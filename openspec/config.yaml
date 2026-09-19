@@ -1,0 +1,34 @@
+schema: spec-driven
+
+# ===== 项目上下文（AI 生成 artifact 时可见） =====
+context: |
+  Tech stack: Python 3.11+, type hints + dataclass/Protocol
+  Architecture: 无特权核心分层插件化（L0 substrate → L4 evolution）
+  Layout: src/core/{substrate,tools,memory,loop,evolution,mcp}, tests/
+  Testing: pytest（单元+集成）, pytest-bdd/behave（规格 BDD）
+  Conventions:
+    - 插件实现 Plugin 契约（plugin_id/generation/schema/coeffects + load/unload/check）
+    - 写操作必须 EffectTracker.record(effect, undo)，副作用建模为可逆效应
+    - 配置/密钥经 CoeffectResolver 注入；密钥只引用不读取、绝不进日志/记忆
+    - 结构化错误码，不向模型抛裸异常
+    - commit 格式 feat(<capability>): ...
+  Spec source of truth: doc/openspec/specs（根 openspec/ 为软链同步，勿直接改根目录）
+
+# ===== 按 artifact 的规则 =====
+rules:
+  proposal:
+    - 提案须指明对哪条 Requirement（CORE-<模块>-R<n>）增/改/删
+    - 提案须包含 Non-goals 与风险
+  tasks:
+    - 任务须可独立验收，粒度 ≤ 2 小时
+
+# ===== apply / archive 的行为指引 =====
+operations:
+  apply:
+    guidance:
+      - 按 tasks.md 逐项实现，先写测试再实现（对齐 doc/04-testing）
+      - 实现偏离规格时，先改规格再改代码
+  archive:
+    guidance:
+      - 归档前 openspec validate --all 必须全绿
+      - delta 合并进 specs/ 后同步 test-cases.md 追踪号
