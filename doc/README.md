@@ -79,6 +79,9 @@ doc/
 ├── 06-ui-frontend/                【UI 界面与启动模式】
 │   └── ui-architecture.md         CLI(Textual)/Web(SPA)/Desktop(Tauri) 三模方案与 ADR-0013~15
 │
+├── 07-mcp-server/                 【MCP Server 模式】
+│   └── mcp-server.md              对外工具源（机器→core-agent 入口）与 ADR-0016~17
+│
 └── openspec/                      【SDD 规格（唯一事实来源）】
     ├── specs/                     ← 系统当前应有的行为（只描述 what，不描述 how）
     │   ├── plugin-registry/spec.md
@@ -97,7 +100,8 @@ doc/
     └── changes/                   ← 修改提案（proposal + design + tasks + delta specs）
         ├── 0001-bootstrap-core/   核心骨架引导变更（原 6 能力）
         ├── 0002-safety-crosscutting/  安全与横切能力变更（新增 6 模块）
-        └── 0003-ui-frontend/          UI 界面与启动模式变更（CLI/Web/Desktop）
+        ├── 0003-ui-frontend/          UI 界面与启动模式变更（CLI/Web/Desktop）
+        └── 0004-mcp-server/           MCP Server 模式变更（对外工具源）
 ```
 
 ---

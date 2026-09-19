@@ -52,7 +52,7 @@ class MCPToolAdapter:
 
 ---
 
-## 4. 调用流程
+## 4. 调用流程（client）
 
 ```
 ToolProvider.invoke(mcp.x.y, args)
@@ -63,7 +63,24 @@ ToolProvider.invoke(mcp.x.y, args)
 
 ---
 
-## 5. 错误码
+## 5. MCPServer 接口（server）
+
+```python
+class MCPServer(Plugin):
+    plugin_id = "mcp.server"
+
+    def serve(self, transport: Literal["stdio", "http"], endpoint: MCPEndpoint) -> None: ...
+    def initialize(self, conn: ServerConnection) -> ServerCapabilities: ...
+    def list_tools(self, conn) -> list[MCPTool]: ...        # 白名单过滤后的暴露面
+    def call_tool(self, conn, name: str, args: dict) -> CallResult: ...  # 复用 ToolProvider.invoke
+```
+
+- **暴露面**：由白名单从 ToolProvider/PluginRegistry 挑选，包装为 MCP tool（`core.<tool>`）。
+- **安全**：`call_tool` 复用 `ToolProvider.invoke` 同一链路，不绕过 permission/observability，来源标注 `external:<client_id>`。
+
+---
+
+## 6. 错误码
 
 | code | 含义 |
 |---|---|
@@ -72,11 +89,13 @@ ToolProvider.invoke(mcp.x.y, args)
 | `MCP_TOOL_NOT_FOUND` | 远程工具不存在 |
 | `REMOTE_TIMEOUT` | 远程超时 |
 | `REMOTE_IRREVERSIBLE` | 远程不可逆操作需确认 |
+| `PERMISSION_DENIED` | 外部调用未授权工具（server 侧越权） |
 
 ---
 
-## 6. 关联
+## 7. 关联
 
 - 模块：`02-modules/mcp.md`
 - 工具契约：`tool-interface.md`
+- MCP Server 模式方案：`07-mcp-server/mcp-server.md`
 - 规格：`openspec/specs/mcp/spec.md`

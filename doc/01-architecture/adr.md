@@ -121,6 +121,20 @@
 - **决策**：Tauri 壳只做开窗口/挂 SPA/启 sidecar 三件事，复用与 Web 相同的 SPA 构建产物实现 100% 一致，sidecar 拉起 Python 后端，参考 Cherry Studio 桌面包经验。
 - **后果**：✅ 体积小、体验与 Web 一致；⚠️ 需 Rust 工具链，sidecar 跨平台打包需 CI 矩阵。
 
+## ADR-0016：MCP Server 暴露面复用 ToolProvider + 白名单
+
+- **状态**：Accepted（2026-09-19）
+- **上下文**：0004 新增 MCP server 角色，需把 core-agent 工具对外暴露；若复制工具实现会双份维护，若绕过内核安全等于开后门。
+- **决策**：暴露面复用 ToolProvider，经白名单筛选后包装为 MCP tool（命名空间 `core.<tool>`）；外部调用走同一 invoke 链路（permission 确认门 + observability 审计，来源 `external:<client_id>`），不绕过内核。
+- **后果**：✅ 单一工具实现源、安全边界外扩一致；⚠️ 需维护白名单与来源标注。
+
+## ADR-0017：MCP Server 传输 stdio 优先 + HTTP/SSE 可选
+
+- **状态**：Accepted（2026-09-19）
+- **上下文**：MCP server 需支持本地与远程两种挂载场景。
+- **决策**：stdio 为默认（本地零配置、进程内 JSON-RPC，Claude Code 直接 `command` 拉起）；HTTP/SSE 为可选（远程/多客户端，鉴权必选 token/mTLS）。
+- **后果**：✅ 本地零配置开箱即用；⚠️ HTTP/SSE 需鉴权，否则等同对外开洞。
+
 ---
 
 ## 变更追踪
@@ -137,3 +151,4 @@
 | ADR-0011 | 02-modules/skills.md |
 | ADR-0012 | 02-modules/context.md |
 | ADR-0013 ~ 0015 | 06-ui-frontend/ui-architecture.md |
+| ADR-0016 ~ 0017 | 07-mcp-server/mcp-server.md |
