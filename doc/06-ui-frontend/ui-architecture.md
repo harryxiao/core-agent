@@ -1,0 +1,161 @@
+# CORE-Harness UI 界面与启动模式设计（CLI / Web / Desktop）
+
+> 状态：提案（Proposal）· 关联 OpenSpec change `0003-ui-frontend` · ADR-0013 ~ 0015
+> 定位：core-agent 的三模启动层——同一内核、同一配置源、三种入口。
+
+---
+
+## 0. 目标与背景
+
+core-agent 内核（loop / memory / tool-use / mcp / evolution / permission / …）目前只有"代码级"入口。
+本设计为它补齐三种用户可感知的启动模式，且三者共享同一内核与同一 LLM 配置：
+
+| 模式 | 入口 | 体验 |
+|---|---|---|
+| CLI | `core-agent` | 终端交互（Claude Code 式 Ink 友好体验） |
+| Web | `core-agent serve` | 浏览器访问，UI 内可配置 LLM API |
+| Desktop | `core-agent.app` | 可打包安装的可执行文件，UI 内可配置 LLM API |
+
+**一条硬约束**：三种模式复用同一套内核与配置，不各自维护一份实现。
+
+---
+
+## 1. 需求摘要
+
+1. **CLI 启动模式**：终端里像 Claude Code（Ink）那样友好交互——折叠块、流式输出、多面板、焦点管理、行内 diff 高亮。
+2. **Web 启动模式**：本地起 HTTP 服务，浏览器打开 SPA，可视化会话 + 流式输出 + **UI 内配置 LLM API**（provider / endpoint / key / base URL）。
+3. **桌面启动模式**：打包成可执行安装文件（Windows / macOS / Linux），同样 UI 内可配置 LLM API，且与 Web 体验 **100% 一致**。
+
+---
+
+## 2. 调研取证（开源方案与框架选型）
+
+> 数据来源：GitHub API + npm registry + 各仓库 raw 抓取，stars 为取证时点值。
+
+### 2.1 TUI 框架选型
+
+| 框架 | Stars | 语言 | 定位 | 对 core-agent 适配 |
+|---|---|---|---|---|
+| **Ink** | 39.9k | TypeScript/React | React for CLI（Claude Code 同款） | ❌ Node 运行时，需与 Python 后端跨语言桥接 |
+| **Textual** | 37.3k | **Python** | 声明式/响应式 TUI（Rich 团队） | ✅ **同进程零桥接，首选** |
+| Rich | 57.4k | Python | 富文本/表格/进度条渲染 | ✅ Textual 底层渲染引擎，作辅助 |
+| Bubbletea | 45.0k | Go | Elm 架构 TUI | ❌ 跨语言 |
+| Ratatui | 22.7k | Rust | 即时模式 TUI | ❌ 跨语言（Tauri 侧或用到） |
+
+**关键事实**：Claude Code 的 npm 包 `dependencies` 为空、只发布平台二进制（`@anthropic-ai/claude-code-linux-x64` 等），
+说明其 Ink/React **全部被打包进原生二进制**。因此 core-agent 不应照搬 Ink（需 Node 运行时），
+而应取 Ink 的"声明式 + 响应式"交互哲学，用 Python 原生对应物 **Textual** 复刻。
+
+### 2.2 现成 Web UI 开源方案
+
+| 项目 | Stars | 后端 | 前端 | 定位 | 能否直接复用 |
+|---|---|---|---|---|---|
+| **Open WebUI** | 152.5k | **Python FastAPI 0.136** | SvelteKit | LLM 聊天 Web UI | ⚠️ 后端同栈最贴合，但是**完整产品**非可嵌入库 |
+| **Cherry Studio** | ~52k | 本地 Electron | TypeScript | 桌面多模型客户端 | ⚠️ 桌面打包的**最佳参考案例** |
+| Lobe Chat | 82.6k | Node | TypeScript | 聊天 UI 框架 | ❌ 前端可参考，后端不同栈 |
+| LibreChat | 44.4k | Node | TypeScript | ChatGPT 克隆 | ❌ 同上 |
+| Dify | ~156k | Python | TypeScript | 工作流编排平台 | ❌ 偏工作流，非通用 UI 层 |
+
+**结论**：**不存在可直接嵌入 core-agent 作为 Web 界面的框架**——以上全是自带后端/数据模型/认证体系的独立应用，
+硬嵌 = 改造 Fork 成本 > 自研。但有两个高价值参照：
+- **Open WebUI** 证明「Python 后端 + Svelte 前端」架构成熟可行，且与 core-agent 同栈；
+- **Cherry Studio** 证明「Electron + 前端 SPA 打桌面包」路径成熟。
+
+### 2.3 桌面打包框架
+
+| 维度 | Electron | Tauri |
+|---|---|---|
+| Stars | 123.2k | ~111k |
+| 内核 | 自带 Chromium + Node | Rust + 系统 WebView |
+| 体积 | ~100MB+ | ~3–10MB |
+| 内存 | 高 | 低 |
+| 前端复用 | 打包即 SPA | 打包即 SPA（可 sidecar 后端） |
+
+---
+
+## 3. 总体架构（三模一张图）
+
+```
+            ┌──────────────────────────────────────────────┐
+            │        单一 SPA 前端（一份代码）                 │
+            │   会话 / 流式输出 / 用量 / 设置(LLM API) / 会话管理 │
+            └───────────────────┬──────────────────────────┘
+                                │ HTTP + SSE（流式）
+            ┌───────────────────▼──────────────────────────┐
+            │    core-agent 后端 API 层（FastAPI）          │
+            │    loop / memory / tool-use / mcp / …         │
+            │    LLM 配置源 = config.yaml + settings.local  │
+            └───────────────────┬──────────────────────────┘
+                                │ 同内核 · 同配置
+   ┌────────────────────────────┼────────────────────────────┐
+   │                            │                            │
+┌──▼─────────────┐      ┌───────▼───────┐      ┌─────────────▼─────┐
+│ ① CLI          │      │ ② Web         │      │ ③ Desktop         │
+│ core-agent     │      │ core-agent    │      │ core-agent.app    │
+│ Textual TUI    │      │ serve → 浏览器 │      │ Tauri 壳 + SPA     │
+│ 直连内核 API   │      │ 打开 SPA      │      │ sidecar 拉起后端   │
+└────────────────┘      └───────────────┘      └───────────────────┘
+```
+
+---
+
+## 4. 各模式设计
+
+### 4.1 CLI（Textual）
+
+- **组件化**：`Widget`/`Compose`/`App`，对应 Ink 的 React 组件树。
+- **响应式**：`@reactive` 装饰器 + CSS 样式系统，做折叠块、行内 diff 高亮、多面板分栏、滚动缓冲。
+- **纯 Python**：与内核同进程直接 import，无 IPC 成本；调用同一后端 API 层，保证行为/鉴权/日志一致。
+- 目录规划：`src/cli/`（`app.py` + `widgets/` + `bridge.py`）。
+
+### 4.2 Web（FastAPI + 单 SPA）
+
+- 后端：FastAPI 暴露 loop/session/memory/tools 接口 + SSE 流式（复用内核）。
+- 前端：单一 SPA（推荐 Svelte 或 React），chat / 会话管理 / 用量 / 设置（LLM API 配置）页。
+- 参考：Open WebUI 的同栈架构成熟经验。
+
+### 4.3 Desktop（Tauri 壳）
+
+- 壳职责最小化：开窗口 + 挂载 SPA + sidecar 拉起 Python 后端。
+- **与 Web 复用同一 SPA 构建产物**，实现桌面/Web 体验 100% 一致。
+- sidecar 由 Tauri 官方机制管理，随应用打包（Windows / macOS / Linux）。
+
+---
+
+## 5. 四条设计原则（保证 100% 一致）
+
+1. **前端单一代码库**：Web 与桌面跑完全相同的 SPA 构建产物，桌面只是换个壳。
+2. **桌面壳职责最小化**：Tauri 只做开窗口 / 挂 SPA / 启 sidecar 三件事。
+3. **统一 API 解耦**：三种模式都走同一套后端 API（HTTP + SSE）；CLI 的 Textual 层也调同一 API，不绕过。
+4. **单一配置源**：LLM API Key 等只在后端 `config.yaml` + `settings.local.json` 配置一次，三模不重复配置。
+
+---
+
+## 6. 分阶段落地路径
+
+| 阶段 | 交付 | 说明 |
+|---|---|---|
+| P1 | 后端 API 层 | FastAPI 暴露 loop/session/memory/tools + SSE 流式；CLI 直连内核先跑通 |
+| P2 | Web SPA | chat / 会话管理 / 用量 / 设置（LLM API 配置）页 |
+| P3 | Tauri 桌面壳 | 复用 SPA + sidecar 后端，打包 Win/macOS/Linux 安装包 |
+| P4 | Textual CLI | 复刻 Ink 式交互（折叠块 / diff 高亮 / 多面板 / 焦点管理） |
+
+---
+
+## 7. 技术决策记录（ADR 索引）
+
+| ADR | 决策 |
+|---|---|
+| ADR-0013 | CLI 采用 Textual（Python 原生）复刻 Ink 式交互 |
+| ADR-0014 | Web 采用自研单 SPA + 统一 API（不嵌入现成开源产品） |
+| ADR-0015 | 桌面端采用 Tauri 壳复用 SPA + sidecar 后端 |
+
+---
+
+## 8. 三模方案一句话总结
+
+| 模式 | 技术 | 复用度 |
+|---|---|---|
+| CLI | Textual（Python 原生 Ink 对应物） | 内核 100% 复用，UI 层自研 |
+| Web | FastAPI 后端 + SPA（参考 Open WebUI） | 后端 + 前端 100% 复用 |
+| Desktop | Tauri 壳 + 同一 SPA + sidecar 后端（参考 Cherry Studio） | SPA 100% 复用 |
