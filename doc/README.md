@@ -54,7 +54,8 @@ doc/
 │   ├── permission.md              权限与审批管控（横切策略层：分级/审批/沙箱）
 │   ├── constraints.md             约束与容错（横切：校验/熔断/重试/压缩中间件）
 │   ├── observability.md           可观测性（横切：日志/指标/追踪/审计）
-│   └── llm-provider.md            三方 LLM 归一化接入（LLMProvider 抽象 + LiteLLM 默认实现）
+│   ├── llm-provider.md            三方 LLM 归一化接入（LLMProvider 抽象 + LiteLLM 默认实现）
+│   └── composition.md             组合与分发（L5：profile 命名组合 / bundle 分发 / patch 覆盖）
 │
 ├── 03-interfaces/                 【接口设计层】
 │   ├── plugin-registry-interface.md        插件契约（trait/lifecycle/reversible effect/coeffect）
@@ -68,7 +69,10 @@ doc/
 │   ├── permission-interface.md    权限判定/审批/沙箱接口
 │   ├── constraints-interface.md   约束中间件接口
 │   ├── observability-interface.md 日志/指标/追踪接口
-│   └── llm-provider-interface.md  三方 LLM 归一化调用接口（completion/stream/embedding）
+│   ├── llm-provider-interface.md  三方 LLM 归一化调用接口（completion/stream/embedding）
+│   ├── composition-interface.md   组合分发接口（解析 / 打包 / 编排 / 分发）
+│   ├── loop-interface.md          智能体循环插件契约（coeffect + run）
+│   └── ui-interface.md            统一后端 API + CLI/Web/Desktop 三模桥接
 │
 ├── 04-testing/                    【测试设计层】
 │   ├── test-strategy.md           测试策略（金字塔、可逆效应性质测试、留出评测）
@@ -76,7 +80,8 @@ doc/
 │   └── test-cases.md              测试用例（逐条对齐 openspec 场景）
 │
 ├── 05-development/                【开发层】
-│   └── development-guide.md       工程规范/目录布局/插件开发流程/Git 工作流
+│   ├── development-guide.md       工程规范/目录布局/插件开发流程/Git 工作流
+│   └── sdd-workflow.md            SDD 工作流（spec → change → delta → archive）
 │
 ├── 06-ui-frontend/                【UI 界面与启动模式】
 │   └── ui-architecture.md         CLI(Textual)/Web(SPA)/Desktop(Tauri) 三模方案与 ADR-0013~15
@@ -103,14 +108,17 @@ doc/
     │   ├── observability/spec.md
     │   ├── ui/spec.md
     │   ├── im/spec.md
-    │   └── llm-provider/spec.md
+    │   ├── llm-provider/spec.md
+    │   └── composition/spec.md
     └── changes/                   ← 修改提案（proposal + design + tasks + delta specs）
         ├── 0001-bootstrap-core/   核心骨架引导变更（原 6 能力）
         ├── 0002-safety-crosscutting/  安全与横切能力变更（新增 6 模块）
         ├── 0003-ui-frontend/          UI 界面与启动模式变更（CLI/Web/Desktop）
         ├── 0004-mcp-server/           MCP Server 模式变更（对外工具源）
         ├── 0005-im-gateway/           IM 网关模式变更（社交 App 远程入口）
-        └── 0006-llm-provider/         LLM Provider 归一化接入变更（任意三方模型）
+        ├── 0006-llm-provider/         LLM Provider 归一化接入变更（任意三方模型）
+        ├── 0007-composition/          组合与分发能力变更（L5 新增 capability）
+        └── 0008-evolution-four-stages/  进化四阶段闭环变更（诊断→提案→验证→评测）
 ```
 
 ---

@@ -33,6 +33,9 @@
 | CORE-CONS-R1~R4 | TC-CONS-* | 单元 + 集成 |
 | CORE-SKILL-R1~R4 | TC-SKILL-* | 单元 + 集成 + 留出 |
 | CORE-CTX-R1~R4 | TC-CTX-* | 单元 + 集成 |
+| CORE-UI-R1~R6 | TC-UI-* | 集成 + E2E |
+| CORE-IM-R1~R6 | TC-IM-* | 集成 + E2E + 安全 |
+| CORE-LLM-R1~R5 | TC-LLM-* | 单元 + 集成 |
 | CORE-NFR-* | TC-NFR-* | 专项（性能/安全/可观测） |
 
 ---

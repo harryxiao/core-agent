@@ -1,0 +1,92 @@
+# 接口设计：UI 界面接口（UI Interface）
+
+> 层：交互层（三模入口） ｜ 对应规格 `ui/spec.md` ｜ 模块 `06-ui-frontend/ui-architecture.md`
+
+---
+
+## 1. 统一后端 API（FastAPI）
+
+三种模式复用同一内核与同一 LLM 配置，走同一套后端 API（HTTP + SSE），不各自维护一份实现。
+
+```python
+# 统一 API 层（三模共用，CLI 也不绕过）
+class UIAPILayer:
+    # 会话与循环
+    def create_session(self, mode: str) -> str: ...
+    def run_loop(self, session_id: str, user_input: str) -> AsyncIterator[Event]:
+        """SSE 流式输出 loop 事件：perception / reasoning / action / result。"""
+
+    # 记忆
+    def get_memory(self, session_id: str) -> dict: ...
+    def compact(self, session_id: str) -> None: ...
+
+    # 工具
+    def list_tools(self) -> list[Tool]: ...
+    def invoke_tool(self, tool_id: str, args: dict) -> ToolResult: ...
+
+    # LLM 配置（三模唯一配置源）
+    def get_llm_config(self) -> LLMConfig: ...
+    def set_llm_config(self, cfg: LLMConfig) -> None: ...
+```
+
+### 1.1 流式事件（SSE）
+
+| 事件 | 载荷 | 说明 |
+|---|---|---|
+| `session.created` | session_id | 会话建立 |
+| `loop.perception` | turn_id, observation | 感知阶段 |
+| `loop.reasoning` | turn_id, plan | 推理阶段（折叠块展示） |
+| `loop.action` | turn_id, action | 行动阶段（含 diff / 审批提示） |
+| `loop.result` | turn_id, result | 结果回传 |
+| `loop.error` | turn_id, error | 结构化错误（不中断循环） |
+
+---
+
+## 2. 三模桥接
+
+| 模式 | 入口 | 桥接方式 | UI 层 |
+|---|---|---|---|
+| CLI | `core-agent` | Textual 层直连内核，但同样调统一 API 层，保证行为/鉴权/日志一致 | `src/cli/`（app.py + widgets/ + bridge.py） |
+| Web | `core-agent serve` | HTTP + SSE 打开单 SPA | Svelte/React SPA（chat / 会话管理 / 用量 / 设置） |
+| Desktop | `core-agent.app` | Tauri 壳复用同一 SPA + sidecar 拉起 Python 后端 | 与 Web 100% 一致 |
+
+```python
+class CLIBridge:      # ① CLI：Textual → 统一 API（同进程，无 IPC）
+    def connect(self) -> UIAPILayer: ...
+
+class WebBridge:      # ② Web：FastAPI 暴露 HTTP + SSE
+    def serve(self, host: str, port: int) -> None: ...
+
+class DesktopBridge:  # ③ Desktop：Tauri 壳 + sidecar
+    def start_sidecar(self) -> None: ...
+```
+
+---
+
+## 3. LLM 配置源（单一配置）
+
+LLM API（provider / endpoint / key / base URL）只在后端配置一次：
+
+- `config.yaml`（声明式默认）
+- `settings.local.json`（本地覆盖，密钥隔离）
+
+三模不重复配置；`set_llm_config` 热更新，无需重启。
+
+---
+
+## 4. 约束（四条设计原则）
+
+1. **前端单一代码库**：Web 与 Desktop 跑同一 SPA 构建产物，桌面只是换个壳。
+2. **桌面壳职责最小化**：Tauri 只做开窗口 / 挂 SPA / 启 sidecar 三件事。
+3. **统一 API 解耦**：三模走同一后端 API（HTTP + SSE），CLI 的 Textual 层也不绕过。
+4. **单一配置源**：LLM API Key 只在后端配置一次，三模不重复配置。
+
+---
+
+## 5. 关联
+
+- 模块：`06-ui-frontend/ui-architecture.md`
+- 规格：`openspec/specs/ui/spec.md`
+- LLM 归一化：经 `llm-provider` 虚拟接口调用（可替换 LiteLLM）
+- 决策：ADR-0013 ~ 0015
+- 测试：`04-testing/test-cases.md`（TC-UI 系列）

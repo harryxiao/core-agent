@@ -1,0 +1,110 @@
+# 接口设计：智能体循环接口（Loop Interface）
+
+> 层：L3 ｜ 对应规格 `loop/spec.md` ｜ 模块 `02-modules/loop.md`
+
+---
+
+## 1. 插件接口
+
+Loop 本身也是插件，默认实现约 100 行，可被不同策略替换（ReAct / Plan-Execute / 自定义）。
+
+```python
+class LoopPlugin(Plugin):
+    plugin_id = "loop.default"
+
+    # 装配依赖（coeffects）：模型适配器 + 记忆存储 + 工具提供者 + 元规则
+    coeffects = ["model:adapter", "memory:store", "tools:provider", "constitution:v1"]
+
+    def run(self, user_input: str) -> LoopResult:
+        """执行一轮完整闭环：感知 → 推理 → 行动 → 记忆。"""
+```
+
+默认实现 `DefaultLoop`（骨架见 `02-modules/loop.md` 第 4 章）：
+
+```python
+class DefaultLoop(Plugin):
+    coeffects = ["model:adapter", "memory:store", "tools:provider", "constitution:v1"]
+
+    def run(self, user_input: str) -> LoopResult:
+        trace_id = new_trace_id()
+        ctx = self.perceive(user_input)          # 检索记忆 + 拼上下文（有上界）
+        while not ctx.done():
+            action = self.reason(ctx)            # 模型决策
+            if action.is_irreversible and not self.gate.confirm(action):
+                action = self.decline(action)    # 确认门拒绝
+            result = self.act(action, trace_id)  # 经 EffectTracker 记录
+            if result.failed:
+                self.rollback(trace_id)          # 回滚本轮
+            ctx = self.observe(ctx, result)
+        self.remember(trace_id, ctx.trajectory)  # 无行动不记忆
+        return LoopResult(reply=ctx.reply, trace_id=trace_id)
+```
+
+---
+
+## 2. 核心数据结构
+
+以下为伪代码最小契约，字段实现可扩展：
+
+```python
+@dataclass
+class LoopResult:
+    reply: str                  # 最终回复
+    trace_id: str               # 本轮追溯 ID（贯穿日志/效应/记忆）
+
+@dataclass
+class LoopContext:
+    messages: list[Message]     # 本轮消息流
+    memory: MemoryPack          # 检索结果 + L1 索引（有 token 上界）
+    tools: list[ToolSchema]     # 可调用工具 schema
+    trajectory: list[Step]      # 本轮轨迹（供 Remember 写入）
+    reply: str = ""
+
+    def done(self) -> bool:
+        """推理判定可结束本轮时返回 True。"""
+
+@dataclass
+class Action:
+    is_irreversible: bool       # True → 触发确认门
+```
+
+阶段方法签名（私有，但为策略替换点）：
+
+```python
+def perceive(self, user_input: str) -> LoopContext
+def reason(self, ctx: LoopContext) -> Action
+def act(self, action: Action, trace_id: str) -> ActionResult   # 经 EffectTracker.record
+def observe(self, ctx: LoopContext, result: ActionResult) -> LoopContext
+def remember(self, trace_id: str, trajectory: list[Step]) -> None
+```
+
+---
+
+## 3. 四阶段职责
+
+| 阶段 | 方法 | 职责 | 硬约束 |
+|---|---|---|---|
+| Perceive | `perceive` | 收集状态，拼上下文包 | token 有硬上界，按优先级裁剪 |
+| Reason | `reason` | 调用模型决策下一步动作 | 非法动作回传结构化错误，不中断 |
+| Act | `act` | 执行动作，经 EffectTracker 记录 | 可回滚；不可逆操作过确认门 |
+| Remember | `remember` | 写本轮轨迹/教训入 L2/L3 | **每轮必做**（无行动不记忆） |
+
+---
+
+## 4. 约束
+
+- 上下文有上界：注入按优先级裁剪（L0 元规则 > 本轮消息 > L1 索引 > L3 技能 > L2 事实），**绝不允许把整个记忆塞进上下文**。
+- 行动可回滚：每个 action 经 `EffectTracker.record` 落 undo 栈；失败即回滚并写记忆。
+- 不可逆/高风险操作（rm、写系统、杀进程、支付）→ 触发 `ask_user` 确认门，拒绝则改写安全动作或终止。
+- 可观测：每轮生成 `trace_id`，单轮可复现（NFR-OBS2）。
+- 连续 N 轮失败 → 触发 L4 诊断钩子，暂停并请求人工介入。
+
+---
+
+## 5. 关联
+
+- 模块：`02-modules/loop.md`
+- 规格：`openspec/specs/loop/spec.md`
+- 记忆：`memory-interface.md`
+- 进化（L4 只读观测 L3）：`evolution-interface.md`
+- 测试：`04-testing/test-cases.md`（LOOP 系列）

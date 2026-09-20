@@ -118,7 +118,47 @@
 | TC-CTX-03 | CORE-CTX-R3 | 多轮对话 | 关键信息自动压实并写回记忆 |
 | TC-CTX-04 | CORE-CTX-R4 | 千页文档 | 仅呈现目录索引，细节按需跳转 |
 
-## 13. 非功能（TC-NFR）
+## 13. UI 界面（TC-UI）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-UI-01 | CORE-UI-R1 | CLI 模式发起会话 | 经同一后端 API 层驱动 loop，行为与 Web 一致 |
+| TC-UI-02 | CORE-UI-R1 | 在 Web 配置 LLM API 后切 CLI | 配置生效，无需重复配置 |
+| TC-UI-03 | CORE-UI-R2 | Web/桌面设置页填 provider/endpoint/key/base URL 并保存 | 写入后端配置源立即生效，密钥不进前端日志 |
+| TC-UI-04 | CORE-UI-R2 | 保存 API key 后持久化配置 | key 存本地受保护配置文件，不入库、不进遥测 |
+| TC-UI-05 | CORE-UI-R3 | 内核产生分片回复 | 终端增量渲染，不整块刷新 |
+| TC-UI-06 | CORE-UI-R3 | 渲染含长输出/工具结果的回复 | 长内容默认折叠，可展开/收起 |
+| TC-UI-07 | CORE-UI-R4 | 启动 Web 模式，浏览器打开服务地址 | 加载 SPA，实时流式回复（SSE） |
+| TC-UI-08 | CORE-UI-R5 | 安装桌面安装包并启动应用 | 桌面壳自动拉起本地后端，加载同一 SPA 可会话 |
+| TC-UI-09 | CORE-UI-R6 | 同版本 Web/桌面打开同一功能页面 | 界面与交互完全一致 |
+
+## 14. IM 网关（TC-IM）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-IM-01 | CORE-IM-R1 | 实现新平台 Provider 适配器并注册 | loop/工具/记忆/权限链路零改动复用 |
+| TC-IM-02 | CORE-IM-R2 | 用户在 IM 向机器人发消息 | 同一 loop 执行并回推结果 |
+| TC-IM-03 | CORE-IM-R2 | 同一用户/群多轮追问 | 按会话/群保持上下文，不重复询问 |
+| TC-IM-04 | CORE-IM-R3 | 配置 Telegram/Discord/飞书官方通道凭证与回调 | 消息经官方通道进网关并回推 |
+| TC-IM-05 | CORE-IM-R3 | 评估个人微信号直接接入 | 因封号风险拒绝，改用企业微信/公众号 |
+| TC-IM-06 | CORE-IM-R4 | 白名单用户发消息 | 正常进入 loop 执行 |
+| TC-IM-07 | CORE-IM-R4 | 非白名单用户发消息 | 拒绝，返回拒绝提示（不暴露内部信息） |
+| TC-IM-08 | CORE-IM-R5 | IM 触发删除/执行等高危工具 | IM 内二次确认，确认后才执行 |
+| TC-IM-09 | CORE-IM-R5 | IM 用户完成任意调用 | 审计标注来源 `im:<platform>:<user_id>` |
+| TC-IM-10 | CORE-IM-R6 | 多平台多用户并发交互 | 会话状态互不串扰 |
+| TC-IM-11 | CORE-IM-R6 | 某平台长连接断开 | 该平台会话隔离重连，不影响其他平台/主循环 |
+
+## 15. LLM Provider（TC-LLM）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-LLM-01 | CORE-LLM-R1 | 内核经 LLMProvider 接口发起请求 | 面向统一请求/响应模型，不感知供应商 |
+| TC-LLM-02 | CORE-LLM-R2 | 配置某三方模型 API Key + URL 后调用 | 自动解析路由到对应 provider，返回归一化结果 |
+| TC-LLM-03 | CORE-LLM-R3 | 注册自研 Provider 替换 LiteLLM | 内核 loop 及调用方零改动切换 |
+| TC-LLM-04 | CORE-LLM-R4 | 底层返回超时/限流/鉴权/网络异常 | 统一映射为领域异常，不泄漏原始错误结构 |
+| TC-LLM-05 | CORE-LLM-R5 | 任意一次模型调用结束 | 审计标注 provider/model 与结果，可追溯 |
+
+## 16. 非功能（TC-NFR）
 
 | 用例 | 对应 NFR | 期望 |
 |---|---|---|

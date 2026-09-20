@@ -115,6 +115,38 @@
 | CORE-CTX-R3 | 系统 SHALL 对多轮对话关键信息自动压实并写回记忆 | P0 | context/spec.md |
 | CORE-CTX-R4 | 千页级文档 SHALL 以轻量索引呈现，不挤占有限上下文窗口 | P1 | context/spec.md |
 
+### 1.13 UI 界面与启动模式（ui）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-UI-R1 | 系统 SHALL 提供 CLI、Web、Desktop 三种启动模式，三者共享同一内核与同一 LLM 配置源 | P0 | ui/spec.md |
+| CORE-UI-R2 | 系统 SHALL 支持在 Web 与桌面 UI 内配置 LLM provider、endpoint、API key 与 base URL | P0 | ui/spec.md |
+| CORE-UI-R3 | 系统 SHALL 在 CLI 模式提供声明式、响应式的终端交互（折叠块、流式输出、多面板、焦点管理），复刻 Claude Code 式 Ink 体验 | P1 | ui/spec.md |
+| CORE-UI-R4 | 系统 SHALL 支持以 HTTP 服务 + 单页应用（SPA）形式提供 Web 界面，流式输出通过 SSE 推送 | P0 | ui/spec.md |
+| CORE-UI-R5 | 系统 SHALL 支持将桌面端打包为可执行安装文件（Windows / macOS / Linux），并内置拉起本地后端的能力 | P1 | ui/spec.md |
+| CORE-UI-R6 | 系统 SHALL 使桌面端复用与 Web 相同的 SPA 构建产物，保证二者体验 100% 一致 | P1 | ui/spec.md |
+
+### 1.14 IM 网关（im）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-IM-R1 | 系统 SHALL 提供统一 IMGateway 抽象屏蔽各平台协议差异，新增平台仅需实现 Provider 适配器，不改动内核 | P0 | im/spec.md |
+| CORE-IM-R2 | 系统 SHALL 将 IM 消息映射为内核会话：入站消息进入同一 loop 执行，执行结果回推到来源会话；同一会话/群内多轮对话保持上下文 | P0 | im/spec.md |
+| CORE-IM-R3 | 系统 SHALL 按各平台官方能力接入：Telegram/Discord 用官方 Bot API（webhook 或长轮询）、飞书用开放平台长连接 WebSocket（事件订阅）、微信用企业微信/公众号等合规通道；个人号接入因封号风险不予采用 | P0 | im/spec.md |
+| CORE-IM-R4 | 系统 SHALL 对远程控制入口做身份鉴权：仅白名单用户（及群内 @ 机器人）可触发执行，防止陌生人操控 | P0 | im/spec.md |
+| CORE-IM-R5 | 系统 SHALL 使 IM 远程调用走与本地一致的 invoke 链路：只读/低危操作放行，高危操作在 IM 内二次确认或拒绝，全部调用标注来源并审计落盘 | P0 | im/spec.md |
+| CORE-IM-R6 | 系统 SHALL 为每个平台/用户建立独立会话，多平台多用户并发互不串扰；单连接/单平台故障熔断隔离，不拖垮主循环 | P1 | im/spec.md |
+
+### 1.15 三方大模型归一化接入（llm-provider）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-LLM-R1 | 系统 SHALL 提供统一的 LLMProvider 抽象接口（completion / stream / embedding 三个入口与统一请求 / 响应模型），内核只依赖该接口、不感知具体供应商实现 | P0 | llm-provider/spec.md |
+| CORE-LLM-R2 | 系统 SHALL 提供 LiteLLM 默认实现，任意三方 API Key + URL 配置即自动路由到对应 provider 协议，无需逐家编写适配代码 | P0 | llm-provider/spec.md |
+| CORE-LLM-R3 | 系统 SHALL 通过依赖注入隔离 LLMProvider 实现，替换 LiteLLM 或接入自研后端时，内核 loop 及所有调用方无需改动即可切换 | P0 | llm-provider/spec.md |
+| CORE-LLM-R4 | 系统 SHALL 将超时 / 限流 / 鉴权 / 网络异常统一为领域异常，上层只处理一类错误语义 | P1 | llm-provider/spec.md |
+| CORE-LLM-R5 | 系统 SHALL 对模型调用做可观测审计，标注 provider / model 与调用结果，复用既有 observability 链路 | P1 | llm-provider/spec.md |
+
 ---
 
 ## 2. 非功能需求（Non-Functional Requirements）

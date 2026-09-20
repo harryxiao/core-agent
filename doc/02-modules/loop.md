@@ -1,6 +1,6 @@
 # 模块设计：智能体循环（L3 Agent Loop）
 
-> 对应规格：`doc/openspec/specs/loop/spec.md` ｜ 接口：`doc/03-interfaces/`（loop 为普通插件，无独立接口文档）
+> 对应规格：`doc/openspec/specs/loop/spec.md` ｜ 接口：`doc/03-interfaces/loop-interface.md`
 
 ---
 
