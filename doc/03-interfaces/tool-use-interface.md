@@ -1,4 +1,4 @@
-# 接口设计：工具接口（Tool Interface）
+# 接口设计：工具接口（Tool Use Interface）
 
 > 层：L1 ｜ 对应规格 `tool-use/spec.md` ｜ 模块 `02-modules/tool-use.md`
 
@@ -100,5 +100,5 @@ class SafetyGate:
 ## 6. 关联
 
 - 模块：`02-modules/tool-use.md`
-- 插件契约：`plugin-interface.md`
+- 插件契约：`plugin-registry-interface.md`
 - 规格：`openspec/specs/tool-use/spec.md`

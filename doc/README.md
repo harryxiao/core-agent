@@ -56,9 +56,9 @@ doc/
 │   └── observability.md           可观测性（横切：日志/指标/追踪/审计）
 │
 ├── 03-interfaces/                 【接口设计层】
-│   ├── plugin-interface.md        插件契约（trait/lifecycle/reversible effect/coeffect）
+│   ├── plugin-registry-interface.md        插件契约（trait/lifecycle/reversible effect/coeffect）
 │   ├── memory-interface.md        分层记忆读写/查询接口
-│   ├── tool-interface.md          工具调用与结果接口
+│   ├── tool-use-interface.md          工具调用与结果接口
 │   ├── mcp-interface.md           MCP server/client 接口
 │   ├── evolution-interface.md     进化引擎四阶段接口
 │   ├── context-interface.md       上下文装配/信息地图/压实接口

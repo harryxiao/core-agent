@@ -1,6 +1,6 @@
 # 模块设计：插件注册与组合基底（L0 Substrate / Plugin Registry）
 
-> 对应规格：`doc/openspec/specs/plugin-registry/spec.md` ｜ 接口：`doc/03-interfaces/plugin-interface.md`
+> 对应规格：`doc/openspec/specs/plugin-registry/spec.md` ｜ 接口：`doc/03-interfaces/plugin-registry-interface.md`
 
 ---
 
@@ -93,6 +93,6 @@ effect = {
 
 ## 6. 关联
 
-- 接口契约：`doc/03-interfaces/plugin-interface.md`
+- 接口契约：`doc/03-interfaces/plugin-registry-interface.md`
 - 规格：`doc/openspec/specs/plugin-registry/spec.md`
 - 测试：`doc/04-testing/test-cases.md`（PLG 系列）

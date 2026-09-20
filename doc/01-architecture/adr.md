@@ -11,7 +11,7 @@
 - **决策**：L0 只保留组合基底（注册/可逆效应/coeffect/HMR），loop/记忆/进化引擎/模型适配器均为插件。
 - **后果**：
   - ✅ 新增能力（如新模型、新记忆后端）不改核心（指标 M5）。
-  - ⚠️ 需要严格定义插件契约（见 `03-interfaces/plugin-interface.md`），否则组合语义模糊。
+  - ⚠️ 需要严格定义插件契约（见 `03-interfaces/plugin-registry-interface.md`），否则组合语义模糊。
 
 ## ADR-0002：副作用一律建模为"可逆效应"
 
@@ -164,7 +164,7 @@
 
 | 编号 | 关联文档 |
 |---|---|
-| ADR-0001 ~ 0003 | 03-interfaces/plugin-interface.md |
+| ADR-0001 ~ 0003 | 03-interfaces/plugin-registry-interface.md |
 | ADR-0004 | 02-modules/memory.md |
 | ADR-0005 | 02-modules/evolution.md |
 | ADR-0006/0008 | 05-development/development-guide.md |

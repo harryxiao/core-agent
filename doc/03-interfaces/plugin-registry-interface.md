@@ -1,4 +1,4 @@
-# 接口设计：插件契约（Plugin Interface）
+# 接口设计：插件契约（Plugin Registry Interface）
 
 > 层：L0 ｜ 对应规格 `plugin-registry/spec.md` ｜ 模块 `02-modules/plugin-registry.md`
 

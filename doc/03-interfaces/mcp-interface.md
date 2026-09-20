@@ -96,6 +96,6 @@ class MCPServer(Plugin):
 ## 7. 关联
 
 - 模块：`02-modules/mcp.md`
-- 工具契约：`tool-interface.md`
+- 工具契约：`tool-use-interface.md`
 - MCP Server 模式方案：`07-mcp-server/mcp-server.md`
 - 规格：`openspec/specs/mcp/spec.md`

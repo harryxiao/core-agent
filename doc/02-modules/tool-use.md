@@ -1,6 +1,6 @@
 # 模块设计：工具使用（L1 Tool Use）
 
-> 对应规格：`doc/openspec/specs/tool-use/spec.md` ｜ 接口：`doc/03-interfaces/tool-interface.md`
+> 对应规格：`doc/openspec/specs/tool-use/spec.md` ｜ 接口：`doc/03-interfaces/tool-use-interface.md`
 
 ---
 
@@ -95,5 +95,5 @@ Provider.invoke(tool_id, args) -> Result  # 统一调用入口（含效应追踪
 
 - 规格：`doc/openspec/specs/tool-use/spec.md`
 - 插件基底：`doc/02-modules/plugin-registry.md`
-- 接口：`doc/03-interfaces/tool-interface.md`
+- 接口：`doc/03-interfaces/tool-use-interface.md`
 - 测试：`doc/04-testing/test-cases.md`（TOOL 系列）
