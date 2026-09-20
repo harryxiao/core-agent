@@ -7,6 +7,11 @@ MCP 是双向协议，core-agent 目前只实现 client 侧（消费外部 tools
 原子工具与技能可被任意 MCP client 复用，形成「机器 → core-agent」入口，与 0003 的「人 → core-agent」
 三入口（CLI/Web/Desktop）对称。
 
+## Research / 参考资料
+
+- **MCP 规范**：`modelcontextprotocol.io/specification/2026-07-28/`（transports / auth / versioning 章节，2026-09-20 抓取）；传输 stdio + Streamable HTTP，鉴权 OAuth 2.1。调研依据见 `plan_distributed/research_findings.md`。
+- **备选方案对比**：自研私有 HTTP/JSON API（无生态、各 harness 需定制接入，复用为零）→ 否决；A2A（面向 Agent↔Agent 委派，不覆盖「Agent↔工具/资源」暴露）→ 不适用；MCP（唯一面向工具/资源暴露的开放标准，Claude Code / Cursor / Kiro 等原生可挂载）→ 采用。
+
 ## Decisions
 
 - **暴露面复用 ToolProvider**：不复制工具实现，通过白名单从 ToolProvider/PluginRegistry 挑选并包装为 MCP

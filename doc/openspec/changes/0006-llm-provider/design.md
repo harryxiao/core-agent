@@ -6,6 +6,11 @@ core-agent 内核 loop 需要调用大模型，但尚无统一 LLM 接入层，�
 
 但直接硬编码 LiteLLM 会把供应商锁进架构。因此本设计以 **LLMProvider 抽象接口为重心**，LiteLLM 仅作默认实现，通过依赖注入隔离：内核只依赖接口，后续替换 LiteLLM 或接入自研后端时调用方零改动。
 
+## Research / 参考资料
+
+- **LiteLLM**：`github.com/BerriAI/litellm`（主库 MIT license，enterprise/ 目录独立授权），59k+ stars，统一 100+ 模型协议，兼容 OpenAI / Anthropic / DeepSeek / 通义等。pyproject 依赖 `litellm>=1.101.0`。
+- **备选方案对比**：各家原生 SDK 直连（OpenAI / Anthropic / DeepSeek SDK，接入新模型即改代码、供应商锁定）→ 否决；LangChain（框架耦合重、引入范围大，超出归一化接入层职责）→ 否决；LiteLLM（事实标准归一化层，社区活跃）→ 采用为默认实现，并经 LLMProvider 抽象接口隔离，保证后续可自研替代而不改调用方。
+
 ## Decisions
 
 - **LLMProvider 抽象接口为重心**：定义 completion / stream / embedding 三个入口 + 统一请求 / 响应模型；内核 loop 只依赖该接口，不感知具体供应商。

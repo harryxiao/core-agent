@@ -181,6 +181,15 @@
 
 ---
 
+## ADR-0024：Composition 组合与分发层（唯一静态层）
+
+- **状态**：Accepted（2026-09-20）
+- **上下文**：架构蓝图 L5「组合与分发层」需把已结晶技能与插件按需组合、跨部署分发、按用户差异覆盖，且该层不应承载业务逻辑。
+- **决策**：以 profile（命名组合）/ bundle（分发格式）/ patch.yml（用户覆盖）三要素建模；composition 为唯一静态层——只做组合代数、无业务逻辑、永不进化；解析顺序固定为「bundle 层叠 → patch.yml 覆盖」，同名项由 patch.yml 覆盖，所有组合/覆盖操作可逆、可回退。
+- **后果**：✅ 组合逻辑与进化逻辑彻底分离、可逆组合基底不被破坏；⚠️ 需定死 patch.yml 合并语义（浅/深合并、删除标记）与 bundle 版本/依赖/哈希元数据，否则破坏可逆性与跨部署一致性。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -199,3 +208,4 @@
 | ADR-0018 ~ 0020 | 08-im-gateway/im-gateway.md |
 | ADR-0021 | 02-modules/llm-provider.md |
 | ADR-0022 ~ 0023 | 09-distributed/distributed.md |
+| ADR-0024 | 02-modules/composition.md |

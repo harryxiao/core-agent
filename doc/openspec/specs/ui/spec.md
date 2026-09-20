@@ -3,6 +3,12 @@
 ## Purpose
 UI 界面与启动模式是 core-agent 面向用户的统一呈现层：CLI / Web / Desktop 三种入口共享同一内核与同一 LLM 配置源，行为、鉴权、日志保持一致；用户在 Web 与桌面 UI 内即可配置 LLM API；桌面与 Web 复用同一前端构建产物实现体验一致。
 
+## 技术选型
+- **CLI**：Python 原生 Textual，取 Ink 的声明式 + 响应式交互哲学，同进程复刻折叠块/流式/多面板，避免 Node 桥接
+- **Web**：自研单 SPA（Svelte 前端）+ 统一后端 API（HTTP + SSE）
+- **Desktop**：Tauri 壳复用同一 SPA 构建产物 + sidecar 拉起 Python 后端，体积远小于 Electron
+- **统一 API 解耦**：三种模式共走同一后端 API，CLI 不绕过内核直连，保证鉴权/日志/行为一致
+
 ## Requirements
 
 ### Requirement: 三模统一内核启动
@@ -31,8 +37,15 @@ UI 界面与启动模式是 core-agent 面向用户的统一呈现层：CLI / We
 - **WHEN** 系统持久化配置
 - **THEN** key 存储在本地受保护配置文件中，不入库、不进遥测
 
+#### Scenario: 密钥持久化失败
+- **GIVEN** 系统持久化 LLM API key 时发生磁盘写满或权限不足
+- **WHEN** 保存配置失败
+- **THEN** 回滚本次配置变更并提示用户，不留下半写状态，密钥不进入错误日志
+
 ### Requirement: CLI 友好交互
 系统 SHALL 在 CLI 模式提供声明式、响应式的终端交互（折叠块、流式输出、多面板、焦点管理），复刻 Claude Code 式 Ink 体验。
+
+实现：Textual（Python 原生）
 
 #### Scenario: 流式输出
 - **GIVEN** 内核产生分片回复
@@ -47,6 +60,8 @@ UI 界面与启动模式是 core-agent 面向用户的统一呈现层：CLI / We
 ### Requirement: Web 界面访问
 系统 SHALL 支持以 HTTP 服务 + 单页应用（SPA）形式提供 Web 界面，流式输出通过 SSE 推送。
 
+实现：Svelte SPA
+
 #### Scenario: 浏览器访问
 - **GIVEN** 用户启动 Web 模式
 - **WHEN** 浏览器打开服务地址
@@ -54,6 +69,8 @@ UI 界面与启动模式是 core-agent 面向用户的统一呈现层：CLI / We
 
 ### Requirement: 桌面打包
 系统 SHALL 支持将桌面端打包为可执行安装文件（Windows / macOS / Linux），并内置拉起本地后端的能力。
+
+实现：Tauri 壳 + sidecar
 
 #### Scenario: 安装包运行
 - **GIVEN** 用户安装桌面安装包

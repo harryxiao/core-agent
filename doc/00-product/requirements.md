@@ -1,6 +1,6 @@
 # CORE-Harness 产品需求文档（Requirements / PRD）
 
-> 版本 v0.1 ｜ 需求编号规则：`CORE-<模块>-R<n>`，与 `openspec/specs/*`、`04-testing/test-cases.md` **同号**。
+> 版本 v0.1 ｜ 需求编号规则：`CORE-<模块>-R<n>`（本表功能需求编号）；与 `openspec/specs/*` 的命名式 Requirement、`04-testing/test-cases.md` 的 `TC-*` 用例组通过命名与编号区间建立追踪映射（非严格同号）。
 > 每条功能需求（FR）必须可追踪到 `openspec/specs/` 中对应的 Requirement；非功能需求（NFR）追踪到架构/测试文档。
 
 ---
@@ -146,6 +146,27 @@
 | CORE-LLM-R3 | 系统 SHALL 通过依赖注入隔离 LLMProvider 实现，替换 LiteLLM 或接入自研后端时，内核 loop 及所有调用方无需改动即可切换 | P0 | llm-provider/spec.md |
 | CORE-LLM-R4 | 系统 SHALL 将超时 / 限流 / 鉴权 / 网络异常统一为领域异常，上层只处理一类错误语义 | P1 | llm-provider/spec.md |
 | CORE-LLM-R5 | 系统 SHALL 对模型调用做可观测审计，标注 provider / model 与调用结果，复用既有 observability 链路 | P1 | llm-provider/spec.md |
+
+### 1.16 组合与分发（composition）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-COMP-R1 | 系统 SHALL 提供 profile 命名组合机制，一个 profile 命名一个可复用的插件组合集合，层叠多个 bundle 并叠加用户 patch.yml | P0 | composition/spec.md |
+| CORE-COMP-R2 | 系统 SHALL 定义 bundle 作为插件的分发格式，使已结晶的技能可打包、跨部署复用 | P0 | composition/spec.md |
+| CORE-COMP-R3 | 系统 SHALL 支持用户 patch.yml 对 profile 组合做局部覆盖，在不改 profile 与 bundle 的前提下按用户差异调整 | P0 | composition/spec.md |
+| CORE-COMP-R4 | 系统 SHALL 按「bundle 层叠 + patch.yml 覆盖」的确定顺序解析最终组合，解析结果可逆、可回退 | P0 | composition/spec.md |
+
+### 1.17 分布式协作（distributed）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-DIST-R1 | 系统 SHALL 同时具备 A2A Client 与 A2A Server 两种角色：作为 Client 可委派任务给外部 Agent，作为 Server 可对外暴露自身能力被外部 Agent 调用 | P0 | distributed/spec.md |
+| CORE-DIST-R2 | 系统 SHALL 以 AgentCard 声明自身能力并支持签名与验证，供对等 Agent 发现与协商 | P0 | distributed/spec.md |
+| CORE-DIST-R3 | 系统 SHALL 支持 A2A 三种协议绑定：JSON-RPC 2.0 over HTTP(S) 为默认/推荐，gRPC 与 REST 为备选，并保留自定义绑定能力 | P0 | distributed/spec.md |
+| CORE-DIST-R4 | 系统 SHALL 支持 OAuth2 / mTLS / APIKey / OpenIdConnect 鉴权，跨设备调用按最小权限 scope 授权，高危操作复用既有 permission 审批链路 | P0 | distributed/spec.md |
+| CORE-DIST-R5 | 系统 SHALL 支持云端 / 个人 PC / 移动终端 / 嵌入式四类设备分布式拓扑，实现控制面/执行面分离 | P0 | distributed/spec.md |
+| CORE-DIST-R6 | 系统 MAY 支持可选的设备间 P2P 直连优化（公钥寻址、NAT 打洞直连优先、失败回退 relay、QUIC 传输），不改变上层 A2A 协议行为 | P2 | distributed/spec.md |
+| CORE-DIST-R7 | 系统 SHALL 遵循 A2A 与 MCP 互补：A2A Server 内部经 MCP 调用底层工具/数据，Agent 间协作走 A2A、能力调用走 MCP | P0 | distributed/spec.md |
 
 ---
 

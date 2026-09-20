@@ -22,6 +22,11 @@ Composition（组合与分发层）是 CORE-Harness 唯一的静态层：只有�
 - **WHEN** 将技能打包为 bundle
 - **THEN** 其他部署可引入该 bundle 复用同一批技能，无需重新结晶
 
+#### Scenario: bundle 校验失败
+- **GIVEN** 引入的 bundle 校验和或签名不符、或格式损坏
+- **WHEN** 部署引入该 bundle
+- **THEN** 拒绝加载并报错定位损坏 bundle，不影响已有组合，可回退到引入前状态
+
 ### Requirement: patch.yml 用户覆盖
 系统 SHALL 支持用户 patch.yml 对 profile 组合做局部覆盖，在不改 profile 与 bundle 的前提下按用户差异调整。
 

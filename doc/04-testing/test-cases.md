@@ -167,6 +167,35 @@
 | TC-NFR-PERF1~3 | PERF1~3 | 满足延迟/插拔目标 |
 | TC-NFR-SEC1 | SEC1 | 日志/记忆无密钥明文 |
 | TC-NFR-SEC2/3 | SEC2/3 | 不可逆操作必确认，爆炸半径可控 |
+| TC-NFR-REL1 | REL1 | 进化回滚成功率 100% |
+| TC-NFR-PORT1 | PORT1 | Python 3.11+，跨 Linux/macOS/Windows |
+| TC-NFR-PORT2 | PORT2 | 兼容 MCP 最新稳定版 |
+
+## 17. 组合与分发（TC-COMP）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-COMP-01 | CORE-COMP-R1 | 用户或部署按名选用某 profile | 解析出该 profile 声明的完整插件集 |
+| TC-COMP-02 | CORE-COMP-R2 | 将已结晶技能打包为 bundle | 其他部署引入后复用同一批技能，无需重新结晶 |
+| TC-COMP-03 | CORE-COMP-R3 | 提供 patch.yml 声明覆盖项 | 在 profile 组合结果上应用覆盖，原 profile/bundle 不变 |
+| TC-COMP-04 | CORE-COMP-R4 | profile 层叠多个 bundle 并叠加 patch.yml 解析 | 按确定顺序合并，同名项由 patch.yml 覆盖，可回退到覆盖前状态 |
+
+## 18. 分布式协作（TC-DIST）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-DIST-01 | CORE-DIST-R1 | 经 A2A Client 向外部 Agent 的 AgentCard 接口发送任务 | 任务被委派，外部 Agent 执行并流式/推送回报进度 |
+| TC-DIST-02 | CORE-DIST-R1 | 外部 Agent 经 A2A Server 接口发起调用 | Core-Agent 接受任务并执行，结果经 A2A 协议返回 |
+| TC-DIST-03 | CORE-DIST-R2 | 对等 Agent 获取并解析 Core-Agent 的 AgentCard | 得到能力/技能/接口清单，据此协商交互方式 |
+| TC-DIST-04 | CORE-DIST-R2 | Core-Agent 验证对等 Agent 的已签名 AgentCard | 有效则接受身份与能力声明，无效则拒绝 |
+| TC-DIST-05 | CORE-DIST-R3 | A2A 交互未显式指定绑定 | 以 JSON-RPC 2.0 over HTTP(S) 承载，流式走 SSE |
+| TC-DIST-06 | CORE-DIST-R3 | 对等 Agent 仅支持 gRPC 或 REST | 按对端声明的绑定完成同套核心操作 |
+| TC-DIST-07 | CORE-DIST-R4 | 云端与嵌入式间下发敏感指令建立连接 | 优先 mTLS 双向认证，仅授予最小权限 scope |
+| TC-DIST-08 | CORE-DIST-R4 | 外部 Agent 调用超出已授权 scope | 拒绝并记录审计日志（来源 a2a:<peer>） |
+| TC-DIST-09 | CORE-DIST-R5 | 云端控制面委派任务，执行面在 PC 本机 | 云端只承载协调与进度，本机执行结果回传 |
+| TC-DIST-10 | CORE-DIST-R5 | 移动终端经 A2A 瘦客户端发现并委派任务 | 移动端仅发现/委派/订阅进度/展示，不承载重型执行 |
+| TC-DIST-11 | CORE-DIST-R6 | 两设备 NAT 打洞成功 | 走直连传输；失败回退 relay，上层 A2A 行为不变 |
+| TC-DIST-12 | CORE-DIST-R7 | A2A Server 收到需底层工具完成的任务 | 经 MCP 调用工具/数据源完成，再经 A2A 回传 |
 
 ---
 

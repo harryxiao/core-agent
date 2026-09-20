@@ -1,6 +1,6 @@
 # 测试设计：测试计划（Test Plan）
 
-> 版本 v0.1 ｜ 本文给出整体测试策略；具体用例见 `test-cases.md`。
+> 版本 v0.1 ｜ 本文给出整体测试策略；具体用例见 `04-testing/test-cases.md`。
 > 规格 → 需求 → 测试三者同号追踪，确保**规格可验证**（SDD 核心）。
 
 ---
@@ -36,6 +36,8 @@
 | CORE-UI-R1~R6 | TC-UI-* | 集成 + E2E |
 | CORE-IM-R1~R6 | TC-IM-* | 集成 + E2E + 安全 |
 | CORE-LLM-R1~R5 | TC-LLM-* | 单元 + 集成 |
+| CORE-COMP-R1~R4 | TC-COMP-* | 单元 + 集成 |
+| CORE-DIST-R1~R7 | TC-DIST-* | 集成 + E2E + 安全 |
 | CORE-NFR-* | TC-NFR-* | 专项（性能/安全/可观测） |
 
 ---
@@ -76,6 +78,6 @@
 
 ## 8. 关联
 
-- 测试用例：`doc/04-testing/test-cases.md`
-- 需求：`doc/00-product/requirements.md`
-- 规格：`doc/openspec/specs/*`
+- 测试用例：`04-testing/test-cases.md`
+- 需求：`00-product/requirements.md`
+- 规格：`openspec/specs/*`

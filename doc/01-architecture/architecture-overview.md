@@ -42,7 +42,7 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
    MCP Client ──────────── 外部能力（tools/resources/prompts）────────
    ═══════════════════════════════════════════════════════════════════
    横切能力（Crosscutting，贯穿 L0–L5）
-   permission 权限/审批/沙箱 · constraints 约束/熔断/压缩 · observability 日志/指标/追踪
+   permission 权限/审批/沙箱 · constraints 约束/熔断 · observability 日志/指标/追踪
 ```
 
 ---
@@ -53,12 +53,12 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
 |---|---|---|---|
 | L0 | 组合基底 Substrate | 提供插件注册、组合、可逆效应、coeffect 的组合代数，是唯一"核心" | 无依赖 |
 | L1 | 原子工具 | 最小可逆能力单元（副作用 + 撤销 + Schema + coeffect 声明） | L0 |
-| L2 | 分层记忆 | 五层记忆读写/检索/结晶，控制上下文上界 | L0（+可选 L4 反馈） |
+| L2 | 分层记忆 | 五层记忆读写/检索/压实/结晶，控制上下文上界 | L0（+可选 L4 反馈） |
 | L3 | 智能体循环 | 四阶段闭环，把工具/记忆/模型装配成智能体 | L0/L1/L2 |
 | L3 | 上下文工程 | 上下文装配、信息地图、自动压实，控制窗口上界 | L0/L2 |
 | L3 | 技能封装 | 技能库版本/灰度/路由，进化结晶产物的治理与调用面 | L0/L2/L4 |
 | L3.5 | 任务编排 | 任务状态机、子任务拓扑、多 Agent 交接、断点续跑 | L3 |
-| L4 | 进化引擎 | 观测 L3 运行 → 诊断 → 提案 → 验证 → 结晶 | L0/L1/L2/L3（只读） |
+| L4 | 进化引擎 | 观测 L3 运行 → 诊断 → 提案 → 验证，结晶产物沉淀至 memory/skills | L0/L1/L2/L3（只读） |
 | L5 | 组合分发 | 把 profile/bundle/patch 打包、版本化、分发 | 全部 |
 
 **横切能力（不属于任一层，贯穿所有层）**：
@@ -66,7 +66,7 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
 | 能力 | 一句话职责 |
 |---|---|
 | 权限与审批 permission | 分级权限（只读/数据编辑/高危）、高危默认拦截、人工审批流、沙箱隔离 |
-| 约束与容错 constraints | schema 校验、熔断/降级/重试、上下文压缩等横切中间件 |
+| 约束与容错 constraints | schema 校验、熔断/降级/重试等横切中间件 |
 | 可观测性 observability | 结构化日志、指标聚合、trace 追踪、审计，统一供给进化与审批 |
 
 **关键约束**：依赖方向**只向下**（L4 → L3 → L2 → L1 → L0），禁止向上依赖；跨层交互一律通过 L0 的注册表/事件总线解耦；横切能力通过 L0 的中间件/切面机制注入，不产生层间硬依赖。
@@ -82,13 +82,13 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
 | CoeffectResolver | L0 | 解析注入权限/宪章/配置，缺失拒绝 | plugin-registry-interface.md |
 | ToolProvider | L1 | 聚合原子工具为 LLM 可调用的 tool schema | tool-use-interface.md |
 | MemoryStore | L2 | 五层存储 + 检索 + 迁移 | memory-interface.md |
-| AgentLoop | L3 | 四阶段闭环驱动 | loop.md |
+| AgentLoop | L3 | 四阶段闭环驱动 + 中间件 hook（横切注入点） | loop.md |
 | ContextEngine | L3 | 上下文装配/信息地图/压实 | context-interface.md |
 | SkillRegistry | L3 | 技能库版本/灰度/路由 | skills-interface.md |
 | Orchestrator | L3.5 | 任务状态机/子任务拓扑/交接/断点续跑 | orchestration-interface.md |
 | Diagnoser/Proposer/Validator/Evaluator | L4 | 进化四插件 | evolution.md |
 | PermissionGuard | 横切 | 分级鉴权/审批/沙箱 | permission-interface.md |
-| ConstraintMiddleware | 横切 | 校验/熔断/压缩中间件链 | constraints-interface.md |
+| ConstraintMiddleware | 横切 | 校验/熔断中间件链 | constraints-interface.md |
 | Telemetry | 横切 | 日志/指标/trace/审计 | observability-interface.md |
 | MCPClient | 横切 | 消费外部 MCP server | mcp-interface.md |
 

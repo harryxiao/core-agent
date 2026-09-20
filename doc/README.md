@@ -47,12 +47,12 @@ doc/
 │   ├── memory.md                  分层记忆（L2：L0元规则–L4归档）
 │   ├── tool-use.md                工具使用（L1：原子工具 + 可逆效应）
 │   ├── mcp.md                     MCP 集成（Model Context Protocol 外部能力）
-│   ├── evolution.md               进化引擎（L4：诊断→提案→验证→评测，结晶经济）
+│   ├── evolution.md               进化引擎（L4：诊断→提案→验证→评测，结晶产物落 memory/skills）
 │   ├── context.md                 上下文工程（L3 输入侧：信息地图 + 压实 + 预算）
 │   ├── skills.md                  技能封装（L3 结晶层：版本/灰度/路由）
 │   ├── orchestration.md           任务编排（L3.5：状态机/子任务/交接/断点续跑）
 │   ├── permission.md              权限与审批管控（横切策略层：分级/审批/沙箱）
-│   ├── constraints.md             约束与容错（横切：校验/熔断/重试/压缩中间件）
+│   ├── constraints.md             约束与容错（横切：校验/熔断/重试中间件）
 │   ├── observability.md           可观测性（横切：日志/指标/追踪/审计）
 │   ├── llm-provider.md            三方 LLM 归一化接入（LLMProvider 抽象 + LiteLLM 默认实现）
 │   └── composition.md             组合与分发（L5：profile 命名组合 / bundle 分发 / patch 覆盖）
@@ -139,8 +139,8 @@ doc/
                                               └──────── 测试(04-testing) ──┘
 ```
 
-- **每个 Requirement ID**（`CORE-<模块>-R<n>`）在 `requirements.md`、`openspec/specs/*`、`test-cases.md` 三处保持**同号**，保证可追踪。
-- **每个 Scenario**（GIVEN/WHEN/THEN）对应 `test-cases.md` 里至少一条自动化/人工测试用例。
+- **每个需求**在 `00-product/requirements.md` 以 `CORE-<模块>-R<n>` 编号陈述，在 `openspec/specs/*` 以命名式 `### Requirement: <名称>` 陈述，在 `04-testing/test-cases.md` 以 `TC-*` 用例组引用；三者通过命名与编号区间建立追踪映射（非严格同号）。
+- **每个 Scenario**（GIVEN/WHEN/THEN）对应 `04-testing/test-cases.md` 里至少一条自动化/人工测试用例。
 
 ---
 
@@ -193,7 +193,7 @@ L3 智能体循环 感知 → 推理 → 行动 → 写记忆（~100 行）
 L2 分层记忆   L0元规则 · L1索引 · L2事实 · L3技能 · L4归档
 L1 原子工具   9 个可逆插件（code_run/file_*/web_* ...）
 L0 基底       插件注册 · 可逆效应追踪 · coeffect 解析 · HMR
-横切能力     permission 权限/审批/沙箱 · constraints 约束/熔断/压缩 · observability 日志/指标/追踪
+横切能力     permission 权限/审批/沙箱 · constraints 约束/熔断 · observability 日志/指标/追踪
 ```
 
 **中心隐喻**：*插件即原子、记忆即光谱、进化即结晶*——想法先以经验进入（L4），稳定后结晶为技能（L3），
