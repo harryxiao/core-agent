@@ -165,6 +165,20 @@
 - **决策**：以 LLMProvider 抽象接口（completion/stream/embedding）为唯一调用契约；LiteLLM 作默认实现（MIT，100+ provider 归一化，任意 API Key + URL 配置即自动路由）；Registry 依赖注入可替换/可自研，调用方零改动；底层原始错误统一归一化为领域异常，不向上泄漏。
 - **后果**：✅ 任意三方模型配置即用、可换/可自研、调用方零改动；⚠️ 抽象接口需覆盖流式/向量化等语义，LiteLLM 升级需回归。
 
+## ADR-0022：分布式协议栈采用 A2A + MCP 互补（跨设备 Agent 互调）
+
+- **状态**：Accepted（2026-09-20）
+- **上下文**：多设备联合开发需 Agent 间对等协作与工具/资源调用，调研（research_findings.md）确认 A2A 是唯一面向 Agent 对等协作/委派的开放标准（Linux Foundation / Apache-2.0），MCP 负责 Agent↔工具/资源（spec 2026-07-28），二者互补非竞争。
+- **决策**：应用层 A2A（Agent↔Agent 委派）+ 能力层 MCP（Agent↔工具/资源）+ mTLS/OAuth 鉴权三层协议栈；A2A Server 内部经 MCP 调用底层工具/数据完成任务。
+- **后果**：✅ 跨设备互调标准开放、生态可对接；⚠️ 需同时维护 A2A 与 MCP 两套协议栈的版本兼容。
+
+## ADR-0023：控制面/执行面分离拓扑（云端协调 + 本机执行）
+
+- **状态**：Accepted（2026-09-20）
+- **上下文**：云端/PC/移动/嵌入式四类设备能力与信任边界差异大，需明确各自角色与数据/工具归属。
+- **决策**：云端为 A2A Server+控制面+relay（只承载协调与进度）；PC 为本地 Agent（文件系统/工具留本机）；移动端为 A2A 瘦客户端（仅发现/委派/订阅/展示）；嵌入式为 MCP Server 能力提供者；控制面与执行面分离。
+- **后果**：✅ 敏感数据与工具留本机、云端权限最小化；⚠️ 需处理跨设备会话（contextId/taskId）与本地 context 模块对接。
+
 ---
 
 ## 变更追踪
@@ -184,3 +198,4 @@
 | ADR-0016 ~ 0017 | 07-mcp-server/mcp-server.md |
 | ADR-0018 ~ 0020 | 08-im-gateway/im-gateway.md |
 | ADR-0021 | 02-modules/llm-provider.md |
+| ADR-0022 ~ 0023 | 09-distributed/distributed.md |

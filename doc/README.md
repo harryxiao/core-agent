@@ -92,6 +92,9 @@ doc/
 ├── 08-im-gateway/                 【IM 网关模式】
 │   └── im-gateway.md              社交 App 远程入口（随身→core-agent）与 ADR-0018~20
 │
+├── 09-distributed/                【分布式协作层】
+│   └── distributed.md             跨设备 Agent 互调（A2A+MCP）与 ADR-0022~23
+│
 └── openspec/                      【SDD 规格（唯一事实来源）】
     ├── specs/                     ← 系统当前应有的行为（只描述 what，不描述 how）
     │   ├── plugin-registry/spec.md
@@ -109,7 +112,8 @@ doc/
     │   ├── ui/spec.md
     │   ├── im/spec.md
     │   ├── llm-provider/spec.md
-    │   └── composition/spec.md
+    │   ├── composition/spec.md
+    │   └── distributed/spec.md
     └── changes/                   ← 修改提案（proposal + design + tasks + delta specs）
         ├── 0001-bootstrap-core/   核心骨架引导变更（原 6 能力）
         ├── 0002-safety-crosscutting/  安全与横切能力变更（新增 6 模块）
@@ -118,7 +122,8 @@ doc/
         ├── 0005-im-gateway/           IM 网关模式变更（社交 App 远程入口）
         ├── 0006-llm-provider/         LLM Provider 归一化接入变更（任意三方模型）
         ├── 0007-composition/          组合与分发能力变更（L5 新增 capability）
-        └── 0008-evolution-four-stages/  进化四阶段闭环变更（诊断→提案→验证→评测）
+        ├── 0008-evolution-four-stages/  进化四阶段闭环变更（诊断→提案→验证→评测）
+        └── 0009-distributed/          分布式协作层变更（A2A+MCP 跨设备互调）
 ```
 
 ---
