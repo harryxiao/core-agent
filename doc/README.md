@@ -53,7 +53,8 @@ doc/
 │   ├── orchestration.md           任务编排（L3.5：状态机/子任务/交接/断点续跑）
 │   ├── permission.md              权限与审批管控（横切策略层：分级/审批/沙箱）
 │   ├── constraints.md             约束与容错（横切：校验/熔断/重试/压缩中间件）
-│   └── observability.md           可观测性（横切：日志/指标/追踪/审计）
+│   ├── observability.md           可观测性（横切：日志/指标/追踪/审计）
+│   └── llm-provider.md            三方 LLM 归一化接入（LLMProvider 抽象 + LiteLLM 默认实现）
 │
 ├── 03-interfaces/                 【接口设计层】
 │   ├── plugin-registry-interface.md        插件契约（trait/lifecycle/reversible effect/coeffect）
@@ -66,7 +67,8 @@ doc/
 │   ├── orchestration-interface.md 任务编排/交接接口
 │   ├── permission-interface.md    权限判定/审批/沙箱接口
 │   ├── constraints-interface.md   约束中间件接口
-│   └── observability-interface.md 日志/指标/追踪接口
+│   ├── observability-interface.md 日志/指标/追踪接口
+│   └── llm-provider-interface.md  三方 LLM 归一化调用接口（completion/stream/embedding）
 │
 ├── 04-testing/                    【测试设计层】
 │   ├── test-strategy.md           测试策略（金字塔、可逆效应性质测试、留出评测）
@@ -100,13 +102,15 @@ doc/
     │   ├── constraints/spec.md
     │   ├── observability/spec.md
     │   ├── ui/spec.md
-    │   └── im/spec.md
+    │   ├── im/spec.md
+    │   └── llm-provider/spec.md
     └── changes/                   ← 修改提案（proposal + design + tasks + delta specs）
         ├── 0001-bootstrap-core/   核心骨架引导变更（原 6 能力）
         ├── 0002-safety-crosscutting/  安全与横切能力变更（新增 6 模块）
         ├── 0003-ui-frontend/          UI 界面与启动模式变更（CLI/Web/Desktop）
         ├── 0004-mcp-server/           MCP Server 模式变更（对外工具源）
-        └── 0005-im-gateway/           IM 网关模式变更（社交 App 远程入口）
+        ├── 0005-im-gateway/           IM 网关模式变更（社交 App 远程入口）
+        └── 0006-llm-provider/         LLM Provider 归一化接入变更（任意三方模型）
 ```
 
 ---

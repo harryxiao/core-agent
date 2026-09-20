@@ -158,6 +158,13 @@
 - **决策**：身份白名单 + 群 @ 触发 + 高危操作 IM 内二次确认；所有调用走同一 invoke 链路（permission 确认门 + observability 审计，来源 `im:<platform>:<user_id>`），会话按 平台:用户/群 隔离熔断。
 - **后果**：✅ 远程控制不降安全等级；⚠️ 需维护白名单与会话隔离策略。
 
+## ADR-0021：LLMProvider 抽象接口归一化，LiteLLM 默认实现可替换
+
+- **状态**：Accepted（2026-09-20）
+- **上下文**：内核 loop 需调用三方大模型，各供应商协议差异大；硬编码单一供应商会形成锁定、更换/自研成本高，且错误与审计口径随供应商分裂。
+- **决策**：以 LLMProvider 抽象接口（completion/stream/embedding）为唯一调用契约；LiteLLM 作默认实现（MIT，100+ provider 归一化，任意 API Key + URL 配置即自动路由）；Registry 依赖注入可替换/可自研，调用方零改动；底层原始错误统一归一化为领域异常，不向上泄漏。
+- **后果**：✅ 任意三方模型配置即用、可换/可自研、调用方零改动；⚠️ 抽象接口需覆盖流式/向量化等语义，LiteLLM 升级需回归。
+
 ---
 
 ## 变更追踪
@@ -176,3 +183,4 @@
 | ADR-0013 ~ 0015 | 06-ui-frontend/ui-architecture.md |
 | ADR-0016 ~ 0017 | 07-mcp-server/mcp-server.md |
 | ADR-0018 ~ 0020 | 08-im-gateway/im-gateway.md |
+| ADR-0021 | 02-modules/llm-provider.md |

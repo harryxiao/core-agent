@@ -3,7 +3,9 @@ name = "core-agent"
 version = "0.1.0"
 description = "CORE-Harness: 无特权核心分层插件化智能体框架（SDD 规格驱动）"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "litellm>=1.101.0",
+]
 
 [project.optional-dependencies]
 dev = [
