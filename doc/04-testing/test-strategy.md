@@ -96,9 +96,9 @@ CORE-Harness 的 L0 基底提供**可逆效应追踪**：一切写操作先记�
 | CORE-DIST（分布式协作） | CORE-DIST-R1~7 | 集成：A2A 双向互调 / AgentCard 发现与签名 / 三种协议绑定 / 四类设备拓扑角色；安全：最小权限 scope 鉴权；E2E：跨设备委派单轮 loop | TC-DIST-01~12 |
 
 
-### 4.2 模块覆盖矩阵（17 模块，NFR 另计）
+### 4.2 模块覆盖矩阵（19 模块，NFR 另计）
 
-与 `test-plan.md` §2 对齐：全部 17 个业务模块均有需求与用例覆盖，NFR 专项另计。
+与 `test-plan.md` §2 对齐：全部 19 个业务模块均有需求与用例覆盖，NFR 专项另计。
 
 | 模块 | 需求 | 测试层级 | 用例组 |
 |---|---|---|---|
@@ -119,6 +119,8 @@ CORE-Harness 的 L0 基底提供**可逆效应追踪**：一切写操作先记�
 | CORE-LLM（三方模型归一化） | CORE-LLM-R1~R5 | 单元 + 集成 | TC-LLM-* |
 | CORE-COMP（组合与分发） | CORE-COMP-R1~R4 | 单元 + 集成 | TC-COMP-* |
 | CORE-DIST（分布式协作） | CORE-DIST-R1~R7 | 集成 + E2E + 安全 | TC-DIST-* |
+| CORE-RAG（检索增强生成） | CORE-RAG-R1~R6 | 单元 + 集成 | TC-RAG-* |
+| CORE-GIT（版本控制） | CORE-GIT-R1~R4 | 单元 + 集成 + 安全 | TC-GIT-* |
 | CORE-NFR（NFR，另计） | CORE-NFR-* | 专项（性能/安全/可观测） | TC-NFR-* |
 
 ---

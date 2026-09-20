@@ -30,3 +30,6 @@ Thumbs.db
 
 # Windows ADS metadata (from network-downloaded files)
 *Zone.Identifier
+
+# Temporary planning dirs (excluded from commits)
+plan_*/

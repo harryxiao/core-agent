@@ -95,6 +95,16 @@ doc/
 ├── 09-distributed/                【分布式协作层】
 │   └── distributed.md             跨设备 Agent 互调（A2A+MCP）与 ADR-0022~23
 │
+├── 10-codebase-engine/            【代码知识图谱引擎】
+│   ├── codebase-engine-evaluation.md  5 引擎横向评估 + codebase-memory-mcp 推荐引入
+│   └── integration-plan.md        codebase-memory-mcp MCP 接入方案（stdio 单 binary）
+│
+├── 11-rag/                        【RAG 检索增强生成】
+│   └── rag-architecture.md        sqlite-vec 本地向量库语义检索与 ADR-0025
+│
+├── 12-git/                        【Git 版本控制】
+│   └── git-architecture.md        版本控制核心操作 + .git 保护 + 凭据安全与 ADR-0026
+│
 └── openspec/                      【SDD 规格（唯一事实来源）】
     ├── specs/                     ← 系统当前应有的行为（只描述 what，不描述 how）
     │   ├── plugin-registry/spec.md
@@ -113,7 +123,9 @@ doc/
     │   ├── im/spec.md
     │   ├── llm-provider/spec.md
     │   ├── composition/spec.md
-    │   └── distributed/spec.md
+    │   ├── distributed/spec.md
+    │   ├── rag/spec.md
+    │   └── git/spec.md
     └── changes/                   ← 修改提案（proposal + design + tasks + delta specs）
         ├── 0001-bootstrap-core/   核心骨架引导变更（原 6 能力）
         ├── 0002-safety-crosscutting/  安全与横切能力变更（新增 6 模块）
@@ -123,7 +135,10 @@ doc/
         ├── 0006-llm-provider/         LLM Provider 归一化接入变更（任意三方模型）
         ├── 0007-composition/          组合与分发能力变更（L5 新增 capability）
         ├── 0008-evolution-four-stages/  进化四阶段闭环变更（诊断→提案→验证→评测）
-        └── 0009-distributed/          分布式协作层变更（A2A+MCP 跨设备互调）
+        ├── 0009-distributed/          分布式协作层变更（A2A+MCP 跨设备互调）
+        ├── 0010-rag/                  RAG 检索增强生成变更（本地向量库语义检索）
+        ├── 0011-git/                  Git 版本控制变更（默认支持 Git）
+        └── 0012-gap-closure/          缺口补齐变更（沙箱颗粒度+审批协议+评测基建+多模态）
 ```
 
 ---

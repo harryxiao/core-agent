@@ -168,6 +168,26 @@
 | CORE-DIST-R6 | 系统 MAY 支持可选的设备间 P2P 直连优化（公钥寻址、NAT 打洞直连优先、失败回退 relay、QUIC 传输），不改变上层 A2A 协议行为 | P2 | distributed/spec.md |
 | CORE-DIST-R7 | 系统 SHALL 遵循 A2A 与 MCP 互补：A2A Server 内部经 MCP 调用底层工具/数据，Agent 间协作走 A2A、能力调用走 MCP | P0 | distributed/spec.md |
 
+### 1.18 检索增强生成（rag）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-RAG-R1 | 系统 SHALL 以 sqlite-vec 作为本地嵌入式向量库存储文档向量与索引：零服务、零外部依赖，与既有 SQLite 生态统一 | P0 | rag/spec.md |
+| CORE-RAG-R2 | 系统 SHALL 提供文档摄取管线：导入→分块→生成 embedding→建向量索引，并支持增量更新与索引失效检测 | P0 | rag/spec.md |
+| CORE-RAG-R3 | 系统 SHALL 用 sentence-transformers + BGE 本地推理生成 embedding，无需外部 API；可经 llm-provider 归一化入口切换远端模型 | P0 | rag/spec.md |
+| CORE-RAG-R4 | 系统 SHALL 按向量相似度检索 top-k 最相关片段、弥补 LLM 知识缺口，结果带相关度得分 | P0 | rag/spec.md |
+| CORE-RAG-R5 | 系统 SHALL 将检索片段经 context 装配器按预算裁剪后注入 llm-provider 生成，检索缺失时降级为纯 LLM 生成 | P0 | rag/spec.md |
+| CORE-RAG-R6 | 系统 SHALL 保持与 codebase-memory-mcp 互补：RAG 管知识文档语义检索，codebase-memory-mcp 管代码结构结构化理解 | P1 | rag/spec.md |
+
+### 1.19 版本控制（git）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-GIT-R1 | 系统 SHALL 提供 Git 核心操作：clone/init/commit/branch/checkout/diff/merge/log/status/pull/push | P0 | git/spec.md |
+| CORE-GIT-R2 | 系统 SHALL 保护 .git 元数据与工作区完整性：默认拒绝修改 .git 内部文件，操作失败不损坏工作区 | P0 | git/spec.md |
+| CORE-GIT-R3 | 系统 SHALL 保证 Git 凭据安全：凭据经 keychain 存储不落盘明文，日志与报错不泄露凭据 | P0 | git/spec.md |
+| CORE-GIT-R4 | 系统 SHALL 让高危 Git 操作（强制推送/删除远程分支/历史改写）走 permission 审批链与沙箱约束 | P0 | git/spec.md |
+
 ---
 
 ## 2. 非功能需求（Non-Functional Requirements）
