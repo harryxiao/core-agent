@@ -204,6 +204,15 @@
 
 ---
 
+## ADR-0027：统一数据模型收敛（单一索引 + 命名冲突裁决）
+
+- **状态**：Accepted（2026-09-20）
+- **上下文**：全量走查发现数据结构定义分散在各接口文档（`03-interfaces/*`）内，无单一索引；且存在 5 处跨层命名/语义冲突（Message / Profile / Trace / Task / Session），以及 2 处被引用但未定义实体（Session、ExecContext）。接口文档是行为契约（spec 的 how），命名收敛不宜塞进 specs（what），故新增 data-model.md 作为架构层索引。
+- **决策**：新增 `doc/01-architecture/data-model.md` 作为单一权威索引 + 命名裁决；权威定义仍以各接口 class/字段为准，不重复定义字段；命名冲突以该文 §3 裁决为收敛目标，接口文档改名在编码阶段首个 change 执行。
+- **后果**：✅ 消除双源漂移风险、提供跨层实体全景与冲突收敛；⚠️ data-model.md 与接口文档需在后续 change 中保持索引同步。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -225,3 +234,4 @@
 | ADR-0024 | 02-modules/composition.md |
 | ADR-0025 | 11-rag/rag-architecture.md |
 | ADR-0026 | 12-git/git-architecture.md |
+| ADR-0027 | 01-architecture/data-model.md |

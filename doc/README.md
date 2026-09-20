@@ -39,6 +39,7 @@ doc/
 │
 ├── 01-architecture/               【架构设计层】
 │   ├── architecture-overview.md   总体架构（L0–L5 分层 + 组件图 + 数据流）
+│   ├── data-model.md              统一数据模型（跨层实体索引 + 命名冲突裁决）
 │   └── adr.md                     架构决策记录（ADR，关键取舍与理由）
 │
 ├── 02-modules/                    【模块设计层】
@@ -72,6 +73,8 @@ doc/
 │   ├── llm-provider-interface.md  三方 LLM 归一化调用接口（completion/stream/embedding）
 │   ├── composition-interface.md   组合分发接口（解析 / 打包 / 编排 / 分发）
 │   ├── loop-interface.md          智能体循环插件契约（coeffect + run）
+│   ├── im-interface.md            IM 网关接口（provider 注册 + 消息收发归一化）
+│   ├── distributed-interface.md   分布式协作接口（A2A 委派 / AgentCard / TaskHandle）
 │   └── ui-interface.md            统一后端 API + CLI/Web/Desktop 三模桥接
 │
 ├── 04-testing/                    【测试设计层】

@@ -82,11 +82,11 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
 | CoeffectResolver | L0 | 解析注入权限/宪章/配置，缺失拒绝 | plugin-registry-interface.md |
 | ToolProvider | L1 | 聚合原子工具为 LLM 可调用的 tool schema | tool-use-interface.md |
 | MemoryStore | L2 | 五层存储 + 检索 + 迁移 | memory-interface.md |
-| AgentLoop | L3 | 四阶段闭环驱动 + 中间件 hook（横切注入点） | loop.md |
+| AgentLoop | L3 | 四阶段闭环驱动 + 中间件 hook（横切注入点） | loop-interface.md |
 | ContextEngine | L3 | 上下文装配/信息地图/压实 | context-interface.md |
 | SkillRegistry | L3 | 技能库版本/灰度/路由 | skills-interface.md |
 | Orchestrator | L3.5 | 任务状态机/子任务拓扑/交接/断点续跑 | orchestration-interface.md |
-| Diagnoser/Proposer/Validator/Evaluator | L4 | 进化四插件 | evolution.md |
+| Diagnoser/Proposer/Validator/Evaluator | L4 | 进化四插件 | evolution-interface.md |
 | PermissionGuard | 横切 | 分级鉴权/审批/沙箱 | permission-interface.md |
 | ConstraintMiddleware | 横切 | 校验/熔断中间件链 | constraints-interface.md |
 | Telemetry | 横切 | 日志/指标/trace/审计 | observability-interface.md |
@@ -176,5 +176,6 @@ core-agent/                      # 仓库根
 ## 7. 关联文档
 
 - 架构决策：`doc/01-architecture/adr.md`
+- 数据模型：`doc/01-architecture/data-model.md`
 - 模块设计：`doc/02-modules/*`
 - 接口设计：`doc/03-interfaces/*`
