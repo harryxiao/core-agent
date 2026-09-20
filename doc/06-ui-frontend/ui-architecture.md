@@ -105,6 +105,7 @@ core-agent 内核（loop / memory / tool-use / mcp / evolution / permission / �
 
 - **组件化**：`Widget`/`Compose`/`App`，对应 Ink 的 React 组件树。
 - **响应式**：`@reactive` 装饰器 + CSS 样式系统，做折叠块、行内 diff 高亮、多面板分栏、滚动缓冲。
+- **斜杠命令提示**：输入 `/` 触发命令自动补全（命令面板），候选来自内核 plugin-registry 注册的 command/tool 元数据（经统一 API 的 `list_tools` 拉取），属 UI 层输入组件交互、不进内核接口。
 - **纯 Python**：与内核同进程直接 import，无 IPC 成本；调用同一后端 API 层，保证行为/鉴权/日志一致。
 - 目录规划：`src/cli/`（`app.py` + `widgets/` + `bridge.py`）。
 
