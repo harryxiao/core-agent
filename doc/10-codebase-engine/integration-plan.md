@@ -29,7 +29,7 @@
 
 ## 3. 落地步骤（声明，具体实现由后续 change 驱动）
 
-1. **MCP server 注册**：在 `mcp` capability 的 server 清单中登记 codebase-memory-mcp（stdio 传输，binary 路径可配置）。
+1. **MCP server 注册**：在 `mcp` capability 的 server 清单中登记 codebase-memory-mcp（stdio 传输，binary 路径可配置）。安装方式：`curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh | bash`（默认装至 `~/.local/bin/codebase-memory-mcp`；Cursor 项目级 MCP 配置见 `.cursor/mcp.json`）。
 2. **工具暴露**：15 个 tools 经 `mcp` 工具路由暴露给内核，纳入 `tool-use` 权限与审批沙箱（对齐 `permission`）。
 3. **索引子任务**：定义「代码索引」子任务模板——触发条件、索引范围（.git 保护，见 `doc/12-git`）、dump 产物落盘位置。
 4. **审计留痕**：索引与查询走 `observability` 审计链路，标注 engine / repo / 结果。
