@@ -15,7 +15,7 @@
 2. 相对主流 Agent 产品处于什么位置；
 3. SDD 文档的功能设计是否「全面」。
 
-功能设计全貌取自 `requirements.md` 17 模块 + `openspec/specs/*` 17 capability（Purpose/Requirements 已逐一核对），对比基线为 5 个开源框架 + 4 个闭源产品。
+功能设计全貌取自 `requirements.md` 17 模块 + `openspec/specs/*` 17 capability（Purpose/Requirements 已逐一核对），对比基线为 5 个开源框架 + 4 个闭源产品 + 2 个自托管个人助理（OpenClaw/Hermes）。
 
 ---
 
@@ -39,28 +39,28 @@ Core-Agent 的 17 个 capability 按职责收敛为五层，功能面覆盖完�
 
 （●=完整支持 ◐=部分/需扩展 ○=缺失）
 
-| 架构维度 | Core-Agent | Claude Code | Cursor | Manus | Devin | LangGraph | CrewAI | AutoGPT | OpenAI Agents | LiteLLM |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 核心循环/运行时 | ● | ● | ● | ● | ● | ●(graph) | ● | ●(blocks) | ●(handoffs) | — |
-| 编排/工作流 | ● | ◐ | ◐ | ● | ● | ● | ●(Flows) | ●(builder) | ● | — |
-| 分层记忆 | ●(L0-L5) | ◐(CLAUDE.md) | ◐(索引) | ◐ | ◐(KNOWLEDGE) | ● | ◐(knowledge) | ◐ | ●(sessions) | — |
-| 上下文工程 | ●(信息地图/压实) | ● | ◐ | ●(压缩) | ◐ | ◐ | ○ | ○ | ◐ | — |
-| 工具/插件 | ● | ● | ● | ● | ● | ● | ● | ● | ● | — |
-| 技能/子代理 | ●(skills) | ●(skills/subagents) | ◐ | ● | ◐ | ◐ | ●(Crews) | ● | ●(agents) | — |
-| MCP | ●(双向) | ●(client+server) | ● | ◐ | ◐ | ◐ | ◐ | ○ | ◐ | — |
-| LLM归一化 | ●(LiteLLM) | ◐(Anthropic原生) | ◐ | ◐ | ◐ | ◐ | ◐ | ◐ | ◐(OpenAI) | ● |
-| 权限/审批 | ●(分级+审批) | ● | ◐ | ● | ● | ◐(HITL) | ◐ | ◐ | ●(guardrails) | — |
-| 沙箱隔离 | ●(设计) | ●(bash隔离) | ○ | ●(VM) | ●(VM) | ○ | ○ | ◐(托管) | ◐ | — |
-| 约束/容错中间件 | ●(输入输出校验) | ◐ | ○ | ◐ | ◐ | ◐ | ○ | ○ | ●(guardrails) | — |
-| 可观测性 | ●(三信号) | ● | ◐ | ◐ | ◐ | ●(tracing) | ◐ | ◐ | ●(tracing) | ●(网关日志) |
-| 进化/自优化闭环 | ●(结晶经济) | ○ | ○ | ◐ | ○ | ○ | ○ | ○ | ○ | ○ |
-| 人机协作(HITL) | ●(审批流) | ● | ● | ● | ● | ● | ● | ● | ● | — |
-| UI/多入口 | ●(CLI/Web/Desktop) | ●(CLI) | ●(IDE) | ●(Web) | ●(Web) | ◐ | ◐ | ●(platform) | ◐(SDK) | ◐(网关) |
-| 社交IM入口 | ●(微信/飞书/TG/Discord) | ○ | ○ | ○ | ◐(Slack) | ○ | ◐(Slack) | ◐ | ○ | ○ |
-| 分布式A2A | ●(AgentCard/拓扑) | ○ | ○ | ○ | ○ | ◐ | ○ | ○ | ○ | ○ |
-| 多模态/语音 | ○ | ◐(图像) | ◐ | ● | ◐ | ◐ | ◐ | ◐ | ●(voice) | ◐ |
-| 代码库索引/embedding | ◐(信息地图) | ◐ | ● | ○ | ● | ◐ | ◐ | ○ | ○ | — |
-| 托管/部署平台 | ○(纯自托管) | ◐(Claude服务) | ● | ● | ● | ●(LangGraph Cloud) | ◐ | ●(platform) | ● | ●(网关) |
+| 架构维度 | Core-Agent | Claude Code | Cursor | Manus | Devin | LangGraph | CrewAI | AutoGPT | OpenAI Agents | LiteLLM | OpenClaw | Hermes |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 核心循环/运行时 | ● | ● | ● | ● | ● | ●(graph) | ● | ●(blocks) | ●(handoffs) | — | ●(Gateway) | ●(loop+TUI) |
+| 编排/工作流 | ● | ◐ | ◐ | ● | ● | ● | ●(Flows) | ●(builder) | ● | — | ◐(skills) | ◐(subagents/cron) |
+| 分层记忆 | ●(L0-L5) | ◐(CLAUDE.md) | ◐(索引) | ◐ | ◐(KNOWLEDGE) | ● | ◐(knowledge) | ◐ | ●(sessions) | — | ◐(MEMORY.md) | ●(持久+画像+程序性) |
+| 上下文工程 | ●(信息地图/压实) | ● | ◐ | ●(压缩) | ◐ | ◐ | ○ | ○ | ◐ | — | ◐(session) | ◐(context-files) |
+| 工具/插件 | ● | ● | ● | ● | ● | ● | ● | ● | ● | — | ●(tools/skills) | ●(40+tools) |
+| 技能/子代理 | ●(skills) | ●(skills/subagents) | ◐ | ● | ◐ | ◐ | ●(Crews) | ● | ●(agents) | — | ◐(skills) | ●(skills自改进+subagents) |
+| MCP | ●(双向) | ●(client+server) | ● | ◐ | ◐ | ◐ | ◐ | ○ | ◐ | — | ◐(未明示) | ●(MCP集成) |
+| LLM归一化 | ●(LiteLLM) | ◐(Anthropic原生) | ◐ | ◐ | ◐ | ◐ | ◐ | ◐ | ◐(OpenAI) | ● | ◐(多provider) | ●(任意模型) |
+| 权限/审批 | ●(分级+审批) | ● | ◐ | ● | ● | ◐(HITL) | ◐ | ◐ | ●(guardrails) | — | ●(DM配对+审批) | ●(命令审批+DM配对) |
+| 沙箱隔离 | ●(设计) | ●(bash隔离) | ○ | ●(VM) | ●(VM) | ○ | ○ | ◐(托管) | ◐ | — | ◐(默认host/可选) | ●(7终端后端) |
+| 约束/容错中间件 | ●(输入输出校验) | ◐ | ○ | ◐ | ◐ | ◐ | ○ | ○ | ●(guardrails) | — | ◐(不可信输入防护) | ◐ |
+| 可观测性 | ●(三信号) | ● | ◐ | ◐ | ◐ | ●(tracing) | ◐ | ◐ | ●(tracing) | ●(网关日志) | ◐(events) | ◐(trajectory) |
+| 进化/自优化闭环 | ●(结晶经济) | ○ | ○ | ◐ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ●(learning-loop+skills自改进) |
+| 人机协作(HITL) | ●(审批流) | ● | ● | ● | ● | ● | ● | ● | ● | — | ●(聊天+审批) | ●(聊天+审批) |
+| UI/多入口 | ●(CLI/Web/Desktop) | ●(CLI) | ●(IDE) | ●(Web) | ●(Web) | ◐ | ◐ | ●(platform) | ◐(SDK) | ◐(网关) | ●(UI/CLI/TUI+app) | ●(TUI/CLI/Desktop) |
+| 社交IM入口 | ●(微信/飞书/TG/Discord) | ○ | ○ | ○ | ◐(Slack) | ○ | ◐(Slack) | ◐ | ○ | ○ | ●(8渠道) | ●(5渠道+HA) |
+| 分布式A2A | ●(AgentCard/拓扑) | ○ | ○ | ○ | ○ | ◐ | ○ | ○ | ○ | ○ | ◐(Gateway多节点) | ◐(subagents/RPC) |
+| 多模态/语音 | ○ | ◐(图像) | ◐ | ● | ◐ | ◐ | ◐ | ◐ | ●(voice) | ◐ | ●(voice/camera/screen) | ◐(voice转录) |
+| 代码库索引/embedding | ◐(信息地图) | ◐ | ● | ○ | ● | ◐ | ◐ | ○ | ○ | — | ○ | ○ |
+| 托管/部署平台 | ○(纯自托管) | ◐(Claude服务) | ● | ● | ● | ●(LangGraph Cloud) | ◐ | ●(platform) | ● | ●(网关) | ◐(自托管) | ◐(自托管+多后端) |
 
 ---
 
@@ -70,11 +70,11 @@ Core-Agent 的 17 个 capability 按职责收敛为五层，功能面覆盖完�
 
 **结构性优势（相对主流产品显著领先的 3 点）：**
 
-1. **进化引擎（evolution）是独有差异化能力**。主流产品全部是「固定能力 + 人工调优」，无一具备「经验→结晶为技能/SOP→验证门→回收」的自我进化闭环。Core-Agent 把进化做成一等公民（四阶段闭环 + 评测留出），这是功能设计上最大的前瞻性。
+1. **进化引擎（evolution）是体系化程度最高的差异化能力**。9 个既有对比对象全部是「固定能力 + 人工调优」，唯一例外是 Hermes Agent——它内置 learning loop（自主创建 skills + skills 自我改进 + trajectory 压缩），印证了「自优化」路线的可行性；但 Hermes 的进化停留在「技能层面的自我改进」，缺少 Core-Agent「采集→结晶→溶解→提案→验证门→评测」的四阶段闭环与结晶经济。Core-Agent 把进化做成一等公民，仍是功能设计上最大的前瞻性。
 
 2. **记忆光谱 + 组合代数是体系化设计**。L0~L5 分层记忆（含「无行动不记忆」原则）、composition 静态组合层（组合代数无业务逻辑、永不进化）在主流产品中无对应物——LangGraph 只有 state、Claude Code 只有 CLAUDE.md，都远不及 Core-Agent 的体系化程度。
 
-3. **入口最全（CLI/Web/Desktop + IM + A2A）**。主流产品多为单一入口（Claude Code=CLI、Cursor=IDE、Manus/Devin=Web），Core-Agent 一次设计覆盖「人→机器→机器」三类入口，入口完整性业界少见。
+3. **入口维度最全（CLI/Web/Desktop + IM + A2A）**。多数对比对象为单一入口（Claude Code=CLI、Cursor=IDE、Manus/Devin=Web）；同为个人助理的 OpenClaw/Hermes 在 IM 渠道数量上更广（含 iMessage/Signal/Teams），但只有 Core-Agent 一次设计覆盖「人→机器→机器」三类入口（IM + UI + A2A），入口完整性业界少见。
 
 ### 4.2 功能设计全面性：A-（覆盖广），但存在 6 处对比缺口
 
@@ -83,7 +83,7 @@ Core-Agent 的 17 个 capability 按职责收敛为五层，功能面覆盖完�
 | # | 缺口维度 | 现状 | 主流产品参照 | 影响 |
 |---|---|---|---|---|
 | 1 | 代码库索引/embedding | context 仅有「信息地图」（语义层），无 embedding/向量检索工程化定义 | Cursor 的 codebase indexing 是核心竞争力；Devin 有 | 长代码库/大仓库场景的检索性能与精度存疑 |
-| 2 | 多模态/语音 | 完全缺失 | OpenAI Agents SDK 有 voice；Manus/Claude Code 有图像 | 若需语音驱动或图像理解则无设计位 |
+| 2 | 多模态/语音 | 完全缺失 | OpenAI Agents SDK 有 voice；Manus/Claude Code 有图像；OpenClaw 有 companion apps（voice/camera/screen） | 若需语音驱动、图像/屏幕理解则无设计位 |
 | 3 | 沙箱执行的工程颗粒度 | permission 有「沙箱隔离」但停留在概念层 | Devin/Manus 的云端 VM（browser+terminal+FS 全隔离）、Claude Code 的 bash 沙箱 | 交付就绪度 C 的关键短板之一，需补齐到可执行规格 |
 | 4 | HITL 审批颗粒度 | 「人工审批流」未展开（approve/reject/edit-plan 分级） | Claude Code permission 规则、OpenAI HITL 粒度 | 审批流的具体交互协议缺失 |
 | 5 | 评测/eval 平台 | evolution 有「评测留出」但未工程化 | OpenAI Agents eval、LangSmith eval | 进化闭环的「验证门」缺可落地的评测基建 |
@@ -111,8 +111,8 @@ Core-Agent 的 17 个 capability 按职责收敛为五层，功能面覆盖完�
 | 评估项 | 评级 | 依据 |
 |---|---|---|
 | 架构设计完善度 | **B+** | 五域 17 模块职责清晰、横切中间件化、入口最全 |
-| 功能设计全面性 | **A-** | 覆盖 18/19 对比维度，独有进化引擎/记忆光谱/组合代数，缺 6 处（#6 托管排除，其余 5 处补齐） |
+| 功能设计全面性 | **A-** | 覆盖 20 个对比维度中的 18 个（○ 仅多模态/托管），进化引擎体系化程度业界最高、记忆光谱/组合代数仍为独有，缺 6 处（#6 托管排除，其余 5 处补齐） |
 | 相对主流产品定位 | **设计前瞻性领先，工程落地滞后** | 差异化能力多（evolution/光谱记忆/IM/A2A），但 src=0、沙箱/评测/embedding 未落地 |
 | 交付就绪度 | **C** | 纯文档态 |
 
-**一句话总结**：Core-Agent 的 SDD 在功能设计的广度与前瞻性上已达到甚至超越主流 Agent 产品的架构高度（进化闭环、光谱记忆、三模+IM+A2A 入口、组合代数均为业界少见的原创设计），但纵向深度不均——6 处对比缺口（#6 托管排除，P0~P4 五处补齐）集中在「工程落地颗粒度」（沙箱、embedding、eval、HITL 协议、多模态），且整体仍为零实现文档态，设计全面性 A- 与交付就绪度 C 之间的落差是当前最大风险。
+**一句话总结**：Core-Agent 的 SDD 在功能设计的广度与前瞻性上已达到甚至超越主流 Agent 产品的架构高度（体系化进化闭环、光谱记忆、三模+IM+A2A 入口、组合代数均为业界少见的原创设计），但纵向深度不均——6 处对比缺口（#6 托管排除，P0~P4 五处补齐）集中在「工程落地颗粒度」（沙箱、embedding、eval、HITL 协议、多模态），且整体仍为零实现文档态，设计全面性 A- 与交付就绪度 C 之间的落差是当前最大风险。
