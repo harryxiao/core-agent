@@ -2,7 +2,7 @@
 
 > 评估时间：2026-09-20
 > 评估对象：Core-Agent SDD 文档体系（`doc/` 全量）
-> ⚠️ 本评估基于**补齐前 17-capability 基线**；补齐后为 **19 capability**（新增 `rag`、`git`），详见 §4.2「缺口排序与补齐路线」
+> ⚠️ 本评估基于**补齐前 17-capability 基线**；补齐后为 **20 capability**（新增 `rag`、`git`、`deployment`），详见 §4.2「缺口排序与补齐路线」
 > 数据基线：既有架构审计报告（17 capability / 10章105篇 / 15接口 / 9 change / 23 ADR）+ 本轮横向调研
 > 调研方法：开源框架取 GitHub README 实证；闭源产品取公开文档与业界共识（官网 JS 渲染，正文不可 fetch）
 
@@ -58,9 +58,9 @@ Core-Agent 的 17 个 capability 按职责收敛为五层，功能面覆盖完�
 | UI/多入口 | ●(CLI/Web/Desktop) | ●(CLI) | ●(IDE) | ●(Web) | ●(Web) | ◐ | ◐ | ●(platform) | ◐(SDK) | ◐(网关) | ●(UI/CLI/TUI+app) | ●(TUI/CLI/Desktop) |
 | 社交IM入口 | ●(微信/飞书/TG/Discord) | ○ | ○ | ○ | ◐(Slack) | ○ | ◐(Slack) | ◐ | ○ | ○ | ●(8渠道) | ●(5渠道+HA) |
 | 分布式A2A | ●(AgentCard/拓扑) | ○ | ○ | ○ | ○ | ◐ | ○ | ○ | ○ | ○ | ◐(Gateway多节点) | ◐(subagents/RPC) |
-| 多模态/语音 | ○ | ◐(图像) | ◐ | ● | ◐ | ◐ | ◐ | ◐ | ●(voice) | ◐ | ●(voice/camera/screen) | ◐(voice转录) |
-| 代码库索引/embedding | ◐(信息地图) | ◐ | ● | ○ | ● | ◐ | ◐ | ○ | ○ | — | ○ | ○ |
-| 托管/部署平台 | ○(纯自托管) | ◐(Claude服务) | ● | ● | ● | ●(LangGraph Cloud) | ◐ | ●(platform) | ● | ●(网关) | ◐(自托管) | ◐(自托管+多后端) |
+| 多模态/语音 | ◐(语音输入转写+实时语音输出，缺视觉) | ◐(图像) | ◐ | ● | ◐ | ◐ | ◐ | ◐ | ●(voice) | ◐ | ●(voice/camera/screen) | ◐(voice转录) |
+| 代码库索引/embedding | ◐(信息地图+RAG，已落地未工程化) | ◐ | ● | ○ | ●(index-repo深度索引) | ◐ | ◐ | ○ | ○ | — | ○ | ○ |
+| 托管/部署平台 | ◐(自托管+可选云托管BYOC) | ◐(Claude服务) | ● | ● | ● | ●(LangGraph Cloud) | ◐ | ●(platform) | ● | ●(网关) | ◐(自托管) | ◐(自托管+多后端) |
 
 ---
 
@@ -76,20 +76,20 @@ Core-Agent 的 17 个 capability 按职责收敛为五层，功能面覆盖完�
 
 3. **入口维度最全（CLI/Web/Desktop + IM + A2A）**。多数对比对象为单一入口（Claude Code=CLI、Cursor=IDE、Manus/Devin=Web）；同为个人助理的 OpenClaw/Hermes 在 IM 渠道数量上更广（含 iMessage/Signal/Teams），但只有 Core-Agent 一次设计覆盖「人→机器→机器」三类入口（IM + UI + A2A），入口完整性业界少见。
 
-### 4.2 功能设计全面性：A-（覆盖广），但存在 6 处对比缺口
+### 4.2 功能设计全面性：A-（覆盖广），本轮补齐多模态/托管两处缺口
 
 相对主流产品，SDD 功能设计在以下维度覆盖不足或缺失：
 
 | # | 缺口维度 | 现状 | 主流产品参照 | 影响 |
 |---|---|---|---|---|
 | 1 | 代码库索引/embedding | context 仅有「信息地图」（语义层），无 embedding/向量检索工程化定义 | Cursor 的 codebase indexing 是核心竞争力；Devin 有 | 长代码库/大仓库场景的检索性能与精度存疑 |
-| 2 | 多模态/语音 | 完全缺失 | OpenAI Agents SDK 有 voice；Manus/Claude Code 有图像；OpenClaw 有 companion apps（voice/camera/screen） | 若需语音驱动、图像/屏幕理解则无设计位 |
+| 2 | 多模态/语音 | 已有语音输入转写，本轮落地实时语音输出（0014-voice），仍缺视觉多模态 | OpenAI Agents SDK 有 voice；Manus/Claude Code 有图像；OpenClaw 有 companion apps（voice/camera/screen） | 语音链路已闭环，视觉多模态（图像/屏幕理解）仍无设计位 |
 | 3 | 沙箱执行的工程颗粒度 | permission 有「沙箱隔离」但停留在概念层 | Devin/Manus 的云端 VM（browser+terminal+FS 全隔离）、Claude Code 的 bash 沙箱 | 交付就绪度 C 的关键短板之一，需补齐到可执行规格 |
 | 4 | HITL 审批颗粒度 | 「人工审批流」未展开（approve/reject/edit-plan 分级） | Claude Code permission 规则、OpenAI HITL 粒度 | 审批流的具体交互协议缺失 |
 | 5 | 评测/eval 平台 | evolution 有「评测留出」但未工程化 | OpenAI Agents eval、LangSmith eval | 进化闭环的「验证门」缺可落地的评测基建 |
-| 6 | 托管/部署平台 | 纯自托管，无托管/云化设计（本轮明确排除） | AutoGPT platform、LangGraph Cloud、LiteLLM 网关 | 面向团队/云端场景的部署运维缺位（定位自托管产品，本轮不补齐） |
+| 6 | 托管/部署平台 | 已落地 deployment capability（自托管+可选云托管 BYOC，0013-deployment） | AutoGPT platform、LangGraph Cloud、LiteLLM 网关 | 云端托管可选项已补齐，自托管仍为主路径 |
 
-**缺口排序与补齐路线（本轮补齐，排除托管 #6）：**
+**缺口排序与补齐路线：**
 
 | 优先级 | 缺口 | 补齐路线 | 落点 |
 |---|---|---|---|
@@ -97,8 +97,8 @@ Core-Agent 的 17 个 capability 按职责收敛为五层，功能面覆盖完�
 | P1 | #3 沙箱执行的工程颗粒度 | 扩展 specs/permission 沙箱执行规格 | specs/permission/spec.md |
 | P2 | #5 评测/eval 平台 | 扩展 specs/evolution 验证门评测基建 | specs/evolution/spec.md |
 | P3 | #4 HITL 审批颗粒度 | 扩展 specs/permission 审批流协议 | specs/permission/spec.md |
-| P4 | #2 多模态/语音 | 扩展 specs/ui 输入模态（或 tool-use，执行态定归属） | specs/ui/spec.md |
-| 排除 | #6 托管/部署平台 | 本轮明确不补齐（定位自托管产品） | — |
+| P4 | #2 多模态/语音 | 已落地：specs/ui 实时语音输出（0014-voice）+ 原有语音输入转写 | specs/ui/spec.md |
+| 已落地 | #6 托管/部署平台 | 0013-deployment：自托管+可选云托管 BYOC | specs/deployment/spec.md |
 
 ### 4.3 交付就绪度：C（不变，仅确认）
 
@@ -111,8 +111,8 @@ Core-Agent 的 17 个 capability 按职责收敛为五层，功能面覆盖完�
 | 评估项 | 评级 | 依据 |
 |---|---|---|
 | 架构设计完善度 | **B+** | 五域 17 模块职责清晰、横切中间件化、入口最全 |
-| 功能设计全面性 | **A-** | 覆盖 20 个对比维度中的 18 个（○ 仅多模态/托管），进化引擎体系化程度业界最高、记忆光谱/组合代数仍为独有，缺 6 处（#6 托管排除，其余 5 处补齐） |
+| 功能设计全面性 | **A-** | 覆盖 20 个对比维度（原 ○ 的多模态/托管已由 ○→◐ 补齐，无 ○ 残留），进化引擎体系化程度业界最高、记忆光谱/组合代数仍为独有，6 处对比缺口本轮补齐多模态/托管两处 |
 | 相对主流产品定位 | **设计前瞻性领先，工程落地滞后** | 差异化能力多（evolution/光谱记忆/IM/A2A），但 src=0、沙箱/评测/embedding 未落地 |
 | 交付就绪度 | **C** | 纯文档态 |
 
-**一句话总结**：Core-Agent 的 SDD 在功能设计的广度与前瞻性上已达到甚至超越主流 Agent 产品的架构高度（体系化进化闭环、光谱记忆、三模+IM+A2A 入口、组合代数均为业界少见的原创设计），但纵向深度不均——6 处对比缺口（#6 托管排除，P0~P4 五处补齐）集中在「工程落地颗粒度」（沙箱、embedding、eval、HITL 协议、多模态），且整体仍为零实现文档态，设计全面性 A- 与交付就绪度 C 之间的落差是当前最大风险。
+**一句话总结**：Core-Agent 的 SDD 在功能设计的广度与前瞻性上已达到甚至超越主流 Agent 产品的架构高度（体系化进化闭环、光谱记忆、三模+IM+A2A 入口、组合代数均为业界少见的原创设计），但纵向深度不均——6 处对比缺口中的多模态/托管已在本轮补齐（语音实时输出 0014-voice、托管 deployment 0013），其余集中在「工程落地颗粒度」（沙箱、embedding、eval、HITL 协议），且整体仍为零实现文档态，设计全面性 A- 与交付就绪度 C 之间的落差是当前最大风险。

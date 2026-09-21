@@ -75,6 +75,7 @@ doc/
 │   ├── loop-interface.md          智能体循环插件契约（coeffect + run）
 │   ├── im-interface.md            IM 网关接口（provider 注册 + 消息收发归一化）
 │   ├── distributed-interface.md   分布式协作接口（A2A 委派 / AgentCard / TaskHandle）
+│   ├── deployment-interface.md    部署与托管接口（启动/停止/探活/升级/回滚/环境配置）
 │   └── ui-interface.md            统一后端 API + CLI/Web/Desktop 三模桥接
 │
 ├── 04-testing/                    【测试设计层】
@@ -128,7 +129,8 @@ doc/
     │   ├── composition/spec.md
     │   ├── distributed/spec.md
     │   ├── rag/spec.md
-    │   └── git/spec.md
+    │   ├── git/spec.md
+    │   └── deployment/spec.md
     └── changes/                   ← 修改提案（proposal + design + tasks + delta specs）
         ├── 0001-bootstrap-core/   核心骨架引导变更（原 6 能力）
         ├── 0002-safety-crosscutting/  安全与横切能力变更（新增 6 模块）
@@ -141,7 +143,9 @@ doc/
         ├── 0009-distributed/          分布式协作层变更（A2A+MCP 跨设备互调）
         ├── 0010-rag/                  RAG 检索增强生成变更（本地向量库语义检索）
         ├── 0011-git/                  Git 版本控制变更（默认支持 Git）
-        └── 0012-gap-closure/          缺口补齐变更（沙箱颗粒度+审批协议+评测基建+多模态）
+        ├── 0012-gap-closure/          缺口补齐变更（沙箱颗粒度+审批协议+评测基建+多模态）
+        ├── 0013-deployment/           部署与托管变更（自托管+可选云托管 BYOC）
+        └── 0014-voice-output/         实时语音输出变更（流式 TTS 播报与打断）
 ```
 
 ---

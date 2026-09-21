@@ -213,6 +213,15 @@
 
 ---
 
+## ADR-0028：Deployment 独立为部署与托管 capability（自托管优先 + 可选云托管 BYOC）
+
+- **状态**：Accepted（2026-09-21）
+- **上下文**：架构设计评估发现「托管/部署平台」维度缺失（○纯自托管）；产品需可落地的运行环境与发布能力。它与 Composition（决定「装什么」——bundle 打包分发）和 Distributed（决定「和谁协作」——跨设备拓扑）正交：Deployment 只回答「跑在哪、怎么跑、怎么升级」，三者互不耦合。
+- **决策**：Deployment 独立为 capability；自托管优先，云托管为可选 BYOC（bring your own cloud），二者共享同一部署抽象与配置；运行环境用抽象概念（进程级或容器级）描述，不锁定具体选型，兼容 PC/服务器/边缘设备；发布升级版本化（内容哈希）+ 滚动升级 + 失败自动回滚，不处半升级态；暴露健康探活端点与生命周期操作（启动/停止/重启），异常触发告警或自动恢复。
+- **后果**：✅ 补齐交付闭环（跑在哪/怎么跑/怎么升级），与 Composition/Distributed 解耦；⚠️ 运行环境抽象不锁选型，需在编码阶段确定具体运行器（进程级/容器级），且升级回滚语义须与 composition bundle 哈希/版本兼容。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -235,3 +244,4 @@
 | ADR-0025 | 11-rag/rag-architecture.md |
 | ADR-0026 | 12-git/git-architecture.md |
 | ADR-0027 | 01-architecture/data-model.md |
+| ADR-0028 | 03-interfaces/deployment-interface.md |

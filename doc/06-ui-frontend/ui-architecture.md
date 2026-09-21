@@ -123,7 +123,25 @@ core-agent 内核（loop / memory / tool-use / mcp / evolution / permission / �
 
 ---
 
-## 5. 四条设计原则（保证 100% 一致）
+## 5. 实时语音输出交互设计（全双工 · barge-in · 流式 TTS）
+
+> 关联 OpenSpec change `0014-voice-output`。语音输出是**全双工、三模共享的跨模式交互能力**，不归入 §4 任一单模小节，独立成节。
+
+1. **全双工（Full-Duplex）**：麦克风采集（ASR 输入通道）与 TTS 播报（输出通道）同时进行、互不阻塞，支持"边说边听"；音频链路 ASR → 内核 loop → 流式 TTS，与 §3 的 HTTP + SSE 文本流并存，同走统一后端 API。
+
+2. **barge-in 打断**：用户开口即由 VAD 触发，立即中止当前 TTS 播报与正在生成的 token（软取消），实现"随时插话"；打断仅终止语音/文本生成，已执行工具结果保留归档、避免重复执行，打断状态机在**内核/后端统一**、三模共用。
+
+3. **流式播报**：TTS 按句子/短片段分片合成、随 token 边生成边播，降低首字延迟；与 SSE 流式输出对齐，TTS 即流式输出的音频投影。
+
+4. **三模 CLI / Web / Desktop 差异（差异仅在音频前端，状态机/协议后端统一）**：
+   - **CLI（Textual）**：终端无原生音频，经系统音频后端（afplay / aplay / pw-play 等）播放，或降级为文本提示；按键触发打断。
+   - **Web**：浏览器 Web Audio / SpeechSynthesis 播报，`getUserMedia` + VAD 做 barge-in；首次需麦克风授权。
+   - **Desktop（Tauri）**：复用同一 SPA 构建产物，音频能力与 Web **零差异**，桌面壳仅保证系统音频权限与扬声器设备。
+   - **统一面**：打断状态机、流式 TTS 分片协议、会话级 TTS 开关均在后端 API 层统一定义，三模仅音频前端实现不同。
+
+---
+
+## 6. 四条设计原则（保证 100% 一致）
 
 1. **前端单一代码库**：Web 与桌面跑完全相同的 SPA 构建产物，桌面只是换个壳。
 2. **桌面壳职责最小化**：Tauri 只做开窗口 / 挂 SPA / 启 sidecar 三件事。
@@ -132,7 +150,7 @@ core-agent 内核（loop / memory / tool-use / mcp / evolution / permission / �
 
 ---
 
-## 6. 分阶段落地路径
+## 7. 分阶段落地路径
 
 | 阶段 | 交付 | 说明 |
 |---|---|---|
@@ -143,7 +161,7 @@ core-agent 内核（loop / memory / tool-use / mcp / evolution / permission / �
 
 ---
 
-## 7. 技术决策记录（ADR 索引）
+## 8. 技术决策记录（ADR 索引）
 
 | ADR | 决策 |
 |---|---|
@@ -153,7 +171,7 @@ core-agent 内核（loop / memory / tool-use / mcp / evolution / permission / �
 
 ---
 
-## 8. 三模方案一句话总结
+## 9. 三模方案一句话总结
 
 | 模式 | 技术 | 复用度 |
 |---|---|---|

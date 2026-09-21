@@ -1,0 +1,86 @@
+# 接口设计：部署与托管接口（Deployment Interface）
+
+> 横切 ｜ 对应规格 `deployment/spec.md`（无专属模块文档，横切运行时能力）
+
+---
+
+## 1. 运行环境抽象接口
+
+```python
+class RuntimeEnvironment:
+    def configure(self, config: RuntimeConfig) -> None: ...  # 读取声明式配置，装配环境
+    def assemble(self) -> None: ...                            # 依赖装配（进程级或容器级）
+    def bootstrap(self) -> None: ...                           # 启动引导，拉起 Core-Agent 及子模块
+```
+
+- 只描述运行环境抽象（进程级或容器级），**不锁定具体选型**，一套配置可在个人 PC / 服务器 / 边缘设备复用。
+
+## 2. 云托管 BYOC 适配接口
+
+```python
+class CloudAdapter:
+    def adapt(self, target: DeployTarget) -> RuntimeEnvironment: ...  # 将部署抽象映射到用户自有云
+    def parity_check(self, local: RuntimeConfig, cloud: RuntimeConfig) -> bool: ...
+```
+
+- 云托管（BYOC）与自托管共享同一部署抽象与配置，行为一致，不绑定特定云厂商。
+
+## 3. 发布与升级接口
+
+```python
+class ReleaseManager:
+    def publish(self, release: ReleaseInfo) -> str: ...      # 版本化发布，返回可寻址版本引用
+    def upgrade(self, version: str) -> None: ...             # 滚动升级到目标版本
+    def rollback(self) -> None: ...                          # 回滚到上一个可用版本
+```
+
+## 4. 健康检查与生命周期接口
+
+```python
+class LifecycleController:
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
+    def restart(self) -> None: ...
+    def probe(self) -> HealthStatus: ...                     # 健康探活端点
+```
+
+## 5. 核心数据结构
+
+```python
+@dataclass
+class RuntimeConfig:
+    kind: str                 # self-hosted | byoc-cloud
+    target: DeployTarget      # 运行目标（PC / 服务器 / 边缘设备 / 用户自有云）
+    env: dict                 # 声明式环境配置
+
+@dataclass
+class DeployTarget:
+    host: str                 # 宿主机标识
+    runtime: str              # 进程级 | 容器级（抽象，不锁具体选型）
+
+@dataclass
+class ReleaseInfo:
+    version: str
+    hash: str                 # 内容哈希，保证跨环境一致
+    strategy: str             # rolling 等滚动升级策略
+
+@dataclass
+class HealthStatus:
+    alive: bool
+    detail: str               # 探活失败原因 / 告警信息
+```
+
+## 6. 约束
+
+- 运行环境抽象**不锁定容器 vs VM vs 进程级**，避免与沙箱选型未定的既有设计冲突。
+- 自托管与云托管（BYOC）共享同一配置与部署抽象，切换运行形态不改业务逻辑。
+- 升级失败自动回滚到上一可用版本，运行环境不处于半升级状态。
+- 探活发现异常 → 触发告警或自动恢复，生命周期操作（启动/停止/重启）可正常执行。
+
+## 7. 关联
+
+- 打包分发互补：`composition-interface.md`（Composition 决定「装什么」，Deployment 决定「跑在哪/怎么跑/怎么升级」）
+- 跨设备拓扑互补：`distributed-interface.md`
+- 审计链路：`observability-interface.md`
+- 规格：`openspec/specs/deployment/spec.md`
+- 变更：`openspec/changes/0013-deployment/`
