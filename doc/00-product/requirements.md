@@ -197,6 +197,16 @@
 | CORE-DEP-R3 | 系统 SHALL 提供健康检查与生命周期管理：暴露探活端点，支持启动/停止/重启，异常时告警或自动恢复 | P0 | deployment/spec.md |
 | CORE-DEP-R4 | 系统 SHALL 支持可选云托管 BYOC：允许部署到用户自选云平台，与自托管共享同一部署抽象与配置，不绑定特定云厂商 | P1 | deployment/spec.md |
 
+### 1.21 核心画像（core-profile）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-PROF-R1 | 系统 SHALL 支持两级 Core.md 灵魂文件：全局级 `~/.core/Core.md`（承载人格、宪法与全局规则）在启动时读取，项目级 `<project>/Core.md`（承载项目信息）在载入项目时读取，塑造 Agent 行为特色与约束 | P0 | core-profile/spec.md |
+| CORE-PROF-R2 | 系统 SHALL 将 Core.md 内容划分双语义分区：宪法与全局规则以 constitution:v1 coeffect 注入为必保约束，人格落 L0 记忆层作元策略与人格预设，两分区职责不重叠 | P0 | core-profile/spec.md |
+| CORE-PROF-R3 | 系统 SHALL 由 ContextEngine 按当前工作目录向上逐级查找项目级 Core.md 并注入上下文，未命中时不注入项目级内容且不报错 | P0 | core-profile/spec.md |
+| CORE-PROF-R4 | 系统 SHALL 定义多级合并优先级：项目级覆盖全局级；Core.md 与 CLAUDE.md 分工并存，Core-Agent 仅读取 Core.md、不加载 CLAUDE.md，二者互不干扰 | P0 | core-profile/spec.md |
+| CORE-PROF-R5 | 系统 SHALL 对 Core.md 做格式校验与容错：文件缺失静默降级，格式非法告警并跳过非法分区，不阻断启动或载入 | P0 | core-profile/spec.md |
+
 ---
 
 ## 2. 非功能需求（Non-Functional Requirements）

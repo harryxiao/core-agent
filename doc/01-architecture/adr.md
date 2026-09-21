@@ -222,6 +222,15 @@
 
 ---
 
+## ADR-0029：Core.md 两级灵魂文件（人格/宪法/全局规则 + 项目信息）
+
+- **状态**：Accepted（2026-09-21）
+- **上下文**：主流 Agent 产品（openclaude 等）均有「灵魂 md」预设以塑造 Agent 人格/宪法/全局规则；Core-Agent 缺此预设。CLAUDE.md（72 行）已占项目记忆语义位、保留给外部 Claude Code，不能复用为 Core-Agent 运行时灵魂文件；且 constitution:v1 coeffect（loop/protocol.py:62）是宪章唯一锚点、无独立文件载体，项目信息也无注入窗口。
+- **决策**：新增 core-profile capability，落地两级 Core.md：① `~/.core/Core.md` = 人格/宪法/全局规则，Agent 启动读取，按双语义分区解析——「宪法+全局规则」→ constitution:v1 coeffect 载体、「人格」→ L0 记忆层；② `<project>/Core.md` = 项目信息，ContextEngine 按 cwd 向上查找并注入 context。与 CLAUDE.md 并存分工：CLAUDE.md 归外部 Claude Code，Core.md 归 Core-Agent 自身运行时。
+- **后果**：✅ 补齐灵魂 md 预设，宪法获得文件载体、项目信息获得注入窗口；⚠️ 需维护 Core.md 与 CLAUDE.md 的语义边界，避免双源漂移，且两级文件合并优先级（项目级覆盖全局级）需在 spec 中定死。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -245,3 +254,4 @@
 | ADR-0026 | 12-git/git-architecture.md |
 | ADR-0027 | 01-architecture/data-model.md |
 | ADR-0028 | 03-interfaces/deployment-interface.md |
+| ADR-0029 | 02-modules/core-profile.md |

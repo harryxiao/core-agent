@@ -80,6 +80,7 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
 | PluginRegistry | L0 | 插件注册/查找/生命周期/版本 | plugin-registry-interface.md |
 | EffectTracker | L0 | 记录每个 effect 及撤销函数，支持时间旅行 | plugin-registry-interface.md |
 | CoeffectResolver | L0 | 解析注入权限/宪章/配置，缺失拒绝 | plugin-registry-interface.md |
+| CoreProfileEngine | L0 | 启动/载入读取两级 Core.md，合并注入 constitution coeffect/人格/项目信息 | core-profile-interface.md |
 | ToolProvider | L1 | 聚合原子工具为 LLM 可调用的 tool schema | tool-use-interface.md |
 | MemoryStore | L2 | 五层存储 + 检索 + 迁移 | memory-interface.md |
 | AgentLoop | L3 | 四阶段闭环驱动 + 中间件 hook（横切注入点） | loop-interface.md |

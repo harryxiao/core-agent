@@ -51,3 +51,11 @@
 - **GIVEN** 记忆压实过程中发生写入失败或中途异常
 - **WHEN** 压实流程出错
 - **THEN** 保留原始条目不变并记录失败原因，下次压实重试，不丢失既有记忆
+
+### Requirement: Core Profile 人格注入
+系统 SHALL 将 Core Profile 的「人格」分区作为 L0 元策略写入记忆，承载 Agent 的行为特色预设。
+
+#### Scenario: 人格分区写入 L0
+- **GIVEN** 全局 Core.md 含「人格」分区
+- **WHEN** Agent 启动读取 Core Profile
+- **THEN** 该分区内容作为 L0 元策略写入记忆，塑造 Agent 行为特色

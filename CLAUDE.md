@@ -1,6 +1,7 @@
 # CLAUDE.md — core-agent (CORE-Harness)
 
 > 本文件是 Claude Code 的项目记忆：进入本仓库开发时，先按此处导航理解项目，再动手。
+> Core-Agent 自身的运行时灵魂文件是 `~/.core/Core.md`（全局：人格/宪法/全局规则，启动时读取）与 `<project>/Core.md`（项目信息，载入项目时按 cwd 向上查找），由 Core-Agent 读取；本 CLAUDE.md 仅供外部 Claude Code 使用，二者分工并存、互不加载。
 
 ## 一句话定位
 

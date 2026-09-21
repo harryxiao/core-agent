@@ -56,6 +56,7 @@ doc/
 │   ├── constraints.md             约束与容错（横切：校验/熔断/重试中间件）
 │   ├── observability.md           可观测性（横切：日志/指标/追踪/审计）
 │   ├── llm-provider.md            三方 LLM 归一化接入（LLMProvider 抽象 + LiteLLM 默认实现）
+│   ├── core-profile.md            Core.md 灵魂文件（两级：~/.core/Core.md 人格/宪法 + <project>/Core.md 项目信息）
 │   └── composition.md             组合与分发（L5：profile 命名组合 / bundle 分发 / patch 覆盖）
 │
 ├── 03-interfaces/                 【接口设计层】
@@ -76,6 +77,7 @@ doc/
 │   ├── im-interface.md            IM 网关接口（provider 注册 + 消息收发归一化）
 │   ├── distributed-interface.md   分布式协作接口（A2A 委派 / AgentCard / TaskHandle）
 │   ├── deployment-interface.md    部署与托管接口（启动/停止/探活/升级/回滚/环境配置）
+│   ├── core-profile-interface.md 核心画像接口（CoreProfile 数据模型 + 读取/解析/合并/注入契约）
 │   └── ui-interface.md            统一后端 API + CLI/Web/Desktop 三模桥接
 │
 ├── 04-testing/                    【测试设计层】
@@ -127,6 +129,7 @@ doc/
     │   ├── im/spec.md
     │   ├── llm-provider/spec.md
     │   ├── composition/spec.md
+    │   ├── core-profile/spec.md
     │   ├── distributed/spec.md
     │   ├── rag/spec.md
     │   ├── git/spec.md
