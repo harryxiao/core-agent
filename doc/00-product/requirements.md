@@ -188,6 +188,15 @@
 | CORE-GIT-R3 | 系统 SHALL 保证 Git 凭据安全：凭据经 keychain 存储不落盘明文，日志与报错不泄露凭据 | P0 | git/spec.md |
 | CORE-GIT-R4 | 系统 SHALL 让高危 Git 操作（强制推送/删除远程分支/历史改写）走 permission 审批链与沙箱约束 | P0 | git/spec.md |
 
+### 1.20 部署与托管（deployment）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-DEP-R1 | 系统 SHALL 支持自托管优先的运行环境：以抽象运行环境（进程级/容器级，不锁定选型）承载 Core-Agent 及子模块，提供环境配置、依赖装配与启动引导，一套部署可在 PC/服务器/边缘设备运行 | P0 | deployment/spec.md |
+| CORE-DEP-R2 | 系统 SHALL 提供发布与升级能力：版本化发布、滚动升级与回滚，升级失败回退到上一可用版本，不处于半升级状态 | P0 | deployment/spec.md |
+| CORE-DEP-R3 | 系统 SHALL 提供健康检查与生命周期管理：暴露探活端点，支持启动/停止/重启，异常时告警或自动恢复 | P0 | deployment/spec.md |
+| CORE-DEP-R4 | 系统 SHALL 支持可选云托管 BYOC：允许部署到用户自选云平台，与自托管共享同一部署抽象与配置，不绑定特定云厂商 | P1 | deployment/spec.md |
+
 ---
 
 ## 2. 非功能需求（Non-Functional Requirements）
