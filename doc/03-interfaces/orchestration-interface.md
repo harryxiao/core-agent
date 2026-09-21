@@ -49,11 +49,15 @@ class Subtask:
     goal: str
     acceptance: str             # 验收标准（Given/When/Then 或断言）
     depends_on: list[str]       # 依赖子任务 id（DAG 拓扑序）
+    priority: int = 0           # 优先级：就绪队列内降序调度，缺省取默认值
 
 @dataclass
 class Plan:
     subtasks: list[Subtask]
     order: list[str]            # 拓扑排序后的执行顺序
+    goal: str                   # 顶层目标
+    success_criteria: list[str] # SMART 成功标准（可度量）
+    waves: list[list[str]]      # 波次划分：每波为无依赖子任务 id 列表
 
 @dataclass
 class VerifyResult:
@@ -72,6 +76,7 @@ class TaskHandoff:
     context_pack: dict          # 由 context 模块打包的必要上下文
     acceptance: str
     deadline: float | None
+    priority: int = 0           # 子任务优先级，就绪队列内降序调度
 
 class MultiAgentRouter:
     def match(self, task: str) -> AgentProfile | None:
@@ -91,6 +96,8 @@ class MultiAgentRouter:
 | `SUBTASK_VERIFY_FAILED` | 子任务校验失败（触发回退/重规划） |
 | `DEADLOOP_DETECTED` | 检测到死循环（触发 RECOVERING） |
 | `NO_AGENT_MATCH` | 无匹配子 Agent（降级/转人工） |
+| `WAVE_FANOUT_LIMIT` | 并行度超限（同波次分批执行，受资源上限约束） |
+| `PROGRESS_NOT_MET` | 进度未达目标（触发重试/重规划，衔接 RECOVERING） |
 
 ---
 

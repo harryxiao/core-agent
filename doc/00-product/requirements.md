@@ -78,6 +78,9 @@
 | CORE-ORCH-R2 | 编排 SHALL 支持子任务拆解并按依赖拓扑执行 | P0 | orchestration/spec.md |
 | CORE-ORCH-R3 | 编排 SHALL 支持多 Agent 路由与 TaskHandoff 上下文交接 | P1 | orchestration/spec.md |
 | CORE-ORCH-R4 | 编排 SHALL 支持长任务挂起/恢复/取消（断点续跑） | P1 | orchestration/spec.md |
+| CORE-ORCH-R5 | 编排 SHALL 支持并行扇出（fan-out/fan-in）波次调度，同波次并行、波次间串行、受资源上限约束 | P1 | orchestration/spec.md |
+| CORE-ORCH-R6 | 编排 SHALL 用 Goal/SuccessCriteria（SMART）定义成功标准并追踪进度 | P1 | orchestration/spec.md |
+| CORE-ORCH-R7 | 编排 SHALL 支持子任务 priority 优先级字段并按优先级降序调度 | P1 | orchestration/spec.md |
 
 ### 1.9 可观测性（observability）
 

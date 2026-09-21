@@ -231,6 +231,15 @@
 
 ---
 
+## ADR-0030：编排运行时三能力（并行扇出 + 目标监控 + 优先级调度）
+
+- **状态**：Accepted（2026-09-21）
+- **上下文**：对照《Agentic Design Patterns》缺口分析，orchestration 现有三层能力（状态机管理/子任务拆解/多 Agent 协同）缺三个运行时能力：GAP-1 无显式并行执行模型（同波次无依赖子任务仍串行）、GAP-2 无目标监控 spec 定义（ProgressTracker 仅存在于模块文档）、GAP-4 无优先级字段（多子任务就绪无调度依据）。三者语义耦合（优先级决定波次调度顺序、目标监控决定 fan-in 成功判定），宜单 change 统一落地。
+- **决策**：扩展 orchestration capability 追加三 Requirement——R5 并行扇出（fan-out/fan-in 波次调度，受资源上限约束）、R6 目标监控（Goal/SuccessCriteria SMART + ProgressTracker 进度追踪）、R7 优先级调度（priority + 就绪队列降序调度）；不新建 capability，改 Purpose 双向（delta 与正式 spec 同步）。
+- **后果**：✅ 补齐编排引擎「并行执行、量化验收、优先级调度」三能力；⚠️ 并行执行需确保多子任务并发状态一致（依赖独立状态域/事件溯源），priority 仅在同波次就绪子任务间生效、跨波次仍守拓扑序。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -255,3 +264,4 @@
 | ADR-0027 | 01-architecture/data-model.md |
 | ADR-0028 | 03-interfaces/deployment-interface.md |
 | ADR-0029 | 02-modules/core-profile.md |
+| ADR-0030 | 02-modules/orchestration.md |

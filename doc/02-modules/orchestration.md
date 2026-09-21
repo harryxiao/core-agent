@@ -9,7 +9,7 @@
 
 单一 loop 只能处理"一轮一步"的短任务；复杂目标需要**跨多轮、多子任务、甚至多智能体**的编排。
 
-本模块在 AgentLoop（L3）之上提供三层能力：**状态机管理、子任务拆解、多 Agent 协同**，使 CORE 从"循环"升级为"执行引擎"。
+本模块在 AgentLoop（L3）之上提供三层基础能力：**状态机管理、子任务拆解、多 Agent 协同**，并新增**并行扇出、目标监控、优先级调度**三项运行时能力，使 CORE 从"循环"升级为"执行引擎"。
 
 ---
 
@@ -52,6 +52,24 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
 - MultiAgentRouter 按任务类型匹配最合适的 Agent。
 - 通过**标准化消息协议**完成交接：`TaskHandoff {task, context_pack, acceptance, deadline}`。
 - 交接上下文由 context 模块打包（信息地图 + 必要事实），避免全量塞入。
+
+### 3.4 并行扇出（fan-out / fan-in 波次调度）
+
+- 子任务 DAG 按依赖拓扑分层为**波次（wave）**：同一波次内子任务无相互依赖，可并行 fan-out 到多个执行单元。
+- 波次内全部子任务完成并经 **fan-in 汇总校验**通过后，才推进下一波次；校验失败触发状态机 RECOVERING。
+- 并行度受**资源上限**约束：超出上限时同波次分批执行。
+
+### 3.5 目标监控（Goal / SuccessCriteria + ProgressTracker）
+
+- 任务拆解时定义 **Goal 与 SuccessCriteria（SMART：具体/可度量/可达成/相关/有时限）**，子任务验收标准对齐父目标。
+- **ProgressTracker** 独立负责进度追踪：记录每子任务进度，汇总为整体目标推进度。
+- 进度未达标时触发重试或重新规划（衔接状态机 RECOVERING）。
+
+### 3.6 优先级调度（priority）
+
+- 子任务带 **priority** 优先级字段；就绪队列（同波次无依赖子任务）按优先级降序调度。
+- 同优先级按入队序（FIFO）稳定执行；priority 缺省时取默认值。
+- 优先级仅在同波次就绪子任务间生效，跨波次仍遵守 DAG 拓扑序。
 
 ---
 
