@@ -206,6 +206,8 @@
 | CORE-PROF-R3 | 系统 SHALL 由 ContextEngine 按当前工作目录向上逐级查找项目级 Core.md 并注入上下文，未命中时不注入项目级内容且不报错 | P0 | core-profile/spec.md |
 | CORE-PROF-R4 | 系统 SHALL 定义多级合并优先级：项目级覆盖全局级；Core.md 与 CLAUDE.md 分工并存，Core-Agent 仅读取 Core.md、不加载 CLAUDE.md，二者互不干扰 | P0 | core-profile/spec.md |
 | CORE-PROF-R5 | 系统 SHALL 对 Core.md 做格式校验与容错：文件缺失静默降级，格式非法告警并跳过非法分区，不阻断启动或载入 | P0 | core-profile/spec.md |
+| CORE-PROF-R6 | 系统 SHALL 提供 Core.md 的题词编写规范，指导用户以可判定、可注入的方式编写各分区内容：宪法与全局规则分区采用命令式可判定句式（每条以「必须/禁止」表述、可判定真伪，不承载具体操作细节），人格分区采用结构化描述（身份/工作风格/沟通风格/决策偏好/边界意识），项目信息分区仅承载项目特有信息且不重复全局规则，单个 Core.md 篇幅受控（建议不超过 50 行，细节下沉 L2/L3 记忆层） | P0 | core-profile/spec.md |
+| CORE-PROF-R7 | 系统 SHALL 提供 Core.md 题词模板（骨架），引导用户按「宪法与全局规则/人格/项目信息」三段式结构填写两级文件：全局级模板含「宪法与全局规则」「人格」两个分区，项目级模板含「项目信息」分区，模板附分区注入说明注释，注明各分区内容落向的运行时通道 | P0 | core-profile/spec.md |
 
 ---
 
