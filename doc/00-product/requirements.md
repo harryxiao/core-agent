@@ -51,7 +51,11 @@
 | CORE-MCP-R2 | 系统 SHALL 支持读取外部 resources 与 prompts，并纳入 loop 的上下文 | P1 | mcp/spec.md |
 | CORE-MCP-R3 | MCP 工具调用 SHALL 同样受可逆追踪与确认门约束 | P0 | mcp/spec.md |
 | CORE-MCP-R4 | 系统 SHALL 支持 stdio 与 Streamable HTTP 两种 MCP 传输 | P1 | mcp/spec.md |
+| CORE-MCP-R5 | 系统 SHALL 支持 MCP 服务端的注册、连接、心跳与断线重连 | P1 | mcp/spec.md |
+| CORE-MCP-R6 | 系统 SHALL 把本地调用透明转发到 MCP，并对 MCP 异常做隔离，不拖垮主循环 | P0 | mcp/spec.md |
+| CORE-MCP-R7 | 系统 SHALL 通过白名单控制对外暴露的工具集合，默认最小暴露，命名空间隔离 | P0 | mcp/spec.md |
 | CORE-MCP-R8 | 系统 SHALL 支持单一 HTTP(TCP) 连接承载多个会话（Mcp-Session-Id 会话标识，会话与连接解耦） | P1 | mcp/spec.md |
+| CORE-MCP-R9 | 系统 SHALL 为每个 MCP 连接建立独立会话，错误隔离不拖垮主循环 | P1 | mcp/spec.md |
 
 ### 1.6 进化引擎（evolution）
 
