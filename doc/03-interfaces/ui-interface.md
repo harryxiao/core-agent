@@ -61,6 +61,8 @@ class DesktopBridge:  # ③ Desktop：Tauri 壳 + sidecar
     def start_sidecar(self) -> None: ...
 ```
 
+**Web Client 与 Host 分离**：Web 前端（SPA）作为纯静态资源独立托管，`WebBridge` 仅暴露统一后端 API；前端经该 API 连接远程 / 本机常驻 Harness Host（见 `deployment-interface.md`），前端升级无需重启 Host 后端。
+
 ---
 
 ## 3. LLM 配置源（单一配置）
@@ -80,6 +82,7 @@ LLM API（provider / endpoint / key / base URL）只在后端配置一次：
 2. **桌面壳职责最小化**：Tauri 只做开窗口 / 挂 SPA / 启 sidecar 三件事。
 3. **统一 API 解耦**：三模走同一后端 API（HTTP + SSE），CLI 的 Textual 层也不绕过。
 4. **单一配置源**：LLM API Key 只在后端配置一次，三模不重复配置。
+5. **前后端解耦部署**：Web 前端独立托管、独立升级，经统一后端 API 连接常驻 Harness Host，前端发布不要求后端重启。
 
 ---
 
@@ -88,5 +91,5 @@ LLM API（provider / endpoint / key / base URL）只在后端配置一次：
 - 模块：`06-ui-frontend/ui-architecture.md`
 - 规格：`openspec/specs/ui/spec.md`
 - LLM 归一化：经 `llm-provider` 虚拟接口调用（可替换 LiteLLM）
-- 决策：ADR-0013 ~ 0015
+- 决策：ADR-0013 ~ 0015、ADR-0031
 - 测试：`04-testing/test-cases.md`（TC-UI 系列）

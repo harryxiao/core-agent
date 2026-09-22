@@ -50,7 +50,8 @@
 | CORE-MCP-R1 | 系统 SHALL 作为 MCP client 发现并调用外部 MCP server 的 tools | P0 | mcp/spec.md |
 | CORE-MCP-R2 | 系统 SHALL 支持读取外部 resources 与 prompts，并纳入 loop 的上下文 | P1 | mcp/spec.md |
 | CORE-MCP-R3 | MCP 工具调用 SHALL 同样受可逆追踪与确认门约束 | P0 | mcp/spec.md |
-| CORE-MCP-R4 | 系统 SHALL 支持 stdio 与 HTTP 两种 MCP 传输 | P1 | mcp/spec.md |
+| CORE-MCP-R4 | 系统 SHALL 支持 stdio 与 Streamable HTTP 两种 MCP 传输 | P1 | mcp/spec.md |
+| CORE-MCP-R8 | 系统 SHALL 支持单一 HTTP(TCP) 连接承载多个会话（Mcp-Session-Id 会话标识，会话与连接解耦） | P1 | mcp/spec.md |
 
 ### 1.6 进化引擎（evolution）
 
@@ -128,6 +129,7 @@
 | CORE-UI-R4 | 系统 SHALL 支持以 HTTP 服务 + 单页应用（SPA）形式提供 Web 界面，流式输出通过 SSE 推送 | P0 | ui/spec.md |
 | CORE-UI-R5 | 系统 SHALL 支持将桌面端打包为可执行安装文件（Windows / macOS / Linux），并内置拉起本地后端的能力 | P1 | ui/spec.md |
 | CORE-UI-R6 | 系统 SHALL 使桌面端复用与 Web 相同的 SPA 构建产物，保证二者体验 100% 一致 | P1 | ui/spec.md |
+| CORE-UI-R9 | 系统 SHALL 支持 Web 前端作为纯静态资源独立托管，与常驻 Harness Host 后端解耦部署：前端经统一后端 API 连接 Host，前端升级不要求后端重启 | P0 | ui/spec.md |
 
 ### 1.14 IM 网关（im）
 
@@ -199,6 +201,7 @@
 | CORE-DEP-R2 | 系统 SHALL 提供发布与升级能力：版本化发布、滚动升级与回滚，升级失败回退到上一可用版本，不处于半升级状态 | P0 | deployment/spec.md |
 | CORE-DEP-R3 | 系统 SHALL 提供健康检查与生命周期管理：暴露探活端点，支持启动/停止/重启，异常时告警或自动恢复 | P0 | deployment/spec.md |
 | CORE-DEP-R4 | 系统 SHALL 支持可选云托管 BYOC：允许部署到用户自选云平台，与自托管共享同一部署抽象与配置，不绑定特定云厂商 | P1 | deployment/spec.md |
+| CORE-DEP-R5 | 系统 SHALL 提供 Harness Host 常驻服务形态：单一 Host 进程常驻运行，承载 Core-Agent 内核并作为统一接入端点，支持多个 Web/Desktop 客户端并发接入，各客户端建立独立会话、互不串扰 | P0 | deployment/spec.md |
 
 ### 1.21 核心画像（core-profile）
 

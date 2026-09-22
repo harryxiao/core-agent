@@ -52,8 +52,8 @@ MCP（Model Context Protocol）集成层为智能体提供双向模型上下文�
 - **WHEN** 完成 initialize 握手
 - **THEN** 返回可用工具列表并可调用
 
-#### Scenario: HTTP/SSE 远程挂载
-- **GIVEN** core-agent MCP server 以 HTTP/SSE 启动
+#### Scenario: Streamable HTTP 远程挂载
+- **GIVEN** core-agent MCP server 以 Streamable HTTP 启动
 - **WHEN** 外部客户端连接并握手
 - **THEN** 建立会话并返回工具列表
 
@@ -95,3 +95,16 @@ MCP（Model Context Protocol）集成层为智能体提供双向模型上下文�
 - **GIVEN** 某客户端异常/崩溃
 - **WHEN** 其调用失败
 - **THEN** 熔断该连接，不影响其他客户端与主循环
+
+### Requirement: 会话多流复用
+系统 SHALL 支持在单一 HTTP(TCP) 连接上承载多个 MCP 会话：多个外部 MCP 客户端共享一条 HTTP(TCP) 连接，各自通过 Mcp-Session-Id 会话标识建立独立会话，请求按 Session-Id 分流、互不串扰。
+
+#### Scenario: 单连接多会话复用
+- **GIVEN** 多个外部 MCP 客户端共享一条 HTTP(TCP) 连接
+- **WHEN** 各自携带不同 Mcp-Session-Id 发起请求
+- **THEN** 各会话独立建立并按 Session-Id 分流，互不串扰
+
+#### Scenario: 会话与连接解耦
+- **GIVEN** 某会话已通过 Mcp-Session-Id 建立
+- **WHEN** 后续请求复用同一 HTTP(TCP) 连接并携带相同 Mcp-Session-Id
+- **THEN** 请求路由到该会话，无需为该会话独占连接

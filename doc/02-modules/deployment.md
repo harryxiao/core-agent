@@ -31,13 +31,15 @@ Deployment（运行与发布层）
 ├── RuntimeEnvironment   运行环境抽象：configure 读配置 → assemble 依赖装配 → bootstrap 启动引导
 ├── CloudAdapter         BYOC 云适配：adapt 映射到用户自有云 / parity_check 校验形态一致
 ├── ReleaseManager       发布与升级：publish 版本化发布（内容哈希）→ upgrade 滚动升级 → rollback 回滚
-└── LifecycleController  健康与生命周期：probe 健康探活 + start / stop / restart
+├── LifecycleController  健康与生命周期：probe 健康探活 + start / stop / restart
+└── HarnessHost          常驻服务：单一 Host 进程承载内核 + 统一接入端点，多客户端并发独立会话
 ```
 
 - **RuntimeEnvironment**：以抽象概念（进程级 / 容器级）描述运行环境，承载 Core-Agent 及其子模块对外提供服务，不锁定具体选型。
 - **CloudAdapter**：把部署抽象映射到用户自有云，并校验自托管与云托管形态一致。
 - **ReleaseManager**：以内容哈希标识发布版本，滚动升级到目标版本，失败回滚到上一可用版本。
 - **LifecycleController**：暴露健康探活端点并承接启动 / 停止 / 重启等生命周期操作。
+- **HarnessHost**：以单一常驻进程承载内核及其子模块，对外暴露统一接入端点，多个 Web/Desktop 客户端并发接入、各自建立独立会话。
 
 ---
 
@@ -67,6 +69,12 @@ Deployment（运行与发布层）
 - **生命周期操作**：支持启动（`start`）、停止（`stop`）、重启（`restart`）。
 - **异常恢复**：探活发现实例异常或不可用时，触发告警或自动恢复，生命周期操作可正常执行。
 
+### 3.5 Harness Host 常驻服务
+
+- **单一常驻进程**：以一个 Harness Host 进程常驻运行，承载 Core-Agent 内核及其子模块，对外提供统一接入端点。
+- **多客户端并发接入**：多个 Web/Desktop 客户端经统一后端 API 连接同一 Host，各自建立独立会话、互不串扰。
+- **生命周期解耦**：Host 生命周期与单个前端客户端解耦，客户端断开不导致 Host 退出；Host 崩溃时依赖健康探活与自动恢复（见 3.4）兜底。
+
 ---
 
 ## 4. 错误处理
@@ -75,6 +83,7 @@ Deployment（运行与发布层）
 |---|---|
 | 升级失败 | 自动回滚到上一个可用版本，运行环境不处半升级态 |
 | 探活发现实例异常 / 不可用 | 触发告警或自动恢复，启动 / 停止 / 重启可正常执行 |
+| Host 进程崩溃 | 触发健康探活告警 / 自动恢复，已接入客户端可重连恢复会话 |
 
 ---
 
@@ -82,5 +91,5 @@ Deployment（运行与发布层）
 
 - 规格：`doc/openspec/specs/deployment/spec.md`
 - 接口：`doc/03-interfaces/deployment-interface.md`
-- 架构决策：`doc/01-architecture/adr.md`（ADR-0028）
+- 架构决策：`doc/01-architecture/adr.md`（ADR-0028、ADR-0031）
 - 正交 capability：`doc/02-modules/composition.md`（装什么）、`doc/09-distributed/distributed.md`（和谁协作）

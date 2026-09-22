@@ -70,17 +70,29 @@ class HealthStatus:
     detail: str               # 探活失败原因 / 告警信息
 ```
 
-## 6. 约束
+## 6. Harness Host 常驻服务接口
+
+```python
+class HarnessHost:
+    def serve(self) -> None: ...                       # 常驻运行，承载内核并对外暴露统一接入端点
+    def accept(self, client: ClientConnection) -> Session: ...  # 客户端接入，建立独立会话
+    def sessions(self) -> list[Session]: ...           # 枚举当前接入的客户端会话（互不串扰）
+```
+
+- 单一 Harness Host 进程常驻承载内核，作为统一接入端点；多个 Web/Desktop 客户端并发接入，各自建立独立会话。
+- Host 生命周期与单个客户端解耦：客户端断开不导致 Host 退出，Host 异常依赖 `LifecycleController` 探活恢复。
+
+## 7. 约束
 
 - 运行环境抽象**不锁定容器 vs VM vs 进程级**，避免与沙箱选型未定的既有设计冲突。
 - 自托管与云托管（BYOC）共享同一配置与部署抽象，切换运行形态不改业务逻辑。
 - 升级失败自动回滚到上一可用版本，运行环境不处于半升级状态。
 - 探活发现异常 → 触发告警或自动恢复，生命周期操作（启动/停止/重启）可正常执行。
 
-## 7. 关联
+## 8. 关联
 
 - 打包分发互补：`composition-interface.md`（Composition 决定「装什么」，Deployment 决定「跑在哪/怎么跑/怎么升级」）
 - 跨设备拓扑互补：`distributed-interface.md`
 - 审计链路：`observability-interface.md`
 - 规格：`openspec/specs/deployment/spec.md`
-- 变更：`openspec/changes/0013-deployment/`
+- 变更：`openspec/changes/0013-deployment/`、`openspec/changes/0019-harness-host-web-client/`

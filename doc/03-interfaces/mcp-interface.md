@@ -26,13 +26,14 @@ class MCPClient(Plugin):
 ```python
 @dataclass
 class MCPEndpoint:
-    transport: Literal["stdio", "http"]
+    transport: Literal["stdio", "http", "streamable-http"]
     # stdio
     command: str | None = None       # "npx"
     args: list[str] | None = None    # ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-    # http
+    # http / streamable-http
     url: str | None = None
     headers: dict | None = None
+    session_id: str | None = None    # Mcp-Session-Id（streamable-http 单连接多会话复用）
 ```
 
 ---
@@ -69,7 +70,7 @@ ToolProvider.invoke(mcp.x.y, args)
 class MCPServer(Plugin):
     plugin_id = "mcp.server"
 
-    def serve(self, transport: Literal["stdio", "http"], endpoint: MCPEndpoint) -> None: ...
+    def serve(self, transport: Literal["stdio", "http", "streamable-http"], endpoint: MCPEndpoint) -> None: ...
     def initialize(self, conn: ServerConnection) -> ServerCapabilities: ...
     def list_tools(self, conn) -> list[MCPTool]: ...        # 白名单过滤后的暴露面
     def call_tool(self, conn, name: str, args: dict) -> CallResult: ...  # 复用 ToolProvider.invoke
@@ -77,6 +78,7 @@ class MCPServer(Plugin):
 
 - **暴露面**：由白名单从 ToolProvider/PluginRegistry 挑选，包装为 MCP tool（`core.<tool>`）。
 - **安全**：`call_tool` 复用 `ToolProvider.invoke` 同一链路，不绕过 permission/observability，来源标注 `external:<client_id>`。
+- **多流复用**：streamable-http 下单一 HTTP(TCP) 连接经 `Mcp-Session-Id` 会话标识承载多个会话，请求按 Session-Id 分流互不串扰。
 
 ---
 

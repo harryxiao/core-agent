@@ -33,7 +33,7 @@ L3 Loop ──► ToolProvider ──► [本地工具 | MCP 适配工具]
 
 - **MCPClient**：负责发现（initialize/list_tools）、传输（stdio 子进程 / HTTP）、协议编解码。
 - **MCP 适配器**：把远程 tool 包装成 `ToolDef`，符合四要素契约，注册进 PluginRegistry。
-- **MCPServer**：负责握手（initialize/list_tools/call_tool）、传输（stdio / HTTP/SSE）、把本地工具经白名单包装为 MCP tool。
+- **MCPServer**：负责握手（initialize/list_tools/call_tool）、传输（stdio / Streamable HTTP）、把本地工具经白名单包装为 MCP tool。
 
 ---
 
@@ -49,7 +49,7 @@ L3 Loop ──► ToolProvider ──► [本地工具 | MCP 适配工具]
 | 传输 | 说明 | 适用 |
 |---|---|---|
 | **stdio** | 子进程标准输入输出 JSON-RPC | 本地、无网络暴露 |
-| **HTTP/SSE** | 远程连接 | 跨机、云 MCP |
+| **Streamable HTTP** | 远程连接，单连接多会话复用（Mcp-Session-Id） | 跨机、云 MCP |
 
 ### 3.3 与本地工具同等的安全约束
 
@@ -71,6 +71,7 @@ L3 Loop ──► ToolProvider ──► [本地工具 | MCP 适配工具]
 - **默认最小暴露**：未配置白名单时仅暴露只读类工具；写/删除/敏感工具默认不暴露。
 - **安全约束透传**：外部调用走同一 invoke 链路（permission 确认门 + observability 审计），来源标注 `external:<client_id>`。
 - **会话隔离**：每个 MCP 连接独立 session，单连接熔断隔离不拖垮主循环。
+- **会话多流复用**：单一 HTTP(TCP) 连接经 Mcp-Session-Id 会话标识承载多个会话，会话与连接解耦，请求按 Session-Id 分流互不串扰。
 - **禁止二级代理**：初版不把 MCP client 已发现的远程工具再转暴露，防 A 挂 B、B 挂 A 的无限代理。
 
 ---
