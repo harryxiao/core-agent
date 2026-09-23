@@ -27,6 +27,12 @@ Composition（组合与分发层）是 CORE-Harness 唯一的静态层：只有�
 - **WHEN** 部署引入该 bundle
 - **THEN** 拒绝加载并报错定位损坏 bundle，不影响已有组合，可回退到引入前状态
 
+#### Scenario: 循环依赖检测
+- **GIVEN** 多个 bundle 间声明引用形成循环依赖
+- **WHEN** 解析 bundle 依赖图
+- **THEN** 检测到环则拒绝加载并报错指出环路径，不进入死循环，已有组合不受影响
+
+
 ### Requirement: patch.yml 用户覆盖
 系统 SHALL 支持用户 patch.yml 对 profile 组合做局部覆盖，在不改 profile 与 bundle 的前提下按用户差异调整。
 
@@ -34,6 +40,12 @@ Composition（组合与分发层）是 CORE-Harness 唯一的静态层：只有�
 - **GIVEN** 用户对某 profile 有局部差异需求
 - **WHEN** 提供 patch.yml 声明覆盖项
 - **THEN** 系统在 profile 组合结果上应用覆盖，原 profile 与 bundle 保持不变
+
+#### Scenario: 覆盖冲突兜底
+- **GIVEN** patch.yml 覆盖项与 profile/bundle 既有项冲突或产生歧义
+- **WHEN** 解析覆盖无法唯一判定生效项
+- **THEN** 按确定优先级裁决（显式 patch 覆盖优先于默认层叠），仍歧义则报错并回退到覆盖前状态，不静默吞掉冲突
+
 
 ### Requirement: 层叠解析
 系统 SHALL 按「bundle 层叠 + patch.yml 覆盖」的确定顺序解析最终组合，解析结果可逆、可回退。

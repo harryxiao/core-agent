@@ -47,3 +47,27 @@ Git 让 Core-Agent 默认支持版本控制操作以完美支撑 Coding 编码�
 - **GIVEN** 一次 force-push 或删除远程分支
 - **WHEN** 操作请求
 - **THEN** 触发 permission 审批，通过后才执行，拒绝则阻断并审计
+
+### Requirement: 远程操作可靠性
+系统 SHALL 保障远程 Git 操作（clone/pull/push）的可靠性：网络超时（timeout）控制、认证失败明确报错不泄露凭据、断线自动重试（retry，指数退避）、操作结束释放连接资源。
+
+#### Scenario: 远程超时
+- **GIVEN** 一次远程操作（clone/pull/push）因网络缓慢
+- **WHEN** 超过超时阈值
+- **THEN** 中止该操作并返回超时错误，不无限挂起
+
+#### Scenario: 认证失败
+- **GIVEN** 一次远程操作认证失败（凭据过期/无权限）
+- **WHEN** 操作请求
+- **THEN** 明确报错并提示原因，不泄露凭据与私有仓库地址
+
+#### Scenario: 断线重试
+- **GIVEN** 远程操作因网络抖动中断
+- **WHEN** 错误可重试
+- **THEN** 按指数退避自动重试，达上限后失败并保持工作区一致
+
+#### Scenario: 连接释放
+- **GIVEN** 远程操作结束
+- **WHEN** 操作完成或失败
+- **THEN** 释放底层连接资源，避免连接泄漏
+

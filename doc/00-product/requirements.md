@@ -95,6 +95,7 @@
 | CORE-OBS-R2 | 系统 SHALL 聚合指标（完成率/token/循环数/错误率） | P0 | observability/spec.md |
 | CORE-OBS-R3 | 每轮 loop SHALL 携带 trace_id 贯穿全链路，支持 replay 复现 | P0 | observability/spec.md |
 | CORE-OBS-R4 | 遥测 SHALL 作为单一数据源，统一供给进化经验采集与审批审计 | P1 | observability/spec.md |
+| CORE-OBS-R5 | 系统 SHALL 为遥测内存缓冲设上限并溢出兜底，导出失败按指数退避重试与背压，不阻塞主循环 | P1 | observability/spec.md |
 
 ### 1.10 约束与容错（constraints）
 
@@ -113,6 +114,7 @@
 | CORE-SKILL-R2 | 技能 SHALL 支持版本管理与灰度发布，A/B 退化自动回退 | P1 | skills/spec.md |
 | CORE-SKILL-R3 | 技能路由 SHALL 按 Top-K 相似度匹配，未命中则沉淀为候选 | P0 | skills/spec.md |
 | CORE-SKILL-R4 | 技能库 SHALL 作为 evolution 结晶/溶解的唯一交接面 | P0 | skills/spec.md |
+| CORE-SKILL-R5 | 系统 SHALL 对技能执行设置超时与资源上限，超时/超限中断执行并回收资源，不阻塞主循环 | P0 | skills/spec.md |
 
 ### 1.12 上下文工程（context）
 
@@ -133,6 +135,8 @@
 | CORE-UI-R4 | 系统 SHALL 支持以 HTTP 服务 + 单页应用（SPA）形式提供 Web 界面，流式输出通过 SSE 推送 | P0 | ui/spec.md |
 | CORE-UI-R5 | 系统 SHALL 支持将桌面端打包为可执行安装文件（Windows / macOS / Linux），并内置拉起本地后端的能力 | P1 | ui/spec.md |
 | CORE-UI-R6 | 系统 SHALL 使桌面端复用与 Web 相同的 SPA 构建产物，保证二者体验 100% 一致 | P1 | ui/spec.md |
+| CORE-UI-R7 | 系统 SHALL 支持图像与语音等多模态输入的接入，并统一路由到具备对应能力的模型处理 | P1 | ui/spec.md |
+| CORE-UI-R8 | 系统 SHALL 支持将内核生成的文本回复以流式 TTS 合成语音实时播报，允许用户在播报过程中打断（barge-in），并保留语音与文本会话上下文的双向引用 | P1 | ui/spec.md |
 | CORE-UI-R9 | 系统 SHALL 支持 Web 前端作为纯静态资源独立托管，与常驻 Harness Host 后端解耦部署：前端经统一后端 API 连接 Host，前端升级不要求后端重启 | P0 | ui/spec.md |
 
 ### 1.14 IM 网关（im）
@@ -155,6 +159,7 @@
 | CORE-LLM-R3 | 系统 SHALL 通过依赖注入隔离 LLMProvider 实现，替换 LiteLLM 或接入自研后端时，内核 loop 及所有调用方无需改动即可切换 | P0 | llm-provider/spec.md |
 | CORE-LLM-R4 | 系统 SHALL 将超时 / 限流 / 鉴权 / 网络异常统一为领域异常，上层只处理一类错误语义 | P1 | llm-provider/spec.md |
 | CORE-LLM-R5 | 系统 SHALL 对模型调用做可观测审计，标注 provider / model 与调用结果，复用既有 observability 链路 | P1 | llm-provider/spec.md |
+| CORE-LLM-R6 | 系统 SHALL 保障模型调用的可靠性：调用失败自动重试（retry，指数退避）、超时（timeout）控制、服务降级（degrade 切换备用 provider/model）、底层连接复用（connection reuse / keep-alive）、流式（stream）响应断流可恢复 | P1 | llm-provider/spec.md |
 
 ### 1.16 组合与分发（composition）
 
@@ -176,6 +181,7 @@
 | CORE-DIST-R5 | 系统 SHALL 支持云端 / 个人 PC / 移动终端 / 嵌入式四类设备分布式拓扑，实现控制面/执行面分离 | P0 | distributed/spec.md |
 | CORE-DIST-R6 | 系统 MAY 支持可选的设备间 P2P 直连优化（公钥寻址、NAT 打洞直连优先、失败回退 relay、QUIC 传输），不改变上层 A2A 协议行为 | P2 | distributed/spec.md |
 | CORE-DIST-R7 | 系统 SHALL 遵循 A2A 与 MCP 互补：A2A Server 内部经 MCP 调用底层工具/数据，Agent 间协作走 A2A、能力调用走 MCP | P0 | distributed/spec.md |
+| CORE-DIST-R8 | 系统 SHALL 管理 A2A 对等连接的完整生命周期：连接保活（keepalive 心跳/heartbeat）与超时（timeout）检测、断线自动重连（reconnect，指数退避）、连接与任务资源显式释放、委派重试幂等（同一任务不重复执行） | P0 | distributed/spec.md |
 
 ### 1.18 检索增强生成（rag）
 
@@ -196,6 +202,7 @@
 | CORE-GIT-R2 | 系统 SHALL 保护 .git 元数据与工作区完整性：默认拒绝修改 .git 内部文件，操作失败不损坏工作区 | P0 | git/spec.md |
 | CORE-GIT-R3 | 系统 SHALL 保证 Git 凭据安全：凭据经 keychain 存储不落盘明文，日志与报错不泄露凭据 | P0 | git/spec.md |
 | CORE-GIT-R4 | 系统 SHALL 让高危 Git 操作（强制推送/删除远程分支/历史改写）走 permission 审批链与沙箱约束 | P0 | git/spec.md |
+| CORE-GIT-R5 | 系统 SHALL 保障远程 Git 操作（clone/pull/push）的可靠性：网络超时（timeout）控制、认证失败明确报错不泄露凭据、断线自动重试（retry，指数退避）、操作结束释放连接资源 | P0 | git/spec.md |
 
 ### 1.20 部署与托管（deployment）
 
@@ -204,6 +211,7 @@
 | CORE-DEP-R1 | 系统 SHALL 支持自托管优先的运行环境：以抽象运行环境（进程级/容器级，不锁定选型）承载 Core-Agent 及子模块，提供环境配置、依赖装配与启动引导，一套部署可在 PC/服务器/边缘设备运行 | P0 | deployment/spec.md |
 | CORE-DEP-R2 | 系统 SHALL 提供发布与升级能力：版本化发布、滚动升级与回滚，升级失败回退到上一可用版本，不处于半升级状态 | P0 | deployment/spec.md |
 | CORE-DEP-R3 | 系统 SHALL 提供健康检查与生命周期管理：暴露探活端点，支持启动/停止/重启，异常时告警或自动恢复 | P0 | deployment/spec.md |
+| CORE-DEP-R6 | 系统 SHALL 在客户端断线或超时后完成会话清理与资源释放，不影响其他并发客户端 | P0 | deployment/spec.md |
 | CORE-DEP-R4 | 系统 SHALL 支持可选云托管 BYOC：允许部署到用户自选云平台，与自托管共享同一部署抽象与配置，不绑定特定云厂商 | P1 | deployment/spec.md |
 | CORE-DEP-R5 | 系统 SHALL 提供 Harness Host 常驻服务形态：单一 Host 进程常驻运行，承载 Core-Agent 内核并作为统一接入端点，支持多个 Web/Desktop 客户端并发接入，各客户端建立独立会话、互不串扰 | P0 | deployment/spec.md |
 
