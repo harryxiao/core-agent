@@ -68,7 +68,7 @@ Distributed（分布式协作层）是 Core-Agent 的跨设备/跨进程 Agent �
 - **THEN** 移动端仅做发现/委派/订阅进度/展示，不承载重型执行
 
 ### Requirement: 可选 P2P 传输优化
-系统 MAY 支持可选的设备间 P2P 直连优化：按公钥寻址、NAT 打洞直连优先、失败回退 relay、QUIC 传输；该优化为可选传输层，不改变上层 A2A 协议行为。
+系统 SHALL 支持可选的设备间 P2P 直连优化：按公钥寻址、NAT 打洞直连优先、失败回退 relay、QUIC 传输；该优化为可选传输层，不改变上层 A2A 协议行为。
 
 #### Scenario: 打洞直连优先
 - **GIVEN** 两设备尝试 P2P 直连
@@ -82,3 +82,4 @@ Distributed（分布式协作层）是 Core-Agent 的跨设备/跨进程 Agent �
 - **GIVEN** A2A Server 收到一个需底层工具完成的任务
 - **WHEN** 执行该任务
 - **THEN** 通过 MCP 调用本地/远程工具与数据源完成，再经 A2A 回传结果
+

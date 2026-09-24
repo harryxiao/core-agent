@@ -43,3 +43,4 @@ Git 让 Core-Agent 默认支持版本控制操作以完美支撑 Coding 编码�
 - **GIVEN** 一次 force-push 或删除远程分支
 - **WHEN** 操作请求
 - **THEN** 触发 permission 审批，通过后才执行，拒绝则阻断并审计
+

@@ -23,6 +23,11 @@ RAG（检索增强生成）让 Core-Agent 通过本地向量库语义检索知�
 - **WHEN** 检测到 hash 不一致
 - **THEN** 触发受影响块的增量重建，期间该文档检索降级为旧索引
 
+#### Scenario: 摄取/重建失败降级
+- **GIVEN** 摄取管线在 embedding 生成、索引写入或重建过程中失败（如 embedding 失败、索引损坏、重建失败）
+- **WHEN** 摄取或重建出错
+- **THEN** 该文档检索降级为旧索引（或纯 LLM 生成），记录失败并可重试，不阻断主流程
+
 ### Requirement: 本地 Embedding
 系统 SHALL 用 sentence-transformers + BGE 在本地推理生成 embedding，无需外部 API；可经 llm-provider 归一化 embedding 入口切换远端模型，调用方零改动。
 

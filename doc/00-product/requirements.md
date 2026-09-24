@@ -211,9 +211,9 @@
 | CORE-DEP-R1 | 系统 SHALL 支持自托管优先的运行环境：以抽象运行环境（进程级/容器级，不锁定选型）承载 Core-Agent 及子模块，提供环境配置、依赖装配与启动引导，一套部署可在 PC/服务器/边缘设备运行 | P0 | deployment/spec.md |
 | CORE-DEP-R2 | 系统 SHALL 提供发布与升级能力：版本化发布、滚动升级与回滚，升级失败回退到上一可用版本，不处于半升级状态 | P0 | deployment/spec.md |
 | CORE-DEP-R3 | 系统 SHALL 提供健康检查与生命周期管理：暴露探活端点，支持启动/停止/重启，异常时告警或自动恢复 | P0 | deployment/spec.md |
-| CORE-DEP-R6 | 系统 SHALL 在客户端断线或超时后完成会话清理与资源释放，不影响其他并发客户端 | P0 | deployment/spec.md |
 | CORE-DEP-R4 | 系统 SHALL 支持可选云托管 BYOC：允许部署到用户自选云平台，与自托管共享同一部署抽象与配置，不绑定特定云厂商 | P1 | deployment/spec.md |
 | CORE-DEP-R5 | 系统 SHALL 提供 Harness Host 常驻服务形态：单一 Host 进程常驻运行，承载 Core-Agent 内核并作为统一接入端点，支持多个 Web/Desktop 客户端并发接入，各客户端建立独立会话、互不串扰 | P0 | deployment/spec.md |
+| CORE-DEP-R6 | 系统 SHALL 在客户端断线或超时后完成会话清理与资源释放，不影响其他并发客户端 | P0 | deployment/spec.md |
 
 ### 1.21 核心画像（core-profile）
 

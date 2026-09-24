@@ -197,6 +197,74 @@
 | TC-DIST-11 | CORE-DIST-R6 | 两设备 NAT 打洞成功 | 走直连传输；失败回退 relay，上层 A2A 行为不变 |
 | TC-DIST-12 | CORE-DIST-R7 | A2A Server 收到需底层工具完成的任务 | 经 MCP 调用工具/数据源完成，再经 A2A 回传 |
 
+## 19. 检索增强生成（TC-RAG）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-RAG-01 | CORE-RAG-R1 | 知识文档完成 embedding 后写入向量库 | 向量落盘于本地 SQLite 向量扩展，无需独立服务或外部向量数据库 |
+| TC-RAG-02 | CORE-RAG-R2 | 导入一份知识文档经摄取管线处理 | 文档被分块、逐块生成 embedding 并建立向量索引，可被检索 |
+| TC-RAG-03 | CORE-RAG-R2 | 源文档变更导致 hash 不一致 | 触发受影响块增量重建，期间该文档检索降级为旧索引 |
+| TC-RAG-04 | CORE-RAG-R3 | 一段文本经本地 embedding 生成 | 由本地 sentence-transformers + BGE 推理完成，不请求外部 embedding API |
+| TC-RAG-05 | CORE-RAG-R3 | 经 llm-provider 归一化入口请求远端 embedding 模型 | 无缝切换到远端模型，检索与调用方无感知 |
+| TC-RAG-06 | CORE-RAG-R4 | 执行语义检索 | 返回按向量相似度排序的 top-k 片段及相关度得分 |
+| TC-RAG-07 | CORE-RAG-R5 | 将检索片段注入生成请求 | 片段经 context 装配器按预算裁剪后注入提示词，由 llm-provider 生成 |
+| TC-RAG-08 | CORE-RAG-R5 | 语义检索无相关片段时构建生成请求 | 降级为纯 LLM 生成，不阻断流程 |
+| TC-RAG-09 | CORE-RAG-R6 | 一次查询同时涉及知识文档与代码结构 | 文档语义检索走 RAG，代码结构理解走 codebase-memory-mcp，互不重叠 |
+
+---
+
+## 20. 版本控制（TC-GIT）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-GIT-01 | CORE-GIT-R1 | 工作区有改动时执行 commit | 改动提交到本地仓库并生成 commit 记录 |
+| TC-GIT-02 | CORE-GIT-R1 | 存在多分支时执行 checkout/merge | 工作区切换/合并完成，冲突时明确报告冲突点 |
+| TC-GIT-03 | CORE-GIT-R2 | 试图修改 .git 内部文件 | 默认拒绝并提示风险，经显式确认或审批后才允许 |
+| TC-GIT-04 | CORE-GIT-R2 | Git 操作中途失败 | 工作区回滚到操作前状态，不处于半提交/半合并状态 |
+| TC-GIT-05 | CORE-GIT-R3 | 远程操作提供凭据 | 凭据经 keychain 存储，配置与日志不出现明文凭据 |
+| TC-GIT-06 | CORE-GIT-R4 | 请求 force-push 或删除远程分支 | 触发 permission 审批，通过才执行，拒绝则阻断并审计 |
+| TC-GIT-07 | CORE-GIT-R5 | 远程操作因网络缓慢超过超时阈值 | 中止操作并返回超时错误，不无限挂起 |
+| TC-GIT-08 | CORE-GIT-R5 | 远程操作认证失败（凭据过期/无权限） | 明确报错并提示原因，不泄露凭据与私有仓库地址 |
+| TC-GIT-09 | CORE-GIT-R5 | 远程操作因网络抖动中断且可重试 | 按指数退避自动重试，达上限后失败并保持工作区一致 |
+| TC-GIT-10 | CORE-GIT-R5 | 远程操作结束（完成或失败） | 释放底层连接资源，避免连接泄漏 |
+
+---
+
+## 21. 部署与托管（TC-DEP）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-DEP-01 | CORE-DEP-R1 | 已安装 Core-Agent 与依赖的宿主机执行启动引导 | 以自托管运行环境启动并对外提供服务，配置从声明式配置读取 |
+| TC-DEP-02 | CORE-DEP-R1 | 一套环境配置迁移到另一台宿主机 | 复用同一环境配置完成装配与启动，无需修改业务逻辑 |
+| TC-DEP-03 | CORE-DEP-R2 | 发布新版本并执行升级 | 完成滚动升级；失败自动回滚到旧版本，服务不中断或快速恢复 |
+| TC-DEP-04 | CORE-DEP-R3 | 探活发现实例异常或不可用 | 触发告警或自动恢复，启动/停止/重启生命周期操作正常 |
+| TC-DEP-05 | CORE-DEP-R4 | 将本地自托管的 Core-Agent 部署到自有云平台（BYOC） | 复用同一环境配置与部署抽象运行，自托管与云托管行为一致 |
+| TC-DEP-06 | CORE-DEP-R5 | 多个 Web/Desktop 客户端经统一 API 连接常驻 Harness Host | 各客户端建立独立会话并可并发，互不串扰 |
+| TC-DEP-07 | CORE-DEP-R5 | 任一客户端经统一接入端点连接 Host | 建立会话，无需各自拉起后端进程 |
+| TC-DEP-08 | CORE-DEP-R6 | 已接入客户端网络断线或异常退出 | Host 检测后清理该客户端会话与连接资源，不影响其他客户端 |
+| TC-DEP-09 | CORE-DEP-R6 | 客户端长时间无活动超过超时阈值 | 判定连接失效并释放会话与连接资源，避免资源泄漏 |
+
+---
+
+## 22. 核心画像（TC-PROF）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-PROF-01 | CORE-PROF-R1 | 主目录存在 `~/.core/Core.md` 时启动 | 读取并加载该文件的人格、宪法与全局规则预设 |
+| TC-PROF-02 | CORE-PROF-R1 | 项目根目录存在 `Core.md` 时载入项目 | 读取并加载该文件的项目信息预设 |
+| TC-PROF-03 | CORE-PROF-R2 | 装配 LoopContext 时注入「宪法与全局规则」分区 | 作为 constitution:v1 coeffect 注入，作为必保约束参与执行 |
+| TC-PROF-04 | CORE-PROF-R2 | 处理「人格」分区 | 落入 L0 记忆层，作为元策略与人格预设参与决策 |
+| TC-PROF-05 | CORE-PROF-R3 | cwd 位于项目子目录且项目根存在 Core.md | 向上逐级查找并命中最靠近的项目根 Core.md，注入项目信息 |
+| TC-PROF-06 | CORE-PROF-R3 | cwd 向上到文件系统根均无 Core.md | 不注入项目级内容，仅用全局级预设且不报错 |
+| TC-PROF-07 | CORE-PROF-R4 | 全局级与项目级对同一配置项给出不同值 | 项目级值生效，覆盖全局级值 |
+| TC-PROF-08 | CORE-PROF-R4 | 仓库同时存在 CLAUDE.md 与 Core.md | 仅读取 Core.md 作为自身预设，不加载 CLAUDE.md，互不干扰 |
+| TC-PROF-09 | CORE-PROF-R5 | Core.md 不存在时执行读取 | 静默降级，按无该级别预设继续运行，不报错 |
+| TC-PROF-10 | CORE-PROF-R5 | Core.md 分区标记格式非法 | 记录告警并跳过非法分区，加载其余合法分区，不阻断启动或载入 |
+| TC-PROF-11 | CORE-PROF-R6 | 参照题词规范编写「宪法与全局规则」分区条目 | 每条以命令式「必须/禁止」表述且可判定真伪，可直接注入执行 |
+| TC-PROF-12 | CORE-PROF-R6 | 参照题词规范填写人格/项目信息分区 | 人格按身份/工作风格/沟通风格/决策偏好/边界意识结构化，篇幅受控 |
+| TC-PROF-13 | CORE-PROF-R7 | 参照全局级题词模板新建 `~/.core/Core.md` | 产出含「宪法与全局规则」「人格」两分区，分别落 coeffect 与 L0 |
+| TC-PROF-14 | CORE-PROF-R7 | 参照项目级题词模板新建项目 `Core.md` | 产出含「项目信息」分区，落入 ContextEngine 注入上下文 |
+
 ---
 
 ## 关联

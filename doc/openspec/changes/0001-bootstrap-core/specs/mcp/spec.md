@@ -16,6 +16,16 @@ MCP（Model Context Protocol）集成层为智能体接入外部模型上下文�
 - **WHEN** 检测到断线
 - **THEN** 按退避策略重连，重连期间相关工具标记不可用
 
+#### Scenario: 心跳保活
+- **GIVEN** 一个已建立但空闲的 MCP 连接
+- **WHEN** 连接进入空闲期
+- **THEN** 按固定间隔发送心跳探测，无响应则判定失效并触发重连，避免半开连接长期占用
+
+#### Scenario: 连接关闭与资源释放
+- **GIVEN** MCP 服务端注销或连接关闭
+- **WHEN** 触发关闭
+- **THEN** 释放该连接占用的会话、socket 与缓冲资源，无泄漏，相关工具标记不可用
+
 ### Requirement: 工具/资源发现
 系统 SHALL 把 MCP 暴露的工具/资源动态映射进本地工具集合。
 
@@ -41,3 +51,4 @@ MCP（Model Context Protocol）集成层为智能体接入外部模型上下文�
 - **GIVEN** MCP 服务端超时/崩溃
 - **WHEN** 调用失败
 - **THEN** 返回 `MCP_UNAVAILABLE`，熔断该 MCP，不影响其他工具
+

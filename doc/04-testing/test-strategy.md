@@ -96,9 +96,9 @@ CORE-Harness 的 L0 基底提供**可逆效应追踪**：一切写操作先记�
 | CORE-DIST（分布式协作） | CORE-DIST-R1~7 | 集成：A2A 双向互调 / AgentCard 发现与签名 / 三种协议绑定 / 四类设备拓扑角色；安全：最小权限 scope 鉴权；E2E：跨设备委派单轮 loop | TC-DIST-01~12 |
 
 
-### 4.2 模块覆盖矩阵（19 模块，NFR 另计）
+### 4.2 模块覆盖矩阵（21 模块，NFR 另计）
 
-与 `test-plan.md` §2 对齐：全部 19 个业务模块均有需求与用例覆盖，NFR 专项另计。
+与 `test-plan.md` §2 对齐：全部 21 个业务模块均有需求与用例覆盖，NFR 专项另计。
 
 | 模块 | 需求 | 测试层级 | 用例组 |
 |---|---|---|---|
@@ -106,21 +106,23 @@ CORE-Harness 的 L0 基底提供**可逆效应追踪**：一切写操作先记�
 | CORE-LOOP（智能体循环） | CORE-LOOP-R1~R4 | 集成 + BDD | TC-LOOP-* |
 | CORE-MEM（分层记忆） | CORE-MEM-R1~R4 | 单元 + 集成 + 留出 | TC-MEM-* |
 | CORE-TOOL（工具使用） | CORE-TOOL-R1~R4 | 单元 + 集成 | TC-TOOL-* |
-| CORE-MCP（MCP 集成） | CORE-MCP-R1~R4 | 集成 + E2E | TC-MCP-* |
+| CORE-MCP（MCP 集成） | CORE-MCP-R1~R9 | 集成 + E2E | TC-MCP-* |
 | CORE-EVO（进化引擎） | CORE-EVO-R1~R4 | 集成 + 留出 | TC-EVO-* |
 | CORE-PERM（权限与审批管控） | CORE-PERM-R1~R4 | 单元 + 集成 + 安全 | TC-PERM-* |
-| CORE-ORCH（任务编排） | CORE-ORCH-R1~R4 | 集成 + E2E | TC-ORCH-* |
-| CORE-OBS（可观测性） | CORE-OBS-R1~R4 | 单元 + 集成 + 专项 | TC-OBS-* |
+| CORE-ORCH（任务编排） | CORE-ORCH-R1~R7 | 集成 + E2E | TC-ORCH-* |
+| CORE-OBS（可观测性） | CORE-OBS-R1~R5 | 单元 + 集成 + 专项 | TC-OBS-* |
 | CORE-CONS（约束与容错） | CORE-CONS-R1~R4 | 单元 + 集成 | TC-CONS-* |
-| CORE-SKILL（技能封装） | CORE-SKILL-R1~R4 | 单元 + 集成 + 留出 | TC-SKILL-* |
+| CORE-SKILL（技能封装） | CORE-SKILL-R1~R5 | 单元 + 集成 + 留出 | TC-SKILL-* |
 | CORE-CTX（上下文工程） | CORE-CTX-R1~R4 | 单元 + 集成 | TC-CTX-* |
-| CORE-UI（前端） | CORE-UI-R1~R6 | 集成 + E2E | TC-UI-* |
+| CORE-UI（前端） | CORE-UI-R1~R9 | 集成 + E2E | TC-UI-* |
 | CORE-IM（IM 网关） | CORE-IM-R1~R6 | 集成 + E2E + 安全 | TC-IM-* |
-| CORE-LLM（三方模型归一化） | CORE-LLM-R1~R5 | 单元 + 集成 | TC-LLM-* |
+| CORE-LLM（三方模型归一化） | CORE-LLM-R1~R6 | 单元 + 集成 | TC-LLM-* |
 | CORE-COMP（组合与分发） | CORE-COMP-R1~R4 | 单元 + 集成 | TC-COMP-* |
-| CORE-DIST（分布式协作） | CORE-DIST-R1~R7 | 集成 + E2E + 安全 | TC-DIST-* |
+| CORE-DIST（分布式协作） | CORE-DIST-R1~R8 | 集成 + E2E + 安全 | TC-DIST-* |
 | CORE-RAG（检索增强生成） | CORE-RAG-R1~R6 | 单元 + 集成 | TC-RAG-* |
-| CORE-GIT（版本控制） | CORE-GIT-R1~R4 | 单元 + 集成 + 安全 | TC-GIT-* |
+| CORE-GIT（版本控制） | CORE-GIT-R1~R5 | 单元 + 集成 + 安全 | TC-GIT-* |
+| CORE-DEP（部署与托管） | CORE-DEP-R1~R6 | 单元 + 集成 + E2E | TC-DEP-* |
+| CORE-PROF（核心画像） | CORE-PROF-R1~R7 | 单元 + 集成 | TC-PROF-* |
 | CORE-NFR（NFR，另计） | CORE-NFR-* | 专项（性能/安全/可观测） | TC-NFR-* |
 
 ---

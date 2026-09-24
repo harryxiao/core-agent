@@ -28,8 +28,15 @@ UI 界面与启动模式是 core-agent 面向用户的统一呈现层：CLI / We
 - **WHEN** 系统持久化配置
 - **THEN** key 存储在本地受保护配置文件中，不入库、不进遥测
 
+#### Scenario: 密钥持久化失败
+- **GIVEN** 系统持久化 LLM API key 时发生磁盘写满或权限不足
+- **WHEN** 保存配置失败
+- **THEN** 回滚本次配置变更并提示用户，不留下半写状态，密钥不进入错误日志
+
 ### Requirement: CLI 友好交互
 系统 SHALL 在 CLI 模式提供声明式、响应式的终端交互（折叠块、流式输出、多面板、焦点管理），复刻 Claude Code 式 Ink 体验。
+
+实现：Textual（Python 原生）
 
 #### Scenario: 流式输出
 - **GIVEN** 内核产生分片回复
@@ -44,13 +51,22 @@ UI 界面与启动模式是 core-agent 面向用户的统一呈现层：CLI / We
 ### Requirement: Web 界面访问
 系统 SHALL 支持以 HTTP 服务 + 单页应用（SPA）形式提供 Web 界面，流式输出通过 SSE 推送。
 
+实现：Svelte SPA
+
 #### Scenario: 浏览器访问
 - **GIVEN** 用户启动 Web 模式
 - **WHEN** 浏览器打开服务地址
 - **THEN** 加载 SPA，可发起会话并实时看到流式回复
 
+#### Scenario: SSE 断线重连
+- **GIVEN** Web 会话的 SSE 流式连接因网络抖动或服务端重启而断开
+- **WHEN** 连接中断
+- **THEN** 客户端按指数退避自动重连并恢复流式推送，期间以心跳探测连接存活，避免流式输出卡死
+
 ### Requirement: 桌面打包
 系统 SHALL 支持将桌面端打包为可执行安装文件（Windows / macOS / Linux），并内置拉起本地后端的能力。
+
+实现：Tauri 壳 + sidecar
 
 #### Scenario: 安装包运行
 - **GIVEN** 用户安装桌面安装包
@@ -64,3 +80,4 @@ UI 界面与启动模式是 core-agent 面向用户的统一呈现层：CLI / We
 - **GIVEN** 同一版本的 Web 与桌面端
 - **WHEN** 打开同一功能页面
 - **THEN** 二者界面与交互完全一致
+

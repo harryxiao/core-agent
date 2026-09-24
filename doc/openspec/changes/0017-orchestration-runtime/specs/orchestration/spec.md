@@ -20,6 +20,11 @@
 - **WHEN** 调度并行扇出
 - **THEN** 分批执行，同时并行数不超过上限
 
+#### Scenario: fan-out 幂等派发
+- **GIVEN** 同一子任务因重试或网络抖动被重复派发
+- **WHEN** fan-out 调度收到重复派发请求
+- **THEN** 按子任务唯一标识去重，同一子任务仅执行一次，重复派发被忽略
+
 ### Requirement: 目标监控
 系统 SHALL 用 Goal 与 SuccessCriteria（SMART：具体/可度量/可达成/相关/有时限）定义任务级成功标准，子任务验收标准对齐父目标，并由 ProgressTracker 追踪每子任务进度与整体目标推进，进度未达标时触发重试或重规划。
 

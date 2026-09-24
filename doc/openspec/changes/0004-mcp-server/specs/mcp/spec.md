@@ -10,8 +10,8 @@ MCP Server 模式让 core-agent 以 MCP server 身份对外暴露 L1 工具与�
 - **WHEN** 完成 initialize 握手
 - **THEN** 返回可用工具列表并可调用
 
-#### Scenario: HTTP/SSE 远程挂载
-- **GIVEN** core-agent MCP server 以 HTTP/SSE 启动
+#### Scenario: Streamable HTTP 远程挂载
+- **GIVEN** core-agent MCP server 以 Streamable HTTP 启动
 - **WHEN** 外部客户端连接并握手
 - **THEN** 建立会话并返回工具列表
 
@@ -53,3 +53,4 @@ MCP Server 模式让 core-agent 以 MCP server 身份对外暴露 L1 工具与�
 - **GIVEN** 某客户端异常/崩溃
 - **WHEN** 其调用失败
 - **THEN** 熔断该连接，不影响其他客户端与主循环
+

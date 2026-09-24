@@ -41,3 +41,4 @@ LLM Provider（三方大模型归一化接入）让 core-agent 通过统一 LLMP
 - **GIVEN** 任意一次模型调用
 - **WHEN** 调用结束
 - **THEN** 审计记录标注 provider / model 与结果，可追溯
+
