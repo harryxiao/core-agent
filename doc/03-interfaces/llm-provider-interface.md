@@ -13,9 +13,13 @@ class LLMProvider(ABC):
     def completion(self, request: LLMRequest) -> LLMResponse: ...
     def stream(self, request: LLMRequest) -> Iterator[LLMChunk]: ...
     def embedding(self, texts: list[str]) -> list[Embedding]: ...
+
+    async def acompletion(self, request: LLMRequest) -> LLMResponse: ...
+    async def astream(self, request: LLMRequest) -> AsyncIterator[LLMChunk]: ...
+    async def aembedding(self, texts: list[str]) -> list[Embedding]: ...
 ```
 
-- 三入口：`completion`（同步补全）/ `stream`（流式补全）/ `embedding`（向量化）。
+- 六入口：`completion` / `stream` / `embedding`（同步）+ `acompletion` / `astream` / `aembedding`（异步）；异步为主、同步为薄壳（内部 `asyncio.run` 桥接），支持事件循环内非阻塞与真并发。
 - 调用方（内核 loop 及所有消费方）只面向此接口，替换实现零改动。
 
 ---
@@ -68,6 +72,18 @@ class LiteLLMProvider(LLMProvider):
 
     def embedding(self, texts: list[str]) -> list[Embedding]:
         # 委托 litellm.embedding
+        ...
+
+    async def acompletion(self, request: LLMRequest) -> LLMResponse:
+        # 委托 litellm.acompletion，映射请求模型 + 归一化协议差异
+        ...
+
+    async def astream(self, request: LLMRequest) -> AsyncIterator[LLMChunk]:
+        # 委托 litellm.acompletion(stream=True)，逐块产出
+        ...
+
+    async def aembedding(self, texts: list[str]) -> list[Embedding]:
+        # 委托 litellm.aembedding
         ...
 ```
 

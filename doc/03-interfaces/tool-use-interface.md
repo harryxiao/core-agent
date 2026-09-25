@@ -29,6 +29,9 @@ class ToolProvider:
 
     def invoke(self, tool_id: str, args: dict, *, trace_id: str) -> ToolResult:
         """统一调用入口：schema 校验 → coeffect 解析 → 确认门 → 执行 → 效应记录。"""
+
+    async def ainvoke(self, tool_id: str, args: dict, *, trace_id: str) -> ToolResult:
+        """异步统一调用入口：与 invoke 同构，事件循环内非阻塞，支持真并发执行。"""
 ```
 
 `ToolResult`：

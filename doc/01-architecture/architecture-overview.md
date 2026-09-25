@@ -108,7 +108,7 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
    ─► Loop.remember ─► MemoryStore.write ─► Telemetry.emit(trace) ─► 下一轮
 ```
 
-> **执行模型**：当前 MVP 内核执行链（热路径）为**同步实现**；异步化能力（`ainvoke` 变体）作为预留接口，待实现期/真并发需求出现时再落地（论证见 ADR-0021）。
+> **执行模型**：异步契约已定义（`acompletion` / `ainvoke` / `arun` / `astream` + `LoopEvent` 流式事件），sync 接口为薄壳（内部 `asyncio.run` 包装）；真并发/流式编排需求由异步接口承载（论证见 ADR-0033）。
 
 ### 4.2 任务编排路径（长任务）
 

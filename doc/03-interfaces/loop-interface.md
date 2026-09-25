@@ -17,6 +17,12 @@ class LoopPlugin(Plugin):
 
     def run(self, user_input: str) -> LoopResult:
         """执行一轮完整闭环：感知 → 推理 → 行动 → 记忆。"""
+
+    async def arun(self, user_input: str) -> LoopResult:
+        """异步执行入口：与 run 同构，事件循环内非阻塞，可并发驱动多个循环。"""
+
+    def astream(self, user_input: str) -> AsyncIterator[LoopEvent]:
+        """流式执行入口：按生命周期顺序产出 LoopEvent 事件流。"""
 ```
 
 默认实现 `DefaultLoop`（骨架见 `02-modules/loop.md` 第 4 章）：
@@ -51,6 +57,11 @@ class DefaultLoop(Plugin):
 class LoopResult:
     reply: str                  # 最终回复
     trace_id: str               # 本轮追溯 ID（贯穿日志/效应/记忆）
+
+@dataclass
+class LoopEvent:
+    type: str                   # loop_started / step_completed / reply_delta / loop_finished / loop_failed
+    payload: Any                # 事件负载（delta token / step 结果 / 终态原因）
 
 @dataclass
 class LoopContext:
