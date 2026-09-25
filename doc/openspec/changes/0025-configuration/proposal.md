@@ -12,15 +12,15 @@
 - **IM 接入配置**：账户/ID/密钥接入信息；密钥经 env/keychain，不入 yaml 明文（决策 3A）。
 - **密钥分级与安全**：敏感密钥不入 yaml 明文，日志/报错脱敏。
 - **配置校验与生效**：schema 校验、变更即生效、失败回滚不留半写状态。
-- **03-interfaces**：configuration 照 durability 先例只建单 spec.md，不单独建 03-interfaces/configuration-interface.md（配置语义已内嵌 spec）。
+- **03-interfaces**：新建 `03-interfaces/configuration-interface.md`，固化配置实体签名（照 durability 先例：spec.md + interface 双文档）。
 - **adr.md**：追加 ADR-0034（configuration 为独立横切能力 + 单一 config.yaml 收口 + 密钥 env/keychain 分级的决策）。
 - **architecture-overview.md**：横切能力计数 4→5 及横切行/横切表/核心组件表/运行时视图/部署树共 6 处同步。
 - **开发工具链落地**：ruff（lint+format）+ pyright（typecheck）+ pre-commit + GitHub Actions CI（lint/typecheck/test/openspec validate）配套落地。
 
 ## Impact
 
-- **Affected specs**：`configuration`（新增，第 23 spec，单 spec.md）；配置语义为 `llm-provider`/`ui`/`im`/`git` 提供挂载点引用（仅语义引用，不修改既有 spec）
-- **Affected docs**：`00-product/requirements.md`（+1.23 配置管理）、`01-architecture/architecture-overview.md`（横切计数 4→5 + ASCII 横切行 + 横切能力表 + 核心组件表 + 运行时视图 + 部署树，共 6 处）、`01-architecture/adr.md`（+ADR-0034）、`00-product/design-completeness-eval.md`（模块计数 22→23）、`changes/0006-llm-provider/design.md`（关闭 Open Question）
+- **Affected specs**：`configuration`（新增，第 23 spec，spec.md + configuration-interface.md 双文档）；配置语义为 `llm-provider`/`ui`/`im`/`git` 提供挂载点引用（仅语义引用，不修改既有 spec）
+- **Affected docs**：`03-interfaces/configuration-interface.md`（新建）、`00-product/requirements.md`（+1.23 配置管理）、`01-architecture/architecture-overview.md`（横切计数 4→5 + ASCII 横切行 + 横切能力表 + 核心组件表 + 运行时视图 + 部署树，共 6 处）、`01-architecture/adr.md`（+ADR-0034）、`00-product/design-completeness-eval.md`（模块计数 22→23）、`changes/0006-llm-provider/design.md`（关闭 Open Question）
 - **Affected code**：无（架构设计与设计文档落地；工程实现依赖后续任务）
 - **Dependencies**：ADR 编号=当前最大+1（0034）；横切能力计数 4→5；specs 22→23 需同步 requirements.md 1.x 清单与 design-completeness-eval.md「N 模块」数字口径；不引入新框架
 
