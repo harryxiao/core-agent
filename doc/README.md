@@ -55,9 +55,11 @@ doc/
 │   ├── permission.md              权限与审批管控（横切策略层：分级/审批/沙箱）
 │   ├── constraints.md             约束与容错（横切：校验/熔断/重试中间件）
 │   ├── observability.md           可观测性（横切：日志/指标/追踪/审计）
+│   ├── durability.md              持久性与恢复（横切：checkpoint/崩溃恢复/回滚）
 │   ├── llm-provider.md            三方 LLM 归一化接入（LLMProvider 抽象 + LiteLLM 默认实现）
 │   ├── core-profile.md            Core.md 灵魂文件（两级：~/.core/Core.md 人格/宪法 + <project>/Core.md 项目信息）
-│   └── composition.md             组合与分发（L5：profile 命名组合 / bundle 分发 / patch 覆盖）
+│   ├── composition.md             组合与分发（L5：profile 命名组合 / bundle 分发 / patch 覆盖）
+│   └── deployment.md              部署与托管（运行与发布：进程/容器 + 自托管/BYOC + 升级回滚）
 │
 ├── 03-interfaces/                 【接口设计层】
 │   ├── plugin-registry-interface.md        插件契约（trait/lifecycle/reversible effect/coeffect）
@@ -71,6 +73,7 @@ doc/
 │   ├── permission-interface.md    权限判定/审批/沙箱接口
 │   ├── constraints-interface.md   约束中间件接口
 │   ├── observability-interface.md 日志/指标/追踪接口
+│   ├── durability-interface.md    持久性接口（checkpoint/恢复/回滚/快照）
 │   ├── llm-provider-interface.md  三方 LLM 归一化调用接口（completion/stream/embedding）
 │   ├── composition-interface.md   组合分发接口（解析 / 打包 / 编排 / 分发）
 │   ├── loop-interface.md          智能体循环插件契约（coeffect + run）
@@ -125,6 +128,7 @@ doc/
     │   ├── permission/spec.md
     │   ├── constraints/spec.md
     │   ├── observability/spec.md
+    │   ├── durability/spec.md
     │   ├── ui/spec.md
     │   ├── im/spec.md
     │   ├── llm-provider/spec.md

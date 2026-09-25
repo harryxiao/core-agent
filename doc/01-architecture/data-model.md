@@ -108,6 +108,7 @@
 | Middleware / ExecContext | 约束与容错中间件 | constraints-interface.md |
 | MCPEndpoint / RemoteTool | MCP 外部能力 | mcp-interface.md |
 | IMProvider / Message | IM 入站消息归一化 | im-interface.md |
+| Checkpoint / Snapshot / RestoreHandle / RetentionPolicy | 执行态持久化（检查点/快照/恢复/保留） | durability-interface.md |
 
 ---
 

@@ -10,7 +10,7 @@
 
 CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**架构。核心只有一层薄薄的
 "组合基底"（L0），其余——循环、记忆、进化引擎、模型适配器——**全部是插件**，可在运行时替换。
-在分层主链之外，另有 **3 个横切能力**（权限、约束、可观测）贯穿所有层，统一收口安全与质量。
+在分层主链之外，另有 **4 个横切能力**（权限、约束、可观测、持久性）贯穿所有层，统一收口安全与质量。
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -42,7 +42,7 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
    MCP Client ──────────── 外部能力（tools/resources/prompts）────────
    ═══════════════════════════════════════════════════════════════════
    横切能力（Crosscutting，贯穿 L0–L5）
-   permission 权限/审批/沙箱 · constraints 约束/熔断 · observability 日志/指标/追踪
+   permission 权限/审批/沙箱 · constraints 约束/熔断 · observability 日志/指标/追踪 · durability 持久性/恢复/回滚
 ```
 
 ---
@@ -68,6 +68,7 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
 | 权限与审批 permission | 分级权限（只读/数据编辑/高危）、高危默认拦截、人工审批流、沙箱隔离 |
 | 约束与容错 constraints | schema 校验、熔断/降级/重试等横切中间件 |
 | 可观测性 observability | 结构化日志、指标聚合、trace 追踪、审计，统一供给进化与审批 |
+| 持久性 durability | 检查点快照、崩溃恢复、时间旅行回滚、保留策略 |
 
 **关键约束**：依赖方向**只向下**（L4 → L3 → L2 → L1 → L0），禁止向上依赖；跨层交互一律通过 L0 的注册表/事件总线解耦；横切能力通过 L0 的中间件/切面机制注入，不产生层间硬依赖。
 
@@ -92,6 +93,7 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
 | ConstraintMiddleware | 横切 | 校验/熔断中间件链 | constraints-interface.md |
 | Telemetry | 横切 | 日志/指标/trace/审计 | observability-interface.md |
 | MCPClient | 横切 | 消费外部 MCP server | mcp-interface.md |
+| CheckpointManager / CrashRecovery / TimeTravel / RetentionManager | 横切 | 执行态持久化/恢复/回滚/保留 | durability-interface.md |
 
 ---
 
@@ -143,6 +145,7 @@ MVP 采用**单进程**：主循环线程 + 记忆/进化后台任务 + MCP 传�
 │  ├─ Orchestrator (L3.5, 任务队列)                                       │
 │  ├─ EvolutionWorker (L4, 后台，低优先级)                                 │
 │  ├─ PermissionGuard / ConstraintMiddleware / Telemetry (横切)           │
+│  ├─ DurabilityManager (横切)                                            │
 │  └─ MCPClient (横切, stdio/HTTP 子进程或连接)                            │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -168,6 +171,7 @@ core-agent/                      # 仓库根
 │   ├── permission/              # 横切：权限与审批
 │   ├── constraints/             # 横切：约束与容错
 │   ├── observability/           # 横切：可观测性
+│   ├── durability/              # 横切：持久性
 │   └── mcp/                     # MCP 集成
 └── tests/                       # 测试（对齐 04-testing）
 ```

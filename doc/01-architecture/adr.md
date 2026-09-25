@@ -249,6 +249,15 @@
 
 ---
 
+## ADR-0032：独立持久性能力（Durability Capability）
+
+- **状态**：Accepted（2026-09-25）
+- **上下文**：orchestration 的任务级断点续跑、loop 的多轮推理-行动闭环，都使执行态面临"进程崩溃即前功尽弃"的脆弱性；tool-use 已有 EffectId undo 栈（时间旅行），但 checkpoint（检查点快照）、crash recovery（崩溃恢复）、retention（保留策略）散落无统一归口，缺少独立的能力抽象与可寻址快照入口。
+- **决策**：新增独立 durability capability（横切层），统一提供 checkpoint 检查点快照、crash recovery 崩溃恢复、time-travel 时间旅行回滚、retention 保留策略；复用 orchestration 断点续跑与 tool-use EffectId undo 栈作为既有挂载点，不重复造轮子。
+- **后果**：✅ 执行态可保存/可恢复/可回滚，长时程任务不再前功尽弃；⚠️ 检查点持久化引入存储配额与 I/O 开销，须按保留策略清理，且落盘故障须降级为内存环形缓冲、不阻塞主循环。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -275,3 +284,4 @@
 | ADR-0029 | 02-modules/core-profile.md |
 | ADR-0030 | 02-modules/orchestration.md |
 | ADR-0031 | 02-modules/deployment.md |
+| ADR-0032 | 02-modules/durability.md |
