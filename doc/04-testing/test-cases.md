@@ -265,6 +265,17 @@
 | TC-PROF-13 | CORE-PROF-R7 | 参照全局级题词模板新建 `~/.core/Core.md` | 产出含「宪法与全局规则」「人格」两分区，分别落 coeffect 与 L0 |
 | TC-PROF-14 | CORE-PROF-R7 | 参照项目级题词模板新建项目 `Core.md` | 产出含「项目信息」分区，落入 ContextEngine 注入上下文 |
 
+## 23. 技能市场（TC-SKILLHUB）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-SKILLHUB-01 | CORE-SKH-R1 | 调用 SkillHubClient 按关键字搜索市场 | 返回按匹配度排序的 Top-K 技能元数据（不拉取完整技能体） |
+| TC-SKILLHUB-02 | CORE-SKH-R2 | 下载签名校验通过的技能 | 以 draft 状态注册到 SkillLibrary，不自动启用 |
+| TC-SKILLHUB-03 | CORE-SKH-R4 | 下载签名校验失败的技能 | 拒绝下载并返回 SIGNATURE_INVALID |
+| TC-SKILLHUB-04 | CORE-SKH-R3 | 发布技能并经审核 approved | 状态 published，VersionManager 版本 v1→v2 |
+| TC-SKILLHUB-05 | CORE-SKH-R3 | 发布技能被审核 rejected | 状态回退，允许修改后重传 |
+| TC-SKILLHUB-06 | CORE-SKH-R5 | 指定 source 路由到市场源 | 路由到对应源；源不健康回退官方源；源不存在拒绝路由 |
+
 ---
 
 ## 关联

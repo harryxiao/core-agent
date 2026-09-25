@@ -57,6 +57,7 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
 | L3 | 智能体循环 | 四阶段闭环，把工具/记忆/模型装配成智能体 | L0/L1/L2 |
 | L3 | 上下文工程 | 上下文装配、信息地图、自动压实，控制窗口上界 | L0/L2 |
 | L3 | 技能封装 | 技能库版本/灰度/路由，进化结晶产物的治理与调用面 | L0/L2/L4 |
+| L3 | 技能市场 skillhub | 技能市场管理/下载/发布，签名校验+审核流，对接技能库 | L0/L2/L3（技能封装） |
 | L3.5 | 任务编排 | 任务状态机、子任务拓扑、多 Agent 交接、断点续跑 | L3 |
 | L4 | 进化引擎 | 观测 L3 运行 → 诊断 → 提案 → 验证，结晶产物沉淀至 memory/skills | L0/L1/L2/L3（只读） |
 | L5 | 组合分发 | 把 profile/bundle/patch 打包、版本化、分发 | 全部 |
@@ -96,6 +97,7 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
 | MCPClient | 横切 | 消费外部 MCP server | mcp-interface.md |
 | CheckpointManager / CrashRecovery / TimeTravel / RetentionManager | 横切 | 执行态持久化/恢复/回滚/保留 | durability-interface.md |
 | ConfigManager | 横切 | 配置加载/功能开关/密钥解析 | configuration-interface.md |
+| SkillHubClient/MarketIndex/SkillPublisher/TrustVerifier | L3 | 技能市场管理/下载/发布 | skillhub-interface.md |
 
 ---
 
@@ -171,6 +173,7 @@ core-agent/                      # 仓库根
 │   ├── loop/                    # L3：智能体循环
 │   ├── context/                 # L3：上下文工程
 │   ├── skills/                  # L3：技能封装
+│   ├── skillhub/                # L3：技能市场
 │   ├── orchestration/           # L3.5：任务编排
 │   ├── evolution/               # L4：进化引擎
 │   ├── permission/              # 横切：权限与审批

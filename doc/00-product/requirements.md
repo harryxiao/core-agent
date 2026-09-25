@@ -247,6 +247,16 @@
 | CORE-CFG-R5 | 系统 SHALL 支持 IM 模块（账户 / ID / 密钥）接入信息配置，密钥经 env / keychain 引用，不落明文 | P0 | configuration/spec.md |
 | CORE-CFG-R6 | 系统 SHALL 对配置做 schema 校验，校验通过才生效；变更即生效；写入失败回滚不留半写状态 | P1 | configuration/spec.md |
 
+### 1.24 技能市场（skillhub）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-SKH-R1 | 系统 SHALL 提供市场技能目录，支持按关键字搜索与按源列出；source 参数预留多源扩展，默认官方源 | P1 | skillhub/spec.md |
+| CORE-SKH-R2 | 系统 SHALL 支持技能下载并在下载前校验签名；下载的技能以 draft 状态注册到 SkillLibrary，不自动启用 | P0 | skillhub/spec.md |
+| CORE-SKH-R3 | 系统 SHALL 支持技能发布并经过审核流 uploaded → pending → published/rejected；审核通过后 VersionManager 版本 v1→v2 | P1 | skillhub/spec.md |
+| CORE-SKH-R4 | 系统 SHALL 在签名校验失败时拒绝下载并返回 SIGNATURE_INVALID | P0 | skillhub/spec.md |
+| CORE-SKH-R5 | 系统 SHALL 按 source 路由市场源；源不健康时回退官方源，源不存在时拒绝路由（默认单官方源起步） | P1 | skillhub/spec.md |
+
 ---
 
 ## 2. 非功能需求（Non-Functional Requirements）
