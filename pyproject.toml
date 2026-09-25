@@ -11,6 +11,9 @@ dependencies = [
 dev = [
     "pytest>=8",
     "pytest-bdd>=7",
+    "ruff>=0.6",
+    "pyright>=1.1",
+    "pre-commit>=3",
 ]
 
 [build-system]
@@ -23,3 +26,17 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "basic"

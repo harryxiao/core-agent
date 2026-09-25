@@ -236,6 +236,17 @@
 | CORE-DUR-R3 | 系统 SHALL 支持执行态级时间旅行（time-travel）：将执行态回滚到任意历史检查点，沿快照差异逆序撤销写类工具副作用（复用 tool-use 可逆效应），与副作用级 EffectId undo 栈协同，不新建撤销机制 | P1 | durability/spec.md |
 | CORE-DUR-R4 | 系统 SHALL 支持检查点生命周期管理：按保留策略（retention policy，数量上限/时间窗口/存储配额）自动清理过期检查点，避免无限增长；被标记的关键检查点（pinned）不受自动清理影响 | P1 | durability/spec.md |
 
+### 1.23 配置管理（configuration）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-CFG-R1 | 系统 SHALL 以 config.yaml 为单一配置收口，支持 env 环境变量覆盖与默认值兜底（env > yaml > default），并作为 llm-provider / ui / im / git 配置语义的上层挂载能力 | P0 | configuration/spec.md |
+| CORE-CFG-R2 | 系统 SHALL 将 LLM 配置（provider / model / endpoint / api_key）设为必选项，缺失或非法时阻断启动并报明确错误 | P0 | configuration/spec.md |
+| CORE-CFG-R3 | 系统 SHALL 提供模块级 feature flag 开关（features 段），被关闭的功能模块不加载、不初始化 | P1 | configuration/spec.md |
+| CORE-CFG-R4 | 系统 SHALL 对敏感密钥采用 env / keychain 分级存储：config.yaml 中只允许 `${VAR}` 引用，禁止明文；日志与报错中脱敏 | P0 | configuration/spec.md |
+| CORE-CFG-R5 | 系统 SHALL 支持 IM 模块（账户 / ID / 密钥）接入信息配置，密钥经 env / keychain 引用，不落明文 | P0 | configuration/spec.md |
+| CORE-CFG-R6 | 系统 SHALL 对配置做 schema 校验，校验通过才生效；变更即生效；写入失败回滚不留半写状态 | P1 | configuration/spec.md |
+
 ---
 
 ## 2. 非功能需求（Non-Functional Requirements）

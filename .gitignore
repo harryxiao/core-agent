@@ -33,3 +33,9 @@ Thumbs.db
 
 # Temporary planning dirs (excluded from commits)
 plan_*/
+
+# Local configuration & secrets (never commit)
+config.local.yaml
+*.local.*
+*.key
+src/*.egg-info/

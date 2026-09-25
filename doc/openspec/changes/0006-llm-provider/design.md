@@ -29,5 +29,5 @@ core-agent 内核 loop 需要调用大模型，但尚无统一 LLM 接入层，�
 ## Open Questions
 
 - 初版是否三入口（completion / stream / embedding）全覆盖，还是先 completion + stream。
-- 模型配置是并入 config.yaml，还是独立 llm.yaml 配置块。
+- 模型配置并入 config.yaml（**已决**，见 change 0025-configuration / ADR-0034），不再保留独立 llm.yaml 配置块。
 - 是否支持多 Provider 按模型前缀路由（如 `deepseek/*` 走 A、`gpt-*` 走 B）。

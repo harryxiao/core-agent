@@ -2,7 +2,7 @@
 
 > 评估时间：2026-09-20
 > 评估对象：Core-Agent SDD 文档体系（`doc/` 全量）
-> ⚠️ 本评估基于**补齐前 17-capability 基线**；补齐后为 **22 capability**（新增 `rag`、`git`、`deployment`、`core-profile`、`durability`），详见 §4.2「缺口排序与补齐路线」
+> ⚠️ 本评估基于**补齐前 17-capability 基线**；补齐后为 **23 capability**（新增 `rag`、`git`、`deployment`、`core-profile`、`durability`、`configuration`），详见 §4.2「缺口排序与补齐路线」
 > 数据基线：既有架构审计报告（17 capability / 10章105篇 / 15接口 / 9 change / 23 ADR）+ 本轮横向调研
 > 调研方法：开源框架取 GitHub README 实证；闭源产品取公开文档与业界共识（官网 JS 渲染，正文不可 fetch）
 
@@ -15,20 +15,20 @@
 2. 相对主流 Agent 产品处于什么位置；
 3. SDD 文档的功能设计是否「全面」。
 
-功能设计全貌取自 `requirements.md` 22 模块 + `openspec/specs/*` 22 capability（Purpose/Requirements 已逐一核对），对比基线为 5 个开源框架 + 4 个闭源产品 + 2 个自托管个人助理（OpenClaw/Hermes）。
+功能设计全貌取自 `requirements.md` 23 模块 + `openspec/specs/*` 23 capability（Purpose/Requirements 已逐一核对），对比基线为 5 个开源框架 + 4 个闭源产品 + 2 个自托管个人助理（OpenClaw/Hermes）。
 
 ---
 
-## 二、SDD 功能设计全貌：22 capability → 5 大功能域
+## 二、SDD 功能设计全貌：23 capability → 5 大功能域
 
-Core-Agent 的 22 个 capability 按职责收敛为五层，功能面覆盖完整、职责边界清晰：
+Core-Agent 的 23 个 capability 按职责收敛为五层，功能面覆盖完整、职责边界清晰：
 
 | 功能域 | capability | 功能要点 |
 |---|---|---|
 | ① 运行时核心 | loop / orchestration / composition / deployment / core-profile | 观察→推理→行动→记忆稳态循环 + 状态机/子任务拆解/多Agent协同 + 组合代数静态层（无业务逻辑、永不进化）+ 运行环境抽象（进程/容器）/自托管优先+可选云托管 BYOC/生命周期管理 + 两级 Core.md 灵魂文件（~/.core/Core.md 人格/宪法 + <project>/Core.md 项目信息）启动/载入读取注入 |
 | ② 记忆与进化 | memory / context / evolution / skills / rag | L0元策略~L4原始会话光谱 + 动态上下文/信息地图/自动压实 + 结晶经济闭环（采集→结晶→溶解→提案→验证门→评测）+ 技能库/灰度A/B/路由 + 本地向量库语义检索补知识缺口 |
 | ③ 能力接入 | tool-use / plugin-registry / mcp / llm-provider / git | schema化工具+coeffect副作用契约 + 插件注册/依赖/隔离 + MCP双向(client+server) + LiteLLM归一化/可替换 + 版本控制核心操作/高危操作审批链 |
-| ④ 安全横切 | permission / constraints / observability / durability | 分级权限/人工审批/沙箱隔离 + 输入输出校验/容错/压缩中间件 + 日志/指标/链路追踪三信号 + checkpoint/崩溃恢复/回滚 |
+| ④ 安全横切 | permission / constraints / observability / durability / configuration | 分级权限/人工审批/沙箱隔离 + 输入输出校验/容错/压缩中间件 + 日志/指标/链路追踪三信号 + checkpoint/崩溃恢复/回滚 + 配置加载/功能开关/密钥解析 |
 | ⑤ 交互协作 | ui / im / distributed | CLI/Web/Desktop三模统一内核 + 微信/飞书/TG/Discord社交入口 + A2A双向/AgentCard/安全鉴权/多设备拓扑 |
 
 **设计特色**：五层职责单向依赖、横切能力以「中间件」形式插入 loop（权限/约束/观测），是「无特权核心 + 分层插件化」的完整工程化表达。
@@ -110,7 +110,7 @@ Core-Agent 的 22 个 capability 按职责收敛为五层，功能面覆盖完�
 
 | 评估项 | 评级 | 依据 |
 |---|---|---|
-| 架构设计完善度 | **B+** | 五域 22 capability 职责清晰、横切中间件化、入口最全 |
+| 架构设计完善度 | **B+** | 五域 23 capability 职责清晰、横切中间件化、入口最全 |
 | 功能设计全面性 | **A-** | 覆盖 20 个对比维度（原 ○ 的多模态/托管已由 ○→◐ 补齐，无 ○ 残留），进化引擎体系化程度业界最高、记忆光谱/组合代数仍为独有，6 处对比缺口本轮补齐多模态/托管两处 |
 | 相对主流产品定位 | **设计前瞻性领先，工程落地滞后** | 差异化能力多（evolution/光谱记忆/IM/A2A），但 src=0、沙箱/评测/embedding 未落地 |
 | 交付就绪度 | **C** | 纯文档态 |
