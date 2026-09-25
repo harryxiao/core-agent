@@ -98,6 +98,7 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
 | CheckpointManager / CrashRecovery / TimeTravel / RetentionManager | 横切 | 执行态持久化/恢复/回滚/保留 | durability-interface.md |
 | ConfigManager | 横切 | 配置加载/功能开关/密钥解析 | configuration-interface.md |
 | SkillHubClient/MarketIndex/SkillPublisher/TrustVerifier | L3 | 技能市场管理/下载/发布 | skillhub-interface.md |
+| CICDPipeline / ArtifactPublisher | 工程交付 | 质量门禁（lint/typecheck/test/build）+ 制品发布/回滚 | ci-cd-interface.md |
 
 ---
 
@@ -181,6 +182,7 @@ core-agent/                      # 仓库根
 │   ├── observability/           # 横切：可观测性
 │   ├── durability/              # 横切：持久性
 │   ├── configuration/           # 横切：配置
+│   ├── ci-cd/                   # 工程交付：质量门禁 + 制品发布
 │   └── mcp/                     # MCP 集成
 └── tests/                       # 测试（对齐 04-testing）
 ```

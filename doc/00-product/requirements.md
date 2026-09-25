@@ -257,6 +257,13 @@
 | CORE-SKH-R4 | 系统 SHALL 在签名校验失败时拒绝下载并返回 SIGNATURE_INVALID | P0 | skillhub/spec.md |
 | CORE-SKH-R5 | 系统 SHALL 按 source 路由市场源；源不健康时回退官方源，源不存在时拒绝路由（默认单官方源起步） | P1 | skillhub/spec.md |
 
+### 1.25 CI/CD 交付流水线（ci-cd）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-CICD-R1 | 系统 SHALL 提供 lint/typecheck/test/build 四道质量门禁；任一门禁失败阻断交付，门禁实现引用 development-toolchain | P1 | ci-cd/spec.md |
+| CORE-CICD-R2 | 系统 SHALL 提供版本化制品打包与发布通道；制品可追溯、可回滚 | P1 | ci-cd/spec.md |
+
 ---
 
 ## 2. 非功能需求（Non-Functional Requirements）
