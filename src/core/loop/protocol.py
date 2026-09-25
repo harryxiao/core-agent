@@ -6,9 +6,10 @@ typing.Protocol 骨架：只声明方法签名与 docstring，不含实现。
 对应规格：doc/openspec/specs/loop/spec.md
 模块设计：doc/02-modules/loop.md
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 
@@ -16,18 +17,18 @@ from typing import Any, Protocol
 class LoopResult:
     """一轮闭环的最终产物。"""
 
-    reply: str                 # 最终回复
-    trace_id: str              # 本轮追溯 ID（贯穿日志/效应/记忆）
+    reply: str  # 最终回复
+    trace_id: str  # 本轮追溯 ID（贯穿日志/效应/记忆）
 
 
 @dataclass
 class LoopContext:
     """一轮循环中的上下文包（token 有硬上界）。"""
 
-    messages: list[Any]        # 本轮消息流（Message）
-    memory: Any                # 检索结果 + L1 索引（MemoryPack，有 token 上界）
-    tools: list[Any]           # 可调用工具 schema（ToolSchema）
-    trajectory: list[Any]      # 本轮轨迹（Step，供 Remember 写入）
+    messages: list[Any]  # 本轮消息流（Message）
+    memory: Any  # 检索结果 + L1 索引（MemoryPack，有 token 上界）
+    tools: list[Any]  # 可调用工具 schema（ToolSchema）
+    trajectory: list[Any]  # 本轮轨迹（Step，供 Remember 写入）
     reply: str = ""
 
     def done(self) -> bool:
@@ -39,14 +40,14 @@ class LoopContext:
 class Action:
     """模型决策的下一步动作。"""
 
-    is_irreversible: bool = False   # True → 触发确认门
+    is_irreversible: bool = False  # True → 触发确认门
 
 
 @dataclass
 class ActionResult:
     """动作执行结果。"""
 
-    failed: bool = False            # True → 回滚本轮
+    failed: bool = False  # True → 回滚本轮
 
 
 class LoopPlugin(Protocol):
@@ -59,7 +60,10 @@ class LoopPlugin(Protocol):
 
     plugin_id: str = "loop.default"
     coeffects: list[str] = [
-        "model:adapter", "memory:store", "tools:provider", "constitution:v1",
+        "model:adapter",
+        "memory:store",
+        "tools:provider",
+        "constitution:v1",
     ]
 
     def run(self, user_input: str) -> LoopResult:

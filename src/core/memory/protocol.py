@@ -7,9 +7,10 @@ typing.Protocol 骨架：MemoryStore / Crystallizer / MemoryBackend，
 对应规格：doc/openspec/specs/memory/spec.md
 模块设计：doc/02-modules/memory.md
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 Layer = Literal["L0", "L1", "L2", "L3", "L4"]
@@ -24,10 +25,10 @@ class MemoryEntry:
     layer: Layer
     content: str
     tags: list[str]
-    source: str                 # 来源（loop/evolution/user）
+    source: str  # 来源（loop/evolution/user）
     trace_id: str
-    reuse_count: int = 0        # 复用次数（结晶阈值依据）
-    ts: float = 0.0             # 时间戳（接口文档无默认值，骨架补 0.0 以便 dataclass 构造）
+    reuse_count: int = 0  # 复用次数（结晶阈值依据）
+    ts: float = 0.0  # 时间戳（接口文档无默认值，骨架补 0.0 以便 dataclass 构造）
 
 
 class MemoryStore(Protocol):
@@ -77,6 +78,6 @@ class MemoryBackend(Protocol):
 
     def search(self, query: str, layer: Layer | None = None) -> list[MemoryEntry]: ...
 
-    def list_index(self) -> Any: ...          # 返回 IndexEntry
+    def list_index(self) -> Any: ...  # 返回 IndexEntry
 
     def delete(self, entry_id: MemoryId) -> None: ...
