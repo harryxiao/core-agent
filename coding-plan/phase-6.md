@@ -51,6 +51,7 @@
 **启动前核对**（按顺序执行）：
 1. 读 contracts_summary §2（composition）+ §8（distributed）+ §7（deployment）原文。
 2. 核对三者的数据类型（`Profile`/`Bundle`/`PatchSpec`/`ResolvedSet`、`AgentCard`、`RuntimeEnvironment`/`RuntimeConfig`/`DeployTarget`/`ReleaseInfo`/`HealthStatus`）在仓库 interface 中是否已有定义，无定义则先补。
+3. 核对 deployment 的参数/命令面归属：`RuntimeConfig` 参数走 ConfigSpec（M5 全量声明 + core/advanced/hidden 分级），发布升级命令面（publish/upgrade/rollback/status/doctor）复用 cli-ops（M4），不在 deployment 内另起命令解析。
 
 ---
 
@@ -73,6 +74,7 @@
 - `HarnessHost` 常驻 + 多客户端接入统一端点；连接生命周期状态机（accept → sessions → 断线清理 → 超时回收）。
 - `ReleaseManager` 发布升级回滚；`LifecycleController` 健康探活与恢复；`CloudAdapter` 可选云托管 BYOC。
 - `RuntimeEnvironment`/`RuntimeConfig`/`DeployTarget`/`ReleaseInfo`/`HealthStatus` 数据类型落地。
+- 参数/命令面衔接：`RuntimeConfig` 参数走 ConfigSpec（M5 全量声明 + core/advanced/hidden 分级），不散落硬编码；发布升级命令面（publish/upgrade/rollback/status/doctor）复用 cli-ops（M4），不在 deployment 内另起命令解析。
 
 ---
 

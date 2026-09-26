@@ -19,6 +19,8 @@
 
 **命名对齐（已拍板 D2）**：`src/core/substrate/` 是 `context` 历史命名，本 Phase **开工第一步**统一重命名为 `context`，一次性消除漂移（风险清单 #3）。
 
+**额外承接 Phase 2.5 遗留（M3 / M4 代码）**：Phase 2.5 已完成 `0028/0029` 契约全量定稿（含 M3/M4 的 spec），本 Phase 承接其**代码实现**——`M3`（tool-use `install/uninstall/list` 三工具，AI 对话安装通道）+ `M4`（新增横切 cli-ops 命令面收口）。契约以 Phase 2.5 落定的 spec 为准，**本 Phase 不重复改 spec**。
+
 ---
 
 ## 2. 里程碑验收（M2 单 Agent 闭环）
@@ -88,6 +90,22 @@
 - 错误码：`PUBLISH_REJECTED`、`SIGNATURE_INVALID`、`SKILL_NOT_ACTIVE`、`SOURCE_NOT_FOUND`、`SOURCE_UNHEALTHY`
 - 验收重点：签名校验失败拒绝下载、下载默认 draft、发布审核流、多源路由健康回退
 
+### 5.5 M3 — tool-use 插件安装工具（承接 Phase 2.5，契约见 0028）
+
+- 核心类/接口：`InstallTool`、`UninstallTool`、`ListTool`（注册进 tool-use 的 `active_tools()`）
+- 关键方法：`install(source)`、`uninstall(name)`、`list(kind?)`
+- 复用：Phase 2.5 M1 的 `InstallableAsset{kind}` + `PluginSource` 生命周期（`discover → verify → install → register`）
+- 约束：经 SafetyGate + 权限审批流（危险操作走审批，与 Phase 2 permission 已交付链对接）
+- 错误码：`INSTALL_FAILED`、`SOURCE_NOT_FOUND`、`SIGNATURE_INVALID`、`UNINSTALL_NOT_FOUND`
+- 验收重点：AI 对话可驱动 install/uninstall/list 全链路；审批流拦高危；uninstall 走 deactivate→清理无残留
+
+### 5.6 M4 — 新增横切 cli-ops 命令面收口（承接 Phase 2.5，契约见 0029）
+
+- 命令集分组：生命周期 start/stop/restart/kill；状态 status/doctor/logs/version/help；资产 install/uninstall/list/info；连接 mcp add/remove/list；安全 auth/permission-mode；网关 gateway
+- 参数映射：优先级链 `CLI flag > env > config.yaml > 默认值`（复用 Phase 2.5 M5 的 ConfigSpec 单一真源）
+- 前置：M1/M2/M3 的资产命令 + M5 映射模型 + M6 权限开关均已就位
+- 验收重点：命令分组全覆盖；`--foo.bar=value ↔ config.foo.bar ↔ CORE_AGENT_FOO_BAR` 三面一致；暴露面 core/advanced/hidden 分级正确
+
 ---
 
 ## 6. 契约对齐
@@ -130,11 +148,13 @@ pytest -q
 - [ ] 压实测试：超长上下文压实后关键信息仍在
 - [ ] 技能 A/B 测试：B 退化自动回退，路由结果不劣化
 - [ ] 签名测试：篡改签名下载被拒，合法签名通过
+- [ ] M3 安装工具测试：`install` 走 SafetyGate + 审批流；`list` 能列出已装资产；`uninstall` 走 deactivate→清理（契约见 Phase 2.5 0028）
+- [ ] M4 cli-ops 测试：命令分组全覆盖；参数映射优先级链 `CLI > env > yml > 默认` 生效；暴露面 core/advanced/hidden 分级正确（契约见 Phase 2.5 0029）
 
 ---
 
 ## 8. 提交规范
 
-- **一个 Phase 一个 commit**：4 模块 + 门禁全绿后单次提交。
-- commit message 形如：`feat(phase3): context/loop/skills/skillhub 单 Agent 闭环（M2）`
+- **一个 Phase 一个 commit**：4 模块 + M3/M4 承接 + 门禁全绿后单次提交。
+- commit message 形如：`feat(phase3): context/loop/skills/skillhub 单 Agent 闭环（M2）+ M3/M4 安装通道与 cli-ops`
 - 提交后回填 roadmap §3 的 M2 里程碑状态为「完成」，并同步更新 `README.md` Phase 3 行状态。

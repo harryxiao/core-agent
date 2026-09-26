@@ -36,6 +36,7 @@
 - 接口：`UIAPILayer`、`CLIBridge`、`WebBridge`、`DesktopBridge`
 - 方法：`create_session()`、`run_loop()`、`get_memory()`、`compact()`、`list_tools()`、`invoke_tool()`、`get_llm_config()`、`set_llm_config()`、`connect()`、`serve()`、`start_sidecar()`
 - 错误码：**无**（需首步补齐）
+- 命令面边界：运维命令面（status/doctor/logs/install/mcp/auth/gateway）**不并入 ui**，复用 cli-ops（M4 横切能力）；`CLIBridge` 只承载交互会话面（无子命令进 `run_loop()`）。
 
 **im（§12）**：
 - 能力：多平台统一接入、消息驱动会话、分平台接入、身份白名单、安全透传、会话隔离容错
@@ -63,12 +64,13 @@
 
 ## 4. 首步任务
 
-**首步补 2 个契约缺口 + 2 项对齐**：
+**首步补 2 个契约缺口 + 3 项对齐**：
 
 1. **补 git 契约（git@119 无接口）**——走 openspec_sop：补 `GitClient` 接口（建议方法：`commit()`/`branch()`/`merge()`/`status()`/`diff()`/`checkout()`/`stash()`/`push()`/`pull()`）+ 错误码（建议：`GIT_AUTH_FAILED`、`GIT_REMOTE_TIMEOUT`、`GIT_WORKTREE_DIRTY`、`GIT_CONFLICT`），再编码。禁止直接 import 具体 git 库到上层，经接口隔离。
 2. **补 ui 错误码（ui@222 无错误码）**——建议：`UI_LLM_KEY_UNSET`、`UI_SESSION_NOT_FOUND`、`UI_MODALITY_MISSING`、`UI_BARGEIN`，走 openspec_sop 补契约再编码。
 3. **对齐 ci-cd 门禁命令**：ci-cd 四道门禁（lint/typecheck/test/build）必须与 Phase -1 已固化的门禁基线命令一致（复用 `verify_sop`/门禁脚本），不得另起一套。
 4. **核对 im ↔ distributed A2A 边界**：im 是「消息驱动会话入口」（人→agent），distributed 是「A2A 双向互调」（agent↔agent）；确认两者不重叠、im 的 `Message` 与 distributed 卡片协议可互转。
+5. **对齐 ui CLI 入口 ↔ cli-ops 运维命令面**：ui 的 `CLIBridge` 只承载交互会话面（`core-agent` 无子命令进会话）；运维命令面（status/doctor/logs/install/mcp/auth/gateway）复用 cli-ops（M4，横切能力，不并入 ui），CLI 入口不得另起命令解析（与 ci-cd 门禁「不得另起一套」同一原则）。
 
 **启动前核对**（按顺序执行）：
 1. 读 contracts_summary §1（ci-cd）+ §11（git）+ §12（im）+ §25（ui）原文。
