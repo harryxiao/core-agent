@@ -91,6 +91,7 @@ class SafetyGate:
 
 | code | 含义 |
 |---|---|
+| `INVALID_TOOL_SCHEMA` | 工具 schema 非法 |
 | `INVALID_ARGS` | 参数不符 schema |
 | `COEFFECT_MISSING` | 约束缺失 |
 | `TIMEOUT` | 执行超时 |

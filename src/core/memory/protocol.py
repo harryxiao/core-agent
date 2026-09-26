@@ -31,6 +31,13 @@ class MemoryEntry:
     ts: float = 0.0  # 时间戳（接口文档无默认值，骨架补 0.0 以便 dataclass 构造）
 
 
+@dataclass
+class IndexEntry:
+    """L1 最小索引：条目 ID → 所属层。"""
+
+    entries: list[tuple[str, Layer]]
+
+
 class MemoryStore(Protocol):
     """记忆存储接口（可插拔后端，MVP 为 FileBackend）。"""
 
@@ -48,7 +55,7 @@ class MemoryStore(Protocol):
         """层间迁移：结晶(→代码层) / 溶解(→技能层)。"""
         ...
 
-    def index(self) -> Any:
+    def index(self) -> IndexEntry:
         """返回 L1 最小索引（IndexEntry）。"""
         ...
 
@@ -78,6 +85,6 @@ class MemoryBackend(Protocol):
 
     def search(self, query: str, layer: Layer | None = None) -> list[MemoryEntry]: ...
 
-    def list_index(self) -> Any: ...  # 返回 IndexEntry
+    def list_index(self) -> IndexEntry: ...
 
     def delete(self, entry_id: MemoryId) -> None: ...

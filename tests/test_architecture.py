@@ -188,3 +188,23 @@ def test_phase0_modules_no_reverse_dependency() -> None:
                 if sub in CAPABILITY_MODULES
             )
     assert not offenders, f"底座模块反向依赖能力层: {offenders}"
+
+
+# ---- 主题 9（Phase 1 补充）：能力模块单向依赖（拓扑序 llm-provider → tool-use → memory） ----
+
+
+def test_phase1_capability_no_reverse_dependency() -> None:
+    """Phase 1 能力模块禁止反向 import，保持 §0 拓扑序单向依赖。"""
+    forbidden: dict[str, set[str]] = {
+        "llm_provider": {"tools", "memory"},
+        "tools": {"memory", "llm_provider"},
+        "memory": {"tools", "llm_provider"},
+    }
+    offenders: list[str] = []
+    for pkg, banned in forbidden.items():
+        for path in (SRC / pkg).rglob("*.py"):
+            offenders.extend(
+                f"{pkg}/{path.name} -> core.{sub}"
+                for sub in sorted(_core_subpackages(path) & banned)
+            )
+    assert not offenders, f"Phase1 能力模块反向依赖: {offenders}"
