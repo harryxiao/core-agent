@@ -32,6 +32,9 @@ EXPECTED_PACKAGES = {
     "loop",  # L3 智能体循环
     "evolution",  # L4 进化
     "composition",  # L5 组合分发
+    "constraints",  # 横切：约束/熔断/压缩
+    "durability",  # 横切：检查点/恢复
+    "permission",  # 横切：权限/审批/沙箱
     "mcp",  # 横切：MCP 协议
 }
 
@@ -44,6 +47,9 @@ CAPABILITY_MODULES = {
     "loop",
     "evolution",
     "composition",
+    "constraints",
+    "durability",
+    "permission",
     "mcp",
 }
 
@@ -208,3 +214,20 @@ def test_phase1_capability_no_reverse_dependency() -> None:
                 for sub in sorted(_core_subpackages(path) & banned)
             )
     assert not offenders, f"Phase1 能力模块反向依赖: {offenders}"
+
+
+# ---- 主题 9（Phase 2 补充）：横切中间件不反向依赖上层（loop/skills/orchestration） ----
+
+
+def test_phase2_middleware_no_reverse_dependency() -> None:
+    """横切中间件禁止反向 import loop/skills/orchestration，保持 L3 以下。"""
+    middleware = {"constraints", "durability", "permission", "mcp"}
+    upper_layers = {"loop", "skills", "orchestration"}
+    offenders: list[str] = []
+    for pkg in sorted(middleware):
+        for path in (SRC / pkg).rglob("*.py"):
+            offenders.extend(
+                f"{pkg}/{path.name} -> core.{sub}"
+                for sub in sorted(_core_subpackages(path) & upper_layers)
+            )
+    assert not offenders, f"横切中间件反向依赖上层: {offenders}"

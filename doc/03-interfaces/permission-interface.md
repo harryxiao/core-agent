@@ -94,6 +94,7 @@ class SandboxResult:
 | `APPROVAL_TIMEOUT` | 审批超时，fail-closed |
 | `SANDBOX_UNAVAILABLE` | 沙箱不可用（不降级直跑） |
 | `APPROVAL_EXPIRED` | 审批单已过期 |
+| `QUOTA_EXCEEDED` | 资源配额超限 |
 
 ---
 

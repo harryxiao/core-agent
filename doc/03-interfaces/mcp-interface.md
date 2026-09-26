@@ -92,6 +92,8 @@ class MCPServer(Plugin):
 | `REMOTE_TIMEOUT` | 远程超时 |
 | `REMOTE_IRREVERSIBLE` | 远程不可逆操作需确认 |
 | `PERMISSION_DENIED` | 外部调用未授权工具（server 侧越权） |
+| `MCP_UNAVAILABLE` | MCP 服务端不可用（熔断） |
+| `TOOL_NAME_CONFLICT` | 远程工具与本地工具重名 |
 
 ---
 
