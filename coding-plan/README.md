@@ -28,6 +28,7 @@
 | `phase-0.md` | 底座与配置 | M0 底座就绪 |
 | `phase-1.md` | 能力提供层 | M1 能力可调 |
 | `phase-2.md` | 横切中间件 | —（随 M2 推进） |
+| `phase-2.5.md` | 紧急补充：三方插件安装 + CLI 命令面契约回填 | —（无独立里程碑） |
 | `phase-3.md` | 引擎主轴 | M2 单 Agent 闭环 |
 | `phase-4.md` | 编排与检索 | M3 多 Agent 编排 |
 | `phase-5.md` | 进化 | M4 自进化 |
@@ -48,6 +49,7 @@
 | 0 底座与配置 | plugin-registry → configuration → observability → core-profile | M0：可注册/卸载插件、配置单源、遥测可观测、宪法 coeffect 注入 | 无（首个无上游） |
 | 1 能力提供层 | llm-provider → tool-use → memory | M1：真实模型调用跑通、工具可定义/调用/校验、记忆可读写与结晶 | 依赖 Phase 0 |
 | 2 横切中间件 | constraints → permission → durability → mcp | —（无独立里程碑） | 依赖 tool-use；permission 另依赖 configuration |
+| 2.5 紧急补充 | plugin-registry 安装抽象 → configuration CLI 覆盖 → mcp add/remove → permission-mode | —（无独立里程碑） | 依赖 Phase 0/1/2；契约含 0028/0029（M3/M4 代码随 P3） |
 | 3 引擎主轴（L3） | context → loop → skills → skillhub | M2：单 Agent 端到端「观察→推理→行动→记忆」闭环 | 依赖 memory/llm-provider + 全部横切；**首步 substrate→context 重命名** |
 | 4 编排与检索（L3.5） | orchestration → rag | M3：多 Agent 协同编排、RAG 检索可用 | 依赖 loop/llm-provider/tool-use/durability/distributed；**首步补 rag 契约** |
 | 5 进化（L4） | evolution | M4：故障/反馈可触发诊断→提案→验证→结晶全链路 | 依赖 observability/memory/skills/plugin-registry；**evolution↔memory 钩子解耦** |
