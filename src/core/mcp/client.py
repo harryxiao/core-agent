@@ -106,7 +106,11 @@ class MCPClient:
         transport = self._transports.get(handle.handle_id)
         if transport is None:
             return False
-        if transport.ping():
+        try:
+            alive = transport.ping()
+        except Exception:  # noqa: BLE001 — 探活异常视为心跳失效
+            return False
+        if alive:
             return True
         try:
             transport.connect(self._endpoints[handle.handle_id])
@@ -128,7 +132,11 @@ class MCPClient:
         transport = self._transports.get(handle.handle_id)
         if transport is None:
             raise MCPError(MCPErrorCode.MCP_UNAVAILABLE, "连接不存在")
-        if not transport.ping():
+        try:
+            alive = transport.ping()
+        except Exception as exc:  # noqa: BLE001 — 探活异常视为远端不可用
+            raise MCPError(MCPErrorCode.MCP_UNAVAILABLE, f"心跳失效: {exc}") from exc
+        if not alive:
             try:
                 transport.connect(self._endpoints[handle.handle_id])
             except Exception as exc:  # noqa: BLE001

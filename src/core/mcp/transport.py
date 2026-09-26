@@ -34,9 +34,11 @@ class FakeTransport:
         self,
         *,
         fail_connect: bool = False,
+        fail_ping: bool = False,
         protocol_version: str = "2024-11-05",
     ) -> None:
         self.fail_connect = fail_connect
+        self.fail_ping = fail_ping
         self.protocol_version = protocol_version
         self.connected = False
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -98,6 +100,8 @@ class FakeTransport:
         raise ValueError(f"unknown method {method}")  # noqa: TRY003 — 模拟远端传输错误
 
     def ping(self) -> bool:
+        if self.fail_ping:
+            raise OSError("ping failed")  # noqa: TRY003 — 模拟探活传输错误
         return self.connected
 
     def close(self) -> None:

@@ -134,6 +134,16 @@ def test_call_tool_not_found() -> None:
     assert result.code == MCPErrorCode.MCP_TOOL_NOT_FOUND.value
 
 
+def test_call_tool_ping_exception_maps_to_unavailable() -> None:
+    transport = FakeTransport(fail_ping=True)
+    transport.add_tool("search", "d")
+    client = _client(lambda ep: transport)
+    handle = client.connect(_endpoint())
+    result = client.call_tool(handle, "search", {})  # 探活抛异常 → 隔离为 MCP_UNAVAILABLE
+    assert result.ok is False
+    assert result.code == MCPErrorCode.MCP_UNAVAILABLE.value
+
+
 # ---- 断线重连 + 心跳 ----
 
 
@@ -154,6 +164,13 @@ def test_heartbeat_reconnects() -> None:
     transport.connected = False
     assert client.heartbeat(handle) is True
     assert transport.connected is True
+
+
+def test_heartbeat_ping_exception_fails_closed() -> None:
+    transport = FakeTransport(fail_ping=True)
+    client = _client(lambda ep: transport)
+    handle = client.connect(_endpoint())
+    assert client.heartbeat(handle) is False  # 探活抛异常 → 心跳失效，不冒泡
 
 
 # ---- server ----
