@@ -34,7 +34,39 @@ pytest -q                       # 单元 + 架构测试
 - 公共 API 强制类型签名；核心模块类型覆盖率目标 **100%**，由 `pyright --strict` 兜底。
 - 目标版本 Python 3.11（`requires-python = ">=3.11"`，`target-version = "py311"`），可用 `X | None`、`list[T]` 等现代语法，由 `UP` 规则自动升级。
 
-**门禁**：`E/F/I/UP/B/SIM/N/TRY/PERF/PLC/PLR/C90` + pyright strict。
+**门禁**：`E/F/I/UP/B/SIM/N/TRY/PERF/PLC/PLR/C90/TID` + pyright strict。
+
+### 1.1 导入语句
+
+- 导入按「标准库 → 第三方库 → 项目本地模块」分组，组间空一行；顺序由 `ruff I`（isort）自动裁决，不手动调整。
+- 禁止单条语句导入多个模块（`import a, b`）；禁止 `from x import *` 通配符导入。
+- 项目内一律使用绝对导入，禁止相对导入（`.module` / `..module`）。
+
+**门禁**：ruff `I` + `E401` + `F403` + `TID252`；禁相对导入另有 Code Review 兜底。
+
+### 1.2 文档与注释
+
+- 公共模块、类、对外 API 强制 Google 风格 docstring：标注 Args / Returns / Raises 语义。
+- 注释只解释「为什么」，不翻译代码；修改代码时同步更新注释。
+- 内部函数可省略 docstring，仅在关键逻辑处加行注释。
+
+**门禁**：Code Review（强制校验公共 API 文档完整性；pyright / ruff 均不查 docstring）。
+
+### 1.3 函数与参数
+
+- 函数体 ≤ 25 行，超限拆分；参数 ≤ 5 个，超限以 dataclass 封装入参。
+- 禁止可变类型（list / dict / set）作默认参数，用 `None` 初始化后函数内赋值。
+- 实例方法首参固定 `self`，类方法首参固定 `cls`，不得改名。
+
+**门禁**：ruff `PLR0913`（参数数）、`PLR0911`（返回数）、`B006`（可变默认参数）；25 行 / dataclass / self·cls 靠 Code Review。
+
+### 1.4 作用域与变量
+
+- 全局变量仅用于模块常量，禁止可变全局变量；跨函数共享状态用类成员。
+- 避免单字母变量名（循环索引 i/j 可豁免），禁用 `l` / `O` / `I` 等易混淆单字符名。
+- 内层函数修改外层变量必须显式 `nonlocal`，禁止隐式闭包改外层状态。
+
+**门禁**：Code Review（`A` / `RUF` 规则集当前未启用，如要静态拦截需先在 pyproject 增补）。
 
 ---
 
