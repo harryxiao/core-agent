@@ -35,6 +35,18 @@ EXPECTED_PACKAGES = {
     "mcp",  # 横切：MCP 协议
 }
 
+# 主题 9（Phase 0 补充）：底座模块只依赖彼此 + stdlib，不反向依赖能力层
+BASE_MODULES = {"plugin_registry", "configuration", "observability", "core_profile"}
+CAPABILITY_MODULES = {
+    "substrate",
+    "tools",
+    "memory",
+    "loop",
+    "evolution",
+    "composition",
+    "mcp",
+}
+
 _SNAKE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _NESTABLE = (ast.If, ast.For, ast.While, ast.Try, ast.With)
 _MAX_NESTING = 3  # 主题 4：if/else 最大嵌套 ≤3
@@ -55,6 +67,24 @@ def _max_nesting(node: ast.AST, depth: int = 0) -> int:
     if not children:
         return depth
     return max(_max_nesting(child, depth) for child in children)
+
+
+def _core_subpackages(path: pathlib.Path) -> set[str]:
+    """返回文件中 import 的 core 一级子包名（相对导入 / 非 core 导入忽略）。"""
+    tree = _parse(path)
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            dotted = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            dotted = [node.module]
+        else:
+            continue
+        for name in dotted:
+            parts = name.split(".")
+            if len(parts) > 1 and parts[0] == "core":
+                found.add(parts[1])
+    return found
 
 
 # ---- 主题 9：模块设计（分层） ----
@@ -86,8 +116,8 @@ def test_public_function_names_snake_case() -> None:
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 name = node.name
-                if name.startswith("__") and name.endswith("__"):
-                    continue  # dunder 豁免
+                if name.startswith("_"):
+                    continue  # dunder + 私有成员豁免（主题 2：私有成员用单下划线前缀）
                 if not _SNAKE_RE.match(name):
                     offenders.append(f"{path.name}:{node.lineno} {name}")
     assert not offenders, f"函数/方法命名非 snake_case: {offenders}"
@@ -143,3 +173,18 @@ def test_no_bare_except() -> None:
             if isinstance(node, ast.ExceptHandler) and node.type is None
         )
     assert not offenders, f"存在裸 except: {offenders}"
+
+
+# ---- 主题 9（Phase 0 补充）：底座模块依赖边界 ----
+
+
+def test_phase0_modules_no_reverse_dependency() -> None:
+    offenders: list[str] = []
+    for base in sorted(BASE_MODULES):
+        for path in (SRC / base).rglob("*.py"):
+            offenders.extend(
+                f"{base}/{path.name} -> core.{sub}"
+                for sub in sorted(_core_subpackages(path))
+                if sub in CAPABILITY_MODULES
+            )
+    assert not offenders, f"底座模块反向依赖能力层: {offenders}"
