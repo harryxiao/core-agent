@@ -152,9 +152,17 @@ def test_constitution_coeffect_injection_chain(tmp_path) -> None:
     engine = CoreProfileEngine()
     engine.load_global(path=str(global_path))
     engine.load_project(cwd=str(root))
-    assembled = engine.assemble()
+    engine.assemble()
+    ctx = engine.resolver.resolve(["constitution:v1"])
+    assert ctx.get("constitution:v1") == ["1. 必须保护用户隐私", "2. 禁止伪造输出"]
+
+
+def test_engine_registers_into_injected_resolver(tmp_path) -> None:
+    global_path = _write(tmp_path / "global.md", _GLOBAL_MD)
     resolver = CoeffectResolver()
-    resolver.register("constitution:v1", assembled.coeffect["constitution:v1"])
+    engine = CoreProfileEngine(resolver=resolver)
+    engine.load_global(path=str(global_path))
+    engine.assemble()
     ctx = resolver.resolve(["constitution:v1"])
     assert ctx.get("constitution:v1") == ["1. 必须保护用户隐私", "2. 禁止伪造输出"]
 

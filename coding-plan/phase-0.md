@@ -27,7 +27,7 @@
 
 - [ ] 可注册/卸载一个最小 Plugin，卸载后无残留（进程内引用、定时器、文件句柄全部释放）
 - [ ] 并发热插拔原子性：注册/卸载并发执行不产生半注册状态，`check()` 能探测到不一致
-- [ ] 循环依赖检测生效：A→B→A 的依赖链被拒绝并报 `INVALID_SCHEMA`
+- [ ] 循环依赖检测生效：A→B→A 的依赖链被拒绝并报 `CIRCULAR_DEPENDENCY`
 - [ ] config.yaml 单一收口生效；缺失 LLM 配置时**阻断启动**（拒绝进入主循环）
 - [ ] 功能开关缺省关闭：未启用的模块完全不初始化（不 import 副作用、不注册）
 - [ ] schema 校验通过才生效；非法配置半写状态可回滚（不残留坏配置）
@@ -65,7 +65,7 @@
   - `CoeffectResolver`：coeffect 解析（供 core-profile 宪法注入使用）
   - `EffectTracker`：effect 追踪（`record()` / `rollback()` / `replay()` / `audit()`）
 - 关键方法：`load()`、`unload()`、`check()`、`resolve()`、`register()`、`compose()`
-- 错误码：`COEFFECT_MISSING`、`GENERATION_CONFLICT`、`INVALID_SCHEMA`、`NOT_ACTIVE`、`UNDO_FAILED`
+- 错误码：`COEFFECT_MISSING`、`GENERATION_CONFLICT`、`INVALID_SCHEMA`、`NOT_ACTIVE`、`UNDO_FAILED`、`CIRCULAR_DEPENDENCY`
 - 验收重点：卸载干净（无残留）、并发原子性、循环依赖检测、崩溃隔离（插件异常不拖垮宿主）
 
 ### 5.2 configuration（依赖 plugin-registry 的 `Plugin` 协议注册配置模块）

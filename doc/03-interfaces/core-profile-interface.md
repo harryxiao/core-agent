@@ -21,6 +21,9 @@ class CoreProfile:
 
 ```python
 class CoreProfileEngine:
+    def __init__(self, resolver: CoeffectResolver | None = None):
+        """resolver 缺省自建；可传入上层共享的 CoeffectResolver 以桥接注入。"""
+
     def load_global(self, path: str = "~/.core/Core.md") -> CoreProfile:
         """启动时读取全局级 Core.md，解析双语义分区。缺失静默降级。"""
 
@@ -28,7 +31,11 @@ class CoreProfileEngine:
         """载入项目时读取项目级 Core.md（cwd 向上查找），注入项目信息。"""
 
     def assemble(self) -> AssembledProfile:
-        """合并全局级与项目级，产出运行时注入单元。"""
+        """合并全局级与项目级，产出运行时注入单元；并把 constitution:v1 注册进 resolver。"""
+
+    @property
+    def resolver(self) -> CoeffectResolver:
+        """宪法 coeffect 注入的 resolver，供上层模块 resolve(["constitution:v1"]) 取用。"""
 
 @dataclass
 class AssembledProfile:
