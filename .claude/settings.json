@@ -1,8 +1,8 @@
 {
   "env": {
     "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
-    "ANTHROPIC_MODEL": "deepseek-chat",
-    "ANTHROPIC_SMALL_FAST_MODEL": "deepseek-chat",
+    "ANTHROPIC_MODEL": "deepseek-v4-pro",
+    "ANTHROPIC_SMALL_FAST_MODEL": "deepseek-v4-pro",
     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "CLAUDE_CODE_ENABLE_TELEMETRY": "0"
