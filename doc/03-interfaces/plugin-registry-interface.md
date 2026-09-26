@@ -133,10 +133,51 @@ class Patch:     # 进化补丁
 | `GENERATION_CONFLICT` | 世代冲突 |
 | `UNDO_FAILED` | 撤销失败（进入 QUARANTINE） |
 | `NOT_ACTIVE` | 插件未激活 |
+| `SOURCE_NOT_FOUND` | 插件来源不可达（安装 discover 阶段） |
+| `SIGNATURE_INVALID` | 插件签名校验失败（安装 verify 阶段） |
+| `INSTALL_FAILED` | 插件安装失败（安装 install 阶段） |
 
 ---
 
-## 8. 关联
+## 8. 插件安装抽象（Installable）
+
+三方插件（skill / mcp / cli）的安装生命周期收敛到 registry 层，与运行时插件生命周期（§3）分离：
+
+```python
+class PluginSource(str, Enum):
+    LOCAL_PATH = "local-path"            # 本地路径
+    GIT_REPO = "git-repo"                # git 仓库
+    MARKET_REGISTRY = "market-registry"  # 市场注册表
+    MCP_ENDPOINT = "mcp-endpoint"        # MCP 端点
+
+class PluginKind(str, Enum):
+    SKILL = "skill"
+    MCP = "mcp"
+    CLI = "cli"
+
+@dataclass(frozen=True)
+class InstallableAsset:
+    kind: PluginKind
+    source: PluginSource
+    manifest: dict
+    lifecycle: str = "discover"
+
+class PluginInstaller:
+    def discover(self, source, location, kind) -> InstallableAsset: ...  # 来源不可达 → SOURCE_NOT_FOUND
+    def verify(self, asset, signature) -> None: ...                      # 签名非法 → SIGNATURE_INVALID
+    def install(self, asset) -> None: ...                                # 失败 → INSTALL_FAILED
+    def register(self, asset, plugin) -> None: ...                       # → REGISTERED
+    def activate(self, plugin_id) -> None: ...                           # load + activate → ACTIVE
+    def deactivate(self, plugin_id) -> None: ...                         # → LOADED
+    def uninstall(self, plugin_id) -> None: ...                          # unload + 释放 → 移除
+```
+
+- `SourceResolver` / `SignatureVerifier` / `Installer` 均可注入，缺省提供「未接入 / 无签名要求 / 无副作用」实现。
+- 签名校验与多源路由语义上提到此统一层，执行实现按 kind 适配（不合并 skillhub/mcp/cli 的执行实现）。
+
+---
+
+## 9. 关联
 
 - 模块：`02-modules/plugin-registry.md`
 - 规格：`openspec/specs/plugin-registry/spec.md`

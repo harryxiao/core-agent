@@ -8,7 +8,8 @@
 
 from __future__ import annotations
 
-from .models import Decision, RiskLevel
+from .errors import AccessControlError, PermissionErrorCode
+from .models import Decision, PermissionMode, RiskLevel
 
 _HIGH_RISK_TOKENS = (
     "delete",
@@ -64,3 +65,37 @@ class PolicyEngine:
                 False, f"高危操作 {op} 作用于 {target}，需人工审批", approval_required=True
             )
         return Decision(True, f"{risk.value} 操作放行")
+
+
+class PermissionModeGate:
+    """权限模式门：四档启动开关，覆盖 :class:`PolicyEngine` 的默认授权。
+
+    - read-only：拒绝写 / 编辑 / 删除类操作（``PERMISSION_DENIED``）。
+    - interactive：高危走人工审批（默认行为）。
+    - auto-approve：非高危自动放行；高危仍按高危策略走审批。
+    - high-risk-block：高危无条件阻断，不进入审批流。
+    """
+
+    def __init__(self, mode: PermissionMode = PermissionMode.INTERACTIVE) -> None:
+        self.mode = mode
+        self._engine = PolicyEngine()
+
+    def classify(self, op: str, target: str, coeffect: list[str]) -> RiskLevel:
+        return self._engine.classify(op, target, coeffect)
+
+    def authorize(self, op: str, target: str, coeffect: list[str]) -> Decision:
+        risk = self.classify(op, target, coeffect)
+        if self.mode is PermissionMode.READ_ONLY and risk in (
+            RiskLevel.DATA_EDIT,
+            RiskLevel.HIGH_RISK,
+        ):
+            raise AccessControlError(
+                PermissionErrorCode.PERMISSION_DENIED,
+                f"read-only 模式下拒绝 {risk.value} 操作: {op}",
+            )
+        if self.mode is PermissionMode.HIGH_RISK_BLOCK and risk is RiskLevel.HIGH_RISK:
+            raise AccessControlError(
+                PermissionErrorCode.PERMISSION_DENIED,
+                f"high-risk-block 模式下一律阻断高危操作: {op}",
+            )
+        return self._engine.authorize(op, target, risk)

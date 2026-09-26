@@ -19,6 +19,25 @@ class RiskLevel(StrEnum):
     HIGH_RISK = "high-risk"
 
 
+class PermissionMode(StrEnum):
+    """启动级权限模式四档（映射 config.permission.mode）。"""
+
+    READ_ONLY = "read-only"
+    INTERACTIVE = "interactive"
+    AUTO_APPROVE = "auto-approve"
+    HIGH_RISK_BLOCK = "high-risk-block"
+
+    @classmethod
+    def from_config(cls, value: str | None) -> PermissionMode:
+        """由配置值解析权限模式；未知 / 缺失缺省 interactive。"""
+        if value is None:
+            return cls.INTERACTIVE
+        try:
+            return cls(value)
+        except ValueError:
+            return cls.INTERACTIVE
+
+
 class SandboxDomain(StrEnum):
     """沙箱隔离域：终端实跑，浏览器 / 文件系统为策略门。"""
 

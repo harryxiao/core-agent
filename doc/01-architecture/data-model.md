@@ -109,6 +109,7 @@
 | MCPEndpoint / RemoteTool | MCP 外部能力 | mcp-interface.md |
 | IMProvider / Message | IM 入站消息归一化 | im-interface.md |
 | Checkpoint / Snapshot / RestoreHandle / RetentionPolicy | 执行态持久化（检查点/快照/恢复/保留） | durability-interface.md |
+| InstallableAsset / PluginSource | 统一插件安装资产 / 来源枚举（kind∈skill\|mcp\|cli，source∈local-path\|git-repo\|market-registry\|mcp-endpoint，manifest，lifecycle） | plugin-registry-interface.md |
 
 ---
 

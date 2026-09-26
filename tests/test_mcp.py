@@ -212,3 +212,31 @@ def test_server_session_routing() -> None:
     assert server.route("s1") is conn_a
     assert server.route("s2") is conn_b
     assert server.route("nope") is None
+
+
+# ---- 安装 / 移除（M2）----
+
+
+def test_mcp_add_enters_connection_management() -> None:
+    transport = FakeTransport()
+    transport.add_tool("search", "d")
+    client = _client(lambda ep: transport)
+    handle = client.add("https://example.com/mcp", "files")
+    assert client.named("files") is handle
+    tools = client.list_tools(handle)
+    assert [t.name for t in tools] == ["search"]
+
+
+def test_mcp_remove_releases_connection() -> None:
+    transport = FakeTransport()
+    client = _client(lambda ep: transport)
+    client.add("https://example.com/mcp", "files")
+    assert transport.connected is True
+    client.remove("files")
+    assert client.named("files") is None
+    assert transport.connected is False  # 连接资源已释放
+
+
+def test_mcp_remove_unknown_name_noop() -> None:
+    client = _client(lambda ep: FakeTransport())
+    client.remove("nonexistent")  # 幂等，不抛

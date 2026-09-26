@@ -15,6 +15,8 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from core.plugin_registry import PluginSource
+
 from .errors import MCPError, MCPErrorCode
 from .models import (
     CallResult,
@@ -44,6 +46,8 @@ class MCPClient:
         self._transport_factory = transport_factory
         self._transports: dict[str, Transport] = {}
         self._endpoints: dict[str, MCPEndpoint] = {}
+        self._named: dict[str, ServerHandle] = {}
+        self._sources: dict[str, PluginSource] = {}
 
     def load(self) -> None:
         return None
@@ -53,6 +57,8 @@ class MCPClient:
             transport.close()
         self._transports.clear()
         self._endpoints.clear()
+        self._named.clear()
+        self._sources.clear()
 
     def check(self) -> bool:
         return True
@@ -122,6 +128,29 @@ class MCPClient:
         transport = self._transports.pop(handle.handle_id, None)
         if transport is not None:
             transport.close()
+
+    def add(self, source: str, name: str) -> ServerHandle:
+        """mcp add：以 mcp-endpoint 来源（PluginSource.MCP_ENDPOINT）安装并连接，按 name 登记。
+
+        discover → verify → install → register 收敛为「构建端点 + 连接 + 登记」，
+        之后进入现有连接管理（心跳 / 复用逻辑不改）。
+        """
+        endpoint = MCPEndpoint(transport="http", url=source)
+        handle = self.connect(endpoint)
+        self._named[name] = handle
+        self._sources[name] = PluginSource.MCP_ENDPOINT
+        return handle
+
+    def remove(self, name: str) -> None:
+        """mcp remove：停用并卸载该服务端，释放连接 / 会话 / socket 资源。"""
+        handle = self._named.pop(name, None)
+        self._sources.pop(name, None)
+        if handle is not None:
+            self.close(handle)
+
+    def named(self, name: str) -> ServerHandle | None:
+        """按安装名查已登记的服务句柄。"""
+        return self._named.get(name)
 
     def _make_transport(self, endpoint: MCPEndpoint) -> Transport:
         if self._transport_factory is not None:

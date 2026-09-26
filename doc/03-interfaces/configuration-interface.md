@@ -32,6 +32,20 @@ class IMConfig:
 class ValidationResult:
     ok: bool                       # 校验是否通过
     errors: list[str]              # 失败原因（缺失 LLM 配置、yaml 明文密钥等）
+
+class ConfigExposure(str, Enum):
+    CORE = "core"                  # 核心（默认暴露）
+    ADVANCED = "advanced"          # 高级
+    HIDDEN = "hidden"              # 隐藏（密钥等）
+
+@dataclass(frozen=True)
+class ConfigSpec:
+    key: str                       # 配置键（点分路径，如 llm.provider）
+    cli_flag: str                  # CLI flag（--llm.provider）
+    env_var: str                   # env 变量（CORE_LLM_PROVIDER）
+    default: Any = None            # 默认值
+    map_to: str = ""               # 映射到 config.yaml 的点分路径
+    exposure: ConfigExposure = ConfigExposure.CORE  # 暴露面分级
 ```
 
 ---
@@ -40,8 +54,12 @@ class ValidationResult:
 
 ```python
 class ConfigManager:
+    def __init__(self, yaml_path=None, *, environ=None, keychain=None, effects=None,
+                 cli=None, specs=None) -> None:
+        """cli=CLI 覆盖层（最高优先级）；specs=ConfigSpec 清单（缺省用内置全量清单）。"""
+
     def load(self) -> AppConfig:
-        """以 config.yaml 为单一收口加载：env 覆盖 yaml 值，未定义项取默认值兜底。"""
+        """以 config.yaml 为单一收口加载：CLI 覆盖 env 覆盖 yaml 值，未定义项取默认值兜底。"""
 
     def validate_schema(self, config: AppConfig) -> ValidationResult:
         """schema 校验：拒绝 yaml 明文密钥，校验通过才返回有效配置。"""
@@ -52,6 +70,20 @@ class ConfigManager:
     def is_enabled(self, module: str) -> bool:
         """feature flag 查询：关闭的模块不加载、不初始化。"""
 
+    def permission_mode(self) -> str:
+        """权限模式查询（缺省 interactive），映射 config.permission.mode。"""
+
     def apply_change(self, patch: dict) -> AppConfig:
         """变更即生效：写入失败回滚到变更前完整配置，不留半写状态。"""
+
+
+def resolve(key, *, cli=None, env=None, yaml=None, specs=None) -> Any:
+    """按优先级链 CLI flag > env > config.yaml > 默认值 解析配置项（ConfigSpec 单一真源）。"""
+
+def validate_map_to(specs) -> list[str]:
+    """校验 map_to 合法（非空点分路径、无重复），返回错误列表。"""
+
+def generate_cli_flags(specs=None) -> list[str]: ...
+def generate_env_vars(specs=None) -> list[str]: ...
+def generate_yaml_defaults(specs=None) -> dict: ...
 ```

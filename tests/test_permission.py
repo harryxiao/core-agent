@@ -17,6 +17,8 @@ from core.permission import (
     ApprovalResult,
     ApprovalWorkflow,
     PermissionErrorCode,
+    PermissionMode,
+    PermissionModeGate,
     PolicyEngine,
     ResourceBudget,
     RiskLevel,
@@ -184,3 +186,41 @@ def test_policy_fs_controlled() -> None:
     with pytest.raises(AccessControlError):
         policy.check_fs("/readonly", mode="w")
     policy.check_fs("/data", mode="w")  # 授权写
+
+
+# ---- 权限模式（M6）----
+
+
+def test_permission_mode_read_only_denies_write() -> None:
+    gate = PermissionModeGate(PermissionMode.READ_ONLY)
+    with pytest.raises(AccessControlError) as exc_info:
+        gate.authorize("write_file", "/tmp/x", ["filesystem:write"])
+    assert exc_info.value.code is PermissionErrorCode.PERMISSION_DENIED
+    assert gate.authorize("read_file", "/tmp/x", ["filesystem:read"]).allowed is True
+
+
+def test_permission_mode_interactive_high_risk_approval() -> None:
+    gate = PermissionModeGate(PermissionMode.INTERACTIVE)
+    decision = gate.authorize("delete", "/prod", [])
+    assert decision.approval_required is True
+
+
+def test_permission_mode_auto_approve_low_risk() -> None:
+    gate = PermissionModeGate(PermissionMode.AUTO_APPROVE)
+    assert gate.authorize("write_file", "/tmp/x", ["filesystem:write"]).allowed is True
+    decision = gate.authorize("delete", "/prod", [])
+    assert decision.approval_required is True  # 高危仍按高危策略走审批
+
+
+def test_permission_mode_high_risk_block() -> None:
+    gate = PermissionModeGate(PermissionMode.HIGH_RISK_BLOCK)
+    with pytest.raises(AccessControlError) as exc_info:
+        gate.authorize("delete", "/prod", [])
+    assert exc_info.value.code is PermissionErrorCode.PERMISSION_DENIED
+    assert gate.authorize("write_file", "/tmp/x", ["filesystem:write"]).allowed is True
+
+
+def test_permission_mode_from_config() -> None:
+    assert PermissionMode.from_config("read-only") is PermissionMode.READ_ONLY
+    assert PermissionMode.from_config("unknown") is PermissionMode.INTERACTIVE
+    assert PermissionMode.from_config(None) is PermissionMode.INTERACTIVE

@@ -17,9 +17,14 @@ import pytest
 from core.configuration import (
     AppConfig,
     ConfigManager,
+    ConfigSpec,
     ConfigurationError,
     LLMConfig,
     ValidationResult,
+    generate_cli_flags,
+    generate_env_vars,
+    generate_yaml_defaults,
+    resolve,
 )
 from core.plugin_registry import CoeffectResolver, EffectTracker
 
@@ -158,3 +163,101 @@ def test_app_config_type(tmp_path: Path) -> None:
     manager = _manager(tmp_path, _VALID_YAML)
     config = manager.load()
     assert isinstance(config, AppConfig)
+
+
+# ---- M5：ConfigSpec 单一真源 + CLI 覆盖层 ----
+
+
+def test_resolve_priority_chain() -> None:
+    specs = [
+        ConfigSpec(
+            "llm.model",
+            "--llm.model",
+            "CORE_LLM_MODEL",
+            default="default-model",
+            map_to="llm.model",
+        ),
+    ]
+    assert (
+        resolve(
+            "llm.model",
+            cli={"llm.model": "from-cli"},
+            env={"CORE_LLM_MODEL": "from-env"},
+            yaml={"llm.model": "from-yaml"},
+            specs=specs,
+        )
+        == "from-cli"
+    )
+    assert (
+        resolve(
+            "llm.model",
+            env={"CORE_LLM_MODEL": "from-env"},
+            yaml={"llm.model": "from-yaml"},
+            specs=specs,
+        )
+        == "from-env"
+    )
+    assert resolve("llm.model", yaml={"llm.model": "from-yaml"}, specs=specs) == "from-yaml"
+    assert resolve("llm.model", specs=specs) == "default-model"
+
+
+def test_config_spec_three_faces_consistent() -> None:
+    specs = [
+        ConfigSpec("llm.model", "--llm.model", "CORE_LLM_MODEL", default="", map_to="llm.model"),
+        ConfigSpec(
+            "permission.mode",
+            "--permission-mode",
+            "CORE_PERMISSION_MODE",
+            default="interactive",
+            map_to="permission.mode",
+        ),
+    ]
+    assert generate_cli_flags(specs) == ["--llm.model", "--permission-mode"]
+    assert generate_env_vars(specs) == ["CORE_LLM_MODEL", "CORE_PERMISSION_MODE"]
+    assert generate_yaml_defaults(specs) == {"llm.model": "", "permission.mode": "interactive"}
+
+
+def test_invalid_map_to_blocks_startup(tmp_path: Path) -> None:
+    manager = _manager(
+        tmp_path,
+        _VALID_YAML,
+        specs=[ConfigSpec("bad", "--bad", "CORE_BAD", default="", map_to="")],
+    )
+    with pytest.raises(ConfigurationError):
+        manager.load()
+
+
+def test_duplicate_map_to_blocks_startup(tmp_path: Path) -> None:
+    manager = _manager(
+        tmp_path,
+        _VALID_YAML,
+        specs=[
+            ConfigSpec("a", "--a", "CORE_A", default="", map_to="llm.model"),
+            ConfigSpec("b", "--b", "CORE_B", default="", map_to="llm.model"),
+        ],
+    )
+    with pytest.raises(ConfigurationError):
+        manager.load()
+
+
+def test_cli_overrides_env_and_yaml(tmp_path: Path) -> None:
+    manager = _manager(
+        tmp_path,
+        _VALID_YAML,
+        environ={"OPENAI_API_KEY": "sk-test", "CORE_LLM_MODEL": "gpt-4o-mini"},
+        cli={"llm.model": "from-cli"},
+    )
+    config = manager.load()
+    assert config.llm.model == "from-cli"
+
+
+def test_permission_mode_from_config(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, _VALID_YAML, cli={"permission.mode": "read-only"})
+    manager.load()
+    assert manager.permission_mode() == "read-only"
+
+
+def test_permission_mode_default(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, _VALID_YAML)
+    manager.load()
+    assert manager.permission_mode() == "interactive"

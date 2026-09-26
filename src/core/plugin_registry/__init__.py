@@ -11,6 +11,7 @@
 from .coeffect_resolver import CoeffectMissing, CoeffectResolver, ResolvedContext, SecretRef
 from .effect_tracker import Effect, EffectId, EffectTracker, RollbackReport
 from .errors import DomainError, ErrorCode
+from .installable import InstallableAsset, PluginInstaller, PluginKind, PluginSource
 from .plugin import Plugin
 from .registry import PluginRegistry, PluginState
 
@@ -22,8 +23,12 @@ __all__ = [
     "EffectId",
     "EffectTracker",
     "ErrorCode",
+    "InstallableAsset",
     "Plugin",
+    "PluginInstaller",
+    "PluginKind",
     "PluginRegistry",
+    "PluginSource",
     "PluginState",
     "ResolvedContext",
     "RollbackReport",

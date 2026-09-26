@@ -98,7 +98,30 @@ class SandboxResult:
 
 ---
 
-## 6. 关联
+## 6. 权限模式门（PermissionModeGate）
+
+```python
+class PermissionMode(str, Enum):
+    READ_ONLY = "read-only"            # 只读：拒 DATA_EDIT / HIGH_RISK
+    INTERACTIVE = "interactive"        # 交互：高危走审批（缺省）
+    AUTO_APPROVE = "auto-approve"      # 自动放行低危，高危仍走审批
+    HIGH_RISK_BLOCK = "high-risk-block"  # 高危无条件阻断
+
+    @classmethod
+    def from_config(cls, value: str | None) -> "PermissionMode": ...
+
+class PermissionModeGate:
+    def __init__(self, mode: PermissionMode = PermissionMode.INTERACTIVE) -> None: ...
+    def classify(self, op, target, coeffect) -> RiskLevel: ...
+    def authorize(self, op, target, coeffect) -> Decision:
+        """按 mode 前置拦截（read-only / high-risk-block 抛 PERMISSION_DENIED），否则委托 PolicyEngine。"""
+```
+
+映射 `config.permission.mode` + CLI `--permission-mode`。
+
+---
+
+## 7. 关联
 
 - 模块：`02-modules/permission.md`
 - 规格：`openspec/specs/permission/spec.md`

@@ -17,6 +17,12 @@ class MCPClient(Plugin):
     def call_tool(self, handle, name: str, args: dict) -> CallResult: ...
     def read_resource(self, handle, uri: str) -> bytes: ...
     def get_prompt(self, handle, name: str, args: dict) -> str: ...
+    def add(self, source: str, name: str) -> ServerHandle:
+        """安装并连接 MCP server（复用 PluginSource(mcp-endpoint)），进入连接管理。"""
+    def remove(self, name: str) -> None:
+        """移除命名 server：关闭连接并释放资源（幂等）。"""
+    def named(self, name: str) -> ServerHandle | None:
+        """按名称查找已命名 server。"""
 ```
 
 ---

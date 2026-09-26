@@ -8,13 +8,14 @@ from .models import (
     ApprovalResult,
     ApprovalTicket,
     Decision,
+    PermissionMode,
     ResourceBudget,
     RiskLevel,
     SandboxDomain,
     SandboxHandle,
     SandboxResult,
 )
-from .policy import PolicyEngine
+from .policy import PermissionModeGate, PolicyEngine
 from .sandbox import SandboxManager, SandboxPolicy
 
 __all__ = [
@@ -26,6 +27,8 @@ __all__ = [
     "ApprovalWorkflow",
     "Decision",
     "PermissionErrorCode",
+    "PermissionMode",
+    "PermissionModeGate",
     "PolicyEngine",
     "ResourceBudget",
     "RiskLevel",

@@ -264,6 +264,13 @@
 | CORE-CICD-R1 | 系统 SHALL 提供 lint/typecheck/test/build 四道质量门禁；任一门禁失败阻断交付，门禁实现引用 development-toolchain | P1 | ci-cd/spec.md |
 | CORE-CICD-R2 | 系统 SHALL 提供版本化制品打包与发布通道；制品可追溯、可回滚 | P1 | ci-cd/spec.md |
 
+### 1.26 CLI 运维命令面（cli-ops）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-CLIOPS-R1 | 系统 SHALL 提供统一的 CLI 运维命令集，覆盖生命周期/状态/资产/连接/安全/网关六组命令 | P1 | cli-ops/spec.md |
+| CORE-CLIOPS-R2 | 系统 SHALL 建立启动参数与配置项的一一对应，优先级链 CLI flag > env > config.yaml > 默认值，映射由 ConfigSpec 单一真源声明 | P1 | cli-ops/spec.md |
+
 ---
 
 ## 2. 非功能需求（Non-Functional Requirements）

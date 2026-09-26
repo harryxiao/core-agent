@@ -19,18 +19,57 @@ from typing import Any, cast
 from core.plugin_registry import CoeffectResolver, Effect, EffectTracker
 
 from .errors import ConfigurationError
-from .models import AppConfig, IMConfig, LLMConfig, ValidationResult
+from .models import AppConfig, ConfigExposure, ConfigSpec, IMConfig, LLMConfig, ValidationResult
 
-# env 覆盖 yaml 的固定映射：env 变量名 -> (yaml 段, yaml 键)
-_ENV_OVERRIDES: dict[str, tuple[str, str]] = {
-    "CORE_LLM_PROVIDER": ("llm", "provider"),
-    "CORE_LLM_MODEL": ("llm", "model"),
-    "CORE_LLM_ENDPOINT": ("llm", "endpoint"),
-    "CORE_LLM_API_KEY": ("llm", "api_key"),
-    "CORE_IM_GATEWAY": ("im", "gateway"),
-    "CORE_IM_CORP_ID": ("im", "corp_id"),
-    "CORE_IM_SECRET": ("im", "secret"),
-}
+# 配置项单一真源（全量声明）：CLI flag / env / yaml 三面由 ConfigSpec 生成，禁止硬编码第二真源。
+_CONFIG_SPECS: list[ConfigSpec] = [
+    ConfigSpec(
+        "llm.provider", "--llm.provider", "CORE_LLM_PROVIDER", default="", map_to="llm.provider"
+    ),
+    ConfigSpec("llm.model", "--llm.model", "CORE_LLM_MODEL", default="", map_to="llm.model"),
+    ConfigSpec(
+        "llm.endpoint", "--llm.endpoint", "CORE_LLM_ENDPOINT", default="", map_to="llm.endpoint"
+    ),
+    ConfigSpec(
+        "llm.api_key",
+        "--llm.api-key",
+        "CORE_LLM_API_KEY",
+        default="",
+        map_to="llm.api_key",
+        exposure=ConfigExposure.HIDDEN,
+    ),
+    ConfigSpec(
+        "im.gateway",
+        "--im.gateway",
+        "CORE_IM_GATEWAY",
+        default="",
+        map_to="im.gateway",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "im.corp-id",
+        "--im.corp-id",
+        "CORE_IM_CORP_ID",
+        default="",
+        map_to="im.corp_id",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "im.secret",
+        "--im.secret",
+        "CORE_IM_SECRET",
+        default="",
+        map_to="im.secret",
+        exposure=ConfigExposure.HIDDEN,
+    ),
+    ConfigSpec(
+        "permission.mode",
+        "--permission-mode",
+        "CORE_PERMISSION_MODE",
+        default="interactive",
+        map_to="permission.mode",
+    ),
+]
 
 _FEATURE_ENV_PREFIX = "CORE_FEATURES_"
 
@@ -40,26 +79,34 @@ _BOOL_NULL: dict[str, Any] = {"true": True, "false": False, "null": None, "~": N
 class ConfigManager:
     """配置加载 / 校验 / 密钥解析 / 功能开关 / 变更即生效。"""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — 注入面为 6 项，均为可选依赖注入
         self,
         yaml_path: Path | str | None = None,
         *,
         environ: Mapping[str, str] | None = None,
         keychain: CoeffectResolver | None = None,
         effects: EffectTracker | None = None,
+        cli: Mapping[str, Any] | None = None,
+        specs: list[ConfigSpec] | None = None,
     ) -> None:
         self._yaml_path = Path(yaml_path) if yaml_path else Path("config.yaml")
         self._environ = dict(environ) if environ is not None else dict(os.environ)
         self._keychain = keychain if keychain is not None else CoeffectResolver()
         self._effects = effects if effects is not None else EffectTracker()
+        self._cli = dict(cli) if cli is not None else {}
+        self._specs = list(specs) if specs is not None else list(_CONFIG_SPECS)
         self._config: AppConfig | None = None
 
     # ---- 加载与校验 ----
 
     def load(self) -> AppConfig:
-        """加载 config.yaml：env 覆盖 yaml，校验通过才生效；LLM 缺失则阻断。"""
+        """加载 config.yaml：CLI 覆盖 env 覆盖 yaml，校验通过才生效；LLM 缺失则阻断。"""
+        map_to_errors = validate_map_to(self._specs)
+        if map_to_errors:
+            raise ConfigurationError("; ".join(map_to_errors))
         raw = self._read_yaml()
         merged = self._apply_env(raw)
+        merged = self._apply_cli(merged)
         config = self._build_config(merged)
         result = self.validate_schema(config)
         if not result.ok:
@@ -110,6 +157,13 @@ class ConfigManager:
             return False
         return self._config.features.get(module, False)
 
+    def permission_mode(self) -> str:
+        """权限模式查询：缺省 interactive（对齐 permission「权限模式」四档）。"""
+        if self._config is None:
+            return "interactive"
+        perm = cast(dict[str, Any], self._config.extra.get("permission") or {})
+        return str(perm.get("mode", "interactive"))
+
     # ---- 变更即生效 ----
 
     def apply_change(self, patch: dict[str, Any]) -> AppConfig:
@@ -147,14 +201,19 @@ class ConfigManager:
         return _parse_yaml_subset(text)
 
     def _apply_env(self, raw: dict[str, Any]) -> dict[str, Any]:
-        for env_key, (section, key) in _ENV_OVERRIDES.items():
-            if env_key in self._environ:
-                raw.setdefault(section, {})[key] = self._environ[env_key]
+        for spec in self._specs:
+            if spec.env_var in self._environ:
+                _set_path(raw, spec.map_to, self._environ[spec.env_var])
         for env_key, value in self._environ.items():
             if env_key.startswith(_FEATURE_ENV_PREFIX):
                 name = env_key[len(_FEATURE_ENV_PREFIX) :].lower()
                 raw.setdefault("features", {})[name] = value.lower() in ("true", "1", "yes")
         return raw
+
+    def _apply_cli(self, merged: dict[str, Any]) -> dict[str, Any]:
+        for path, value in self._cli.items():
+            _set_path(merged, path, value)
+        return merged
 
     def _build_config(self, merged: dict[str, Any]) -> AppConfig:
         llm_raw = cast(dict[str, Any], merged.get("llm") or {})
@@ -276,3 +335,77 @@ def _parse_scalar(value: str) -> Any:
     except ValueError:
         pass
     return value
+
+
+# ---- ConfigSpec 单一真源：优先级链解析 / 三面生成 / map_to 校验 ----
+
+
+def _set_path(root: dict[str, Any], path: str, value: Any) -> None:
+    """把点分路径写入嵌套 dict，自动补建中间层。"""
+    parts = path.split(".")
+    node = root
+    for part in parts[:-1]:
+        node = node.setdefault(part, {})
+    node[parts[-1]] = value
+
+
+def _find_spec(specs: list[ConfigSpec], key: str) -> ConfigSpec | None:
+    for spec in specs:
+        if spec.key == key:
+            return spec
+    return None
+
+
+def validate_map_to(specs: list[ConfigSpec]) -> list[str]:
+    """校验 ConfigSpec 的 map_to 合法（非空点分路径、无重复），返回错误列表。"""
+    errors: list[str] = []
+    seen: dict[str, str] = {}
+    for spec in specs:
+        if not spec.map_to or not all(seg for seg in spec.map_to.split(".")):
+            errors.append(f"ConfigSpec[{spec.key}] map_to 非法: {spec.map_to!r}")
+            continue
+        if spec.map_to in seen:
+            errors.append(
+                f"ConfigSpec[{spec.key}] map_to 冲突: {spec.map_to} 已由 {seen[spec.map_to]} 声明"
+            )
+        else:
+            seen[spec.map_to] = spec.key
+    return errors
+
+
+def resolve(
+    key: str,
+    *,
+    cli: Mapping[str, Any] | None = None,
+    env: Mapping[str, str] | None = None,
+    yaml: Mapping[str, Any] | None = None,
+    specs: list[ConfigSpec] | None = None,
+) -> Any:
+    """按优先级链 CLI flag > env > config.yaml > 默认值 解析配置项（ConfigSpec 单一真源）。"""
+    spec_list = specs if specs is not None else _CONFIG_SPECS
+    spec = _find_spec(spec_list, key)
+    cli = cli or {}
+    env = env or {}
+    yaml = yaml or {}
+    if key in cli:
+        return cli[key]
+    if spec is not None and spec.env_var in env:
+        return env[spec.env_var]
+    if key in yaml:
+        return yaml[key]
+    return spec.default if spec is not None else None
+
+
+def generate_cli_flags(specs: list[ConfigSpec] | None = None) -> list[str]:
+    """由 ConfigSpec 生成 CLI 参数面。"""
+    return [s.cli_flag for s in (specs if specs is not None else _CONFIG_SPECS)]
+
+
+def generate_env_vars(specs: list[ConfigSpec] | None = None) -> list[str]:
+    """由 ConfigSpec 生成 env 变量面。"""
+    return [s.env_var for s in (specs if specs is not None else _CONFIG_SPECS)]
+
+
+def generate_yaml_defaults(specs: list[ConfigSpec] | None = None) -> dict[str, Any]:
+    """由 ConfigSpec 生成 yaml 默认值面（map_to -> default）。"""
+    return {s.map_to: s.default for s in (specs if specs is not None else _CONFIG_SPECS)}

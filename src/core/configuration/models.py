@@ -6,7 +6,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
+
+
+class ConfigExposure(StrEnum):
+    """配置项暴露面分级。"""
+
+    CORE = "core"
+    ADVANCED = "advanced"
+    HIDDEN = "hidden"
+
+
+@dataclass(frozen=True)
+class ConfigSpec:
+    """配置项单一真源：cli_flag / env_var / default / map_to / 暴露面。"""
+
+    key: str  # 点分配置键，如 "llm.model"
+    cli_flag: str  # "--llm.model"
+    env_var: str  # "CORE_LLM_MODEL"
+    default: Any = None
+    map_to: str = ""  # yaml 目标路径（点分），如 "llm.model"
+    exposure: ConfigExposure = ConfigExposure.CORE
 
 
 @dataclass(frozen=True)
