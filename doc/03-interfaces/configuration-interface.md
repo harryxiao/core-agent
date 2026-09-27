@@ -13,6 +13,7 @@ class AppConfig:
     llm: LLMConfig                 # LLM 配置（必选）
     features: dict[str, bool]      # 模块级 feature flag
     im: IMConfig | None            # IM 接入配置（可选，None 表示未接入）
+    pet: PetConfig | None          # 宠物模式配置（可选，None 表示未启用）
     extra: dict                    # 其他模块扩展配置
 
 @dataclass
@@ -27,6 +28,12 @@ class IMConfig:
     gateway: str                   # 网关类型
     corp_id: str                   # 账户/ID
     secret_ref: str                # secret 的 ${VAR} 引用（非明文）
+
+@dataclass
+class PetConfig:
+    """宠物模式配置（pet.*，纳入 ConfigSpec 单一真源）。"""
+    enabled: bool = False          # pet.enabled：总开关（--pet-enabled / CORE_PET_ENABLED）
+    persons_dir: str = "persons"   # pet.persons_dir：多宠物 persona 目录（--pet-dir / CORE_PET_DIR）
 
 @dataclass
 class ValidationResult:

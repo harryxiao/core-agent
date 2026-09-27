@@ -42,6 +42,22 @@ class UIAPILayer:
 | `loop.result` | turn_id, result | 结果回传 |
 | `loop.error` | turn_id, error | 结构化错误（不中断循环） |
 
+### 1.2 HTTP 端点清单（WebBridge.serve）
+
+`WebBridge.serve(host, port)` 将 `UIAPILayer` 9 方法暴露为 HTTP 端点（REST + SSE）：
+
+| 端点 | 方法 | 映射 | 说明 |
+|---|---|---|---|
+| `POST /session` | create_session | `create_session(mode)` | 新建会话 |
+| `POST /run` | run_loop | `run_loop(session_id, user_input)` | SSE 流式 loop 事件 |
+| `POST /barge-in` | barge_in | `barge_in()` | 打断当前语音播报 |
+| `GET /memory` | get_memory | `get_memory(session_id)` | 读会话记忆 |
+| `POST /session/compact` | compact | `compact(session_id)` | 压实上下文 |
+| `GET /tools` | list_tools | `list_tools()` | 列出工具 |
+| `POST /tools/invoke` | invoke_tool | `invoke_tool(tool_id, args)` | 调用工具 |
+| `GET /llm-config` | get_llm_config | `get_llm_config()` | 读 LLM 配置 |
+| `PUT /llm-config` | set_llm_config | `set_llm_config(cfg)` | 写 LLM 配置（热更新） |
+
 ---
 
 ## 2. 三模桥接
@@ -62,6 +78,8 @@ class WebBridge:      # ② Web：FastAPI 暴露 HTTP + SSE
 class DesktopBridge:  # ③ Desktop：Tauri 壳 + sidecar
     def start_sidecar(self) -> None: ...
 ```
+
+**CLIBridge 交互会话循环（REPL）**：`connect()` 进入 Textual 交互循环（而非仅返回 `UIAPILayer`）——无子命令时进 REPL，多轮上下文保持，`barge_in()` 支持打断语音播报；运维命令面（status/doctor/logs/install/mcp/auth/gateway）复用 cli-ops，不并入 REPL。
 
 **Web Client 与 Host 分离**：Web 前端（SPA）作为纯静态资源独立托管，`WebBridge` 仅暴露统一后端 API；前端经该 API 连接远程 / 本机常驻 Harness Host（见 `deployment-interface.md`），前端升级无需重启 Host 后端。
 

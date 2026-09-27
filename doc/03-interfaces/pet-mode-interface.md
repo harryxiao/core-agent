@@ -53,7 +53,33 @@ class PetSession:
 
 ---
 
-## 2. PetTask 任务类型
+## 2. Persona 人格与随机任务开关（pet.md）
+
+每只宠物经 `pet.md`（目录 `pet.persons_dir`，每只一个 `<name>.md`）声明人格；人格经 `PersonaLayer.render_prompt()` 渲染进自主任务提示词，宠物行为/输出风格受其约束（R9）。随机微任务可配置关闭（R14）。
+
+```python
+@dataclass
+class Persona:              # 实现 PersonaLayer
+    name: str               # 角色名
+    species: str            # 物种
+    persona_text: str       # 性格描述（角色/性格）
+    traits: list[str]       # 性格特征
+    preferences: list[str]  # 喜好
+
+    def render_prompt(self) -> str: ...
+        """组合 pet.md 人格为 persona 提示词，宠物行为/输出风格受其约束。"""
+```
+
+| 字段 | 语义 | 契约 Requirement |
+|---|---|---|
+| 角色 `name` | 宠物角色名 | R9 Pet Persona and Prompt |
+| 性格 `persona_text` + `traits` | 性格描述与特征 | R9 |
+| 喜好 `preferences` | 主人/宠物偏好 | R9 |
+| 随机任务开关 | 日常随机微任务开关；侵入性（无厘头注释）默认关 | R14 Pet Micro-tasks |
+
+---
+
+## 3. PetTask 任务类型
 
 宠物会话只承载重复简单任务，任务类型枚举收口为两类：
 
@@ -71,7 +97,7 @@ class PetTask:
 
 ---
 
-## 3. 三入口激活契约
+## 4. 三入口激活契约
 
 三入口统一走「pet session 生命周期」契约收口，避免各自实现激活逻辑产生第二真源：
 
@@ -94,7 +120,7 @@ class PetActivator:
 
 ---
 
-## 4. 宠物循环契约（后台自治循环）
+## 5. 宠物循环契约（后台自治循环）
 
 主循环之上叠加后台自治调度：任务派发 → 周期触发 → 偏好读写 → 反馈/惊喜 → 让行退避。
 
@@ -109,7 +135,7 @@ class PetActivator:
 
 ---
 
-## 5. 错误码
+## 6. 错误码
 
 | 错误码 | 含义 |
 |---|---|
@@ -121,7 +147,7 @@ class PetActivator:
 
 ---
 
-## 6. 关联
+## 7. 关联
 
 - 规格：`openspec/specs/pet-mode/spec.md`
 - 变更：`openspec/changes/0030-pet-mode/`
