@@ -208,8 +208,8 @@
 
 ### 23. skills — 技能封装
 
-- **能力**：原子技能库、版本管理灰度/A/B、技能路由、超时与资源上限。
-- **契约**：注册校验、前置条件检查；灰度发布、A/B 中 B 退化自动回退；路由命中 Top-K、未命中沉淀；执行超时中断、资源超限熔断。
+- **能力**：原子技能库、版本管理灰度/A/B、技能路由。
+- **契约**：注册校验、前置条件检查；灰度发布、A/B 中 B 退化自动回退；路由命中 Top-K、未命中沉淀。
 - **接口**：`SkillLibrary`、`VersionManager`、`SkillRouter`、`SkillCrystallizer`；数据类型 `Skill`/`ABResult`/`SkillMatch`。
 - **方法**：`register()`、`lookup()`、`list_by_domain()`、`check_preconditions()`、`promote()`、`ab_test()`、`select()`、`match()`、`crystallize()`、`dissolve()`。
 - **错误码**：`INVALID_SKILL_SCHEMA`、`NO_SKILL_MATCH`、`PRECONDITION_FAILED`。
