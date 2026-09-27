@@ -271,6 +271,25 @@
 | CORE-CLIOPS-R1 | 系统 SHALL 提供统一的 CLI 运维命令集，覆盖生命周期/状态/资产/连接/安全/网关六组命令 | P1 | cli-ops/spec.md |
 | CORE-CLIOPS-R2 | 系统 SHALL 建立启动参数与配置项的一一对应，优先级链 CLI flag > env > config.yaml > 默认值，映射由 ConfigSpec 单一真源声明 | P1 | cli-ops/spec.md |
 
+### 1.27 宠物模式（pet-mode）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-PET-R1 | 系统 SHALL 管理宠物会话的启动、休眠、恢复、异常退避、终止全生命周期，复用 Loop.run() 同步薄壳逐次唤醒 | P1 | pet-mode/spec.md |
+| CORE-PET-R2 | 系统 SHALL 支持重复简单任务（信息收集、闲逛探索）作为宠物会话的可分配任务类型 | P1 | pet-mode/spec.md |
+| CORE-PET-R3 | 系统 SHALL 保证宠物低优先级让行：休眠/让行复用 orchestration 任务状态机 SUSPENDED，主循环 busy 时宠物不抢锁、不阻塞主循环 | P1 | pet-mode/spec.md |
+| CORE-PET-R4 | 系统 SHALL 追踪主 Agent（主人）偏好，以 MemoryEntry.source=user 落 L2 facts 层 | P1 | pet-mode/spec.md |
+| CORE-PET-R5 | 系统 SHALL 支持三入口激活宠物会话：/pet 斜杠命令（候选经 list_tools 拉取）、pet <verb> CLI argv（CommandGroup 扩展）、WebUI 自然语言激活（消息驱动会话） | P1 | pet-mode/spec.md |
+| CORE-PET-R6 | 系统 SHALL 支持宠物定期与主 Agent 沟通/反馈，并基于主人偏好制造惊喜（代办/取悦主人当前不太重要的事） | P1 | pet-mode/spec.md |
+| CORE-PET-R7 | 系统 SHALL 将宠物实现为解耦的四层架构：基础属性层（角色/性格/喜好/物种）、自主目标循环层、探索工具集层、安全边界层；各层可独立配置与替换 | P1 | pet-mode/spec.md |
+| CORE-PET-R8 | 系统 SHALL 支持同时管理多只宠物，每只宠物拥有独立会话、独立人格、独立任务队列，互不干扰、可独立启停 | P1 | pet-mode/spec.md |
+| CORE-PET-R9 | 系统 SHALL 支持通过 pet.md/prompt 为每只宠物设定角色、性格、喜好，宠物行为与输出风格受其人格约束 | P1 | pet-mode/spec.md |
+| CORE-PET-R10 | 系统 SHALL 提供宠物角色库，支持从预置角色模板创建宠物、自定义角色、导入/导出角色定义 | P1 | pet-mode/spec.md |
+| CORE-PET-R11 | 系统 SHALL 为宠物提供受限探索工具集（只读优先），供信息收集与闲逛探索使用，工具清单可配置、需授权 | P1 | pet-mode/spec.md |
+| CORE-PET-R12 | 系统 SHALL 为宠物行为施加安全边界：只读优先、不可逆操作禁止、爆炸半径可控、越界即暂停并通知主人 | P1 | pet-mode/spec.md |
+| CORE-PET-R13 | 系统 SHALL 支持宠物主动通知主人（如「发现插件X一键生成测试用例，帮你试3次都成功」），通知异步投递、不阻塞主循环 | P1 | pet-mode/spec.md |
+| CORE-PET-R14 | 系统 SHALL 支持宠物执行日常随机小任务（终端散步、系统小提示、给代码加无厘头注释），其中侵入性任务可配置关闭 | P1 | pet-mode/spec.md |
+
 ---
 
 ## 2. 非功能需求（Non-Functional Requirements）

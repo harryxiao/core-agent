@@ -102,6 +102,7 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
 | CLICommandDispatcher / ParamMapper | 横切 | 运维命令集 / 启动参数映射 | cli-ops-interface.md |
 | SkillHubClient/MarketIndex/SkillPublisher/TrustVerifier | L3 | 技能市场管理/下载/发布 | skillhub-interface.md |
 | CICDPipeline / ArtifactPublisher | 工程交付 | 质量门禁（lint/typecheck/test/build）+ 制品发布/回滚 | ci-cd-interface.md |
+| PetModeLoop | L3.5 | 后台自治循环：宠物会话生命周期/让行（SUSPENDED）/偏好追踪/定期反馈/三入口激活 | pet-mode-interface.md |
 
 ---
 
@@ -154,6 +155,7 @@ MVP 采用**单进程**：主循环线程 + 记忆/进化后台任务 + MCP 传�
 │  ├─ ContextEngine / SkillRegistry (L3)                                  │
 │  ├─ Orchestrator (L3.5, 任务队列)                                       │
 │  ├─ EvolutionWorker (L4, 后台，低优先级)                                 │
+│  ├─ PetModeLoop (L3.5, 后台自治循环，低优先级让行)                             │
 │  ├─ PermissionGuard / ConstraintMiddleware / Telemetry (横切)           │
 │  ├─ DurabilityManager (横切)                                            │
 │  ├─ ConfigManager (横切)                                                │
