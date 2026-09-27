@@ -23,11 +23,11 @@
 2. **独立子 Agent + 共享能力集**（D2 决策）。神兽 `AgentProfile.loop` 是独立 `LoopPlugin` 实例 → **独立记忆 namespace**（`MemoryEntry.source = f"beast.{agent_id}"`）+ **独立上下文**（`DynamicAssembler.build()` 按神兽任务阶段装配 `ContextPack`）；运行时能力分两层：**L1 工具**共享全局 `ToolProvider`（loop 原生消费，通用能力真实可用）+ **L3 技能**（神通 `beast.*`）注册进全局 `SkillLibrary`（注册/共享实例可验证，loop→skill 运行时调用 deferred）。→「复用主 Agent 通用能力」成立，「技能运行时调用」留待桥接。
 3. **一次一兽**（D1 决策）。`BeastSession` 单例，当前显形神兽唯一；已有兽在岗时新召唤先拒绝或先回归。
 
-**生命周期（D3 决策）**：`DORMANT → MANIFEST → ACTIVE → RECALLED`。召唤**同步执行**（`handoff` 阻塞至神兽 loop 跑完，契合「前台重大任务」）；任务完成自动回归（据 `LoopResult.failed` 判定成败）+ 手动复位（`/recall` / `recall` CLI / NL「召回」→ 单例复位，同步执行下无「中断在岗兽」窗口）。
+**生命周期（D3 决策）**：`DORMANT → MANIFEST → ACTIVE → RECALLED`。召唤**同步执行**（`handoff` 阻塞至神兽 loop 跑完，契合「前台重大任务」）；任务完成自动回归（据 `LoopResult.failed` 判定成败，字段随 0034 契约 delta 补齐）+ 手动复位（`/recall` / `recall` CLI / NL「召回」→ 单例复位，同步执行下无「中断在岗兽」窗口）。
 
 ### 1.1 二十神兽名册（BeastRegistry 内置预定义，只读）
 
-> `agent_id = beast.<拼音>`；独有神通 = `beast.<拼音>.<skill>` 注册进全局 `SkillLibrary`（命名空间 `beast.<拼音>`，与既有 `skills.<domain>.<name>` 口径并列，`_domain()` 取 `parts[1]` 不受影响；**运行时调用 deferred**）；
+> `agent_id = beast.<拼音>`；独有神通 = `beast.<拼音>.<skill>` 注册进全局 `SkillLibrary`（3 段 id，`_domain()` 取 `parts[1]`=拼音 → 20 神兽各成一个拼音 domain，`list_by_domain("beast")` 恒空；专属路由不依赖 `_domain()` 索引，由 `BeastSession` 按 agent_id 前缀过滤候选；**运行时调用 deferred**）；
 > `capabilities` 标签供 `MultiAgentRouter.match()` 关键词打分路由。
 
 | # | 神兽 | agent_id | 领域 / 重大任务职责 | 独有神通 skill_id |
@@ -103,7 +103,7 @@
 
 1. **走 OpenSpec 变更**（openspec_sop）：`beast-mode` 新增能力 → `openspec/changes/0034-beast-mode/`（proposal + design + spec delta），产出 `openspec/specs/beast-mode/spec.md`；**含 loop/orchestration 契约 delta**（`LoopResult.failed` + `handoff` 返回完整结果），`validate --all` 通过。
 2. **对齐 command 面权威口径**：读 `cli-contract-baseline.md` §2（30 动词 + 14 flag）确认 summon/recall 动词的 flag 归属（如 `--beast`、`--force`），不凭空造参数。
-3. **确认 skills 的 Skill 注册契约**：读 `doc/03-interfaces/skills-interface.md`（Skill 字段：skill_id / preconditions / parameters），神通 Skill 严格按此契约落地，禁造新 Skill 结构；**runtime 调用 deferred**（loop 只消费 `ToolProvider`，不接 SkillLibrary）。
+3. **确认 skills 的 Skill 注册契约**：读 `doc/03-interfaces/skills-interface.md`（Skill 字段：skill_id / preconditions / param_schema），神通 Skill 严格按此契约落地，禁造新 Skill 结构；**runtime 调用 deferred**（loop 只消费 `ToolProvider`，不接 SkillLibrary）。
 4. **复用 pet 六模块骨架**：以 `src/core/pet/` 为模板平移出 `src/core/beast/`（models / session / activator / manager / registry / skills），保持与 pet 相同的分层粒度。
 
 ---
