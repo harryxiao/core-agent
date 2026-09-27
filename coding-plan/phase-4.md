@@ -23,18 +23,18 @@
 
 **M3 标志**：编排 DAG + RAG 检索可运行。以下全部勾选才算 Phase 4 完成：
 
-- [ ] orchestration：合法状态转移、非法转移拒绝、死循环检测
-- [ ] orchestration：拆解拓扑执行、子任务校验通过才推进
-- [ ] orchestration：能力匹配交接、无匹配 Agent 处理；挂起/恢复/取消
-- [ ] orchestration：波次划分并行扇出、fan-in 汇总推进、资源上限、fan-out 幂等派发
-- [ ] orchestration：成功标准 + 进度追踪、未达标重试/重规划
-- [ ] orchestration：优先级排序、同优先级稳定、缺省处理
-- [ ] orchestration：复用异步接口、扇出真并发非阻塞、契约空白闭合
-- [ ] rag：文档导入建索引、源变更增量更新、摄取/重建失败降级
-- [ ] rag：本地推理无外部依赖、可经 llm-provider 切远端模型
-- [ ] rag：top-k 相似度检索；检索上下文注入生成、无结果降级
-- [ ] rag：与 CodeBase Engine 职责边界（文档/代码各归其位）
-- [ ] 端到端：一个多子任务任务经编排 DAG 分发到多个 Agent，检索结果注入生成全程可跑
+- [x] orchestration：合法状态转移、非法转移拒绝、死循环检测
+- [x] orchestration：拆解拓扑执行、子任务校验通过才推进
+- [x] orchestration：能力匹配交接、无匹配 Agent 处理；挂起/恢复/取消
+- [x] orchestration：波次划分并行扇出、fan-in 汇总推进、资源上限、fan-out 幂等派发
+- [x] orchestration：成功标准 + 进度追踪、未达标重试/重规划
+- [x] orchestration：优先级排序、同优先级稳定、缺省处理
+- [x] orchestration：复用异步接口、扇出真并发非阻塞、契约空白闭合
+- [x] rag：文档导入建索引、源变更增量更新、摄取/重建失败降级
+- [x] rag：本地推理无外部依赖、可经 llm-provider 切远端模型
+- [x] rag：top-k 相似度检索；检索上下文注入生成、无结果降级
+- [x] rag：与 CodeBase Engine 职责边界（文档/代码各归其位）
+- [x] 端到端：一个多子任务任务经编排 DAG 分发到多个 Agent，检索结果注入生成全程可跑
 
 ---
 
@@ -115,13 +115,13 @@ pytest -q
 
 本 Phase 专属校验（附加于全局门禁）：
 
-- [ ] 架构测试：orchestration 不得反向依赖 composition（Phase 6 才引入）
-- [ ] 状态机测试：非法转移拒绝 + 死循环检测生效
-- [ ] 并行扇出测试：fan-out 真并发非阻塞，fan-in 汇总正确，幂等无重复派发
-- [ ] 断点续跑测试：挂起后恢复，进度不丢失
-- [ ] rag 摄取测试：文档导入建索引、源变更增量更新、失败降级
-- [ ] rag 检索测试：top-k 相似度正确、无结果降级、生成融合上下文注入
-- [ ] 端到端冒烟：编排 DAG 分发多子任务 + RAG 检索注入生成全程可跑
+- [x] 架构测试：orchestration 不得反向依赖 composition（Phase 6 才引入）
+- [x] 状态机测试：非法转移拒绝 + 死循环检测生效
+- [x] 并行扇出测试：fan-out 真并发非阻塞，fan-in 汇总正确，幂等无重复派发
+- [x] 断点续跑测试：挂起后恢复，进度不丢失
+- [x] rag 摄取测试：文档导入建索引、源变更增量更新、失败降级
+- [x] rag 检索测试：top-k 相似度正确、无结果降级、生成融合上下文注入
+- [x] 端到端冒烟：编排 DAG 分发多子任务 + RAG 检索注入生成全程可跑
 
 ---
 

@@ -39,8 +39,8 @@ RECOVERING→EXECUTING | FAILED
 
 ```python
 class SubtaskDecomposer:
-    def decompose(self, goal: str) -> Plan:
-        """大目标 → 分步 Todo（含验收标准与依赖 DAG）。"""
+    def decompose(self, goal: str, success_criteria: list[str] | None = None) -> Plan:
+        """大目标 → 分步 Todo（含验收标准与依赖 DAG）；success_criteria 透传至 Plan。"""
 
     def verify(self, subtask: Subtask, result: Any) -> VerifyResult:
         """用验收标准校验子任务结果；通过才推进。"""
