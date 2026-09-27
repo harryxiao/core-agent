@@ -1,6 +1,6 @@
 """受限探索工具集（pet-explore）。
 
-只读优先、需授权、清单可配置（R11）；实现 pet_core.ExplorerLayer 探索工具集层。
+只读优先、需授权、清单可配置（R11）；实现 core.pet.core.ExplorerLayer 探索工具集层。
 
 对应接口：doc/03-interfaces/pet-mode-interface.md §1（探索工具集层）
 """

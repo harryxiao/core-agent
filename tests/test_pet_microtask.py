@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.pet_microtask import MicrotaskRunner
+from core.pet.microtask import MicrotaskRunner
 
 
 def test_default_excludes_intrusive() -> None:

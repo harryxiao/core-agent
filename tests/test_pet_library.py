@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.pet_library import CharacterLibrary, Persona
+from core.pet.library import CharacterLibrary, Persona
 
 
 def test_render_prompt_contains_persona_text() -> None:

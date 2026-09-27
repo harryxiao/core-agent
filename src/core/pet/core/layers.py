@@ -2,8 +2,8 @@
 
 R7 四层解耦：基础属性层（PersonaLayer）/ 自主目标循环层（复用
 core.loop.LoopPlugin）/ 探索工具集层（ExplorerLayer）/ 安全边界层
-（SafetyLayer）。各层以 Protocol 声明，由 pet_library / pet_explore /
-pet_safety 提供实现，独立配置与替换。
+（SafetyLayer）。各层以 Protocol 声明，由 pet 子模块 library /
+explore / safety 提供实现，独立配置与替换。
 
 对应接口：doc/03-interfaces/pet-mode-interface.md §1
 """

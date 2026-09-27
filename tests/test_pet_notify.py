@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.pet_notify import AsyncNotifier
+from core.pet.notify import AsyncNotifier
 
 
 def test_notify_enqueues_without_delivering() -> None:

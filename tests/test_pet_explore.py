@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.pet_explore import Explorer
+from core.pet.explore import Explorer
 
 
 def test_available_returns_allowlist() -> None:

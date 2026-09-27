@@ -1,7 +1,7 @@
 """宠物人格模型（pet-library）。
 
 pet.md/prompt 设定角色/性格/喜好，行为与输出风格受人格约束（R9）；
-实现 pet_core.PersonaLayer 基础属性层。
+实现 core.pet.core.PersonaLayer 基础属性层。
 
 对应接口：doc/03-interfaces/pet-mode-interface.md §1（基础属性层）
 """

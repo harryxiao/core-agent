@@ -6,7 +6,7 @@ import pytest
 
 from core.loop import LoopResult
 from core.memory import MemoryEntry
-from core.pet_core import (
+from core.pet.core import (
     PetActivator,
     PetError,
     PetErrorCode,

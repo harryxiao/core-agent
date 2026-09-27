@@ -47,12 +47,7 @@ EXPECTED_PACKAGES = {
     "ui",  # 接入：三模统一入口
     "im",  # 接入：IM 网关
     "git",  # 工具横切：版本控制
-    "pet_core",  # 宠物模式核心（后台自治循环）
-    "pet_library",  # 宠物人格与角色库
-    "pet_explore",  # 受限探索工具集
-    "pet_safety",  # 宠物安全边界
-    "pet_notify",  # 异步通知
-    "pet_microtask",  # 日常微任务
+    "pet",  # 宠物模式子系统（core/library/explore/safety/notify/microtask）
 }
 
 # 主题 9（Phase 0 补充）：底座模块只依赖彼此 + stdlib，不反向依赖能力层
@@ -79,12 +74,7 @@ CAPABILITY_MODULES = {
     "ui",
     "im",
     "git",
-    "pet_core",
-    "pet_library",
-    "pet_explore",
-    "pet_safety",
-    "pet_notify",
-    "pet_microtask",
+    "pet",
 }
 
 _SNAKE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -124,6 +114,24 @@ def _core_subpackages(path: pathlib.Path) -> set[str]:
             parts = name.split(".")
             if len(parts) > 1 and parts[0] == "core":
                 found.add(parts[1])
+    return found
+
+
+def _pet_subpackages(path: pathlib.Path) -> set[str]:
+    """返回文件中 import 的 pet 子模块名（core/library/explore/safety/notify/microtask）。"""
+    tree = _parse(path)
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            dotted = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            dotted = [node.module]
+        else:
+            continue
+        for name in dotted:
+            parts = name.split(".")
+            if len(parts) >= 3 and parts[0] == "core" and parts[1] == "pet":  # noqa: PLR2004
+                found.add(parts[2])
     return found
 
 
@@ -355,24 +363,24 @@ def test_phase7_ci_cd_ui_im_git_no_reverse_dependency() -> None:
 
 
 def test_phase8_pet_modules_no_reverse_dependency() -> None:
-    """pet 六模块单向依赖：pet_core 基座；leaf 仅依赖 pet_core。
+    """pet 六子模块单向依赖：core 基座；leaf 仅依赖 core。
 
-    microtask 额外可依赖 pet_safety。
+    microtask 额外可依赖 safety。
     """
 
     forbidden: dict[str, set[str]] = {
-        "pet_core": {"pet_library", "pet_explore", "pet_safety", "pet_notify", "pet_microtask"},
-        "pet_library": {"pet_explore", "pet_safety", "pet_notify", "pet_microtask"},
-        "pet_explore": {"pet_library", "pet_safety", "pet_notify", "pet_microtask"},
-        "pet_safety": {"pet_library", "pet_explore", "pet_notify", "pet_microtask"},
-        "pet_notify": {"pet_library", "pet_explore", "pet_safety", "pet_microtask"},
-        "pet_microtask": {"pet_library", "pet_explore", "pet_notify"},
+        "core": {"library", "explore", "safety", "notify", "microtask"},
+        "library": {"explore", "safety", "notify", "microtask"},
+        "explore": {"library", "safety", "notify", "microtask"},
+        "safety": {"library", "explore", "notify", "microtask"},
+        "notify": {"library", "explore", "safety", "microtask"},
+        "microtask": {"library", "explore", "notify"},
     }
     offenders: list[str] = []
-    for pkg, banned in forbidden.items():
-        for path in (SRC / pkg).rglob("*.py"):
+    for sub, banned in forbidden.items():
+        for path in (SRC / "pet" / sub).rglob("*.py"):
             offenders.extend(
-                f"{pkg}/{path.name} -> core.{sub}"
-                for sub in sorted(_core_subpackages(path) & banned)
+                f"pet/{sub}/{path.name} -> pet.{dep}"
+                for dep in sorted(_pet_subpackages(path) & banned)
             )
-    assert not offenders, f"Phase8 宠物模式模块反向依赖: {offenders}"
+    assert not offenders, f"Phase8 宠物模式子模块反向依赖: {offenders}"

@@ -1,7 +1,7 @@
 """宠物安全边界（pet-safety）。
 
 只读优先、不可逆操作禁止、爆炸半径可控、越界即阻断（R12）；实现
-pet_core.SafetyLayer 安全边界层。越界返回 SafetyDecision（阻断是决策非
+core.pet.core.SafetyLayer 安全边界层。越界返回 SafetyDecision（阻断是决策非
 错误），PetSession 据此暂停并通知主人。
 
 对应接口：doc/03-interfaces/pet-mode-interface.md §1（安全边界层）
@@ -9,7 +9,7 @@ pet_core.SafetyLayer 安全边界层。越界返回 SafetyDecision（阻断是�
 
 from __future__ import annotations
 
-from core.pet_core import SafetyDecision
+from core.pet.core import SafetyDecision
 
 # 默认不可逆操作集合。
 _DEFAULT_IRREVERSIBLE = {"file.write", "file.patch", "git.push", "rm"}

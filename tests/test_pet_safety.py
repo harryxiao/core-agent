@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.pet_safety import SafetyBounds
+from core.pet.safety import SafetyBounds
 
 
 def test_read_only_blocks_write() -> None:
