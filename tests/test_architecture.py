@@ -29,9 +29,11 @@ EXPECTED_PACKAGES = {
     "context",  # L2.5 上下文工程
     "tools",  # L1 工具使用
     "memory",  # L2 记忆
+    "rag",  # L3 检索底座
     "loop",  # L3 智能体循环
     "skills",  # L3 技能封装
     "skillhub",  # L3 技能市场
+    "orchestration",  # L3.5 任务编排
     "evolution",  # L4 进化
     "composition",  # L5 组合分发
     "constraints",  # 横切：约束/熔断/压缩
@@ -47,9 +49,11 @@ CAPABILITY_MODULES = {
     "context",
     "tools",
     "memory",
+    "rag",
     "loop",
     "skills",
     "skillhub",
+    "orchestration",
     "evolution",
     "composition",
     "constraints",
@@ -256,3 +260,22 @@ def test_phase3_loop_no_reverse_dependency() -> None:
                 for sub in sorted(_core_subpackages(path) & banned)
             )
     assert not offenders, f"引擎主轴反向依赖上层: {offenders}"
+
+
+# ---- 主题 9（Phase 4 补充）：编排与检索底座不反向依赖上层 ----
+
+
+def test_phase4_orchestration_rag_no_reverse_dependency() -> None:
+    """orchestration 不得反向依赖 evolution/composition；rag 不得反向依赖 orchestration 及以上。"""
+    forbidden: dict[str, set[str]] = {
+        "orchestration": {"evolution", "composition"},
+        "rag": {"orchestration", "evolution", "composition"},
+    }
+    offenders: list[str] = []
+    for pkg, banned in forbidden.items():
+        for path in (SRC / pkg).rglob("*.py"):
+            offenders.extend(
+                f"{pkg}/{path.name} -> core.{sub}"
+                for sub in sorted(_core_subpackages(path) & banned)
+            )
+    assert not offenders, f"Phase4 编排/检索底座反向依赖上层: {offenders}"

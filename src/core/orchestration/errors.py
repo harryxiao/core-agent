@@ -1,0 +1,34 @@
+"""任务编排领域错误码（orchestration）。
+
+结构化错误码与异常分离：非法转移 / 校验失败 / 死循环 / 无匹配 Agent /
+并行度超限 / 进度未达标，以领域异常承载，不向模型抛裸异常。
+
+对应接口：doc/03-interfaces/orchestration-interface.md §4
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+
+
+class OrchestrationErrorCode(StrEnum):
+    """编排结构化错误码。"""
+
+    INVALID_TRANSITION = "INVALID_TRANSITION"
+    SUBTASK_VERIFY_FAILED = "SUBTASK_VERIFY_FAILED"
+    DEADLOOP_DETECTED = "DEADLOOP_DETECTED"
+    NO_AGENT_MATCH = "NO_AGENT_MATCH"
+    WAVE_FANOUT_LIMIT = "WAVE_FANOUT_LIMIT"
+    PROGRESS_NOT_MET = "PROGRESS_NOT_MET"
+
+
+class OrchestrationError(Exception):
+    """编排业务异常：携带结构化错误码与人类可读信息。"""
+
+    def __init__(self, code: OrchestrationErrorCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+    def __str__(self) -> str:
+        return f"{self.code.value}: {self.message}"

@@ -30,13 +30,13 @@
 | permission | ✅ | ✅ | 分级权限 + 人工审批 + 沙箱隔离 | APPROVAL_EXPIRED, APPROVAL_REQUIRED, APPROVAL_TIMEOUT, PERMISSION_DENIED, SANDBOX_UNAVAILABLE |
 | pet-mode | ✅ | ✅ | 后台宠物模式（自治循环 + 多宠物 + 人格 + 受限探索 + 通知） | PET_ALREADY_ACTIVE, PET_NOT_ACTIVE, PET_BACKOFF, PET_YIELDING, PET_PREFERENCE_WRITE_FAILED |
 | plugin-registry | ✅ | ✅ | 插件注册表 + 依赖解析 + 隔离 | COEFFECT_MISSING, GENERATION_CONFLICT, INVALID_SCHEMA, NOT_ACTIVE, UNDO_FAILED |
-| rag | ✅ | ❌ | 本地向量库 + 检索增强生成 | — |
+| rag | ✅ | ✅ | 本地向量库 + 检索增强生成 | EMBEDDING_FAILED, INDEX_CORRUPT, REBUILD_FAILED |
 | skillhub | ✅ | ✅ | 技能市场（发现/路由/签名/审核） | PUBLISH_REJECTED, SIGNATURE_INVALID, SKILL_NOT_ACTIVE, SOURCE_NOT_FOUND, SOURCE_UNHEALTHY |
 | skills | ✅ | ✅ | 原子技能库 + 版本灰度/A/B + 路由 | INVALID_SKILL_SCHEMA, NO_SKILL_MATCH, PRECONDITION_FAILED |
 | tool-use | ✅ | ✅ | 工具 schema/参数校验 + coeffect 副作用契约 | COEFFECT_MISSING, GATE_DENIED, INVALID_ARGS, INVALID_TOOL_SCHEMA, IRREVERSIBLE_BLOCKED, TIMEOUT, UNDO_FAILED |
 | ui | ✅ | ✅ | 三模入口（CLI/Web/Desktop）统一后端 API | — |
 
-> 注：`git`、`rag` 两个规格无对应接口文件（纯规格层）。
+> 注：`git` 规格无对应接口文件（纯规格层）。
 
 ---
 
@@ -193,7 +193,7 @@
 - **方法**：`load()`、`unload()`、`check()`、`record()`、`rollback()`、`replay()`、`audit()`、`resolve()`、`register()`、`compose()`、`activate()`、`apply()`、`undo()`。
 - **错误码**：`COEFFECT_MISSING`、`GENERATION_CONFLICT`、`INVALID_SCHEMA`、`NOT_ACTIVE`、`UNDO_FAILED`。
 
-### 21. rag — RAG（无接口）
+### 21. rag — RAG
 
 - **能力**：本地向量库（sqlite-vec）、文档摄取分块、本地 Embedding、语义检索、生成融合。
 - **契约**：嵌入式零服务存储；文档导入建索引、源变更增量更新、摄取/重建失败降级；本地推理无外部依赖、可经 llm-provider 切远端模型；top-k 相似度检索；检索上下文注入生成、无结果降级；与 CodeBase Engine 职责边界（文档/代码各归其位）。

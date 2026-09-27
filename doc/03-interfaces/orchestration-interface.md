@@ -12,6 +12,7 @@ class TaskState(str, Enum):
     PLANNING = "planning"
     EXECUTING = "executing"
     VERIFYING = "verifying"
+    SUSPENDED = "suspended"
     RECOVERING = "recovering"
     FAILED = "failed"
     DONE = "done"
@@ -27,6 +28,7 @@ class StateMachine:
 
 ```
 CREATED→PLANNING→EXECUTING→VERIFYING→{EXECUTING(重试)|DONE|RECOVERING}
+EXECUTING→SUSPENDED（挂起）；SUSPENDED→EXECUTING（恢复）
 RECOVERING→EXECUTING | FAILED
 任意态→FAILED（熔断/人工终止）
 ```
@@ -70,6 +72,12 @@ class VerifyResult:
 ## 3. 多 Agent 协同接口
 
 ```python
+@dataclass
+class AgentProfile:
+    agent_id: str               # 子 Agent 唯一 id
+    capabilities: list[str]     # 能力标签（路由匹配依据）
+    loop: LoopPlugin | None     # 可编排执行单元（arun/astream），handoff 时复用
+
 @dataclass
 class TaskHandoff:
     task: str
