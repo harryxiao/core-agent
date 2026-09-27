@@ -86,7 +86,18 @@ LLM API（provider / endpoint / key / base URL）只在后端配置一次：
 
 ---
 
-## 5. 关联
+## 5. 错误码
+
+| 错误码 | 含义 |
+|---|---|
+| `UI_LLM_KEY_UNSET` | LLM API Key 未配置（运行 loop 前校验） |
+| `UI_SESSION_NOT_FOUND` | 会话不存在 |
+| `UI_MODALITY_MISSING` | 模型不具备该模态理解能力 |
+| `UI_BARGEIN` | 语音播报被打断（barge-in） |
+
+---
+
+## 6. 关联
 
 - 模块：`06-ui-frontend/ui-architecture.md`
 - 规格：`openspec/specs/ui/spec.md`

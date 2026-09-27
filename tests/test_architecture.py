@@ -43,6 +43,10 @@ EXPECTED_PACKAGES = {
     "permission",  # 横切：权限/审批/沙箱
     "mcp",  # 横切：MCP 协议
     "cli_ops",  # 横切：CLI 运维命令面
+    "ci_cd",  # 交付：CI/CD 流水线
+    "ui",  # 接入：三模统一入口
+    "im",  # 接入：IM 网关
+    "git",  # 工具横切：版本控制
 }
 
 # 主题 9（Phase 0 补充）：底座模块只依赖彼此 + stdlib，不反向依赖能力层
@@ -65,6 +69,10 @@ CAPABILITY_MODULES = {
     "permission",
     "mcp",
     "cli_ops",
+    "ci_cd",
+    "ui",
+    "im",
+    "git",
 }
 
 _SNAKE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -314,3 +322,21 @@ def test_phase6_composition_distributed_deployment_no_reverse_dependency() -> No
                 for sub in sorted(_core_subpackages(path) & banned)
             )
     assert not offenders, f"Phase6 组合/分布层反向依赖上层: {offenders}"
+
+
+def test_phase7_ci_cd_ui_im_git_no_reverse_dependency() -> None:
+    """ci-cd/ui/im/git 四模块两两互不依赖（均为交付/接入/工具横切端顶点）。"""
+    forbidden: dict[str, set[str]] = {
+        "ci_cd": {"ui", "im", "git"},
+        "ui": {"ci_cd", "im", "git"},
+        "im": {"ci_cd", "ui", "git"},
+        "git": {"ci_cd", "ui", "im"},
+    }
+    offenders: list[str] = []
+    for pkg, banned in forbidden.items():
+        for path in (SRC / pkg).rglob("*.py"):
+            offenders.extend(
+                f"{pkg}/{path.name} -> core.{sub}"
+                for sub in sorted(_core_subpackages(path) & banned)
+            )
+    assert not offenders, f"Phase7 交付/接入层两两互不依赖: {offenders}"
