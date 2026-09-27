@@ -14,15 +14,15 @@
 
 ## 0. 边界铁律（先读，决定哪些「算 CLI」）
 
-1. **UIAPILayer 8 方法 = 三桥统一命令面核心锚点**（关键结论 6/7）：
-   - create_session / run_loop 经 CLI 子命令（`session create` / `run`）暴露；其余 6 方法（get_memory / compact / list_tools / invoke_tool / get_llm_config / set_llm_config）经三桥统一 API（SSE/WS）暴露。
+1. **UIAPILayer 9 方法 = 三桥统一命令面核心锚点**（关键结论 6/7）：
+   - create_session / run_loop 经 CLI 子命令（`session create` / `run`）暴露；其余 7 方法（barge_in / get_memory / compact / list_tools / invoke_tool / get_llm_config / set_llm_config）经三桥统一 API（SSE/WS）暴露。
    - 内置工具 `tools.*`、SafetyGate 交互（confirm/ask）、SSE 事件、五阶段 loop 协议——全部走运行时协议（SSE/WS/API），**不进 CLI 命令面**。
 2. **SSE 事件是前端流式协议**，属 CLI 基线「必选联动项」而非命令。
 3. **CLI 覆盖四类**：① 启动/生命周期/运维入口；② 配置读写校验；③ 资产管理（MCP/插件/技能）与分发；④ 会话/运行（`session create` / `run`，UIAPILayer 核心锚点）。运行时其余能力走统一 UIAPILayer。
 
 ---
 
-## 1. 命令面总览（29 动词 + 14 全局 flag）
+## 1. 命令面总览（30 动词 + 14 全局 flag）
 
 | 子命令族 | 命令动词 | 层 | 缺口归属 |
 |---|---|---|---|
@@ -34,6 +34,7 @@
 | 技能市场 | skill search/install/remove | L3 skillhub | install=plugin --kind skill 别名 |
 | 会话/运行 | session create + run | L1 UIAPILayer | 命令面核心锚点 |
 | 分发 | release publish/upgrade/rollback | L5 ReleaseManager | 补 |
+| 宠物 | pet <verb> | 编排层扩展 pet-mode | 补 M6（三入口之一，子动词面见 pet-mode-interface §3） |
 
 ---
 
@@ -108,7 +109,13 @@
 | 28 | `core-agent release upgrade <version>` | 升级 | ReleaseManager.upgrade() |
 | 29 | `core-agent release rollback` | 回滚 | ReleaseManager.rollback() |
 
-### 2.9 全局 flag（启动参数，非子命令 · 14）
+### 2.9 宠物（pet-mode · 补 M6）
+
+| # | 命令 | 语义 | 对应 | 缺口 |
+|---|---|---|---|---|
+| 30 | `core-agent pet <verb> [...]` | 激活/枚举/停止宠物（后台自治会话），三入口之一 | `PetActivator.activate_from_cli(verb, rest)` / `PetManager` | **补 M6（子动词面待 phase-9 敲定，见 pet-mode-interface §3）** |
+
+### 2.10 全局 flag（启动参数，非子命令 · 14）
 
 | # | flag | 语义 | 落点 |
 |---|---|---|---|
@@ -235,11 +242,11 @@ CLI flag  >  env var  >  config.yaml  >  默认值
 
 ---
 
-## 10. 运行时命令面（UIAPILayer 8 方法 = 三桥统一命令面核心锚点）
+## 10. 运行时命令面（UIAPILayer 9 方法 = 三桥统一命令面核心锚点）
 
 | 类别 | 成员 | 暴露方式 |
 |---|---|---|
-| UIAPILayer 8 方法 | create_session / run_loop / get_memory / compact / list_tools / invoke_tool / get_llm_config / set_llm_config | 三桥统一 API；create_session / run_loop 另经 CLI 子命令（session create / run）暴露，其余经 SSE/WS |
+| UIAPILayer 9 方法 | create_session / run_loop / barge_in / get_memory / compact / list_tools / invoke_tool / get_llm_config / set_llm_config | 三桥统一 API；create_session / run_loop 另经 CLI 子命令（session create / run）暴露，其余经 SSE/WS |
 | 内置工具 tools.* 9 个 | file_read/file_write/file_patch（✅已实现）；code_run/web_scan/web_execute_js/ask_user/process/memory（**未实现**） | 工具 ID，经 ToolProvider.invoke 调用 |
 | 对话指令 | SafetyGate.confirm(confirm/deny/auto) / ApprovalWorkflow.ask / tools.ask_user | 运行时交互，非 CLI |
 | SSE 事件契约 | session.created / loop.perception / reasoning / action / result / error | Web/桌面流式协议，CLI 基线必选联动项 |
