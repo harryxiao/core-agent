@@ -36,6 +36,8 @@ EXPECTED_PACKAGES = {
     "orchestration",  # L3.5 任务编排
     "evolution",  # L4 进化
     "composition",  # L5 组合分发
+    "distributed",  # 分布层（横切）
+    "deployment",  # 托管层（横切）
     "constraints",  # 横切：约束/熔断/压缩
     "durability",  # 横切：检查点/恢复
     "permission",  # 横切：权限/审批/沙箱
@@ -56,6 +58,8 @@ CAPABILITY_MODULES = {
     "orchestration",
     "evolution",
     "composition",
+    "distributed",
+    "deployment",
     "constraints",
     "durability",
     "permission",
@@ -294,3 +298,19 @@ def test_phase5_evolution_no_reverse_dependency() -> None:
                 for sub in sorted(_core_subpackages(path) & banned)
             )
     assert not offenders, f"Phase5 进化层反向依赖 composition: {offenders}"
+
+
+def test_phase6_composition_distributed_deployment_no_reverse_dependency() -> None:
+    """composition 不依赖 distributed/deployment/evolution；distributed 不依赖 deployment。"""
+    forbidden: dict[str, set[str]] = {
+        "composition": {"distributed", "deployment", "evolution"},
+        "distributed": {"deployment"},
+    }
+    offenders: list[str] = []
+    for pkg, banned in forbidden.items():
+        for path in (SRC / pkg).rglob("*.py"):
+            offenders.extend(
+                f"{pkg}/{path.name} -> core.{sub}"
+                for sub in sorted(_core_subpackages(path) & banned)
+            )
+    assert not offenders, f"Phase6 组合/分布层反向依赖上层: {offenders}"

@@ -89,7 +89,16 @@ class HarnessHost:
 - 升级失败自动回滚到上一可用版本，运行环境不处于半升级状态。
 - 探活发现异常 → 触发告警或自动恢复，生命周期操作（启动/停止/重启）可正常执行。
 
-## 8. 关联
+## 8. 错误码
+
+| 错误码 | 含义 |
+|---|---|
+| `UPGRADE_FAILED` | 升级失败（已自动回滚） |
+| `ROLLBACK_FAILED` | 回滚失败 |
+| `HEALTH_UNHEALTHY` | 探活异常 |
+| `NOT_READY` | 生命周期非法迁移 / 未 bootstrap 就操作 |
+
+## 9. 关联
 
 - 打包分发互补：`composition-interface.md`（Composition 决定「装什么」，Deployment 决定「跑在哪/怎么跑/怎么升级」）
 - 跨设备拓扑互补：`distributed-interface.md`

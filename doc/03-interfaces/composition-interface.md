@@ -37,6 +37,7 @@ class Bundle:
     version: str
     hash: str                 # 内容哈希，保证跨部署一致
     plugin_refs: list[PluginRef]
+    deps: list[str]           # 依赖的 bundle 名（用于循环依赖检测）
 
 @dataclass
 class PatchSpec:
@@ -89,7 +90,16 @@ class BundleDistributor:
 
 ---
 
-## 6. 关联
+## 6. 错误码
+
+| 错误码 | 含义 |
+|---|---|
+| `BUNDLE_INVALID` | bundle 校验和 / 哈希 / 版本不符或格式损坏 |
+| `CIRCULAR_DEPENDENCY` | bundle 依赖构成环 |
+| `PATCH_CONFLICT` | patch.yml 覆盖冲突无法唯一判定 |
+| `PLUGIN_MISSING` | profile / patch 引用了不存在的插件 |
+
+## 7. 关联
 
 - 模块：`02-modules/composition.md`
 - 插件来源：`plugin-registry-interface.md`
