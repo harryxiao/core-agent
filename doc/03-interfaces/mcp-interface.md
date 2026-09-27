@@ -44,7 +44,23 @@ class MCPEndpoint:
 
 ---
 
-## 3. 适配器（远程工具 → ToolDef）
+## 3. Transport 抽象（传输层隔离）
+
+传输层是 MCP 的三方依赖边界：底层 MCP SDK / JSON-RPC 传输实现收敛于单一 Transport 适配器，`MCPClient` / `MCPServer` 只依赖 Transport 抽象，替换 SDK 或传输实现零改动。
+
+```python
+class Transport(Protocol):
+    def connect(self, endpoint: MCPEndpoint) -> None: ...
+    def call(self, session_id: str | None, method: str, params: dict) -> Any: ...
+    def close(self) -> None: ...
+    def ping(self) -> bool: ...
+```
+
+> 生产实现（stdio / http / streamable-http）懒 import；测试用 `FakeTransport` 注入断线 / 超时 / 异常，不碰真实网络。
+
+---
+
+## 4. 适配器（远程工具 → ToolDef）
 
 ```python
 class MCPToolAdapter:
@@ -59,7 +75,7 @@ class MCPToolAdapter:
 
 ---
 
-## 4. 调用流程（client）
+## 5. 调用流程（client）
 
 ```
 ToolProvider.invoke(mcp.x.y, args)
@@ -70,7 +86,7 @@ ToolProvider.invoke(mcp.x.y, args)
 
 ---
 
-## 5. MCPServer 接口（server）
+## 6. MCPServer 接口（server）
 
 ```python
 class MCPServer(Plugin):
@@ -88,7 +104,7 @@ class MCPServer(Plugin):
 
 ---
 
-## 6. 错误码
+## 7. 错误码
 
 | code | 含义 |
 |---|---|
@@ -103,7 +119,7 @@ class MCPServer(Plugin):
 
 ---
 
-## 7. 关联
+## 8. 关联
 
 - 模块：`02-modules/mcp.md`
 - 工具契约：`tool-use-interface.md`

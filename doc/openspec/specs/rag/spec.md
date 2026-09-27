@@ -2,17 +2,17 @@
 
 ## Purpose
 
-RAG（检索增强生成）让 Core-Agent 通过本地向量库语义检索知识文档、弥补 LLM 知识缺口：以 sqlite-vec 嵌入式零服务向量库存储文档向量，sentence-transformers + BGE 本地推理生成 embedding，检索器按向量相似度取 top-k 片段，经 context 装配器注入上下文、由 llm-provider 生成。职责边界：RAG 管「知识文档」语义检索，codebase-memory-mcp 管「代码结构」结构化理解，二者正交互补。
+RAG（检索增强生成）让 Core-Agent 通过本地向量库语义检索知识文档、弥补 LLM 知识缺口：以嵌入式零服务向量库存储文档向量，本地 embedding 模型推理生成 embedding，检索器按向量相似度取 top-k 片段，经 context 装配器注入上下文、由 llm-provider 生成。职责边界：RAG 管「知识文档」语义检索，codebase-memory-mcp 管「代码结构」结构化理解，二者正交互补。
 
 ## Requirements
 
 ### Requirement: 本地向量库存储
-系统 SHALL 以 sqlite-vec 作为本地嵌入式向量库存储文档向量与索引：零服务、零外部依赖，与既有 SQLite 生态统一，无需独立 daemon 或外部向量数据库。
+系统 SHALL 以本地嵌入式零服务向量库存储文档向量与索引：零服务、零外部依赖，与既有 SQLite 生态统一，无需独立 daemon 或外部向量数据库。默认实现为 sqlite-vec，经 VectorStore 抽象接口隔离，替换向量库实现时调用方零改动。
 
 #### Scenario: 嵌入式零服务存储
 - **GIVEN** 知识文档完成 embedding
 - **WHEN** 向量写入向量库
-- **THEN** 向量落盘于本地 SQLite 向量扩展，无需启动独立服务或外部向量数据库
+- **THEN** 向量落盘于本地嵌入式向量库（默认 SQLite 向量扩展），无需启动独立服务或外部向量数据库
 
 ### Requirement: 文档摄取与分块
 系统 SHALL 提供文档摄取管线：导入知识文档 → 分块 → 生成 embedding → 建立向量索引，并支持增量更新与索引失效检测。
@@ -33,17 +33,30 @@ RAG（检索增强生成）让 Core-Agent 通过本地向量库语义检索知�
 - **THEN** 该文档检索降级为旧索引（或纯 LLM 生成），记录失败并可重试，不阻断主流程
 
 ### Requirement: 本地 Embedding
-系统 SHALL 用 sentence-transformers + BGE 在本地推理生成 embedding，无需外部 API；可经 llm-provider 归一化 embedding 入口切换远端模型，调用方零改动。
+系统 SHALL 用本地 embedding 模型在本地推理生成 embedding（默认 sentence-transformers + BGE），无需外部 API；可经 llm-provider 归一化 embedding 入口切换远端模型，调用方零改动。
 
 #### Scenario: 本地推理无外部依赖
 - **GIVEN** 一段文本需生成向量
 - **WHEN** 调用 embedding 生成
-- **THEN** 由本地 sentence-transformers + BGE 推理完成，不请求外部 embedding API
+- **THEN** 由本地 embedding 模型（默认 sentence-transformers + BGE）推理完成，不请求外部 embedding API
 
 #### Scenario: 经 llm-provider 切换远端模型
 - **GIVEN** 用户配置了远端 embedding 模型
 - **WHEN** 经 llm-provider 归一化入口请求
 - **THEN** 无缝切换到远端模型，检索与调用方无感知
+
+### Requirement: 存储与 Embedding 依赖注入隔离
+系统 SHALL 通过依赖注入隔离 VectorStore 与 Embedder 实现：替换向量库（如 sqlite-vec → Chroma）或替换 embedding 后端（本地 → 远端 / 换模型）时，检索与调用方零改动。
+
+#### Scenario: 替换向量库实现
+- **GIVEN** 需要替换向量库实现（如 sqlite-vec → Chroma）
+- **WHEN** 注册新的 VectorStore 实现
+- **THEN** Retriever 及所有调用方无需改动即可切换
+
+#### Scenario: 替换 embedding 后端
+- **GIVEN** 需要替换 embedding 后端（本地 BGE → 远端模型）
+- **WHEN** 经 llm-provider 归一化入口或注册新的 Embedder 实现
+- **THEN** 检索与调用方无感知切换
 
 ### Requirement: 语义检索
 系统 SHALL 按向量相似度检索 top-k 最相关片段、弥补 LLM 知识缺口，检索结果带相关度得分供后续裁剪排序。

@@ -88,7 +88,14 @@ class RagGenerator:
 
 ---
 
-## 6. 错误码
+## 6. 依赖注入隔离（MAL）
+
+- **VectorStore / Embedder 是三方依赖边界**：底层向量库（默认 sqlite-vec）与本地 embedding 模型（默认 sentence-transformers + BGE）收敛于单一适配器，懒 import，异常归一到领域错误码（见 §7），不泄漏底层库异常结构。
+- 经依赖注入装配（构造 / registry），`Retriever` 与 `RagGenerator` 只依赖抽象接口；替换向量库或 embedding 后端仅改装配点，调用方零改动。
+
+---
+
+## 7. 错误码
 
 | 错误码 | 含义 |
 |---|---|
@@ -98,7 +105,7 @@ class RagGenerator:
 
 ---
 
-## 7. 关联
+## 8. 关联
 
 - 模块：`02-modules/rag.md`
 - 规格：`openspec/specs/rag/spec.md`
