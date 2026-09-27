@@ -47,6 +47,12 @@ EXPECTED_PACKAGES = {
     "ui",  # 接入：三模统一入口
     "im",  # 接入：IM 网关
     "git",  # 工具横切：版本控制
+    "pet_core",  # 宠物模式核心（后台自治循环）
+    "pet_library",  # 宠物人格与角色库
+    "pet_explore",  # 受限探索工具集
+    "pet_safety",  # 宠物安全边界
+    "pet_notify",  # 异步通知
+    "pet_microtask",  # 日常微任务
 }
 
 # 主题 9（Phase 0 补充）：底座模块只依赖彼此 + stdlib，不反向依赖能力层
@@ -73,6 +79,12 @@ CAPABILITY_MODULES = {
     "ui",
     "im",
     "git",
+    "pet_core",
+    "pet_library",
+    "pet_explore",
+    "pet_safety",
+    "pet_notify",
+    "pet_microtask",
 }
 
 _SNAKE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -340,3 +352,27 @@ def test_phase7_ci_cd_ui_im_git_no_reverse_dependency() -> None:
                 for sub in sorted(_core_subpackages(path) & banned)
             )
     assert not offenders, f"Phase7 交付/接入层两两互不依赖: {offenders}"
+
+
+def test_phase8_pet_modules_no_reverse_dependency() -> None:
+    """pet 六模块单向依赖：pet_core 基座；leaf 仅依赖 pet_core。
+
+    microtask 额外可依赖 pet_safety。
+    """
+
+    forbidden: dict[str, set[str]] = {
+        "pet_core": {"pet_library", "pet_explore", "pet_safety", "pet_notify", "pet_microtask"},
+        "pet_library": {"pet_explore", "pet_safety", "pet_notify", "pet_microtask"},
+        "pet_explore": {"pet_library", "pet_safety", "pet_notify", "pet_microtask"},
+        "pet_safety": {"pet_library", "pet_explore", "pet_notify", "pet_microtask"},
+        "pet_notify": {"pet_library", "pet_explore", "pet_safety", "pet_microtask"},
+        "pet_microtask": {"pet_library", "pet_explore", "pet_notify"},
+    }
+    offenders: list[str] = []
+    for pkg, banned in forbidden.items():
+        for path in (SRC / pkg).rglob("*.py"):
+            offenders.extend(
+                f"{pkg}/{path.name} -> core.{sub}"
+                for sub in sorted(_core_subpackages(path) & banned)
+            )
+    assert not offenders, f"Phase8 宠物模式模块反向依赖: {offenders}"

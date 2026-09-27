@@ -1,0 +1,168 @@
+"""宠物会话生命周期（pet-core）。
+
+PetSession 是编排层「后台自治循环」核心句柄：启动 / 休眠 / 恢复 / 异常退避 /
+终止全生命周期收口；每次唤醒复用 Loop.run() 同步薄壳逐次执行；让行复用
+orchestration 任务状态机 SUSPENDED 语义（宠物自身仅四态，不新增枚举）；
+偏好以 MemoryEntry.source="user" 落 L2 facts 层。
+
+对应接口：doc/03-interfaces/pet-mode-interface.md §1
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections import deque
+from collections.abc import Callable
+
+from core.loop import DefaultLoop, LoopPlugin, LoopResult
+from core.memory import MemoryEntry, MemoryStore
+
+from .errors import PetError, PetErrorCode
+from .layers import ExplorerLayer, PersonaLayer, SafetyLayer
+from .models import PetSessionState, PetTask
+
+
+class PetSession:
+    """宠物会话：低优先级后台自治任务的生命周期与派发。"""
+
+    def __init__(  # noqa: PLR0913 — 注入面均为可选依赖注入
+        self,
+        *,
+        session_id: str | None = None,
+        loop: LoopPlugin | None = None,
+        memory: MemoryStore | None = None,
+        persona: PersonaLayer | None = None,
+        explorer: ExplorerLayer | None = None,
+        safety: SafetyLayer | None = None,
+        notifier: Callable[[str], None] | None = None,
+        busy: Callable[[], bool] | None = None,
+        feedback_period: int = 5,
+    ) -> None:
+        self.session_id = session_id if session_id is not None else uuid.uuid4().hex
+        self.state = PetSessionState.IDLE
+        self._loop = loop if loop is not None else DefaultLoop()
+        self._memory = memory
+        self._persona = persona
+        self._explorer = explorer
+        self._safety = safety
+        self._notifier = notifier
+        self._busy = busy if busy is not None else (lambda: False)
+        self._feedback_period = feedback_period
+        self._tasks: deque[PetTask] = deque()
+        self._yielding = False
+        self._fault = ""
+        self._wake_count = 0
+        self._last_trace_id = ""
+        self._preferences: dict[str, str] = {}
+
+    # ---- 生命周期 ----
+
+    def start(self, task: PetTask) -> None:
+        """IDLE → ACTIVE 并派发首个任务；重复激活被拒。"""
+        if self.state is not PetSessionState.IDLE:
+            raise PetError(PetErrorCode.PET_ALREADY_ACTIVE, "会话已激活，重复激活被拒")
+        self.state = PetSessionState.ACTIVE
+        self._tasks.append(task)
+
+    def wake(self) -> LoopResult:
+        """每次唤醒经 Loop.run() 同步薄壳执行一次自治任务。"""
+        if self.state is PetSessionState.BACKOFF:
+            raise PetError(PetErrorCode.PET_BACKOFF, "会话处于异常退避态，暂不可唤醒")
+        if self.state is not PetSessionState.ACTIVE:
+            raise PetError(PetErrorCode.PET_NOT_ACTIVE, "会话未激活，唤醒无效")
+        if self._yielding or self._busy():
+            raise PetError(PetErrorCode.PET_YIELDING, "主循环 busy，宠物让行")
+        goal = self._tasks[0].goal if self._tasks else "闲逛探索：观察当前环境"
+        result = self._loop.run(self._compose_prompt(goal))
+        self._last_trace_id = result.trace_id
+        self._wake_count += 1
+        return result
+
+    def suspend(self) -> None:
+        """让行/休眠：复用 orchestration 任务状态机 SUSPENDED 语义，不新增枚举。"""
+        self._require_active("suspend")
+        self._yielding = True
+
+    def resume(self) -> None:
+        """主循环释放资源后恢复，已完成的子任务结果不丢失。"""
+        self._require_active("resume")
+        self._yielding = False
+
+    def backoff(self, err: Exception) -> None:
+        """异常退避：标记故障态、隔离，不残留半运行状态，不阻塞主循环。"""
+        if self.state is PetSessionState.TERMINATED:
+            raise PetError(PetErrorCode.PET_NOT_ACTIVE, "会话已终止，无法退避")
+        self.state = PetSessionState.BACKOFF
+        self._fault = str(err)
+
+    def terminate(self) -> None:
+        """终止释放：任务与资源释放，无悬空引用。"""
+        self.state = PetSessionState.TERMINATED
+        self._tasks.clear()
+        self._yielding = False
+
+    # ---- 任务派发 ----
+
+    def dispatch(self, task: PetTask) -> None:
+        """低优先级派发；主循环 busy 时让行，不抢锁。"""
+        self._require_active("dispatch")
+        self._tasks.append(task)
+
+    # ---- 偏好追踪 ----
+
+    def observe(self, behavior: str) -> MemoryEntry:
+        """观察主人行为/反馈，以 MemoryEntry.source="user" 落 L2 facts 层。"""
+        if self._memory is None:
+            raise PetError(PetErrorCode.PET_PREFERENCE_WRITE_FAILED, "记忆后端未接，偏好无法落 L2")
+        entry = MemoryEntry(
+            id=uuid.uuid4().hex,
+            layer="L2",
+            content=behavior,
+            tags=["preference"],
+            source="user",
+            trace_id=self._last_trace_id or uuid.uuid4().hex,
+        )
+        if self._memory.write("L2", entry) is None:
+            raise PetError(PetErrorCode.PET_PREFERENCE_WRITE_FAILED, "偏好写入 L2 facts 层失败")
+        if ":" in behavior:
+            key, _, value = behavior.partition(":")
+            self._preferences[key.strip()] = value.strip()
+        return entry
+
+    def prefer(self, key: str) -> str | None:
+        """复用已记录偏好，供任务执行/沟通时对齐主人偏好。"""
+        if key in self._preferences:
+            return self._preferences[key]
+        if self._memory is None:
+            return None
+        for entry in self._memory.read(key, budget=512):
+            if entry.source == "user":
+                return entry.content
+        return None
+
+    # ---- 反馈与惊喜 ----
+
+    def report(self) -> str:
+        """达到反馈周期时向主人汇报后台进展，不阻塞主循环。"""
+        on_cycle = self._wake_count and self._wake_count % self._feedback_period == 0
+        prefix = "定期反馈：" if on_cycle else ""
+        name = self._persona.name if self._persona is not None else self.session_id[:8]
+        return f"{prefix}宠物 {name}（状态 {self.state.value}，待办 {len(self._tasks)}）"
+
+    def surprise(self) -> str:
+        """基于主人偏好发现可代办/取悦之事，主动执行并制造惊喜。"""
+        if self._preferences:
+            key, value = next(iter(self._preferences.items()))
+            return f"发现可代办：{key}={value}，已帮你安排"
+        return "发现一件你可能喜欢的小事，已帮你安排"
+
+    # ---- 内部辅助 ----
+
+    def _require_active(self, op: str) -> None:
+        if self.state is not PetSessionState.ACTIVE:
+            raise PetError(PetErrorCode.PET_NOT_ACTIVE, f"会话未激活，{op} 无效")
+
+    def _compose_prompt(self, goal: str) -> str:
+        if self._persona is None:
+            return goal
+        return f"{self._persona.render_prompt()}\n任务：{goal}"
