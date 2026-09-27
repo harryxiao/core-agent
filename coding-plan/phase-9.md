@@ -32,7 +32,7 @@
 
 **entry（cli-ops-interface + cli-contract-baseline 原文）**：
 - 能力：argparse 解析 argv，命令分组路由到 dispatcher，`-h/--help` 输出全量指令
-- 契约：命令面**权威 = baseline 30 动词 + 14 flag**（§2.1-2.10），不得另起命令解析；`CommandGroup` 六组（LIFECYCLE/STATUS/ASSET/SECURITY/CONNECTION/GATEWAY）路由；`ParamMapper` 三源映射
+- 契约：命令面**权威 = baseline 30 动词 + 14 flag**（§2.1-2.10），不得另起命令解析；`CommandGroup` 六组（LIFECYCLE/STATUS/ASSET/CONNECTION/SECURITY/GATEWAY）路由；`ParamMapper` 三源映射
 - 入口结构：`src/core/__main__.py` + `src/core/entry.py`（`main()` 供 console_scripts 引用）+ pyproject `[project.scripts] core-agent = "core.entry:main"`
 - 三级帮助：`core-agent -h`（顶层 + 全局 flag）→ `core-agent <group> -h`（子命令列表）→ `core-agent <cmd> -h`（参数详情）
 
@@ -88,7 +88,7 @@
 - entry 依赖：Phase 7（dispatcher/ParamMapper 已就位）+ Phase 2（config 模块）
 - serve 依赖：Phase 7（UIAPILayer 9 方法）+ pyproject 补 fastapi/uvicorn（按 ADR-0040 MAL 隔离）
 - repl 依赖：Phase 7（CLIBridge 抽象）+ Phase 3（loop）
-- pet.md 依赖：Phase 8（PetSession/PetActivator）+ Phase 2（ConfigManager.resolve）
+- pet.md 依赖：Phase 8（PetSession/PetActivator）+ Phase 2（configuration.resolve()）
 - user-guide 依赖：以上四项全部落地后，据实测输出
 
 **建议顺序**：补 pet.* 契约 + serve/REPL 契约 → pyproject 依赖（fastapi/uvicorn/textual，接入层边界依赖按 ADR-0040 MAL）→ entry（__main__/argparse）→ serve → repl → pet.md → user-guide → 门禁全绿单次提交
