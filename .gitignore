@@ -39,3 +39,6 @@ config.local.yaml
 *.local.*
 *.key
 src/*.egg-info/
+
+# Claude Code codebase memory (transient)
+.codebase-memory/

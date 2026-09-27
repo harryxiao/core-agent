@@ -3,7 +3,7 @@
 > 只读核对产物（M1「能力可调」启动前最后一环），作为 claude code 实现清单。
 > **状态（2026-09-26）**：§13/§16/§24 三处契约不一致点已由 Phase 1 实现收敛（五红线对抗 39/39 PASS），本对照表归档为历史记录，不再作为开放实现清单。
 > 源三件套：
-> - 速查表：`plan_codingplan/contracts_summary.md`（§13 / §16 / §24）
+> - 速查表：`contracts_summary.md`（§13 / §16 / §24）
 > - 行为契约：`doc/openspec/specs/llm-provider/spec.md`（7 Requirement）、`tool-use/spec.md`（6）、`memory/spec.md`（6）
 > - 签名契约：`doc/openspec/03-interfaces/*.md`
 > 生成：2026-09-26（GA 只读核对，未改任何源码）
