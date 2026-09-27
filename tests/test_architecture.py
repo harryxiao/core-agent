@@ -279,3 +279,18 @@ def test_phase4_orchestration_rag_no_reverse_dependency() -> None:
                 for sub in sorted(_core_subpackages(path) & banned)
             )
     assert not offenders, f"Phase4 编排/检索底座反向依赖上层: {offenders}"
+
+
+def test_phase5_evolution_no_reverse_dependency() -> None:
+    """evolution 不得反向依赖 composition（L5 组合层）。"""
+    forbidden: dict[str, set[str]] = {
+        "evolution": {"composition"},
+    }
+    offenders: list[str] = []
+    for pkg, banned in forbidden.items():
+        for path in (SRC / pkg).rglob("*.py"):
+            offenders.extend(
+                f"{pkg}/{path.name} -> core.{sub}"
+                for sub in sorted(_core_subpackages(path) & banned)
+            )
+    assert not offenders, f"Phase5 进化层反向依赖 composition: {offenders}"

@@ -46,6 +46,7 @@ class GenerationCandidate:
     target_plugin: str
     delta: dict                 # 变更内容（补丁/新技能）
     kind: Literal["skill", "plugin"]
+    status: str = "pending"     # 候选状态：pending → confirmed（待人工确认，不自动发布）
 
 @dataclass
 class GateReport:
@@ -92,7 +93,18 @@ class EvolutionTrigger:
 
 ---
 
-## 5. 约束
+## 5. 错误码
+
+| 错误码 | 含义 |
+|---|---|
+| `NO_EVIDENCE` | 无结果证据（采集强制模式下无成对证据） |
+| `CANDIDATE_PENDING` | 候选未过人工确认（禁止自动发布） |
+| `GATE_REJECTED` | 验证门拒绝（review / 运行时测试不过） |
+| `EVAL_REGRESSED` | 留出集退化（触发回滚） |
+
+---
+
+## 6. 约束
 
 - 进化**只读**观测 L3，不直接改运行态；产物必经 gate 才发布。
 - 候选未过门 → 丢弃 + 教训写 L2/L3。
@@ -100,7 +112,7 @@ class EvolutionTrigger:
 
 ---
 
-## 6. 关联
+## 7. 关联
 
 - 模块：`02-modules/evolution.md`
 - 记忆结晶：`memory-interface.md`
