@@ -74,7 +74,7 @@
 
 **启动前核对**（按顺序执行）：
 1. 读 contracts_summary §1（ci-cd）+ §11（git）+ §12（im）+ §25（ui）原文。
-2. 补 git 接口契约 + ui 错误码契约，validate 通过后再编码。
+2. 补 git 接口契约（先补 `doc/03-interfaces/git-interface.md`，当前缺失）+ ui 错误码契约，validate 通过后再编码。
 
 ---
 
