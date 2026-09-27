@@ -1,0 +1,51 @@
+"""上下文工程数据模型。
+
+对应接口：doc/03-interfaces/context-interface.md §1 / §3 / §4
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Pointer:
+    """信息地图指针：定位长文档中的一个章节/要点。"""
+
+    doc_id: str
+    section: str
+    summary: str
+    offset: int | None = None
+
+
+@dataclass
+class MapEntry:
+    """一份文档的信息地图：目录索引 + 内容指纹。"""
+
+    doc_id: str
+    content_hash: str
+    pointers: list[Pointer] = field(default_factory=list[Pointer])
+
+
+@dataclass
+class ContextPack:
+    """动态装配的上下文包（token 有硬上界）。"""
+
+    task: str
+    stage: str
+    facts: list[dict[str, str]] = field(default_factory=list[dict[str, str]])
+    skills: list[dict[str, str]] = field(default_factory=list[dict[str, str]])
+    constitution: list[str] = field(default_factory=list[str])
+    pending: list[str] = field(default_factory=list[str])
+    token_used: int = 0
+    token_budget: int = 0
+
+
+@dataclass
+class Compaction:
+    """多轮压实产物：关键信息摘要 + 被清理冗余。"""
+
+    conclusions: list[str] = field(default_factory=list[str])
+    decisions: list[str] = field(default_factory=list[str])
+    open_items: list[str] = field(default_factory=list[str])
+    dropped: list[str] = field(default_factory=list[str])

@@ -8,6 +8,7 @@
 
 from .builtin import file_patch, file_read, file_write
 from .errors import ToolErrorCode, ToolUseError
+from .install_tools import install_tool, list_tool, uninstall_tool
 from .models import GateDecision, ToolDef, ToolError, ToolResult
 from .provider import ToolProvider
 from .safety_gate import SafetyGate
@@ -26,4 +27,7 @@ __all__ = [
     "file_patch",
     "file_read",
     "file_write",
+    "install_tool",
+    "list_tool",
+    "uninstall_tool",
 ]

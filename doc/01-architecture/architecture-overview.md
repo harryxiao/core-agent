@@ -174,7 +174,7 @@ core-agent/                      # 仓库根
 ├── doc/                         # 本文档集（SDD）
 ├── openspec/                    # （可选）OpenSpec CLI 生成的规格目录
 ├── src/core/                    # 源码（待实现）
-│   ├── substrate/               # L0：registry/effect/coeffect/hmr
+│   ├── plugin_registry/         # L0：registry/effect/coeffect
 │   ├── tools/                   # L1：原子工具
 │   ├── memory/                  # L2：分层记忆
 │   ├── loop/                    # L3：智能体循环

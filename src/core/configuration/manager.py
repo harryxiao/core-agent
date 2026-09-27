@@ -373,6 +373,11 @@ def validate_map_to(specs: list[ConfigSpec]) -> list[str]:
     return errors
 
 
+def config_specs() -> list[ConfigSpec]:
+    """返回 ConfigSpec 单一真源清单的副本（ParamMapper 等消费）。"""
+    return list(_CONFIG_SPECS)
+
+
 def resolve(
     key: str,
     *,

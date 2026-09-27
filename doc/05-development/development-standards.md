@@ -116,7 +116,7 @@ pytest -q                       # 单元 + 架构测试
 - 分层依赖方向（L0→L5 单向，横切 mcp 可被各层消费）：
 
 ```
-substrate(L0) → tools(L1) → memory(L2) → loop(L3) → evolution(L4) → composition(L5)
+plugin_registry(L0) → tools(L1) → memory(L2) → context(L2.5) → loop(L3) → evolution(L4) → composition(L5)
 ```
 
 **门禁**：架构测试 `test_protocol_contracts_defined`（依赖倒置契约存在性）；import-linter 待引入。

@@ -1,0 +1,22 @@
+"""智能体循环（L3 Loop）。
+
+「观察→推理→行动→记忆」单轮闭环：LoopPlugin 协议声明三入口（run/arun/
+astream）+ 五阶段方法，DefaultLoop 为默认实现，可被 ReAct / Plan-Execute
+等策略替换。横切中间件在本主轴关键节点按序插入、被拒短路。
+
+对应规格：doc/openspec/specs/loop/spec.md
+模块设计：doc/02-modules/loop.md
+"""
+
+from .default import DefaultLoop
+from .protocol import Action, ActionResult, LoopContext, LoopEvent, LoopPlugin, LoopResult
+
+__all__ = [
+    "Action",
+    "ActionResult",
+    "DefaultLoop",
+    "LoopContext",
+    "LoopEvent",
+    "LoopPlugin",
+    "LoopResult",
+]

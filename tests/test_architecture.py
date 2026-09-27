@@ -26,31 +26,37 @@ SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "core"
 
 # 主题 9：L0-L5 分层 + 横切包结构
 EXPECTED_PACKAGES = {
-    "substrate",  # L0 能力基座
+    "context",  # L2.5 上下文工程
     "tools",  # L1 工具使用
     "memory",  # L2 记忆
     "loop",  # L3 智能体循环
+    "skills",  # L3 技能封装
+    "skillhub",  # L3 技能市场
     "evolution",  # L4 进化
     "composition",  # L5 组合分发
     "constraints",  # 横切：约束/熔断/压缩
     "durability",  # 横切：检查点/恢复
     "permission",  # 横切：权限/审批/沙箱
     "mcp",  # 横切：MCP 协议
+    "cli_ops",  # 横切：CLI 运维命令面
 }
 
 # 主题 9（Phase 0 补充）：底座模块只依赖彼此 + stdlib，不反向依赖能力层
 BASE_MODULES = {"plugin_registry", "configuration", "observability", "core_profile"}
 CAPABILITY_MODULES = {
-    "substrate",
+    "context",
     "tools",
     "memory",
     "loop",
+    "skills",
+    "skillhub",
     "evolution",
     "composition",
     "constraints",
     "durability",
     "permission",
     "mcp",
+    "cli_ops",
 }
 
 _SNAKE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -231,3 +237,22 @@ def test_phase2_middleware_no_reverse_dependency() -> None:
                 for sub in sorted(_core_subpackages(path) & upper_layers)
             )
     assert not offenders, f"横切中间件反向依赖上层: {offenders}"
+
+
+# ---- 主题 9（Phase 3 补充）：引擎主轴不反向依赖上层 ----
+
+
+def test_phase3_loop_no_reverse_dependency() -> None:
+    """loop 不得反向依赖 skills/skillhub；context 不得反向依赖 loop。"""
+    forbidden: dict[str, set[str]] = {
+        "loop": {"skills", "skillhub"},
+        "context": {"loop"},
+    }
+    offenders: list[str] = []
+    for pkg, banned in forbidden.items():
+        for path in (SRC / pkg).rglob("*.py"):
+            offenders.extend(
+                f"{pkg}/{path.name} -> core.{sub}"
+                for sub in sorted(_core_subpackages(path) & banned)
+            )
+    assert not offenders, f"引擎主轴反向依赖上层: {offenders}"

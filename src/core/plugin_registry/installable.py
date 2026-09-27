@@ -121,7 +121,16 @@ class PluginInstaller:
     def deactivate(self, plugin_id: str) -> None:
         self._registry.deactivate(plugin_id)
 
+    def installed(self) -> list[dict[str, str]]:
+        """返回已安装资产的清单（plugin_id/kind/source），供 list 命令与工具消费。"""
+        return [
+            {"plugin_id": pid, "kind": asset.kind.value, "source": asset.source.value}
+            for pid, asset in sorted(self._assets.items())
+        ]
+
     def uninstall(self, plugin_id: str) -> None:
+        if plugin_id not in self._assets:
+            raise DomainError(ErrorCode.UNINSTALL_NOT_FOUND, f"插件未安装: {plugin_id}")
         state = self._registry.state(plugin_id)
         if state is PluginState.ACTIVE:
             self._registry.deactivate(plugin_id)

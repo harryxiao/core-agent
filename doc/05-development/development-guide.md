@@ -26,7 +26,7 @@ core-agent/
 ├── doc/                           # 本文档集（SDD 唯一事实来源）
 ├── openspec/                      # OpenSpec CLI 生成（可选，与 doc/ 同步）
 ├── src/core/
-│   ├── substrate/                 # L0
+│   ├── plugin_registry/           # L0
 │   ├── tools/                     # L1
 │   ├── memory/                    # L2
 │   ├── loop/                      # L3

@@ -3,6 +3,7 @@
 from .errors import ConfigurationError
 from .manager import (
     ConfigManager,
+    config_specs,
     generate_cli_flags,
     generate_env_vars,
     generate_yaml_defaults,
@@ -17,6 +18,7 @@ __all__ = [
     "ConfigManager",
     "ConfigSpec",
     "ConfigurationError",
+    "config_specs",
     "IMConfig",
     "LLMConfig",
     "ValidationResult",
