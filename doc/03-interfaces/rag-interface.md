@@ -1,6 +1,6 @@
 # 接口设计：检索增强生成（RAG Interface）
 
-> 模块：`11-rag/rag-architecture.md` ｜ 规格：`openspec/specs/rag/spec.md`
+> 模块：`02-modules/rag.md` ｜ 规格：`openspec/specs/rag/spec.md`
 
 ---
 
@@ -100,5 +100,5 @@ class RagGenerator:
 
 ## 7. 关联
 
-- 模块：`11-rag/rag-architecture.md`
+- 模块：`02-modules/rag.md`
 - 规格：`openspec/specs/rag/spec.md`
