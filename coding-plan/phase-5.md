@@ -1,6 +1,6 @@
 # Phase 5 — 自进化引擎（evolution）
 
-> 里程碑：**M4 自进化**（roadmap §3）
+> 里程碑：**M4 自进化**
 > 位置：分层图 L5 进化层（结晶闭环）
 > 上游：Phase 0（底座）+ Phase 1（能力）+ Phase 3（loop/skills）+ Phase 4（orchestration 可选数据源）
 
@@ -125,4 +125,4 @@ pytest -q
 
 - **一个 Phase 一个 commit**：evolution 模块 + 错误码补齐 + 门禁全绿后单次提交。
 - commit message 形如：`feat(phase5): evolution 自进化结晶闭环（M4）`
-- 提交后回填 roadmap §3 的 M4 里程碑状态为「完成」，并同步更新 `README.md` Phase 5 行状态。
+- 提交后更新 `README.md` §2 总览表 Phase 5 行状态列为「完成」。

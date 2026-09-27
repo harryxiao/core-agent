@@ -104,4 +104,4 @@
 
 - **一个 Phase 一个 commit**：pet-core + pet-library + pet-explore + pet-safety + pet-notify + pet-microtask 六模块 + 门禁全绿后单次提交。
 - commit message 形如：`feat(phase8): pet-mode 宠物模式六模块（随 M5 增值发布）`
-- 提交后回填 roadmap §3 的 M5 里程碑状态为「完成」（无独立里程碑，随 M5），并同步更新 `README.md` Phase 8 行状态。
+- 提交后更新 `README.md` §2 总览表 Phase 8 行状态列为「完成」（无独立里程碑，随 M5）。

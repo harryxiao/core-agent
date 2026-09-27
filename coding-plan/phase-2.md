@@ -130,4 +130,4 @@ pytest -q
 
 - **一个 Phase 一个 commit**：4 模块 + 门禁全绿后单次提交。
 - commit message 形如：`feat(phase2): constraints/durability/permission/mcp 横切中间件`
-- 提交后更新 `README.md` Phase 2 行状态（本 Phase 无独立里程碑，不改 roadmap §3 里程碑表）。
+- 提交后更新 `README.md` §2 总览表 Phase 2 行状态列为「完成」（本 Phase 无独立里程碑）。

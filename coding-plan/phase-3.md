@@ -1,6 +1,6 @@
 # Phase 3 — 单 Agent 闭环（context / loop / skills / skillhub）
 
-> 里程碑：**M2 单 Agent 闭环**（roadmap §3）
+> 里程碑：**M2 单 Agent 闭环**
 > 位置：分层图 L2.5 上下文 + L3 主轴（执行循环 / 技能封装 / 技能市场）
 > 上游：Phase 0（底座）+ Phase 1（能力）+ Phase 2（横切中间件）
 
@@ -30,7 +30,7 @@
 - [x] context：按需加载 + 预算控制，超预算裁剪保留关键；地图定位按需取详情、失效重建、重建失败二阶兜底；压实不丢关键信息；宪法分区注入；项目信息未命中降级
 - [x] loop：停止条件触发退出、单轮回滚；中间件按序执行、被拒短路；循环次数超限、token 预算超限；异步入口 + 流式事件 + 同步薄壳等价
 - [x] skills：注册校验、前置条件检查；灰度发布、A/B 中 B 退化自动回退；路由命中 Top-K、未命中沉淀
-- [ ] skills 执行超时/资源熔断：spec §47「超时与资源上限」（SKILL_TIMEOUT）接口 §6 未列该码、Skill 无执行入口——spec↔interface 漂移，待 OpenSpec 变更闭环
+- [x] skills 执行超时/资源熔断：spec §47「超时与资源上限」（SKILL_TIMEOUT）已摘除——该 Requirement 在 skills 层无执行落点，超时/资源约束由 tool-use 承载（change 0031）
 - [x] skillhub：源不可达回退、源不存在报错；签名校验失败拒绝、下载默认 draft；发布进审核、通过才发布、驳回处理
 - [x] 端到端：loop 驱动 tool-use + memory + context 协同、全程无断点（离线冒烟经注入 planner 替代 llm-provider，真实模型调用待联调）
 
@@ -158,4 +158,4 @@ pytest -q
 
 - **一个 Phase 一个 commit**：4 模块 + M3/M4 承接 + 门禁全绿后单次提交。
 - commit message 形如：`feat(phase3): context/loop/skills/skillhub 单 Agent 闭环（M2）+ M3/M4 安装通道与 cli-ops`
-- 提交后回填 roadmap §3 的 M2 里程碑状态为「完成」，并同步更新 `README.md` Phase 3 行状态。
+- 提交后更新 `README.md` §2 总览表 Phase 3 行状态列为「完成」。

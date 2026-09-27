@@ -123,4 +123,4 @@ pytest -q
 
 - **一个 Phase 一个 commit**：composition + distributed + deployment 三模块 + 门禁全绿后单次提交。
 - commit message 形如：`feat(phase6): composition/distributed/deployment 分发协作托管闭环`
-- 提交后回填 `README.md` Phase 6 行状态（本 Phase 无独立里程碑，不更新 roadmap 里程碑表）。
+- 提交后更新 `README.md` §2 总览表 Phase 6 行状态列为「完成」（本 Phase 无独立里程碑）。

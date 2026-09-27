@@ -44,18 +44,18 @@
 
 > 顺序即依赖序：先无依赖底座 → 能力层 → 横切中间件 → 引擎主轴 → 编排 → 进化 → 组合分发 → 入口。
 
-| Phase | 模块（实现顺序） | 里程碑验收 | 关键前置动作 |
-|---|---|---|---|
-| 0 底座与配置 | plugin-registry → configuration → observability → core-profile | M0：可注册/卸载插件、配置单源、遥测可观测、宪法 coeffect 注入 | 无（首个无上游） |
-| 1 能力提供层 | llm-provider → tool-use → memory | M1：真实模型调用跑通、工具可定义/调用/校验、记忆可读写与结晶 | 依赖 Phase 0 |
-| 2 横切中间件 | constraints → permission → durability → mcp | —（无独立里程碑） | 依赖 tool-use；permission 另依赖 configuration |
-| 2.5 紧急补充 | plugin-registry 安装抽象 → configuration CLI 覆盖 → mcp add/remove → permission-mode | —（无独立里程碑） | 依赖 Phase 0/1/2；契约含 0028/0029（M3/M4 代码随 P3） |
-| 3 引擎主轴（L3） | context → loop → skills → skillhub | M2：单 Agent 端到端「观察→推理→行动→记忆」闭环 | 依赖 memory/llm-provider + 全部横切；**首步 substrate→context 重命名** |
-| 4 编排与检索（L3.5） | orchestration → rag | M3：多 Agent 协同编排、RAG 检索可用 | 依赖 loop/llm-provider/tool-use/durability/distributed；**首步补 rag 契约** |
-| 5 进化（L4） | evolution | M4：故障/反馈可触发诊断→提案→验证→结晶全链路 | 依赖 observability/memory/skills/plugin-registry；**evolution↔memory 钩子解耦** |
-| 6 组合分发与部署（L5） | composition → distributed → deployment | —（无独立里程碑） | distributed 依赖 mcp/permission；deployment 依赖 composition/configuration |
-| 7 工程交付与用户入口 | ci-cd → ui/im/git | M5：完整产品形态可发布 | ci-cd 依赖 composition；ui/im/git 依赖 loop/configuration/permission；**首步补 git 契约** |
-| 8 宠物模式（后台自主增值） | pet-core → pet-library → pet-explore → pet-safety → pet-notify → pet-microtask | —（随 M5 增值发布） | 依赖 Phase 0/1/2/3/4；**首步对齐 /pet 三入口↔cli-ops 命令面边界 + Loop.run 同步薄壳复用** |
+| Phase | 状态 | 模块（实现顺序） | 里程碑验收 | 关键前置动作 |
+|---|---|---|---|---|
+| 0 底座与配置 | ✅ 完成 | plugin-registry → configuration → observability → core-profile | M0：可注册/卸载插件、配置单源、遥测可观测、宪法 coeffect 注入 | 无（首个无上游） |
+| 1 能力提供层 | ✅ 完成 | llm-provider → tool-use → memory | M1：真实模型调用跑通、工具可定义/调用/校验、记忆可读写与结晶 | 依赖 Phase 0 |
+| 2 横切中间件 | ✅ 完成 | constraints → permission → durability → mcp | —（无独立里程碑） | 依赖 tool-use；permission 另依赖 configuration |
+| 2.5 紧急补充 | ✅ 完成 | plugin-registry 安装抽象 → configuration CLI 覆盖 → mcp add/remove → permission-mode | —（无独立里程碑） | 依赖 Phase 0/1/2；契约含 0028/0029（M3/M4 代码随 P3） |
+| 3 引擎主轴（L3） | ✅ 完成 | context → loop → skills → skillhub | M2：单 Agent 端到端「观察→推理→行动→记忆」闭环 | 依赖 memory/llm-provider + 全部横切；**首步 substrate→context 重命名** |
+| 4 编排与检索（L3.5） | ⬜ 待开始 | orchestration → rag | M3：多 Agent 协同编排、RAG 检索可用 | 依赖 loop/llm-provider/tool-use/durability/distributed；**首步补 rag 契约** |
+| 5 进化（L4） | ⬜ 待开始 | evolution | M4：故障/反馈可触发诊断→提案→验证→结晶全链路 | 依赖 observability/memory/skills/plugin-registry；**evolution↔memory 钩子解耦** |
+| 6 组合分发与部署（L5） | ⬜ 待开始 | composition → distributed → deployment | —（无独立里程碑） | distributed 依赖 mcp/permission；deployment 依赖 composition/configuration |
+| 7 工程交付与用户入口 | ⬜ 待开始 | ci-cd → ui/im/git | M5：完整产品形态可发布 | ci-cd 依赖 composition；ui/im/git 依赖 loop/configuration/permission；**首步补 git 契约** |
+| 8 宠物模式（后台自主增值） | ⬜ 待开始 | pet-core → pet-library → pet-explore → pet-safety → pet-notify → pet-microtask | —（随 M5 增值发布） | 依赖 Phase 0/1/2/3/4；**首步对齐 /pet 三入口↔cli-ops 命令面边界 + Loop.run 同步薄壳复用** |
 
 > **里程碑口径（M0~M5）**：M0 底座就绪（P0）→ M1 能力可调（P1）→ M2 单 Agent 闭环（P3）→ M3 多 Agent 编排（P4）→ M4 自进化（P5）→ M5 可发布产品（P7）。
 > Phase 2（横切中间件）、Phase 6（组合分发部署）为**贯穿阶段**，不单设里程碑，其成果在 M2/M5 验收中一并体现。
@@ -113,7 +113,7 @@ pytest -q                       # 单元 + 架构测试
 5. **实现顺序**：模块级拓扑序 + 每个模块的关键类/接口
 6. **契约对齐**：引用 `contracts_summary.md` 对应章节 + 关键方法签名
 7. **门禁验收**：ruff / pyright / pytest 四命令全绿 + 本 Phase 专属校验
-8. **提交规范**：一个 Phase 一个 commit，回填里程碑状态
+8. **提交规范**：一个 Phase 一个 commit，更新 `README.md` §2 状态列
 
 ---
 
@@ -125,7 +125,7 @@ pytest -q                       # 单元 + 架构测试
    - 实现代码，并逐一对齐 interface 契约（方法签名/语义）；
    - 跑门禁四命令全绿 + 单测/契约校验通过后，方视为完成该 Phase。
 3. **跨 Phase 一致性**：接口引用以 `doc/03-interfaces/*-interface.md` 为准；出现契约冲突时，回读 spec 原文裁决，不要凭记忆改接口。
-4. **回填**：每 Phase 完成后回填里程碑验收状态并 commit（一个 Phase 一个 commit，便于回溯）。
+4. **回填**：每 Phase 完成后更新 `README.md` §2 总览表状态列并 commit（一个 Phase 一个 commit，便于回溯）。
 
 ---
 

@@ -1,6 +1,6 @@
 # Phase 1 — 能力可调（llm-provider / tool-use / memory）
 
-> 里程碑：**M1 能力可调**（roadmap §3）
+> 里程碑：**M1 能力可调**
 > 位置：分层图 L4 能力层（LLM 归一化 / 工具使用 / 记忆系统）
 > 上游：Phase 0（M0 底座：plugin-registry / configuration / observability）
 
@@ -122,4 +122,4 @@ pytest -q              # 单元 + 架构测试
 
 - **一个 Phase 一个 commit**：3 模块 + 门禁全绿后单次提交。
 - commit message 形如：`feat(phase1): llm-provider/tool-use/memory 能力可调（M1）`
-- 提交后回填 roadmap §3 的 M1 里程碑状态为「完成」，并同步更新 `README.md` Phase 1 行状态。
+- 提交后更新 `README.md` §2 总览表 Phase 1 行状态列为「完成」。

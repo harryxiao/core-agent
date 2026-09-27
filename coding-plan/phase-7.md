@@ -1,6 +1,6 @@
 # Phase 7 — 交付流水线、三模入口与 IM 网关（ci-cd / ui / im / git）
 
-> 里程碑：**M5 可发布产品**（roadmap §3）
+> 里程碑：**M5 可发布产品**
 > 位置：接入层（ui/im）+ 交付层（ci-cd）+ 工具横切（git）
 > 上游：Phase 0（底座）+ Phase 1（能力）+ Phase 2（横切中间件）+ Phase 4（orchestration/distributed/deployment）
 
@@ -112,4 +112,4 @@
 
 - **一个 Phase 一个 commit**：ci-cd + ui + im + git 四模块 + 门禁全绿后单次提交。
 - commit message 形如：`feat(phase7): ci-cd/ui/im/git 交付流水线与三模入口（M5）`
-- 提交后回填 roadmap §3 的 M5 里程碑状态为「完成」，并同步更新 `README.md` Phase 7 行状态。
+- 提交后更新 `README.md` §2 总览表 Phase 7 行状态列为「完成」。

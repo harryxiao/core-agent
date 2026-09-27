@@ -90,4 +90,4 @@
   4. 撤销回滚：写类工具执行后触发回滚 → 状态恢复到检查点；不可逆工具 → `IRREVERSIBLE_BLOCKED`。
   5. memory 分层：写入 L0/L2/L4 → 落对层；L1 索引最小；冷数据异步加载、失败降级不阻断主流程。
   6. 错误码命名：验证 §4 冲突 #1 已拍板收敛（单一 `INVALID_TOOL_SCHEMA` 或等效）。
-- **一个 Phase 一个 commit**；M1 完成后回填 `roadmap` §3 进度。
+- **一个 Phase 一个 commit**；M1 完成后更新 `README.md` §2 总览表 Phase 1 行状态。

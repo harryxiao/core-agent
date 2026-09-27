@@ -1,6 +1,6 @@
 # Phase 0 — 底座与配置（plugin-registry / configuration / observability / core-profile）
 
-> 里程碑：**M0 底座就绪**（roadmap §3）
+> 里程碑：**M0 底座就绪**
 > 位置：分层图 L0（core-profile 宪法分区）/ L5（plugin-registry / configuration / observability）
 > 上游：无（首个 Phase，全系统地基）
 
@@ -136,4 +136,4 @@ pytest -q              # 单元 + 架构测试
 
 - **一个 Phase 一个 commit**：完成 4 模块 + 门禁全绿后单次提交。
 - commit message 形如：`feat(phase0): plugin-registry/configuration/observability/core-profile 底座（M0）`
-- 提交后回填 roadmap §3 的 M0 里程碑状态为「完成」，并同步更新 `README.md` Phase 0 行状态。
+- 提交后更新 `README.md` §2 总览表 Phase 0 行状态列为「完成」。

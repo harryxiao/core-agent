@@ -1,6 +1,6 @@
 # Phase 4 — 多 Agent 编排（orchestration / rag）
 
-> 里程碑：**M3 多 Agent 编排**（roadmap §3）
+> 里程碑：**M3 多 Agent 编排**
 > 位置：分层图 L4 编排层（任务规划编排）+ L3 检索底座（RAG）
 > 上游：Phase 0（底座）+ Phase 1（能力）+ Phase 3（单 Agent 闭环）
 
@@ -129,4 +129,4 @@ pytest -q
 
 - **一个 Phase 一个 commit**：rag 契约补齐 + 2 模块 + 门禁全绿后单次提交。
 - commit message 形如：`feat(phase4): orchestration/rag 多 Agent 编排（M3）`
-- 提交后回填 roadmap §3 的 M3 里程碑状态为「完成」，并同步更新 `README.md` Phase 4 行状态。
+- 提交后更新 `README.md` §2 总览表 Phase 4 行状态列为「完成」。
