@@ -25,7 +25,7 @@ class SubtaskDecomposer:
     def __init__(self, planner: Planner | None = None) -> None:
         self._planner = planner
 
-    def decompose(self, goal: str) -> Plan:
+    def decompose(self, goal: str, success_criteria: list[str] | None = None) -> Plan:
         """大目标 → 分步 Todo（含验收标准与依赖 DAG），划分拓扑序与波次。"""
         subtasks = (
             self._planner(goal)
@@ -38,7 +38,13 @@ class SubtaskDecomposer:
                 OrchestrationErrorCode.DEADLOOP_DETECTED, "子任务依赖成环，无法拓扑排序"
             )
         waves = self._build_waves(subtasks, order)
-        return Plan(subtasks=subtasks, goal=goal, order=order, success_criteria=[], waves=waves)
+        return Plan(
+            subtasks=subtasks,
+            goal=goal,
+            order=order,
+            success_criteria=success_criteria or [],
+            waves=waves,
+        )
 
     def verify(self, subtask: Subtask, result: Any) -> VerifyResult:
         """用验收标准校验子任务结果；通过才推进（离线简单判定：结果非空即通过）。"""

@@ -106,6 +106,7 @@ class MultiAgentRouter:
 | `NO_AGENT_MATCH` | 无匹配子 Agent（降级/转人工） |
 | `WAVE_FANOUT_LIMIT` | 并行度超限（同波次分批执行，受资源上限约束） |
 | `PROGRESS_NOT_MET` | 进度未达目标（触发重试/重规划，衔接 RECOVERING） |
+| `MISSING_SUCCESS_CHECKER` | 提供了成功标准但未注入判定器（配置错误，fail-fast，转 FAILED） |
 
 ---
 

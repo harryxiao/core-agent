@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .decomposer import SubtaskDecomposer
@@ -63,7 +64,7 @@ class SubtaskOutcome:
 class TaskScheduler:
     """波次并行扇出调度器：fan-out（真并发）+ fan-in（汇总校验）+ 断点续跑。"""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — 调度依赖与策略均为构造注入
         self,
         *,
         decomposer: SubtaskDecomposer,
@@ -71,6 +72,7 @@ class TaskScheduler:
         state_machine: StateMachine,
         tracker: ProgressTracker | None = None,
         max_concurrency: int = 4,
+        success_checker: Callable[[list[str]], bool] | None = None,
     ) -> None:
         if max_concurrency < 1:
             raise OrchestrationError(
@@ -82,10 +84,13 @@ class TaskScheduler:
         self._state_machine = state_machine
         self._tracker = tracker if tracker is not None else ProgressTracker()
         self._max_concurrency = max_concurrency
+        self._success_checker = success_checker
 
-    async def run(self, task_id: str, goal: str) -> list[SubtaskOutcome]:
+    async def run(
+        self, task_id: str, goal: str, success_criteria: list[str] | None = None
+    ) -> list[SubtaskOutcome]:
         """拆解 → 波次并行扇出 → fan-in 校验推进，直至完成或失败。"""
-        plan = self._decomposer.decompose(goal)
+        plan = self._decomposer.decompose(goal, success_criteria)
         self._enter_executing(task_id)
         outcomes: list[SubtaskOutcome] = []
         for wave in plan.waves:
@@ -107,6 +112,18 @@ class TaskScheduler:
                 )
             self._state_machine.transition(task_id, TaskState.EXECUTING)
         self._state_machine.transition(task_id, TaskState.VERIFYING)
+        if plan.success_criteria and self._success_checker is None:
+            self._state_machine.transition(task_id, TaskState.FAILED)
+            raise OrchestrationError(
+                OrchestrationErrorCode.MISSING_SUCCESS_CHECKER,
+                f"任务 {task_id} 提供了 success_criteria 但未注入 success_checker",
+            )
+        if not self._success_met(plan.success_criteria):
+            self._state_machine.transition(task_id, TaskState.RECOVERING)
+            raise OrchestrationError(
+                OrchestrationErrorCode.PROGRESS_NOT_MET,
+                f"任务 {task_id} 未达成成功标准: {plan.success_criteria}",
+            )
         self._state_machine.transition(task_id, TaskState.DONE)
         return outcomes
 
@@ -122,6 +139,13 @@ class TaskScheduler:
         """取消：转入 FAILED 并释放进度上下文。"""
         self._state_machine.transition(task_id, TaskState.FAILED)
         self._tracker.reset(task_id)
+
+    def _success_met(self, criteria: list[str]) -> bool:
+        """成功标准判定：空标准视为通过；否则调用注入的 checker（缺失已在 run 入口校验）。"""
+        if not criteria:
+            return True
+        assert self._success_checker is not None  # run() 入口已拦截缺失场景
+        return self._success_checker(criteria)
 
     def _enter_executing(self, task_id: str) -> None:
         """新任务 CREATED→PLANNING→EXECUTING；挂起/已执行任务直接进 EXECUTING。"""

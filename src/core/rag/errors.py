@@ -15,6 +15,7 @@ class RAGErrorCode(StrEnum):
     """RAG 结构化错误码。"""
 
     EMBEDDING_FAILED = "EMBEDDING_FAILED"
+    # 预留：sqlite-vec 生产实现落地时使用（当前内存实现无损坏场景）
     INDEX_CORRUPT = "INDEX_CORRUPT"
     REBUILD_FAILED = "REBUILD_FAILED"
 

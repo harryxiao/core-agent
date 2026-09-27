@@ -279,6 +279,59 @@ def test_run_verify_failure_recovers() -> None:
     assert sm.state("task") == TaskState.RECOVERING
 
 
+def test_run_success_criteria_unmet_recovers() -> None:
+    profile = AgentProfile(agent_id="a", capabilities=["t"], loop=_loop("ok"))
+    decomposer = SubtaskDecomposer(
+        planner=lambda goal: [Subtask(id="1", goal="t-one", acceptance="")]
+    )
+    router = MultiAgentRouter(agents=[profile])
+    sm = StateMachine()
+    scheduler = TaskScheduler(
+        decomposer=decomposer,
+        router=router,
+        state_machine=sm,
+        success_checker=lambda _: False,
+    )
+    with pytest.raises(OrchestrationError) as exc:
+        asyncio.run(scheduler.run("task", "goal", success_criteria=["c1"]))
+    assert exc.value.code == OrchestrationErrorCode.PROGRESS_NOT_MET
+    assert sm.state("task") == TaskState.RECOVERING
+
+
+def test_run_empty_success_criteria_done() -> None:
+    # 空标准走向后兼容分支：即便 checker 恒 False 也直接 DONE，不触发 PROGRESS_NOT_MET
+    profile = AgentProfile(agent_id="a", capabilities=["t"], loop=_loop("ok"))
+    decomposer = SubtaskDecomposer(
+        planner=lambda goal: [Subtask(id="1", goal="t-one", acceptance="")]
+    )
+    router = MultiAgentRouter(agents=[profile])
+    sm = StateMachine()
+    scheduler = TaskScheduler(
+        decomposer=decomposer,
+        router=router,
+        state_machine=sm,
+        success_checker=lambda _: False,
+    )
+    outcomes = asyncio.run(scheduler.run("task", "goal"))
+    assert all(o.ok for o in outcomes)
+    assert sm.state("task") == TaskState.DONE
+
+
+def test_run_criteria_without_checker_fails_fast() -> None:
+    # 配置错误：给了 success_criteria 但未注入 success_checker → FAILED（fail-fast），而非静默通过
+    profile = AgentProfile(agent_id="a", capabilities=["t"], loop=_loop("ok"))
+    decomposer = SubtaskDecomposer(
+        planner=lambda goal: [Subtask(id="1", goal="t-one", acceptance="")]
+    )
+    router = MultiAgentRouter(agents=[profile])
+    sm = StateMachine()
+    scheduler = TaskScheduler(decomposer=decomposer, router=router, state_machine=sm)
+    with pytest.raises(OrchestrationError) as exc:
+        asyncio.run(scheduler.run("task", "goal", success_criteria=["c1"]))
+    assert exc.value.code == OrchestrationErrorCode.MISSING_SUCCESS_CHECKER
+    assert sm.state("task") == TaskState.FAILED
+
+
 def test_suspend_resume_cancel() -> None:
     sm = StateMachine()
     scheduler = TaskScheduler(
