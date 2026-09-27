@@ -21,7 +21,7 @@ class SearchHit:
 
 class VectorStore:
     def put(self, chunk: Chunk) -> None:
-        """写入块向量并建索引（sqlite-vec 嵌入式落盘，零服务）。"""
+        """写入块向量并建索引（默认 sqlite-vec 嵌入式落盘，零服务）。"""
 
     def get(self, chunk_id: str) -> Chunk | None:
         """按块 id 读取；不存在返回 None。"""
