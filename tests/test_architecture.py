@@ -48,6 +48,7 @@ EXPECTED_PACKAGES = {
     "im",  # 接入：IM 网关
     "git",  # 工具横切：版本控制
     "pet",  # 宠物模式子系统（core/library/explore/safety/notify/microtask）
+    "beast",  # 神兽召唤层（前台重大任务，pet-mode 对偶）
 }
 
 # 主题 9（Phase 0 补充）：底座模块只依赖彼此 + stdlib，不反向依赖能力层
@@ -75,6 +76,7 @@ CAPABILITY_MODULES = {
     "im",
     "git",
     "pet",
+    "beast",
 }
 
 _SNAKE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -384,3 +386,18 @@ def test_phase8_pet_modules_no_reverse_dependency() -> None:
                 for dep in sorted(_pet_subpackages(path) & banned)
             )
     assert not offenders, f"Phase8 宠物模式子模块反向依赖: {offenders}"
+
+
+def test_phase10_beast_not_imported_by_dependencies() -> None:
+    """beast 是编排层扩展叶子：loop/skills/orchestration 不得反向 import beast。"""
+
+    lower_layers = {"loop", "skills", "orchestration"}
+    offenders: list[str] = []
+    for pkg in sorted(lower_layers):
+        for path in (SRC / pkg).rglob("*.py"):
+            offenders.extend(
+                f"{pkg}/{path.name} -> core.beast"
+                for sub in sorted(_core_subpackages(path))
+                if sub == "beast"
+            )
+    assert not offenders, f"Phase10 神兽召唤层被底层反向依赖: {offenders}"

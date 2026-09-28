@@ -70,6 +70,7 @@ class DefaultLoop(Plugin):
     async def arun(self, user_input: str) -> LoopResult:
         reply = ""
         trace_id = ""
+        failed = False
         async for event in self.astream(user_input):
             if event.type == "loop_started":
                 trace_id = str(event.payload.get("trace_id", ""))
@@ -77,7 +78,8 @@ class DefaultLoop(Plugin):
                 return event.payload
             elif event.type == "loop_failed":
                 reply = str(event.payload.get("reason", "LOOP_FAILED"))
-        return LoopResult(reply=reply, trace_id=trace_id)
+                failed = True
+        return LoopResult(reply=reply, trace_id=trace_id, failed=failed)
 
     async def astream(self, user_input: str) -> AsyncIterator[LoopEvent]:
         trace_id = uuid.uuid4().hex
@@ -105,7 +107,10 @@ class DefaultLoop(Plugin):
             yield LoopEvent("loop_failed", {"reason": limit_reason, "trace_id": trace_id})
         self.remember(trace_id, ctx.trajectory)
         yield LoopEvent("reply_delta", {"text": ctx.reply})
-        yield LoopEvent("loop_finished", LoopResult(reply=ctx.reply, trace_id=trace_id))
+        yield LoopEvent(
+            "loop_finished",
+            LoopResult(reply=ctx.reply, trace_id=trace_id, failed=bool(limit_reason)),
+        )
 
     # ---- 阶段方法 ----
 

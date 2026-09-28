@@ -133,18 +133,20 @@ def test_match_none_when_no_hit_no_fallback() -> None:
     assert router.match("write a poem") is None
 
 
-def test_handoff_returns_trace_id() -> None:
+def test_handoff_returns_loop_result() -> None:
     router = MultiAgentRouter(
         agents=[AgentProfile(agent_id="a", capabilities=["code"], loop=_loop("done"))]
     )
-    trace_id = router.handoff("a", TaskHandoff(task="fix bug"))
-    assert trace_id
+    result = asyncio.run(router.handoff("a", TaskHandoff(task="fix bug")))
+    assert result.trace_id
+    assert result.reply == "done"
+    assert result.failed is False
 
 
 def test_handoff_unknown_agent_raises() -> None:
     router = MultiAgentRouter()
     with pytest.raises(OrchestrationError) as exc:
-        router.handoff("nope", TaskHandoff(task="x"))
+        asyncio.run(router.handoff("nope", TaskHandoff(task="x")))
     assert exc.value.code == OrchestrationErrorCode.NO_AGENT_MATCH
 
 

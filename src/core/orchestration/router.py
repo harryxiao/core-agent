@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from core.loop import LoopResult
+
 from .errors import OrchestrationError, OrchestrationErrorCode
 from .models import AgentProfile, TaskHandoff
 
@@ -40,12 +42,11 @@ class MultiAgentRouter:
                 best, best_score = profile, score
         return best if best is not None else self._fallback
 
-    def handoff(self, target: str, handoff: TaskHandoff) -> str:
-        """显式交接任务给指定 Agent，同步执行并返回 trace_id；无匹配抛错。"""
+    async def handoff(self, target: str, handoff: TaskHandoff) -> LoopResult:
+        """显式交接任务给指定 Agent，异步执行并返回完整 LoopResult；无匹配抛错。"""
         profile = self._agents.get(target)
         if profile is None or profile.loop is None:
             raise OrchestrationError(
                 OrchestrationErrorCode.NO_AGENT_MATCH, f"无匹配 Agent: {target}"
             )
-        result = profile.loop.run(handoff.task)
-        return result.trace_id
+        return await profile.loop.arun(handoff.task)

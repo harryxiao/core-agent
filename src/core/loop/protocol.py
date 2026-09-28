@@ -21,6 +21,7 @@ class LoopResult:
 
     reply: str  # 最终回复
     trace_id: str  # 本轮追溯 ID（贯穿日志/效应/记忆）
+    failed: bool = False  # 成败信号：目标未达成/异常终止/预算耗尽为 True
 
 
 @dataclass
