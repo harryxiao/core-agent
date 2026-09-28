@@ -18,7 +18,7 @@ pet-mode（Phase 8）只覆盖「后台重复简单任务」（信息收集/闲�
 ## Impact
 
 - **Affected specs**：`beast-mode/spec.md`（ADDED，8 条 Requirement）、`loop/spec.md`（MODIFIED 执行循环）、`orchestration/spec.md`（MODIFIED 多 Agent 协同）
-- **Affected docs**：`03-interfaces/beast-mode-interface.md`（新增，实现期）、`03-interfaces/cli-ops-interface.md` + `cli-contract-baseline.md`（summon/recall 动词 30→32，实现期）、`00-product/requirements.md`（新增 1.28 beast-mode，CORE-BEAST-R1~R8）
+- **Affected docs**：`01-architecture/adr.md`（新增 ADR-0041 神兽召唤模式）、`03-interfaces/beast-mode-interface.md`（新增，实现期）、`03-interfaces/cli-ops-interface.md` + `cli-contract-baseline.md`（summon/recall 动词 30→32，实现期）、`00-product/requirements.md`（新增 1.28 beast-mode，CORE-BEAST-R1~R8）
 - **Affected code**：`src/core/beast/`（六模块，复用 pet 骨架）、`loop/protocol.py`（LoopResult.failed）、`orchestration/router.py`（handoff 异步执行并返回完整结果）、`skills/library.py`（20 神通注册）——实现期（M7）
 - **Dependencies**：`orchestration`（MultiAgentRouter/AgentProfile/TaskHandoff）、`skills`（SkillLibrary）、`pet`（三入口范式）、`context`/`memory`（独立命名空间）；无新三方依赖
 
