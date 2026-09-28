@@ -184,6 +184,16 @@ def test_manager_summon_is_handoff() -> None:
     assert session.state is BeastSessionState.RECALLED  # 任务完成 → 自动回归
 
 
+def test_manager_summon_failed_still_recalled() -> None:
+    """无论任务成败，handoff 完成即自动回归，failed 如实记录于 last_result。"""
+    router = FakeRouter(failed=True)
+    manager = BeastManager(router=router)
+    session = asyncio.run(manager.summon("beast.qinglong"))
+    assert session.last_result is not None
+    assert session.last_result.failed is True
+    assert session.state is BeastSessionState.RECALLED  # 失败也自动回归
+
+
 def test_manager_recall_resets_target_only() -> None:
     manager = BeastManager()
 

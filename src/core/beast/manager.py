@@ -61,7 +61,7 @@ class BeastManager:
             )
             session.last_result = result
             session.last_trace_id = result.trace_id
-            session.recall()  # 任务完成 → 据 failed 判定成败，自动回归 RECALLED
+            session.recall()  # 任务完成（无论成败）自动回归 RECALLED，成败见 last_result.failed
         return session
 
     def recall(self, agent_id: str) -> BeastSession:
