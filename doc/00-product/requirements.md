@@ -290,6 +290,19 @@
 | CORE-PET-R13 | 系统 SHALL 支持宠物主动通知主人（如「发现插件X一键生成测试用例，帮你试3次都成功」），通知异步投递、不阻塞主循环 | P1 | pet-mode/spec.md |
 | CORE-PET-R14 | 系统 SHALL 支持宠物执行日常随机小任务（终端散步、系统小提示、给代码加无厘头注释），其中侵入性任务可配置关闭 | P1 | pet-mode/spec.md |
 
+### 1.28 神兽召唤（beast-mode）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-BEAST-R1 | 系统 SHALL 内置 20 个山海经神兽作为只读注册表，每兽以 agent_id=beast.<拼音> 唯一标识，含称号/领域职责/独有神通/能力标签，区别于 pet.md 用户自定义 | P1 | beast-mode/spec.md |
+| CORE-BEAST-R2 | 系统 SHALL 以 DORMANT/MANIFEST/ACTIVE/RECALLED 四态管理神兽会话，多实例并发（dict[agent_id, BeastSession]），兽间并行、兽内串行 | P1 | beast-mode/spec.md |
+| CORE-BEAST-R3 | 系统 SHALL 将召唤实现为 MultiAgentRouter.handoff（神兽为内置 AgentProfile），复用编排层交接语义，不另造第二真源 | P1 | beast-mode/spec.md |
+| CORE-BEAST-R4 | 系统 SHALL 让神兽以独立 AgentProfile.loop 运行（独立记忆命名空间 source=beast.<agent_id> + 独立上下文），共享全局 ToolProvider（L1 工具运行时共享）+ 全局 SkillLibrary（L3 技能注册共享，运行时调用 deferred） | P1 | beast-mode/spec.md |
+| CORE-BEAST-R5 | 系统 SHALL 为每兽注册独有神通 Skill（beast.<拼音>.<skill>）进全局 SkillLibrary，专属路由（他兽不可路由，runtime 调用 deferred） | P1 | beast-mode/spec.md |
+| CORE-BEAST-R6 | 系统 SHALL 异步并发执行召唤（handoff 经 loop.arun 非阻塞，多兽并行），据 LoopResult.failed 判定成败自动回归，记忆分区封存 | P1 | beast-mode/spec.md |
+| CORE-BEAST-R7 | 系统 SHALL 支持手动复位（/recall <beast> + recall <beast> CLI + NL「召回」）按 beast_id 复位至 RECALLED | P1 | beast-mode/spec.md |
+| CORE-BEAST-R8 | 系统 SHALL 支持三入口召唤（/summon 斜杠 + summon <beast> [task] CLI + WebUI 自然语言），三入口同源 | P1 | beast-mode/spec.md |
+
 ---
 
 ## 2. 非功能需求（Non-Functional Requirements）
