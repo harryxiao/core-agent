@@ -125,27 +125,27 @@ skills(SkillLibrary 全局) ─────────────────�
 
 ## 6. 里程碑验收清单
 
-- [ ] `openspec/changes/0034-beast-mode/` 归档完成，`openspec/specs/beast-mode/spec.md` 存在且 `validate --all` 通过；loop/orchestration 契约 delta（`LoopResult.failed` + `handoff` 异步执行（`loop.run`→`loop.arun`）并返回结果）并入
-- [ ] `BeastRegistry` 内置 20 神兽（agent_id + 称号 + 领域 + 独有神通），只读不可改（区别于 pet.md 用户自定义）
-- [ ] 20 个 `beast.*` 神通 Skill 注册进全局 `SkillLibrary`，专属路由语义（他兽不可用，runtime 调用 deferred）
-- [ ] `BeastSession` 四态状态机（DORMANT/MANIFEST/ACTIVE/RECALLED）+ 多实例并发（`dict[agent_id, BeastSession]`，兽间并行）
-- [ ] 召唤 = `MultiAgentRouter.handoff`（返回完整 `LoopResult`）；神兽 loop 独立记忆（`source=beast.*`）+ 共享全局 `ToolProvider`（运行时）+ `SkillLibrary`（注册）
-- [ ] 自动回归（据 `LoopResult.failed`）+ 手动复位（`/recall` + `recall` CLI + NL）
-- [ ] `BeastActivator` 三入口：`/summon` 斜杠 + `summon <beast> [task]` CLI + WebUI NL「召唤 X 兽做 Y」
-- [ ] 契约基线更新：cli-contract-baseline 增补 summon/recall 动词（30 → 32）+ 对应 flag；README.md §2 总览表增 Phase 10 行
-- [ ] 门禁四件套全绿：ruff check ✓ · ruff format --check ✓ · pyright 0 errors · pytest 全通过（含本 Phase 新增用例）
+- [x] `openspec/changes/0034-beast-mode/` 归档完成，`openspec/specs/beast-mode/spec.md` 存在且 `validate --all` 通过；loop/orchestration 契约 delta（`LoopResult.failed` + `handoff` 异步执行（`loop.run`→`loop.arun`）并返回结果）并入
+- [x] `BeastRegistry` 内置 20 神兽（agent_id + 称号 + 领域 + 独有神通），只读不可改（区别于 pet.md 用户自定义）
+- [x] 20 个 `beast.*` 神通 Skill 注册进全局 `SkillLibrary`，专属路由语义（他兽不可用，runtime 调用 deferred）
+- [x] `BeastSession` 四态状态机（DORMANT/MANIFEST/ACTIVE/RECALLED）+ 多实例并发（`dict[agent_id, BeastSession]`，兽间并行）
+- [x] 召唤 = `MultiAgentRouter.handoff`（返回完整 `LoopResult`）；神兽 loop 独立记忆（`source=beast.*`）+ 共享全局 `ToolProvider`（运行时）+ `SkillLibrary`（注册）
+- [x] 自动回归（据 `LoopResult.failed`）+ 手动复位（`/recall` + `recall` CLI + NL）
+- [x] `BeastActivator` 三入口：`/summon` 斜杠 + `summon <beast> [task]` CLI + WebUI NL「召唤 X 兽做 Y」
+- [x] 契约基线更新：cli-contract-baseline 增补 summon/recall 动词（30 → 32）+ 对应 flag；README.md §2 总览表增 Phase 10 行
+- [x] 门禁四件套全绿：ruff check ✓ · ruff format --check ✓ · pyright 0 errors · pytest 全通过（含本 Phase 新增用例）
 
 ---
 
 ## 7. 测试要点
 
-- [ ] 并发多兽：多兽同时显形并行执行（断言兽间并行、互不阻塞）；同兽重复召唤 → 拒绝/先回归（断言兽内串行、无同兽双实例）
-- [ ] 召唤-回归闭环：召唤 → handoff 返回完整 `LoopResult` → `failed=False` → 自动迁 RECALLED → 记忆封存（`source=beast.*` 不再被主 loop read 命中）
-- [ ] 手动复位：`/recall <beast>` → 按 beast_id 复位 → RECALLED → 可再次召唤该兽（他兽不受影响）
-- [ ] 神通路由：神兽 A 的独有神通仅 A 可路由（专属路由语义，runtime deferred）；主 Agent 与神兽共享同一 `ToolProvider` 实例 + 同一 `SkillLibrary` 实例（单测引用同一对象断言）
-- [ ] 独立记忆：神兽执行产生的 MemoryEntry 全为 `source=beast.<agent_id>`，主记忆（`source=loop`）零污染
-- [ ] 三入口等价：slash / CLI / NL 三入口最终都落到同一 `BeastSession` 生命周期（参照 pet 三入口断言）
-- [ ] 错误码：`NO_AGENT_MATCH`（召唤不存在的兽）、同兽重复召唤冲突、回归时无在岗兽等异常路径全覆盖（权威码枚举进 beast-mode interface 错误码节，参照 pet §5）
+- [x] 并发多兽：多兽同时显形并行执行（断言兽间并行、互不阻塞）；同兽重复召唤 → 拒绝/先回归（断言兽内串行、无同兽双实例）
+- [x] 召唤-回归闭环：召唤 → handoff 返回完整 `LoopResult` → `failed=False` → 自动迁 RECALLED → 记忆封存（`source=beast.*` 不再被主 loop read 命中）
+- [x] 手动复位：`/recall <beast>` → 按 beast_id 复位 → RECALLED → 可再次召唤该兽（他兽不受影响）
+- [x] 神通路由：神兽 A 的独有神通仅 A 可路由（专属路由语义，runtime deferred）；主 Agent 与神兽共享同一 `ToolProvider` 实例 + 同一 `SkillLibrary` 实例（单测引用同一对象断言）
+- [x] 独立记忆：神兽执行产生的 MemoryEntry 全为 `source=beast.<agent_id>`，主记忆（`source=loop`）零污染
+- [x] 三入口等价：slash / CLI / NL 三入口最终都落到同一 `BeastSession` 生命周期（参照 pet 三入口断言）
+- [x] 错误码：`NO_AGENT_MATCH`（召唤不存在的兽）、同兽重复召唤冲突、回归时无在岗兽等异常路径全覆盖（权威码枚举进 beast-mode interface 错误码节，参照 pet §5）
 
 ---
 

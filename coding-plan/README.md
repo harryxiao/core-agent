@@ -1,7 +1,7 @@
 # Core-Agent Coding Plan（编码落地总索引）
 
 > **定位**：这是「架构设计 → 编码实现」开始前的最后一环规划产物，供 Claude Code / 开发 Agent 按序推进编码时使用。
-> 本目录 `coding-plan/` 承载 11 份文档：本 README（总索引）+ `phase-0.md` ~ `phase-9.md`（10 个 Phase 的可执行落地说明）。
+> 本目录 `coding-plan/` 承载 12 份文档：本 README（总索引）+ `phase-0.md` ~ `phase-10.md`（11 个 Phase 的可执行落地说明）。
 > **规则**：严格按依赖拓扑序推进；每 Phase 完成须 100% 通过门禁三件套；所有 spec/interface 契约以仓库原文为准，速查见契约速查表。
 
 ---
@@ -36,6 +36,7 @@
 | `phase-7.md` | 工程交付与用户入口 | M5 可发布产品 |
 | `phase-8.md` | 宠物模式（后台自主增值） | —（随 M5 增值发布） |
 | `phase-9.md` | 产品化入口层（entry/serve/repl/pet.md/user-guide） | M6 可启动产品 |
+| `phase-10.md` | 神兽召唤层（beast-mode/summon） | M7 神兽召唤 |
 
 **契约速查**：`contracts_summary.md`（27 capability 的 spec 目标 + interface 核心方法签名 + 模块路径，写代码前先查它）。
 
@@ -58,8 +59,9 @@
 | 7 工程交付与用户入口 | ✅ 完成 | ci-cd → ui/im/git | M5：完整产品形态可发布 | ci-cd 依赖 composition；ui/im/git 依赖 loop/configuration/permission；**首步补 git 契约** |
 | 8 宠物模式（后台自主增值） | ✅ 完成 | pet.core → pet.library → pet.explore → pet.safety → pet.notify → pet.microtask | —（随 M5 增值发布） | 依赖 Phase 0/1/2/3/4；**首步对齐 /pet 三入口↔cli-ops 命令面边界 + Loop.run 同步薄壳复用** |
 | 9 产品化入口层 | ⬜ 待开始 | entry → serve → repl → pet.md → user-guide | M6：可启动产品（`pip install` 后 `core-agent` 可用、serve/repl 双入口跑通、pet.md 多宠物加载） | 依赖 Phase 7（三桥/UIAPILayer）+ Phase 8（PetSession/PetActivator）+ 门禁基线；**首步补 pet.* ConfigSpec + serve/REPL 落地契约** |
+| 10 神兽召唤层 | ✅ 完成 | beast-registry → beast-mode → innate-skills → summon-activator | M7：20 神兽可召唤执行前台重大任务（异步并发 + 自动回归）、三入口 | 依赖 Phase 8（pet 范式）+ Phase 9（入口）+ orchestration + skills；**首步走 0034 契约 delta + 补 LoopResult.failed + handoff 异步化** |
 
-> **里程碑口径（M0~M6）**：M0 底座就绪（P0）→ M1 能力可调（P1）→ M2 单 Agent 闭环（P3）→ M3 多 Agent 编排（P4）→ M4 自进化（P5）→ M5 可发布产品（P7）→ M6 可启动产品（P9，M5 的入口侧补缺）。
+> **里程碑口径（M0~M7）**：M0 底座就绪（P0）→ M1 能力可调（P1）→ M2 单 Agent 闭环（P3）→ M3 多 Agent 编排（P4）→ M4 自进化（P5）→ M5 可发布产品（P7）→ M6 可启动产品（P9，M5 的入口侧补缺）→ M7 神兽召唤（P10，前台重大任务）。
 > Phase 2（横切中间件）、Phase 6（组合分发部署）为**贯穿阶段**，不单设里程碑，其成果在 M2/M5 验收中一并体现。
 
 ---

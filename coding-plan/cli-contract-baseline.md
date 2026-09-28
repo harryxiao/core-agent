@@ -22,7 +22,7 @@
 
 ---
 
-## 1. 命令面总览（30 动词 + 14 全局 flag）
+## 1. 命令面总览（32 动词 + 14 全局 flag）
 
 | 子命令族 | 命令动词 | 层 | 缺口归属 |
 |---|---|---|---|
@@ -35,6 +35,7 @@
 | 会话/运行 | session create + run | L1 UIAPILayer | 命令面核心锚点 |
 | 分发 | release publish/upgrade/rollback | L5 ReleaseManager | 补 |
 | 宠物 | pet <verb> | 编排层扩展 pet-mode | 补 M6（三入口之一，子动词面见 pet-mode-interface §3） |
+| 神兽 | summon <beast> [task] / recall <beast> | 编排层扩展 beast-mode | 补 M7（前台重大任务，三入口见 beast-mode spec） |
 
 ---
 
@@ -115,7 +116,16 @@
 |---|---|---|---|---|
 | 30 | `core-agent pet <verb> [...]` | 激活/枚举/停止宠物（后台自治会话），三入口之一 | `PetActivator.activate_from_cli(verb, rest)` / `PetManager` | **补 M6（子动词面待 phase-9 敲定，见 pet-mode-interface §3）** |
 
-### 2.10 全局 flag（启动参数，非子命令 · 14）
+### 2.10 神兽（beast-mode · 补 M7）
+
+| # | 命令 | 语义 | 对应 | 缺口 |
+|---|---|---|---|---|
+| 31 | `core-agent summon <beast> [task]` | 召唤神兽执行前台重大任务（异步并发，完成后自动回归），三入口之一 | `BeastActivator.activate_from_cli(beast, rest)` / `BeastManager.summon` | **补 M7（异步执行经 handoff→loop.arun）** |
+| 32 | `core-agent recall <beast>` | 手动复位目标神兽至 RECALLED（可再次召唤），他兽不受影响 | `BeastActivator.recall_from_cli(beast)` / `BeastManager.recall` | **补 M7** |
+
+> `beast list` 枚举 20 只内置神兽（只读，`BeastRegistry.all()`），属 read 查询，非独立动词。
+
+### 2.11 全局 flag（启动参数，非子命令 · 14）
 
 | # | flag | 语义 | 落点 |
 |---|---|---|---|
