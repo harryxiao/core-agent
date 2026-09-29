@@ -114,7 +114,6 @@
 | CORE-SKILL-R2 | 技能 SHALL 支持版本管理与灰度发布，A/B 退化自动回退 | P1 | skills/spec.md |
 | CORE-SKILL-R3 | 技能路由 SHALL 按 Top-K 相似度匹配，未命中则沉淀为候选 | P0 | skills/spec.md |
 | CORE-SKILL-R4 | 技能库 SHALL 作为 evolution 结晶/溶解的唯一交接面 | P0 | skills/spec.md |
-| CORE-SKILL-R5 | 系统 SHALL 对技能执行设置超时与资源上限，超时/超限中断执行并回收资源，不阻塞主循环 | P0 | skills/spec.md |
 
 ### 1.12 上下文工程（context）
 

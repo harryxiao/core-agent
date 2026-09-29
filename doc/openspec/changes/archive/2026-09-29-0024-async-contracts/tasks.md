@@ -9,14 +9,14 @@
 - [x] 2.1 specs/llm-provider/spec.md delta：## ADDED Requirements「异步调用接口」acompletion/astream/aembedding + sync 薄壳语义
 - [x] 2.2 specs/tool-use/spec.md delta：## ADDED Requirements「异步工具调用」ainvoke + sync 薄壳语义
 - [x] 2.3 specs/loop/spec.md delta：## ADDED Requirements「异步流式执行」arun/astream + LoopEvent 五事件（loop_started/step_completed/reply_delta/loop_finished/loop_failed）
-- [ ] 2.4 specs/orchestration/spec.md delta：## ADDED Requirements「异步执行单元契约」扇出执行单元复用 acompletion/ainvoke
+- [x] 2.4 specs/orchestration/spec.md delta：## ADDED Requirements「异步执行单元契约」扇出执行单元复用 acompletion/ainvoke
 
 ## 3. spec merged（P0）
 
 - [x] 3.1 specs/llm-provider/spec.md 正文：Purpose 双向 + 追加异步 Requirement（与 delta 逐字一致）
 - [x] 3.2 specs/tool-use/spec.md 正文：同上（与 delta 逐字一致）
 - [x] 3.3 specs/loop/spec.md 正文：同上（与 delta 逐字一致）
-- [ ] 3.4 specs/orchestration/spec.md 正文：同上（与 delta 逐字一致）
+- [x] 3.4 specs/orchestration/spec.md 正文：同上（与 delta 逐字一致）
 
 ## 4. 接口文档（P0）
 

@@ -53,6 +53,7 @@ register ─► load ─► active ─► suspend ─► unload ─► archive
 | suspended | 暂停（如进化候选评审中） |
 | unloaded | 已卸载，undo 栈已回滚 |
 | archived | 归档（保留元数据，不再加载） |
+| faulted | 运行时异常，已标记故障并隔离（不拖垮宿主） |
 
 ---
 
@@ -130,12 +131,16 @@ class Patch:     # 进化补丁
 |---|---|
 | `COEFFECT_MISSING` | 必需 coeffect 缺失 |
 | `INVALID_SCHEMA` | 插件 schema 非法 |
+| `INVALID_MANIFEST` | 插件 manifest 非法（版本/依赖/入口） |
 | `GENERATION_CONFLICT` | 世代冲突 |
-| `UNDO_FAILED` | 撤销失败（进入 QUARANTINE） |
 | `NOT_ACTIVE` | 插件未激活 |
+| `UNDO_FAILED` | 撤销失败（进入 QUARANTINE） |
+| `CIRCULAR_DEPENDENCY` | 插件依赖存在循环 |
+| `REGISTER_TIMEOUT` | 插件注册超时 |
 | `SOURCE_NOT_FOUND` | 插件来源不可达（安装 discover 阶段） |
 | `SIGNATURE_INVALID` | 插件签名校验失败（安装 verify 阶段） |
 | `INSTALL_FAILED` | 插件安装失败（安装 install 阶段） |
+| `UNINSTALL_NOT_FOUND` | 卸载的插件不存在（未安装） |
 
 ---
 
