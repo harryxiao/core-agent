@@ -2,7 +2,7 @@
 
 > 评估时间：2026-09-20
 > 评估对象：Core-Agent SDD 文档体系（`doc/` 全量）
-> ⚠️ 本评估基于**补齐前 17-capability 基线**；补齐后为 **27 capability**（新增 `rag`、`git`、`deployment`、`core-profile`、`durability`、`configuration`、`skillhub`、`ci-cd`、`cli-ops`、`pet-mode`），详见 §4.2「缺口排序与补齐路线」
+> ⚠️ 本评估基于**补齐前 17-capability 基线**；补齐后为 **29 capability**（新增 `rag`、`git`、`deployment`、`core-profile`、`durability`、`configuration`、`skillhub`、`ci-cd`、`cli-ops`、`pet-mode`、`beast-mode`、`judgment`），详见 §4.2「缺口排序与补齐路线」
 > 数据基线：既有架构审计报告（17 capability / 10章105篇 / 15接口 / 9 change / 23 ADR）+ 本轮横向调研
 > 调研方法：开源框架取 GitHub README 实证；闭源产品取公开文档与业界共识（官网 JS 渲染，正文不可 fetch）
 
@@ -15,13 +15,13 @@
 2. 相对主流 Agent 产品处于什么位置；
 3. SDD 文档的功能设计是否「全面」。
 
-功能设计全貌取自 `requirements.md` 27 模块 + `openspec/specs/*` 27 capability（Purpose/Requirements 已逐一核对），对比基线为 5 个开源框架 + 4 个闭源产品 + 2 个自托管个人助理（OpenClaw/Hermes）。
+功能设计全貌取自 `requirements.md` 29 模块 + `openspec/specs/*` 29 capability（Purpose/Requirements 已逐一核对），对比基线为 5 个开源框架 + 4 个闭源产品 + 2 个自托管个人助理（OpenClaw/Hermes）。
 
 ---
 
-## 二、SDD 功能设计全貌：27 capability → 6 大功能域
+## 二、SDD 功能设计全貌：29 capability → 6 大功能域
 
-Core-Agent 的 27 个 capability 按职责收敛为六层，功能面覆盖完整、职责边界清晰：
+Core-Agent 的 29 个 capability 按职责收敛为六层，功能面覆盖完整、职责边界清晰：
 
 | 功能域 | capability | 功能要点 |
 |---|---|---|
@@ -111,7 +111,7 @@ Core-Agent 的 27 个 capability 按职责收敛为六层，功能面覆盖完�
 
 | 评估项 | 评级 | 依据 |
 |---|---|---|
-| 架构设计完善度 | **B+** | 六域 27 capability 职责清晰、横切中间件化、入口最全 |
+| 架构设计完善度 | **B+** | 六域 29 capability 职责清晰、横切中间件化、入口最全 |
 | 功能设计全面性 | **A-** | 覆盖 20 个对比维度（原 ○ 的多模态/托管已由 ○→◐ 补齐，无 ○ 残留），进化引擎体系化程度业界最高、记忆光谱/组合代数仍为独有，6 处对比缺口本轮补齐多模态/托管两处 |
 | 相对主流产品定位 | **设计前瞻性领先，工程落地滞后** | 差异化能力多（evolution/光谱记忆/IM/A2A），但 src=0、沙箱/评测/embedding 未落地 |
 | 交付就绪度 | **C** | 纯文档态 |

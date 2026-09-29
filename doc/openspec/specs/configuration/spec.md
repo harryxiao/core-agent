@@ -2,7 +2,7 @@
 
 ## Purpose
 
-配置管理（configuration）能力提供统一的配置源、功能开关与密钥分级：以 config.yaml 为单一收口，CLI 覆盖 + env 覆盖 + 默认值兜底（优先级链 CLI flag > env > config.yaml > 默认值），配置项以 ConfigSpec 为单一真源（每项声明 cli_flag/env_var/default/map_to，暴露面 core/advanced/hidden 分级），模块级 feature flag 开关，LLM 配置为必选项（缺失阻断启动），IM 凭证与敏感密钥经 env/keychain 分级存储，schema 校验 + 变更即生效 + 失败回滚不留半写状态，作为 llm-provider / ui / im / git 配置语义的上层挂载能力（来源：exploration_findings.md，2026-09-25）。
+配置管理（configuration）能力提供统一的配置源、功能开关与密钥分级：以 config.yaml 为单一收口，CLI 覆盖 + env 覆盖 + 默认值兜底（优先级链 CLI flag > env > config.yaml > 默认值），配置项以 ConfigSpec 为单一真源（每项声明 cli_flag/env_var/default/map_to，暴露面 core/advanced/hidden 分级），模块级 feature flag 开关，LLM 配置为必选项（缺失阻断启动），IM 凭证与敏感密钥经 env/keychain 分级存储，schema 校验 + 变更即生效 + 失败回滚不留半写状态，作为 llm-provider / ui / im / git / judgment 配置语义的上层挂载能力（来源：exploration_findings.md，2026-09-25）。
 
 ## Requirements
 
@@ -77,6 +77,24 @@
 - **GIVEN** 未配置 im 段
 - **WHEN** 系统启动
 - **THEN** IM 网关不初始化，其余功能不受影响
+
+### Requirement: 决策模型配置
+系统 SHALL 将决策模型（judgment）接入配置纳入 ConfigSpec 单一真源：judgment.provider / judgment.model / judgment.base_url / judgment.api_key / judgment.confidence_threshold；api_key 经 env/keychain 分级存储不落 yaml 明文，未配置时决策能力关闭、主 LLM 兜底。
+
+#### Scenario: 决策模型配置经 ConfigSpec 声明
+- **GIVEN** 配置了 judgment 段的 provider/model/base_url/api_key/confidence_threshold
+- **WHEN** 系统启动加载配置
+- **THEN** 配置经 ConfigSpec 单一真源解析（优先级链 CLI flag > env > config.yaml > 默认值），暴露面 core/hidden 分级
+
+#### Scenario: 决策模型密钥不入 yaml 明文
+- **GIVEN** judgment.api_key 为敏感密钥
+- **WHEN** 系统做 schema 校验
+- **THEN** api_key 必须为 `${VAR}` 引用，yaml 明文被拒绝
+
+#### Scenario: 未配置决策模型回退主 LLM
+- **GIVEN** 未配置 judgment 段或 provider 为空
+- **WHEN** 系统需要决策
+- **THEN** 决策能力关闭，回退主 LLM 兜底
 
 ### Requirement: 密钥分级与安全
 系统 SHALL 保证敏感密钥不入 yaml 明文，日志与报错输出对密钥脱敏（对齐 observability）。

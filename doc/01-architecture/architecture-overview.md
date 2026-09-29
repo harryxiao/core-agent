@@ -10,7 +10,7 @@
 
 CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**架构。核心只有一层薄薄的
 "组合基底"（L0），其余——循环、记忆、进化引擎、模型适配器——**全部是插件**，可在运行时替换。
-在分层主链之外，另有 **6 个横切能力**（权限、约束、可观测、持久性、配置、CLI 运维）贯穿所有层，统一收口安全与质量。
+在分层主链之外，另有 **7 个横切能力**（权限、约束、可观测、持久性、配置、CLI 运维、决策）贯穿所有层，统一收口安全与质量。
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -43,7 +43,7 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
    ═══════════════════════════════════════════════════════════════════
    横切能力（Crosscutting，贯穿 L0–L5）
    permission 权限/审批/沙箱 · constraints 约束/熔断 · observability 日志/指标/追踪 · durability 持久性/恢复/回滚 · configuration 配置加载/功能开关/密钥解析
-   cli-ops CLI 运维（命令集/启动参数映射/进程守护）
+   cli-ops CLI 运维（命令集/启动参数映射/进程守护） · judgment 决策（原语路由/JEV 接入/置信度回退/审计）
 ```
 
 ---
@@ -71,6 +71,7 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
 | 约束与容错 constraints | schema 校验、熔断/降级/重试等横切中间件 |
 | 可观测性 observability | 结构化日志、指标聚合、trace 追踪、审计，统一供给进化与审批 |
 | 持久性 durability | 检查点快照、崩溃恢复、时间旅行回滚、保留策略 |
+| 决策 judgment | 决策原语路由（choice/score/noul）、JEV System One 接入、置信度回退、决策审计 |
 | 配置管理 configuration | config.yaml 单一收口、env 覆盖/默认值兜底、功能开关、密钥分级、schema 校验 |
 | CLI 运维 cli-ops | 运维命令集（生命周期/状态/资产/连接/安全/网关）、启动参数映射、进程守护 |
 
@@ -99,6 +100,7 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
 | MCPClient | 横切 | 消费外部 MCP server | mcp-interface.md |
 | CheckpointManager / CrashRecovery / TimeTravel / RetentionManager | 横切 | 执行态持久化/恢复/回滚/保留 | durability-interface.md |
 | ConfigManager | 横切 | 配置加载/功能开关/密钥解析 | configuration-interface.md |
+| DecisionRouter / JEVProvider / Compactor / Guardrail | 横切 | 决策原语路由/JEV 接入/置信度回退/决策审计 | judgment-interface.md |
 | CLICommandDispatcher / ParamMapper | 横切 | 运维命令集 / 启动参数映射 | cli-ops-interface.md |
 | SkillHubClient/MarketIndex/SkillPublisher/TrustVerifier | L3 | 技能市场管理/下载/发布 | skillhub-interface.md |
 | CICDPipeline / ArtifactPublisher | 工程交付 | 质量门禁（lint/typecheck/test/build）+ 制品发布/回滚 | ci-cd-interface.md |
@@ -161,6 +163,7 @@ MVP 采用**单进程**：主循环线程 + 记忆/进化后台任务 + MCP 传�
 │  ├─ PermissionGuard / ConstraintMiddleware / Telemetry (横切)           │
 │  ├─ DurabilityManager (横切)                                            │
 │  ├─ ConfigManager (横切)                                                │
+│  ├─ DecisionRouter / JEVProvider (横切, 决策/JEV 接入)                     │
 │  ├─ MCPClient (横切, stdio/HTTP 子进程或连接)                            │
 │  └─ CLIOps (横切, 命令分发/参数映射/进程守护)                           │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -190,6 +193,7 @@ core-agent/                      # 仓库根
 │   ├── observability/           # 横切：可观测性
 │   ├── durability/              # 横切：持久性
 │   ├── configuration/           # 横切：配置
+│   ├── judgment/                # 横切：决策
 │   ├── cli-ops/                 # 横切：CLI 运维命令面
 │   ├── ci-cd/                   # 工程交付：质量门禁 + 制品发布
 │   └── mcp/                     # MCP 集成

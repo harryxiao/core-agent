@@ -240,12 +240,13 @@
 
 | ID | 需求描述 | 优先级 | 追踪规格 |
 |---|---|---|---|
-| CORE-CFG-R1 | 系统 SHALL 以 config.yaml 为单一配置收口，支持 env 环境变量覆盖与默认值兜底（env > yaml > default），并作为 llm-provider / ui / im / git 配置语义的上层挂载能力 | P0 | configuration/spec.md |
+| CORE-CFG-R1 | 系统 SHALL 以 config.yaml 为单一配置收口，支持 env 环境变量覆盖与默认值兜底（env > yaml > default），并作为 llm-provider / ui / im / git / judgment 配置语义的上层挂载能力 | P0 | configuration/spec.md |
 | CORE-CFG-R2 | 系统 SHALL 将 LLM 配置（provider / model / endpoint / api_key）设为必选项，缺失或非法时阻断启动并报明确错误 | P0 | configuration/spec.md |
 | CORE-CFG-R3 | 系统 SHALL 提供模块级 feature flag 开关（features 段），被关闭的功能模块不加载、不初始化 | P1 | configuration/spec.md |
 | CORE-CFG-R4 | 系统 SHALL 对敏感密钥采用 env / keychain 分级存储：config.yaml 中只允许 `${VAR}` 引用，禁止明文；日志与报错中脱敏 | P0 | configuration/spec.md |
 | CORE-CFG-R5 | 系统 SHALL 支持 IM 模块（账户 / ID / 密钥）接入信息配置，密钥经 env / keychain 引用，不落明文 | P0 | configuration/spec.md |
 | CORE-CFG-R6 | 系统 SHALL 对配置做 schema 校验，校验通过才生效；变更即生效；写入失败回滚不留半写状态 | P1 | configuration/spec.md |
+| CORE-CFG-R7 | 系统 SHALL 将决策模型（judgment）配置（provider / model / base_url / api_key / confidence_threshold）纳入 ConfigSpec 单一真源，api_key 分级存储不落明文，未配置时关闭决策能力、主 LLM 兜底 | P1 | configuration/spec.md |
 
 ### 1.24 技能市场（skillhub）
 
@@ -302,6 +303,15 @@
 | CORE-BEAST-R6 | 系统 SHALL 异步并发执行召唤（handoff 经 loop.arun 非阻塞，多兽并行），据 LoopResult.failed 判定成败自动回归，记忆分区封存 | P1 | beast-mode/spec.md |
 | CORE-BEAST-R7 | 系统 SHALL 支持手动复位（/recall <beast> + recall <beast> CLI + NL「召回」）按 beast_id 复位至 RECALLED | P1 | beast-mode/spec.md |
 | CORE-BEAST-R8 | 系统 SHALL 支持三入口召唤（/summon 斜杠 + summon <beast> [task] CLI + WebUI 自然语言），三入口同源 | P1 | beast-mode/spec.md |
+
+### 1.29 决策（judgment）
+
+| ID | 需求描述 | 优先级 | 追踪规格 |
+|---|---|---|---|
+| CORE-JDG-R1 | 系统 SHALL 提供 choice（选项路由）/score（评分筛选）/noul（布尔判断）三类决策原语作为统一决策入口，供 loop/orchestration/evolution 在决策点调用 | P1 | judgment/spec.md |
+| CORE-JDG-R2 | 系统 SHALL 经 JEV/TypeSafe「System One」决策小模型（POST /v1/systemone：state + typed questions → typed answers，答案按原语分形）接入决策原语，Provider 懒加载、api_key/base_url/model 挂载 | P1 | judgment/spec.md |
+| CORE-JDG-R3 | 系统 SHALL 在决策 confidence 低于配置阈值时回退主 LLM 重新决策，并标注回退轨迹，保证决策质量下限 | P1 | judgment/spec.md |
+| CORE-JDG-R4 | 系统 SHALL 将每次决策轨迹（输入 state、原语类型、选项、结果、置信度、是否回退）落 observability 链路，供进化与审批消费 | P1 | judgment/spec.md |
 
 ---
 
