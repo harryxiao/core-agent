@@ -1,6 +1,6 @@
 # core-agent 契约速查表（Contracts Summary）
 
-> 从 `openspec/specs/*/spec.md`（27 个规格）与 `03-interfaces/*.md`（25 个接口）提取。
+> 从 `openspec/specs/*/spec.md`（28 个规格）与 `03-interfaces/*.md`（26 个接口）提取。
 > 用途：跨模块快速检索「能力 / 关键契约 / 接口类与方法 / 错误码」。
 > 来源只读，本表为唯一产物，不修改任何 core-agent 源文件。
 
@@ -21,6 +21,7 @@
 | evolution | ✅ | ✅ | 进化引擎结晶闭环（诊断→提案→验证→评测） | — |
 | git | ✅ | ❌ | 版本控制 + .git/工作区保护 | — |
 | im | ✅ | ✅ | IM 网关多平台统一接入 | IM_CONFIRM_DENIED, IM_CONFIRM_TIMEOUT, IM_NOT_WHITELISTED, IM_PLATFORM_DISCONNECTED, IM_PLATFORM_UNSUPPORTED, IM_SEND_FAILED |
+| judgment | ✅ | ✅ | 决策模型接入（choice/score/noul 三原语 + JEV + 置信度回退 + 决策审计） | JUDGMENT_PROVIDER_UNREACHABLE, JUDGMENT_SCHEMA_MISMATCH, JUDGMENT_LOW_CONFIDENCE, JUDGMENT_TIMEOUT, JUDGMENT_INVALID_PRIMITIVE |
 | llm-provider | ✅ | ✅ | 三方 LLM 归一化（LiteLLM 默认，可替换） | LLM_ERROR, LLM_TIMEOUT, LLM_RATE_LIMITED, LLM_AUTH, LLM_NETWORK, LLM_UNKNOWN_PROVIDER |
 | loop | ✅ | ✅ | 核心执行循环（观察→推理→行动→记忆） | — |
 | mcp | ✅ | ✅ | MCP 集成（client + server 双向） | MCP_CONNECT_FAILED, MCP_PROTOCOL_MISMATCH, MCP_TOOL_NOT_FOUND, PERMISSION_DENIED, REMOTE_IRREVERSIBLE, REMOTE_TIMEOUT |
@@ -250,3 +251,14 @@
 - **依赖**：`configuration-interface`（`ConfigSpec`）、`plugin-registry-interface`（插件来源/安装生命周期）、`mcp-interface`（mcp 安装/移除生命周期）。
 - **需求**：运维命令集 / 启动参数映射。
 - **里程碑**：无独立里程碑（CLI 命令面契约随 Phase 2.5 回填）。
+
+### 28. judgment — 决策模型接入（JEV System One）
+
+- **能力**：choice（选项路由）/ score（评分筛选）/ noul（布尔判断）三类决策原语统一入口；经 JEV/TypeSafe `POST /v1/systemone` 结构化决策；置信度低于阈值回退主 LLM；每次决策轨迹落 observability。
+- **契约**：三原语统一走 `DecisionRouter.decide()` 不散落生成式 prompt；答案按原语分形（noul→noul / choice→choice+probabilities+confidence / score→score+legend+probabilities+confidence）；confidence < 阈值 → 主 LLM 回退 + `fallback=True` + 轨迹标注；JEV 不可达/超时亦回退；未配置 judgment 段 → 决策能力关闭、主 LLM 兜底。
+- **接口**：`DecisionRouter`、`JEVProvider`、`Compactor`、`Guardrail`；数据类型 `DecisionPrimitive`/`DecisionRequest`/`DecisionResult`/`DecisionTrace`。
+- **方法**：`choose()`、`decide()`、`query()`、`score()`、`check()`。
+- **错误码**：`JUDGMENT_PROVIDER_UNREACHABLE`、`JUDGMENT_SCHEMA_MISMATCH`、`JUDGMENT_LOW_CONFIDENCE`、`JUDGMENT_TIMEOUT`、`JUDGMENT_INVALID_PRIMITIVE`。
+- **依赖**：`observability-interface`（决策轨迹落盘）、`configuration-interface`（`ConfigSpec`）、`llm-provider-interface`（主 LLM 回退兜底）。
+- **需求**：决策原语路由 / JEV 提供方接入 / 置信度回退 / 决策审计。
+- **里程碑**：M8 决策模型接入。

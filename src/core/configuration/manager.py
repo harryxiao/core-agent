@@ -24,6 +24,7 @@ from .models import (
     ConfigExposure,
     ConfigSpec,
     IMConfig,
+    JudgmentConfig,
     LLMConfig,
     PetConfig,
     ValidationResult,
@@ -91,6 +92,42 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         default="persons",
         map_to="pet.persons_dir",
     ),
+    ConfigSpec(
+        "judgment.provider",
+        "--judgment.provider",
+        "CORE_JUDGMENT_PROVIDER",
+        default="",
+        map_to="judgment.provider",
+    ),
+    ConfigSpec(
+        "judgment.model",
+        "--judgment.model",
+        "CORE_JUDGMENT_MODEL",
+        default="",
+        map_to="judgment.model",
+    ),
+    ConfigSpec(
+        "judgment.base_url",
+        "--judgment.base-url",
+        "CORE_JUDGMENT_BASE_URL",
+        default="",
+        map_to="judgment.base_url",
+    ),
+    ConfigSpec(
+        "judgment.api_key",
+        "--judgment.api-key",
+        "CORE_JUDGMENT_API_KEY",
+        default="",
+        map_to="judgment.api_key",
+        exposure=ConfigExposure.HIDDEN,
+    ),
+    ConfigSpec(
+        "judgment.confidence_threshold",
+        "--judgment.confidence-threshold",
+        "CORE_JUDGMENT_CONFIDENCE_THRESHOLD",
+        default=0.7,
+        map_to="judgment.confidence_threshold",
+    ),
 ]
 
 _FEATURE_ENV_PREFIX = "CORE_FEATURES_"
@@ -143,6 +180,8 @@ class ConfigManager:
             errors.append("llm.api_key 必须为 ${VAR} 引用，禁止明文密钥")
         if config.im is not None and _looks_like_secret(config.im.secret_ref):
             errors.append("im.secret 必须为 ${VAR} 引用，禁止明文密钥")
+        if config.judgment is not None and _looks_like_secret(config.judgment.api_key_ref):
+            errors.append("judgment.api_key 必须为 ${VAR} 引用，禁止明文密钥")
         for key, value in (
             ("provider", config.llm.provider),
             ("model", config.llm.model),
@@ -267,8 +306,23 @@ class ConfigManager:
                 ),
                 persons_dir=str(pet_raw.get("persons_dir", "persons")),
             )
-        extra = {k: v for k, v in merged.items() if k not in {"llm", "features", "im", "pet"}}
-        return AppConfig(llm=llm, features=features, im=im, pet=pet, extra=extra)
+        judgment = None
+        judgment_raw = cast(dict[str, Any], merged.get("judgment") or {})
+        if judgment_raw:
+            threshold_raw = judgment_raw.get("confidence_threshold", 0.7)
+            judgment = JudgmentConfig(
+                provider=str(judgment_raw.get("provider", "")),
+                model=str(judgment_raw.get("model", "")),
+                base_url=str(judgment_raw.get("base_url", "")),
+                api_key_ref=str(judgment_raw.get("api_key", "")),
+                confidence_threshold=(
+                    threshold_raw if isinstance(threshold_raw, (int, float)) else 0.7
+                ),
+            )
+        extra = {
+            k: v for k, v in merged.items() if k not in {"llm", "features", "im", "pet", "judgment"}
+        }
+        return AppConfig(llm=llm, features=features, im=im, pet=pet, judgment=judgment, extra=extra)
 
 
 def _parse_ref(ref: str) -> str | None:
@@ -319,6 +373,7 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
         features=features,
         im=im,
         pet=config.pet,
+        judgment=config.judgment,
         extra=dict(config.extra),
     )
 

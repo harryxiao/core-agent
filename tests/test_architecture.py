@@ -49,6 +49,7 @@ EXPECTED_PACKAGES = {
     "git",  # 工具横切：版本控制
     "pet",  # 宠物模式子系统（core/library/explore/safety/notify/microtask）
     "beast",  # 神兽召唤层（前台重大任务，pet-mode 对偶）
+    "judgment",  # 横切：决策模型（System One 决策小模型 + 主 LLM 回退）
 }
 
 # 主题 9（Phase 0 补充）：底座模块只依赖彼此 + stdlib，不反向依赖能力层
@@ -77,6 +78,7 @@ CAPABILITY_MODULES = {
     "git",
     "pet",
     "beast",
+    "judgment",
 }
 
 _SNAKE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -401,3 +403,30 @@ def test_phase10_beast_not_imported_by_dependencies() -> None:
                 if sub == "beast"
             )
     assert not offenders, f"Phase10 神兽召唤层被底层反向依赖: {offenders}"
+
+
+def test_phase11_judgment_no_reverse_dependency() -> None:
+    """judgment 低层横切叶子：只依赖 llm_provider/observability 底座。
+
+    不得反向依赖其消费方上层（loop/memory/permission 等）。
+    """
+
+    upper_layers = {
+        "loop",
+        "memory",
+        "permission",
+        "context",
+        "rag",
+        "skills",
+        "skillhub",
+        "orchestration",
+        "evolution",
+        "composition",
+    }
+    offenders: list[str] = []
+    for path in (SRC / "judgment").rglob("*.py"):
+        offenders.extend(
+            f"judgment/{path.name} -> core.{sub}"
+            for sub in sorted(_core_subpackages(path) & upper_layers)
+        )
+    assert not offenders, f"Phase11 决策层反向依赖上层: {offenders}"

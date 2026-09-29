@@ -62,7 +62,7 @@
 | 8 宠物模式（后台自主增值） | ✅ 完成 | pet.core → pet.library → pet.explore → pet.safety → pet.notify → pet.microtask | —（随 M5 增值发布） | 依赖 Phase 0/1/2/3/4；**首步对齐 /pet 三入口↔cli-ops 命令面边界 + Loop.run 同步薄壳复用** |
 | 9 产品化入口层 | ✅ 完成 | entry → serve → repl → pet.md → user-guide | M6：可启动产品（`pip install` 后 `core-agent` 可用、serve/repl 双入口跑通、pet.md 多宠物加载） | 依赖 Phase 7（三桥/UIAPILayer）+ Phase 8（PetSession/PetActivator）+ 门禁基线；**首步补 pet.* ConfigSpec + serve/REPL 落地契约** |
 | 10 神兽召唤层 | ✅ 完成 | beast-registry → beast-mode → innate-skills → summon-activator | M7：20 神兽可召唤执行前台重大任务（异步并发 + 自动回归）、三入口 | 依赖 Phase 8（pet 范式）+ Phase 9（入口）+ orchestration + skills；**首步走 0034 契约 delta + 补 LoopResult.failed + handoff 异步化** |
-| 11 决策模型接入 | ⬜ 待开始 | judgment（errors → models → router → provider → compactor → guardrail） | M8：三原语 choice/score/noul 统一决策入口 + JEV System One 接入 + 置信度回退主 LLM + 决策轨迹审计 | 依赖 observability + configuration + permission + llm_provider（均已落地）；契约已就绪（0035 + judgment-interface.md）；**首步补 judgment.* ConfigSpec + 归档 0035** |
+| 11 决策模型接入 | ✅ 完成 | judgment（errors → models → router → provider → compactor → guardrail） | M8：三原语 choice/score/noul 统一决策入口 + JEV System One 接入 + 置信度回退主 LLM + 决策轨迹审计 | 依赖 observability + configuration + permission + llm_provider（均已落地）；契约已就绪（0035 + judgment-interface.md）；**首步补 judgment.* ConfigSpec + 归档 0035** |
 | 12 MCP 安装/传输/安全 | ⏸ DEFERRED | transport 生产实现 → client 安装分流 → 消费侧安全接线 | —（延期待重开：mcp SDK 离线不可装 + 依赖红线须 ADR） | 依赖 permission（SandboxManager）+ plugin_registry（MCP_ENDPOINT）；**重开首步 ADR 评估 mcp SDK 依赖定位 + 落 0033 ADDED delta** |
 
 > **里程碑口径（M0~M7）**：M0 底座就绪（P0）→ M1 能力可调（P1）→ M2 单 Agent 闭环（P3）→ M3 多 Agent 编排（P4）→ M4 自进化（P5）→ M5 可发布产品（P7）→ M6 可启动产品（P9，M5 的入口侧补缺）→ M7 神兽召唤（P10，前台重大任务）→ M8 决策模型接入（P11，judgment/JEV System One）。

@@ -58,6 +58,17 @@ class PetConfig:
 
 
 @dataclass(frozen=True)
+class JudgmentConfig:
+    """决策模型配置（可选）：未配置 provider 时决策能力关闭、回退主 LLM。"""
+
+    provider: str = ""
+    model: str = ""
+    base_url: str = ""
+    api_key_ref: str = ""  # api_key 的 ${VAR} 引用（非明文）
+    confidence_threshold: float = 0.7
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """配置聚合：单一收口解析后的有效配置。"""
 
@@ -65,6 +76,7 @@ class AppConfig:
     features: dict[str, bool] = field(default_factory=dict[str, bool])
     im: IMConfig | None = None
     pet: PetConfig | None = None
+    judgment: JudgmentConfig | None = None
     extra: dict[str, Any] = field(default_factory=dict[str, Any])
 
 

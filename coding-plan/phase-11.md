@@ -74,25 +74,25 @@ llm_provider(主 LLM 回退) ─────────────────
 
 ## 6. 里程碑验收清单
 
-- [ ] `openspec/changes/0035-judgment-decision/` 归档完成（spec 已同步，`--skip-specs` 仅移动）；`openspec validate` 全绿
-- [ ] `src/core/judgment/` 6 文件落地：errors（5 码 `JUDGMENT_PROVIDER_UNREACHABLE / JUDGMENT_SCHEMA_MISMATCH / JUDGMENT_LOW_CONFIDENCE / JUDGMENT_TIMEOUT / JUDGMENT_INVALID_PRIMITIVE`）+ models（`DecisionPrimitive` / `DecisionRequest` / `DecisionResult` / `DecisionTrace`）+ router + provider + compactor + guardrail
-- [ ] `DecisionRouter.decide()` 按原语分发；`choose()` 返回唯一选中项 + 概率分布 + 置信度
-- [ ] `JEVProvider.query(state, questions)` 经 `/v1/systemone` 适配 typed questions/answers（答案按原语分形：noul→noul / choice→choice+probabilities+confidence / score→score+legend+probabilities+confidence）
-- [ ] 置信度回退：confidence < 阈值 → 主 LLM + `DecisionResult.fallback=True` + 轨迹标注；noul 概率接近 0.5 判定；JEV 不可达/超时回退
-- [ ] 决策轨迹 `DecisionTrace` 落 observability（含置信度 + 回退标记）
-- [ ] judgment.* 5 键纳入 ConfigSpec 单一真源；api_key 走 `${VAR}` 引用分级；未配置时决策能力关闭、主 LLM 兜底
-- [ ] 决策点 DI seam：loop（choice）/ memory 压实（score）/ permission guardrail（noul）三决策点经注入接 judgment，不内联 JEV 调用
-- [ ] 门禁四件套全绿：ruff check ✓ · ruff format --check ✓ · pyright 0 errors · pytest 全通过（含本 Phase 新增用例）
+- [x] `openspec/changes/0035-judgment-decision/` 归档完成（spec 已同步，`--skip-specs` 仅移动）；`openspec validate` 全绿
+- [x] `src/core/judgment/` 6 文件落地：errors（5 码 `JUDGMENT_PROVIDER_UNREACHABLE / JUDGMENT_SCHEMA_MISMATCH / JUDGMENT_LOW_CONFIDENCE / JUDGMENT_TIMEOUT / JUDGMENT_INVALID_PRIMITIVE`）+ models（`DecisionPrimitive` / `DecisionRequest` / `DecisionResult` / `DecisionTrace`）+ router + provider + compactor + guardrail
+- [x] `DecisionRouter.decide()` 按原语分发；`choose()` 返回唯一选中项 + 概率分布 + 置信度
+- [x] `JEVProvider.query(state, questions)` 经 `/v1/systemone` 适配 typed questions/answers（答案按原语分形：noul→noul / choice→choice+probabilities+confidence / score→score+legend+probabilities+confidence）
+- [x] 置信度回退：confidence < 阈值 → 主 LLM + `DecisionResult.fallback=True` + 轨迹标注；noul 概率接近 0.5 判定；JEV 不可达/超时回退
+- [x] 决策轨迹 `DecisionTrace` 落 observability（含置信度 + 回退标记）
+- [x] judgment.* 5 键纳入 ConfigSpec 单一真源；api_key 走 `${VAR}` 引用分级；未配置时决策能力关闭、主 LLM 兜底
+- [ ] 决策点 DI seam：loop（choice）/ memory 压实（score）/ permission guardrail（noul）三决策点经注入接 judgment，不内联 JEV 调用（deferred：三组件已落地并提供三原语，loop/memory/permission 三决策点的实际 DI 接线为后续 Phase）
+- [x] 门禁四件套全绿：ruff check ✓ · ruff format --check ✓ · pyright 0 errors · pytest 全通过（含本 Phase 新增用例）
 
 ## 7. 测试要点
 
-- [ ] 三原语分发：choice 返回唯一选中项 + 置信度；score 返回各条目评分；noul 返回是/否（均对齐 `judgment-interface.md` 分形）
-- [ ] JEV 协议适配：state + typed questions → typed answers（按原语分形），答案与问题 schema 不匹配 → `JUDGMENT_SCHEMA_MISMATCH`
-- [ ] 置信度回退：confidence < 阈值 → `fallback=True` 且回退主 LLM；noul 概率 ≈0.5 → 回退；JEV 不可达 → `JUDGMENT_PROVIDER_UNREACHABLE` 回退；超时 → `JUDGMENT_TIMEOUT` 回退
-- [ ] 未识别原语 → `JUDGMENT_INVALID_PRIMITIVE`
-- [ ] 决策轨迹：每次决策产出 `DecisionTrace`，落 observability，含置信度与回退标记（单测断言轨迹字段完整）
-- [ ] ConfigSpec：judgment.* 5 键三面一致（CLI flag / env / yaml）；api_key 明文 yaml 拒绝；未配置 provider → 决策能力关闭、主 LLM 兜底
-- [ ] 决策点 DI：loop/memory/permission 注入 fake `DecisionRouter`/`Compactor`/`Guardrail` 断言调用（不碰真实 JEV）
+- [x] 三原语分发：choice 返回唯一选中项 + 置信度；score 返回各条目评分；noul 返回是/否（均对齐 `judgment-interface.md` 分形）
+- [x] JEV 协议适配：state + typed questions → typed answers（按原语分形），答案与问题 schema 不匹配 → `JUDGMENT_SCHEMA_MISMATCH`
+- [x] 置信度回退：confidence < 阈值 → `fallback=True` 且回退主 LLM；noul 概率 ≈0.5 → 回退；JEV 不可达 → `JUDGMENT_PROVIDER_UNREACHABLE` 回退；超时 → `JUDGMENT_TIMEOUT` 回退
+- [x] 未识别原语 → `JUDGMENT_INVALID_PRIMITIVE`
+- [x] 决策轨迹：每次决策产出 `DecisionTrace`，落 observability，含置信度与回退标记（单测断言轨迹字段完整）
+- [x] ConfigSpec：judgment.* 5 键三面一致（CLI flag / env / yaml）；api_key 明文 yaml 拒绝；未配置 provider → 决策能力关闭、主 LLM 兜底
+- [ ] 决策点 DI：loop/memory/permission 注入 fake `DecisionRouter`/`Compactor`/`Guardrail` 断言调用（deferred：随 DI 接线后续 Phase 补测，不碰真实 JEV）
 
 ## 8. 提交规范
 

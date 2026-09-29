@@ -19,6 +19,7 @@ from core.configuration import (
     ConfigManager,
     ConfigSpec,
     ConfigurationError,
+    JudgmentConfig,
     LLMConfig,
     PetConfig,
     ValidationResult,
@@ -304,3 +305,66 @@ def test_pet_enabled_env_override(tmp_path: Path) -> None:
     config = manager.load()
     assert config.pet is not None
     assert config.pet.enabled is False
+
+
+# ---- M8：judgment.* ConfigSpec 单一真源 ----
+
+
+_JUDGMENT_YAML = """\
+llm:
+  provider: openai
+  model: gpt-4o
+  endpoint: https://api.openai.com/v1
+  api_key: ${OPENAI_API_KEY}
+judgment:
+  provider: jev
+  model: systemone
+  base_url: http://jev.local
+  api_key: ${JEV_API_KEY}
+  confidence_threshold: 0.8
+"""
+
+
+def test_judgment_config_resolve_defaults() -> None:
+    assert resolve("judgment.provider") == ""
+    assert resolve("judgment.confidence_threshold") == 0.7  # noqa: PLR2004
+
+
+def test_judgment_config_from_yaml(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, _JUDGMENT_YAML, environ={"JEV_API_KEY": "jev-sk"})
+    config = manager.load()
+    assert config.judgment == JudgmentConfig(
+        provider="jev",
+        model="systemone",
+        base_url="http://jev.local",
+        api_key_ref="${JEV_API_KEY}",
+        confidence_threshold=0.8,
+    )
+
+
+def test_judgment_config_absent(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, _VALID_YAML)
+    assert manager.load().judgment is None
+
+
+def test_judgment_env_override(tmp_path: Path) -> None:
+    manager = _manager(
+        tmp_path,
+        _JUDGMENT_YAML,
+        environ={"JEV_API_KEY": "jev-sk", "CORE_JUDGMENT_MODEL": "systemone-mini"},
+    )
+    config = manager.load()
+    assert config.judgment is not None
+    assert config.judgment.model == "systemone-mini"
+
+
+def test_judgment_plaintext_secret_rejected(tmp_path: Path) -> None:
+    manager = _manager(
+        tmp_path,
+        "llm:\n  provider: openai\n  model: gpt-4o\n  endpoint: e\n  api_key: ${OPENAI_API_KEY}\n"
+        "judgment:\n  provider: jev\n  api_key: sk-RAW-JEV\n",
+    )
+    with pytest.raises(ConfigurationError) as exc_info:
+        manager.load()
+    assert "judgment.api_key" in str(exc_info.value)
+    assert "sk-RAW-JEV" not in str(exc_info.value)
