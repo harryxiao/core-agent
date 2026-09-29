@@ -19,7 +19,15 @@ from typing import Any, cast
 from core.plugin_registry import CoeffectResolver, Effect, EffectTracker
 
 from .errors import ConfigurationError
-from .models import AppConfig, ConfigExposure, ConfigSpec, IMConfig, LLMConfig, ValidationResult
+from .models import (
+    AppConfig,
+    ConfigExposure,
+    ConfigSpec,
+    IMConfig,
+    LLMConfig,
+    PetConfig,
+    ValidationResult,
+)
 
 # 配置项单一真源（全量声明）：CLI flag / env / yaml 三面由 ConfigSpec 生成，禁止硬编码第二真源。
 _CONFIG_SPECS: list[ConfigSpec] = [
@@ -68,6 +76,20 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_PERMISSION_MODE",
         default="interactive",
         map_to="permission.mode",
+    ),
+    ConfigSpec(
+        "pet.enabled",
+        "--pet-enabled",
+        "CORE_PET_ENABLED",
+        default=False,
+        map_to="pet.enabled",
+    ),
+    ConfigSpec(
+        "pet.persons_dir",
+        "--pet-dir",
+        "CORE_PET_DIR",
+        default="persons",
+        map_to="pet.persons_dir",
     ),
 ]
 
@@ -233,8 +255,20 @@ class ConfigManager:
                 corp_id=str(im_raw.get("corp_id", "")),
                 secret_ref=str(im_raw.get("secret", "")),
             )
-        extra = {k: v for k, v in merged.items() if k not in {"llm", "features", "im"}}
-        return AppConfig(llm=llm, features=features, im=im, extra=extra)
+        pet = None
+        pet_raw = cast(dict[str, Any], merged.get("pet") or {})
+        if pet_raw:
+            enabled_raw = pet_raw.get("enabled", False)
+            pet = PetConfig(
+                enabled=(
+                    enabled_raw
+                    if isinstance(enabled_raw, bool)
+                    else str(enabled_raw).lower() in ("true", "1", "yes")
+                ),
+                persons_dir=str(pet_raw.get("persons_dir", "persons")),
+            )
+        extra = {k: v for k, v in merged.items() if k not in {"llm", "features", "im", "pet"}}
+        return AppConfig(llm=llm, features=features, im=im, pet=pet, extra=extra)
 
 
 def _parse_ref(ref: str) -> str | None:
@@ -284,6 +318,7 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
         ),
         features=features,
         im=im,
+        pet=config.pet,
         extra=dict(config.extra),
     )
 

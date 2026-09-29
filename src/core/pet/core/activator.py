@@ -10,6 +10,7 @@ pet <verb> CLI argv（cli-ops-interface CommandGroup 扩展）、WebUI 自然语
 
 from __future__ import annotations
 
+from .layers import PersonaLayer
 from .manager import PetManager
 from .models import PetTask, PetTaskKind
 from .session import PetSession
@@ -40,11 +41,13 @@ class PetActivator:
         kind = _SLASH_TOOLS.get(tool_id, PetTaskKind.IDLE_EXPLORATION)
         return self._activate(PetTask(kind=kind, goal=f"斜杠命令 {tool_id}"))
 
-    def activate_from_cli(self, verb: str, rest: list[str]) -> PetSession:
-        """`pet <verb>` CLI argv 经 cli-ops CommandGroup 扩展解析。"""
+    def activate_from_cli(
+        self, verb: str, rest: list[str], *, persona: PersonaLayer | None = None
+    ) -> PetSession:
+        """`pet <verb>` CLI argv 经 cli-ops CommandGroup 扩展解析；persona 从 pet.md 加载注入。"""
         kind = _CLI_VERBS.get(verb, PetTaskKind.IDLE_EXPLORATION)
         goal = " ".join(rest) if rest else f"CLI 命令 {verb}"
-        return self._activate(PetTask(kind=kind, goal=goal))
+        return self._activate(PetTask(kind=kind, goal=goal), persona=persona)
 
     def activate_from_nl(self, user_input: str) -> PetSession:
         """WebUI 自然语言「启动宠物 + 任务」，Agent 理解意图后绑定任务。"""
@@ -55,8 +58,8 @@ class PetActivator:
         )
         return self._activate(PetTask(kind=kind, goal=user_input))
 
-    def _activate(self, task: PetTask) -> PetSession:
-        session = PetSession()
+    def _activate(self, task: PetTask, *, persona: PersonaLayer | None = None) -> PetSession:
+        session = PetSession(persona=persona)
         session.start(task)
         self._manager.register(session)
         return session

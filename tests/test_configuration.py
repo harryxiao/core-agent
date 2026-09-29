@@ -20,6 +20,7 @@ from core.configuration import (
     ConfigSpec,
     ConfigurationError,
     LLMConfig,
+    PetConfig,
     ValidationResult,
     generate_cli_flags,
     generate_env_vars,
@@ -261,3 +262,45 @@ def test_permission_mode_default(tmp_path: Path) -> None:
     manager = _manager(tmp_path, _VALID_YAML)
     manager.load()
     assert manager.permission_mode() == "interactive"
+
+
+# ---- M6：pet.* ConfigSpec 单一真源 ----
+
+
+_PET_YAML = """\
+llm:
+  provider: openai
+  model: gpt-4o
+  endpoint: https://api.openai.com/v1
+  api_key: ${OPENAI_API_KEY}
+pet:
+  enabled: true
+  persons_dir: ./pets
+"""
+
+
+def test_pet_config_resolve_defaults() -> None:
+    assert resolve("pet.enabled") is False
+    assert resolve("pet.persons_dir") == "persons"
+
+
+def test_pet_config_from_yaml(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, _PET_YAML)
+    config = manager.load()
+    assert config.pet == PetConfig(enabled=True, persons_dir="./pets")
+
+
+def test_pet_config_absent(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, _VALID_YAML)
+    assert manager.load().pet is None
+
+
+def test_pet_enabled_env_override(tmp_path: Path) -> None:
+    manager = _manager(
+        tmp_path,
+        _PET_YAML,
+        environ={"OPENAI_API_KEY": "sk-test", "CORE_PET_ENABLED": "false"},
+    )
+    config = manager.load()
+    assert config.pet is not None
+    assert config.pet.enabled is False

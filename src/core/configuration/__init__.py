@@ -10,7 +10,15 @@ from .manager import (
     resolve,
     validate_map_to,
 )
-from .models import AppConfig, ConfigExposure, ConfigSpec, IMConfig, LLMConfig, ValidationResult
+from .models import (
+    AppConfig,
+    ConfigExposure,
+    ConfigSpec,
+    IMConfig,
+    LLMConfig,
+    PetConfig,
+    ValidationResult,
+)
 
 __all__ = [
     "AppConfig",
@@ -21,6 +29,7 @@ __all__ = [
     "config_specs",
     "IMConfig",
     "LLMConfig",
+    "PetConfig",
     "ValidationResult",
     "generate_cli_flags",
     "generate_env_vars",

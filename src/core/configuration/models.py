@@ -50,12 +50,21 @@ class IMConfig:
 
 
 @dataclass(frozen=True)
+class PetConfig:
+    """宠物模式配置（可选）。"""
+
+    enabled: bool = False
+    persons_dir: str = "persons"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """配置聚合：单一收口解析后的有效配置。"""
 
     llm: LLMConfig
     features: dict[str, bool] = field(default_factory=dict[str, bool])
     im: IMConfig | None = None
+    pet: PetConfig | None = None
     extra: dict[str, Any] = field(default_factory=dict[str, Any])
 
 

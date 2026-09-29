@@ -58,7 +58,7 @@
 | 6 组合分发与部署（L5） | ✅ 完成 | composition → distributed → deployment | —（无独立里程碑） | distributed 依赖 mcp/permission；deployment 依赖 composition/configuration |
 | 7 工程交付与用户入口 | ✅ 完成 | ci-cd → ui/im/git | M5：完整产品形态可发布 | ci-cd 依赖 composition；ui/im/git 依赖 loop/configuration/permission；**首步补 git 契约** |
 | 8 宠物模式（后台自主增值） | ✅ 完成 | pet.core → pet.library → pet.explore → pet.safety → pet.notify → pet.microtask | —（随 M5 增值发布） | 依赖 Phase 0/1/2/3/4；**首步对齐 /pet 三入口↔cli-ops 命令面边界 + Loop.run 同步薄壳复用** |
-| 9 产品化入口层 | ⬜ 待开始 | entry → serve → repl → pet.md → user-guide | M6：可启动产品（`pip install` 后 `core-agent` 可用、serve/repl 双入口跑通、pet.md 多宠物加载） | 依赖 Phase 7（三桥/UIAPILayer）+ Phase 8（PetSession/PetActivator）+ 门禁基线；**首步补 pet.* ConfigSpec + serve/REPL 落地契约** |
+| 9 产品化入口层 | ✅ 完成 | entry → serve → repl → pet.md → user-guide | M6：可启动产品（`pip install` 后 `core-agent` 可用、serve/repl 双入口跑通、pet.md 多宠物加载） | 依赖 Phase 7（三桥/UIAPILayer）+ Phase 8（PetSession/PetActivator）+ 门禁基线；**首步补 pet.* ConfigSpec + serve/REPL 落地契约** |
 | 10 神兽召唤层 | ✅ 完成 | beast-registry → beast-mode → innate-skills → summon-activator | M7：20 神兽可召唤执行前台重大任务（异步并发 + 自动回归）、三入口 | 依赖 Phase 8（pet 范式）+ Phase 9（入口）+ orchestration + skills；**首步走 0034 契约 delta + 补 LoopResult.failed + handoff 异步化** |
 
 > **里程碑口径（M0~M7）**：M0 底座就绪（P0）→ M1 能力可调（P1）→ M2 单 Agent 闭环（P3）→ M3 多 Agent 编排（P4）→ M4 自进化（P5）→ M5 可发布产品（P7）→ M6 可启动产品（P9，M5 的入口侧补缺）→ M7 神兽召唤（P10，前台重大任务）。

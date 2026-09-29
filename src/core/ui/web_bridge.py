@@ -1,7 +1,7 @@
 """Web 桥接（ui）。
 
 HTTP + SSE 打开单 SPA；前端纯静态独立托管，经统一后端 API 连接常驻
-Harness Host。HTTP/SSE 传输为抽象（真实 FastAPI 后端未接）。
+Harness Host。HTTP/SSE 传输经 fastapi_serve 适配器落地（懒 import，MAL 隔离）。
 
 对应接口：doc/03-interfaces/ui-interface.md §2
 """
@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from .api import UIAPILayer
+from .fastapi_serve import serve as _serve_fastapi
 
 
 class WebBridge:
@@ -30,5 +31,6 @@ class WebBridge:
         self._serve_impl(self._api, host, port)
 
 
-def _default_serve(_api: UIAPILayer, host: str, port: int) -> None:
-    raise RuntimeError(f"HTTP/SSE 服务器未接（{host}:{port} 需接真实 FastAPI 后端）")  # noqa: TRY003
+def _default_serve(api: UIAPILayer, host: str, port: int) -> None:
+    """启动真实 FastAPI/uvicorn HTTP + SSE 服务（经 fastapi_serve 适配器）。"""
+    _serve_fastapi(api, host, port)

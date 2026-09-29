@@ -97,24 +97,24 @@
 
 ## 6. 里程碑验收清单
 
-- [ ] 契约补齐：pet.* ConfigSpec + serve 端点清单 + REPL 循环语义，openspec validate 通过
-- [ ] pyproject：`[project.scripts] core-agent` + fastapi/uvicorn/textual 依赖（接入层边界依赖，按 ADR-0040 MAL 四条落契约）
-- [ ] entry：`core-agent` / `python -m core` 可用，三级帮助覆盖 30 动词 + 14 flag
-- [ ] serve：`core-agent serve` 起真实 FastAPI，SSE 流式 run_loop 跑通
-- [ ] repl：`core-agent` 无子命令进交互循环，多轮上下文 + barge-in
-- [ ] pet.md：多宠物加载 + `pet.*` 经 resolve() 读取 + `core-agent pet ...` 激活（pet-notify 真实通道 im 本 Phase 不接，维持注入回调 deferred）
-- [ ] user-guide：安装/配置/help/启动/LLM 六节落盘，每条例证实测
-- [ ] M6 冒烟：entry + serve + repl + pet.md 四入口全链路跑通，门禁四件套全绿
+- [x] 契约补齐：pet.* ConfigSpec + serve 端点清单 + REPL 循环语义，openspec validate 通过
+- [x] pyproject：`[project.scripts] core-agent` + fastapi/uvicorn/textual 依赖（接入层边界依赖，按 ADR-0040 MAL 四条落契约）
+- [x] entry：`core-agent` / `python -m core` 可用，三级帮助覆盖 30 动词 + 14 flag
+- [x] serve：`core-agent serve` 起真实 FastAPI，SSE 流式 run_loop 跑通
+- [x] repl：`core-agent` 无子命令进交互循环，多轮上下文 + barge-in
+- [x] pet.md：多宠物加载 + `pet.*` 经 resolve() 读取 + `core-agent pet ...` 激活（pet-notify 真实通道 im 本 Phase 不接，维持注入回调 deferred）
+- [x] user-guide：安装/配置/help/启动/LLM 六节落盘，每条例证实测
+- [x] M6 冒烟：entry + serve + repl + pet.md 四入口全链路跑通，门禁四件套全绿
 
 ---
 
 ## 7. 测试要点
 
-- [ ] entry：`-h` 三级帮助与 baseline 30 动词 + 14 flag 逐条 diff 一致；未知命令错误码；`--version` 输出
-- [ ] serve：HTTP 端点 CRUD + SSE 流式事件 + 断线重连 + 三模复用同一内核
-- [ ] repl：多轮上下文保持 + barge-in 打断 + 空输入/EOF 退出 + 运维命令面不并入 REPL
-- [ ] pet.md：多宠物隔离加载 + persona 解析（角色/性格/喜好）+ 随机任务开关 + 三入口同源 + pet.* 经 resolve() 链
-- [ ] user-guide：文档中每条命令/配置项与实测输出一致（交叉验证，禁止凭记忆写）
+- [x] entry：`-h` 三级帮助与 baseline 30 动词 + 14 flag 逐条 diff 一致；未知命令错误码；`--version` 输出
+- [x] serve：HTTP 端点 CRUD + SSE 流式事件 + 断线重连 + 三模复用同一内核
+- [x] repl：多轮上下文保持 + barge-in 打断 + 空输入/EOF 退出 + 运维命令面不并入 REPL
+- [x] pet.md：多宠物隔离加载 + persona 解析（角色/性格/喜好）+ 随机任务开关 + 三入口同源 + pet.* 经 resolve() 链
+- [x] user-guide：文档中每条命令/配置项与实测输出一致（交叉验证，禁止凭记忆写）
 
 ---
 
