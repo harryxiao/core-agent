@@ -1,5 +1,13 @@
 # Change: MCP 安装/传输/安全接线——本地 stdio 沙箱 + 远端网络管控
 
+> **状态：DEFERRED（正式延期）** — 2026-09-29
+>
+> 本变更全部条目（spec 1.x + 代码 2.x–4.x）正式延期，不随当前里程碑交付。
+>
+> - **理由**：生产 stdio/http 传输需引入 `mcp` SDK，当前离线环境不可安装、无法实现与实测；且引入 SDK 触及「litellm 唯一运行时三方依赖」红线，需另行 ADR 评估（懒 import 可选依赖 vs 边界依赖）。
+> - **现状保持**：`transport.build_transport` 持续明确报错 `MCP_CONNECT_FAILED`（注释已标注「M2 接入」）；`MCPClient.add` 暂只支持远端 http。
+> - **重开条件**：后续里程碑待 `mcp` SDK 可安装、并经 ADR 评估依赖红线后，重开本变更再落地。
+
 ## Why
 
 架构审计（2026-09-27）走查 MCP 客户端侧（core-agent 作为 MCP client 消费三方/本地 MCP 服务端）发现三条接线缺口，影响「Agent 开发完毕后导入 MCP server」的可用性与安全：
