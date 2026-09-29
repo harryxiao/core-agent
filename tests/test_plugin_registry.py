@@ -30,7 +30,7 @@ from core.plugin_registry import (
 class _FakePlugin:
     """满足 Plugin 结构契约的最小测试插件。"""
 
-    def __init__(  # noqa: PLR0913 — 测试桩，参数皆为可选的注入行为
+    def __init__(  # noqa: PLR0913, PLR0917 — 测试桩，参数皆为可选的注入行为
         self,
         plugin_id: str,
         generation: int = 0,

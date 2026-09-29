@@ -60,7 +60,7 @@ def map_litellm_error(exc: Exception) -> LLMError:
 class LiteLLMProvider(LLMProvider):
     """默认实现：委托 LiteLLM 统一 100+ 模型协议。"""
 
-    def __init__(  # noqa: PLR0913 — 可选配置参数多，构造注入
+    def __init__(  # noqa: PLR0913, PLR0917 — 可选配置参数多，构造注入
         self,
         api_key: str | None = None,
         base_url: str | None = None,
