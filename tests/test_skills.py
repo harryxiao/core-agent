@@ -49,6 +49,19 @@ def test_lookup_and_domain() -> None:
     assert lib.list_by_domain("data") == [s]
 
 
+def test_remove_skill_and_cleans_domain_index() -> None:
+    lib = SkillLibrary()
+    lib.register(Skill(skill_id="skills.data.summarize", description="summarize docs"))
+    lib.remove("skills.data.summarize")
+    assert lib.all_skills() == []
+    assert lib.list_by_domain("data") == []
+
+
+def test_remove_missing_raises_key_error() -> None:
+    with pytest.raises(KeyError):
+        SkillLibrary().remove("skills.data.nope")
+
+
 def test_check_preconditions() -> None:
     lib = SkillLibrary()
     s = Skill(skill_id="s.x", description="", preconditions=["auth"])

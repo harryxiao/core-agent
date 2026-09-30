@@ -13,19 +13,40 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import json
 import os
 import sys
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
 
 from core.beast import BeastActivator
 from core.cli_ops import CLICommandDispatcher
-from core.configuration import ConfigManager, ConfigSpec, config_specs, resolve
+from core.configuration import (
+    AppConfig,
+    ConfigManager,
+    ConfigSpec,
+    ConfigurationError,
+    config_specs,
+    resolve,
+)
+from core.deployment import (
+    DeploymentError,
+    HarnessHost,
+    LifecycleController,
+    ReleaseInfo,
+    ReleaseManager,
+)
 from core.loop import LoopPlugin
 from core.pet.core import PetActivator, PetManager
 from core.pet.library import load_persona, load_personas
+from core.plugin_registry import DomainError, PluginInstaller, PluginKind, PluginSource
+from core.plugins import InstallDispatcher
 from core.runtime import build_runtime
+from core.skills import SkillLibrary
+from core.tools import ToolProvider
 from core.ui import CLIBridge, DesktopBridge, UIAPILayer, UiError, WebBridge
 
 _VERSION = "0.1.0"
@@ -226,7 +247,7 @@ def _dispatch(args: argparse.Namespace) -> int:
     handler = _HANDLERS.get(command)
     if handler is not None:
         return handler(args)
-    # probe / sessions / mcp / plugin / skill / release：识别但对应里程碑未落地
+    # mcp：识别但 Phase 12 未落地
     print(f"命令 '{command}' 已识别，尚未接线（对应里程碑未落地）", file=sys.stderr)
     return 0
 
@@ -261,8 +282,266 @@ def _config(args: argparse.Namespace) -> int:
         value = resolve(args.key, cli=_cli_overrides(args), env=os.environ)
         print(value if value not in (None, "") else "(未配置)")
         return 0
+    mgr = ConfigManager(yaml_path=args.config or "config.yaml", cli=_cli_overrides(args))
+    if args.config_cmd == "show":
+        return _config_show(mgr, args)
+    if args.config_cmd == "validate":
+        return _config_validate(args)
+    if args.config_cmd == "set":
+        return _config_set(mgr, args)
     print(f"config {args.config_cmd} 已识别，尚未接线", file=sys.stderr)
     return 0
+
+
+def _config_show(mgr: ConfigManager, args: argparse.Namespace) -> int:
+    """显示有效配置（env > cli > yaml 合并后的 AppConfig）。"""
+    try:
+        app = mgr.load()
+    except ConfigurationError as exc:
+        print(f"配置无效: {exc}", file=sys.stderr)
+        return 1
+    data = _dump_config(app)
+    if getattr(args, "format", "yaml") == "json":
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+    else:
+        print(_to_yaml(data))
+    return 0
+
+
+def _config_validate(args: argparse.Namespace) -> int:
+    """校验 config.yaml：无效时打印错误并 exit 1。"""
+    path = getattr(args, "file", None) or args.config or "config.yaml"
+    try:
+        ConfigManager(yaml_path=path).load()
+    except ConfigurationError as exc:
+        print(f"无效: {exc}", file=sys.stderr)
+        return 1
+    print("配置有效")
+    return 0
+
+
+def _config_set(mgr: ConfigManager, args: argparse.Namespace) -> int:
+    """运行时变更配置（apply_change 校验通过才生效，失败回滚；不写回 yaml）。"""
+    try:
+        patch = _key_to_patch(args.key, args.value)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    try:
+        mgr.load()
+    except ConfigurationError as exc:
+        print(f"配置无效，无法变更: {exc}", file=sys.stderr)
+        return 1
+    try:
+        mgr.apply_change(patch)
+    except ConfigurationError as exc:
+        print(f"变更失败: {exc}", file=sys.stderr)
+        return 1
+    print(f"已设置 {args.key}={args.value}（运行时生效，未写回 config.yaml）")
+    return 0
+
+
+def _plugin(args: argparse.Namespace) -> int:
+    """插件/资产安装生命周期（process 内注册，跨进程持久化未接）。"""
+    if args.plugin_cmd == "install":
+        return _plugin_install(_build_installer(), args.asset, PluginKind(args.kind or "skill"))
+    if args.plugin_cmd == "list":
+        return _plugin_list(_build_installer(), args.kind)
+    if args.plugin_cmd == "uninstall":
+        return _plugin_uninstall(_build_installer(), args.name)
+    print(f"plugin {args.plugin_cmd} 已识别，尚未接线", file=sys.stderr)
+    return 0
+
+
+def _skill(args: argparse.Namespace) -> int:
+    """技能市场：search 走本地库（市场拉取未接）；install/remove 别名到 plugin。"""
+    if args.skill_cmd == "search":
+        return _skill_search(SkillLibrary(), args.query)
+    if args.skill_cmd == "install":
+        return _plugin_install(_build_installer(), args.name, PluginKind.SKILL)
+    if args.skill_cmd == "remove":
+        return _skill_remove(SkillLibrary(), args.name)
+    print(f"skill {args.skill_cmd} 已识别，尚未接线", file=sys.stderr)
+    return 0
+
+
+def _release(args: argparse.Namespace) -> int:
+    """发布 / 升级 / 回滚（ReleaseManager，进程内版本登记，真实制品仓库未接）。"""
+    manager = ReleaseManager()
+    try:
+        if args.release_cmd == "publish":
+            version = manager.publish(
+                ReleaseInfo(version=args.bundle, hash=_content_hash(args.bundle))
+            )
+            print(f"已发布版本 {version}")
+            return 0
+        if args.release_cmd == "upgrade":
+            manager.upgrade(args.version)
+            print(f"已升级到 {args.version}")
+            return 0
+        if args.release_cmd == "rollback":
+            manager.rollback()
+            print(f"已回滚到 {manager.current}")
+            return 0
+    except DeploymentError as exc:
+        print(f"发布失败: {exc}", file=sys.stderr)
+        return 1
+    print(f"release {args.release_cmd} 已识别，尚未接线", file=sys.stderr)
+    return 0
+
+
+def _probe(args: argparse.Namespace) -> int:
+    """健康探针 → HealthStatus：alive 时 exit 0，否则 exit 1。"""
+    status = LifecycleController().probe()
+    if getattr(args, "format", "json") == "json":
+        print(json.dumps({"alive": status.alive, "detail": status.detail}, ensure_ascii=False))
+    else:
+        print(f"alive={status.alive}" + (f" detail={status.detail}" if status.detail else ""))
+    return 0 if status.alive else 1
+
+
+def _sessions(args: argparse.Namespace) -> int:
+    """枚举 Harness Host 当前活跃会话（无常驻 host 时为进程内空集）。"""
+    sessions = HarnessHost().sessions()
+    if not sessions:
+        print("（无活跃会话）")
+        return 0
+    for session in sessions:
+        print(f"{session.session_id} ({session.client_id}, {session.state.value})")
+    return 0
+
+
+# ---- 命令辅助 ----
+
+
+def _build_installer() -> PluginInstaller:
+    """装配轻量插件安装器（无需 LLM/loop，仅本地来源解析）。"""
+    skills = SkillLibrary()
+    provider = ToolProvider()
+    dispatcher = InstallDispatcher(skill_library=skills, tool_provider=provider)
+    return PluginInstaller(source_resolver=dispatcher.resolve, installer=dispatcher.install)
+
+
+def _plugin_install(installer: PluginInstaller, asset: str, kind: PluginKind) -> int:
+    try:
+        item = installer.discover(PluginSource.LOCAL_PATH, asset, kind)
+        installer.install(item)
+    except DomainError as exc:
+        print(f"安装失败: {exc}", file=sys.stderr)
+        return 1
+    print(f"已安装 {kind.value} 资产: {asset}")
+    return 0
+
+
+def _plugin_list(installer: PluginInstaller, kind: str | None) -> int:
+    assets = installer.installed()
+    if kind:
+        assets = [a for a in assets if a["kind"] == kind]
+    if not assets:
+        print("（无已安装资产）")
+        return 0
+    for item in assets:
+        print(f"{item['plugin_id']} ({item['kind']}, {item['source']})")
+    return 0
+
+
+def _plugin_uninstall(installer: PluginInstaller, name: str) -> int:
+    try:
+        installer.uninstall(name)
+    except DomainError as exc:
+        print(f"卸载失败: {exc}", file=sys.stderr)
+        return 1
+    print(f"已卸载 {name}")
+    return 0
+
+
+def _skill_search(library: SkillLibrary, query: str) -> int:
+    q = query.lower()
+    matches = [
+        s for s in library.all_skills() if q in s.skill_id.lower() or q in s.description.lower()
+    ]
+    if not matches:
+        print(f"（未找到匹配技能: {query}）")
+        return 0
+    for skill in matches:
+        print(f"{skill.skill_id}: {skill.description}")
+    return 0
+
+
+def _skill_remove(library: SkillLibrary, name: str) -> int:
+    try:
+        library.remove(name)
+    except KeyError:
+        print(f"技能未注册: {name}", file=sys.stderr)
+        return 1
+    print(f"已卸载技能 {name}")
+    return 0
+
+
+def _dump_config(app: AppConfig) -> dict[str, Any]:
+    """AppConfig → dict（仅含 ${VAR} 引用，不含明文密钥）。"""
+    data: dict[str, Any] = asdict(app)
+    for key in ("im", "pet", "judgment"):
+        if data.get(key) is None:
+            data.pop(key, None)
+    return data
+
+
+def _to_yaml(data: dict[str, Any], indent: int = 0) -> str:
+    """极简嵌套 dict → 缩进 yaml（仅标量 + 映射，够 config show 用）。"""
+    lines: list[str] = []
+    pad = "  " * indent
+    for key, value in data.items():
+        if isinstance(value, dict):
+            lines.append(f"{pad}{key}:")
+            lines.append(_to_yaml(cast(dict[str, Any], value), indent + 1))
+        else:
+            lines.append(f"{pad}{key}: {_yaml_scalar(value)}")
+    return "\n".join(lines)
+
+
+def _yaml_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    return str(value)
+
+
+def _key_to_patch(key: str, value: str) -> dict[str, Any]:
+    """点分键 → apply_change 支持的嵌套 patch（仅 llm./features./im.）。"""
+    top, _, rest = key.partition(".")
+    if top not in ("llm", "features", "im") or not rest:
+        raise ValueError(f"config set 暂不支持键: {key}（仅支持 llm./features./im.）")  # noqa: TRY003
+    node: dict[str, Any] = {}
+    parts = rest.split(".")
+    target = node
+    for part in parts[:-1]:
+        target = target.setdefault(part, {})
+    target[parts[-1]] = _coerce(value)
+    return {top: node}
+
+
+def _coerce(value: str) -> Any:
+    lowered = value.lower()
+    if lowered in ("true", "yes", "on"):
+        return True
+    if lowered in ("false", "no", "off"):
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return value
+
+
+def _content_hash(version: str) -> str:
+    """bundle 内容哈希（CLI 无真实制品内容，退化为版本名哈希）。"""
+    return hashlib.sha256(version.encode("utf-8")).hexdigest()[:16]
 
 
 def _session(args: argparse.Namespace) -> int:
@@ -417,6 +696,11 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "session": _session,
     "run": _run,
     "config": _config,
+    "plugin": _plugin,
+    "skill": _skill,
+    "release": _release,
+    "probe": _probe,
+    "sessions": _sessions,
     "start": _ops,
     "stop": _ops,
     "restart": _ops,

@@ -51,6 +51,15 @@ class SkillLibrary:
         """返回全部已注册技能。"""
         return list(self._skills.values())
 
+    def remove(self, skill_id: str) -> None:
+        """卸载技能；不存在抛 KeyError（对齐 lookup）。"""
+        self._skills.pop(skill_id)
+        domain = _domain(skill_id)
+        if domain in self._domain_index:
+            self._domain_index[domain] = [
+                sid for sid in self._domain_index[domain] if sid != skill_id
+            ]
+
     def check_preconditions(self, skill: Skill, ctx: dict[str, Any]) -> bool:
         """前置条件不满足返回 False（PRECONDITION_FAILED）。"""
         return all(bool(ctx.get(p)) for p in skill.preconditions)
