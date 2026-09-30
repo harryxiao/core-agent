@@ -17,6 +17,8 @@ Phase 14 只把进化做到「采集 + 提案 dry-run」，候选「只能看不
 | 沙箱执行颗粒度 | P1 | permission「沙箱执行颗粒度」 | `SandboxManager`/`SandboxPolicy` 已有（subprocess + outbound/fs 检查），缺三域隔离 + 资源配额 |
 | HITL 审批颗粒度 | P3 | permission「审批动作分级协议」 | `ApprovalWorkflow` 已有 create/ask/archive，缺 approve/reject/edit-plan 三动作 |
 
+> **优先级说明**：P1/P2/P3 是 design-completeness-eval 的**全局 backlog 严重度**，不是本 phase 内实现顺序。实现顺序按依赖拓扑：评测基建（5.1）是验证门/结晶（5.2）的前置，故先于沙箱（5.3）；沙箱/HITL/durability 为独立横切缺口，与主线无依赖，排在主线之后。
+
 ## 2. 里程碑验收（M10 后半段）
 
 - [ ] 一个真实缺陷（如工具写错路径）走完 诊断 → 提案 → 验证门 → 留出评测 → 结晶 全链路，`EvolutionOutcome.status == published`
@@ -61,7 +63,10 @@ Phase 14 只把进化做到「采集 + 提案 dry-run」，候选「只能看不
 
 ### 5.5 CrashRecovery/TimeTravel 接 loop（durability → runtime/loop）
 
-- `CrashRecovery.restore/resume`、`TimeTravel.rollback` 已有 → 接线：runtime 启动时检测未完成任务 → `restore/resume`；loop `act` 副作用经 `EffectTracker` 可 `rollback`（Phase 2 已有实现，接 loop 触发点）
+- 核对现状（loop 副作用注册**已就绪，无需新代码**）：`ToolProvider` 内置 `EffectTracker`（tools/provider.py:54-58），`DefaultLoop.act → ainvoke(..., trace_id)` 记录可逆效应，失败时 `DefaultLoop.rollback(trace_id)` 已按 trace 回滚（loop/default.py:105-107 / 178-180）。
+- 缺口 ① 共享 EffectTracker：`TimeTravel.rollback` 需与 `ToolProvider` 同一 `EffectTracker` 实例；runtime 现用 ToolProvider 内置默认实例未外露 → 构造处新建单个 `EffectTracker` 注入 `ToolProvider(effect_tracker=...)` 与 `TimeTravel(effect_tracker=...)`。
+- 缺口 ② checkpoint 带 trace_ids：`TimeTravel.rollback` 读 `snapshot.state["trace_ids"]`（durability/manager.py:146）；Phase-14 `_checkpoint` 仅写 outcomes → 补写本波次 `trace_ids`（从子任务 `LoopResult.trace_id` 汇总）。
+- 缺口 ③ 崩溃检测触发点：runtime 启动（`build_runtime` 装配末尾）`CheckpointManager.list_checkpoints()` 过滤无 DONE 标记的任务 → `CrashRecovery.restore(task_id)` + `resume(handle)` 续跑。
 
 ## 6. 契约对齐
 
