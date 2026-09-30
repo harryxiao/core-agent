@@ -47,8 +47,8 @@ Phase 13 打通「热路径」单 Agent 闭环（runtime → loop → LLM → to
 
 - 构造注入 `tracer: Tracer`、`engine: EvolutionEngine`、`trigger: EvolutionTrigger | None = None`
 - `on_trace_complete(trace_id: str) -> None`：登记一条已完成 trace（热路径只登记，不阻塞）
-- `maybe_run(*, force: bool = False) -> EvolutionOutcome | None`：`trigger.maybe_run` 命中或 `force` → replay 累积 trace_id → `_to_trace(TraceEvent)` → `engine.run_cycle(list[Trace])`
-- `_to_trace(events: list[TraceEvent]) -> list[Trace]`：把同 trace_id 的 `TraceEvent` 配对为 evolution `Trace`——`kind="tool_call"` → `action`；`kind="effect"` → `result`/`success`；`kind="metric"` → `metrics`；`plugin_id` 从 `tool_id` 归因
+- `maybe_run(*, force: bool = False) -> EvolutionOutcome | None`：`trigger.maybe_run` 命中或 `force` → replay 累积 trace_id → `_to_traces(list[TraceEvent])` → `engine.run_cycle(list[Trace])`
+- `_to_traces(events: list[TraceEvent]) -> list[Trace]`：把同 trace_id 的 `TraceEvent` 适配为 evolution `Trace`——仅 `kind="tool_call"` 事件产出 Trace（`action` 取 tool+args，`result`/`success` 从 tool_call payload 内嵌的 result 提取）；`plugin_id` 从 tool id 归因；`effect` 为副作用记录、`metric` 无对应事件（`TraceLogger` 无 `log_metric`），均不产出 Trace
 
 依赖约束：`evolution → observability` 合法（observability 是横切 base 模块，架构测试无禁令）。
 
@@ -86,7 +86,7 @@ ruff check src tests && ruff format --check src tests && pyright && pytest -q
 ```
 
 - 新增 `tests/test_phase14.py`：
-  - `EvolutionWorker.maybe_run(force=True)` 消费一段含 tool_call+effect 的 trace → 产出 `EvolutionOutcome`；无证据 → `no_evidence`
+  - `EvolutionWorker.maybe_run(force=True)` 消费一段含 tool_call 的 trace → 产出 `EvolutionOutcome`；无证据 → `no_evidence`
   - 失败 trace 归因：`DiagnosisReport.target_plugin` 非空 + `Proposer` 产出候选
   - `TaskScheduler.run` 多 Agent（两个 AgentProfile）跑通多子任务，`checkpoint` 回调每个 wave 被调用一次
 - 架构测试同步：`test_runtime_is_sole_composition_root.required` 补 `evolution`/`orchestration`/`durability`
