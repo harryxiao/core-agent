@@ -21,6 +21,8 @@ from core.loop.planner import LLMPlanner
 from core.memory import FileBackend, MemoryBackend, MemoryStore
 from core.observability import Tracer
 from core.permission import PermissionGuard
+from core.plugin_registry import CoeffectResolver, PluginInstaller
+from core.plugins import InstallDispatcher
 from core.skills import SkillLibrary, SkillRouter
 from core.tools import ToolProvider, file_patch, file_read, file_write
 
@@ -37,6 +39,7 @@ class Runtime:
     tracer: Tracer
     router: DecisionRouter
     loop: DefaultLoop
+    installer: PluginInstaller
 
 
 def build_runtime(
@@ -84,11 +87,17 @@ def build_runtime(
         backend=memory_backend if memory_backend is not None else FileBackend(),
         compactor=Compactor(router) if jev is not None else None,
     )
-    tools = ToolProvider(gate=guard)
+    resolver = CoeffectResolver()
+    resolver.register("filesystem:read", True)
+    resolver.register("filesystem:write", True)
+    tools = ToolProvider(coeffect_resolver=resolver, gate=guard)
     for tool in (file_read(), file_write(), file_patch()):
         tools.register(tool)
 
-    skill_router = SkillRouter(SkillLibrary(), memory=memory)
+    skill_library = SkillLibrary()
+    skill_router = SkillRouter(skill_library, memory=memory)
+    dispatcher = InstallDispatcher(skill_library=skill_library, tool_provider=tools)
+    installer = PluginInstaller(source_resolver=dispatcher.resolve, installer=dispatcher.install)
     planner = LLMPlanner(
         llm,
         model=app.llm.model,
@@ -113,4 +122,5 @@ def build_runtime(
         tracer=tracer,
         router=router,
         loop=loop,
+        installer=installer,
     )

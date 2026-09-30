@@ -1,7 +1,7 @@
 # Core-Agent Coding Plan（编码落地总索引）
 
 > **定位**：这是「架构设计 → 编码实现」开始前的最后一环规划产物，供 Claude Code / 开发 Agent 按序推进编码时使用。
-> 本目录 `coding-plan/` 承载 16 份文档：本 README（总索引）+ `phase-0.md` ~ `phase-13.md`（15 个 Phase 的可执行落地说明；Phase 12 为 DEFERRED 重开预案）。
+> 本目录 `coding-plan/` 承载 17 份文档：本 README（总索引）+ `phase-0.md` ~ `phase-13.md` + `phase-16.md`（16 个 Phase 的可执行落地说明；Phase 12 为 DEFERRED 重开预案）。
 > **规则**：严格按依赖拓扑序推进；每 Phase 完成须 100% 通过门禁三件套；所有 spec/interface 契约以仓库原文为准，速查见契约速查表。
 
 ---
@@ -40,6 +40,7 @@
 | `phase-11.md` | 决策模型接入（judgment/JEV System One） | M8 决策模型接入 |
 | `phase-12.md` | MCP 安装/传输/安全接线（stdio 沙箱 + 远端网络管控） | —（DEFERRED，待 ADR 重开） |
 | `phase-13.md` | 系统级接线（runtime 组合根 + 热路径真闭环 + judgment DI + entry 贯通） | M9 系统级闭环 |
+| `phase-16.md` | 插件/工具链路缺口补齐（CLI 执行入口 + 插件安装分发 + coeffect 来源接线） | M9 修复补丁 |
 
 **契约速查**：`contracts_summary.md`（29 capability 的 spec 目标 + interface 核心方法签名 + 模块路径，写代码前先查它）。
 
@@ -66,6 +67,7 @@
 | 11 决策模型接入 | ✅ 完成 | judgment（errors → models → router → provider → compactor → guardrail） | M8：三原语 choice/score/noul 统一决策入口 + JEV System One 接入 + 置信度回退主 LLM + 决策轨迹审计 | 依赖 observability + configuration + permission + llm_provider（均已落地）；契约已就绪（0035 + judgment-interface.md）；**首步补 judgment.* ConfigSpec + 归档 0035** |
 | 12 MCP 安装/传输/安全 | ⏸ DEFERRED | transport 生产实现 → client 安装分流 → 消费侧安全接线 | —（延期待重开：mcp SDK 离线不可装 + 依赖红线须 ADR） | 依赖 permission（SandboxManager）+ plugin_registry（MCP_ENDPOINT）；**重开首步 ADR 评估 mcp SDK 依赖定位 + 落 0033 ADDED delta** |
 | 13 系统级接线 | ✅ 完成 | runtime（组合根）→ loop.planner（LLMPlanner）→ loop tracer 注入 → 横切注入（PermissionGuard/constraints/observability/judgment 三决策点）→ entry 贯通 | M9：单 Agent 真闭环（runtime 全量装配 + loop.reason 接 LLM + judgment 三决策点 DI + entry 贯通走真链路） | 依赖 Phase 0–11（28 capability 已落地，缺系统级装配）+ architecture-overview §4.1/§5；**首步新建 runtime.py 组合根 + LLMPlanner** |
+| 16 插件/工具链路缺口 | ✅ 完成 | plugins（cli_adapter → install 按 kind 分发）→ runtime coeffect 接线 | M9 修复补丁：CLI 可执行 + 插件安装按 PluginKind 分发 + 内置文件工具 coeffect 贯通 | 依赖 Phase 13 组合根；**首步 CLI 适配层 + 组合根注入 resolver/installer** |
 
 > **里程碑口径（M0~M9）**：M0 底座就绪（P0）→ M1 能力可调（P1）→ M2 单 Agent 闭环（P3）→ M3 多 Agent 编排（P4）→ M4 自进化（P5）→ M5 可发布产品（P7）→ M6 可启动产品（P9，M5 的入口侧补缺）→ M7 神兽召唤（P10，前台重大任务）→ M8 决策模型接入（P11，judgment/JEV System One）→ M9 系统级闭环（P13，runtime 组合根 + 单 Agent 真闭环）。
 > Phase 2（横切中间件）、Phase 6（组合分发部署）为**贯穿阶段**，不单设里程碑，其成果在 M2/M5 验收中一并体现。
