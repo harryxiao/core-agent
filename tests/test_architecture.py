@@ -430,3 +430,44 @@ def test_phase11_judgment_no_reverse_dependency() -> None:
             for sub in sorted(_core_subpackages(path) & upper_layers)
         )
     assert not offenders, f"Phase11 决策层反向依赖上层: {offenders}"
+
+
+def test_runtime_is_sole_composition_root() -> None:
+    """runtime 是唯一被允许 import 全部模块的组合根。
+
+    其余模块（除 entry 入口）不得反向依赖 runtime，否则与组合根形成循环。
+    """
+    required = {
+        "configuration",
+        "context",
+        "judgment",
+        "llm_provider",
+        "loop",
+        "memory",
+        "observability",
+        "permission",
+        "skills",
+        "tools",
+    }
+    imported = _core_subpackages(SRC / "runtime.py")
+    missing = required - imported
+    assert not missing, f"runtime 组合根未装配这些模块: {sorted(missing)}"
+
+    offenders: list[str] = []
+    for path in _iter_py_files():
+        if path.name in ("runtime.py", "entry.py"):
+            continue
+        tree = _parse(path)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                dotted = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                dotted = [node.module]
+            else:
+                continue
+            offenders.extend(
+                f"{path.relative_to(SRC)} -> core.runtime"
+                for name in dotted
+                if name == "core.runtime" or name.startswith("core.runtime.")
+            )
+    assert not offenders, f"非组合根模块反向依赖 runtime: {offenders}"

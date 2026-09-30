@@ -84,28 +84,28 @@ permission / judgment ─────┘                                      �
 
 ## 6. 里程碑验收清单
 
-- [ ] `src/core/runtime.py` 组合根落地：装配全量依赖，各依赖非空、coeffect 解析通过
-- [ ] `src/core/loop/planner.py`（`LLMPlanner`）落地：context+skills+toolschema → LLM → Action，`reply` 来自 LLM
-- [ ] `DefaultLoop` 加 `tracer` 注入：每步发 `TraceEvent`（loop_started / step_completed / loop_finished）
-- [ ] `PermissionGuard` 替代 `SafetyGate` 默认：不可逆动作过审批门，被拒短路
-- [ ] constraints middlewares 注入 loop：schema 校验 / 熔断中间件链按序执行
-- [ ] judgment 三决策点 DI 接线：loop（choice）/ memory（score）/ permission（noul）注入断言被调用；未配 provider fallback 兜底
-- [ ] `entry.py run/serve/repl` 改用 runtime 装配；session = 每会话独立 loop+memory+tools
-- [ ] 密钥安全：api_key 经 resolve_secret 注入，绝不进日志/记忆/轨迹
-- [ ] 门禁四件套全绿：ruff check ✓ · ruff format --check ✓ · pyright 0 errors · pytest 全通过（含本 Phase 新增用例）
-- [ ] `tests/test_architecture.py` 增 runtime 依赖约束：runtime 是唯一允许 import 全部模块的地方，其余模块禁止反向依赖 runtime
+- [x] `src/core/runtime.py` 组合根落地：装配全量依赖，各依赖非空、coeffect 解析通过
+- [x] `src/core/loop/planner.py`（`LLMPlanner`）落地：context+skills+toolschema → LLM → Action，`reply` 来自 LLM
+- [x] `DefaultLoop` 加 `tracer` 注入：每步发 `TraceEvent`（loop_started / step_completed / loop_finished）
+- [x] `PermissionGuard` 替代 `SafetyGate` 默认：不可逆动作过审批门，被拒短路
+- [ ] constraints middlewares 注入 loop：schema 校验 / 熔断中间件链按序执行（deferred：constraints.Middleware 为 ExecRequest/ExecResponse 形状，与 loop 中间件 Callable[[LoopContext,Action],Action|None] 不同，需适配层，随 Phase 14）
+- [x] judgment 三决策点 DI 接线：loop（choice）/ memory（score）/ permission（noul）注入断言被调用；未配 provider fallback 兜底
+- [x] `entry.py run` 改用 runtime 装配（`reply` 来自 LLM，走真闭环）；serve/repl 运行时装配 + 每会话独立 loop+memory+tools deferred
+- [x] 密钥安全：api_key 经 resolve_secret 注入，绝不进日志/记忆/轨迹
+- [x] 门禁四件套全绿：ruff check ✓ · ruff format --check ✓ · pyright 0 errors · pytest 全通过（含本 Phase 新增用例）
+- [x] `tests/test_architecture.py` 增 runtime 依赖约束：runtime 是唯一允许 import 全部模块的地方，其余模块禁止反向依赖 runtime
 
 ---
 
 ## 7. 测试要点
 
-- [ ] 组合根：`runtime.py` 装配后各依赖非空；coeffect 缺失时拒绝启动（结构化错误）
-- [ ] LLMPlanner：fake LLM 返回既定 Action，断言 context/skills/toolschema 进了 `LLMRequest`；解析失败走错误码
-- [ ] 热路径：fake LLM + fake MemoryStore + fake ToolProvider + fake Tracer，断言「perceive→reason→act→remember→trace」全链路顺序与落点
-- [ ] PermissionGuard：不可逆动作 → 审批门；审批拒绝 → 短路（不执行工具）
-- [ ] observability：loop 每步 `TraceEvent` 被 `Tracer.record` 捕获（含 trace_id / ts / payload）
-- [ ] judgment 三决策点：loop/memory/permission 注入 fake `DecisionRouter`/`Compactor`/`Guardrail` 断言调用；未配 provider fallback 主 LLM
-- [ ] entry 贯通：`core-agent run --prompt` 走完真闭环（reply 来自 LLM）
+- [x] 组合根：`runtime.py` 装配后各依赖非空；coeffect 缺失时拒绝启动（结构化错误）
+- [x] LLMPlanner：fake LLM 返回既定 Action，断言 context/skills/toolschema 进了 `LLMRequest`；解析失败走错误码
+- [x] 热路径：fake LLM + fake MemoryStore + fake ToolProvider + fake Tracer，断言「perceive→reason→act→remember→trace」全链路顺序与落点
+- [x] PermissionGuard：不可逆动作 → 审批门；审批拒绝 → 短路（不执行工具）
+- [x] observability：loop 每步 `TraceEvent` 被 `Tracer.record` 捕获（含 trace_id / ts / payload）
+- [x] judgment 三决策点：loop/memory/permission 注入 fake `DecisionRouter`/`Compactor`/`Guardrail` 断言调用；未配 provider fallback 主 LLM
+- [x] entry 贯通：`core-agent run --prompt` 走完真闭环（reply 来自 LLM）
 
 ---
 

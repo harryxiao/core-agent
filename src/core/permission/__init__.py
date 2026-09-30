@@ -2,6 +2,7 @@
 
 from .approval import ApprovalWorkflow
 from .errors import AccessControlError, PermissionErrorCode
+from .guard import PermissionGuard
 from .models import (
     ApprovalAction,
     ApprovalRequest,
@@ -27,6 +28,7 @@ __all__ = [
     "ApprovalWorkflow",
     "Decision",
     "PermissionErrorCode",
+    "PermissionGuard",
     "PermissionMode",
     "PermissionModeGate",
     "PolicyEngine",

@@ -17,13 +17,15 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from core.beast import BeastActivator
 from core.cli_ops import CLICommandDispatcher
-from core.configuration import ConfigSpec, config_specs, resolve
+from core.configuration import ConfigManager, ConfigSpec, config_specs, resolve
+from core.loop import LoopPlugin
 from core.pet.core import PetActivator, PetManager
 from core.pet.library import load_persona, load_personas
+from core.runtime import build_runtime
 from core.ui import CLIBridge, DesktopBridge, UIAPILayer, UiError, WebBridge
 
 _VERSION = "0.1.0"
@@ -277,7 +279,20 @@ def _run(args: argparse.Namespace) -> int:
     if prompt is None:
         print("用法: core-agent run [--prompt TEXT | --file PATH]", file=sys.stderr)
         return 1
-    api = UIAPILayer()
+    try:
+        runtime = build_runtime(
+            ConfigManager(yaml_path=args.config or "config.yaml", cli=_cli_overrides(args))
+        )
+    except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
+        print(f"装配失败: {exc}", file=sys.stderr)
+        return 1
+    api = UIAPILayer(
+        loop=cast(LoopPlugin, runtime.loop),
+        memory=runtime.memory,
+        tools=runtime.tools,
+        config=runtime.config,
+    )
+    api.set_llm_config(runtime.app.llm)
     session_id = args.session_id or api.create_session("cli")
     try:
         asyncio.run(_stream(api, session_id, prompt))

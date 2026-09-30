@@ -10,11 +10,14 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 
+from core.judgment import DecisionResult, DecisionRouter
 from core.memory import MemoryEntry, MemoryStore
+from core.observability import TraceEvent, Tracer
 from core.plugin_registry import Plugin
 from core.tools import SafetyGate, ToolProvider
 
@@ -40,6 +43,8 @@ class DefaultLoop(Plugin):
         tools: ToolProvider | None = None,
         gate: SafetyGate | None = None,
         middlewares: list[Middleware] | None = None,
+        tracer: Tracer | None = None,
+        router: DecisionRouter | None = None,
         max_rounds: int = 10,
         token_budget: int = 65536,
     ) -> None:
@@ -48,6 +53,8 @@ class DefaultLoop(Plugin):
         self._tools = tools
         self._gate = gate if gate is not None else SafetyGate()
         self._middlewares = list(middlewares or [])
+        self._tracer = tracer
+        self._router = router
         self._max_rounds = max_rounds
         self._token_budget = token_budget
 
@@ -84,6 +91,7 @@ class DefaultLoop(Plugin):
     async def astream(self, user_input: str) -> AsyncIterator[LoopEvent]:
         trace_id = uuid.uuid4().hex
         yield LoopEvent("loop_started", {"trace_id": trace_id})
+        self._trace(trace_id, "loop_started", {"trace_id": trace_id})
         ctx = self.perceive(user_input)
         limit_reason = ""
         while not ctx.done():
@@ -99,6 +107,7 @@ class DefaultLoop(Plugin):
                 self.rollback(trace_id)
             ctx = self.observe(ctx, result)
             yield LoopEvent("step_completed", {"round": ctx.rounds, "failed": result.failed})
+            self._trace(trace_id, "step_completed", {"round": ctx.rounds, "failed": result.failed})
             if self._token_budget > 0 and ctx.token_used >= self._token_budget:
                 limit_reason = "TOKEN_BUDGET_EXCEEDED"
                 break
@@ -106,6 +115,7 @@ class DefaultLoop(Plugin):
             ctx.reply = f"{limit_reason}: 本轮终止"
             yield LoopEvent("loop_failed", {"reason": limit_reason, "trace_id": trace_id})
         self.remember(trace_id, ctx.trajectory)
+        self._trace(trace_id, "loop_finished", {"reply": ctx.reply, "failed": bool(limit_reason)})
         yield LoopEvent("reply_delta", {"text": ctx.reply})
         yield LoopEvent(
             "loop_finished",
@@ -184,11 +194,39 @@ class DefaultLoop(Plugin):
             content = str(first)
         return f"已完成：{content}"
 
+    def _trace(self, trace_id: str, kind: str, payload: dict[str, Any] | None = None) -> None:
+        if self._tracer is None:
+            return
+        self._tracer.record(
+            TraceEvent(
+                trace_id=trace_id,
+                span_id=uuid.uuid4().hex,
+                ts=time.time(),
+                kind=kind,
+                payload=payload or {},
+            )
+        )
+
     def _allow(self, action: Action) -> bool:
         decision = self._gate.confirm(
             action.tool_id, action.args, self._coeffects(action.tool_id), reversible=False
         )
-        return decision.action == "auto"
+        if decision.action != "auto":
+            return False
+        if self._router is None:
+            return True
+        chosen = self._router.choose(
+            {"tool_id": action.tool_id, "args": action.args},
+            ["proceed", "block"],
+        )
+        return not self._chose_block(chosen)
+
+    @staticmethod
+    def _chose_block(result: DecisionResult) -> bool:
+        answer = result.answers.get("choice")
+        if not isinstance(answer, dict):
+            return False
+        return cast(dict[str, Any], answer).get("choice") == "block"
 
     def _coeffects(self, tool_id: str) -> list[str]:
         if self._tools is None:

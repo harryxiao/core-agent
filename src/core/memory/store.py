@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from dataclasses import asdict
 
+from core.judgment import Compactor, DecisionResult
 from core.plugin_registry import Effect, EffectTracker
 
 from .backend import FileBackend
@@ -34,10 +36,12 @@ class MemoryStore:
         backend: MemoryBackend | None = None,
         effect_tracker: EffectTracker | None = None,
         embedder: Callable[[list[str]], list[list[float]]] | None = None,
+        compactor: Compactor | None = None,
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
         self._tracker = effect_tracker if effect_tracker is not None else EffectTracker()
         self._embedder = embedder
+        self._compactor = compactor
         self._hot: dict[str, MemoryEntry] = {}
 
     def load(self) -> None:
@@ -102,6 +106,16 @@ class MemoryStore:
         if trace_id is None:
             return entries
         return [e for e in entries if e.trace_id == trace_id]
+
+    def compact(self, query: str = "", budget: int = 4096) -> DecisionResult | None:
+        """以 score 原语压实：注入 Compactor 时评分保留/丢弃，未注入返回 None。"""
+        if self._compactor is None:
+            return None
+        items = self.read(query, budget=budget)
+        return self._compactor.score(
+            {"query": query, "count": len(items)},
+            [asdict(entry) for entry in items],
+        )
 
     # ---- 内部辅助 ----
 
