@@ -73,6 +73,7 @@ class TaskScheduler:
         tracker: ProgressTracker | None = None,
         max_concurrency: int = 4,
         success_checker: Callable[[list[str]], bool] | None = None,
+        checkpoint: Callable[[str, list[SubtaskOutcome]], None] | None = None,
     ) -> None:
         if max_concurrency < 1:
             raise OrchestrationError(
@@ -85,6 +86,7 @@ class TaskScheduler:
         self._tracker = tracker if tracker is not None else ProgressTracker()
         self._max_concurrency = max_concurrency
         self._success_checker = success_checker
+        self._checkpoint = checkpoint
 
     async def run(
         self, task_id: str, goal: str, success_criteria: list[str] | None = None
@@ -110,6 +112,8 @@ class TaskScheduler:
                     OrchestrationErrorCode.DEADLOOP_DETECTED,
                     f"任务 {task_id} 检测到死循环（进度无推进）",
                 )
+            if self._checkpoint is not None:
+                self._checkpoint(task_id, wave_outcomes)
             self._state_machine.transition(task_id, TaskState.EXECUTING)
         self._state_machine.transition(task_id, TaskState.VERIFYING)
         if plan.success_criteria and self._success_checker is None:

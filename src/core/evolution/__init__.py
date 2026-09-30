@@ -22,6 +22,7 @@ from .models import (
 )
 from .proposer import Proposer
 from .validator import Validator
+from .worker import EvolutionWorker
 
 __all__ = [
     "Benchmark",
@@ -36,6 +37,7 @@ __all__ = [
     "EvolutionErrorCode",
     "EvolutionOutcome",
     "EvolutionTrigger",
+    "EvolutionWorker",
     "GateReport",
     "GenerationCandidate",
     "Proposer",

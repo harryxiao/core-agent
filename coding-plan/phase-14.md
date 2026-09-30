@@ -23,10 +23,10 @@ Phase 13 打通「热路径」单 Agent 闭环（runtime → loop → LLM → to
 
 ## 2. 里程碑验收（M10 前半段）
 
-- [ ] `EvolutionWorker.maybe_run(force=True)` 消费一段真实 trace → 产出 `EvolutionOutcome`（status ∈ no_evidence/manual/pending/rejected，dry-run 不到 crystallize）
-- [ ] 一段「工具调用失败」的 trace 被 `Diagnoser` 归因到具体插件（`DiagnosisReport.target_plugin` 非空），`Proposer` 产出 `GenerationCandidate`
-- [ ] `TaskScheduler.run` 在多 Agent 下 decompose → 派发多 `DefaultLoop` → 完成多子任务（含一次 `TaskHandoff`）
-- [ ] 每个 wave 完成后调用 `CheckpointManager.create_checkpoint`（长任务断点可恢复）
+- [x] `EvolutionWorker.maybe_run(force=True)` 消费一段真实 trace → 产出 `EvolutionOutcome`（status ∈ no_evidence/manual/pending/rejected，dry-run 不到 crystallize）
+- [x] 一段「工具调用失败」的 trace 被 `Diagnoser` 归因到具体插件（`DiagnosisReport.target_plugin` 非空），`Proposer` 产出 `GenerationCandidate`
+- [x] `TaskScheduler.run` 在多 Agent 下 decompose → 派发多 `DefaultLoop` → 完成多子任务（含一次 `TaskHandoff`）
+- [x] 每个 wave 完成后调用 `CheckpointManager.create_checkpoint`（长任务断点可恢复）
 
 ## 3. 依赖与前置
 

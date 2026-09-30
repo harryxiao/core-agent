@@ -10,16 +10,35 @@ Compactor / Guardrail）→ LLMPlanner → PermissionGuard → DefaultLoop，供
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 from core.configuration import ConfigManager
 from core.configuration.models import AppConfig
 from core.context import DynamicAssembler
+from core.durability import CheckpointManager, CheckpointStore
+from core.evolution import (
+    Diagnoser,
+    Evaluator,
+    EvolutionEngine,
+    EvolutionTrigger,
+    EvolutionWorker,
+    Proposer,
+    Validator,
+)
 from core.judgment import Compactor, DecisionRouter, Guardrail, JEVProvider
 from core.llm_provider import LiteLLMProvider, LLMProvider
-from core.loop import DefaultLoop
+from core.loop import DefaultLoop, LoopPlugin
 from core.loop.planner import LLMPlanner
 from core.memory import FileBackend, MemoryBackend, MemoryStore
 from core.observability import Tracer
+from core.orchestration import (
+    AgentProfile,
+    MultiAgentRouter,
+    StateMachine,
+    SubtaskDecomposer,
+    SubtaskOutcome,
+    TaskScheduler,
+)
 from core.permission import PermissionGuard
 from core.plugin_registry import CoeffectResolver, PluginInstaller
 from core.plugins import InstallDispatcher
@@ -40,6 +59,9 @@ class Runtime:
     router: DecisionRouter
     loop: DefaultLoop
     installer: PluginInstaller
+    evolution: EvolutionWorker
+    orchestrator: TaskScheduler
+    checkpoints: CheckpointManager
 
 
 def build_runtime(
@@ -113,6 +135,34 @@ def build_runtime(
         tracer=tracer,
         router=router if jev is not None else None,
     )
+
+    evolution_engine = EvolutionEngine(
+        diagnoser=Diagnoser(),
+        proposer=Proposer(),
+        validator=Validator(),
+        evaluator=Evaluator(),
+    )
+    evolution = EvolutionWorker(tracer=tracer, engine=evolution_engine, trigger=EvolutionTrigger())
+
+    agent_router = MultiAgentRouter(
+        [AgentProfile(agent_id="main", capabilities=["default"], loop=cast(LoopPlugin, loop))]
+    )
+    checkpoints = CheckpointManager(CheckpointStore())
+
+    def _checkpoint(task_id: str, outcomes: list[SubtaskOutcome]) -> None:
+        checkpoints.create_checkpoint(
+            task_id,
+            "default",
+            {"outcomes": [{"subtask_id": o.subtask_id, "ok": o.ok} for o in outcomes]},
+        )
+
+    orchestrator = TaskScheduler(
+        decomposer=SubtaskDecomposer(),
+        router=agent_router,
+        state_machine=StateMachine(),
+        checkpoint=_checkpoint,
+    )
+
     return Runtime(
         app=app,
         config=config,
@@ -123,4 +173,7 @@ def build_runtime(
         router=router,
         loop=loop,
         installer=installer,
+        evolution=evolution,
+        orchestrator=orchestrator,
+        checkpoints=checkpoints,
     )
