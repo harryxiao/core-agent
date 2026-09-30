@@ -174,12 +174,22 @@ def test_gate_deny_precedes_cli_execution() -> None:
 
 
 def test_build_runtime_wires_installer_and_coeffects(monkeypatch, tmp_path) -> None:
+    """走真装配路径（非手建 resolver）：build_runtime 注入的 resolver 必须让
+    filesystem:read / filesystem:write 两个 coeffect 都 resolve 通过并执行。"""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
 
     target = tmp_path / "a.txt"
     target.write_text("hello\n", encoding="utf-8")
-    result = runtime.tools.invoke("tools.file_read", {"path": str(target)}, trace_id="t1")
+    read = runtime.tools.invoke("tools.file_read", {"path": str(target)}, trace_id="t1")
+    assert read.ok
+    assert read.data["content"] == "hello"
 
-    assert result.ok
+    out = tmp_path / "b.txt"
+    write = runtime.tools.invoke(
+        "tools.file_write", {"path": str(out), "content": "written"}, trace_id="t2"
+    )
+    assert write.ok
+    assert out.read_text(encoding="utf-8") == "written"
+
     assert runtime.installer is not None
