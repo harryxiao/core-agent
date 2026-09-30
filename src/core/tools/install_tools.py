@@ -35,8 +35,12 @@ _UNINSTALL_SCHEMA = {
 _LIST_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
 
 
-class _StubPlugin:
-    """满足 Plugin 结构契约的最小安装载体（MVP：manifest 物化为插件）。"""
+class StubPlugin:
+    """满足 Plugin 结构契约的最小安装载体（MVP：manifest 物化为插件）。
+
+    供安装账本（PluginInstaller._assets）登记使用，无需承载真实业务逻辑；
+    ``load``/``unload``/``check`` 为 no-op，卸载时经注册表释放即可。
+    """
 
     def __init__(self, plugin_id: str, manifest: dict[str, Any]) -> None:
         self.plugin_id = plugin_id
@@ -65,7 +69,7 @@ def install_tool(installer: PluginInstaller | None = None) -> Tool:
         inst.verify(asset, str(asset.manifest.get("signature", "")))
         inst.install(asset)
         plugin_id = str(asset.manifest.get("plugin_id") or f"installed.{kind}.{name or source}")
-        inst.register(asset, _StubPlugin(plugin_id, asset.manifest))
+        inst.register(asset, StubPlugin(plugin_id, asset.manifest))
         inst.activate(plugin_id)
         return {"installed": plugin_id, "kind": kind, "source": source}
 

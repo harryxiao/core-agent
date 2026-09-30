@@ -46,7 +46,7 @@ from core.plugin_registry import DomainError, PluginInstaller, PluginKind, Plugi
 from core.plugins import InstallDispatcher
 from core.runtime import build_runtime
 from core.skills import SkillLibrary
-from core.tools import ToolProvider
+from core.tools import StubPlugin, ToolProvider
 from core.ui import CLIBridge, DesktopBridge, UIAPILayer, UiError, WebBridge
 
 _VERSION = "0.1.0"
@@ -426,6 +426,14 @@ def _plugin_install(installer: PluginInstaller, asset: str, kind: PluginKind) ->
     try:
         item = installer.discover(PluginSource.LOCAL_PATH, asset, kind)
         installer.install(item)
+        manifest = item.manifest
+        plugin_id = str(
+            manifest.get("plugin_id")
+            or manifest.get("skill_id")
+            or manifest.get("name")
+            or f"installed.{kind.value}.{asset}"
+        )
+        installer.register(item, StubPlugin(plugin_id, manifest))
     except DomainError as exc:
         print(f"安装失败: {exc}", file=sys.stderr)
         return 1

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.entry import _build_parser, main
+from core.entry import _build_installer, _build_parser, main
 
 # cli-contract-baseline.md §2 顶层命令面（19 子命令 + 无子命令进 REPL）。
 _TOP_LEVEL_COMMANDS = {
@@ -181,6 +181,27 @@ def test_plugin_install_skill_local_path(tmp_path, capsys: pytest.CaptureFixture
     )
     assert main(["plugin", "install", str(manifest), "--kind", "skill"]) == 0
     assert "已安装 skill 资产" in capsys.readouterr().out
+
+
+def test_plugin_install_records_ledger_and_uninstall(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """install 落账本（register）→ list 可见 → uninstall 清理（对齐 install_tools 全生命周期）。"""
+    installer = _build_installer()
+    monkeypatch.setattr("core.entry._build_installer", lambda: installer)
+    manifest = tmp_path / "skill.json"
+    manifest.write_text(
+        '{"skill_id": "skills.demo.hello", "description": "hi", "param_schema": {}}',
+        encoding="utf-8",
+    )
+    assert main(["plugin", "install", str(manifest), "--kind", "skill"]) == 0
+    assert installer.installed() == [
+        {"plugin_id": "skills.demo.hello", "kind": "skill", "source": "local-path"}
+    ]
+    assert main(["plugin", "list"]) == 0
+    assert "skills.demo.hello" in capsys.readouterr().out
+    assert main(["plugin", "uninstall", "skills.demo.hello"]) == 0
+    assert installer.installed() == []
 
 
 def test_skill_remove_missing(capsys: pytest.CaptureFixture[str]) -> None:
