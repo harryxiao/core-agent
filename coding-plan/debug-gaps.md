@@ -19,7 +19,7 @@
 
 | 维度 | 状态 |
 |---|---|
-| 门禁 | ruff check ✓ / ruff format ✓(259 文件) / pyright 0 error / pytest 490 passed |
+| 门禁 | ruff check ✓ / ruff format ✓(259 文件) / pyright 0 error / pytest 491 passed |
 | 运行时依赖 | litellm（唯一第三方运行时依赖）已装 |
 | Phase | 0–11、13–16 ✅；12 ⏸ DEFERRED |
 | 里程碑 | M0–M10 名义完成 |
@@ -43,12 +43,14 @@
 
 | 命令 | 现象 | 根因 | 关闭动作 |
 |---|---|---|---|
-| `plugin list` / `plugin uninstall` | list 恒空、uninstall 恒 `UNINSTALL_NOT_FOUND` | install 落 SkillLibrary/ToolProvider，list/uninstall 读 `PluginInstaller._assets`；Phase 16 install 路径未调 `register` → 双注册表脱节 | 统一 install 生命周期跟踪（register/activate），或 list/uninstall 改读 SkillLibrary/ToolProvider |
+| `plugin list` / `plugin uninstall` | ✅ 已修：list 可见、uninstall 可清理 | install 落 SkillLibrary/ToolProvider，list/uninstall 读 `PluginInstaller._assets`；Phase 16 install 路径未调 `register` → 双注册表脱节 | 已修：`_plugin_install` 补 `register(item, StubPlugin)` 落账本 |
 | `sessions` | 恒「无活跃会话」 | 无常驻 serve host，`HarnessHost` 每进程新建 | 建 serve 常驻进程 + 会话持久化 |
 | `probe` | 恒 alive（exit 0） | `LifecycleController` 默认 probe_fn 恒 alive，无真探活目标 | 接 serve 进程探活 |
 | `release rollback` / `upgrade` | 恒失败（无历史 / 版本不存在） | `ReleaseManager` 每进程新建，无持久化版本登记 | 版本登记持久化 / 接真实制品仓库 |
 | `config set` | 运行时生效但不写回 yaml | `apply_change` 是内存变更 | 契约「写回 + revalidate」仍待确认（`cli-contract-baseline.md` §14） |
 | `skill search` | 恒空 | 市场 skillhub client 未接，仅本地库 | 接 SkillHubClient（外部市场 deferred） |
+
+> 残留（未修，与 `install_tools` 路径同源）：`uninstall` 仅清账本（`_assets`）+ 卸载 `PluginRegistry` 桩，**不回退** SkillLibrary/ToolProvider 的真实注册。进程内态 + 无常驻 host，CLI 层面无感；真可逆需给 `PluginInstaller` 加对称 `uninstaller` 钩子。
 
 ### 2.3 真实外部后端未接（「抽象不锁选型」立场）— 低（不挡核心回路调试）
 
@@ -84,6 +86,6 @@
 ## 4. 关闭顺序建议
 
 1. **真机冒烟**（§3）→ 确认核心闭环；
-2. **§2.2「plugin 双注册表脱节」**——影响 `plugin`/`skill` 命令可信度，可单开 Phase 16.5；
+2. ~~§2.2「plugin 双注册表脱节」~~ ✅ 已修（`register` 落账本，见上）；
 3. **§2.1 Phase 12 MCP 重开**（先 ADR）；
 4. **§2.2 其余 + §2.3**——随「serve 常驻进程 + 持久化」一并落地。
