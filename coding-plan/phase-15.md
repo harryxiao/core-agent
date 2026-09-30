@@ -21,13 +21,13 @@ Phase 14 只把进化做到「采集 + 提案 dry-run」，候选「只能看不
 
 ## 2. 里程碑验收（M10 后半段）
 
-- [ ] 一个真实缺陷（如工具写错路径）走完 诊断 → 提案 → 验证门 → 留出评测 → 结晶 全链路，`EvolutionOutcome.status == published`
-- [ ] 验证门：`Validator` review + 运行时测试均过 → `GateReport.passed=True`；未过门候选丢弃 + 教训写回 L2/L3
-- [ ] 留出评测：`Evaluator` 在基准集批量评测 + 与基线对比 → `EvalReport.verdict ∈ publish/rollback/freeze`
-- [ ] 结晶：`EvolutionEngine.crystallize` → `SkillLibrary.register`（skill）/ `MemoryStore.crystallize`（plugin）
-- [ ] 沙箱颗粒度（P1）：三域隔离 + 网络出站白名单 + 资源配额超限返回 `QUOTA_EXCEEDED`
-- [ ] HITL（P3）：`approve`/`reject`/`edit-plan` 三动作 + 分级路由，`edit-plan` 旧单标 superseded
-- [ ] 崩溃恢复/时间旅行接 loop：崩溃后 `restore/resume` 续跑；`rollback` 回滚副作用
+- [x] 一个真实缺陷（如工具写错路径）走完 诊断 → 提案 → 验证门 → 留出评测 → 结晶 全链路，`EvolutionOutcome.status == published`
+- [x] 验证门：`Validator` review + 运行时测试均过 → `GateReport.passed=True`；未过门候选丢弃 + 教训写回 L2/L3
+- [x] 留出评测：`Evaluator` 在基准集批量评测 + 与基线对比 → `EvalReport.verdict ∈ publish/rollback/freeze`
+- [x] 结晶：`EvolutionEngine.crystallize` → `SkillLibrary.register`（skill）/ `MemoryStore.crystallize`（plugin）
+- [x] 沙箱颗粒度（P1）：三域隔离 + 网络出站白名单 + 资源配额超限返回 `QUOTA_EXCEEDED`
+- [x] HITL（P3）：`approve`/`reject`/`edit-plan` 三动作 + 分级路由，`edit-plan` 旧单标 superseded
+- [x] 崩溃恢复/时间旅行接 loop：崩溃后 `restore/resume` 续跑；`rollback` 回滚副作用
 
 ## 3. 依赖与前置
 

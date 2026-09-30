@@ -50,7 +50,48 @@ class ApprovalWorkflow:
         if approver is None:
             ticket.status = _STATUS_TIMEOUT
             raise AccessControlError(PermissionErrorCode.APPROVAL_TIMEOUT, "审批超时，fail-closed")
-        result = approver(ticket)
+        return self._resolve(ticket, approver(ticket))
+
+    def approve(
+        self, ticket: ApprovalTicket, approver: str = "human", note: str | None = None
+    ) -> ApprovalResult:
+        """人工批准：放行并归档，可回溯。"""
+        return self._resolve(
+            ticket,
+            ApprovalResult(
+                approved=True, approver=approver, note=note, action=ApprovalAction.APPROVE
+            ),
+        )
+
+    def reject(
+        self, ticket: ApprovalTicket, approver: str = "human", note: str | None = None
+    ) -> ApprovalResult:
+        """人工拒绝：阻断并附拒绝理由，供后续提案改进。"""
+        return self._resolve(
+            ticket,
+            ApprovalResult(
+                approved=False, approver=approver, note=note, action=ApprovalAction.REJECT
+            ),
+        )
+
+    def edit_plan(
+        self,
+        ticket: ApprovalTicket,
+        request: ApprovalRequest,
+        approver: str = "human",
+        note: str | None = None,
+    ) -> ApprovalTicket:
+        """编辑计划后重提：原单标 superseded，修订计划形成新审批单（pending）。"""
+        self._resolve(
+            ticket,
+            ApprovalResult(
+                approved=False, approver=approver, note=note, action=ApprovalAction.EDIT_PLAN
+            ),
+        )
+        return self.create(request)
+
+    def _resolve(self, ticket: ApprovalTicket, result: ApprovalResult) -> ApprovalResult:
+        """按审批动作分级路由：approve→approved / reject→rejected / edit-plan→superseded。"""
         if result.action == ApprovalAction.EDIT_PLAN:
             ticket.status = _STATUS_SUPERSEDED
         elif result.approved:

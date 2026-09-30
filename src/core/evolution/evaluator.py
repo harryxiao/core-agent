@@ -39,6 +39,10 @@ class BenchmarkRegistry:
     def baseline_score(self, plugin_id: str) -> float:
         return self._baselines.get(plugin_id, 0.0)
 
+    def list(self) -> list[Benchmark]:
+        """返回已注册基准集列表（留出评测按需引用）。"""
+        return list(self._benchmarks.values())
+
 
 class QualityEvaluator:
     """三维任务质量评测：完成度 / 正确性 / 轨迹质量。"""

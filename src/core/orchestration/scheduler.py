@@ -53,12 +53,13 @@ class ProgressTracker:
 
 @dataclass
 class SubtaskOutcome:
-    """子任务执行结果：通过与否 + 结构化错误码 + 原因。"""
+    """子任务执行结果：通过与否 + 结构化错误码 + 原因 + 追溯 trace。"""
 
     subtask_id: str
     ok: bool
     error: OrchestrationErrorCode | None = None
     reason: str = ""
+    trace_id: str = ""
 
 
 class TaskScheduler:
@@ -74,6 +75,7 @@ class TaskScheduler:
         max_concurrency: int = 4,
         success_checker: Callable[[list[str]], bool] | None = None,
         checkpoint: Callable[[str, list[SubtaskOutcome]], None] | None = None,
+        on_done: Callable[[str, list[SubtaskOutcome]], None] | None = None,
     ) -> None:
         if max_concurrency < 1:
             raise OrchestrationError(
@@ -87,6 +89,7 @@ class TaskScheduler:
         self._max_concurrency = max_concurrency
         self._success_checker = success_checker
         self._checkpoint = checkpoint
+        self._on_done = on_done
 
     async def run(
         self, task_id: str, goal: str, success_criteria: list[str] | None = None
@@ -129,6 +132,8 @@ class TaskScheduler:
                 f"任务 {task_id} 未达成成功标准: {plan.success_criteria}",
             )
         self._state_machine.transition(task_id, TaskState.DONE)
+        if self._on_done is not None:
+            self._on_done(task_id, outcomes)
         return outcomes
 
     def suspend(self, task_id: str) -> None:
@@ -189,10 +194,11 @@ class TaskScheduler:
             verify = self._decomposer.verify(subtask, result.reply)
             if verify.passed:
                 self._tracker.record(task_id, subtask.id)
-                return SubtaskOutcome(subtask.id, ok=True)
+                return SubtaskOutcome(subtask.id, ok=True, trace_id=result.trace_id)
             return SubtaskOutcome(
                 subtask.id,
                 ok=False,
                 error=OrchestrationErrorCode.SUBTASK_VERIFY_FAILED,
                 reason=verify.reason,
+                trace_id=result.trace_id,
             )
