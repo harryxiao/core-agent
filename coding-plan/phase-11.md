@@ -57,7 +57,7 @@
 2. **补 judgment.* ConfigSpec**：在 `src/core/configuration/manager.py` 的 `_CONFIG_SPECS` 补 5 条（`judgment.provider` / `judgment.model` / `judgment.base_url` / `judgment.api_key` / `judgment.confidence_threshold`），`api_key` 走 `exposure=HIDDEN` + `${VAR}` 引用（对齐 llm.api_key 写法），`confidence_threshold` 默认值（如 0.7）。
 3. **定 JEV HTTP 客户端选型**：stdlib `urllib.request`（**零新依赖**，契合「litellm 唯一运行时三方依赖」红线）vs `httpx`（litellm 传递依赖，非直接声明）；按 ADR-0040 MAL 函数内懒 import。**默认取 stdlib urllib**（避免依赖传递假设），除非实测有硬需。
 4. **核对 observability 落盘契约**：读 `doc/03-interfaces/observability-interface.md`，确认 `DecisionTrace` 走既有 trace/事件链（不另造观测真源）。
-5. **决策点接线边界**：loop（choice）/ memory 压实（score）/ permission guardrail（noul）三决策点经 **DI seam 注入** `DecisionRouter`/`Compactor`/`Guardrail`，不内联 JEV 调用（对齐 beast/pet「抽象不锁选型」立场）。
+5. **决策点接线边界**（本 Phase 仅定义边界，实际 DI 接线 deferred 至后续 Phase）：loop（choice）/ memory 压实（score）/ permission guardrail（noul）三决策点经 **DI seam 注入** `DecisionRouter`/`Compactor`/`Guardrail`，不内联 JEV 调用（对齐 beast/pet「抽象不锁选型」立场）。
 
 ## 5. 依赖与顺序
 
@@ -69,8 +69,8 @@ llm_provider(主 LLM 回退) ─────────────────
 ```
 
 - **硬依赖**：configuration / observability / permission / llm_provider 均已落地（Phase 0/1/2）；本 Phase 零新增三方依赖（JEV 为 HTTP API）。
-- **顺序**：ConfigSpec → errors + models（4 实体 + 5 错误码）→ provider（JEV 接入 + typed questions/answers 适配）→ router（choice/decide + 置信度回退）→ compactor（score）→ guardrail（noul）→ 决策点 DI 接线 → DecisionTrace 落 observability。
-- **并行**：compactor / guardrail 互不依赖，可与 provider/router 并行推进；决策点 DI 接线依赖三组件全部就绪后收口。
+- **顺序**：ConfigSpec → errors + models（4 实体 + 5 错误码）→ provider（JEV 接入 + typed questions/answers 适配）→ router（choice/decide + 置信度回退）→ compactor（score）→ guardrail（noul）→ DecisionTrace 落 observability（决策点 DI 接线 deferred 至后续 Phase）。
+- **并行**：compactor / guardrail 互不依赖，可与 provider/router 并行推进；决策点 DI 接线（deferred）依赖三组件全部就绪后于后续 Phase 收口。
 
 ## 6. 里程碑验收清单
 
@@ -96,7 +96,7 @@ llm_provider(主 LLM 回退) ─────────────────
 
 ## 8. 提交规范
 
-- **一个 Phase 一个 commit**：judgment 六文件 + judgment.* ConfigSpec + 决策点 DI 接线 + observability 轨迹 + 契约归档（0035）+ 门禁全绿后单次提交。
+- **一个 Phase 一个 commit**：judgment 六文件 + judgment.* ConfigSpec + observability 轨迹 + 契约归档（0035）+ 门禁全绿后单次提交（决策点 DI 接线 deferred，不纳入本 Phase commit）。
 - commit message 形如：`feat(phase11): 决策模型接入 judgment/JEV System One（M8）`
 - 提交后更新 `README.md` §2 总览表 Phase 11 行状态列为「完成」。
 - 契约变更走 openspec 归档（changes/0035，spec 已同步故 `--skip-specs`），与代码同 commit 或紧邻提交。
