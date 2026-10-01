@@ -44,10 +44,10 @@
 | 命令 | 现象 | 根因 | 关闭动作 |
 |---|---|---|---|
 | `plugin list` / `plugin uninstall` | ✅ 已修：list 可见、uninstall 可清理 | install 落 SkillLibrary/ToolProvider，list/uninstall 读 `PluginInstaller._assets`；Phase 16 install 路径未调 `register` → 双注册表脱节 | 已修：`_plugin_install` 补 `register(item, StubPlugin)` 落账本 |
-| `sessions` | 恒「无活跃会话」 | 无常驻 serve host，`HarnessHost` 每进程新建 | 建 serve 常驻进程 + 会话持久化 |
-| `probe` | 恒 alive（exit 0） | `LifecycleController` 默认 probe_fn 恒 alive，无真探活目标 | 接 serve 进程探活 |
-| `release rollback` / `upgrade` | 恒失败（无历史 / 版本不存在） | `ReleaseManager` 每进程新建，无持久化版本登记 | 版本登记持久化 / 接真实制品仓库 |
-| `config set` | 运行时生效但不写回 yaml | `apply_change` 是内存变更 | 契约「写回 + revalidate」仍待确认（`cli-contract-baseline.md` §14） |
+| `sessions` | ✅ 已修：读持久化会话（serve 自登记常驻会话） | 无常驻 serve host，`HarnessHost` 每进程新建 | 已修：`HarnessHost` 加 JSONL 持久化 + `_serve` 自登记常驻会话 |
+| `probe` | ✅ 已修：pidfile 探活，不再恒 alive | `LifecycleController` 默认 probe_fn 恒 alive，无真探活目标 | 已修：`ServeStateStore` pidfile + `os.kill(pid,0)`，`_serve` 写状态、`_probe` 读状态 |
+| `release rollback` / `upgrade` | ✅ 已修：版本登记跨进程可见 | `ReleaseManager` 每进程新建，无持久化版本登记 | 已修：`ReleaseManager` 加 JSON 持久化（真实制品仓库仍 deferred） |
+| `config set` | ✅ 已修：写回 config.yaml + revalidate | `apply_change` 是内存变更 | 已修：`ConfigManager.write_patch` 写回 + 重读校验（明文密钥被 `apply_change` 先拒） |
 | `skill search` | 恒空 | 市场 skillhub client 未接，仅本地库 | 接 SkillHubClient（外部市场 deferred） |
 
 > ~~残留~~ ✅ 已修：给 `PluginInstaller` 加对称 `uninstaller` 钩子，`uninstall` 现在回退 SkillLibrary/ToolProvider 的真实注册（skill 移除 / mcp 卸载工具并释放连接 / cli 卸载工具，`ToolProvider` 新增 `unregister`）。进程内态 + 无常驻 host 的「CLI 层面无感」仍成立，但进程内可逆闭环已打通。

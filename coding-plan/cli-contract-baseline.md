@@ -226,7 +226,7 @@ CLI flag  >  env var  >  config.yaml  >  默认值
 | `config show` | —（只读） | — | — |
 | `config get <key>` | —（只读） | — | — |
 | `config validate` | —（只读） | — | ✅ 触发 validate_schema |
-| `config set <section>.<key>=<value>` | 任意可写键 | ✅ 写回 | ✅ 应触发 revalidate（待确认实现） |
+| `config set <section>.<key>=<value>` | 任意可写键 | ✅ 写回 | ✅ 触发 revalidate（已实现：`write_patch` 写回后重读重校验） |
 | `feature <name> on/off`（推演） | features 前缀 | ✅ 写回 features 段 | 否 |
 
 ---
@@ -267,7 +267,7 @@ CLI flag  >  env var  >  config.yaml  >  默认值
 ## 11. 风险 / 待确认
 
 1. **CLI flag 层是否实现**：env 覆盖机制已实测，但 `--llm-*`/`--im-*` 等 flag 是否已接线（三模入口未实现 → 大概率仅设计态）。
-2. **config set 写回 + revalidate**：写回是否会重跑 `validate_schema`，未确认。
+2. **config set 写回 + revalidate**：~~写回是否会重跑 `validate_schema`，未确认。~~ ✅ 已确认：`write_patch` 写回后重读重校验（`apply_change` 先拒明文密钥，`${VAR}` 引用原样保留）。
 3. **secret 校验不对称**：`secret_ref` 不强制非空/可解析，可能导致"空 secret 也能过校验"。
 4. **features 无固定清单**：任意 `CORE_FEATURES_*` 可注册，CLI `--feature` 的补全/帮助无法静态枚举。
 5. **extra 透传无校验**：拼写错误的段名会被静默吞进 `extra`，不会报"未知配置键"。
