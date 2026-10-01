@@ -50,7 +50,7 @@
 | `config set` | 运行时生效但不写回 yaml | `apply_change` 是内存变更 | 契约「写回 + revalidate」仍待确认（`cli-contract-baseline.md` §14） |
 | `skill search` | 恒空 | 市场 skillhub client 未接，仅本地库 | 接 SkillHubClient（外部市场 deferred） |
 
-> 残留（未修，与 `install_tools` 路径同源）：`uninstall` 仅清账本（`_assets`）+ 卸载 `PluginRegistry` 桩，**不回退** SkillLibrary/ToolProvider 的真实注册。进程内态 + 无常驻 host，CLI 层面无感；真可逆需给 `PluginInstaller` 加对称 `uninstaller` 钩子。
+> ~~残留~~ ✅ 已修：给 `PluginInstaller` 加对称 `uninstaller` 钩子，`uninstall` 现在回退 SkillLibrary/ToolProvider 的真实注册（skill 移除 / mcp 卸载工具并释放连接 / cli 卸载工具，`ToolProvider` 新增 `unregister`）。进程内态 + 无常驻 host 的「CLI 层面无感」仍成立，但进程内可逆闭环已打通。
 
 ### 2.3 真实外部后端未接（「抽象不锁选型」立场）— 低（不挡核心回路调试）
 

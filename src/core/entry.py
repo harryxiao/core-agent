@@ -451,7 +451,11 @@ def _build_installer() -> PluginInstaller:
     skills = SkillLibrary()
     provider = ToolProvider()
     dispatcher = InstallDispatcher(skill_library=skills, tool_provider=provider)
-    return PluginInstaller(source_resolver=dispatcher.resolve, installer=dispatcher.install)
+    return PluginInstaller(
+        source_resolver=dispatcher.resolve,
+        installer=dispatcher.install,
+        uninstaller=dispatcher.uninstall,
+    )
 
 
 def _plugin_install(installer: PluginInstaller, asset: str, kind: PluginKind) -> int:

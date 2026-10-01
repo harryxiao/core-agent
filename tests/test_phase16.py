@@ -22,6 +22,7 @@ from core.skills import SkillLibrary
 from core.tools import (
     GateDecision,
     SafetyGate,
+    StubPlugin,
     ToolErrorCode,
     ToolProvider,
     file_patch,
@@ -106,6 +107,52 @@ def test_install_dispatch_by_kind() -> None:
     cli_asset = installer.discover(PluginSource.LOCAL_PATH, "cli-loc", PluginKind.CLI)
     installer.install(cli_asset)
     assert "cli.echo" in {t.tool_id for t in provider.active_tools()}
+
+
+def test_uninstall_reverses_dispatch_by_kind() -> None:
+    """uninstall 对称回退 install 的真实注册：skill 移除 / mcp+cli 工具卸载。"""
+    skill_library = SkillLibrary()
+    provider = ToolProvider()
+    transport = FakeTransport()
+    transport.add_tool("search", "d")
+    mcp_client = MCPClient(transport_factory=lambda ep: transport)
+    dispatcher = InstallDispatcher(skill_library, provider, mcp_client=mcp_client)
+
+    manifests = {
+        "skill-loc": {"skill_id": "skills.data.sum", "description": "d", "param_schema": {}},
+        "mcp-loc": {"url": "https://example.com/mcp", "name": "files"},
+        "cli-loc": {"name": "echo", "command": "echo", "args": ["hi"]},
+    }
+
+    def fake_resolve(_source, location):
+        return manifests[location]
+
+    installer = PluginInstaller(
+        source_resolver=fake_resolve,
+        installer=dispatcher.install,
+        uninstaller=dispatcher.uninstall,
+    )
+
+    for key, kind, plugin_id in (
+        ("skill-loc", PluginKind.SKILL, "skills.data.sum"),
+        ("mcp-loc", PluginKind.MCP, "mcp.files"),
+        ("cli-loc", PluginKind.CLI, "cli.echo"),
+    ):
+        asset = installer.discover(PluginSource.LOCAL_PATH, key, kind)
+        installer.install(asset)
+        installer.register(asset, StubPlugin(plugin_id, asset.manifest))
+
+    assert skill_library.lookup("skills.data.sum").skill_id == "skills.data.sum"
+    ids = {t.tool_id for t in provider.active_tools()}
+    assert any(i.startswith("mcp.") and i.endswith(".search") for i in ids)
+    assert "cli.echo" in ids
+
+    for plugin_id in ("skills.data.sum", "mcp.files", "cli.echo"):
+        installer.uninstall(plugin_id)
+
+    assert skill_library.all_skills() == []
+    assert provider.active_tools() == []
+    assert installer.installed() == []
 
 
 # ---- ① CLI 执行 ----

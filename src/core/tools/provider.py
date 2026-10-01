@@ -74,6 +74,10 @@ class ToolProvider:
             )
         self._tools[tool.definition.tool_id] = tool
 
+    def unregister(self, tool_id: str) -> None:
+        """卸载工具：对称于 register；不存在静默忽略（卸载幂等）。"""
+        self._tools.pop(tool_id, None)
+
     @property
     def warnings(self) -> list[str]:
         """声明/行为不符告警列表（遥测观测到偏差后待复核）。"""

@@ -89,3 +89,28 @@ class InstallDispatcher:
             return self._mcp.call_tool(handle, name, dict(kwargs))
 
         return Tool(definition=definition, handler=handler)
+
+    def uninstall(self, asset: InstallableAsset) -> None:
+        """按 PluginKind 对称回退 install：skill 移除 / mcp 卸载工具并释放连接 / cli 卸载工具。"""
+        if asset.kind is PluginKind.SKILL:
+            self._uninstall_skill(asset)
+        elif asset.kind is PluginKind.MCP:
+            self._uninstall_mcp(asset)
+        else:
+            self._uninstall_cli(asset)
+
+    def _uninstall_skill(self, asset: InstallableAsset) -> None:
+        manifest = asset.manifest
+        skill_id = str(manifest.get("skill_id") or manifest.get("plugin_id") or "")
+        self._skills.remove(skill_id)
+
+    def _uninstall_mcp(self, asset: InstallableAsset) -> None:
+        name = str(asset.manifest.get("name") or "mcp")
+        handle = self._mcp.named(name)
+        if handle is not None:
+            for remote in self._mcp.list_tools(handle):
+                self._tools.unregister(self._adapter.tool_id(remote, handle))
+        self._mcp.remove(name)
+
+    def _uninstall_cli(self, asset: InstallableAsset) -> None:
+        self._tools.unregister(self._cli.adapt(asset).definition.tool_id)

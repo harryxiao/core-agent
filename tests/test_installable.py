@@ -13,6 +13,7 @@ import pytest
 from core.plugin_registry import (
     DomainError,
     ErrorCode,
+    InstallableAsset,
     PluginInstaller,
     PluginKind,
     PluginRegistry,
@@ -97,3 +98,18 @@ def test_dependency_cycle_rejected_on_register() -> None:
     with pytest.raises(DomainError) as exc_info:
         installer.register(asset, _FakePlugin("b", deps=["a"]))
     assert exc_info.value.code is ErrorCode.CIRCULAR_DEPENDENCY
+
+
+def test_uninstall_calls_symmetric_uninstaller() -> None:
+    """uninstall 调用对称 uninstaller 钩子回退真实注册（不再只清账本）。"""
+    called: list[InstallableAsset] = []
+
+    def fake_uninstall(asset: InstallableAsset) -> None:
+        called.append(asset)
+
+    installer = PluginInstaller(source_resolver=_resolver(), uninstaller=fake_uninstall)
+    asset = installer.discover(PluginSource.LOCAL_PATH, "pkg", PluginKind.SKILL)
+    installer.register(asset, _FakePlugin("a"))
+    installer.uninstall("a")
+    assert called == [asset]
+    assert installer.installed() == []

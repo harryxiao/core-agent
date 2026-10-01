@@ -53,6 +53,7 @@ class InstallableAsset:
 SourceResolver = Callable[[PluginSource, str], dict[str, Any]]
 SignatureVerifier = Callable[[InstallableAsset, str], bool]
 Installer = Callable[[InstallableAsset], None]
+Uninstaller = Callable[[InstallableAsset], None]
 
 
 def _default_resolve(source: PluginSource, location: str) -> dict[str, Any]:
@@ -70,6 +71,11 @@ def _default_install(asset: InstallableAsset) -> None:
     return None
 
 
+def _default_uninstall(asset: InstallableAsset) -> None:
+    """默认卸载：无副作用（真实物化回退由执行层按 kind 适配）。"""
+    return None
+
+
 class PluginInstaller:
     """插件安装生命周期：
     discover → verify → install → register → activate → deactivate → uninstall。
@@ -82,11 +88,13 @@ class PluginInstaller:
         source_resolver: SourceResolver | None = None,
         verifier: SignatureVerifier | None = None,
         installer: Installer | None = None,
+        uninstaller: Uninstaller | None = None,
     ) -> None:
         self._registry = registry if registry is not None else PluginRegistry()
         self._source_resolver = source_resolver or _default_resolve
         self._verifier = verifier or _default_verify
         self._installer = installer or _default_install
+        self._uninstaller = uninstaller or _default_uninstall
         self._assets: dict[str, InstallableAsset] = {}
 
     def discover(self, source: PluginSource, location: str, kind: PluginKind) -> InstallableAsset:
@@ -131,9 +139,11 @@ class PluginInstaller:
     def uninstall(self, plugin_id: str) -> None:
         if plugin_id not in self._assets:
             raise DomainError(ErrorCode.UNINSTALL_NOT_FOUND, f"插件未安装: {plugin_id}")
+        asset = self._assets[plugin_id]
         state = self._registry.state(plugin_id)
         if state is PluginState.ACTIVE:
             self._registry.deactivate(plugin_id)
         if state is not PluginState.UNLOADED:
             self._registry.unload(plugin_id)
+        self._uninstaller(asset)  # 对称回退真实注册（skill 移除 / tool 卸载）
         self._assets.pop(plugin_id, None)

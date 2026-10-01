@@ -20,8 +20,12 @@ class MCPToolAdapter:
     def __init__(self) -> None:
         self._seen: set[str] = set()
 
+    def tool_id(self, remote: RemoteTool, handle: ServerHandle) -> str:
+        """远程工具 → 本地 tool_id（纯函数，供 install/uninstall 对称复用）。"""
+        return f"mcp.{handle.handle_id}.{remote.name}"
+
     def adapt(self, remote: RemoteTool, handle: ServerHandle) -> ToolDef:
-        tool_id = f"mcp.{handle.handle_id}.{remote.name}"
+        tool_id = self.tool_id(remote, handle)
         if tool_id in self._seen:
             raise MCPError(MCPErrorCode.TOOL_NAME_CONFLICT, f"工具名冲突: {tool_id}")
         self._seen.add(tool_id)
