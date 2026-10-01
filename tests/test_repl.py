@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 
 from core.configuration.models import LLMConfig
-from core.loop import LoopEvent
+from core.loop import LoopEvent, LoopResult
 from core.ui import Event, UIAPILayer, UiErrorCode
-from core.ui.repl import barge_in_event, build_app, repl_loop
+from core.ui.repl import _format_event, barge_in_event, build_app, repl_loop
 
 
 class RecordingLoop:
@@ -95,6 +95,19 @@ def test_repl_barge_in_degrades_gracefully() -> None:
     assert event.payload["code"] == UiErrorCode.UI_BARGEIN.value
 
 
+def test_format_event_strips_scaffolding() -> None:
+    """REPL 只回显回复文本与错误，剥离 session/trace/round/LoopResult 脚手架。"""
+    assert _format_event(Event("session.created", {"session_id": "s", "trace_id": "t"})) is None
+    assert _format_event(Event("loop.action", {"round": 1, "failed": False})) is None
+    assert _format_event(Event("loop.result", {"text": "你好"})) == "你好"
+    assert _format_event(Event("loop.result", {"reply": "echo:hi"})) == "echo:hi"
+    assert _format_event(Event("loop.result", LoopResult(reply="hi", trace_id="t"))) is None
+    assert _format_event(Event("loop.error", {"reason": "LOOP_LIMIT_EXCEEDED"})) == (
+        "[loop.error] LOOP_LIMIT_EXCEEDED"
+    )
+    assert _format_event(Event("error", {"code": "X", "message": "m"})) == "[X] m"
+
+
 def test_textual_app_headless_smoke() -> None:
     """真实 Textual 接线冒烟：headless 构建 + 输入驱动 run_loop + barge-in 键。"""
     loop = RecordingLoop()
@@ -108,6 +121,26 @@ def test_textual_app_headless_smoke() -> None:
             await pilot.pause()
             await pilot.press("ctrl+b")
             await pilot.pause()
+
+    asyncio.run(drive())
+    assert loop.inputs == ["hi"]
+
+
+def test_input_clears_after_submit() -> None:
+    """回车后输入框立即清空（准备下一轮）。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> None:
+        async with app.run_test() as pilot:
+            await pilot.press("h", "i")
+            await pilot.pause()
+            assert app.query_one("#input").value == "hi"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.query_one("#input").value == ""
 
     asyncio.run(drive())
     assert loop.inputs == ["hi"]

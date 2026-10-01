@@ -100,6 +100,83 @@ def test_pet_disabled_by_default(capsys: pytest.CaptureFixture[str]) -> None:
     assert "宠物模式未启用" in capsys.readouterr().err
 
 
+def test_repl_wires_llm_config(monkeypatch, tmp_path) -> None:
+    """无子命令进 REPL：真 runtime 装配 + 注入 LLM 配置（对齐 run 的同构入口）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    captured: dict[str, object] = {}
+
+    class _FakeBridge:
+        def __init__(self, *, api=None, connect_impl=None) -> None:
+            captured["api"] = api
+
+        def connect(self) -> None:
+            return None
+
+    monkeypatch.setattr("core.entry.CLIBridge", _FakeBridge)
+    assert main(["--config", _write_config(tmp_path)]) == 0
+    api = captured["api"]
+    assert api.get_llm_config().model == "test-model"
+
+
+def test_serve_wires_llm_config(monkeypatch, tmp_path) -> None:
+    """serve 命令：真 runtime 装配 + 注入 LLM 配置到 WebBridge。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    captured: dict[str, object] = {}
+
+    class _FakeBridge:
+        def __init__(self, *, api=None, serve_impl=None) -> None:
+            captured["api"] = api
+
+        def serve(self, host: str, port: int) -> None:
+            return None
+
+    monkeypatch.setattr("core.entry.WebBridge", _FakeBridge)
+    assert main(["--config", _write_config(tmp_path), "serve"]) == 0
+    api = captured["api"]
+    assert api.get_llm_config().model == "test-model"
+
+
+def test_app_wires_llm_config(monkeypatch, tmp_path) -> None:
+    """app 命令：真 runtime 装配 + 注入 LLM 配置到 DesktopBridge。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    captured: dict[str, object] = {}
+
+    class _FakeBridge:
+        def __init__(self, *, api=None, start_impl=None) -> None:
+            captured["api"] = api
+
+        def start_sidecar(self) -> None:
+            return None
+
+    monkeypatch.setattr("core.entry.DesktopBridge", _FakeBridge)
+    assert main(["--config", _write_config(tmp_path), "app"]) == 0
+    api = captured["api"]
+    assert api.get_llm_config().model == "test-model"
+
+
+def test_build_ui_warms_up_litellm(monkeypatch, tmp_path) -> None:
+    """build_ui 预热 litellm：首次 import 前移到启动期，不落到首次输入。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    imported: list[str] = []
+
+    class _FakeImportlib:
+        def import_module(self, name: str) -> object:
+            imported.append(name)
+            return object()
+
+    class _FakeBridge:
+        def __init__(self, *, api=None) -> None:
+            pass
+
+        def connect(self) -> None:
+            return None
+
+    monkeypatch.setattr("core.entry.importlib", _FakeImportlib())
+    monkeypatch.setattr("core.entry.CLIBridge", _FakeBridge)
+    assert main(["--config", _write_config(tmp_path)]) == 0
+    assert "litellm" in imported
+
+
 # ---- 已接线命令面（config/probe/sessions/release/plugin/skill） ----
 
 

@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
+import importlib
 import json
 import os
 import sys
@@ -243,7 +245,7 @@ def _metavar(key: str) -> str:
 def _dispatch(args: argparse.Namespace) -> int:
     command: str | None = args.command
     if command is None:
-        return _repl()
+        return _repl(args)
     handler = _HANDLERS.get(command)
     if handler is not None:
         return handler(args)
@@ -252,19 +254,49 @@ def _dispatch(args: argparse.Namespace) -> int:
     return 0
 
 
-def _repl() -> int:
+def _build_ui(args: argparse.Namespace) -> UIAPILayer | None:
+    """装配真 runtime + UIAPILayer 并注入 LLM 配置（四入口共用）；失败返回 None。"""
+    try:
+        runtime = build_runtime(
+            ConfigManager(yaml_path=args.config or "config.yaml", cli=_cli_overrides(args))
+        )
+    except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
+        print(f"装配失败: {exc}", file=sys.stderr)
+        return None
+    api = UIAPILayer(
+        loop=cast(LoopPlugin, runtime.loop),
+        memory=runtime.memory,
+        tools=runtime.tools,
+        config=runtime.config,
+    )
+    api.set_llm_config(runtime.app.llm)
+    with contextlib.suppress(ImportError):
+        importlib.import_module("litellm")  # 预热：首次 import ~4s 前移到启动期，避免落到首次输入
+    return api
+
+
+def _repl(args: argparse.Namespace) -> int:
     """无子命令进入 Textual 交互会话循环（阻塞，退出后返回）。"""
-    CLIBridge().connect()
+    api = _build_ui(args)
+    if api is None:
+        return 1
+    CLIBridge(api=api).connect()
     return 0
 
 
 def _serve(args: argparse.Namespace) -> int:
-    WebBridge().serve(args.host, args.port)
+    api = _build_ui(args)
+    if api is None:
+        return 1
+    WebBridge(api=api).serve(args.host, args.port)
     return 0
 
 
 def _app(args: argparse.Namespace) -> int:
-    DesktopBridge().start_sidecar()
+    api = _build_ui(args)
+    if api is None:
+        return 1
+    DesktopBridge(api=api).start_sidecar()
     return 0
 
 
@@ -566,20 +598,9 @@ def _run(args: argparse.Namespace) -> int:
     if prompt is None:
         print("用法: core-agent run [--prompt TEXT | --file PATH]", file=sys.stderr)
         return 1
-    try:
-        runtime = build_runtime(
-            ConfigManager(yaml_path=args.config or "config.yaml", cli=_cli_overrides(args))
-        )
-    except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
-        print(f"装配失败: {exc}", file=sys.stderr)
+    api = _build_ui(args)
+    if api is None:
         return 1
-    api = UIAPILayer(
-        loop=cast(LoopPlugin, runtime.loop),
-        memory=runtime.memory,
-        tools=runtime.tools,
-        config=runtime.config,
-    )
-    api.set_llm_config(runtime.app.llm)
     session_id = args.session_id or api.create_session("cli")
     try:
         asyncio.run(_stream(api, session_id, prompt))

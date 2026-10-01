@@ -52,35 +52,58 @@ def _error_event(err: UiError) -> Event:
 def build_app(api: UIAPILayer) -> Any:
     """构建 Textual 应用（懒 import textual），暴露给 headless 冒烟测试驱动。"""
     from textual.app import App, ComposeResult  # noqa: PLC0415 — MAL 懒 import
-    from textual.widgets import Input, RichLog  # noqa: PLC0415 — MAL 懒 import
+    from textual.containers import Horizontal  # noqa: PLC0415 — MAL 懒 import
+    from textual.widgets import Input, RichLog, Static  # noqa: PLC0415 — MAL 懒 import
 
     session_id = api.create_session("cli")
 
     class ReplApp(App[None]):
         """core-agent 交互会话 TUI。"""
 
+        CSS = """
+#input-row {
+    height: auto;
+}
+#prompt {
+    width: auto;
+}
+#input {
+    width: 1fr;
+    height: 1;
+    border: none;
+    padding: 0;
+}
+"""
+
         BINDINGS = [("ctrl+b", "barge_in", "打断")]
 
         def compose(self) -> ComposeResult:
             yield RichLog(id="output")
-            yield Input(placeholder="> ", id="input")
+            with Horizontal(id="input-row"):
+                yield Static("> ", id="prompt")
+                yield Input(placeholder="输入消息，回车发送（Ctrl+B 打断）", id="input")
 
         def on_mount(self) -> None:
             self.query_one("#input", Input).focus()
 
         def action_barge_in(self) -> None:
-            self.query_one("#output", RichLog).write(_format_event(barge_in_event(api)))
+            line = _format_event(barge_in_event(api))
+            if line:
+                self.query_one("#output", RichLog).write(line)
 
         async def on_input_submitted(self, message: Input.Submitted) -> None:
             log = self.query_one("#output", RichLog)
             text = message.value.strip()
+            message.input.clear()  # 回车即清空输入框，准备下一轮
             if not text:
                 self.exit()
                 return
             log.write(f"> {text}")
             try:
                 async for event in api.run_loop(session_id, text):
-                    log.write(_format_event(event))
+                    line = _format_event(event)
+                    if line:
+                        log.write(line)
             except UiError as err:
                 log.write(_format_event(_error_event(err)))
 
@@ -92,9 +115,21 @@ def run_repl(api: UIAPILayer) -> None:
     build_app(api).run()
 
 
-def _format_event(event: Event) -> str:
-    """Event → 单行文本（REPL 输出）。"""
+def _format_event(event: Event) -> str | None:
+    """Event → 单行文本；None 表示内部脚手架事件（会话/回合/结果对象），不显示。
+
+    只回显交互内容：错误（error/loop.error）与回复文本（loop.result 的 text/reply），
+    剥离 session_id/trace_id/round/LoopResult 等后端事件。
+    """
+    payload = event.payload
     if event.type == "error":
-        payload = cast(dict[str, object], event.payload)
-        return f"[{payload.get('code', 'error')}] {payload.get('message', '')}"
-    return str(event.payload)
+        data = cast(dict[str, object], payload)
+        return f"[{data.get('code', 'error')}] {data.get('message', '')}"
+    if event.type == "loop.error":
+        data = cast(dict[str, object], payload) if isinstance(payload, dict) else {}
+        return f"[loop.error] {data.get('reason', '')}"
+    if event.type == "loop.result" and isinstance(payload, dict):
+        data = cast(dict[str, object], payload)
+        text = data.get("text") or data.get("reply")
+        return str(text) if text else None
+    return None
