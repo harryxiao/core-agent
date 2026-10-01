@@ -10,9 +10,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, cast
 
 from core.judgment import DecisionResult, DecisionRouter
@@ -38,7 +39,7 @@ class DefaultLoop(Plugin):
     def __init__(  # noqa: PLR0913 — 注入面均为可选依赖注入
         self,
         *,
-        planner: Callable[[LoopContext], Action] | None = None,
+        planner: Callable[[LoopContext], Action | Awaitable[Action]] | None = None,
         memory: MemoryStore | None = None,
         tools: ToolProvider | None = None,
         gate: SafetyGate | None = None,
@@ -98,7 +99,7 @@ class DefaultLoop(Plugin):
             if ctx.rounds >= self._max_rounds:
                 limit_reason = "LOOP_LIMIT_EXCEEDED"
                 break
-            action = self.reason(ctx)
+            action = await self.reason(ctx)
             action = self._apply_middlewares(ctx, action)
             if action.is_irreversible and not self._allow(action):
                 action = self.decline(action)
@@ -134,10 +135,13 @@ class DefaultLoop(Plugin):
             token_used=len(user_input) // 4,
         )
 
-    def reason(self, ctx: LoopContext) -> Action:
-        if self._planner is not None:
-            return self._planner(ctx)
-        return Action(args={"reply": self._echo(ctx)})
+    async def reason(self, ctx: LoopContext) -> Action:
+        if self._planner is None:
+            return Action(args={"reply": self._echo(ctx)})
+        result = self._planner(ctx)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     async def act(self, action: Action, trace_id: str) -> ActionResult:
         if action.is_terminal:

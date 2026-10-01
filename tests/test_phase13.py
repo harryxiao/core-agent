@@ -9,6 +9,7 @@ entry 贯通装配。
 from __future__ import annotations
 
 import argparse
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -55,6 +56,9 @@ class _FakeLLM:
             provider="fake",
             model="test-model",
         )
+
+    async def acompletion(self, request: object) -> LLMResponse:
+        return self.completion(request)
 
 
 def _write_config(tmp_path) -> str:
@@ -105,7 +109,7 @@ def test_llm_planner_returns_action_and_carries_context(tmp_path) -> None:
         fake, assembler=assembler, skill_router=lambda task: ["skills.x.y"], tools=provider
     )
 
-    action = planner(LoopContext(messages=[{"role": "user", "content": "hi"}]))
+    action = asyncio.run(planner(LoopContext(messages=[{"role": "user", "content": "hi"}])))
 
     assert action.tool_id == "tools.echo"
     assert action.args == {"text": "hi"}
@@ -119,15 +123,39 @@ def test_llm_planner_returns_action_and_carries_context(tmp_path) -> None:
 
 def test_llm_planner_parse_failure_error_code() -> None:
     planner = LLMPlanner(_FakeLLM('{"tool_id": "tools.echo",'))
-    action = planner(LoopContext(messages=[{"role": "user", "content": "hi"}]))
+    action = asyncio.run(planner(LoopContext(messages=[{"role": "user", "content": "hi"}])))
     assert "LLM_PLAN_PARSE_FAILED" in action.args["reply"]
 
 
 def test_llm_planner_plain_text_reply() -> None:
     planner = LLMPlanner(_FakeLLM("直接回复文本"))
-    action = planner(LoopContext(messages=[{"role": "user", "content": "hi"}]))
+    action = asyncio.run(planner(LoopContext(messages=[{"role": "user", "content": "hi"}])))
     assert action.args == {"reply": "直接回复文本"}
     assert action.is_terminal
+
+
+def test_loop_uses_async_llm_without_nested_loop() -> None:
+    """真 LLM 同步薄壳经 asyncio.run 桥接：loop 应走异步 acompletion，不触发嵌套事件循环。"""
+
+    class _ThinShellLLM:
+        def __init__(self, content: str) -> None:
+            self._content = content
+
+        async def acompletion(self, request: object) -> LLMResponse:
+            return LLMResponse(
+                content=self._content,
+                usage=TokenUsage(prompt_tokens=0, completion_tokens=0),
+                finish_reason="stop",
+                provider="fake",
+                model="test-model",
+            )
+
+        def completion(self, request: object) -> LLMResponse:
+            return asyncio.run(self.acompletion(request))
+
+    loop = DefaultLoop(planner=LLMPlanner(_ThinShellLLM("直接回复文本")))
+    result = loop.run("问题")
+    assert result.reply == "直接回复文本"
 
 
 # ---- 热路径 TraceEvent ----

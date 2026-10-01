@@ -108,7 +108,7 @@ class LoopPlugin(Protocol):
         """收集状态，拼上下文包（token 有硬上界，按优先级裁剪）。"""
         ...
 
-    def reason(self, ctx: LoopContext) -> Action:
+    async def reason(self, ctx: LoopContext) -> Action:
         """调用模型决策下一步动作（非法动作回传结构化错误，不中断）。"""
         ...
 

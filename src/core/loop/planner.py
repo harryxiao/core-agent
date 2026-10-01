@@ -47,10 +47,10 @@ class LLMPlanner:
         self._skill_router = skill_router
         self._tools = tools
 
-    def __call__(self, ctx: LoopContext) -> Action:
+    async def __call__(self, ctx: LoopContext) -> Action:
         request = self._build_request(ctx)
         try:
-            response = self._llm.completion(request)
+            response = await self._llm.acompletion(request)
         except LLMError as exc:
             return Action(args={"reply": f"LLM 调用失败: {exc}"})
         return self._parse(response.content)
