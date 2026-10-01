@@ -253,6 +253,17 @@ class ConfigManager:
     def _restore(self, config: AppConfig) -> None:
         self._config = config
 
+    def write_patch(self, patch: dict[str, Any]) -> None:
+        """把 patch 写回 config.yaml（只合并用户 patch，不落 env/cli 覆盖与明文密钥）。
+
+        写回基于 yaml 文件原文（``_read_yaml``，未叠加 env/cli），``${VAR}`` 引用
+        不解析、原样保留。明文密钥在 ``apply_change`` 已被 ``validate_schema`` 拒绝，
+        故不会进入写回。
+        """
+        raw = self._read_yaml()
+        _merge_raw(raw, patch)
+        self._yaml_path.write_text(_dump_yaml(raw), encoding="utf-8")
+
     # ---- 内部：读取 / 覆盖 / 构造 ----
 
     def _read_yaml(self) -> dict[str, Any]:
@@ -425,6 +436,36 @@ def _parse_scalar(value: str) -> Any:
     except ValueError:
         pass
     return value
+
+
+def _merge_raw(raw: dict[str, Any], patch: dict[str, Any]) -> None:
+    """递归浅合并 patch 进 raw（原地），未触及的键原样保留。"""
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(raw.get(key), dict):
+            _merge_raw(cast(dict[str, Any], raw.get(key)), cast(dict[str, Any], value))
+        else:
+            raw[key] = value
+
+
+def _dump_yaml(data: dict[str, Any], indent: int = 0) -> str:
+    """嵌套 dict → 缩进 yaml（仅标量 + 映射，与 ``_parse_yaml_subset`` 对称）。"""
+    lines: list[str] = []
+    pad = "  " * indent
+    for key, value in data.items():
+        if isinstance(value, dict):
+            lines.append(f"{pad}{key}:")
+            lines.append(_dump_yaml(cast(dict[str, Any], value), indent + 1))
+        else:
+            lines.append(f"{pad}{key}: {_dump_scalar(value)}")
+    return "\n".join(lines)
+
+
+def _dump_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    return str(value)
 
 
 # ---- ConfigSpec 单一真源：优先级链解析 / 三面生成 / map_to 校验 ----

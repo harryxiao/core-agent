@@ -20,6 +20,7 @@ from .models import (
     SessionState,
 )
 from .release import ReleaseManager
+from .serve_state import ServeStateStore
 
 __all__ = [
     "ClientConnection",
@@ -36,6 +37,7 @@ __all__ = [
     "ReleaseManager",
     "RuntimeConfig",
     "RuntimeEnvironment",
+    "ServeStateStore",
     "Session",
     "SessionState",
 ]

@@ -35,11 +35,13 @@ from core.configuration import (
     resolve,
 )
 from core.deployment import (
+    ClientConnection,
     DeploymentError,
     HarnessHost,
     LifecycleController,
     ReleaseInfo,
     ReleaseManager,
+    ServeStateStore,
 )
 from core.loop import LoopPlugin
 from core.pet.core import PetActivator, PetManager
@@ -288,7 +290,15 @@ def _serve(args: argparse.Namespace) -> int:
     api = _build_ui(args)
     if api is None:
         return 1
-    WebBridge(api=api).serve(args.host, args.port)
+    host = HarnessHost(path=_state_path("sessions.jsonl"))
+    host.serve()
+    host.accept(ClientConnection(client_id="serve"))
+    store = ServeStateStore(_state_path("serve.json"))
+    store.mark_running()
+    try:
+        WebBridge(api=api).serve(args.host, args.port)
+    finally:
+        store.mark_stopped()
     return 0
 
 
@@ -353,7 +363,7 @@ def _config_validate(args: argparse.Namespace) -> int:
 
 
 def _config_set(mgr: ConfigManager, args: argparse.Namespace) -> int:
-    """运行时变更配置（apply_change 校验通过才生效，失败回滚；不写回 yaml）。"""
+    """运行时变更配置：apply_change 校验通过才生效，写回 yaml 并 revalidate。"""
     try:
         patch = _key_to_patch(args.key, args.value)
     except ValueError as exc:
@@ -369,7 +379,13 @@ def _config_set(mgr: ConfigManager, args: argparse.Namespace) -> int:
     except ConfigurationError as exc:
         print(f"变更失败: {exc}", file=sys.stderr)
         return 1
-    print(f"已设置 {args.key}={args.value}（运行时生效，未写回 config.yaml）")
+    try:
+        mgr.write_patch(patch)
+        mgr.load()  # revalidate：从磁盘重读重校验
+    except ConfigurationError as exc:
+        print(f"写回失败: {exc}", file=sys.stderr)
+        return 1
+    print(f"已设置 {args.key}={args.value}（已写回 config.yaml）")
     return 0
 
 
@@ -398,8 +414,8 @@ def _skill(args: argparse.Namespace) -> int:
 
 
 def _release(args: argparse.Namespace) -> int:
-    """发布 / 升级 / 回滚（ReleaseManager，进程内版本登记，真实制品仓库未接）。"""
-    manager = ReleaseManager()
+    """发布 / 升级 / 回滚（ReleaseManager，版本登记持久化，真实制品仓库未接）。"""
+    manager = ReleaseManager(path=_state_path("releases.json"))
     try:
         if args.release_cmd == "publish":
             version = manager.publish(
@@ -424,7 +440,8 @@ def _release(args: argparse.Namespace) -> int:
 
 def _probe(args: argparse.Namespace) -> int:
     """健康探针 → HealthStatus：alive 时 exit 0，否则 exit 1。"""
-    status = LifecycleController().probe()
+    store = ServeStateStore(_state_path("serve.json"))
+    status = LifecycleController(probe_fn=store.probe).probe()
     if getattr(args, "format", "json") == "json":
         print(json.dumps({"alive": status.alive, "detail": status.detail}, ensure_ascii=False))
     else:
@@ -433,8 +450,8 @@ def _probe(args: argparse.Namespace) -> int:
 
 
 def _sessions(args: argparse.Namespace) -> int:
-    """枚举 Harness Host 当前活跃会话（无常驻 host 时为进程内空集）。"""
-    sessions = HarnessHost().sessions()
+    """枚举 Harness Host 当前活跃会话（读持久化会话文件）。"""
+    sessions = HarnessHost(path=_state_path("sessions.jsonl")).sessions()
     if not sessions:
         print("（无活跃会话）")
         return 0
@@ -586,6 +603,16 @@ def _coerce(value: str) -> Any:
 def _content_hash(version: str) -> str:
     """bundle 内容哈希（CLI 无真实制品内容，退化为版本名哈希）。"""
     return hashlib.sha256(version.encode("utf-8")).hexdigest()[:16]
+
+
+def _state_path(name: str) -> Path:
+    """全局状态文件路径：$CORE_STATE_DIR（缺省 ~/.core/state）/<name>。
+
+    env 覆盖便于测试隔离（对齐 config 的 env 覆盖惯例）；缺省对齐 ~/.core/Core.md
+    全局约定。
+    """
+    base = os.environ.get("CORE_STATE_DIR") or str(Path.home() / ".core" / "state")
+    return Path(base) / name
 
 
 def _session(args: argparse.Namespace) -> int:

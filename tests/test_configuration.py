@@ -167,6 +167,28 @@ def test_app_config_type(tmp_path: Path) -> None:
     assert isinstance(config, AppConfig)
 
 
+def test_write_patch_round_trips(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, _VALID_YAML)
+    manager.load()
+    manager.write_patch({"llm": {"model": "gpt-4.1"}})
+    # 新进程（新实例）读回：model 已更新，api_key 引用与未触及键原样保留
+    reloaded = ConfigManager(tmp_path / "config.yaml", environ={"OPENAI_API_KEY": "sk-test"})
+    config = reloaded.load()
+    assert config.llm.model == "gpt-4.1"
+    assert config.llm.api_key_ref == "${OPENAI_API_KEY}"
+    assert config.features == {"voice_output": False}
+
+
+def test_write_patch_rejects_plaintext_via_apply(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, _VALID_YAML)
+    manager.load()
+    with pytest.raises(ConfigurationError):
+        manager.apply_change({"llm": {"api_key": "sk-BAD-PLAINTEXT"}})
+    # apply_change 拒绝明文密钥，写回不会发生（文件未被篡改）
+    reloaded = ConfigManager(tmp_path / "config.yaml", environ={"OPENAI_API_KEY": "sk-test"})
+    assert reloaded.load().llm.api_key_ref == "${OPENAI_API_KEY}"
+
+
 # ---- M5：ConfigSpec 单一真源 + CLI 覆盖层 ----
 
 

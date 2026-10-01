@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from core.deployment import ServeStateStore
 from core.entry import _build_installer, _build_parser, main
 
 # cli-contract-baseline.md §2 顶层命令面（19 子命令 + 无子命令进 REPL）。
@@ -230,7 +231,13 @@ def test_config_set_unsupported_key(
     assert "暂不支持" in capsys.readouterr().err
 
 
-def test_probe_alive_json(capsys: pytest.CaptureFixture[str]) -> None:
+def test_probe_down_when_no_serve(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["probe"]) == 1
+    assert '"alive": false' in capsys.readouterr().out
+
+
+def test_probe_alive_when_serve_running(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    ServeStateStore(tmp_path / "state" / "serve.json").mark_running()  # 当前进程 pid，真实存活
     assert main(["probe"]) == 0
     assert '"alive": true' in capsys.readouterr().out
 

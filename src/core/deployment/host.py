@@ -9,8 +9,11 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
+from dataclasses import asdict
+from pathlib import Path
 
 from .models import ClientConnection, Session, SessionState
 
@@ -18,11 +21,21 @@ from .models import ClientConnection, Session, SessionState
 class HarnessHost:
     """常驻 Host：多客户端接入统一端点 + 会话生命周期管理。"""
 
-    def __init__(self, *, clock: Callable[[], float] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] | None = None,
+        path: Path | None = None,
+    ) -> None:
         self._clock = clock if clock is not None else time.monotonic
         self._sessions: dict[str, Session] = {}
         self._serving = False
         self._counter = 0
+        self._path = path
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                self._load()
 
     @property
     def serving(self) -> bool:
@@ -43,6 +56,7 @@ class HarnessHost:
             last_seen=self._clock(),
         )
         self._sessions[session.session_id] = session
+        self._persist()
         return session
 
     def sessions(self) -> list[Session]:
@@ -59,6 +73,7 @@ class HarnessHost:
         session = self._sessions.get(session_id)
         if session is not None:
             session.state = SessionState.DISCONNECTED
+            self._persist()
 
     def reap(self, timeout: float) -> list[str]:
         """连接超时回收：回收超过超时阈值未活动的会话，返回回收的 session_id。"""
@@ -68,4 +83,36 @@ class HarnessHost:
             if session.state is SessionState.CONNECTED and now - session.last_seen > timeout:
                 session.state = SessionState.EXPIRED
                 expired.append(session_id)
+        if expired:
+            self._persist()
         return expired
+
+    # ---- 持久化 ----
+
+    def _persist(self) -> None:
+        if self._path is None:
+            return
+        lines = [json.dumps(asdict(s), ensure_ascii=False) for s in self._sessions.values()]
+        self._path.write_text("\n".join(lines), encoding="utf-8")
+
+    def _load(self) -> None:
+        if self._path is None:
+            return
+        for line in self._path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+                session = Session(
+                    session_id=data["session_id"],
+                    client_id=data["client_id"],
+                    state=SessionState(data["state"]),
+                    last_seen=float(data["last_seen"]),
+                )
+            except (json.JSONDecodeError, KeyError, ValueError):
+                continue
+            self._sessions[session.session_id] = session
+        self._counter = max(
+            (int(sid.rsplit("-", 1)[1]) for sid in self._sessions if sid.startswith("session-")),
+            default=0,
+        )

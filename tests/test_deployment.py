@@ -18,6 +18,7 @@ from core.deployment import (
     ReleaseManager,
     RuntimeConfig,
     RuntimeEnvironment,
+    ServeStateStore,
 )
 
 # ---- Harness Host：连接生命周期状态机 ----
@@ -41,6 +42,29 @@ def test_host_reap_timeout() -> None:
     now[0] = 100.0
     assert host.reap(timeout=10.0) == [session.session_id]
     assert host.sessions() == []
+
+
+def test_host_persists_sessions(tmp_path) -> None:
+    host = HarnessHost(path=tmp_path / "sessions.jsonl")
+    host.serve()
+    first = host.accept(ClientConnection("alice"))
+    host.accept(ClientConnection("bob"))
+    host.disconnect(first.session_id)
+    # 新进程（新实例）读同一文件：只见 bob 一个活跃会话
+    reloaded = HarnessHost(path=tmp_path / "sessions.jsonl")
+    assert [s.client_id for s in reloaded.sessions()] == ["bob"]
+
+
+def test_serve_state_probe_liveness(tmp_path) -> None:
+    live_pid = 42
+    dead_pid = 99
+    store = ServeStateStore(path=tmp_path / "serve.json", pid_alive=lambda pid: pid == live_pid)
+    store.mark_running(pid=live_pid)
+    assert store.probe().alive is True
+    store.mark_running(pid=dead_pid)  # 死 pid
+    assert store.probe().alive is False
+    store.mark_stopped()
+    assert store.probe().alive is False
 
 
 # ---- 运行环境状态机 ----
@@ -103,6 +127,19 @@ def test_rollback_without_previous() -> None:
     with pytest.raises(DeploymentError) as exc_info:
         ReleaseManager().rollback()
     assert exc_info.value.code is DeploymentErrorCode.ROLLBACK_FAILED
+
+
+def test_release_manager_persists_across_instances(tmp_path) -> None:
+    path = tmp_path / "releases.json"
+    manager = ReleaseManager(path=path)
+    manager.publish(ReleaseInfo(version="v1", hash="h1"))
+    manager.publish(ReleaseInfo(version="v2", hash="h2"))
+    manager.upgrade("v2")
+    # 新进程（新实例）读同一文件：版本登记跨进程可见，可回滚
+    reloaded = ReleaseManager(path=path)
+    assert reloaded.current == "v2"
+    reloaded.rollback()
+    assert reloaded.current == "v1"
 
 
 # ---- 健康探活与恢复 ----
