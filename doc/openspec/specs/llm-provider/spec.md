@@ -2,7 +2,7 @@
 
 ## Purpose
 
-LLM Provider（三方大模型归一化接入）让 core-agent 通过统一 LLMProvider 抽象接口调用任意三方大模型：配置任意模型 API Key 与 URL 即自动路由接入，LiteLLM 作默认实现、经依赖注入隔离可无缝替换或自研，调用方零改动。接口同步（completion / stream / embedding）与异步（acompletion / astream / aembedding）同构：异步为主、同步为薄壳，支持事件循环内非阻塞与真并发调用。
+LLM Provider（三方大模型归一化接入）让 core-agent 通过统一 LLMProvider 抽象接口调用任意三方大模型：配置任意模型 API Key 与 URL 即自动路由接入，StdlibLLMProvider（OpenAI 兼容 stdlib）作默认实现、经依赖注入隔离可无缝替换或自研，调用方零改动。接口同步（completion / stream / embedding）与异步（acompletion / astream / aembedding）同构：异步为主、同步为薄壳，支持事件循环内非阻塞与真并发调用。
 
 ## Requirements
 
@@ -14,8 +14,8 @@ LLM Provider（三方大模型归一化接入）让 core-agent 通过统一 LLMP
 - **WHEN** 经 LLMProvider 接口发起请求
 - **THEN** 内核无需关心底层供应商协议，仅面向统一请求 / 响应模型
 
-### Requirement: LiteLLM 默认实现与配置归一化
-系统 SHALL 提供 LiteLLM 默认实现，任意三方 API Key + URL 配置即自动路由到对应 provider 协议，无需逐家编写适配代码。
+### Requirement: 默认实现与配置归一化
+系统 SHALL 提供 OpenAI 兼容 stdlib 默认实现，任意 OpenAI 兼容 API Key + URL 配置即路由到对应端点，无需逐家编写适配代码。
 
 #### Scenario: 任意三方模型接入
 - **GIVEN** 用户配置某三方模型的 API Key 与 URL
@@ -23,10 +23,10 @@ LLM Provider（三方大模型归一化接入）让 core-agent 通过统一 LLMP
 - **THEN** 系统自动解析并路由到对应 provider 协议，返回归一化结果
 
 ### Requirement: 依赖注入可替换
-系统 SHALL 通过依赖注入隔离 LLMProvider 实现，替换 LiteLLM 或接入自研后端时，内核 loop 及所有调用方无需改动即可切换。
+系统 SHALL 通过依赖注入隔离 LLMProvider 实现，替换默认实现或接入自研后端时，内核 loop 及所有调用方无需改动即可切换。
 
 #### Scenario: 替换底层实现
-- **GIVEN** 需要替换 LiteLLM 为自研或其他后端
+- **GIVEN** 需要替换默认实现为自研或其他后端
 - **WHEN** 注册新的 Provider 实现
 - **THEN** 内核 loop 及所有调用方无需改动即可切换
 

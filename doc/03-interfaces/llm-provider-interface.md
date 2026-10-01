@@ -56,38 +56,38 @@ class LLMResponse:
 
 ---
 
-## 3. LiteLLMProvider（默认实现）
+## 3. StdlibLLMProvider（默认实现）
 
 ```python
-class LiteLLMProvider(LLMProvider):
-    """默认实现：委托 LiteLLM 统一 100+ 模型协议。"""
+class StdlibLLMProvider(LLMProvider):
+    """默认实现：stdlib 直连 OpenAI 兼容端点（零第三方运行时依赖）。"""
 
     def completion(self, request: LLMRequest) -> LLMResponse:
-        # 委托 litellm.completion，映射请求模型 + 归一化协议差异
+        # urllib.request 发 OpenAI 兼容 HTTP，映射请求模型
         ...
 
     def stream(self, request: LLMRequest) -> Iterator[LLMChunk]:
-        # 委托 litellm.completion(stream=True)，逐块产出
+        # SSE 流式，逐块产出
         ...
 
     def embedding(self, texts: list[str]) -> list[Embedding]:
-        # 委托 litellm.embedding
+        # urllib.request 发 /embeddings
         ...
 
     async def acompletion(self, request: LLMRequest) -> LLMResponse:
-        # 委托 litellm.acompletion，映射请求模型 + 归一化协议差异
+        # asyncio.to_thread + urllib.request，映射请求模型
         ...
 
     async def astream(self, request: LLMRequest) -> AsyncIterator[LLMChunk]:
-        # 委托 litellm.acompletion(stream=True)，逐块产出
+        # run_in_executor + asyncio.Queue 桥接 SSE，逐块产出
         ...
 
     async def aembedding(self, texts: list[str]) -> list[Embedding]:
-        # 委托 litellm.aembedding
+        # asyncio.to_thread + urllib.request 发 /embeddings
         ...
 ```
 
-- 配置归一化：任意三方 API Key + Base URL 配置即自动路由到对应 provider 协议。
+- 配置归一化：任意 OpenAI 兼容 API Key + Base URL（含 /v1）配置即路由到对应端点。
 
 ---
 
@@ -99,10 +99,10 @@ class LLMProviderRegistry:
 
     def register(self, name: str, provider: LLMProvider) -> None: ...
     def resolve(self, name_or_model_prefix: str) -> LLMProvider: ...
-    def default(self) -> LLMProvider: ...   # 未命中时回落 LiteLLMProvider
+    def default(self) -> LLMProvider: ...   # 未命中时回落 StdlibLLMProvider
 ```
 
-- 替换 LiteLLM / 接入自研后端：仅 `register` 一处变更，内核与调用方零改动。
+- 替换默认实现 / 接入自研后端：仅 `register` 一处变更，内核与调用方零改动。
 
 ---
 

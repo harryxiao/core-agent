@@ -20,7 +20,7 @@
 | 维度 | 状态 |
 |---|---|
 | 门禁 | ruff check ✓ / ruff format ✓(259 文件) / pyright 0 error / pytest 491 passed |
-| 运行时依赖 | litellm（唯一第三方运行时依赖）已装 |
+| 运行时依赖 | 核心零第三方运行时依赖（LLM 归一化 stdlib 手写 OpenAI 兼容） |
 | Phase | 0–11、13–16 ✅；12 ⏸ DEFERRED |
 | 里程碑 | M0–M10 名义完成 |
 | CLI 命令面 | 19 命令：18 已接真实后端，`mcp *` 未接（Phase 12） |
@@ -32,7 +32,7 @@
 ### 2.1 Phase 12 MCP（唯一 DEFERRED Phase）— 阻塞级
 
 - **范围**：transport 生产实现（stdio/http）、client 安装分流、消费侧安全接线。
-- **阻塞原因**：mcp SDK 离线不可装 + 「litellm-only 依赖红线」须 ADR 裁决。
+- **阻塞原因**：mcp SDK 离线不可装 + 「核心零第三方运行时依赖红线」须 ADR 裁决。
 - **现状**：`MCPClient`/`MCPServer` 骨架在，`build_transport` 返回 FakeTransport；CLI `mcp serve/list/add/remove` 未接（entry 落 stub）。
 - **重开路径**：ADR 评估 mcp SDK 依赖定位 → 落 0033 ADDED delta。
 - **参考**：`coding-plan/phase-12.md`；归档 `doc/openspec/changes/archive/2026-09-29-0033-mcp-install-security-DEFERRED/`。
@@ -78,7 +78,7 @@
 
 绿测试全用 `_FakeLLM`，真实 LLM 调用未对活端点冒烟。第一步：
 
-1. 写真 `config.yaml`：`llm.provider=litellm` + 可达 `endpoint` + `api_key: ${VAR}`（环境变量喂真 key）；
+1. 写真 `config.yaml`：`llm.provider=stdlib` + 可达 `endpoint` + `api_key: ${VAR}`（环境变量喂真 key）；
 2. `core-agent run --prompt "..."` 走一遍，验证 planner 解析 / 工具调用 / trace 事件在真模型下成立。
 
 ---

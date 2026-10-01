@@ -14,7 +14,7 @@ uv sync                      # 安装运行时依赖 + 建 .venv
 pip install -e .             # 等价：可编辑安装，注册 core-agent 命令
 ```
 
-安装后 `core-agent` 命令可用，`python -m core` 等价。运行时第三方依赖仅 `litellm`（LLM 归一化）+ `fastapi`/`uvicorn`/`textual`（接入层边界依赖）。
+安装后 `core-agent` 命令可用，`python -m core` 等价。核心运行时零第三方依赖（LLM 归一化 stdlib 手写 OpenAI 兼容）；接入层边界依赖 `fastapi`/`uvicorn`/`textual`。
 
 验证：
 
@@ -139,7 +139,7 @@ core-agent pet list
 
 ## 6. LLM 配置
 
-LLM 归一化经 `litellm`，配置项与主 Agent 配置同源（`config.yaml` 的 `llm` 段）。四键：
+LLM 归一化经 stdlib OpenAI 兼容 HTTP，配置项与主 Agent 配置同源（`config.yaml` 的 `llm` 段）。四键：
 
 | 键 | 说明 |
 |---|---|
