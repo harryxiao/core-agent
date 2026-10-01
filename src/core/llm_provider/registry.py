@@ -1,6 +1,6 @@
 """Provider 注册中心（llm-provider 依赖注入）。
 
-内核按名称 / 模型前缀解析 Provider，注册即生效；替换 LiteLLM 或接入自研
+内核按名称 / 模型前缀解析 Provider，注册即生效；替换默认实现或接入自研
 后端仅改注册处，调用方零改动。
 
 对应接口：doc/03-interfaces/llm-provider-interface.md §4
@@ -11,12 +11,12 @@ from __future__ import annotations
 import threading
 
 from .errors import UnknownProviderError
-from .litellm_provider import LiteLLMProvider
 from .provider import LLMProvider
+from .stdlib_provider import StdlibLLMProvider
 
 
 class LLMProviderRegistry:
-    """Provider 注册中心：按名称 / 模型前缀解析，未命中回落 LiteLLMProvider。"""
+    """Provider 注册中心：按名称 / 模型前缀解析，未命中回落 StdlibLLMProvider。"""
 
     def __init__(self) -> None:
         self._providers: dict[str, LLMProvider] = {}
@@ -44,4 +44,4 @@ class LLMProviderRegistry:
             for name in ("default",):
                 if name in self._providers:
                     return self._providers[name]
-        return LiteLLMProvider()
+        return StdlibLLMProvider()

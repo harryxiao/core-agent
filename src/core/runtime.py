@@ -1,7 +1,7 @@
 """组合根（runtime）：唯一被允许 import 全模块、专职装配的地方。
 
 把 Phase 0–11 的 DI 友好构造串成可运行系统：ConfigManager.load → resolve_secret
-→ LiteLLMProvider → MemoryStore / ToolProvider / Tracer → judgment（DecisionRouter /
+→ StdlibLLMProvider → MemoryStore / ToolProvider / Tracer → judgment（DecisionRouter /
 Compactor / Guardrail）→ LLMPlanner → PermissionGuard → DefaultLoop，供 entry 三入口复用。
 
 架构约束：全仓库除本文件外，任何模块不得 import core.runtime（test_architecture 断言）。
@@ -33,7 +33,7 @@ from core.evolution import (
     Validator,
 )
 from core.judgment import Compactor, DecisionRouter, Guardrail, JEVProvider
-from core.llm_provider import LiteLLMProvider, LLMProvider
+from core.llm_provider import LLMProvider, StdlibLLMProvider
 from core.loop import DefaultLoop, LoopPlugin
 from core.loop.planner import LLMPlanner
 from core.memory import Crystallizer, FileBackend, MemoryBackend, MemoryStore
@@ -92,7 +92,7 @@ def build_runtime(
     """
     app = config.load()
     api_key = config.resolve_secret(app.llm.api_key_ref)
-    llm = LiteLLMProvider(
+    llm = StdlibLLMProvider(
         api_key=api_key,
         base_url=app.llm.endpoint or None,
         model=app.llm.model,

@@ -1,7 +1,7 @@
 """LLM Provider（三方大模型归一化接入）。
 
 统一 ``LLMProvider`` 抽象接口（completion / stream / embedding 六入口），
-LiteLLM 作默认实现、经依赖注入隔离可替换；底层异常归一到 ``LLMError``
+StdlibLLMProvider（OpenAI 兼容 stdlib）作默认实现、经依赖注入隔离可替换；底层异常归一到 ``LLMError``
 层级；异步为主、同步为薄壳。
 
 对应规格：doc/openspec/specs/llm-provider/spec.md
@@ -15,10 +15,10 @@ from .errors import (
     LLMTimeoutError,
     UnknownProviderError,
 )
-from .litellm_provider import LiteLLMProvider, map_litellm_error
 from .models import Embedding, LLMChunk, LLMRequest, LLMResponse, Message, TokenUsage
 from .provider import LLMProvider
 from .registry import LLMProviderRegistry
+from .stdlib_provider import StdlibLLMProvider, map_http_error
 
 __all__ = [
     "Embedding",
@@ -32,9 +32,9 @@ __all__ = [
     "LLMRequest",
     "LLMResponse",
     "LLMTimeoutError",
-    "LiteLLMProvider",
+    "StdlibLLMProvider",
     "Message",
     "TokenUsage",
     "UnknownProviderError",
-    "map_litellm_error",
+    "map_http_error",
 ]

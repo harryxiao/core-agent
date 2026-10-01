@@ -155,29 +155,6 @@ def test_app_wires_llm_config(monkeypatch, tmp_path) -> None:
     assert api.get_llm_config().model == "test-model"
 
 
-def test_build_ui_warms_up_litellm(monkeypatch, tmp_path) -> None:
-    """build_ui 预热 litellm：首次 import 前移到启动期，不落到首次输入。"""
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    imported: list[str] = []
-
-    class _FakeImportlib:
-        def import_module(self, name: str) -> object:
-            imported.append(name)
-            return object()
-
-    class _FakeBridge:
-        def __init__(self, *, api=None) -> None:
-            pass
-
-        def connect(self) -> None:
-            return None
-
-    monkeypatch.setattr("core.entry.importlib", _FakeImportlib())
-    monkeypatch.setattr("core.entry.CLIBridge", _FakeBridge)
-    assert main(["--config", _write_config(tmp_path)]) == 0
-    assert "litellm" in imported
-
-
 # ---- 已接线命令面（config/probe/sessions/release/plugin/skill） ----
 
 

@@ -1,7 +1,7 @@
 """JEVProvider（JEV/TypeSafe System One 决策小模型接入）。
 
 经 TypeSafe 专有 REST 端点（POST /v1/systemone）挂接 JEV：以 stdlib
-``urllib.request`` 发 HTTP（零新三方依赖，契合「litellm 唯一运行时三方依赖」
+``urllib.request`` 发 HTTP（零新三方依赖，契合「核心零第三方运行时依赖」
 红线），Bearer 认证；提交 state + typed questions，返回 typed answers
 （map<id, Answer>，按原语分形）。答案与问题 schema 不匹配抛
 ``JUDGMENT_SCHEMA_MISMATCH``；端点不可达抛 ``JUDGMENT_PROVIDER_UNREACHABLE``；

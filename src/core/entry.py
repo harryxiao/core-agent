@@ -13,9 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import hashlib
-import importlib
 import json
 import os
 import sys
@@ -272,8 +270,6 @@ def _build_ui(args: argparse.Namespace) -> UIAPILayer | None:
         config=runtime.config,
     )
     api.set_llm_config(runtime.app.llm)
-    with contextlib.suppress(ImportError):
-        importlib.import_module("litellm")  # 预热：首次 import ~4s 前移到启动期，避免落到首次输入
     return api
 
 
