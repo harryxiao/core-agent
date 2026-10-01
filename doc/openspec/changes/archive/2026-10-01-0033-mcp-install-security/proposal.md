@@ -1,12 +1,10 @@
 # Change: MCP 安装/传输/安全接线——本地 stdio 沙箱 + 远端网络管控
 
-> **状态：DEFERRED（正式延期）** — 2026-09-29
+> **状态：重开（Reopened）** — 2026-10-01
 >
-> 本变更全部条目（spec 1.x + 代码 2.x–4.x）正式延期，不随当前里程碑交付。
+> 原 DEFERRED 理由已裁决：ADR-0043 将 `mcp` SDK 依赖定位定为「stdio=stdlib 手写（零新依赖）、http/streamable-http=懒 import 可选依赖（`[mcp]` extra，默认不装）」，守住 litellm-only 红线。SDK 可安装仍为 http 侧硬前置（实现时先验证）。
 >
-> - **理由**：生产 stdio/http 传输需引入 `mcp` SDK，当前离线环境不可安装、无法实现与实测；且引入 SDK 触及「litellm 唯一运行时三方依赖」红线，需另行 ADR 评估（懒 import 可选依赖 vs 边界依赖）。
-> - **现状保持**：`transport.build_transport` 持续明确报错 `MCP_CONNECT_FAILED`（注释已标注「M2 接入」）；`MCPClient.add` 暂只支持远端 http。
-> - **重开条件**：后续里程碑待 `mcp` SDK 可安装、并经 ADR 评估依赖红线后，重开本变更再落地。
+> 本次落 spec delta（ADDED「MCP 客户端消费安全」+ MODIFIED「MCP Server 安装与移除」两类来源）；代码（transport 生产实现 / client 分流 / 消费侧安全接线）随后按 tasks 执行。
 
 ## Why
 
