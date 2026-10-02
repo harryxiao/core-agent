@@ -241,3 +241,52 @@ def test_tui_approval_prompt_y_n() -> None:
             return prompt_seen, still_pending, approved
 
     assert asyncio.run(_drive()) == (True, True, True)
+
+
+def test_tui_approval_resolves_from_real_message_path() -> None:
+    """回归：消息经 handler→worker 执行，审批挂起时输入 y 必须能决断。
+
+    handler 内联 await 整轮执行会阻塞消息泵（y 永远送不到 → 假死），
+    本测试走真实 Input.Submitted 路径防回归（超时即失败）。
+    """
+    from core.loop import LoopResult  # noqa: PLC0415 — 流式事件构造
+
+    channel = ApprovalChannel()
+
+    class _ApprovalLoop:
+        """astream 中途经审批通道挂起（模拟 web_fetch 确认门）。"""
+
+        async def astream(self, user_input: str):
+            yield LoopEvent("loop_started", {"trace_id": "t1"})
+            approved = await channel.ask("tools.web_fetch", {"url": "https://x"}, "出站抓取")
+            yield LoopEvent("reply_delta", {"text": "已批准" if approved else "被拒绝"})
+            yield LoopEvent("loop_finished", LoopResult(reply="ok", trace_id="t1"))
+
+    api = UIAPILayer(loop=_ApprovalLoop(), approval=channel)
+    api.set_llm_config(_llm())
+    from core.ui.repl import build_app  # noqa: PLC0415 — 可选依赖懒 import
+
+    app = build_app(api)
+
+    async def _drive() -> tuple[bool, bool]:
+        from textual.widgets import Input, RichLog  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            inp.value = "抓一下"
+            await pilot.press("enter")  # 真实路径：handler 派发 worker，审批挂起
+            await pilot.pause()
+            prompt_seen = "需审批" in "".join(
+                strip.text for strip in app.query_one("#output", RichLog).lines
+            )
+            inp.value = "y"
+            await pilot.press("enter")  # 审批决断
+            for _ in range(50):  # 等 worker 收尾（终态全文落日志）
+                await pilot.pause(0.05)
+                if not app._turn_busy and app._approval_future is None:
+                    break
+            log_text = "".join(strip.text for strip in app.query_one("#output", RichLog).lines)
+            return prompt_seen, "已批准" in log_text
+
+    assert asyncio.run(asyncio.wait_for(_drive(), 10)) == (True, True)

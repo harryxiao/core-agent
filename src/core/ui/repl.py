@@ -103,6 +103,7 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
             super().__init__()
             self._live_buf: list[str] = []  # 流式增量缓冲（终态一次性落定进日志）
             self._approval_future: Any | None = None  # 挂起中的审批 Future[bool]
+            self._turn_busy = False  # 本轮 worker 是否在跑（忙时新消息提示等待）
 
         def compose(self) -> ComposeResult:
             yield RichLog(id="output")
@@ -159,7 +160,8 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
             live.update("")
             live.display = False
 
-        async def on_input_submitted(self, message: Input.Submitted) -> None:
+        def on_input_submitted(self, message: Input.Submitted) -> None:
+            """输入分发：审批决断优先；消息经 worker 执行（消息泵不被阻塞）。"""
             log = self.query_one("#output", RichLog)
             pending = self._approval_future
             if pending is not None and not pending.done():
@@ -172,12 +174,23 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
                 else:
                     log.write("请输入 y（批准）或 n（拒绝）")
                 return
-            status = self.query_one("#status", Static)
             text = message.value.strip()
             message.input.clear()  # 回车即清空输入框，准备下一轮
             if not text:
                 return  # 空回车忽略（IME 确认误触不退出；退出走 Ctrl+Q/Ctrl+C）
+            if self._turn_busy:
+                log.write("处理中，请稍候（Ctrl+B 打断）")
+                return
             log.write(f"> {text}")
+            self._turn_busy = True  # handler 内同步置位（与忙检同上下文，无竞态窗口）
+            # 本轮执行进 worker：handler 即刻返回，消息泵保持可响应
+            # （审批 y/n、Ctrl+B 打断等后续输入才能被分发——泵内 await 会死锁）
+            self.run_worker(self._run_turn(text))
+
+        async def _run_turn(self, text: str) -> None:
+            """单轮执行：流式增量上 live、其余事件落日志；结束复位状态。"""
+            log = self.query_one("#output", RichLog)
+            status = self.query_one("#status", Static)
             status.update("[dim]思考中…[/dim]")
             try:
                 async for event in api.run_loop(session_id, text):
@@ -193,6 +206,7 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
             finally:
                 self._flush_live()
                 status.update("")
+                self._turn_busy = False
 
     return ReplApp()
 
