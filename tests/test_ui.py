@@ -118,3 +118,53 @@ def test_set_llm_config_rejects_plaintext() -> None:
     with pytest.raises(UiError) as exc_info:
         UIAPILayer().set_llm_config(_llm("sk-secret-plaintext"))
     assert exc_info.value.code is UiErrorCode.UI_LLM_KEY_UNSET
+
+
+# ---- TUI（ReplApp headless 冒烟）----
+
+
+def _tui_app() -> object:
+    pytest.importorskip("textual")
+    from core.ui.repl import build_app  # noqa: PLC0415 — 可选依赖懒 import
+
+    api, _ = _streaming_api()
+    return build_app(api)
+
+
+def test_tui_empty_enter_does_not_exit() -> None:
+    """空回车忽略不退出（IME 确认误触防护）；退出走 Ctrl+Q/Ctrl+C。"""
+    app = _tui_app()
+
+    async def _drive() -> bool:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            app.query_one("#input", Input).focus()
+            await pilot.press("enter")  # 空输入直接回车
+            await pilot.pause()
+            running = app.is_running
+        return running
+
+    assert asyncio.run(_drive()) is True
+
+
+def test_tui_message_roundtrip_clears_status() -> None:
+    app = _tui_app()
+
+    async def _drive() -> tuple[bool, object]:
+        from textual.widgets import Input, Static  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            inp.value = "hi"
+            await pilot.press("enter")
+            await pilot.pause()
+            running = app.is_running
+            status = app.query_one("#status", Static).content
+            input_cleared = inp.value == ""
+        return running and input_cleared, status
+
+    ok, status = asyncio.run(_drive())
+    assert ok is True
+    assert status == ""

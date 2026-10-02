@@ -73,15 +73,21 @@ def build_app(api: UIAPILayer) -> Any:
     border: none;
     padding: 0;
 }
+#status {
+    height: 1;
+    width: 1fr;
+}
 """
 
+        # 退出走 App 默认 ctrl+q / ctrl+c；空回车不再退出（IME 确认等误触防护）
         BINDINGS = [("ctrl+b", "barge_in", "打断")]
 
         def compose(self) -> ComposeResult:
             yield RichLog(id="output")
             with Horizontal(id="input-row"):
                 yield Static("> ", id="prompt")
-                yield Input(placeholder="输入消息，回车发送（Ctrl+B 打断）", id="input")
+                yield Input(placeholder="输入消息（Ctrl+B 打断，Ctrl+Q 退出）", id="input")
+            yield Static(id="status")
 
         def on_mount(self) -> None:
             self.query_one("#input", Input).focus()
@@ -93,12 +99,13 @@ def build_app(api: UIAPILayer) -> Any:
 
         async def on_input_submitted(self, message: Input.Submitted) -> None:
             log = self.query_one("#output", RichLog)
+            status = self.query_one("#status", Static)
             text = message.value.strip()
             message.input.clear()  # 回车即清空输入框，准备下一轮
             if not text:
-                self.exit()
-                return
+                return  # 空回车忽略（IME 确认误触不退出；退出走 Ctrl+Q/Ctrl+C）
             log.write(f"> {text}")
+            status.update("[dim]思考中…[/dim]")
             try:
                 async for event in api.run_loop(session_id, text):
                     line = _format_event(event)
@@ -106,6 +113,8 @@ def build_app(api: UIAPILayer) -> Any:
                         log.write(line)
             except UiError as err:
                 log.write(_format_event(_error_event(err)))
+            finally:
+                status.update("")
 
     return ReplApp()
 
