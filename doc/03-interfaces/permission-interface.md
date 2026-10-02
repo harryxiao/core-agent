@@ -63,6 +63,21 @@ class ApprovalResult:
     note: str | None
 ```
 
+### 3.1 ApprovalChannel（交互审批通道）
+
+```python
+class ApprovalChannel:
+    """交互审批通道：confirm 门 → UI 终端 y/n（问一次、拿布尔）。
+
+    与 ApprovalWorkflow 的单据生命周期互补，供 loop / ToolProvider 在异步
+    执行流内直接 await；未接交互端（handler=None）时 fail-closed 拒绝。
+    """
+
+    handler: Callable[[str, dict, str], Awaitable[bool]] | None
+
+    async def ask(self, tool_id: str, args: dict, reason: str) -> bool: ...
+```
+
 ---
 
 ## 4. SandboxManager 接口

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 
 import pytest
@@ -13,6 +14,7 @@ import pytest
 from core.permission import (
     AccessControlError,
     ApprovalAction,
+    ApprovalChannel,
     ApprovalRequest,
     ApprovalResult,
     ApprovalWorkflow,
@@ -224,3 +226,26 @@ def test_permission_mode_from_config() -> None:
     assert PermissionMode.from_config("read-only") is PermissionMode.READ_ONLY
     assert PermissionMode.from_config("unknown") is PermissionMode.INTERACTIVE
     assert PermissionMode.from_config(None) is PermissionMode.INTERACTIVE
+
+
+# ---- 交互审批通道（ApprovalChannel）----
+
+
+def test_approval_channel_fail_closed_without_handler() -> None:
+    """通道未接交互端（handler=None）：fail-closed 拒绝。"""
+    channel = ApprovalChannel()
+    assert asyncio.run(channel.ask("tools.code_run", {}, "需人工审批")) is False
+
+
+def test_approval_channel_delegates_to_handler() -> None:
+    """通道接交互端后委派决断，携带 tool_id/args/reason 全量上下文。"""
+    seen: list[tuple[str, dict, str]] = []
+
+    async def handler(tool_id: str, args: dict, reason: str) -> bool:
+        seen.append((tool_id, args, reason))
+        return True
+
+    channel = ApprovalChannel()
+    channel.handler = handler
+    assert asyncio.run(channel.ask("tools.web_fetch", {"url": "https://x"}, "出站")) is True
+    assert seen == [("tools.web_fetch", {"url": "https://x"}, "出站")]

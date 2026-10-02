@@ -29,6 +29,9 @@ class UIAPILayer:
     # LLM 配置（三模唯一配置源）
     def get_llm_config(self) -> LLMConfig: ...
     def set_llm_config(self, cfg: LLMConfig) -> None: ...
+
+    # 审批通道（高风险工具 confirm 门的终端 y/n 交互；非交互入口为 None）
+    approval: ApprovalChannel | None
 ```
 
 ### 1.1 流式事件（SSE）

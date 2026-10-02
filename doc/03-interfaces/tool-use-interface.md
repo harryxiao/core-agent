@@ -27,11 +27,14 @@ class ToolProvider:
     def active_tools(self) -> list[ToolDef]:
         """返回当前 profile 激活的工具 schema 列表（供 loop 注入）。"""
 
-    def invoke(self, tool_id: str, args: dict, *, trace_id: str) -> ToolResult:
+    def invoke(self, tool_id: str, args: dict, *, trace_id: str, approved: bool = False) -> ToolResult:
         """统一调用入口：schema 校验 → coeffect 解析 → 确认门 → 执行 → 效应记录。"""
 
-    async def ainvoke(self, tool_id: str, args: dict, *, trace_id: str) -> ToolResult:
-        """异步统一调用入口：与 invoke 同构，事件循环内非阻塞，支持真并发执行。"""
+    async def ainvoke(self, tool_id: str, args: dict, *, trace_id: str, approved: bool = False) -> ToolResult:
+        """异步统一调用入口：与 invoke 同构，事件循环内非阻塞，支持真并发执行。
+
+        确认门判 confirm 时经 approver 请求人工批准（approved=True 表示上层
+        已批准、跳过重复询问）；无 approver 时 fail-closed 返回 IRREVERSIBLE_BLOCKED。"""
 ```
 
 `ToolResult`：
@@ -67,6 +70,7 @@ class ToolError:
 | `tools.file_patch` | `path`, `old_content`, `new_content` | 精确替换 |
 | `tools.web_scan` | `text_only`, `switch_tab_id` | 读页面 |
 | `tools.web_execute_js` | `script`, `switch_tab_id` | 执行页面 JS |
+| `tools.web_fetch` | `url`, `timeout` | GET 抓取网页（仅 http/https，出站经确认门） |
 | `tools.ask_user` | `question`, `candidates` | 人机确认 |
 | `tools.process` | `action`, `pid` | 进程管理（精确 PID） |
 | `tools.memory` | `layer`, `action`, `entry` | 记忆读写 |

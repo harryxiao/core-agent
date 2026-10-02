@@ -16,6 +16,7 @@ from core.configuration import ConfigManager
 from core.configuration.models import LLMConfig
 from core.loop import DefaultLoop, LoopEvent, LoopPlugin
 from core.memory import MemoryStore
+from core.permission import ApprovalChannel
 from core.tools import ToolDef, ToolProvider, ToolResult
 
 from .errors import UiError, UiErrorCode
@@ -42,6 +43,7 @@ class UIAPILayer:
         tools: ToolProvider | None = None,
         config: ConfigManager | None = None,
         supported_modalities: set[str] | None = None,
+        approval: ApprovalChannel | None = None,
     ) -> None:
         self._loop = loop if loop is not None else DefaultLoop()
         self._memory = memory
@@ -50,8 +52,14 @@ class UIAPILayer:
         self._modalities: set[str] = (
             supported_modalities if supported_modalities is not None else set()
         )
+        self._approval = approval
         self._sessions: dict[str, str] = {}
         self._llm_config: LLMConfig | None = None
+
+    @property
+    def approval(self) -> ApprovalChannel | None:
+        """交互审批通道（高风险工具 confirm 门的终端 y/n）；非交互入口为 None。"""
+        return self._approval
 
     # ---- 会话与循环 ----
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from core.plugin_registry import (
@@ -26,6 +27,9 @@ from .errors import ToolErrorCode, ToolUseError
 from .models import ToolDef, ToolError, ToolResult
 from .safety_gate import SafetyGate
 from .tool import Tool
+
+# 审批回调：确认门判 confirm 时询问人工（tool_id, args, reason）→ 是否放行。
+Approver = Callable[[str, dict[str, Any], str], Awaitable[bool]]
 
 
 def _matches_type(value: Any, expected: str) -> bool:  # noqa: PLR0911
@@ -53,10 +57,12 @@ class ToolProvider:
         coeffect_resolver: CoeffectResolver | None = None,
         effect_tracker: EffectTracker | None = None,
         gate: SafetyGate | None = None,
+        approver: Approver | None = None,
     ) -> None:
         self._resolver = coeffect_resolver if coeffect_resolver is not None else CoeffectResolver()
         self._tracker = effect_tracker if effect_tracker is not None else EffectTracker()
         self._gate = gate if gate is not None else SafetyGate()
+        self._approver = approver
         self._tools: dict[str, Tool] = {}
         self._warnings: list[str] = []
 
@@ -87,12 +93,14 @@ class ToolProvider:
         """返回当前已注册工具的定义列表（供 loop 注入）。"""
         return [tool.definition for tool in self._tools.values()]
 
-    def invoke(self, tool_id: str, args: dict[str, Any], *, trace_id: str) -> ToolResult:
+    def invoke(
+        self, tool_id: str, args: dict[str, Any], *, trace_id: str, approved: bool = False
+    ) -> ToolResult:
         """同步统一调用入口：经事件循环桥接 ainvoke。"""
-        return asyncio.run(self.ainvoke(tool_id, args, trace_id=trace_id))
+        return asyncio.run(self.ainvoke(tool_id, args, trace_id=trace_id, approved=approved))
 
     async def ainvoke(  # noqa: PLR0911 — 调用管道天然多早退分支
-        self, tool_id: str, args: dict[str, Any], *, trace_id: str
+        self, tool_id: str, args: dict[str, Any], *, trace_id: str, approved: bool = False
     ) -> ToolResult:
         """异步统一调用入口（非阻塞，支持真并发）。"""
         tool = self._tools.get(tool_id)
@@ -115,11 +123,16 @@ class ToolProvider:
         decision = self._gate.confirm(tool_id, args, coeffects, tool.definition.reversible)
         if decision.action == "deny":
             return ToolResult(ok=False, error=ToolError(ToolErrorCode.GATE_DENIED, decision.reason))
-        if decision.action == "confirm":
-            return ToolResult(
-                ok=False,
-                error=ToolError(ToolErrorCode.IRREVERSIBLE_BLOCKED, decision.reason),
+        if decision.action == "confirm" and not approved:
+            # 上层未批准：经审批通道询问人工；无通道或被拒即 fail-closed
+            human_approved = self._approver is not None and await self._approver(
+                tool_id, args, decision.reason
             )
+            if not human_approved:
+                return ToolResult(
+                    ok=False,
+                    error=ToolError(ToolErrorCode.IRREVERSIBLE_BLOCKED, decision.reason),
+                )
 
         try:
             result = await asyncio.wait_for(

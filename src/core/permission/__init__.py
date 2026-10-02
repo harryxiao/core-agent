@@ -1,6 +1,6 @@
 """权限（permission）：分级权限 + 人工审批 + 沙箱隔离。"""
 
-from .approval import ApprovalWorkflow
+from .approval import ApprovalChannel, ApprovalWorkflow
 from .errors import AccessControlError, PermissionErrorCode
 from .guard import PermissionGuard
 from .models import (
@@ -22,6 +22,7 @@ from .sandbox import SandboxManager, SandboxPolicy
 __all__ = [
     "AccessControlError",
     "ApprovalAction",
+    "ApprovalChannel",
     "ApprovalRequest",
     "ApprovalResult",
     "ApprovalTicket",

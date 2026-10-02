@@ -42,6 +42,7 @@ from core.deployment import (
     ServeStateStore,
 )
 from core.loop import LoopPlugin
+from core.permission import ApprovalChannel
 from core.pet.core import PetActivator, PetManager
 from core.pet.library import load_persona, load_personas
 from core.plugin_registry import DomainError, PluginInstaller, PluginKind, PluginSource
@@ -258,10 +259,18 @@ def _dispatch(args: argparse.Namespace) -> int:
     return 0
 
 
-def _build_ui(args: argparse.Namespace) -> UIAPILayer | None:
-    """装配真 runtime + UIAPILayer 并注入 LLM 配置（四入口共用）；失败返回 None。"""
+def _build_ui(args: argparse.Namespace, *, interactive: bool = False) -> UIAPILayer | None:
+    """装配真 runtime + UIAPILayer 并注入 LLM 配置（四入口共用）；失败返回 None。
+
+    interactive=True 时创建交互审批通道：confirm 门经终端 y/n 决断；
+    非交互入口无通道，高风险 fail-closed 拒绝。
+    """
+    approval = ApprovalChannel() if interactive else None
     try:
-        runtime = build_runtime(ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)))
+        runtime = build_runtime(
+            ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)),
+            approver=approval.ask if approval is not None else None,
+        )
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
         print(f"装配失败: {exc}", file=sys.stderr)
         return None
@@ -270,6 +279,7 @@ def _build_ui(args: argparse.Namespace) -> UIAPILayer | None:
         memory=runtime.memory,
         tools=runtime.tools,
         config=runtime.config,
+        approval=approval,
     )
     api.set_llm_config(runtime.app.llm)
     return api
@@ -277,7 +287,7 @@ def _build_ui(args: argparse.Namespace) -> UIAPILayer | None:
 
 def _repl(args: argparse.Namespace) -> int:
     """无子命令进入 Textual 交互会话循环（阻塞，退出后返回）。"""
-    api = _build_ui(args)
+    api = _build_ui(args, interactive=True)
     if api is None:
         return 1
     CLIBridge(api=api).connect()

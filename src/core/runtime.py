@@ -34,7 +34,7 @@ from core.evolution import (
 )
 from core.judgment import Compactor, DecisionRouter, Guardrail, JEVProvider
 from core.llm_provider import LLMProvider, StdlibLLMProvider
-from core.loop import DefaultLoop, LoopPlugin
+from core.loop import Approver, DefaultLoop, LoopPlugin
 from core.loop.planner import LLMPlanner
 from core.memory import Crystallizer, FileBackend, MemoryBackend, MemoryStore
 from core.observability import Tracer
@@ -50,7 +50,14 @@ from core.permission import PermissionGuard
 from core.plugin_registry import CoeffectResolver, EffectTracker, PluginInstaller
 from core.plugins import InstallDispatcher
 from core.skills import SkillLibrary, SkillRouter
-from core.tools import ToolProvider, file_patch, file_read, file_write
+from core.tools import (
+    ToolProvider,
+    code_run,
+    file_patch,
+    file_read,
+    file_write,
+    web_fetch,
+)
 
 
 @dataclass
@@ -83,6 +90,7 @@ def build_runtime(
     assembler: DynamicAssembler | None = None,
     tracer: Tracer | None = None,
     memory_backend: MemoryBackend | None = None,
+    approver: Approver | None = None,
 ) -> Runtime:
     """装配全量依赖：ConfigManager.load → resolve_secret → 各层组件 → DefaultLoop。
 
@@ -128,8 +136,12 @@ def build_runtime(
     resolver = CoeffectResolver()
     resolver.register("filesystem:read", True)
     resolver.register("filesystem:write", True)
-    tools = ToolProvider(coeffect_resolver=resolver, effect_tracker=effect_tracker, gate=guard)
-    for tool in (file_read(), file_write(), file_patch()):
+    resolver.register("process:spawn", True)
+    resolver.register("network:outbound", True)
+    tools = ToolProvider(
+        coeffect_resolver=resolver, effect_tracker=effect_tracker, gate=guard, approver=approver
+    )
+    for tool in (file_read(), file_write(), file_patch(), code_run(), web_fetch()):
         tools.register(tool)
 
     skill_library = SkillLibrary()
@@ -151,6 +163,7 @@ def build_runtime(
         gate=guard,
         tracer=tracer,
         router=router if jev is not None else None,
+        approver=approver,
     )
 
     evolution_engine = EvolutionEngine(

@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from .errors import AccessControlError, PermissionErrorCode
 from .models import ApprovalAction, ApprovalRequest, ApprovalResult, ApprovalTicket
@@ -109,3 +110,21 @@ class ApprovalWorkflow:
 
     def list_archived(self) -> list[ApprovalTicket]:
         return list(self._archive)
+
+
+class ApprovalChannel:
+    """交互审批通道：confirm 门 → UI 终端 y/n（问一次、拿布尔）。
+
+    与 :class:`ApprovalWorkflow` 的单据生命周期互补，供 loop / ToolProvider
+    在异步执行流内直接 await；未接交互端（handler=None）时 fail-closed 拒绝。
+    对应接口：doc/03-interfaces/permission-interface.md §3.1。
+    """
+
+    def __init__(self) -> None:
+        self.handler: Callable[[str, dict[str, Any], str], Awaitable[bool]] | None = None
+
+    async def ask(self, tool_id: str, args: dict[str, Any], reason: str) -> bool:
+        """请求人工批准：handler 缺席即拒绝（fail-closed）。"""
+        if self.handler is None:
+            return False
+        return await self.handler(tool_id, args, reason)

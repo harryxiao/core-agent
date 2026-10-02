@@ -57,6 +57,11 @@ UI 界面与启动模式是 core-agent 面向用户的统一呈现层：CLI / We
 - **WHEN** CLI 渲染该回复
 - **THEN** 长内容默认折叠，用户可展开/收起
 
+#### Scenario: 终端审批确认
+- **GIVEN** 执行中某高风险工具调用被确认门要求人工审批
+- **WHEN** TUI 弹出审批提示
+- **THEN** 用户输入 y 批准 / n 拒绝后执行继续；输入其他值提示重输
+
 ### Requirement: Web 界面访问
 系统 SHALL 支持以 HTTP 服务 + 单页应用（SPA）形式提供 Web 界面，流式输出通过 SSE 推送。
 

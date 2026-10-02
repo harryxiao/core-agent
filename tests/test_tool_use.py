@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -21,11 +22,15 @@ from core.tools import (
     ToolErrorCode,
     ToolProvider,
     ToolUseError,
+    code_run,
     file_read,
     file_write,
+    web_fetch,
 )
+from core.tools.builtin import _MAX_FETCH_BYTES  # noqa: PLC2701 — 截断上界断言
 
 _DELAY = 0.1
+_HTTP_OK = 200  # FakeHTTPResponse 默认状态码
 _SERIAL_THRESHOLD = 0.18  # 串行两次 sleep ≈ 2*_DELAY，真并发应显著低于此值
 
 _ECHO_SCHEMA = {
@@ -39,6 +44,8 @@ def _provider() -> ToolProvider:
     resolver = CoeffectResolver()
     resolver.register("filesystem:read", True)
     resolver.register("filesystem:write", True)
+    resolver.register("process:spawn", True)
+    resolver.register("network:outbound", True)
     return ToolProvider(coeffect_resolver=resolver)
 
 
@@ -365,3 +372,146 @@ def test_async_true_concurrency() -> None:
     ok1, ok2, elapsed = asyncio.run(main())
     assert ok1 and ok2
     assert elapsed < _SERIAL_THRESHOLD
+
+
+# ---- code_run / web_fetch 内置原子工具 ----
+
+
+def test_code_run_python_and_bash() -> None:
+    """code_run 执行 python/bash 片段，返回码与 stdout 正确映射。"""
+    provider = _provider()
+    provider.register(code_run())
+    py = provider.invoke(
+        "tools.code_run", {"script": "print(21 * 2)", "type": "python"}, trace_id="t", approved=True
+    )
+    sh = provider.invoke(
+        "tools.code_run", {"script": "echo bash-ok", "type": "bash"}, trace_id="t", approved=True
+    )
+    assert py.ok and py.data["returncode"] == 0 and py.data["stdout"].strip() == "42"
+    assert sh.ok and sh.data["stdout"].strip() == "bash-ok"
+
+
+def test_code_run_timeout_structured() -> None:
+    """脚本超时：子进程被杀并归一 EXECUTION_FAILED，不向调用方抛裸异常。"""
+    provider = _provider()
+    provider.register(code_run())
+    result = provider.invoke(
+        "tools.code_run",
+        {"script": "sleep 1", "type": "bash", "timeout": 0.05},
+        trace_id="t",
+        approved=True,
+    )
+    assert result.ok is False
+    assert result.error is not None and result.error.code == ToolErrorCode.EXECUTION_FAILED
+    assert "timed out" in result.error.message
+
+
+def test_code_run_blocked_without_approval() -> None:
+    """code_run 不可逆高风险：无批准（approved/approver 均无）即 fail-closed。"""
+    provider = _provider()
+    provider.register(code_run())
+    result = provider.invoke("tools.code_run", {"script": "print(1)"}, trace_id="t")
+    assert result.ok is False
+    assert result.error is not None and result.error.code == ToolErrorCode.IRREVERSIBLE_BLOCKED
+
+
+class _FakeHTTPResponse:
+    """urlopen 返回的上下文管理器形状（status/headers/read）。"""
+
+    def __init__(self, body: bytes, status: int = 200, content_type: str = "text/html") -> None:
+        self.status = status
+        self.headers = {"Content-Type": content_type}
+        self._body = body
+
+    def read(self, limit: int = -1) -> bytes:
+        return self._body if limit < 0 else self._body[:limit]
+
+    def __enter__(self) -> _FakeHTTPResponse:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+def test_web_fetch_maps_response() -> None:
+    provider = _provider()
+    provider.register(web_fetch())
+    with patch(
+        "core.tools.builtin.urllib.request.urlopen",
+        return_value=_FakeHTTPResponse(b"<html>hello</html>"),
+    ) as mocked:
+        result = provider.invoke(
+            "tools.web_fetch", {"url": "https://example.com"}, trace_id="t", approved=True
+        )
+    assert result.ok
+    assert result.data["status"] == _HTTP_OK
+    assert result.data["body"] == "<html>hello</html>"
+    assert result.data["truncated"] is False
+    assert mocked.call_args is not None  # 真发起了出站 GET
+
+
+def test_web_fetch_truncates_body() -> None:
+    """正文按字节上限截断并置 truncated 标记。"""
+    provider = _provider()
+    provider.register(web_fetch())
+    with patch(
+        "core.tools.builtin.urllib.request.urlopen",
+        return_value=_FakeHTTPResponse(b"x" * (_MAX_FETCH_BYTES + 10)),
+    ):
+        result = provider.invoke(
+            "tools.web_fetch", {"url": "https://example.com"}, trace_id="t", approved=True
+        )
+    assert result.ok
+    assert len(result.data["body"]) == _MAX_FETCH_BYTES
+    assert result.data["truncated"] is True
+
+
+def test_web_fetch_rejects_non_http() -> None:
+    """仅接受 http/https：file:// 等协议经结构化错误拒绝（SSRF 防线）。"""
+    provider = _provider()
+    provider.register(web_fetch())
+    result = provider.invoke(
+        "tools.web_fetch", {"url": "file:///etc/passwd"}, trace_id="t", approved=True
+    )
+    assert result.ok is False
+    assert result.error is not None and result.error.code == ToolErrorCode.EXECUTION_FAILED
+    assert "http" in result.error.message
+
+
+# ---- 确认门审批通道 ----
+
+
+def _approving_provider(approver) -> ToolProvider:
+    resolver = CoeffectResolver()
+    resolver.register("network:outbound", True)
+    return ToolProvider(coeffect_resolver=resolver, approver=approver)
+
+
+def test_confirm_gate_approval_decides_execution() -> None:
+    """确认门 confirm：经审批通道决断——批准放行、拒绝 fail-closed。"""
+    asked: list[str] = []
+
+    async def approver(tool_id, args, reason):  # noqa: ANN001 — 测试内鸭子类型
+        asked.append(tool_id)
+        return args.get("url") == "https://a.example"
+
+    provider = _approving_provider(approver)
+    provider.register(web_fetch())
+    with patch("core.tools.builtin.urllib.request.urlopen", return_value=_FakeHTTPResponse(b"ok")):
+        ok = provider.invoke("tools.web_fetch", {"url": "https://a.example"}, trace_id="t")
+    denied = provider.invoke("tools.web_fetch", {"url": "https://b.example"}, trace_id="t")
+    assert ok.ok and ok.data["body"] == "ok"
+    assert denied.ok is False
+    assert denied.error is not None and denied.error.code == ToolErrorCode.IRREVERSIBLE_BLOCKED
+    assert asked == ["tools.web_fetch", "tools.web_fetch"]
+
+
+def test_confirm_gate_fail_closed_without_approver() -> None:
+    """确认门 confirm 且无审批通道：直接 fail-closed 拒绝。"""
+    resolver = CoeffectResolver()
+    resolver.register("network:outbound", True)
+    provider = ToolProvider(coeffect_resolver=resolver)
+    provider.register(web_fetch())
+    result = provider.invoke("tools.web_fetch", {"url": "https://a.example"}, trace_id="t")
+    assert result.ok is False
+    assert result.error is not None and result.error.code == ToolErrorCode.IRREVERSIBLE_BLOCKED

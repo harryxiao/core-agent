@@ -69,6 +69,7 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
     from textual.widgets import Input, RichLog, Static  # noqa: PLC0415 — MAL 懒 import
 
     session_id = api.create_session("cli")
+    approval = api.approval  # 审批通道（None 表示非交互入口，confirm 门 fail-closed）
 
     class ReplApp(App[None]):
         """core-agent 交互会话 TUI。"""
@@ -101,6 +102,7 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
         def __init__(self) -> None:
             super().__init__()
             self._live_buf: list[str] = []  # 流式增量缓冲（终态一次性落定进日志）
+            self._approval_future: Any | None = None  # 挂起中的审批 Future[bool]
 
         def compose(self) -> ComposeResult:
             yield RichLog(id="output")
@@ -113,6 +115,27 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
         def on_mount(self) -> None:
             self.query_one("#live", Static).display = False  # 无流式增量时收起
             self.query_one("#input", Input).focus()
+            if approval is not None:
+                approval.handler = self._ask_approval  # 审批通道接终端 y/n
+
+        async def _ask_approval(self, tool_id: str, args: dict[str, Any], reason: str) -> bool:
+            """审批提示落日志，输入 y/n 决断；同刻仅一单（重复请求 fail-closed）。"""
+            if self._approval_future is not None and not self._approval_future.done():
+                return False
+            import asyncio  # noqa: PLC0415 — 与 textual 懒 import 同策略
+
+            future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+            self._approval_future = future
+            log = self.query_one("#output", RichLog)
+            status = self.query_one("#status", Static)
+            log.write(f"⚠ 需审批: {reason}")
+            log.write("输入 y 批准 / n 拒绝")
+            status.update("[yellow]等待审批…[/yellow]")
+            try:
+                return await future
+            finally:
+                self._approval_future = None
+                status.update("[dim]思考中…[/dim]")
 
         def action_barge_in(self) -> None:
             line = _format_event(barge_in_event(api))
@@ -138,6 +161,17 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
 
         async def on_input_submitted(self, message: Input.Submitted) -> None:
             log = self.query_one("#output", RichLog)
+            pending = self._approval_future
+            if pending is not None and not pending.done():
+                # 审批决断分支：y 批准 / n 拒绝；其他输入提示重输
+                message.input.clear()
+                answer = message.value.strip().lower()
+                if answer in ("y", "yes", "n", "no"):
+                    log.write(f"> {answer}")
+                    pending.set_result(answer in ("y", "yes"))
+                else:
+                    log.write("请输入 y（批准）或 n（拒绝）")
+                return
             status = self.query_one("#status", Static)
             text = message.value.strip()
             message.input.clear()  # 回车即清空输入框，准备下一轮

@@ -8,6 +8,7 @@ import pytest
 
 from core.configuration.models import LLMConfig
 from core.loop import LoopEvent
+from core.permission import ApprovalChannel
 from core.ui import CLIBridge, DesktopBridge, Event, UIAPILayer, UiError, UiErrorCode, WebBridge
 
 
@@ -206,3 +207,37 @@ def test_tui_streams_deltas_then_flushes_once() -> None:
     ok, count = asyncio.run(_drive())
     assert ok is True
     assert count == 1  # 全文只出现一次（live 流式落定，终态不重复）
+
+
+def test_tui_approval_prompt_y_n() -> None:
+    """高风险审批：TUI 弹 y/n 提示；非法输入重输提示不决断，y 批准。"""
+    channel = ApprovalChannel()
+    api = UIAPILayer(loop=FakeLoop([]), approval=channel)
+    api.set_llm_config(_llm())
+    from core.ui.repl import build_app  # noqa: PLC0415 — 可选依赖懒 import
+
+    app = build_app(api)
+
+    async def _drive() -> tuple[bool, bool, bool]:
+        from textual.widgets import Input, RichLog  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            task = asyncio.ensure_future(
+                channel.ask("tools.web_fetch", {"url": "https://x"}, "出站网络抓取")
+            )
+            await pilot.pause()
+            prompt_seen = "需审批" in "".join(
+                strip.text for strip in app.query_one("#output", RichLog).lines
+            )
+            inp.value = "x"  # 非法输入：提示重输，审批保持挂起
+            await pilot.press("enter")
+            await pilot.pause()
+            still_pending = app._approval_future is not None and not app._approval_future.done()
+            inp.value = "y"
+            await pilot.press("enter")
+            approved = await asyncio.wait_for(task, 2)
+            return prompt_seen, still_pending, approved
+
+    assert asyncio.run(_drive()) == (True, True, True)

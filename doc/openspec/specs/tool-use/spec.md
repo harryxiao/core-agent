@@ -106,3 +106,16 @@
 - **WHEN** 调用 uninstall / list 工具
 - **THEN** 卸载对应插件 / 返回已安装插件清单
 
+### Requirement: 内置原子工具（代码执行 / 网页读取）
+系统 SHALL 内置代码执行与网页读取原子工具，与文件工具一致地经 schema 校验、coeffect 确认门、超时与输出截断约束执行。
+
+#### Scenario: 代码执行
+- **GIVEN** Agent 需执行一段代码（python 或 bash）
+- **WHEN** 调用 `tools.code_run`
+- **THEN** 子进程执行并返回返回码与 stdout/stderr（按上限截断），执行超时/异常归一为结构化错误；`process`/`filesystem` 副作用声明经确认门（不可逆高风险需人工审批）
+
+#### Scenario: 网页读取
+- **GIVEN** Agent 需读取一个网页
+- **WHEN** 调用 `tools.web_fetch`（仅接受 http/https URL）
+- **THEN** GET 抓取返回状态码与正文（按字节上限截断），网络错误归一为结构化错误；出站网络 coeffect 经确认门（高风险需人工审批）
+

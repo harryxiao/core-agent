@@ -10,6 +10,7 @@ import asyncio
 
 from core.loop import Action, DefaultLoop
 from core.memory import MemoryStore
+from core.plugin_registry import CoeffectResolver
 from core.tools import Tool, ToolDef, ToolProvider
 
 
@@ -201,3 +202,88 @@ def test_loop_feeds_observation_back_to_planner() -> None:
     assert roles == ["user", "assistant", "tool"]
     assert "tools.echo" in seen[1][1]["content"]  # type: ignore[index]
     assert "echo:hi" in seen[1][2]["content"]  # type: ignore[index]
+
+
+# ---- 不可逆动作审批通道 ----
+
+
+def _irreversible_echo_provider(executed: list[str]) -> ToolProvider:
+    """带不可逆写 echo 工具的 provider（filesystem:write + irreversible）。"""
+    resolver = CoeffectResolver()
+    resolver.register("filesystem:write", True)
+    provider = ToolProvider(coeffect_resolver=resolver)
+
+    def handler(text: str) -> str:
+        executed.append(text)
+        return f"wecho:{text}"
+
+    provider.register(
+        Tool(
+            definition=ToolDef(
+                tool_id="tools.wecho",
+                description="不可逆写 echo",
+                schema={"type": "object", "properties": {"text": {"type": "string"}}},
+                coeffects=["filesystem:write"],
+                reversible=False,
+            ),
+            handler=handler,
+        )
+    )
+    return provider
+
+
+def test_irreversible_action_approval_allows_and_asks_once() -> None:
+    """不可逆动作经审批通道单次询问（loop 问、provider 不重复），批准后执行。"""
+    executed: list[str] = []
+    provider = _irreversible_echo_provider(executed)
+    asked: list[tuple[str, dict]] = []
+
+    async def approver(tool_id: str, args: dict, reason: str) -> bool:
+        asked.append((tool_id, args))
+        return True
+
+    def planner(ctx):
+        if ctx.rounds == 0:
+            return Action(tool_id="tools.wecho", args={"text": "hi"}, is_irreversible=True)
+        return Action(args={"reply": "done"})
+
+    loop = DefaultLoop(planner=planner, tools=provider, approver=approver)
+    result = loop.run("q")
+    assert result.reply == "done"
+    assert asked == [("tools.wecho", {"text": "hi"})]  # 单次询问，无双重提示
+    assert executed == ["hi"]
+
+
+def test_irreversible_action_rejected_declines_round() -> None:
+    """审批被拒：动作不执行，本轮以已拒绝回复终止。"""
+    executed: list[str] = []
+    provider = _irreversible_echo_provider(executed)
+
+    async def approver(tool_id: str, args: dict, reason: str) -> bool:
+        return False
+
+    def planner(ctx):
+        if ctx.rounds == 0:
+            return Action(tool_id="tools.wecho", args={"text": "hi"}, is_irreversible=True)
+        return Action(args={"reply": "done"})
+
+    loop = DefaultLoop(planner=planner, tools=provider, approver=approver)
+    result = loop.run("q")
+    assert result.reply.startswith("已拒绝")
+    assert executed == []
+
+
+def test_irreversible_action_without_approver_fail_closed() -> None:
+    """无审批通道：不可逆动作默认拒绝（fail-closed），不执行。"""
+    executed: list[str] = []
+    provider = _irreversible_echo_provider(executed)
+
+    def planner(ctx):
+        if ctx.rounds == 0:
+            return Action(tool_id="tools.wecho", args={"text": "hi"}, is_irreversible=True)
+        return Action(args={"reply": "done"})
+
+    loop = DefaultLoop(planner=planner, tools=provider)
+    result = loop.run("q")
+    assert result.reply.startswith("已拒绝")
+    assert executed == []

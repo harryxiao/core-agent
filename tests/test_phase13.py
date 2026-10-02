@@ -91,7 +91,13 @@ def test_build_runtime_assembles_all_deps(monkeypatch, tmp_path) -> None:
     assert runtime.router is not None
     assert runtime.loop is not None
     ids = {t.tool_id for t in runtime.tools.active_tools()}
-    assert ids == {"tools.file_read", "tools.file_write", "tools.file_patch"}
+    assert ids == {
+        "tools.file_read",
+        "tools.file_write",
+        "tools.file_patch",
+        "tools.code_run",
+        "tools.web_fetch",
+    }
 
 
 def test_build_runtime_rejects_missing_config(tmp_path) -> None:
@@ -403,8 +409,9 @@ def test_entry_run_wires_runtime(monkeypatch) -> None:
             self.config = object()
             self.app = SimpleNamespace(llm=SimpleNamespace(api_key_ref="${KEY}"))
 
-    def _fake_build(config):
+    def _fake_build(config, **kwargs):
         calls["config"] = config
+        calls["build_kwargs"] = kwargs
         return _FakeRuntime()
 
     class _FakeAPI:
@@ -430,3 +437,5 @@ def test_entry_run_wires_runtime(monkeypatch) -> None:
     assert calls["llm_cfg"].api_key_ref == "${KEY}"
     assert calls["kwargs"]["loop"] is not None
     assert calls["kwargs"]["memory"] is not None
+    assert calls["kwargs"]["approval"] is None  # 非交互入口无审批通道（fail-closed）
+    assert calls["build_kwargs"]["approver"] is None

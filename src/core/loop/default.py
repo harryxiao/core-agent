@@ -28,6 +28,9 @@ from .protocol import Action, ActionResult, LoopContext, LoopEvent, LoopResult
 # 中间件契约：返回 Action 放行/改写，返回 None 表示拒绝（短路）。
 Middleware = Callable[[LoopContext, Action], Action | None]
 
+# 审批回调：不可逆动作经确认门判 confirm 时询问人工（tool_id, args, reason）→ 是否放行。
+Approver = Callable[[str, dict[str, Any], str], Awaitable[bool]]
+
 
 class DefaultLoop(Plugin):
     """默认执行循环：ReAct 式「观察→推理→行动→记忆」闭环。"""
@@ -47,6 +50,7 @@ class DefaultLoop(Plugin):
         middlewares: list[Middleware] | None = None,
         tracer: Tracer | None = None,
         router: DecisionRouter | None = None,
+        approver: Approver | None = None,
         max_rounds: int = 10,
         token_budget: int = 65536,
     ) -> None:
@@ -57,6 +61,7 @@ class DefaultLoop(Plugin):
         self._middlewares = list(middlewares or [])
         self._tracer = tracer
         self._router = router
+        self._approver = approver
         self._max_rounds = max_rounds
         self._token_budget = token_budget
 
@@ -126,9 +131,8 @@ class DefaultLoop(Plugin):
                     action = item
             assert action is not None  # noqa: S101 — _reason_events 末态必产 Action
             action = self._apply_middlewares(ctx, action)
-            if action.is_irreversible and not self._allow(action):
-                action = self.decline(action)
-            result = await self.act(action, trace_id)
+            action, approved = await self._authorize(action)
+            result = await self.act(action, trace_id, approved=approved)
             self._record_observation(ctx, action, result)
             if result.failed:
                 self.rollback(trace_id)
@@ -170,12 +174,22 @@ class DefaultLoop(Plugin):
             return await result
         return result
 
-    async def act(self, action: Action, trace_id: str) -> ActionResult:
+    async def _authorize(self, action: Action) -> tuple[Action, bool]:
+        """不可逆动作过确认门 + 审批通道；返回（可能被拒绝替换的）动作与是否已批准。"""
+        if not action.is_irreversible:
+            return action, False
+        if await self._allow(action):
+            return action, True
+        return self.decline(action), False
+
+    async def act(self, action: Action, trace_id: str, *, approved: bool = False) -> ActionResult:
         if action.is_terminal:
             return ActionResult(failed=False, data=action.args)
         if self._tools is None:
             return ActionResult(failed=True, error="NO_TOOL_PROVIDER")
-        result = await self._tools.ainvoke(action.tool_id, action.args, trace_id=trace_id)
+        result = await self._tools.ainvoke(
+            action.tool_id, action.args, trace_id=trace_id, approved=approved
+        )
         if result.ok:
             return ActionResult(failed=False, data=result.data)
         code = result.error.code if result.error is not None else "TOOL_ERROR"
@@ -256,11 +270,14 @@ class DefaultLoop(Plugin):
             )
         )
 
-    def _allow(self, action: Action) -> bool:
+    async def _allow(self, action: Action) -> bool:
         decision = self._gate.confirm(
             action.tool_id, action.args, self._coeffects(action.tool_id), reversible=False
         )
         if decision.action != "auto":
+            # 需确认：经审批通道询问人工；无通道或被拒即拒绝（fail-closed）
+            if decision.action == "confirm" and self._approver is not None:
+                return await self._approver(action.tool_id, action.args, decision.reason)
             return False
         if self._router is None:
             return True

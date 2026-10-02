@@ -36,8 +36,8 @@ class DefaultLoop(Plugin):
         ctx = self.perceive(user_input)          # 检索记忆 + 拼上下文（有上界）
         while not ctx.done():
             action = self.reason(ctx)            # 模型决策
-            if action.is_irreversible and not self.gate.confirm(action):
-                action = self.decline(action)    # 确认门拒绝
+            if action.is_irreversible and not await self.approve(action):
+                action = self.decline(action)    # 确认门拒绝（有审批通道则询问，无则 fail-closed）
             result = self.act(action, trace_id)  # 经 EffectTracker 记录
             if result.failed:
                 self.rollback(trace_id)          # 回滚本轮
