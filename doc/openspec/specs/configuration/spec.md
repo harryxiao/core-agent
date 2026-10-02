@@ -7,7 +7,7 @@
 ## Requirements
 
 ### Requirement: 配置源与分层
-系统 SHALL 以 config.yaml 为单一配置收口，支持 env 环境变量与 CLI 启动参数覆盖 yaml 值，未配置项取默认值兜底；优先级链为 CLI flag > env > config.yaml > 默认值。配置项以 ConfigSpec 为单一真源：每项声明 cli_flag / env_var / default / map_to 与暴露面分级（core/advanced/hidden），CLI flag / env / yaml 三面由 ConfigSpec 生成，非法 map_to 阻断启动。
+系统 SHALL 以 config.yaml 为单一配置收口，支持 env 环境变量与 CLI 启动参数覆盖 yaml 值，未配置项取默认值兜底；优先级链为 CLI flag > env > config.yaml > 默认值。config.yaml 发现链为 cwd config.yaml → ~/.core-agent/config.yaml（显式 --config 指定路径不回落）；~/.core-agent/.env 作为 env 兜底源（进程 env 优先于 .env）。配置项以 ConfigSpec 为单一真源：每项声明 cli_flag / env_var / default / map_to 与暴露面分级（core/advanced/hidden），CLI flag / env / yaml 三面由 ConfigSpec 生成，非法 map_to 阻断启动。
 
 #### Scenario: env 覆盖 yaml
 - **GIVEN** config.yaml 与 env 环境变量同时定义了同一配置项
@@ -38,6 +38,16 @@
 - **GIVEN** 配置项标注了暴露面分级（core/advanced/hidden）
 - **WHEN** 生成 CLI 帮助与参数面
 - **THEN** 按分级暴露，hidden 项不出现于默认帮助
+
+#### Scenario: cwd 缺失回落用户级目录
+- **GIVEN** 工作目录不存在 config.yaml，且 ~/.core-agent/config.yaml 存在
+- **WHEN** 未显式指定 --config 时加载配置
+- **THEN** 读取 ~/.core-agent/config.yaml；显式 --config 指定的路径缺失时不回落，直接报配置文件不存在
+
+#### Scenario: .env 兜底解析密钥引用
+- **GIVEN** ~/.core-agent/.env 定义 KEY=VALUE，且进程 env 未定义同名变量
+- **WHEN** resolve_secret 解析 ${KEY}
+- **THEN** 取 .env 值解析成功；进程 env 存在同名变量时优先于 .env
 
 ### Requirement: LLM 提供商配置（必选）
 系统 SHALL 要求 LLM 配置（provider/model/endpoint/api_key）为必选项，缺失或不完整时阻断启动并报明确错误。

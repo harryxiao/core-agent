@@ -204,7 +204,11 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
     # 启动参数（F1-F3）
     parser.add_argument("--profile", metavar="P", help="Bundle 组合清单（独立文件）")
     parser.add_argument("--cwd", metavar="DIR", help="工作目录")
-    parser.add_argument("--config", metavar="PATH", help="config.yaml 路径（默认 config.yaml）")
+    parser.add_argument(
+        "--config",
+        metavar="PATH",
+        help="config.yaml 路径（默认 cwd config.yaml，缺失回落 ~/.core-agent/config.yaml）",
+    )
     # feature flag（F5，外推形态：--feature NAME[=BOOL]）
     parser.add_argument(
         "--feature", action="append", metavar="NAME[=BOOL]", help="feature flag 覆盖"
@@ -257,9 +261,7 @@ def _dispatch(args: argparse.Namespace) -> int:
 def _build_ui(args: argparse.Namespace) -> UIAPILayer | None:
     """装配真 runtime + UIAPILayer 并注入 LLM 配置（四入口共用）；失败返回 None。"""
     try:
-        runtime = build_runtime(
-            ConfigManager(yaml_path=args.config or "config.yaml", cli=_cli_overrides(args))
-        )
+        runtime = build_runtime(ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)))
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
         print(f"装配失败: {exc}", file=sys.stderr)
         return None
@@ -320,7 +322,7 @@ def _config(args: argparse.Namespace) -> int:
         value = resolve(args.key, cli=_cli_overrides(args), env=os.environ)
         print(value if value not in (None, "") else "(未配置)")
         return 0
-    mgr = ConfigManager(yaml_path=args.config or "config.yaml", cli=_cli_overrides(args))
+    mgr = ConfigManager(yaml_path=args.config, cli=_cli_overrides(args))
     if args.config_cmd == "show":
         return _config_show(mgr, args)
     if args.config_cmd == "validate":
@@ -348,7 +350,7 @@ def _config_show(mgr: ConfigManager, args: argparse.Namespace) -> int:
 
 def _config_validate(args: argparse.Namespace) -> int:
     """校验 config.yaml：无效时打印错误并 exit 1。"""
-    path = getattr(args, "file", None) or args.config or "config.yaml"
+    path = getattr(args, "file", None) or args.config
     try:
         ConfigManager(yaml_path=path).load()
     except ConfigurationError as exc:

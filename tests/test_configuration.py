@@ -127,6 +127,73 @@ def test_resolve_secret_from_keychain(tmp_path: Path) -> None:
     assert manager.resolve_secret("${IM_SECRET}") == "im-sk"
 
 
+# ---- 用户级目录回落与 .env 兜底 ----
+
+_DOTENV_YAML = _VALID_YAML.replace("${OPENAI_API_KEY}", "${CORE_TEST_DOTENV_KEY}")
+
+
+def _fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **files: str) -> Path:
+    """伪造 ~/.core-agent/：写入 files（相对名 → 内容）并劫持 Path.home。"""
+    core_dir = tmp_path / "home" / ".core-agent"
+    core_dir.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        _write(core_dir / name, text)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    return core_dir
+
+
+def test_yaml_fallback_to_user_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    empty_cwd = tmp_path / "cwd"
+    empty_cwd.mkdir()
+    monkeypatch.chdir(empty_cwd)
+    _fake_home(tmp_path, monkeypatch, **{"config.yaml": _VALID_YAML})
+
+    config = ConfigManager(environ={"OPENAI_API_KEY": "sk-test"}).load()
+
+    assert config.llm.model == "gpt-4o"
+
+
+def test_explicit_path_no_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_home(tmp_path, monkeypatch, **{"config.yaml": _VALID_YAML})
+
+    manager = ConfigManager(tmp_path / "missing.yaml", environ={"OPENAI_API_KEY": "sk-test"})
+    with pytest.raises(ConfigurationError):
+        manager.load()
+
+
+def test_env_file_backfills_secret(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CORE_TEST_DOTENV_KEY", raising=False)
+    empty_cwd = tmp_path / "cwd"
+    empty_cwd.mkdir()
+    monkeypatch.chdir(empty_cwd)
+    _fake_home(
+        tmp_path,
+        monkeypatch,
+        **{"config.yaml": _DOTENV_YAML, ".env": "CORE_TEST_DOTENV_KEY=sk-from-dotenv\n"},
+    )
+
+    manager = ConfigManager()  # environ 未注入 → 进程 env + ~/.core-agent/.env 兜底
+    config = manager.load()
+    assert manager.resolve_secret("${CORE_TEST_DOTENV_KEY}") == "sk-from-dotenv"
+    assert config.llm.provider == "openai"
+
+
+def test_process_env_wins_over_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CORE_TEST_DOTENV_KEY", "sk-from-os")
+    empty_cwd = tmp_path / "cwd"
+    empty_cwd.mkdir()
+    monkeypatch.chdir(empty_cwd)
+    _fake_home(
+        tmp_path,
+        monkeypatch,
+        **{"config.yaml": _DOTENV_YAML, ".env": "CORE_TEST_DOTENV_KEY=sk-from-dotenv\n"},
+    )
+
+    manager = ConfigManager()
+
+    assert manager.resolve_secret("${CORE_TEST_DOTENV_KEY}") == "sk-from-os"
+
+
 def test_validate_schema_reports_errors(tmp_path: Path) -> None:
     manager = ConfigManager(_write(tmp_path / "config.yaml", _VALID_YAML), environ={})
     config = AppConfig(llm=LLMConfig(provider="openai", model="", endpoint="", api_key_ref=""))

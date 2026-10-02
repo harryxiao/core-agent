@@ -135,6 +135,36 @@ _FEATURE_ENV_PREFIX = "CORE_FEATURES_"
 _BOOL_NULL: dict[str, Any] = {"true": True, "false": False, "null": None, "~": None}
 
 
+def _default_user_dir() -> Path:
+    """用户级配置目录（config.yaml 回落位 + .env 兜底位）。"""
+    return Path.home() / ".core-agent"
+
+
+def _default_yaml_path() -> Path:
+    """默认发现链：cwd config.yaml 优先，缺失回落 ~/.core-agent/config.yaml。"""
+    cwd = Path("config.yaml")
+    if cwd.exists():
+        return cwd
+    fallback = _default_user_dir() / "config.yaml"
+    if fallback.exists():
+        return fallback
+    return cwd  # 均缺失：保持「配置文件不存在: config.yaml」报错语义
+
+
+def _load_env_file(path: Path) -> dict[str, str]:
+    """读取 KEY=VALUE 行（跳过注释与空行）；仅作进程 env 的兜底源。"""
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip().strip("'\"")
+    return values
+
+
 class ConfigManager:
     """配置加载 / 校验 / 密钥解析 / 功能开关 / 变更即生效。"""
 
@@ -148,8 +178,13 @@ class ConfigManager:
         cli: Mapping[str, Any] | None = None,
         specs: list[ConfigSpec] | None = None,
     ) -> None:
-        self._yaml_path = Path(yaml_path) if yaml_path else Path("config.yaml")
-        self._environ = dict(environ) if environ is not None else dict(os.environ)
+        self._yaml_path = Path(yaml_path) if yaml_path else _default_yaml_path()
+        if environ is not None:
+            self._environ = dict(environ)
+        else:
+            self._environ = dict(os.environ)
+            for key, value in _load_env_file(_default_user_dir() / ".env").items():
+                self._environ.setdefault(key, value)  # 进程 env 优先于 .env
         self._keychain = keychain if keychain is not None else CoeffectResolver()
         self._effects = effects if effects is not None else EffectTracker()
         self._cli = dict(cli) if cli is not None else {}
