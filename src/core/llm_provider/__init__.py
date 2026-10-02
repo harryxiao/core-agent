@@ -15,7 +15,15 @@ from .errors import (
     LLMTimeoutError,
     UnknownProviderError,
 )
-from .models import Embedding, LLMChunk, LLMRequest, LLMResponse, Message, TokenUsage
+from .models import (
+    Embedding,
+    LLMChunk,
+    LLMRequest,
+    LLMResponse,
+    Message,
+    TokenUsage,
+    ToolCall,
+)
 from .provider import LLMProvider
 from .registry import LLMProviderRegistry
 from .stdlib_provider import StdlibLLMProvider, map_http_error
@@ -35,6 +43,7 @@ __all__ = [
     "StdlibLLMProvider",
     "Message",
     "TokenUsage",
+    "ToolCall",
     "UnknownProviderError",
     "map_http_error",
 ]

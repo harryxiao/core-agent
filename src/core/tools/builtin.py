@@ -30,7 +30,7 @@ _WRITE_SCHEMA = {
     "properties": {
         "path": {"type": "string"},
         "content": {"type": "string"},
-        "mode": {"type": "string"},
+        "mode": {"type": "string", "enum": ["w", "a"]},
     },
     "required": ["path", "content"],
 }
@@ -72,10 +72,12 @@ def file_write() -> Tool:
     snap: dict[str, str | None] = {}
 
     def handler(path: str, content: str, mode: str = "w") -> dict[str, Any]:
+        # 模型侧语义值归一为 Python open 模式；未知值由 EXECUTION_FAILED 结构化兜底
+        normalized = {"write": "w", "overwrite": "w", "append": "a"}.get(mode, mode)
         target = Path(path)
         snap["path"] = path
         snap["before"] = target.read_text(encoding="utf-8") if target.exists() else None
-        with target.open(mode, encoding="utf-8") as fh:
+        with target.open(normalized, encoding="utf-8") as fh:
             fh.write(content)
         return {"path": path, "bytes_written": len(content)}
 

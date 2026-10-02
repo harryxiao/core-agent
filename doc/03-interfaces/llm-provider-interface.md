@@ -47,12 +47,25 @@ class TokenUsage:
     completion_tokens: int
 
 @dataclass
+class ToolCall:
+    tool_id: str         # function.name
+    arguments: str       # 参数 JSON 字符串（流式片段为增量）
+    call_id: str | None = None
+    index: int = 0       # 流式片段归属索引
+
+@dataclass
 class LLMResponse:
     content: str
     usage: TokenUsage
     finish_reason: str
     provider: str        # 审计标注：实际响应的 provider
     model: str           # 审计标注：实际使用的 model
+    tool_calls: list[ToolCall] | None = None  # 原生 function call（缺失走 content 协议）
+
+@dataclass
+class LLMChunk:
+    content: str
+    tool_calls: list[ToolCall] | None = None  # delta.tool_calls 增量片段（index 分组）
 ```
 
 ---

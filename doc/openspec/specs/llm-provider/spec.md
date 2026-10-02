@@ -22,6 +22,11 @@ LLM Provider（三方大模型归一化接入）让 core-agent 通过统一 LLMP
 - **WHEN** 发起模型调用
 - **THEN** 系统自动解析并路由到对应 provider 协议，返回归一化结果
 
+#### Scenario: 原生工具调用解析
+- **GIVEN** 请求携带工具（tools 字段）且端点以原生 tool_calls 形式返回（而非 system prompt 约定的 content JSON）
+- **WHEN** 收到补全响应或流式增量
+- **THEN** 系统把 message.tool_calls / delta.tool_calls 片段归一为 ToolCall（流式按 index 累积 name 与 arguments），上层 planner 据此产出工具 Action，content 协议与原生协议并存兼容
+
 ### Requirement: 依赖注入可替换
 系统 SHALL 通过依赖注入隔离 LLMProvider 实现，替换默认实现或接入自研后端时，内核 loop 及所有调用方无需改动即可切换。
 

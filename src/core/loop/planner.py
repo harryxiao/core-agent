@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 
 from core.context import DynamicAssembler
-from core.llm_provider import LLMError, LLMProvider, LLMRequest, Message
+from core.llm_provider import LLMError, LLMProvider, LLMRequest, Message, ToolCall
 from core.tools import ToolProvider
 
 from .protocol import Action, LoopContext
@@ -55,13 +55,16 @@ class LLMPlanner:
             response = await self._llm.acompletion(request)
         except LLMError as exc:
             return Action(args={"reply": f"LLM 调用失败: {exc}"})
+        if response.tool_calls:  # 原生 function call 优先于 content 协议
+            return self._from_tool_calls(response.tool_calls)
         return self._parse(response.content)
 
     async def astream(self, ctx: LoopContext) -> AsyncIterator[str | Action]:
         """流式推理：自然语言回复逐 delta 外发，末态产出终 Action。
 
         首个 ``{`` 判定为工具调用 JSON：缓冲不外泄（逐 token 外发半截 JSON 无意义），
-        拼完整后走 ``_parse``。provider 不支持流式（缺 astream）或流式失败时与
+        拼完整后走 ``_parse``；原生 tool_calls 片段按 index 累积（name/arguments），
+        同样缓冲不外发。provider 不支持流式（缺 astream）或流式失败时与
         ``__call__`` 同语义（终端回复，不抛裸异常）。
         """
         if not hasattr(self._llm, "astream"):
@@ -70,17 +73,36 @@ class LLMPlanner:
         request = self._build_request(ctx)
         chunks: list[str] = []
         reply_stream = False  # 已判定为自然语言回复才外发
+        native_tool = False  # 出现原生 tool_calls 片段
+        tool_names: dict[int, str] = {}
+        tool_args: dict[int, str] = {}
         try:
             async for chunk in self._llm.astream(request):
+                for fragment in chunk.tool_calls or []:
+                    native_tool = True
+                    index = fragment.index
+                    tool_names[index] = tool_names.get(index, "") or fragment.tool_id
+                    tool_args[index] = tool_args.get(index, "") + fragment.arguments
                 if not chunk.content:
                     continue
                 chunks.append(chunk.content)
-                if len(chunks) == 1:
+                if len(chunks) == 1 and not native_tool:
                     reply_stream = not chunk.content.lstrip().startswith("{")
-                if reply_stream:
+                if reply_stream and not native_tool:
                     yield chunk.content
         except LLMError as exc:
             yield Action(args={"reply": f"LLM 调用失败: {exc}"})
+            return
+        if native_tool:
+            calls = [
+                ToolCall(
+                    tool_id=tool_names[index],
+                    arguments=tool_args[index],
+                    index=index,
+                )
+                for index in sorted(tool_names)
+            ]
+            yield self._from_tool_calls(calls)
             return
         yield self._parse("".join(chunks))
 
@@ -176,6 +198,23 @@ class LLMPlanner:
                 return Action(args={"reply": f"{_PARSE_FAILED}: 无法解析模型输出为动作"})
             return self._from_dict(data)
         return Action(args={"reply": text})
+
+    def _from_tool_calls(self, calls: list[ToolCall]) -> Action:
+        """原生 tool_calls → Action（Action 为单工具协议，并行多调用取首个）。"""
+        first = calls[0]
+        if not first.tool_id:
+            return Action(args={"reply": f"{_PARSE_FAILED}: 工具调用缺 function.name"})
+        try:
+            args = json.loads(first.arguments or "{}")
+        except ValueError:
+            return Action(args={"reply": f"{_PARSE_FAILED}: 工具参数无法解析为 JSON"})
+        if not isinstance(args, dict):
+            return Action(args={"reply": f"{_PARSE_FAILED}: 工具参数非 JSON 对象"})
+        return Action(
+            tool_id=first.tool_id,
+            args=cast(dict[str, Any], args),
+            is_irreversible=self._is_irreversible(first.tool_id),
+        )
 
     def _from_dict(self, data: Any) -> Action:
         if not isinstance(data, dict):

@@ -95,6 +95,7 @@ class SafetyGate:
 | `INVALID_ARGS` | 参数不符 schema |
 | `COEFFECT_MISSING` | 约束缺失 |
 | `TIMEOUT` | 执行超时 |
+| `EXECUTION_FAILED` | handler 执行异常归一 |
 | `GATE_DENIED` | 确认门拒绝 |
 | `IRREVERSIBLE_BLOCKED` | 不可逆操作未确认被阻止 |
 | `UNDO_FAILED` | 撤销失败 |

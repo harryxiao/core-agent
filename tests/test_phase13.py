@@ -18,7 +18,7 @@ from core import entry
 from core.configuration import ConfigManager, ConfigurationError
 from core.context import DynamicAssembler
 from core.judgment import DecisionPrimitive, DecisionResult
-from core.llm_provider import LLMChunk, LLMError, LLMResponse, TokenUsage
+from core.llm_provider import LLMChunk, LLMError, LLMResponse, TokenUsage, ToolCall
 from core.loop import Action, DefaultLoop, LLMPlanner, LoopContext
 from core.memory import MemoryStore
 from core.observability import Tracer
@@ -172,16 +172,16 @@ def test_loop_uses_async_llm_without_nested_loop() -> None:
 
 
 class _StreamingFakeLLM:
-    """记录 LLMRequest、按固定分片流式产出的假 LLM。"""
+    """记录 LLMRequest、按固定分片流式产出的假 LLM（str 分片或整 LLMChunk）。"""
 
-    def __init__(self, chunks: list[str]) -> None:
+    def __init__(self, chunks: list[str | LLMChunk]) -> None:
         self._chunks = chunks
         self.requests: list[object] = []
 
     async def astream(self, request: object):
         self.requests.append(request)
-        for text in self._chunks:
-            yield LLMChunk(content=text)
+        for item in self._chunks:
+            yield item if isinstance(item, LLMChunk) else LLMChunk(content=str(item))
 
 
 def _collect_planner_stream(planner: LLMPlanner) -> list[str | Action]:
@@ -218,6 +218,60 @@ def test_planner_astream_llm_error_returns_action() -> None:
     planner = LLMPlanner(_BrokenLLM())
     items = _collect_planner_stream(planner)
     assert len(items) == 1 and "LLM 调用失败" in items[0].args["reply"]
+
+
+# ---- 原生 tool_calls 协议 ----
+
+
+class _NativeToolLLM:
+    """非流式返回原生 tool_calls 的假 LLM。"""
+
+    def __init__(self, tool_calls: list[ToolCall]) -> None:
+        self._tool_calls = tool_calls
+
+    async def acompletion(self, request: object) -> LLMResponse:
+        return LLMResponse(
+            content="",
+            usage=TokenUsage(prompt_tokens=0, completion_tokens=0),
+            finish_reason="tool_calls",
+            provider="fake",
+            model="test-model",
+            tool_calls=self._tool_calls,
+        )
+
+
+def test_planner_parses_native_tool_calls() -> None:
+    """原生 tool_calls → 工具 Action（优先于 content 协议）。"""
+    planner = LLMPlanner(
+        _NativeToolLLM([ToolCall(tool_id="tools.echo", arguments='{"text": "hi"}')])
+    )
+    action = asyncio.run(planner(LoopContext(messages=["hi"])))
+    assert action.tool_id == "tools.echo"
+    assert action.args == {"text": "hi"}
+    assert not action.is_irreversible
+
+
+def test_planner_native_tool_call_bad_arguments() -> None:
+    """参数 JSON 非法 → 结构化解析错误码（不抛裸异常）。"""
+    planner = LLMPlanner(_NativeToolLLM([ToolCall(tool_id="tools.echo", arguments="{oops")]))
+    action = asyncio.run(planner(LoopContext(messages=["hi"])))
+    assert "LLM_PLAN_PARSE_FAILED" in action.args["reply"]
+
+
+def test_planner_astream_accumulates_native_tool_fragments() -> None:
+    """流式原生片段按 index 累积 name/arguments，不外泄半截，末态工具 Action。"""
+    fake = _StreamingFakeLLM(
+        [
+            LLMChunk(
+                content="",
+                tool_calls=[ToolCall(tool_id="tools.echo", arguments="", call_id="c1")],
+            ),
+            LLMChunk(content="", tool_calls=[ToolCall(tool_id="", arguments='{"text"')]),
+            LLMChunk(content="", tool_calls=[ToolCall(tool_id="", arguments=': "hi"}')]),
+        ]
+    )
+    items = _collect_planner_stream(LLMPlanner(fake))
+    assert items == [Action(tool_id="tools.echo", args={"text": "hi"})]
 
 
 # ---- 热路径 TraceEvent ----

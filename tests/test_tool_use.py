@@ -110,6 +110,47 @@ def test_invoke_unknown_tool() -> None:
     assert result.error is not None and result.error.code == ToolErrorCode.INVALID_ARGS
 
 
+def test_invoke_handler_exception_structured() -> None:
+    """handler 执行异常归一 EXECUTION_FAILED（不向调用方抛裸异常，主循环可继续）。"""
+    provider = _provider()
+    provider.register(
+        Tool(
+            definition=ToolDef(
+                tool_id="test.boom",
+                description="必炸",
+                schema=_ECHO_SCHEMA,
+                coeffects=["filesystem:read"],
+                reversible=False,
+            ),
+            handler=lambda text: (_ for _ in ()).throw(ValueError("bad mode")),
+        )
+    )
+    result = provider.invoke("test.boom", {"text": "hi"}, trace_id="t")
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == ToolErrorCode.EXECUTION_FAILED
+    assert "执行失败" in result.error.message
+
+
+def test_file_write_normalizes_mode_alias(tmp_path) -> None:
+    """模型语义 mode（write/append）归一为 Python open 模式。"""
+    target = tmp_path / "a.txt"
+    provider = _provider()
+    provider.register(file_write())
+    first = provider.invoke(
+        "tools.file_write",
+        {"path": str(target), "content": "x", "mode": "write"},
+        trace_id="t",
+    )
+    second = provider.invoke(
+        "tools.file_write",
+        {"path": str(target), "content": "y", "mode": "append"},
+        trace_id="t",
+    )
+    assert first.ok and second.ok
+    assert target.read_text(encoding="utf-8") == "xy"
+
+
 # ---- 只读自动执行 ----
 
 

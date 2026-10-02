@@ -180,3 +180,24 @@ def test_e2e_loop_drives_tool_and_memory() -> None:
     assert result.trace_id
     # 记忆写入：remember 落 L2 轨迹，按 trace 可审计
     assert memory.audit(result.trace_id) != []
+
+
+def test_loop_feeds_observation_back_to_planner() -> None:
+    """观察回灌：工具轮的调用与执行结果进入下一轮 planner 上下文（ReAct 多轮前提）。"""
+    provider = ToolProvider()
+    provider.register(_echo_tool())
+    seen: list[list] = []
+
+    def planner(ctx):
+        seen.append(list(ctx.messages))
+        if ctx.rounds == 0:
+            return Action(tool_id="tools.echo", args={"text": "hi"})
+        return Action(args={"reply": "done"})
+
+    loop = DefaultLoop(planner=planner, tools=provider)
+    result = loop.run("q")
+    assert result.reply == "done"
+    roles = [m["role"] for m in seen[1]]  # type: ignore[index]
+    assert roles == ["user", "assistant", "tool"]
+    assert "tools.echo" in seen[1][1]["content"]  # type: ignore[index]
+    assert "echo:hi" in seen[1][2]["content"]  # type: ignore[index]

@@ -42,6 +42,20 @@ class TokenUsage:
 
 
 @dataclass
+class ToolCall:
+    """原生 function call（OpenAI 兼容 tool_calls 的统一形状）。
+
+    流式响应中为增量片段：``index`` 标识归属，``tool_id``/``call_id`` 仅首片携带，
+    ``arguments`` 为 JSON 字符串的增量拼接段，由消费方按 index 累积。
+    """
+
+    tool_id: str  # function.name
+    arguments: str  # 参数 JSON 字符串
+    call_id: str | None = None
+    index: int = 0  # 流式片段归属索引
+
+
+@dataclass
 class LLMResponse:
     """统一补全响应（含审计标注）。"""
 
@@ -50,6 +64,7 @@ class LLMResponse:
     finish_reason: str
     provider: str  # 审计标注：实际响应的 provider
     model: str  # 审计标注：实际使用的 model
+    tool_calls: list[ToolCall] | None = None  # 原生 function call（缺失走 content 协议）
 
 
 @dataclass
@@ -64,3 +79,4 @@ class LLMChunk:
     """流式响应增量块。"""
 
     content: str
+    tool_calls: list[ToolCall] | None = None  # delta.tool_calls 增量片段

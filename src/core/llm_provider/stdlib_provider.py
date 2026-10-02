@@ -24,7 +24,7 @@ from .errors import (
     LLMTimeoutError,
     UnknownProviderError,
 )
-from .models import Embedding, LLMChunk, LLMRequest, LLMResponse, TokenUsage
+from .models import Embedding, LLMChunk, LLMRequest, LLMResponse, TokenUsage, ToolCall
 from .provider import LLMProvider
 
 # 可重试错误：限流 / 网络抖动 / 超时（鉴权等非瞬时错误不重试）
@@ -229,6 +229,7 @@ class StdlibLLMProvider(LLMProvider):
             finish_reason=str(choice.get("finish_reason") or "stop"),
             provider="stdlib",
             model=model,
+            tool_calls=self._map_tool_calls(message.get("tool_calls")),
         )
 
     def _map_chunk(self, part: Any) -> LLMChunk:
@@ -236,7 +237,33 @@ class StdlibLLMProvider(LLMProvider):
         if not choices:
             return LLMChunk(content="")
         delta = cast(dict[str, Any], choices[0].get("delta")) or {}
-        return LLMChunk(content=str(delta.get("content") or ""))
+        return LLMChunk(
+            content=str(delta.get("content") or ""),
+            tool_calls=self._map_tool_calls(delta.get("tool_calls")),
+        )
+
+    @staticmethod
+    def _map_tool_calls(raw: Any) -> list[ToolCall] | None:
+        """OpenAI 兼容 tool_calls 数组 → 统一 ToolCall。
+
+        流式片段原样透传（``index`` 分组、``arguments`` 为增量段），完整响应则为
+        拼好的参数 JSON 字符串；累积/解析由上层消费方收口。
+        """
+        if not raw:
+            return None
+        calls: list[ToolCall] = []
+        for item in cast(list[Any], raw):
+            entry = cast(dict[str, Any], item)
+            function = cast(dict[str, Any], entry.get("function")) or {}
+            calls.append(
+                ToolCall(
+                    tool_id=str(function.get("name") or ""),
+                    arguments=str(function.get("arguments") or ""),
+                    call_id=str(entry["id"]) if entry.get("id") else None,
+                    index=int(entry.get("index", 0) or 0),
+                )
+            )
+        return calls
 
     def _backoff(self, attempt: int) -> float:
         return min(2 ** (attempt - 1) * 0.5, 8.0)  # 0.5s 起，指数退避，8s 封顶

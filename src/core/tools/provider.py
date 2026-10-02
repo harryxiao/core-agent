@@ -129,6 +129,11 @@ class ToolProvider:
             return ToolResult(
                 ok=False, error=ToolError(ToolErrorCode.TIMEOUT, f"工具 {tool_id} 执行超时")
             )
+        except Exception as exc:  # noqa: BLE001 — handler 异常统一归一结构化错误
+            return ToolResult(
+                ok=False,
+                error=ToolError(ToolErrorCode.EXECUTION_FAILED, f"工具 {tool_id} 执行失败: {exc}"),
+            )
 
         effect_id: str | None = None
         if tool.undo is not None:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -128,6 +129,7 @@ class DefaultLoop(Plugin):
             if action.is_irreversible and not self._allow(action):
                 action = self.decline(action)
             result = await self.act(action, trace_id)
+            self._record_observation(ctx, action, result)
             if result.failed:
                 self.rollback(trace_id)
             ctx = self.observe(ctx, result)
@@ -178,6 +180,24 @@ class DefaultLoop(Plugin):
             return ActionResult(failed=False, data=result.data)
         code = result.error.code if result.error is not None else "TOOL_ERROR"
         return ActionResult(failed=True, error=code)
+
+    @staticmethod
+    def _record_observation(ctx: LoopContext, action: Action, result: ActionResult) -> None:
+        """观察回灌：工具调用与执行结果写入上下文消息（ReAct 多轮推进的前提）。"""
+        if action.is_terminal:
+            return
+        ctx.messages.append(
+            {
+                "role": "assistant",
+                "content": json.dumps(
+                    {"tool_id": action.tool_id, "args": action.args}, ensure_ascii=False
+                ),
+            }
+        )
+        observation = {"error": result.error} if result.failed else {"data": result.data}
+        ctx.messages.append(
+            {"role": "tool", "content": json.dumps(observation, ensure_ascii=False)}
+        )
 
     def observe(self, ctx: LoopContext, result: ActionResult) -> LoopContext:
         ctx.rounds += 1

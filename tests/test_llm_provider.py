@@ -29,6 +29,7 @@ from core.llm_provider import (
     Message,
     StdlibLLMProvider,
     TokenUsage,
+    ToolCall,
     UnknownProviderError,
     map_http_error,
 )
@@ -212,6 +213,72 @@ def test_astream_parses_sse() -> None:
     assert chunks == ["he", "llo"]
     body = json.loads(urlopen.call_args[0][0].data.decode("utf-8"))
     assert body["stream"] is True
+
+
+def test_response_maps_native_tool_calls() -> None:
+    """非流式：message.tool_calls 归一为 ToolCall（原生 function call 协议）。"""
+    provider = _make_provider()
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "tools.echo", "arguments": '{"text": "hi"}'},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+    }
+    resp = _fake_json_response(payload)
+    with mock.patch("core.llm_provider.stdlib_provider.urllib.request.urlopen", return_value=resp):
+        result = asyncio.run(
+            provider.acompletion(LLMRequest(messages=[Message("user", "hi")], model="m"))
+        )
+    assert result.tool_calls == [
+        ToolCall(tool_id="tools.echo", arguments='{"text": "hi"}', call_id="call_1", index=0)
+    ]
+
+
+def test_astream_maps_tool_call_fragments() -> None:
+    """流式：delta.tool_calls 增量片段透传（index 分组、arguments 为增量段）。"""
+    provider = _make_provider()
+    lines = [
+        b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1",'
+        b'"function":{"name":"tools.echo","arguments":""}}]}}]}\n',
+        b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+        b'"function":{"arguments":"{\\"text\\":"}}]}}]}\n',
+        b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+        b'"function":{"arguments":" \\"hi\\"}"}}]}}]}\n',
+        b"data: [DONE]\n",
+    ]
+    resp = mock.MagicMock()
+    resp.__enter__.return_value = resp
+    resp.__iter__.return_value = iter(lines)
+    with mock.patch("core.llm_provider.stdlib_provider.urllib.request.urlopen", return_value=resp):
+
+        async def _collect_chunks() -> list[LLMChunk]:
+            return [
+                chunk
+                async for chunk in provider.astream(
+                    LLMRequest(messages=[Message("user", "hi")], model="m")
+                )
+            ]
+
+        chunks = asyncio.run(_collect_chunks())
+    fragments = [c for c in chunks if c.tool_calls]
+    assert [c.content for c in chunks if c.content] == []
+    assert fragments[0].tool_calls == [
+        ToolCall(tool_id="tools.echo", arguments="", call_id="c1", index=0)
+    ]
+    assert fragments[1].tool_calls == [ToolCall(tool_id="", arguments='{"text":', index=0)]
+    assert fragments[2].tool_calls == [ToolCall(tool_id="", arguments=' "hi"}', index=0)]
 
 
 def test_aembedding_maps() -> None:
