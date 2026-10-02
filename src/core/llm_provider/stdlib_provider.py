@@ -187,6 +187,8 @@ class StdlibLLMProvider(LLMProvider):
             body["max_tokens"] = request.max_tokens
         if request.tools is not None:
             body["tools"] = request.tools
+        if request.reasoning_effort is not None:
+            body["reasoning_effort"] = request.reasoning_effort
         if stream:
             body["stream"] = True
         return body

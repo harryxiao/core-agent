@@ -171,6 +171,24 @@ def test_acompletion_posts_openai_shape() -> None:
     body = json.loads(req.data.decode("utf-8"))
     assert body["model"] == "m"
     assert body["messages"] == [{"role": "user", "content": "hi"}]
+    assert "reasoning_effort" not in body  # 未配置不下发（不支持该字段的端点零影响）
+
+
+def test_reasoning_effort_passthrough() -> None:
+    provider = _make_provider()
+    resp = _fake_json_response(
+        {"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]}
+    )
+    with mock.patch(
+        "core.llm_provider.stdlib_provider.urllib.request.urlopen", return_value=resp
+    ) as urlopen:
+        asyncio.run(
+            provider.acompletion(
+                LLMRequest(messages=[Message("user", "hi")], model="m", reasoning_effort="low")
+            )
+        )
+    body = json.loads(urlopen.call_args[0][0].data.decode("utf-8"))
+    assert body["reasoning_effort"] == "low"
 
 
 def test_astream_parses_sse() -> None:

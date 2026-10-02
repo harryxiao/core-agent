@@ -18,7 +18,7 @@ from core import entry
 from core.configuration import ConfigManager, ConfigurationError
 from core.context import DynamicAssembler
 from core.judgment import DecisionPrimitive, DecisionResult
-from core.llm_provider import LLMResponse, TokenUsage
+from core.llm_provider import LLMChunk, LLMError, LLMResponse, TokenUsage
 from core.loop import Action, DefaultLoop, LLMPlanner, LoopContext
 from core.memory import MemoryStore
 from core.observability import Tracer
@@ -68,7 +68,8 @@ def _write_config(tmp_path) -> str:
         "  provider: litellm\n"
         "  model: test-model\n"
         "  endpoint: https://example.com/v1\n"
-        "  api_key: ${OPENAI_API_KEY}\n",
+        "  api_key: ${OPENAI_API_KEY}\n"
+        "  reasoning_effort: low\n",
         encoding="utf-8",
     )
     return str(cfg)
@@ -82,6 +83,7 @@ def test_build_runtime_assembles_all_deps(monkeypatch, tmp_path) -> None:
     runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
 
     assert runtime.app.llm.model == "test-model"
+    assert runtime.app.llm.reasoning_effort == "low"
     assert runtime.llm is not None
     assert runtime.memory is not None
     assert runtime.tools is not None
@@ -106,7 +108,11 @@ def test_llm_planner_returns_action_and_carries_context(tmp_path) -> None:
     fake = _FakeLLM('{"tool_id": "tools.echo", "args": {"text": "hi"}}')
     assembler = DynamicAssembler(constitution=["规则A"])
     planner = LLMPlanner(
-        fake, assembler=assembler, skill_router=lambda task: ["skills.x.y"], tools=provider
+        fake,
+        reasoning_effort="low",
+        assembler=assembler,
+        skill_router=lambda task: ["skills.x.y"],
+        tools=provider,
     )
 
     action = asyncio.run(planner(LoopContext(messages=[{"role": "user", "content": "hi"}])))
@@ -114,6 +120,7 @@ def test_llm_planner_returns_action_and_carries_context(tmp_path) -> None:
     assert action.tool_id == "tools.echo"
     assert action.args == {"text": "hi"}
     request = fake.requests[0]
+    assert request.reasoning_effort == "low"
     # 工具以 OpenAI function 信封进 LLMRequest.tools；宪法/技能进 system prompt
     tools = request.tools or []
     assert tools and tools[0]["type"] == "function"
@@ -159,6 +166,58 @@ def test_loop_uses_async_llm_without_nested_loop() -> None:
     loop = DefaultLoop(planner=LLMPlanner(_ThinShellLLM("直接回复文本")))
     result = loop.run("问题")
     assert result.reply == "直接回复文本"
+
+
+# ---- LLMPlanner 流式推理 ----
+
+
+class _StreamingFakeLLM:
+    """记录 LLMRequest、按固定分片流式产出的假 LLM。"""
+
+    def __init__(self, chunks: list[str]) -> None:
+        self._chunks = chunks
+        self.requests: list[object] = []
+
+    async def astream(self, request: object):
+        self.requests.append(request)
+        for text in self._chunks:
+            yield LLMChunk(content=text)
+
+
+def _collect_planner_stream(planner: LLMPlanner) -> list[str | Action]:
+    async def _run() -> list[str | Action]:
+        return [item async for item in planner.astream(LoopContext(messages=["hi"]))]
+
+    return asyncio.run(_run())
+
+
+def test_planner_astream_yields_reply_deltas() -> None:
+    """自然语言回复：逐 delta 外发，末态 Action 携带全文。"""
+    planner = LLMPlanner(_StreamingFakeLLM(["你", "好", "，", "世界"]))
+    items = _collect_planner_stream(planner)
+    assert items == ["你", "好", "，", "世界", Action(args={"reply": "你好，世界"})]
+
+
+def test_planner_astream_buffers_tool_call_json() -> None:
+    """工具调用 JSON：分片缓冲不外泄半截 JSON，末态解析为工具 Action。"""
+    planner = LLMPlanner(
+        _StreamingFakeLLM(['{"tool_id": "tools.', 'echo", "args": {"text": "hi"}}'])
+    )
+    items = _collect_planner_stream(planner)
+    assert items == [Action(tool_id="tools.echo", args={"text": "hi"})]
+
+
+def test_planner_astream_llm_error_returns_action() -> None:
+    """流式失败与 __call__ 同语义：终端回复错误信息，不抛裸异常。"""
+
+    class _BrokenLLM:
+        async def astream(self, request: object):
+            raise LLMError("boom")
+            yield  # pragma: no cover — 使其为异步生成器
+
+    planner = LLMPlanner(_BrokenLLM())
+    items = _collect_planner_stream(planner)
+    assert len(items) == 1 and "LLM 调用失败" in items[0].args["reply"]
 
 
 # ---- 热路径 TraceEvent ----

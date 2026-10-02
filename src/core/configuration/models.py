@@ -38,6 +38,7 @@ class LLMConfig:
     model: str
     endpoint: str
     api_key_ref: str  # api_key 的 ${VAR} 引用（非明文）
+    reasoning_effort: str | None = None  # 推理档位 low/medium/high（可选）
 
 
 @dataclass(frozen=True)

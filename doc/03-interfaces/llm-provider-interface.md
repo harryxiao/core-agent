@@ -39,6 +39,7 @@ class LLMRequest:
     temperature: float = 0.7
     max_tokens: int | None = None
     tools: list[ToolDef] | None = None
+    reasoning_effort: str | None = None  # 推理档位 low/medium/high；None 不下发
 
 @dataclass
 class TokenUsage:

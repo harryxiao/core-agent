@@ -120,6 +120,47 @@ def test_run_arun_equivalent() -> None:
     assert async_result.trace_id
 
 
+# ---- 流式推理（逐 token reply_delta）----
+
+
+class _StreamingPlanner:
+    """duck-typed 流式 planner：先逐 delta 外发自然语言，末态产出终 Action。"""
+
+    def __init__(self, deltas: list[str], action: Action) -> None:
+        self._deltas = deltas
+        self._action = action
+
+    async def astream(self, ctx):
+        for delta in self._deltas:
+            yield delta
+        yield self._action
+
+
+def _collect_events(loop: DefaultLoop, prompt: str):
+    async def _run():
+        return [event async for event in loop.astream(prompt)]
+
+    return asyncio.run(_run())
+
+
+def test_astream_streaming_planner_yields_per_token_deltas() -> None:
+    """流式 planner：推理期逐 token reply_delta，终态不重复全文。"""
+    loop = DefaultLoop(planner=_StreamingPlanner(["你", "好"], Action(args={"reply": "你好"})))
+    events = _collect_events(loop, "问题")
+    deltas = [(e.type, e.payload) for e in events if e.type == "reply_delta"]
+    assert deltas == [("reply_delta", {"text": "你"}), ("reply_delta", {"text": "好"})]
+    assert events[-1].type == "loop_finished"
+    assert events[-1].payload.reply == "你好"
+
+
+def test_astream_non_streaming_planner_keeps_full_delta() -> None:
+    """纯 callable planner：无 delta 时终态补一次全文（既有行为不变）。"""
+    loop = DefaultLoop(planner=lambda ctx: Action(args={"reply": "ok"}))
+    events = _collect_events(loop, "问题")
+    deltas = [e for e in events if e.type == "reply_delta"]
+    assert len(deltas) == 1 and deltas[0].payload == {"text": "ok"}
+
+
 # ---- 端到端冒烟：loop 驱动 tool-use + memory ----
 
 

@@ -89,17 +89,41 @@ class DefaultLoop(Plugin):
                 failed = True
         return LoopResult(reply=reply, trace_id=trace_id, failed=failed)
 
+    async def _reason_events(self, ctx: LoopContext) -> AsyncIterator[LoopEvent | Action]:
+        """推理步事件流：planner 支持流式时逐 delta 转 reply_delta，末态产出 Action。
+
+        planner 无 ``astream``（含 None/纯 callable）时退化为 reason()，仅产出单个
+        Action，事件序与非流式实现完全一致。
+        """
+        planner = getattr(self._planner, "astream", None)
+        if planner is None:
+            yield await self.reason(ctx)
+            return
+        async for item in planner(ctx):
+            if isinstance(item, str):
+                yield LoopEvent("reply_delta", {"text": item})
+            else:
+                yield item
+
     async def astream(self, user_input: str) -> AsyncIterator[LoopEvent]:
         trace_id = uuid.uuid4().hex
         yield LoopEvent("loop_started", {"trace_id": trace_id})
         self._trace(trace_id, "loop_started", {"trace_id": trace_id})
         ctx = self.perceive(user_input)
         limit_reason = ""
+        streamed = False  # 本轮循环是否已流式外发 reply_delta（避免终态重复全文）
         while not ctx.done():
             if ctx.rounds >= self._max_rounds:
                 limit_reason = "LOOP_LIMIT_EXCEEDED"
                 break
-            action = await self.reason(ctx)
+            action: Action | None = None
+            async for item in self._reason_events(ctx):
+                if isinstance(item, LoopEvent):
+                    streamed = True
+                    yield item
+                else:
+                    action = item
+            assert action is not None  # noqa: S101 — _reason_events 末态必产 Action
             action = self._apply_middlewares(ctx, action)
             if action.is_irreversible and not self._allow(action):
                 action = self.decline(action)
@@ -117,7 +141,8 @@ class DefaultLoop(Plugin):
             yield LoopEvent("loop_failed", {"reason": limit_reason, "trace_id": trace_id})
         self.remember(trace_id, ctx.trajectory)
         self._trace(trace_id, "loop_finished", {"reply": ctx.reply, "failed": bool(limit_reason)})
-        yield LoopEvent("reply_delta", {"text": ctx.reply})
+        if not streamed:  # 未流式外发过 delta 才补一次全文（非流式 planner 兼容路径）
+            yield LoopEvent("reply_delta", {"text": ctx.reply})
         yield LoopEvent(
             "loop_finished",
             LoopResult(reply=ctx.reply, trace_id=trace_id, failed=bool(limit_reason)),

@@ -168,3 +168,41 @@ def test_tui_message_roundtrip_clears_status() -> None:
     ok, status = asyncio.run(_drive())
     assert ok is True
     assert status == ""
+
+
+def test_tui_streams_deltas_then_flushes_once() -> None:
+    """流式 reply_delta：live 区逐字上屏，终态全文只落日志一次（不重复）。"""
+    from core.loop import LoopResult  # noqa: PLC0415 — 流式事件构造
+
+    api = UIAPILayer(
+        loop=FakeLoop(
+            [
+                LoopEvent("loop_started", {"trace_id": "t1"}),
+                LoopEvent("reply_delta", {"text": "你"}),
+                LoopEvent("reply_delta", {"text": "好"}),
+                LoopEvent("loop_finished", LoopResult(reply="你好", trace_id="t1")),
+            ]
+        )
+    )
+    api.set_llm_config(_llm())
+    from core.ui.repl import build_app  # noqa: PLC0415 — 可选依赖懒 import
+
+    app = build_app(api)
+
+    async def _drive() -> tuple[bool, int]:
+        from textual.widgets import Input, RichLog, Static  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            inp.value = "hi"
+            await pilot.press("enter")
+            await pilot.pause()
+            live_hidden = app.query_one("#live", Static).display is False
+            log_text = "".join(strip.text for strip in app.query_one("#output", RichLog).lines)
+            running = app.is_running
+        return live_hidden and running, log_text.count("你好")
+
+    ok, count = asyncio.run(_drive())
+    assert ok is True
+    assert count == 1  # 全文只出现一次（live 流式落定，终态不重复）

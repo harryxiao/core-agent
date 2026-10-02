@@ -29,6 +29,8 @@ class LLMRequest:
     temperature: float = 0.7
     max_tokens: int | None = None
     tools: list[Any] | None = None
+    # 推理档位（OpenAI 风格 low/medium/high）：None 不下发（端点不支持该字段时零影响）
+    reasoning_effort: str | None = None
 
 
 @dataclass

@@ -135,6 +135,11 @@ _FEATURE_ENV_PREFIX = "CORE_FEATURES_"
 _BOOL_NULL: dict[str, Any] = {"true": True, "false": False, "null": None, "~": None}
 
 
+def _opt_str(value: Any) -> str | None:
+    """yaml 可选字符串：缺省/空串归一为 None（不下发该字段）。"""
+    return str(value) if value else None
+
+
 def _default_user_dir() -> Path:
     """用户级配置目录（config.yaml 回落位 + .env 兜底位）。"""
     return Path.home() / ".core-agent"
@@ -329,6 +334,7 @@ class ConfigManager:
             model=str(llm_raw.get("model", "")),
             endpoint=str(llm_raw.get("endpoint", "")),
             api_key_ref=str(llm_raw.get("api_key", "")),
+            reasoning_effort=_opt_str(llm_raw.get("reasoning_effort")),
         )
         features_raw = cast(dict[str, Any], merged.get("features") or {})
         features = {str(k): bool(v) for k, v in features_raw.items()}
@@ -415,6 +421,7 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
             model=str(llm_raw["model"]),
             endpoint=str(llm_raw["endpoint"]),
             api_key_ref=str(llm_raw["api_key"]),
+            reasoning_effort=_opt_str(llm_raw.get("reasoning_effort")),
         ),
         features=features,
         im=im,

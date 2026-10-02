@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 
 from core.context import DynamicAssembler
@@ -32,17 +32,19 @@ _SYSTEM_PROMPT = (
 class LLMPlanner:
     """ReAct 式 LLM 规划器：感知 → 装配 → 推理 → 解析 Action。"""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — 注入面均为可选依赖注入
         self,
         llm: LLMProvider,
         *,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         assembler: DynamicAssembler | None = None,
         skill_router: Callable[[str], list[str]] | None = None,
         tools: ToolProvider | None = None,
     ) -> None:
         self._llm = llm
         self._model = model
+        self._reasoning_effort = reasoning_effort
         self._assembler = assembler
         self._skill_router = skill_router
         self._tools = tools
@@ -55,6 +57,33 @@ class LLMPlanner:
             return Action(args={"reply": f"LLM 调用失败: {exc}"})
         return self._parse(response.content)
 
+    async def astream(self, ctx: LoopContext) -> AsyncIterator[str | Action]:
+        """流式推理：自然语言回复逐 delta 外发，末态产出终 Action。
+
+        首个 ``{`` 判定为工具调用 JSON：缓冲不外泄（逐 token 外发半截 JSON 无意义），
+        拼完整后走 ``_parse``。provider 不支持流式（缺 astream）或流式失败时与
+        ``__call__`` 同语义（终端回复，不抛裸异常）。
+        """
+        if not hasattr(self._llm, "astream"):
+            yield await self(ctx)  # completion-only provider：退化为单 Action，无 delta
+            return
+        request = self._build_request(ctx)
+        chunks: list[str] = []
+        reply_stream = False  # 已判定为自然语言回复才外发
+        try:
+            async for chunk in self._llm.astream(request):
+                if not chunk.content:
+                    continue
+                chunks.append(chunk.content)
+                if len(chunks) == 1:
+                    reply_stream = not chunk.content.lstrip().startswith("{")
+                if reply_stream:
+                    yield chunk.content
+        except LLMError as exc:
+            yield Action(args={"reply": f"LLM 调用失败: {exc}"})
+            return
+        yield self._parse("".join(chunks))
+
     def _build_request(self, ctx: LoopContext) -> LLMRequest:
         messages = [Message(role="system", content=self._system_prompt(ctx))]
         messages.extend(self._to_messages(ctx.messages))
@@ -62,6 +91,7 @@ class LLMPlanner:
             messages=messages,
             model=self._model or "",
             tools=self._tool_schemas(),
+            reasoning_effort=self._reasoning_effort,
         )
 
     # ---- 组装 ----

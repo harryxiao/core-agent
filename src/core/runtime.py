@@ -139,6 +139,7 @@ def build_runtime(
     planner = LLMPlanner(
         llm,
         model=app.llm.model,
+        reasoning_effort=app.llm.reasoning_effort,
         assembler=assembler,
         skill_router=lambda task: [m.skill.skill_id for m in skill_router.match(task)],
         tools=tools,

@@ -642,6 +642,10 @@ def _run(args: argparse.Namespace) -> int:
 async def _stream(api: UIAPILayer, session_id: str, prompt: str) -> None:
     async for event in api.run_loop(session_id, prompt):
         payload = event.payload if event.payload is not None else ""
+        # 增量 reply_delta（Event 层映射为 dict 载荷的 loop.result）不逐行打印，
+        # 完整回复由终态 LoopResult 事件携带
+        if event.type == "loop.result" and isinstance(payload, dict):
+            continue
         print(f"[{event.type}] {payload}")
 
 
