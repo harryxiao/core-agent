@@ -114,8 +114,11 @@ def test_llm_planner_returns_action_and_carries_context(tmp_path) -> None:
     assert action.tool_id == "tools.echo"
     assert action.args == {"text": "hi"}
     request = fake.requests[0]
-    # 工具 schema 进 LLMRequest.tools；宪法/技能进 system prompt
-    assert request.tools == [t.schema for t in provider.active_tools()]
+    # 工具以 OpenAI function 信封进 LLMRequest.tools；宪法/技能进 system prompt
+    tools = request.tools or []
+    assert tools and tools[0]["type"] == "function"
+    assert tools[0]["function"]["name"] == "tools.echo"
+    assert tools[0]["function"]["parameters"] == provider.active_tools()[0].schema
     system = request.messages[0].content
     assert "规则A" in system
     assert "skills.x.y" in system

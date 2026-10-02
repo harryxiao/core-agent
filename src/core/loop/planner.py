@@ -88,7 +88,18 @@ class LLMPlanner:
     def _tool_schemas(self) -> list[Any] | None:
         if self._tools is None:
             return None
-        return [t.schema for t in self._tools.active_tools()]
+        # OpenAI 兼容工具信封：端点按 function.name 校验，裸参数 schema 会被拒（400）
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.tool_id,
+                    "description": t.description,
+                    "parameters": t.schema,
+                },
+            }
+            for t in self._tools.active_tools()
+        ]
 
     def _skill_hints(self, task: str) -> list[str]:
         if self._skill_router is None:
