@@ -31,10 +31,43 @@
 - **WHEN** 拆解器生成子任务 DAG
 - **THEN** 子任务按依赖拓扑序执行，无依赖项可并行
 
+#### Scenario: LLM 拆解产出子任务 DAG
+- **GIVEN** 拆解器注入 LLM planner
+- **WHEN** 输入一个复合目标
+- **THEN** planner 经模型调用产出子任务 DAG（id/goal/acceptance/depends_on），按依赖拓扑序与波次执行
+
+#### Scenario: LLM 拆解失败回落单子任务
+- **GIVEN** 拆解器注入 LLM planner
+- **WHEN** 模型调用失败或输出不可解析为合法子任务集
+- **THEN** 回落为单子任务（目标即子任务），任务不因此中断
+
+#### Scenario: 依赖结果交接
+- **GIVEN** 子任务 B 依赖子任务 A 且 A 验收通过
+- **WHEN** B 开始执行
+- **THEN** A 的验收通过结果作为前置上下文注入 B 的执行输入，结果随检查点持久化供续跑重建
+
 #### Scenario: 子任务校验通过才推进
 - **GIVEN** 一个子任务执行完成
 - **WHEN** 结果未通过其验收标准
 - **THEN** 不推进下一步，回退重试（有限次）或重新规划
+
+### Requirement: 子任务验收门
+系统 SHALL 对带验收标准的子任务结果经 LLM 对照判定（验收门）：判定通过才记录完成并推进；判定不通过或判定器不可用时标记失败不推进（fail-closed）；无验收标准时退化为离线非空判定，不调用模型。
+
+#### Scenario: 验收门 LLM 判定
+- **GIVEN** 子任务带验收标准且执行完成
+- **WHEN** 验收门对照 acceptance 判定结果
+- **THEN** 判定通过才记录完成并推进下一波次，判定结论与理由写入 trace
+
+#### Scenario: 验收判定失败不推进
+- **GIVEN** 子任务结果未达验收标准（或判定调用失败）
+- **WHEN** 验收门判定不通过
+- **THEN** 子任务标记失败（含理由），不静默推进，任务转入 RECOVERING
+
+#### Scenario: 无验收标准离线判定
+- **GIVEN** 子任务未定义验收标准
+- **WHEN** 验收门校验结果
+- **THEN** 退化为离线判定（结果非空即通过），不调用模型
 
 ### Requirement: 多 Agent 协同
 系统 SHALL 支持按任务类型路由到最合适的子 Agent，并通过标准化消息协议完成交接。
@@ -143,3 +176,21 @@
 - **GIVEN** 扇出执行单元与 LLMProvider / ToolProvider 异步能力之间存在契约空白
 - **WHEN** 本契约显式映射执行单元到异步接口
 - **THEN** 并行编排与异步能力之间的契约空白被闭合，扇出场景不再退化为同步串行阻塞
+
+### Requirement: 任务入口与进度事件
+系统 SHALL 提供 `core-agent task <目标>` CLI 入口驱动编排器：流式产出任务进度事件（task_started / plan_ready / wave_started / subtask_started / subtask_completed / task_checkpoint / task_finished / task_failed），关键节点（拆解、验收、检查点、终态）写入 trace 审计；支持从检查点断点续跑（重建原计划与已完成子任务集，未完成子任务续跑，已完成子任务不重复执行）。
+
+#### Scenario: CLI 任务入口流式进度
+- **GIVEN** 一个复合目标
+- **WHEN** 执行 `core-agent task <目标>`
+- **THEN** 拆解出子任务 DAG 按依赖序执行，进度事件依序流式输出，验收与检查点写入 trace
+
+#### Scenario: 断点续跑恢复
+- **GIVEN** 任务执行中断（进程被杀）且检查点已持久化
+- **WHEN** 以同一 task-id 从检查点恢复
+- **THEN** 重建原计划并跳过已完成子任务，仅续跑未完成子任务（幂等恢复），已完成子任务结果重建为依赖上下文
+
+#### Scenario: 任务失败可见
+- **GIVEN** 某子任务验收失败
+- **WHEN** 编排器收拢该波次
+- **THEN** 流式产出 task_failed 事件并携带失败子任务与理由，命令以非零退出码结束

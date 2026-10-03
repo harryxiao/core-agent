@@ -2,22 +2,39 @@
 
 波次内子任务异步扇出（真并发，受资源上限约束分批），fan-in 汇总校验；
 目标进度追踪 + 死循环哨兵；挂起 / 恢复 / 取消断点续跑。子任务按优先级
-降序调度（同优先级稳定序 FIFO），已完成子任务幂等跳过。
+降序调度（同优先级稳定序 FIFO），已完成子任务幂等跳过。run 为同步语义
+收口（失败按原错误码抛错），astream 流式外发任务进度事件，拆解 / 验收 /
+检查点 / 终态等关键节点写 trace 审计。
 
-对应接口：doc/03-interfaces/orchestration-interface.md §1（断点续跑场景）
+对应接口：doc/03-interfaces/orchestration-interface.md §1（断点续跑）§2.2
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+import time
+import uuid
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
+from typing import Any, cast
+
+from core.loop import LoopEvent
+from core.observability import TraceEvent, Tracer
 
 from .decomposer import SubtaskDecomposer
 from .errors import OrchestrationError, OrchestrationErrorCode
 from .models import Plan, Subtask, TaskState
 from .router import MultiAgentRouter
 from .state_machine import StateMachine
+
+# 检查点回调：波次收拢后持久化（task_id、累计结果、全量计划——续跑重建用）。
+CheckpointFn = Callable[[str, "list[SubtaskOutcome]", Plan], None]
+# 完成回调：任务 DONE 后落终态检查点（done=True）。
+DoneFn = Callable[[str, "list[SubtaskOutcome]", Plan], None]
+# 子任务事件发射器：入队即返回（None 为波次收尾哨兵）。
+Emit = Callable[[LoopEvent | None], None]
+
+_MAX_HANDOFF_CHARS = 2000  # 依赖结果注入/检查点留存的回复截断（上下文有界）
 
 
 class ProgressTracker:
@@ -53,13 +70,17 @@ class ProgressTracker:
 
 @dataclass
 class SubtaskOutcome:
-    """子任务执行结果：通过与否 + 结构化错误码 + 原因 + 追溯 trace。"""
+    """子任务执行结果：通过与否 + 结构化错误码 + 原因 + 追溯 trace + 回复摘要。
+
+    reply 携带验收通过的结果（截断有界），供依赖子任务交接与检查点续跑重建。
+    """
 
     subtask_id: str
     ok: bool
     error: OrchestrationErrorCode | None = None
     reason: str = ""
     trace_id: str = ""
+    reply: str = ""
 
 
 class TaskScheduler:
@@ -74,8 +95,9 @@ class TaskScheduler:
         tracker: ProgressTracker | None = None,
         max_concurrency: int = 4,
         success_checker: Callable[[list[str]], bool] | None = None,
-        checkpoint: Callable[[str, list[SubtaskOutcome]], None] | None = None,
-        on_done: Callable[[str, list[SubtaskOutcome]], None] | None = None,
+        checkpoint: CheckpointFn | None = None,
+        on_done: DoneFn | None = None,
+        tracer: Tracer | None = None,
     ) -> None:
         if max_concurrency < 1:
             raise OrchestrationError(
@@ -90,51 +112,154 @@ class TaskScheduler:
         self._success_checker = success_checker
         self._checkpoint = checkpoint
         self._on_done = on_done
+        self._tracer = tracer
+        self._results: dict[str, dict[str, str]] = {}  # task_id → subtask_id → 验收通过的回复
 
-    async def run(
-        self, task_id: str, goal: str, success_criteria: list[str] | None = None
+    async def run(  # noqa: PLR0913 — 续跑注入面（plan/completed/results）
+        self,
+        task_id: str,
+        goal: str,
+        success_criteria: list[str] | None = None,
+        *,
+        plan: Plan | None = None,
+        completed: set[str] | None = None,
+        results: dict[str, str] | None = None,
     ) -> list[SubtaskOutcome]:
-        """拆解 → 波次并行扇出 → fan-in 校验推进，直至完成或失败。"""
-        plan = self._decomposer.decompose(goal, success_criteria)
+        """同步语义收口：消费 astream；终态失败按原错误码抛 OrchestrationError。
+
+        plan / completed / results 为断点续跑注入面：跳过拆解、跳过已完成
+        子任务、重建依赖结果上下文。
+        """
+        async for event in self.astream(
+            task_id, goal, success_criteria, plan=plan, completed=completed, results=results
+        ):
+            if event.type == "task_failed":
+                data = cast(dict[str, Any], event.payload)
+                raise OrchestrationError(data["code"], data["reason"])
+            if event.type == "task_finished":
+                data = cast(dict[str, Any], event.payload)
+                return cast(list[SubtaskOutcome], data["outcomes"])
+        # astream 必达终态（finished/failed），此处为防御性兜底
+        raise OrchestrationError(
+            OrchestrationErrorCode.PROGRESS_NOT_MET, "任务流意外终止（未达终态）"
+        )
+
+    async def astream(  # noqa: C901, PLR0912, PLR0913, PLR0915 — 编排主管线多分支长管道
+        self,
+        task_id: str,
+        goal: str,
+        success_criteria: list[str] | None = None,
+        *,
+        plan: Plan | None = None,
+        completed: set[str] | None = None,
+        results: dict[str, str] | None = None,
+    ) -> AsyncIterator[LoopEvent]:
+        """流式任务执行：拆解 → 波次扇出 → 验收推进，进度事件依序外发。"""
+        yield LoopEvent("task_started", {"task_id": task_id, "goal": goal})
+        for subtask_id in completed or set():
+            self._tracker.record(task_id, subtask_id)  # 续跑：已完成集回填
+        if results:
+            self._results.setdefault(task_id, {}).update(results)  # 续跑：依赖上下文重建
+        if plan is None:
+            try:
+                plan = await self._decomposer.decompose(goal, success_criteria)
+            except OrchestrationError as exc:
+                self._trace(task_id, "task_failed", {"reason": str(exc)})
+                yield LoopEvent(
+                    "task_failed", {"task_id": task_id, "code": exc.code, "reason": str(exc)}
+                )
+                return
+        self._trace(
+            task_id, "plan_ready", {"subtasks": [s.id for s in plan.subtasks], "waves": plan.waves}
+        )
+        yield LoopEvent(
+            "plan_ready",
+            {
+                "task_id": task_id,
+                "goal": plan.goal,
+                "subtasks": [
+                    {
+                        "id": s.id,
+                        "goal": s.goal,
+                        "acceptance": s.acceptance,
+                        "depends_on": list(s.depends_on),
+                    }
+                    for s in plan.subtasks
+                ],
+                "waves": [list(w) for w in plan.waves],
+            },
+        )
         self._enter_executing(task_id)
         outcomes: list[SubtaskOutcome] = []
         for wave in plan.waves:
-            wave_outcomes = await self._fan_out(task_id, plan, wave)
+            yield LoopEvent("wave_started", {"task_id": task_id, "wave": list(wave)})
+            queue: asyncio.Queue[LoopEvent | None] = asyncio.Queue()
+            gather_task = asyncio.create_task(self._fan_out(task_id, plan, wave, queue.put_nowait))
+            while True:  # 排水子任务事件（None 哨兵 = 波次收拢）
+                event = await queue.get()
+                if event is None:
+                    break
+                yield event
+            await gather_task  # fan-out 异常在此重放（fan-in 语义不变）
+            wave_outcomes = gather_task.result()
             outcomes.extend(wave_outcomes)
             self._state_machine.transition(task_id, TaskState.VERIFYING)
             failed = [o.subtask_id for o in wave_outcomes if not o.ok]
             if failed:
                 self._state_machine.transition(task_id, TaskState.RECOVERING)
-                raise OrchestrationError(
+                yield self._failed(
+                    task_id,
                     OrchestrationErrorCode.SUBTASK_VERIFY_FAILED,
                     f"子任务校验失败: {failed}",
+                    failed=failed,
                 )
+                return
             if self._tracker.detect_stall(task_id):
                 self._state_machine.transition(task_id, TaskState.RECOVERING)
-                raise OrchestrationError(
+                yield self._failed(
+                    task_id,
                     OrchestrationErrorCode.DEADLOOP_DETECTED,
                     f"任务 {task_id} 检测到死循环（进度无推进）",
                 )
+                return
             if self._checkpoint is not None:
-                self._checkpoint(task_id, wave_outcomes)
+                self._checkpoint(task_id, outcomes, plan)
+                yield LoopEvent(
+                    "task_checkpoint",
+                    {
+                        "task_id": task_id,
+                        "wave": list(wave),
+                        "completed": sorted(self._tracker.completed(task_id)),
+                    },
+                )
+                self._trace(task_id, "task_checkpoint", {"wave": list(wave)})
             self._state_machine.transition(task_id, TaskState.EXECUTING)
         self._state_machine.transition(task_id, TaskState.VERIFYING)
         if plan.success_criteria and self._success_checker is None:
             self._state_machine.transition(task_id, TaskState.FAILED)
-            raise OrchestrationError(
+            yield self._failed(
+                task_id,
                 OrchestrationErrorCode.MISSING_SUCCESS_CHECKER,
                 f"任务 {task_id} 提供了 success_criteria 但未注入 success_checker",
             )
+            return
         if not self._success_met(plan.success_criteria):
             self._state_machine.transition(task_id, TaskState.RECOVERING)
-            raise OrchestrationError(
+            yield self._failed(
+                task_id,
                 OrchestrationErrorCode.PROGRESS_NOT_MET,
                 f"任务 {task_id} 未达成成功标准: {plan.success_criteria}",
             )
+            return
         self._state_machine.transition(task_id, TaskState.DONE)
         if self._on_done is not None:
-            self._on_done(task_id, outcomes)
-        return outcomes
+            self._on_done(task_id, outcomes, plan)
+        self._trace(
+            task_id,
+            "task_finished",
+            {"ok": sum(1 for o in outcomes if o.ok), "total": len(outcomes)},
+        )
+        yield LoopEvent("task_finished", {"task_id": task_id, "outcomes": outcomes})
 
     def suspend(self, task_id: str) -> None:
         """挂起：持久化执行上下文（进度已留存于 tracker）并转入 SUSPENDED。"""
@@ -149,11 +274,26 @@ class TaskScheduler:
         self._state_machine.transition(task_id, TaskState.FAILED)
         self._tracker.reset(task_id)
 
+    def _failed(
+        self,
+        task_id: str,
+        code: OrchestrationErrorCode,
+        reason: str,
+        *,
+        failed: list[str] | None = None,
+    ) -> LoopEvent:
+        """失败收口：trace + task_failed 事件（run 消费端还原为抛错）。"""
+        self._trace(task_id, "task_failed", {"code": str(code), "reason": reason})
+        payload: dict[str, Any] = {"task_id": task_id, "code": code, "reason": reason}
+        if failed:
+            payload["failed"] = failed
+        return LoopEvent("task_failed", payload)
+
     def _success_met(self, criteria: list[str]) -> bool:
         """成功标准判定：空标准视为通过；否则调用注入的 checker（缺失已在 run 入口校验）。"""
         if not criteria:
             return True
-        assert self._success_checker is not None  # run() 入口已拦截缺失场景
+        assert self._success_checker is not None  # astream 已拦截缺失场景
         return self._success_checker(criteria)
 
     def _enter_executing(self, task_id: str) -> None:
@@ -165,36 +305,94 @@ class TaskScheduler:
         elif state == TaskState.SUSPENDED:
             self._state_machine.transition(task_id, TaskState.EXECUTING)
 
-    async def _fan_out(self, task_id: str, plan: Plan, wave: list[str]) -> list[SubtaskOutcome]:
+    async def _fan_out(
+        self, task_id: str, plan: Plan, wave: list[str], emit: Emit
+    ) -> list[SubtaskOutcome]:
         """波次内子任务优先级排序 + 真并发扇出（资源上限分批）+ 汇总。"""
         subtasks = [s for s in plan.subtasks if s.id in wave]
         ordered = sorted(subtasks, key=lambda s: s.priority, reverse=True)
         semaphore = asyncio.Semaphore(self._max_concurrency)
-        outcomes = await asyncio.gather(
-            *(self._run_subtask(task_id, subtask, semaphore) for subtask in ordered)
-        )
-        return list(outcomes)
+        try:
+            outcomes = await asyncio.gather(
+                *(self._run_subtask(task_id, plan, subtask, semaphore, emit) for subtask in ordered)
+            )
+            return list(outcomes)
+        finally:
+            emit(None)  # 收尾哨兵：异常路径也必须解除事件排水阻塞
 
-    async def _run_subtask(
-        self, task_id: str, subtask: Subtask, semaphore: asyncio.Semaphore
+    async def _run_subtask(  # noqa: PLR0911, PLR0913 — 子任务管道多早退分支/注入面
+        self,
+        task_id: str,
+        plan: Plan,
+        subtask: Subtask,
+        semaphore: asyncio.Semaphore,
+        emit: Emit,
     ) -> SubtaskOutcome:
-        """执行单个子任务：幂等跳过已完成 → 匹配 Agent → 异步执行 → 校验。"""
+        """执行单个子任务：幂等跳过已完成 → 匹配 Agent → 异步执行 → 验收门。"""
         if subtask.id in self._tracker.completed(task_id):
+            emit(
+                LoopEvent(
+                    "subtask_completed",
+                    {"task_id": task_id, "subtask_id": subtask.id, "ok": True, "skipped": True},
+                )
+            )
             return SubtaskOutcome(subtask.id, ok=True)
+        emit(
+            LoopEvent(
+                "subtask_started",
+                {"task_id": task_id, "subtask_id": subtask.id, "goal": subtask.goal},
+            )
+        )
         async with semaphore:
             profile = self._router.match(subtask.goal)
             if profile is None or profile.loop is None:
+                emit(
+                    LoopEvent(
+                        "subtask_completed",
+                        {
+                            "task_id": task_id,
+                            "subtask_id": subtask.id,
+                            "ok": False,
+                            "reason": "无匹配 Agent",
+                        },
+                    )
+                )
                 return SubtaskOutcome(
                     subtask.id,
                     ok=False,
                     error=OrchestrationErrorCode.NO_AGENT_MATCH,
                     reason="无匹配 Agent",
                 )
-            result = await profile.loop.arun(subtask.goal)
-            verify = self._decomposer.verify(subtask, result.reply)
+            result = await profile.loop.arun(self._handoff_goal(task_id, plan, subtask))
+            verify = await self._decomposer.verify(subtask, result.reply)
+            self._trace(
+                task_id,
+                "subtask_verified",
+                {"subtask_id": subtask.id, "passed": verify.passed, "reason": verify.reason},
+            )
+            emit(
+                LoopEvent(
+                    "subtask_completed",
+                    {
+                        "task_id": task_id,
+                        "subtask_id": subtask.id,
+                        "ok": verify.passed,
+                        "reason": verify.reason,
+                        "trace_id": result.trace_id,
+                    },
+                )
+            )
             if verify.passed:
                 self._tracker.record(task_id, subtask.id)
-                return SubtaskOutcome(subtask.id, ok=True, trace_id=result.trace_id)
+                self._results.setdefault(task_id, {})[subtask.id] = result.reply[
+                    :_MAX_HANDOFF_CHARS
+                ]
+                return SubtaskOutcome(
+                    subtask.id,
+                    ok=True,
+                    trace_id=result.trace_id,
+                    reply=result.reply[:_MAX_HANDOFF_CHARS],
+                )
             return SubtaskOutcome(
                 subtask.id,
                 ok=False,
@@ -202,3 +400,30 @@ class TaskScheduler:
                 reason=verify.reason,
                 trace_id=result.trace_id,
             )
+
+    def _handoff_goal(self, task_id: str, plan: Plan, subtask: Subtask) -> str:
+        """交接目标：子任务 goal + 前置依赖的验收通过结果（结果驱动后继）。"""
+        results = self._results.get(task_id, {})
+        by_id = {s.id: s for s in plan.subtasks}
+        deps = [dep for dep in subtask.depends_on if dep in results]
+        if not deps:
+            return subtask.goal
+        context = "\n\n".join(
+            f"[前置子任务 {dep}] {by_id[dep].goal if dep in by_id else ''}\n结果：{results[dep]}"
+            for dep in deps
+        )
+        return f"{subtask.goal}\n\n前置子任务结果（可直接引用）：\n{context}"
+
+    def _trace(self, task_id: str, kind: str, payload: dict[str, Any] | None = None) -> None:
+        """关键节点写 trace（拆解/验收/检查点/终态——审计与断点续跑可查）。"""
+        if self._tracer is None:
+            return
+        self._tracer.record(
+            TraceEvent(
+                trace_id=task_id,
+                span_id=uuid.uuid4().hex,
+                ts=time.time(),
+                kind=kind,
+                payload=payload or {},
+            )
+        )

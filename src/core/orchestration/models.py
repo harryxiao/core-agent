@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 from core.loop import LoopPlugin
 
@@ -76,3 +76,47 @@ class AgentProfile:
     agent_id: str
     capabilities: list[str] = field(default_factory=list[str])
     loop: LoopPlugin | None = None
+
+
+def plan_to_dict(plan: Plan) -> dict[str, Any]:
+    """Plan → 可检查点持久化 dict（断点续跑重建用）。"""
+    return {
+        "goal": plan.goal,
+        "subtasks": [
+            {
+                "id": s.id,
+                "goal": s.goal,
+                "acceptance": s.acceptance,
+                "depends_on": list(s.depends_on),
+                "priority": s.priority,
+            }
+            for s in plan.subtasks
+        ],
+        "order": list(plan.order),
+        "success_criteria": list(plan.success_criteria),
+        "waves": [list(wave) for wave in plan.waves],
+    }
+
+
+def plan_from_dict(data: dict[str, Any]) -> Plan:
+    """dict → Plan（检查点重建）；缺字段按空值兜底，不抛裸异常。"""
+    items = [
+        cast(dict[str, Any], item) for item in data.get("subtasks", []) if isinstance(item, dict)
+    ]
+    subtasks = [
+        Subtask(
+            id=str(item.get("id", "")),
+            goal=str(item.get("goal", "")),
+            acceptance=str(item.get("acceptance", "")),
+            depends_on=[str(dep) for dep in item.get("depends_on", [])],
+            priority=int(item.get("priority", 0)),
+        )
+        for item in items
+    ]
+    return Plan(
+        subtasks=subtasks,
+        goal=str(data.get("goal", "")),
+        order=[str(sid) for sid in data.get("order", [])],
+        success_criteria=[str(c) for c in data.get("success_criteria", [])],
+        waves=[[str(sid) for sid in wave] for wave in data.get("waves", [])],
+    )

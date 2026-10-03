@@ -7,19 +7,32 @@
 对应规格：doc/openspec/specs/orchestration/spec.md
 """
 
-from .decomposer import SubtaskDecomposer
+from .decomposer import Planner, SubtaskDecomposer, Verifier
 from .errors import OrchestrationError, OrchestrationErrorCode
-from .models import AgentProfile, Plan, Subtask, TaskHandoff, TaskState, VerifyResult
+from .models import (
+    AgentProfile,
+    Plan,
+    Subtask,
+    TaskHandoff,
+    TaskState,
+    VerifyResult,
+    plan_from_dict,
+    plan_to_dict,
+)
+from .planner import LLMSubtaskPlanner, LLMVerifier
 from .router import MultiAgentRouter
 from .scheduler import ProgressTracker, SubtaskOutcome, TaskScheduler
 from .state_machine import StateMachine
 
 __all__ = [
     "AgentProfile",
+    "LLMSubtaskPlanner",
+    "LLMVerifier",
     "MultiAgentRouter",
     "OrchestrationError",
     "OrchestrationErrorCode",
     "Plan",
+    "Planner",
     "ProgressTracker",
     "StateMachine",
     "Subtask",
@@ -28,5 +41,8 @@ __all__ = [
     "TaskHandoff",
     "TaskScheduler",
     "TaskState",
+    "Verifier",
     "VerifyResult",
+    "plan_from_dict",
+    "plan_to_dict",
 ]

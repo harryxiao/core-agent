@@ -9,7 +9,9 @@ Compactor / Guardrail）→ LLMPlanner → PermissionGuard → DefaultLoop，供
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import cast
 
 from core.configuration import ConfigManager
@@ -40,11 +42,15 @@ from core.memory import Crystallizer, FileBackend, MemoryBackend, MemoryStore
 from core.observability import Tracer
 from core.orchestration import (
     AgentProfile,
+    LLMSubtaskPlanner,
+    LLMVerifier,
     MultiAgentRouter,
+    Plan,
     StateMachine,
     SubtaskDecomposer,
     SubtaskOutcome,
     TaskScheduler,
+    plan_to_dict,
 )
 from core.permission import PermissionGuard
 from core.plugin_registry import CoeffectResolver, EffectTracker, PluginInstaller
@@ -82,6 +88,15 @@ class Runtime:
     def recover(self) -> list[RestoreHandle]:
         """启动时扫描检查点，恢复无 done 标记的任务（返回续跑句柄）。"""
         return _recover_incomplete(self.checkpoints, self.crash_recovery)
+
+
+def _checkpoint_path() -> Path:
+    """检查点落盘路径：$CORE_STATE_DIR（缺省 ~/.core/state）/checkpoints.jsonl。
+
+    与 entry 的全局状态目录约定一致；env 覆盖便于测试隔离。
+    """
+    base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
+    return base / "checkpoints.jsonl"
 
 
 def build_runtime(
@@ -177,37 +192,54 @@ def build_runtime(
     )
     evolution = EvolutionWorker(tracer=tracer, engine=evolution_engine, trigger=EvolutionTrigger())
 
-    agent_router = MultiAgentRouter(
-        [AgentProfile(agent_id="main", capabilities=["default"], loop=cast(LoopPlugin, loop))]
+    main_agent = AgentProfile(
+        agent_id="main", capabilities=["default"], loop=cast(LoopPlugin, loop)
     )
-    store = CheckpointStore()
+    # 单 Agent 运行时：能力标签无命中时降级主循环（spec：无匹配 → 备用 Agent）
+    agent_router = MultiAgentRouter([main_agent], fallback=main_agent)
+    store = CheckpointStore(_checkpoint_path())  # 落盘：跨进程续跑/崩溃恢复可读
     checkpoints = CheckpointManager(store)
     time_travel = TimeTravel(store, effect_tracker=effect_tracker)
     crash_recovery = CrashRecovery(store)
 
-    def _checkpoint(task_id: str, outcomes: list[SubtaskOutcome]) -> None:
-        _write_checkpoint(task_id, outcomes, done=False)
+    def _checkpoint(task_id: str, outcomes: list[SubtaskOutcome], plan: Plan) -> None:
+        _write_checkpoint(task_id, outcomes, plan, done=False)
 
-    def _finalize(task_id: str, outcomes: list[SubtaskOutcome]) -> None:
-        _write_checkpoint(task_id, outcomes, done=True)
+    def _finalize(task_id: str, outcomes: list[SubtaskOutcome], plan: Plan) -> None:
+        _write_checkpoint(task_id, outcomes, plan, done=True)
 
-    def _write_checkpoint(task_id: str, outcomes: list[SubtaskOutcome], *, done: bool) -> None:
+    def _write_checkpoint(
+        task_id: str, outcomes: list[SubtaskOutcome], plan: Plan, *, done: bool
+    ) -> None:
         checkpoints.create_checkpoint(
             task_id,
             "default",
             {
-                "outcomes": [{"subtask_id": o.subtask_id, "ok": o.ok} for o in outcomes],
+                "plan": plan_to_dict(plan),  # 计划随检查点持久化（续跑重建）
+                "outcomes": [
+                    {
+                        "subtask_id": o.subtask_id,
+                        "ok": o.ok,
+                        # 依赖交接上下文（续跑重建用）
+                        "reply": o.reply,
+                    }
+                    for o in outcomes
+                ],
                 "trace_ids": [o.trace_id for o in outcomes if o.trace_id],
                 "done": done,
             },
         )
 
     orchestrator = TaskScheduler(
-        decomposer=SubtaskDecomposer(),
+        decomposer=SubtaskDecomposer(
+            planner=LLMSubtaskPlanner(llm, model=app.llm.model),
+            verifier=LLMVerifier(llm, model=app.llm.model),
+        ),
         router=agent_router,
         state_machine=StateMachine(),
         checkpoint=_checkpoint,
         on_done=_finalize,
+        tracer=tracer,
     )
 
     return Runtime(

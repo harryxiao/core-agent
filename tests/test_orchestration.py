@@ -8,15 +8,22 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
-from core.loop import Action, DefaultLoop, LoopResult
+from core.llm_provider import LLMError
+from core.loop import Action, DefaultLoop, LoopEvent, LoopResult
 from core.orchestration import (
     AgentProfile,
+    LLMSubtaskPlanner,
+    LLMVerifier,
     MultiAgentRouter,
     OrchestrationError,
     OrchestrationErrorCode,
+    Plan,
     ProgressTracker,
     StateMachine,
     Subtask,
@@ -24,6 +31,8 @@ from core.orchestration import (
     TaskHandoff,
     TaskScheduler,
     TaskState,
+    plan_from_dict,
+    plan_to_dict,
 )
 
 # ---- 状态机 ----
@@ -59,7 +68,7 @@ def test_unknown_task_defaults_created() -> None:
 
 
 def test_decompose_default_single_subtask() -> None:
-    plan = SubtaskDecomposer().decompose("do thing")
+    plan = asyncio.run(SubtaskDecomposer().decompose("do thing"))
     assert [s.id for s in plan.subtasks] == ["1"]
     assert plan.order == ["1"]
     assert plan.waves == [["1"]]
@@ -74,7 +83,7 @@ def test_decompose_topological_order_and_waves() -> None:
             Subtask(id="d", goal="", acceptance="", depends_on=["c"]),
         ]
     )
-    plan = decomposer.decompose("goal")
+    plan = asyncio.run(decomposer.decompose("goal"))
     assert plan.order == ["a", "b", "c", "d"]
     assert plan.waves == [["a", "b"], ["c"], ["d"]]
 
@@ -87,20 +96,20 @@ def test_decompose_cycle_detected() -> None:
         ]
     )
     with pytest.raises(OrchestrationError) as exc:
-        decomposer.decompose("goal")
+        asyncio.run(decomposer.decompose("goal"))
     assert exc.value.code == OrchestrationErrorCode.DEADLOOP_DETECTED
 
 
 def test_verify_empty_result_fails() -> None:
     decomposer = SubtaskDecomposer()
     subtask = Subtask(id="1", goal="", acceptance="")
-    assert decomposer.verify(subtask, "").passed is False
+    assert asyncio.run(decomposer.verify(subtask, "")).passed is False
 
 
 def test_verify_nonempty_passes() -> None:
     decomposer = SubtaskDecomposer()
     subtask = Subtask(id="1", goal="", acceptance="")
-    assert decomposer.verify(subtask, "ok").passed is True
+    assert asyncio.run(decomposer.verify(subtask, "ok")).passed is True
 
 
 # ---- 多 Agent 路由 ----
@@ -202,6 +211,18 @@ class _TrackingLoop(DefaultLoop):
         result = await super().arun(user_input)
         self._tracker.exit()
         return result
+
+
+class _FixedReplyLoop(DefaultLoop):
+    """固定回复并记录收到的子任务输入（依赖结果交接断言）。"""
+
+    def __init__(self, reply: str) -> None:
+        super().__init__(planner=lambda ctx: Action(args={"reply": reply}))
+        self.inputs: list[str] = []
+
+    async def arun(self, user_input: str) -> LoopResult:
+        self.inputs.append(user_input)
+        return await super().arun(user_input)
 
 
 def test_run_completes_and_marks_done() -> None:
@@ -358,3 +379,257 @@ def test_scheduler_rejects_invalid_concurrency() -> None:
             max_concurrency=0,
         )
     assert exc.value.code == OrchestrationErrorCode.WAVE_FANOUT_LIMIT
+
+
+# ---- LLM 拆解 / 验收适配器 ----
+
+
+class _FakeLLM:
+    """acompletion 桩：固定 content 或抛错；记录调用次数。"""
+
+    def __init__(self, content: str | list[str] = "", error: Exception | None = None) -> None:
+        self.contents = [content] if isinstance(content, str) else list(content)
+        self.error = error
+        self.calls = 0
+
+    async def acompletion(self, request: object) -> object:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        # 逐次回放；耗尽后重复末项（重试场景末项即最终输出）
+        idx = min(self.calls - 1, len(self.contents) - 1)
+        return SimpleNamespace(content=self.contents[idx])
+
+
+def test_llm_planner_produces_dag() -> None:
+    dag = json.dumps(
+        {
+            "subtasks": [
+                {"id": "1", "goal": "抓取页面", "acceptance": "正文非空", "depends_on": []},
+                {"id": "2", "goal": "汇总写文件", "acceptance": "文件存在", "depends_on": ["1"]},
+                {"id": "bad", "goal": "", "acceptance": "", "depends_on": []},  # 缺 goal 剔除
+            ]
+        }
+    )
+    llm = _FakeLLM(content=f"```json\n{dag}\n```")  # 围栏包裹也能解析
+    subtasks = asyncio.run(LLMSubtaskPlanner(llm)("复合目标"))
+    assert [(s.id, s.depends_on) for s in subtasks] == [("1", []), ("2", ["1"])]
+    assert subtasks[0].acceptance == "正文非空"
+
+
+def test_llm_planner_fallback_on_error_or_garbage() -> None:
+    errored = asyncio.run(LLMSubtaskPlanner(_FakeLLM(error=LLMError("boom")))("目标"))
+    assert [s.id for s in errored] == ["1"] and errored[0].goal == "目标"
+    garbage = asyncio.run(LLMSubtaskPlanner(_FakeLLM(content="无法拆解"))("目标"))
+    assert [s.id for s in garbage] == ["1"] and garbage[0].goal == "目标"
+
+
+def test_llm_verifier_judges_acceptance() -> None:
+    ok = _FakeLLM(content='{"passed": true, "reason": "正文非空"}')
+    verdict = asyncio.run(LLMVerifier(ok)(Subtask(id="1", goal="g", acceptance="正文非空"), "正文"))
+    assert (verdict.passed, verdict.reason) == (True, "正文非空")
+    bad = _FakeLLM(content='{"passed": false, "reason": "缺少输出"}')
+    verdict = asyncio.run(LLMVerifier(bad)(Subtask(id="1", goal="g", acceptance="x"), ""))
+    assert (verdict.passed, verdict.reason) == (False, "缺少输出")
+
+
+_VERIFY_RETRIES_TOTAL = 2  # 判定调用总次数：首发 + 单次重试
+
+
+def test_llm_verifier_normalizes_string_bool_and_retries() -> None:
+    """判定字段 "true" 字符串归一；不可解析输出重试一次后才 fail-closed。"""
+    subtask = Subtask(id="1", goal="g", acceptance="标准")
+    flaky = _FakeLLM(["不是 JSON", '{"passed": "true", "reason": "达标"}'])
+    verdict = asyncio.run(LLMVerifier(flaky)(subtask, "结果"))
+    assert verdict.passed is True
+    assert verdict.reason == "达标"
+    assert flaky.calls == _VERIFY_RETRIES_TOTAL  # 首次不可解析 → 重试一次
+
+    hopeless = _FakeLLM(["垃圾", "还是垃圾"])
+    verdict = asyncio.run(LLMVerifier(hopeless)(subtask, "结果"))
+    assert verdict.passed is False
+    assert "fail-closed" in verdict.reason
+    assert hopeless.calls == _VERIFY_RETRIES_TOTAL  # 重试仍失败 → fail-closed 不放行
+
+
+def test_llm_verifier_fail_closed() -> None:
+    subtask = Subtask(id="1", goal="g", acceptance="a")
+    boom = asyncio.run(LLMVerifier(_FakeLLM(error=LLMError("down")))(subtask, "r"))
+    assert boom.passed is False and "fail-closed" in boom.reason
+    garbage = asyncio.run(LLMVerifier(_FakeLLM(content="看不懂"))(subtask, "r"))
+    assert garbage.passed is False
+
+
+def test_verify_gate_routes_by_acceptance() -> None:
+    llm = _FakeLLM(content='{"passed": true, "reason": "ok"}')
+    decomposer = SubtaskDecomposer(verifier=LLMVerifier(llm))
+    offline = asyncio.run(decomposer.verify(Subtask(id="1", goal="g", acceptance=""), "ok"))
+    assert offline.passed is True and llm.calls == 0  # 无验收标准不调模型
+    gated = asyncio.run(decomposer.verify(Subtask(id="1", goal="g", acceptance="标准"), "ok"))
+    assert gated.passed is True and llm.calls == 1
+
+
+def test_plan_dict_roundtrip() -> None:
+    plan = Plan(
+        subtasks=[
+            Subtask(id="1", goal="g", acceptance="a", depends_on=[], priority=3),
+            Subtask(id="2", goal="h", acceptance="", depends_on=["1"]),
+        ],
+        goal="G",
+        order=["1", "2"],
+        success_criteria=["c"],
+        waves=[["1"], ["2"]],
+    )
+    assert plan_from_dict(plan_to_dict(plan)) == plan
+
+
+# ---- 调度器事件流 / 断点续跑 / 审计 ----
+
+
+class _Recorder:
+    """tracer 桩：收集 trace 事件。"""
+
+    def __init__(self) -> None:
+        self.events: list[SimpleNamespace] = []
+
+    def record(self, event: SimpleNamespace) -> None:
+        self.events.append(event)
+
+
+def _collect(scheduler: TaskScheduler, task_id: str, goal: str, **kwargs: Any) -> list[LoopEvent]:
+    async def _drive() -> list[LoopEvent]:
+        return [event async for event in scheduler.astream(task_id, goal, **kwargs)]
+
+    return asyncio.run(_drive())
+
+
+def test_scheduler_astream_emits_progress_events() -> None:
+    executed = _ConcurrencyTracker()
+    decomposer = SubtaskDecomposer(
+        planner=lambda goal: [
+            Subtask(id="1", goal="t-one", acceptance=""),
+            Subtask(id="2", goal="t-two", acceptance="", depends_on=["1"]),
+        ]
+    )
+    recorder = _Recorder()
+    scheduler = TaskScheduler(
+        decomposer=decomposer,
+        router=MultiAgentRouter(
+            [AgentProfile(agent_id="a", capabilities=["t"], loop=_TrackingLoop("ok", executed))]
+        ),
+        state_machine=StateMachine(),
+        checkpoint=lambda task_id, outcomes, plan: None,
+        tracer=recorder,
+    )
+    events = _collect(scheduler, "task", "goal")
+    assert [e.type for e in events] == [
+        "task_started",
+        "plan_ready",
+        "wave_started",
+        "subtask_started",
+        "subtask_completed",
+        "task_checkpoint",
+        "wave_started",
+        "subtask_started",
+        "subtask_completed",
+        "task_checkpoint",
+        "task_finished",
+    ]
+    plan_payload = cast(dict[str, Any], events[1].payload)
+    assert [s["id"] for s in plan_payload["subtasks"]] == ["1", "2"]
+    finished = cast(dict[str, Any], events[-1].payload)
+    assert [o.ok for o in finished["outcomes"]] == [True, True]
+    kinds = {e.kind for e in recorder.events}  # 审计：关键节点写 trace
+    assert {"plan_ready", "subtask_verified", "task_checkpoint", "task_finished"} <= kinds
+
+
+def test_scheduler_astream_failure_visible() -> None:
+    decomposer = SubtaskDecomposer(planner=lambda goal: [Subtask(id="1", goal="t", acceptance="")])
+    scheduler = TaskScheduler(
+        decomposer=decomposer,
+        router=MultiAgentRouter([AgentProfile(agent_id="a", capabilities=["t"], loop=_loop(""))]),
+        state_machine=StateMachine(),
+    )
+    events = _collect(scheduler, "task", "goal")
+    assert events[-1].type == "task_failed"
+    payload = cast(dict[str, Any], events[-1].payload)
+    assert payload["code"] == OrchestrationErrorCode.SUBTASK_VERIFY_FAILED
+    assert payload["failed"] == ["1"]
+    with pytest.raises(OrchestrationError):  # run() 同路径还原抛错语义
+        asyncio.run(scheduler.run("task-2", "goal"))
+
+
+def test_scheduler_resume_skips_completed() -> None:
+    executed = _ConcurrencyTracker()
+    plan = asyncio.run(
+        SubtaskDecomposer(
+            planner=lambda goal: [
+                Subtask(id="1", goal="t-one", acceptance=""),
+                Subtask(id="2", goal="t-two", acceptance=""),
+            ]
+        ).decompose("goal")
+    )
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(),
+        router=MultiAgentRouter(
+            [AgentProfile(agent_id="a", capabilities=["t"], loop=_TrackingLoop("ok", executed))]
+        ),
+        state_machine=StateMachine(),
+    )
+    events = _collect(scheduler, "task", "goal", plan=plan, completed={"1"})
+    assert executed.order == ["t-two"]  # 已完成子任务不重复执行
+    skipped = [
+        e
+        for e in events
+        if e.type == "subtask_completed" and cast(dict[str, Any], e.payload).get("skipped")
+    ]
+    assert [cast(dict[str, Any], e.payload)["subtask_id"] for e in skipped] == ["1"]
+    assert events[-1].type == "task_finished"
+
+
+def test_scheduler_passes_dependency_results() -> None:
+    """依赖子任务执行时注入前置子任务的验收通过结果（结果驱动后继）。"""
+    loop = _FixedReplyLoop("答案：一叶知秋")
+    plan = asyncio.run(
+        SubtaskDecomposer(
+            planner=lambda goal: [
+                Subtask(id="1", goal="t-one", acceptance=""),
+                Subtask(id="2", goal="t-two", acceptance="", depends_on=["1"]),
+            ]
+        ).decompose("goal")
+    )
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(),
+        router=MultiAgentRouter([AgentProfile(agent_id="a", capabilities=["t"], loop=loop)]),
+        state_machine=StateMachine(),
+    )
+
+    _collect(scheduler, "task", "goal", plan=plan)
+
+    assert loop.inputs[0] == "t-one"  # 无依赖子任务原样执行
+    assert "一叶知秋" in loop.inputs[1]  # 前置结果注入后继输入
+    assert "前置子任务结果" in loop.inputs[1]
+
+
+def test_scheduler_resume_rebuilds_dependency_results() -> None:
+    """续跑注入 results 时，依赖上下文自检查点重建（不重跑上游也有结果）。"""
+    loop = _FixedReplyLoop("新结果")
+    plan = asyncio.run(
+        SubtaskDecomposer(
+            planner=lambda goal: [
+                Subtask(id="1", goal="t-one", acceptance=""),
+                Subtask(id="2", goal="t-two", acceptance="", depends_on=["1"]),
+            ]
+        ).decompose("goal")
+    )
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(),
+        router=MultiAgentRouter([AgentProfile(agent_id="a", capabilities=["t"], loop=loop)]),
+        state_machine=StateMachine(),
+    )
+
+    _collect(scheduler, "task", "goal", plan=plan, completed={"1"}, results={"1": "上游答复"})
+
+    assert loop.inputs == [
+        "t-two\n\n前置子任务结果（可直接引用）：\n[前置子任务 1] t-one\n结果：上游答复"
+    ]

@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import sys
+import uuid
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -41,7 +42,8 @@ from core.deployment import (
     ReleaseManager,
     ServeStateStore,
 )
-from core.loop import LoopPlugin
+from core.loop import LoopEvent, LoopPlugin
+from core.orchestration import Plan, TaskScheduler, plan_from_dict
 from core.permission import ApprovalChannel
 from core.pet.core import PetActivator, PetManager
 from core.pet.library import load_persona, load_personas
@@ -101,6 +103,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_skill_parser(sub)
     _add_session_parser(sub)
     _add_run_parser(sub)
+    _add_task_parser(sub)
     _add_release_parser(sub)
     _add_pet_parser(sub)
     _add_beast_parser(sub)
@@ -175,6 +178,13 @@ def _add_run_parser(sub: Any) -> None:
     run.add_argument("--file", metavar="PATH")
     run.add_argument("--session", metavar="ID", dest="session_id")
     run.add_argument("--max-turns", type=int, metavar="N")
+
+
+def _add_task_parser(sub: Any) -> None:
+    task = sub.add_parser("task", help="多任务编排：拆解 → 波次执行 → 验收")
+    task.add_argument("goal", nargs="?", metavar="GOAL", help="任务目标")
+    task.add_argument("--task-id", metavar="ID", dest="task_id", help="任务 id（审计/续跑定位）")
+    task.add_argument("--resume", metavar="ID", dest="resume_id", help="从该任务最新检查点续跑")
 
 
 def _add_release_parser(sub: Any) -> None:
@@ -659,6 +669,107 @@ async def _stream(api: UIAPILayer, session_id: str, prompt: str) -> None:
         print(f"[{event.type}] {payload}")
 
 
+def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911 — 入口校验天然多早退
+    """多任务编排入口：拆解 → 波次执行 → 验收，流式打印进度事件。
+
+    非交互入口：无审批通道，高风险工具动作 fail-closed（与 run/serve 一致）。
+    """
+    if not args.goal and not args.resume_id:
+        print("用法: core-agent task <目标> [--task-id ID | --resume ID]", file=sys.stderr)
+        return 1
+    try:
+        runtime = build_runtime(ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)))
+    except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
+        print(f"装配失败: {exc}", file=sys.stderr)
+        return 1
+    goal = args.goal or ""
+    task_id = args.task_id or f"task-{uuid.uuid4().hex[:8]}"
+    plan: Plan | None = None
+    completed: set[str] | None = None
+    results: dict[str, str] | None = None
+    if args.resume_id:
+        cps = runtime.checkpoints.list_checkpoints(task_id=args.resume_id)
+        if not cps:
+            print(f"未找到任务 {args.resume_id} 的检查点", file=sys.stderr)
+            return 1
+        state = runtime.checkpoints.get_snapshot(cps[-1].checkpoint_id).state
+        if state.get("done"):
+            print(f"[task_finished] 任务 {args.resume_id} 已完成（检查点 done）")
+            return 0
+        if not isinstance(state.get("plan"), dict):
+            print("检查点缺少计划，无法续跑；请直接给定 <目标> 重新拆解", file=sys.stderr)
+            return 1
+        plan = plan_from_dict(state["plan"])
+        completed = {str(o["subtask_id"]) for o in state.get("outcomes", []) if o.get("ok")}
+        results = {  # 已完成子任务的回复重建（依赖交接上下文）
+            str(o["subtask_id"]): str(o.get("reply", ""))
+            for o in state.get("outcomes", [])
+            if o.get("ok")
+        }
+        goal = plan.goal or goal
+        task_id = args.resume_id
+    if not goal:
+        print("缺少任务目标（检查点未携带且未给定 <目标>）", file=sys.stderr)
+        return 1
+    failed = asyncio.run(
+        _stream_task(runtime.orchestrator, task_id, goal, plan, completed, results)
+    )
+    return 1 if failed else 0
+
+
+async def _stream_task(  # noqa: PLR0913 — 续跑注入面参数组
+    orchestrator: TaskScheduler,
+    task_id: str,
+    goal: str,
+    plan: Plan | None,
+    completed: set[str] | None,
+    results: dict[str, str] | None,
+) -> bool:
+    """流式驱动编排器并打印进度事件；返回是否终态失败（task_failed）。"""
+    failed = False
+    async for event in orchestrator.astream(
+        task_id, goal, plan=plan, completed=completed, results=results
+    ):
+        line = _format_task_event(event)
+        if line:
+            print(line)
+        if event.type == "task_failed":
+            failed = True
+    return failed
+
+
+def _format_task_event(event: LoopEvent) -> str | None:  # noqa: PLR0911, C901 — 事件格式化一分支一返回
+    """编排进度事件 → 单行文本；无需展示的事件返回 None。"""
+    raw = event.payload
+    if not isinstance(raw, dict):
+        return None
+    payload = cast(dict[str, Any], raw)
+    if event.type == "task_started":
+        return f"[task] 任务 {payload.get('task_id')}：{payload.get('goal', '')}"
+    if event.type == "plan_ready":
+        n = len(payload.get("subtasks", []))
+        return f"[plan] 拆解 {n} 个子任务，波次 {payload.get('waves')}"
+    if event.type == "wave_started":
+        return f"[wave] 开始波次 {payload.get('wave')}"
+    if event.type == "subtask_started":
+        return f"[子任务 {payload.get('subtask_id')}] {payload.get('goal', '')}"
+    if event.type == "subtask_completed":
+        if payload.get("skipped"):
+            return f"[子任务 {payload.get('subtask_id')}] ✓ 已完成（续跑跳过）"
+        mark = "✓" if payload.get("ok") else "✗"
+        reason = f" — {payload.get('reason', '')}" if not payload.get("ok") else ""
+        return f"[子任务 {payload.get('subtask_id')}] {mark}{reason}"
+    if event.type == "task_checkpoint":
+        return f"[checkpoint] 波次 {payload.get('wave')} 已持久化"
+    if event.type == "task_failed":
+        return f"[task_failed] {payload.get('code')}: {payload.get('reason')}"
+    if event.type == "task_finished":
+        outcomes = payload.get("outcomes", [])
+        ok = sum(1 for o in outcomes if getattr(o, "ok", False))
+        return f"[task_finished] 任务完成（{ok}/{len(outcomes)} 子任务通过）"
+    return None
+
+
 def _read_prompt(args: argparse.Namespace) -> str | None:
     if args.file:
         return Path(args.file).read_text(encoding="utf-8")
@@ -767,6 +878,7 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "recall": _recall,
     "session": _session,
     "run": _run,
+    "task": _task,
     "config": _config,
     "plugin": _plugin,
     "skill": _skill,

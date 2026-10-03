@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from core.deployment import ServeStateStore
 from core.entry import _build_installer, _build_parser, main
+from core.loop import LoopEvent
+from core.orchestration import Plan, Subtask, plan_to_dict
 
 # cli-contract-baseline.md §2 顶层命令面（19 子命令 + 无子命令进 REPL）。
 _TOP_LEVEL_COMMANDS = {
@@ -24,6 +28,7 @@ _TOP_LEVEL_COMMANDS = {
     "skill",
     "session",
     "run",
+    "task",
     "release",
     "pet",
     "summon",
@@ -268,3 +273,117 @@ def test_plugin_install_records_ledger_and_uninstall(
 def test_skill_remove_missing(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["skill", "remove", "skills.demo.hello"]) == 1
     assert "技能未注册" in capsys.readouterr().err
+
+
+# ---- task：多任务编排入口 ----
+
+
+class _StreamOrchestrator:
+    """编排器桩：记录调用参数，依序回放进度事件。"""
+
+    def __init__(self, events: list[tuple[str, dict[str, object]]]) -> None:
+        self.events = events
+        self.calls: dict[str, object] = {}
+
+    async def astream(self, task_id: str, goal: str, **kwargs: object) -> object:
+        self.calls = {"task_id": task_id, "goal": goal, **kwargs}
+        for kind, payload in self.events:
+            yield LoopEvent(kind, payload)
+
+
+def _patch_runtime(
+    monkeypatch: pytest.MonkeyPatch, orch: _StreamOrchestrator, checkpoints: object
+) -> None:
+    runtime = SimpleNamespace(orchestrator=orch, checkpoints=checkpoints)
+    monkeypatch.setattr("core.entry.build_runtime", lambda config: runtime)
+
+
+def test_task_streams_progress_events(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    orch = _StreamOrchestrator(
+        [
+            ("task_started", {"task_id": "t1", "goal": "复合目标"}),
+            ("plan_ready", {"subtasks": [{"id": "1"}], "waves": [["1"]]}),
+            ("subtask_started", {"subtask_id": "1", "goal": "子目标"}),
+            ("subtask_completed", {"subtask_id": "1", "ok": True}),
+            ("task_finished", {"outcomes": [SimpleNamespace(ok=True)]}),
+        ]
+    )
+    _patch_runtime(monkeypatch, orch, checkpoints=None)
+
+    rc = main(["task", "复合目标", "--task-id", "t1"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[task] 任务 t1：复合目标" in out
+    assert "[plan] 拆解 1 个子任务" in out
+    assert "[task_finished] 任务完成（1/1 子任务通过）" in out
+
+
+def test_task_failed_exits_nonzero(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    orch = _StreamOrchestrator(
+        [
+            ("task_started", {"task_id": "t1", "goal": "g"}),
+            (
+                "task_failed",
+                {
+                    "task_id": "t1",
+                    "code": "SUBTASK_VERIFY_FAILED",
+                    "reason": "子任务校验失败: ['1']",
+                },
+            ),
+        ]
+    )
+    _patch_runtime(monkeypatch, orch, checkpoints=None)
+
+    rc = main(["task", "g", "--task-id", "t1"])
+
+    assert rc == 1
+    assert "[task_failed]" in capsys.readouterr().out
+
+
+def test_task_requires_goal(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["task"]) == 1
+    assert "用法" in capsys.readouterr().err
+
+
+def test_task_resume_rebuilds_plan_and_completed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan = Plan(
+        subtasks=[
+            Subtask(id="1", goal="已完成", acceptance=""),
+            Subtask(id="2", goal="续跑部分", acceptance=""),
+        ],
+        goal="续跑目标",
+        order=["1", "2"],
+        waves=[["1"], ["2"]],
+    )
+    orch = _StreamOrchestrator([("task_started", {}), ("task_finished", {"outcomes": []})])
+    cps = [SimpleNamespace(checkpoint_id="cp1", task_id="t1")]
+    snapshots = {
+        "cp1": SimpleNamespace(
+            state={
+                "plan": plan_to_dict(plan),
+                "outcomes": [{"subtask_id": "1", "ok": True, "reply": "上游答复"}],
+                "done": False,
+            }
+        )
+    }
+    checkpoints = SimpleNamespace(
+        list_checkpoints=lambda *, task_id=None: cps,
+        get_snapshot=lambda checkpoint_id: snapshots[checkpoint_id],
+    )
+    _patch_runtime(monkeypatch, orch, checkpoints=checkpoints)
+
+    rc = main(["task", "--resume", "t1"])
+
+    assert rc == 0
+    assert orch.calls["task_id"] == "t1"
+    assert orch.calls["goal"] == "续跑目标"  # 目标自检查点计划重建
+    assert isinstance(orch.calls["plan"], Plan)
+    assert orch.calls["completed"] == {"1"}  # 已完成集回填，续跑跳过
+    assert orch.calls["results"] == {"1": "上游答复"}  # 依赖交接上下文重建

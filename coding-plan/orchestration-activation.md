@@ -1,6 +1,14 @@
 # 任务：多任务编排激活（L3.5 orchestration 从骨架到可用）
 
-> 状态：待启动 ｜ 创建：2026-10-03 ｜ 前置：工具调用链路已贯通（原生 tool_calls + code_run/web_fetch + 审批通道，见 `7789f46` 后续提交）
+> 状态：已完成 ｜ 创建：2026-10-03 ｜ 完成：2026-10-03 ｜ 前置：工具调用链路已贯通（原生 tool_calls + code_run/web_fetch + 审批通道，见 `7789f46` 后续提交）
+
+> 完成纪要：spec 补「LLM 拆解 / 验收门 / 任务入口 / 依赖结果交接」场景；
+> `LLMSubtaskPlanner`（失败回落单子任务）+ `LLMVerifier`（fail-closed，单次重试）注入拆解器；
+> `core-agent task <目标> [--task-id|--resume]` CLI 入口流式进度事件；
+> 检查点落盘 `$CORE_STATE_DIR/checkpoints.jsonl`（计划 + 累计结果 + 依赖交接上下文），
+> kill -9 后跨进程 `--resume` 幂等续跑（已完成子任务跳过）；
+> 依赖子任务注入前置验收通过结果。E2E：3 子任务 DAG 并行波次 3/3 通过；
+> kill/续跑跳过已完成；验收失败非零退出不静默推进。
 
 ## 背景
 

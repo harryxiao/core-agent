@@ -9,29 +9,34 @@
 
 from __future__ import annotations
 
+import inspect
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .errors import OrchestrationError, OrchestrationErrorCode
 from .models import Plan, Subtask, VerifyResult
 
-Planner = Callable[[str], list[Subtask]]
+# 拆解器注入面：目标 → 子任务集（支持异步，LLM 拆解经 acompletion）。
+Planner = Callable[[str], list[Subtask] | Awaitable[list[Subtask]]]
+# 验收门注入面：子任务 + 结果 → 判定（支持异步，LLM 对照 acceptance）。
+Verifier = Callable[[Subtask, Any], VerifyResult | Awaitable[VerifyResult]]
 
 
 class SubtaskDecomposer:
-    """子任务拆解器：拆解目标为 Plan + 校验子任务结果。"""
+    """子任务拆解器：拆解目标为 Plan + 校验子任务结果（验收门）。"""
 
-    def __init__(self, planner: Planner | None = None) -> None:
+    def __init__(self, planner: Planner | None = None, verifier: Verifier | None = None) -> None:
         self._planner = planner
+        self._verifier = verifier
 
-    def decompose(self, goal: str, success_criteria: list[str] | None = None) -> Plan:
+    async def decompose(self, goal: str, success_criteria: list[str] | None = None) -> Plan:
         """大目标 → 分步 Todo（含验收标准与依赖 DAG），划分拓扑序与波次。"""
-        subtasks = (
-            self._planner(goal)
-            if self._planner is not None
-            else [Subtask(id="1", goal=goal, acceptance="")]
-        )
+        if self._planner is None:
+            subtasks = [Subtask(id="1", goal=goal, acceptance="")]  # 离线默认
+        else:
+            produced = self._planner(goal)
+            subtasks = await produced if inspect.isawaitable(produced) else produced
         order = self._topological_order(subtasks)
         if len(order) < len(subtasks):
             raise OrchestrationError(
@@ -46,8 +51,11 @@ class SubtaskDecomposer:
             waves=waves,
         )
 
-    def verify(self, subtask: Subtask, result: Any) -> VerifyResult:
-        """用验收标准校验子任务结果；通过才推进（离线简单判定：结果非空即通过）。"""
+    async def verify(self, subtask: Subtask, result: Any) -> VerifyResult:
+        """验收门：有 acceptance 且注入 verifier 时经其判定；否则离线非空判定。"""
+        if subtask.acceptance and self._verifier is not None:
+            verdict = self._verifier(subtask, result)
+            return await verdict if inspect.isawaitable(verdict) else verdict
         text = str(result or "").strip()
         if not text:
             return VerifyResult(passed=False, reason=f"子任务 {subtask.id} 结果为空")

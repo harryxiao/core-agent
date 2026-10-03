@@ -291,7 +291,7 @@ def test_scheduler_on_done_and_trace_id() -> None:
             [AgentProfile(agent_id="main", capabilities=["default"], loop=main)]
         ),
         state_machine=StateMachine(),
-        on_done=lambda task_id, outcomes: done.append((task_id, outcomes)),
+        on_done=lambda task_id, outcomes, plan: done.append((task_id, outcomes)),
     )
 
     outcomes = asyncio.run(scheduler.run("task-1", "plan"))

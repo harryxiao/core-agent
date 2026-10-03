@@ -129,7 +129,7 @@ def test_task_scheduler_multi_agent_checkpoint_per_wave() -> None:
             Subtask(id="2", goal="write the code", acceptance="", depends_on=["1"]),
         ]
 
-    def checkpoint(task_id: str, outcomes: list[SubtaskOutcome]) -> None:
+    def checkpoint(task_id: str, outcomes: list[SubtaskOutcome], plan: object) -> None:
         calls.append((task_id, [o.subtask_id for o in outcomes]))
 
     scheduler = TaskScheduler(
@@ -147,9 +147,13 @@ def test_task_scheduler_multi_agent_checkpoint_per_wave() -> None:
     outcomes = asyncio.run(scheduler.run("task-1", "plan"))
 
     assert [o.ok for o in outcomes] == [True, True]
-    assert calls == [("task-1", ["1"]), ("task-1", ["2"])]
+    assert calls == [("task-1", ["1"]), ("task-1", ["1", "2"])]  # 检查点携带累计结果
     assert main.calls == ["run the default task"]
-    assert coder.calls == ["write the code"]
+    # 依赖结果交接：上游验收通过结果注入后继子任务输入（spec：依赖结果交接）
+    assert coder.calls == [
+        "write the code\n\n前置子任务结果（可直接引用）：\n"
+        "[前置子任务 1] run the default task\n结果：ok"
+    ]
 
 
 def test_router_handoff_delegates_to_target_agent() -> None:
