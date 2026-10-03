@@ -35,6 +35,7 @@ DoneFn = Callable[[str, "list[SubtaskOutcome]", Plan], None]
 Emit = Callable[[LoopEvent | None], None]
 
 _MAX_HANDOFF_CHARS = 2000  # 依赖结果注入/检查点留存的回复截断（上下文有界）
+_MAX_EVENT_EXCERPT = 600  # 进度事件携带的回复节选（UI 折叠详情用）
 
 
 class ProgressTracker:
@@ -340,7 +341,12 @@ class TaskScheduler:
         emit(
             LoopEvent(
                 "subtask_started",
-                {"task_id": task_id, "subtask_id": subtask.id, "goal": subtask.goal},
+                {
+                    "task_id": task_id,
+                    "subtask_id": subtask.id,
+                    "goal": subtask.goal,
+                    "acceptance": subtask.acceptance,
+                },
             )
         )
         async with semaphore:
@@ -379,6 +385,7 @@ class TaskScheduler:
                         "ok": verify.passed,
                         "reason": verify.reason,
                         "trace_id": result.trace_id,
+                        "reply": result.reply[:_MAX_EVENT_EXCERPT],
                     },
                 )
             )

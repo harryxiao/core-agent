@@ -3,6 +3,10 @@
 CLIBridge.connect() 落地为 Textual 交互会话循环；textual 仅此文件持有且懒 import
 （ADR-0040 MAL 隔离），上层（cli_bridge / UIAPILayer）不依赖具体 TUI 框架。
 
+时间线（#timeline）为混合 widget 流：用户输入灰底气泡（Static.bubble）、
+系统提示浅灰单行（Static.hint）、子任务/任务可折叠块（Collapsible 单行标题，
+点击展开验收/结果/判定详情）、终态高亮（.ok/.fail）。
+
 对应接口：doc/03-interfaces/ui-interface.md §1（CLIBridge 交互会话面）。
 """
 
@@ -62,179 +66,6 @@ def _event_delta(event: Event) -> str | None:
     return str(data.get("text", "")) or None
 
 
-def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体推高复杂度
-    """构建 Textual 应用（懒 import textual），暴露给 headless 冒烟测试驱动。"""
-    from textual.app import App, ComposeResult  # noqa: PLC0415 — MAL 懒 import
-    from textual.containers import Horizontal  # noqa: PLC0415 — MAL 懒 import
-    from textual.widgets import Input, RichLog, Static  # noqa: PLC0415 — MAL 懒 import
-
-    session_id = api.create_session("cli")
-    approval = api.approval  # 审批通道（None 表示非交互入口，confirm 门 fail-closed）
-
-    class ReplApp(App[None]):
-        """core-agent 交互会话 TUI。"""
-
-        CSS = """
-#input-row {
-    height: auto;
-}
-#prompt {
-    width: auto;
-}
-#input {
-    width: 1fr;
-    height: 1;
-    border: none;
-    padding: 0;
-}
-#live {
-    height: auto;
-}
-#status {
-    height: 1;
-    width: 1fr;
-}
-"""
-
-        # 退出走 App 默认 ctrl+q / ctrl+c；空回车不再退出（IME 确认等误触防护）
-        BINDINGS = [("ctrl+b", "barge_in", "打断")]
-
-        def __init__(self) -> None:
-            super().__init__()
-            self._live_buf: list[str] = []  # 流式增量缓冲（终态一次性落定进日志）
-            self._approval_future: Any | None = None  # 挂起中的审批 Future[bool]
-            self._turn_busy = False  # 本轮 worker 是否在跑（忙时新消息提示等待）
-
-        def compose(self) -> ComposeResult:
-            yield RichLog(id="output")
-            yield Static(id="live")
-            with Horizontal(id="input-row"):
-                yield Static("> ", id="prompt")
-                yield Input(placeholder="输入消息（Ctrl+B 打断，Ctrl+Q 退出）", id="input")
-            yield Static(id="status")
-
-        def on_mount(self) -> None:
-            self.query_one("#live", Static).display = False  # 无流式增量时收起
-            self.query_one("#input", Input).focus()
-            if approval is not None:
-                approval.handler = self._ask_approval  # 审批通道接终端 y/n
-
-        async def _ask_approval(self, tool_id: str, args: dict[str, Any], reason: str) -> bool:
-            """审批提示落日志，输入 y/n 决断；同刻仅一单（重复请求 fail-closed）。"""
-            if self._approval_future is not None and not self._approval_future.done():
-                return False
-            import asyncio  # noqa: PLC0415 — 与 textual 懒 import 同策略
-
-            future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
-            self._approval_future = future
-            log = self.query_one("#output", RichLog)
-            status = self.query_one("#status", Static)
-            log.write(f"⚠ 需审批: {reason}")
-            log.write("输入 y 批准 / n 拒绝")
-            status.update("[yellow]等待审批…[/yellow]")
-            try:
-                return await future
-            finally:
-                self._approval_future = None
-                status.update("[dim]思考中…[/dim]")
-
-        def action_barge_in(self) -> None:
-            line = _format_event(barge_in_event(api))
-            if line:
-                self.query_one("#output", RichLog).write(line)
-
-        def _show_delta(self, delta: str) -> None:
-            """流式增量进 live 区逐字上屏（RichLog 不支持行内追加）。"""
-            live = self.query_one("#live", Static)
-            if not self._live_buf:
-                live.display = True
-            self._live_buf.append(delta)
-            live.update("".join(self._live_buf))
-
-        def _flush_live(self) -> None:
-            """流式文本终态一次性写入日志，live 区复位（全文不重复落两次）。"""
-            live = self.query_one("#live", Static)
-            if self._live_buf:
-                self.query_one("#output", RichLog).write("".join(self._live_buf))
-            self._live_buf = []
-            live.update("")
-            live.display = False
-
-        def on_input_submitted(self, message: Input.Submitted) -> None:
-            """输入分发：审批决断优先；消息经 worker 执行（消息泵不被阻塞）。"""
-            log = self.query_one("#output", RichLog)
-            pending = self._approval_future
-            if pending is not None and not pending.done():
-                # 审批决断分支：y 批准 / n 拒绝；其他输入提示重输
-                message.input.clear()
-                answer = message.value.strip().lower()
-                if answer in ("y", "yes", "n", "no"):
-                    log.write(f"> {answer}")
-                    pending.set_result(answer in ("y", "yes"))
-                else:
-                    log.write("请输入 y（批准）或 n（拒绝）")
-                return
-            text = message.value.strip()
-            message.input.clear()  # 回车即清空输入框，准备下一轮
-            if not text:
-                return  # 空回车忽略（IME 确认误触不退出；退出走 Ctrl+Q/Ctrl+C）
-            if self._turn_busy:
-                log.write("处理中，请稍候（Ctrl+B 打断）")
-                return
-            log.write(f"> {text}")
-            self._turn_busy = True  # handler 内同步置位（与忙检同上下文，无竞态窗口）
-            # 本轮执行进 worker：handler 即刻返回，消息泵保持可响应
-            # （审批 y/n、Ctrl+B 打断等后续输入才能被分发——泵内 await 会死锁）
-            if text.startswith("/task "):  # 任务命令：驱动编排器（不进普通对话）
-                goal = text[len("/task ") :].strip()
-                if not goal:
-                    self._turn_busy = False
-                    log.write("用法：/task <目标>")
-                    return
-                self.run_worker(self._run_task_turn(goal))
-                return
-            self.run_worker(self._run_turn(text))
-
-        async def _run_task_turn(self, goal: str) -> None:
-            """任务轮：经 /task 驱动编排器，进度事件逐行落日志；结束复位忙态。"""
-            log = self.query_one("#output", RichLog)
-            status = self.query_one("#status", Static)
-            status.update("[dim]任务执行中…[/dim]")
-            try:
-                async for event in api.run_task(session_id, goal):
-                    line = _format_event(event)
-                    if line:
-                        log.write(line)
-            except UiError as err:
-                log.write(_format_event(_error_event(err)))
-            finally:
-                status.update("")
-                self._turn_busy = False
-
-        async def _run_turn(self, text: str) -> None:
-            """单轮执行：流式增量上 live、其余事件落日志；结束复位状态。"""
-            log = self.query_one("#output", RichLog)
-            status = self.query_one("#status", Static)
-            status.update("[dim]思考中…[/dim]")
-            try:
-                async for event in api.run_loop(session_id, text):
-                    delta = _event_delta(event)
-                    if delta is not None:
-                        self._show_delta(delta)
-                        continue
-                    line = _format_event(event)
-                    if line:
-                        log.write(line)
-            except UiError as err:
-                log.write(_format_event(_error_event(err)))
-            finally:
-                self._flush_live()
-                status.update("")
-                self._turn_busy = False
-
-    return ReplApp()
-
-
 def format_task_event(kind: str, payload: object) -> str | None:  # noqa: PLR0911, C901 — 一分支一返回
     """编排进度事件 → 单行文本；无需展示的事件返回 None（CLI 与 TUI 共用）。"""
     if not isinstance(payload, dict):
@@ -266,11 +97,6 @@ def format_task_event(kind: str, payload: object) -> str | None:  # noqa: PLR091
     return None
 
 
-def run_repl(api: UIAPILayer) -> None:
-    """启动 Textual 交互会话循环（阻塞；懒 import textual）。"""
-    build_app(api).run()
-
-
 def _format_event(event: Event) -> str | None:
     """Event → 单行文本；None 表示内部脚手架事件（会话/回合/结果对象），不显示。
 
@@ -278,7 +104,7 @@ def _format_event(event: Event) -> str | None:
     剥离 session_id/trace_id/round/LoopResult 等后端事件。
     """
     payload = event.payload
-    if event.type.startswith("task."):  # 编排进度事件（/task 命令与 CLI task 同构）
+    if event.type.startswith("task."):  # 编排进度事件（CLI 同构文本，TUI 走折叠块）
         return format_task_event(event.type.removeprefix("task."), payload)
     if event.type == "error":
         data = cast(dict[str, object], payload)
@@ -291,3 +117,288 @@ def _format_event(event: Event) -> str | None:
         text = data.get("text") or data.get("reply")
         return str(text) if text else None
     return None
+
+
+def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体推高复杂度
+    """构建 Textual 应用（懒 import textual），暴露给 headless 冒烟测试驱动。"""
+    from textual.app import App, ComposeResult  # noqa: PLC0415 — MAL 懒 import
+    from textual.containers import Horizontal, Vertical  # noqa: PLC0415 — MAL 懒 import
+    from textual.widget import Widget  # noqa: PLC0415 — MAL 懒 import
+    from textual.widgets import Collapsible, Input, Static  # noqa: PLC0415 — MAL 懒 import
+
+    session_id = api.create_session("cli")
+    approval = api.approval  # 审批通道（None 表示非交互入口，confirm 门 fail-closed）
+
+    class ReplApp(App[None]):
+        """core-agent 交互会话 TUI：时间线（气泡/折叠块）+ 流式 live + 输入行。"""
+
+        CSS = """
+#timeline {
+    height: 1fr;
+    overflow-y: auto;
+    padding: 0 1;
+}
+#input-row {
+    height: auto;
+}
+#prompt {
+    width: auto;
+}
+#input {
+    width: 1fr;
+    height: 1;
+    border: none;
+    padding: 0;
+}
+#live {
+    height: auto;
+    padding: 0 1;
+}
+#status {
+    height: 1;
+    width: 1fr;
+}
+.bubble {  /* 用户输入：灰底气泡块 */
+    background: $panel;
+    color: $text;
+    padding: 0 1;
+    margin: 0 2 0 0;
+    width: auto;
+}
+.hint {  /* 系统/进度提示：浅灰单行 */
+    color: $text-muted;
+    width: auto;
+}
+.ok {
+    color: $success;
+    width: auto;
+    text-style: bold;
+}
+.fail {
+    color: $error;
+    width: auto;
+}
+Collapsible {  /* 子任务/工具：单行提示，点击展开 */
+    background: $surface;
+    border: none;
+    padding: 0;
+    width: 1fr;
+    height: auto;
+}
+Collapsible > CollapsibleTitle {
+    color: $text-muted;
+    background: $surface;
+    padding: 0 1;
+}
+"""
+
+        # 退出走 App 默认 ctrl+q / ctrl+c；空回车不再退出（IME 确认等误触防护）
+        BINDINGS = [("ctrl+b", "barge_in", "打断")]
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._live_buf: list[str] = []  # 流式增量缓冲（终态一次性落定进时间线）
+            self._approval_future: Any | None = None  # 挂起中的审批 Future[bool]
+            self._turn_busy = False  # 本轮 worker 是否在跑（忙时新消息提示等待）
+            self._open: dict[str, tuple[Collapsible, str]] = {}  # 子任务折叠块 sid→(块, goal)
+
+        def compose(self) -> ComposeResult:
+            yield Vertical(id="timeline")
+            yield Static(id="live")
+            with Horizontal(id="input-row"):
+                yield Static("> ", id="prompt")
+                placeholder = "输入消息（Ctrl+B 打断，Ctrl+Q 退出）；/task <目标> 启动编排任务"
+                yield Input(placeholder=placeholder, id="input")
+            yield Static(id="status")
+
+        def on_mount(self) -> None:
+            self.query_one("#live", Static).display = False  # 无流式增量时收起
+            self.query_one("#input", Input).focus()
+            if approval is not None:
+                approval.handler = self._ask_approval  # 审批通道接终端 y/n
+
+        # ---- 时间线 ----
+
+        def _add(self, widget: Widget) -> None:
+            """时间线追加 widget 并滚到底（mount 不等待，消息泵不被阻塞）。"""
+            timeline = self.query_one("#timeline", Vertical)
+            timeline.mount(widget)
+            timeline.call_after_refresh(timeline.scroll_end, animate=False)
+
+        async def _ask_approval(self, tool_id: str, args: dict[str, Any], reason: str) -> bool:
+            """审批提示落时间线，输入 y/n 决断；同刻仅一单（重复请求 fail-closed）。"""
+            if self._approval_future is not None and not self._approval_future.done():
+                return False
+            import asyncio  # noqa: PLC0415 — 与 textual 懒 import 同策略
+
+            future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+            self._approval_future = future
+            self._add(Static(f"⚠ 需审批: {reason}", classes="fail"))
+            self._add(Static("输入 y 批准 / n 拒绝", classes="hint"))
+            self.query_one("#status", Static).update("[yellow]等待审批…[/yellow]")
+            try:
+                return await future
+            finally:
+                self._approval_future = None
+                self.query_one("#status", Static).update("[dim]思考中…[/dim]")
+
+        def action_barge_in(self) -> None:
+            line = _format_event(barge_in_event(api))
+            if line:
+                self._add(Static(line, classes="hint"))
+
+        def _show_delta(self, delta: str) -> None:
+            """流式增量进 live 区逐字上屏（时间线不逐字追加，终态一次落定）。"""
+            live = self.query_one("#live", Static)
+            if not self._live_buf:
+                live.display = True
+            self._live_buf.append(delta)
+            live.update("".join(self._live_buf))
+
+        def _flush_live(self) -> None:
+            """流式文本终态一次性落时间线，live 区复位（全文不重复落两次）。"""
+            live = self.query_one("#live", Static)
+            if self._live_buf:
+                self._add(Static("".join(self._live_buf)))
+            self._live_buf = []
+            live.update("")
+            live.display = False
+
+        # ---- 输入分发 ----
+
+        def on_input_submitted(self, message: Input.Submitted) -> None:
+            """输入分发：审批决断优先；消息经 worker 执行（消息泵不被阻塞）。"""
+            pending = self._approval_future
+            if pending is not None and not pending.done():
+                # 审批决断分支：y 批准 / n 拒绝；其他输入提示重输
+                message.input.clear()
+                answer = message.value.strip().lower()
+                if answer in ("y", "yes", "n", "no"):
+                    self._add(Static(f"> {answer}", classes="bubble"))
+                    pending.set_result(answer in ("y", "yes"))
+                else:
+                    self._add(Static("请输入 y（批准）或 n（拒绝）", classes="hint"))
+                return
+            text = message.value.strip()
+            message.input.clear()  # 回车即清空输入框，准备下一轮
+            if not text:
+                return  # 空回车忽略（IME 确认误触不退出；退出走 Ctrl+Q/Ctrl+C）
+            if self._turn_busy:
+                self._add(Static("处理中，请稍候（Ctrl+B 打断）", classes="hint"))
+                return
+            self._add(Static(f"> {text}", classes="bubble"))  # 用户输入气泡
+            self._turn_busy = True  # handler 内同步置位（与忙检同上下文，无竞态窗口）
+            # 本轮执行进 worker：handler 即刻返回，消息泵保持可响应
+            # （审批 y/n、Ctrl+B 打断等后续输入才能被分发——泵内 await 会死锁）
+            if text.startswith("/task "):  # 任务命令：驱动编排器（不进普通对话）
+                goal = text[len("/task ") :].strip()
+                if not goal:
+                    self._turn_busy = False
+                    self._add(Static("用法：/task <目标>", classes="hint"))
+                    return
+                self.run_worker(self._run_task_turn(goal))
+                return
+            self.run_worker(self._run_turn(text))
+
+        # ---- 任务轮（/task）----
+
+        async def _run_task_turn(self, goal: str) -> None:
+            """任务轮：经 /task 驱动编排器，进度事件落时间线（单行提示+折叠块）。"""
+            self.query_one("#status", Static).update("[dim]任务执行中…[/dim]")
+            try:
+                async for event in api.run_task(session_id, goal):
+                    self._add_task_widget(event)
+            except UiError as err:
+                line = _format_event(_error_event(err))
+                if line:
+                    self._add(Static(line, classes="fail"))
+            finally:
+                self.query_one("#status", Static).update("")
+                self._turn_busy = False
+
+        def _add_task_widget(self, event: Event) -> None:  # noqa: PLR0911 — 一分支一事件
+            """编排事件 → 时间线 widget：任务/波次浅灰单行，子任务折叠块，终态高亮。"""
+            payload = event.payload
+            if not isinstance(payload, dict):
+                return
+            data = cast(dict[str, Any], payload)
+            kind = event.type.removeprefix("task.")
+            if kind == "task_started":
+                line = f"▸ 任务 {data.get('task_id')}：{data.get('goal', '')}"
+                self._add(Static(line, classes="hint"))
+                return
+            if kind == "plan_ready":
+                n = len(data.get("subtasks", []))
+                self._add(Static(f"▸ 拆解 {n} 个子任务 · 波次 {data.get('waves')}", classes="hint"))
+                return
+            if kind == "wave_started":
+                self._add(Static(f"▸ 波次 {data.get('wave')}", classes="hint"))
+                return
+            if kind == "subtask_started":
+                self._open_subtask(str(data.get("subtask_id", "")), data)
+                return
+            if kind == "subtask_completed":
+                self._complete_subtask(str(data.get("subtask_id", "")), data)
+                return
+            if kind == "task_failed":
+                line = f"✗ 任务失败 {data.get('code')}: {data.get('reason')}"
+                self._add(Static(line, classes="fail"))
+                return
+            if kind == "task_finished":
+                outcomes = data.get("outcomes", [])
+                ok = sum(1 for o in outcomes if getattr(o, "ok", False))
+                self._add(Static(f"✔ 任务完成（{ok}/{len(outcomes)} 子任务通过）", classes="ok"))
+
+        def _open_subtask(self, sid: str, data: dict[str, Any]) -> None:
+            """子任务开工：单行折叠块 + 验收标准详情（点击展开）。"""
+            goal = str(data.get("goal", ""))
+            box = Collapsible(title=f"▸ 子任务 {sid}  {goal}", collapsed=True)
+            self._add(box)
+            box.mount(Static(f"验收：{data.get('acceptance') or '（无）'}", classes="hint"))
+            self._open[sid] = (box, goal)
+
+        def _complete_subtask(self, sid: str, data: dict[str, Any]) -> None:
+            """子任务收尾：标题落 ✓/✗，展开区补判定与结果节选。"""
+            entry = self._open.get(sid)
+            if entry is None:
+                return
+            box, goal = entry
+            if data.get("skipped"):
+                box.title = f"▸ 子任务 {sid}  ✓ 已完成（续跑跳过）"
+                return
+            mark = "✓" if data.get("ok") else "✗"
+            box.title = f"▸ 子任务 {sid}  {mark} {goal}"
+            box.mount(Static(f"判定：{data.get('reason', '')}", classes="hint"))
+            reply = str(data.get("reply", "")).strip()
+            if reply:
+                box.mount(Static(reply))
+
+        # ---- 普通消息轮 ----
+
+        async def _run_turn(self, text: str) -> None:
+            """单轮执行：流式增量上 live、终态/错误落时间线；结束复位状态。"""
+            self.query_one("#status", Static).update("[dim]思考中…[/dim]")
+            try:
+                async for event in api.run_loop(session_id, text):
+                    delta = _event_delta(event)
+                    if delta is not None:
+                        self._show_delta(delta)
+                        continue
+                    line = _format_event(event)
+                    if line:
+                        self._add(Static(line, classes="hint"))
+            except UiError as err:
+                line = _format_event(_error_event(err))
+                if line:
+                    self._add(Static(line, classes="fail"))
+            finally:
+                self._flush_live()
+                self.query_one("#status", Static).update("")
+                self._turn_busy = False
+
+    return ReplApp()
+
+
+def run_repl(api: UIAPILayer) -> None:
+    """启动 Textual 交互会话循环（阻塞；懒 import textual）。"""
+    build_app(api).run()

@@ -51,7 +51,7 @@ class UIAPILayer:
 | `loop.action` | turn_id, action | 行动阶段（含 diff / 审批提示） |
 | `loop.result` | turn_id, result | 结果回传 |
 | `loop.error` | turn_id, error | 结构化错误（不中断循环） |
-| `task.*` | 编排事件载荷 | 任务进度（task_started / plan_ready / wave_started / subtask_started / subtask_completed / task_checkpoint / task_finished / task_failed，type 前缀 `task.`） |
+| `task.*` | 编排事件载荷 | 任务进度（task_started / plan_ready / wave_started / subtask_started / subtask_completed / task_checkpoint / task_finished / task_failed，type 前缀 `task.`；TUI 时间线呈现：任务/波次浅灰单行，子任务 Collapsible 折叠块，展开含验收/判定/结果节选） |
 
 ### 1.2 HTTP 端点清单（WebBridge.serve）
 

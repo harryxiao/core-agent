@@ -149,6 +149,21 @@ def test_input_clears_after_submit() -> None:
 # ---- TUI 任务入口（/task 命令驱动编排器，进度事件流式呈现） ----
 
 
+def _timeline_text(app: object) -> str:
+    """时间线全量文本：Static 取渲染文本，Collapsible 取标题 + 内部 Static。"""
+    from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+    from textual.widgets import Collapsible, Static  # noqa: PLC0415 — 可选依赖懒 import
+
+    parts: list[str] = []
+    for child in app.query_one("#timeline", Vertical).children:
+        if isinstance(child, Collapsible):
+            parts.append(str(child.title))
+            parts.extend(str(s.render()) for s in child.query(Static))
+        else:
+            parts.append(str(child.render()))
+    return "".join(parts)
+
+
 class _TaskOrchestrator:
     """编排器桩：回放进度事件并记录目标。"""
 
@@ -195,9 +210,7 @@ def test_task_command_drives_orchestrator_not_loop() -> None:
     api.set_llm_config(_llm())
     app = build_app(api)
 
-    async def drive() -> list[str]:
-        from textual.widgets import RichLog  # noqa: PLC0415 — 断言处取类型
-
+    async def drive() -> str:
         async with app.run_test() as pilot:
             for ch in "/task build it":
                 await pilot.press(ch)
@@ -211,14 +224,13 @@ def test_task_command_drives_orchestrator_not_loop() -> None:
             await pilot.press("h", "i", "enter")  # 忙态复位后普通消息可继续
             for _ in range(10):
                 await pilot.pause()
-            widget = app.query_one("#output", RichLog)
-            return [strip.text for strip in widget.lines]
+            return _timeline_text(app)
 
-    lines = asyncio.run(drive())
+    text = asyncio.run(drive())
     assert orch.goals == ["build it"]
     assert loop.inputs == ["hi"]  # /task 不进普通对话；结束后复位可继续
-    assert any("[task] 任务 t1：build it" in line for line in lines)
-    assert any("[task_finished]" in line for line in lines)
+    assert "▸ 任务 t1：build it" in text
+    assert "任务完成" in text  # task_finished 终态单行（✔ 任务完成…）
 
 
 def test_task_command_without_goal_shows_usage() -> None:
@@ -278,3 +290,49 @@ def test_task_command_busy_rejects_concurrent() -> None:
 
     asyncio.run(drive())
     assert loop.inputs == []  # 忙时的 hello 未进普通对话
+
+
+def test_task_subtask_collapsible_lifecycle() -> None:
+    """子任务折叠块：标题随完成态落 ✓，展开区含验收/判定/结果节选。"""
+    orch = _TaskOrchestrator(
+        [
+            ("task_started", {"task_id": "t1", "goal": "查答案"}),
+            (
+                "subtask_started",
+                {"task_id": "t1", "subtask_id": "1", "goal": "查资料", "acceptance": "给出来源"},
+            ),
+            (
+                "subtask_completed",
+                {
+                    "task_id": "t1",
+                    "subtask_id": "1",
+                    "ok": True,
+                    "reason": "验收通过",
+                    "reply": "答案 42",
+                },
+            ),
+            ("task_finished", {"outcomes": []}),
+        ]
+    )
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> str:
+        async with app.run_test() as pilot:
+            for ch in "/task 查答案":
+                await pilot.press(ch)
+            await pilot.press("enter")
+            for _ in range(50):  # 等 worker 跑完编排桩（事件即时产出）
+                await pilot.pause()
+                if orch.goals:
+                    break
+            for _ in range(5):
+                await pilot.pause()
+            return _timeline_text(app)
+
+    text = asyncio.run(drive())
+    assert "▸ 子任务 1  ✓ 查资料" in text  # 完成后标题更新（单行提示）
+    assert "验收：给出来源" in text  # 展开区：验收标准
+    assert "判定：验收通过" in text  # 展开区：判定理由
+    assert "答案 42" in text  # 展开区：结果节选

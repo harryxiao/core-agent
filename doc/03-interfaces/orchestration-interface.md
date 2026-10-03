@@ -125,7 +125,9 @@ class TaskScheduler:
 - 依赖结果交接：子任务验收通过的回复（截断 2000 字符）注入 `depends_on` 后继
   子任务的执行输入（「前置子任务结果」段），并随 `SubtaskOutcome.reply` 写入
   检查点 outcomes，续跑时经 `results` 参数重建依赖上下文。
-- 事件复用 `core.loop.LoopEvent`（type + dict 载荷），与 loop/ui 事件面同构。
+- 事件复用 `core.loop.LoopEvent`（type + dict 载荷），与 loop/ui 事件面同构；
+  载荷携带 UI 折叠详情所需字段：`subtask_started` 含 `goal` + `acceptance`（验收
+  标准），`subtask_completed` 含 `reason`（判定）+ `reply` 节选（600 字符）。
 - TUI 入口：REPL 会话内输入 `/task <目标>`，经 `UIAPILayer.run_task` 驱动同一编排器，
   进度事件以 `task.*` 前缀映射为 UI Event 流式呈现（与 CLI 同一格式化）。
 

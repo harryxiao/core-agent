@@ -132,6 +132,21 @@ def _tui_app() -> object:
     return build_app(api)
 
 
+def _timeline_text(app: object) -> str:
+    """时间线全量文本：Static 取渲染文本，Collapsible 取标题 + 内部 Static。"""
+    from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+    from textual.widgets import Collapsible, Static  # noqa: PLC0415 — 可选依赖懒 import
+
+    parts: list[str] = []
+    for child in app.query_one("#timeline", Vertical).children:
+        if isinstance(child, Collapsible):
+            parts.append(str(child.title))
+            parts.extend(str(s.render()) for s in child.query(Static))
+        else:
+            parts.append(str(child.render()))
+    return "".join(parts)
+
+
 def test_tui_empty_enter_does_not_exit() -> None:
     """空回车忽略不退出（IME 确认误触防护）；退出走 Ctrl+Q/Ctrl+C。"""
     app = _tui_app()
@@ -191,7 +206,7 @@ def test_tui_streams_deltas_then_flushes_once() -> None:
     app = build_app(api)
 
     async def _drive() -> tuple[bool, int]:
-        from textual.widgets import Input, RichLog, Static  # noqa: PLC0415 — 可选依赖懒 import
+        from textual.widgets import Input, Static  # noqa: PLC0415 — 可选依赖懒 import
 
         async with app.run_test() as pilot:
             inp = app.query_one("#input", Input)
@@ -200,7 +215,7 @@ def test_tui_streams_deltas_then_flushes_once() -> None:
             await pilot.press("enter")
             await pilot.pause()
             live_hidden = app.query_one("#live", Static).display is False
-            log_text = "".join(strip.text for strip in app.query_one("#output", RichLog).lines)
+            log_text = _timeline_text(app)
             running = app.is_running
         return live_hidden and running, log_text.count("你好")
 
@@ -219,7 +234,7 @@ def test_tui_approval_prompt_y_n() -> None:
     app = build_app(api)
 
     async def _drive() -> tuple[bool, bool, bool]:
-        from textual.widgets import Input, RichLog  # noqa: PLC0415 — 可选依赖懒 import
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
 
         async with app.run_test() as pilot:
             inp = app.query_one("#input", Input)
@@ -228,9 +243,7 @@ def test_tui_approval_prompt_y_n() -> None:
                 channel.ask("tools.web_fetch", {"url": "https://x"}, "出站网络抓取")
             )
             await pilot.pause()
-            prompt_seen = "需审批" in "".join(
-                strip.text for strip in app.query_one("#output", RichLog).lines
-            )
+            prompt_seen = "需审批" in _timeline_text(app)
             inp.value = "x"  # 非法输入：提示重输，审批保持挂起
             await pilot.press("enter")
             await pilot.pause()
@@ -269,7 +282,7 @@ def test_tui_approval_resolves_from_real_message_path() -> None:
     app = build_app(api)
 
     async def _drive() -> tuple[bool, bool]:
-        from textual.widgets import Input, RichLog  # noqa: PLC0415 — 可选依赖懒 import
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
 
         async with app.run_test() as pilot:
             inp = app.query_one("#input", Input)
@@ -277,17 +290,14 @@ def test_tui_approval_resolves_from_real_message_path() -> None:
             inp.value = "抓一下"
             await pilot.press("enter")  # 真实路径：handler 派发 worker，审批挂起
             await pilot.pause()
-            prompt_seen = "需审批" in "".join(
-                strip.text for strip in app.query_one("#output", RichLog).lines
-            )
+            prompt_seen = "需审批" in _timeline_text(app)
             inp.value = "y"
             await pilot.press("enter")  # 审批决断
-            for _ in range(50):  # 等 worker 收尾（终态全文落日志）
+            for _ in range(50):  # 等 worker 收尾（终态全文落时间线）
                 await pilot.pause(0.05)
                 if not app._turn_busy and app._approval_future is None:
                     break
-            log_text = "".join(strip.text for strip in app.query_one("#output", RichLog).lines)
-            return prompt_seen, "已批准" in log_text
+            return prompt_seen, "已批准" in _timeline_text(app)
 
     assert asyncio.run(asyncio.wait_for(_drive(), 10)) == (True, True)
 
