@@ -5,6 +5,7 @@ CLIBridge.connect() 落地为 Textual 交互会话循环；textual 仅此文件�
 
 对标 Claude CLI 的呈现层：
 - core 主题（terracotta accent #d97757）+ 圆角输入框（focus 高亮）；
+- 输入区/提示盒整体钉底（dock: bottom），时间线独占剩余高度（防 1fr 撑满）；
 - 工作状态行 ✻ label… (Ns)（set_interval 轮换 glyph，无内置 Spinner 组件）；
 - 回复流式逐字进 live 区、终态一次渲染为 Markdown（代码块语法高亮）；
 - 用户输入以 ❯ 前缀行回显；底部快捷键提示盒（F1 展开）；启动欢迎横幅；
@@ -192,6 +193,10 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
     padding: 0 2;
     color: $text;
 }
+#footer {  /* 输入区+提示盒钉底：时间线独占剩余空间（内层容器默认 1fr 会撑满全屏） */
+    dock: bottom;
+    height: auto;
+}
 #input-box {
     height: auto;
     border: round $panel;
@@ -213,7 +218,6 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
     padding: 0;
 }
 #hints {
-    dock: bottom;
     border: round $panel;
     width: auto;
     padding: 0 2;
@@ -296,10 +300,11 @@ Collapsible > CollapsibleTitle:hover {
             yield Vertical(id="timeline")
             yield Static(id="live")
             yield Static(id="spinner")
-            with Vertical(id="input-box"), Horizontal():
-                yield Static("❯ ", id="prompt")
-                yield Input(placeholder="发送消息，或 /task <目标> 启动编排任务", id="input")
-            yield Static(self._HINTS_SHORT, id="hints")
+            with Vertical(id="footer"):  # 输入区+提示盒钉底，时间线独占剩余空间
+                with Horizontal(id="input-box"):
+                    yield Static("❯ ", id="prompt")
+                    yield Input(placeholder="发送消息，或 /task <目标> 启动编排任务", id="input")
+                yield Static(self._HINTS_SHORT, id="hints")
 
         def on_mount(self) -> None:
             self.register_theme(core_theme)
