@@ -25,6 +25,7 @@ from .models import Event
 
 _ACCENT = "#d97757"  # core 主题 accent（Claude CLI terracotta）
 _SPIN_GLYPHS = ["✻", "·", "•", "∘", "○"]  # 工作状态行轮换符号
+_MS_PER_SECOND = 1000  # 耗时人类可读换算
 
 
 async def repl_loop(
@@ -101,6 +102,38 @@ def format_task_event(kind: str, payload: object) -> str | None:  # noqa: PLR091
         outcomes = data.get("outcomes", [])
         ok = sum(1 for o in outcomes if getattr(o, "ok", False))
         return f"[task_finished] 任务完成（{ok}/{len(outcomes)} 子任务通过）"
+    return None
+
+
+def _arg_summary(args: object) -> str:
+    """动作参数单行摘要：dict → k=v 逗号拼接；其余 str 化截断。"""
+    if isinstance(args, dict):
+        data = cast(dict[str, object], args)
+        return ", ".join(f"{k}={v}" for k, v in list(data.items())[:4])
+    return str(args or "")
+
+
+def _fmt_ms(ms: object) -> str:
+    """毫秒 → 人类可读（<1s 显示 ms，≥1s 显示 s 一位小数）。"""
+    try:
+        value = int(ms)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return ""
+    return f"{value / _MS_PER_SECOND:.1f}s" if value >= _MS_PER_SECOND else f"{value}ms"
+
+
+def format_action_event(kind: str, payload: object) -> str | None:
+    """工具动作事件 → 单行文本（CLI 与 TUI 共用）；非动作事件返回 None。"""
+    if not isinstance(payload, dict):
+        return None
+    data = cast(dict[str, Any], payload)
+    tool = str(data.get("tool_id", ""))
+    if kind == "action_started":
+        return f"⏺ {tool}({_arg_summary(data.get('args'))})"
+    if kind == "action_completed":
+        if data.get("ok"):
+            return f"⏺ {tool} ✓ ({_fmt_ms(data.get('duration_ms'))})"
+        return f"⏺ {tool} ✗"
     return None
 
 
@@ -252,6 +285,7 @@ Collapsible > CollapsibleTitle:hover {
             self._approval_future: Any | None = None  # 挂起中的审批 Future[bool]
             self._turn_busy = False  # 本轮 worker 是否在跑（忙时新消息提示等待）
             self._open: dict[str, tuple[Collapsible, str]] = {}  # 子任务折叠块 sid→(块, goal)
+            self._actions: dict[str, Collapsible] = {}  # 动作折叠块 round:tool→块
             self._spin_timer: Timer | None = None  # 工作状态行驱动
             self._spin_t0 = 0.0
             self._spin_idx = 0
@@ -457,6 +491,34 @@ Collapsible > CollapsibleTitle:hover {
                 ok = sum(1 for o in outcomes if getattr(o, "ok", False))
                 self._add(Static(f"✔ 任务完成（{ok}/{len(outcomes)} 子任务通过）", classes="ok"))
 
+        def _add_action_widget(self, event: Event) -> None:
+            """工具动作事件 → ⏺ 折叠块：单行标题，完成落 ✓/✗+耗时，展开含参数/输出。"""
+            payload = event.payload
+            if not isinstance(payload, dict):
+                return
+            data = cast(dict[str, Any], payload)
+            key = f"{data.get('round')}:{data.get('tool_id')}"
+            kind = event.type.removeprefix("loop.action_")
+            box = self._actions.get(key)
+            if kind == "started":
+                tool = str(data.get("tool_id", ""))
+                box = Collapsible(
+                    title=f"⏺ {tool}({_arg_summary(data.get('args'))})", collapsed=True
+                )
+                self._add(box)
+                args_text = str(data.get("args", ""))
+                box.mount(Static(f"参数：{args_text}", classes="hint"))
+                self._actions[key] = box
+                return
+            if box is None:
+                return
+            tool = str(data.get("tool_id", ""))
+            if data.get("ok"):
+                box.title = f"⏺ {tool} ✓ ({_fmt_ms(data.get('duration_ms'))})"
+            else:
+                box.title = f"⏺ {tool} ✗"
+            box.mount(Static(f"输出：{data.get('output', '')}", classes="hint"))
+
         def _open_subtask(self, sid: str, data: dict[str, Any]) -> None:
             """子任务开工：单行折叠块 + 验收标准详情（点击展开）。"""
             goal = str(data.get("goal", ""))
@@ -491,6 +553,9 @@ Collapsible > CollapsibleTitle:hover {
                     delta = _event_delta(event)
                     if delta is not None:
                         self._show_delta(delta)
+                        continue
+                    if event.type.startswith("loop.action_"):  # 工具动作行（折叠块）
+                        self._add_action_widget(event)
                         continue
                     line = _format_event(event)
                     if line:

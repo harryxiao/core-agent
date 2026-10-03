@@ -100,6 +100,46 @@ def test_run_loop_modality_missing() -> None:
     assert exc_info.value.code is UiErrorCode.UI_MODALITY_MISSING
 
 
+def test_run_loop_maps_action_events() -> None:
+    """工具动作事件（spec：异步流式执行）：action_* → loop.action_* 前缀透传。"""
+    api = UIAPILayer(
+        loop=FakeLoop(
+            [
+                LoopEvent("loop_started", {"trace_id": "t1"}),
+                LoopEvent(
+                    "action_started", {"round": 0, "tool_id": "tools.echo", "args": {"text": "hi"}}
+                ),
+                LoopEvent(
+                    "action_completed",
+                    {
+                        "round": 0,
+                        "tool_id": "tools.echo",
+                        "ok": True,
+                        "duration_ms": 12,
+                        "output": "echo:hi",
+                    },
+                ),
+                LoopEvent("step_completed", {"round": 1, "failed": False}),
+                LoopEvent("loop_finished", {"reply": "done"}),
+            ]
+        )
+    )
+    api.set_llm_config(_llm())
+    session_id = api.create_session("cli")
+
+    streamed = _collect(api, session_id, "hi")
+
+    assert [e.type for e in streamed] == [
+        "session.created",
+        "loop.action_started",
+        "loop.action_completed",
+        "loop.action",
+        "loop.result",
+    ]
+    assert streamed[1].payload["tool_id"] == "tools.echo"
+    assert streamed[2].payload["ok"] is True
+
+
 def test_barge_in() -> None:
     with pytest.raises(UiError) as exc_info:
         UIAPILayer().barge_in()

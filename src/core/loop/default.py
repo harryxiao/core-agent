@@ -32,6 +32,22 @@ Middleware = Callable[[LoopContext, Action], Action | None]
 Approver = Callable[[str, dict[str, Any], str], Awaitable[bool]]
 
 
+_MAX_ACTION_EXCERPT = 400  # 动作事件 args/output 节选上界（事件面有界）
+
+
+def _args_excerpt(args: dict[str, Any]) -> dict[str, Any] | str:
+    """动作参数节选：短载荷原样（结构化消费友好），长载荷 str 化截断。"""
+    text = str(args)
+    if len(text) <= _MAX_ACTION_EXCERPT:
+        return args
+    return text[:_MAX_ACTION_EXCERPT]
+
+
+def _output_excerpt(value: Any) -> str:
+    """动作输出节选：str 化截断（失败时 error，成功时 data）。"""
+    return str(value or "")[:_MAX_ACTION_EXCERPT]
+
+
 class DefaultLoop(Plugin):
     """默认执行循环：ReAct 式「观察→推理→行动→记忆」闭环。"""
 
@@ -111,7 +127,9 @@ class DefaultLoop(Plugin):
             else:
                 yield item
 
-    async def astream(self, user_input: str) -> AsyncIterator[LoopEvent]:
+    async def astream(  # noqa: C901 — 主管线多分支长管道（事件面七类）
+        self, user_input: str
+    ) -> AsyncIterator[LoopEvent]:
         trace_id = uuid.uuid4().hex
         yield LoopEvent("loop_started", {"trace_id": trace_id})
         self._trace(trace_id, "loop_started", {"trace_id": trace_id})
@@ -132,7 +150,28 @@ class DefaultLoop(Plugin):
             assert action is not None  # noqa: S101 — _reason_events 末态必产 Action
             action = self._apply_middlewares(ctx, action)
             action, approved = await self._authorize(action)
+            if not action.is_terminal:  # 终止动作（空 tool_id）非工具调用，不发
+                yield LoopEvent(
+                    "action_started",
+                    {
+                        "round": ctx.rounds,
+                        "tool_id": action.tool_id,
+                        "args": _args_excerpt(action.args),
+                    },
+                )
+            act_t0 = time.monotonic()
             result = await self.act(action, trace_id, approved=approved)
+            if not action.is_terminal:
+                yield LoopEvent(
+                    "action_completed",
+                    {
+                        "round": ctx.rounds,
+                        "tool_id": action.tool_id,
+                        "ok": not result.failed,
+                        "duration_ms": int((time.monotonic() - act_t0) * 1000),
+                        "output": _output_excerpt(result.error if result.failed else result.data),
+                    },
+                )
             self._record_observation(ctx, action, result)
             if result.failed:
                 self.rollback(trace_id)

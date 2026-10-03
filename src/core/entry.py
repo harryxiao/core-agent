@@ -53,7 +53,7 @@ from core.runtime import build_runtime
 from core.skills import SkillLibrary
 from core.tools import StubPlugin, ToolProvider
 from core.ui import CLIBridge, DesktopBridge, UIAPILayer, UiError, WebBridge
-from core.ui.repl import format_task_event
+from core.ui.repl import format_action_event, format_task_event
 
 _VERSION = "0.1.0"
 
@@ -667,6 +667,11 @@ async def _stream(api: UIAPILayer, session_id: str, prompt: str) -> None:
         # 增量 reply_delta（Event 层映射为 dict 载荷的 loop.result）不逐行打印，
         # 完整回复由终态 LoopResult 事件携带
         if event.type == "loop.result" and isinstance(payload, dict):
+            continue
+        if event.type.startswith("loop.action_"):  # 工具动作行（与 TUI 同构单行）
+            line = format_action_event(event.type.removeprefix("loop."), payload)
+            if line:
+                print(line)
             continue
         print(f"[{event.type}] {payload}")
 

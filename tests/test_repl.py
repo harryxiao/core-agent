@@ -336,3 +336,57 @@ def test_task_subtask_collapsible_lifecycle() -> None:
     assert "验收：给出来源" in text  # 展开区：验收标准
     assert "判定：验收通过" in text  # 展开区：判定理由
     assert "答案 42" in text  # 展开区：结果节选
+
+
+def test_tui_action_widget_lifecycle() -> None:
+    """TUI 工具动作行：⏺ 折叠块标题随完成落 ✓+耗时，展开区含参数/输出。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+
+    from core.ui.repl import build_app  # noqa: PLC0415 — 可选依赖懒 import
+
+    app = build_app(api)
+
+    class _ActionLoop:
+        """回放一轮工具动作事件 + 终态回复的 loop 替身。"""
+
+        async def astream(self, user_input: str):
+            from core.loop import LoopEvent  # noqa: PLC0415 — 事件构造
+
+            yield LoopEvent("loop_started", {"trace_id": "t1"})
+            yield LoopEvent(
+                "action_started",
+                {"round": 0, "tool_id": "tools.code_run", "args": {"code": "print(1)"}},
+            )
+            yield LoopEvent(
+                "action_completed",
+                {
+                    "round": 0,
+                    "tool_id": "tools.code_run",
+                    "ok": True,
+                    "duration_ms": 1500,
+                    "output": "1",
+                },
+            )
+            yield LoopEvent("step_completed", {"round": 1, "failed": False})
+            yield LoopEvent("loop_finished", {"reply": "done", "trace_id": "t1"})
+
+    api._loop = _ActionLoop()  # noqa: SLF001 — 注入替身驱动事件面
+
+    async def drive() -> str:
+        async with app.run_test() as pilot:
+            from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            inp.value = "跑一下"
+            await pilot.press("enter")
+            for _ in range(30):
+                await pilot.pause()
+            return _timeline_text(app)
+
+    text = asyncio.run(drive())
+    assert "⏺ tools.code_run ✓ (1.5s)" in text  # 完成标题（开工标题被更新覆盖）
+    assert "参数：{'code': 'print(1)'}" in text  # 展开区：参数
+    assert "输出：1" in text  # 展开区：输出节选

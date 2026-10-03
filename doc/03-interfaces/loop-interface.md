@@ -60,7 +60,10 @@ class LoopResult:
 
 @dataclass
 class LoopEvent:
-    type: str                   # loop_started / step_completed / reply_delta / loop_finished / loop_failed
+    type: str                   # loop_started / action_started / action_completed /
+                                # step_completed / reply_delta / loop_finished / loop_failed
+                                # 动作事件仅非终止动作产出：started(round/tool_id/args 节选)、
+                                # completed(round/tool_id/ok/duration_ms/output 节选，≤400 字符)
     payload: Any                # 事件负载（delta token / step 结果 / 终态原因）
 
 @dataclass

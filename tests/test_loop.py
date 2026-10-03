@@ -287,3 +287,88 @@ def test_irreversible_action_without_approver_fail_closed() -> None:
     result = loop.run("q")
     assert result.reply.startswith("已拒绝")
     assert executed == []
+
+
+# ---- 工具动作事件（action_started / action_completed，spec：异步流式执行） ----
+
+
+def test_astream_tool_action_events_order_and_payload() -> None:
+    """非终止动作：执行前后产出 action_started/completed，先于该轮 step_completed。"""
+    provider = ToolProvider()
+    provider.register(_echo_tool())
+
+    def planner(ctx):
+        if ctx.rounds == 0:
+            return Action(tool_id="tools.echo", args={"text": "hi"})
+        return Action(args={"reply": "done"})
+
+    loop = DefaultLoop(planner=planner, tools=provider, max_rounds=5)
+
+    events = _collect_events(loop, "hi")
+
+    # round0 工具轮（动作事件先于该轮 step_completed）+ round1 终止轮
+    assert [e.type for e in events] == [
+        "loop_started",
+        "action_started",
+        "action_completed",
+        "step_completed",
+        "step_completed",
+        "reply_delta",
+        "loop_finished",
+    ]
+    started = events[1].payload
+    assert started["tool_id"] == "tools.echo"
+    assert started["args"] == {"text": "hi"}
+    assert started["round"] == 0
+    completed = events[2].payload
+    assert completed["tool_id"] == "tools.echo"
+    assert completed["ok"] is True
+    assert completed["duration_ms"] >= 0
+    assert "echo:hi" in completed["output"]
+
+
+def test_astream_terminal_action_emits_no_action_events() -> None:
+    """终止动作（空 tool_id，回复收尾）不产出动作事件。"""
+    loop = DefaultLoop(planner=lambda ctx: Action(args={"reply": "你好"}))
+
+    events = _collect_events(loop, "hi")
+
+    # 终止动作不发动作事件；step_completed 为每轮既有语义（含终止轮）
+    assert [e.type for e in events] == [
+        "loop_started",
+        "step_completed",
+        "reply_delta",
+        "loop_finished",
+    ]
+
+
+def test_astream_failed_action_completes_with_ok_false() -> None:
+    """失败动作：action_completed.ok=False、output 含错误信息（动作行仍收尾不挂起）。"""
+    provider = ToolProvider()
+    provider.register(
+        Tool(
+            definition=ToolDef(
+                tool_id="tools.fail",
+                description="",
+                schema={"type": "object"},
+                coeffects=["filesystem:write"],  # 未注册 → CoeffectMissing → 失败
+                reversible=False,
+            ),
+            handler=lambda: "x",
+        )
+    )
+
+    def planner(ctx):
+        if ctx.rounds == 0:
+            return Action(tool_id="tools.fail", args={"cmd": "boom"})
+        return Action(args={"reply": "done"})
+
+    loop = DefaultLoop(planner=planner, tools=provider, max_rounds=5)
+
+    events = _collect_events(loop, "hi")
+
+    kinds = [e.type for e in events]
+    assert kinds[:4] == ["loop_started", "action_started", "action_completed", "step_completed"]
+    completed = events[2].payload
+    assert completed["ok"] is False
+    assert completed["output"]

@@ -48,7 +48,9 @@ class UIAPILayer:
 | `session.created` | session_id | 会话建立 |
 | `loop.perception` | turn_id, observation | 感知阶段 |
 | `loop.reasoning` | turn_id, plan | 推理阶段（折叠块展示） |
-| `loop.action` | turn_id, action | 行动阶段（含 diff / 审批提示） |
+| `loop.action` | turn_id, action | 回合推进（step_completed 映射，既有契约） |
+| `loop.action_started` | round, tool_id, args | 工具动作开工（⏺ 动作行，TUI 折叠块呈现） |
+| `loop.action_completed` | round, tool_id, ok, duration_ms, output | 工具动作收尾（标题落 ✓/✗+耗时，展开含输出节选） |
 | `loop.result` | turn_id, result | 结果回传 |
 | `loop.error` | turn_id, error | 结构化错误（不中断循环） |
 | `task.*` | 编排事件载荷 | 任务进度（task_started / plan_ready / wave_started / subtask_started / subtask_completed / task_checkpoint / task_finished / task_failed，type 前缀 `task.`；TUI 时间线呈现：任务/波次浅灰单行，子任务 Collapsible 折叠块，展开含验收/判定/结果节选） |

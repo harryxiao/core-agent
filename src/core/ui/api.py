@@ -23,10 +23,12 @@ from core.tools import ToolDef, ToolProvider, ToolResult
 from .errors import UiError, UiErrorCode
 from .models import Event
 
-# LoopEvent 类型 → SSE 事件类型（DefaultLoop 只产出五类 LoopEvent）。
+# LoopEvent 类型 → SSE 事件类型（DefaultLoop 产出七类 LoopEvent，spec：异步流式执行）。
 _EVENT_MAP = {
     "loop_started": "session.created",
-    "step_completed": "loop.action",
+    "step_completed": "loop.action",  # 既有契约（回合推进），不随动作事件新增而改名
+    "action_started": "loop.action_started",
+    "action_completed": "loop.action_completed",
     "reply_delta": "loop.result",
     "loop_finished": "loop.result",
     "loop_failed": "loop.error",
