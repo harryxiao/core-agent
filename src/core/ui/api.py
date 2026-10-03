@@ -16,6 +16,7 @@ from core.configuration import ConfigManager
 from core.configuration.models import LLMConfig
 from core.loop import DefaultLoop, LoopEvent, LoopPlugin
 from core.memory import MemoryStore
+from core.orchestration import TaskScheduler
 from core.permission import ApprovalChannel
 from core.tools import ToolDef, ToolProvider, ToolResult
 
@@ -44,6 +45,7 @@ class UIAPILayer:
         config: ConfigManager | None = None,
         supported_modalities: set[str] | None = None,
         approval: ApprovalChannel | None = None,
+        orchestrator: TaskScheduler | None = None,
     ) -> None:
         self._loop = loop if loop is not None else DefaultLoop()
         self._memory = memory
@@ -53,6 +55,7 @@ class UIAPILayer:
             supported_modalities if supported_modalities is not None else set()
         )
         self._approval = approval
+        self._orchestrator = orchestrator
         self._sessions: dict[str, str] = {}
         self._llm_config: LLMConfig | None = None
 
@@ -87,6 +90,15 @@ class UIAPILayer:
                 )
         async for loop_event in cast(AsyncIterator[LoopEvent], self._loop.astream(user_input)):
             yield self._map_event(session_id, loop_event)
+
+    async def run_task(self, session_id: str, goal: str) -> AsyncIterator[Event]:
+        """SSE 流式输出编排任务进度事件（task.* 前缀）；进度事件与 CLI task 入口同构。"""
+        self._require_session(session_id)
+        if self._orchestrator is None:
+            raise UiError(UiErrorCode.UI_ORCHESTRATOR_UNSET, "编排器未注入（任务入口不可用）")
+        task_id = f"task-{uuid.uuid4().hex[:8]}"
+        async for task_event in self._orchestrator.astream(task_id, goal):
+            yield Event(type=f"task.{task_event.type}", payload=task_event.payload)
 
     def barge_in(self) -> None:
         """语音播报被打断（barge-in）：语音输出为抽象能力（TTS 后端未接）。"""

@@ -126,6 +126,8 @@ class TaskScheduler:
   子任务的执行输入（「前置子任务结果」段），并随 `SubtaskOutcome.reply` 写入
   检查点 outcomes，续跑时经 `results` 参数重建依赖上下文。
 - 事件复用 `core.loop.LoopEvent`（type + dict 载荷），与 loop/ui 事件面同构。
+- TUI 入口：REPL 会话内输入 `/task <目标>`，经 `UIAPILayer.run_task` 驱动同一编排器，
+  进度事件以 `task.*` 前缀映射为 UI Event 流式呈现（与 CLI 同一格式化）。
 
 ---
 

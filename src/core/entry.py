@@ -42,7 +42,7 @@ from core.deployment import (
     ReleaseManager,
     ServeStateStore,
 )
-from core.loop import LoopEvent, LoopPlugin
+from core.loop import LoopPlugin
 from core.orchestration import Plan, TaskScheduler, plan_from_dict
 from core.permission import ApprovalChannel
 from core.pet.core import PetActivator, PetManager
@@ -53,6 +53,7 @@ from core.runtime import build_runtime
 from core.skills import SkillLibrary
 from core.tools import StubPlugin, ToolProvider
 from core.ui import CLIBridge, DesktopBridge, UIAPILayer, UiError, WebBridge
+from core.ui.repl import format_task_event
 
 _VERSION = "0.1.0"
 
@@ -290,6 +291,7 @@ def _build_ui(args: argparse.Namespace, *, interactive: bool = False) -> UIAPILa
         tools=runtime.tools,
         config=runtime.config,
         approval=approval,
+        orchestrator=runtime.orchestrator,  # /task 命令驱动同一编排器
     )
     api.set_llm_config(runtime.app.llm)
     return api
@@ -730,44 +732,12 @@ async def _stream_task(  # noqa: PLR0913 — 续跑注入面参数组
     async for event in orchestrator.astream(
         task_id, goal, plan=plan, completed=completed, results=results
     ):
-        line = _format_task_event(event)
+        line = format_task_event(event.type, event.payload)
         if line:
             print(line)
         if event.type == "task_failed":
             failed = True
     return failed
-
-
-def _format_task_event(event: LoopEvent) -> str | None:  # noqa: PLR0911, C901 — 事件格式化一分支一返回
-    """编排进度事件 → 单行文本；无需展示的事件返回 None。"""
-    raw = event.payload
-    if not isinstance(raw, dict):
-        return None
-    payload = cast(dict[str, Any], raw)
-    if event.type == "task_started":
-        return f"[task] 任务 {payload.get('task_id')}：{payload.get('goal', '')}"
-    if event.type == "plan_ready":
-        n = len(payload.get("subtasks", []))
-        return f"[plan] 拆解 {n} 个子任务，波次 {payload.get('waves')}"
-    if event.type == "wave_started":
-        return f"[wave] 开始波次 {payload.get('wave')}"
-    if event.type == "subtask_started":
-        return f"[子任务 {payload.get('subtask_id')}] {payload.get('goal', '')}"
-    if event.type == "subtask_completed":
-        if payload.get("skipped"):
-            return f"[子任务 {payload.get('subtask_id')}] ✓ 已完成（续跑跳过）"
-        mark = "✓" if payload.get("ok") else "✗"
-        reason = f" — {payload.get('reason', '')}" if not payload.get("ok") else ""
-        return f"[子任务 {payload.get('subtask_id')}] {mark}{reason}"
-    if event.type == "task_checkpoint":
-        return f"[checkpoint] 波次 {payload.get('wave')} 已持久化"
-    if event.type == "task_failed":
-        return f"[task_failed] {payload.get('code')}: {payload.get('reason')}"
-    if event.type == "task_finished":
-        outcomes = payload.get("outcomes", [])
-        ok = sum(1 for o in outcomes if getattr(o, "ok", False))
-        return f"[task_finished] 任务完成（{ok}/{len(outcomes)} 子任务通过）"
-    return None
 
 
 def _read_prompt(args: argparse.Namespace) -> str | None:

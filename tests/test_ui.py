@@ -290,3 +290,67 @@ def test_tui_approval_resolves_from_real_message_path() -> None:
             return prompt_seen, "已批准" in log_text
 
     assert asyncio.run(asyncio.wait_for(_drive(), 10)) == (True, True)
+
+
+# ---- 任务编排入口（TUI /task 与 CLI task 共用编排器） ----
+
+
+class _TaskOrchestrator:
+    """编排器桩：记录目标与注入面，依序回放任务进度事件。"""
+
+    def __init__(self, events: list[tuple[str, dict]]) -> None:
+        self._events = events
+        self.goals: list[str] = []
+
+    async def astream(self, task_id: str, goal: str, **kwargs: object):
+        self.goals.append(goal)
+        for kind, payload in self._events:
+            yield LoopEvent(kind, payload)
+
+
+def _collect_task(api: UIAPILayer, session_id: str, goal: str) -> list[Event]:
+    async def _run() -> list[Event]:
+        return [event async for event in api.run_task(session_id, goal)]
+
+    return asyncio.run(_run())
+
+
+def test_run_task_streams_mapped_task_events() -> None:
+    orch = _TaskOrchestrator(
+        [
+            ("task_started", {"task_id": "t1", "goal": "复合目标"}),
+            ("plan_ready", {"subtasks": [{"id": "1"}], "waves": [["1"]]}),
+            ("task_finished", {"outcomes": []}),
+        ]
+    )
+    api = UIAPILayer(orchestrator=orch)
+    session_id = api.create_session("cli")
+
+    events = _collect_task(api, session_id, "复合目标")
+
+    assert [e.type for e in events] == [
+        "task.task_started",
+        "task.plan_ready",
+        "task.task_finished",
+    ]
+    assert events[0].payload["task_id"] == "t1"  # type: ignore[index]
+    assert orch.goals == ["复合目标"]
+
+
+def test_run_task_requires_orchestrator() -> None:
+    api = UIAPILayer()
+    session_id = api.create_session("cli")
+
+    with pytest.raises(UiError) as err:
+        _collect_task(api, session_id, "目标")
+
+    assert err.value.code == UiErrorCode.UI_ORCHESTRATOR_UNSET
+
+
+def test_run_task_unknown_session() -> None:
+    api = UIAPILayer(orchestrator=_TaskOrchestrator([]))
+
+    with pytest.raises(UiError) as err:
+        _collect_task(api, "nope", "目标")
+
+    assert err.value.code == UiErrorCode.UI_SESSION_NOT_FOUND

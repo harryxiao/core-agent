@@ -18,6 +18,10 @@ class UIAPILayer:
     def barge_in(self) -> None: ...
         """打断当前语音播报（barge-in）：语音输出为抽象能力（TTS 后端未接）。"""
 
+    # 任务编排（TUI `/task` / 复用 CLI 同一编排器）
+    def run_task(self, session_id: str, goal: str) -> AsyncIterator[Event]:
+        """SSE 流式输出编排任务进度事件（task.*）；编排器未注入时 UI_ORCHESTRATOR_UNSET。"""
+
     # 记忆
     def get_memory(self, session_id: str) -> dict: ...
     def compact(self, session_id: str) -> None: ...
@@ -32,6 +36,9 @@ class UIAPILayer:
 
     # 审批通道（高风险工具 confirm 门的终端 y/n 交互；非交互入口为 None）
     approval: ApprovalChannel | None
+
+    # 编排器注入（组合根装配；None 时 run_task 报 UI_ORCHESTRATOR_UNSET）
+    orchestrator: TaskScheduler | None
 ```
 
 ### 1.1 流式事件（SSE）
@@ -44,6 +51,7 @@ class UIAPILayer:
 | `loop.action` | turn_id, action | 行动阶段（含 diff / 审批提示） |
 | `loop.result` | turn_id, result | 结果回传 |
 | `loop.error` | turn_id, error | 结构化错误（不中断循环） |
+| `task.*` | 编排事件载荷 | 任务进度（task_started / plan_ready / wave_started / subtask_started / subtask_completed / task_checkpoint / task_finished / task_failed，type 前缀 `task.`） |
 
 ### 1.2 HTTP 端点清单（WebBridge.serve）
 
@@ -117,6 +125,7 @@ LLM API（provider / endpoint / key / base URL）只在后端配置一次：
 | `UI_SESSION_NOT_FOUND` | 会话不存在 |
 | `UI_MODALITY_MISSING` | 模型不具备该模态理解能力 |
 | `UI_BARGEIN` | 语音播报被打断（barge-in） |
+| `UI_ORCHESTRATOR_UNSET` | 编排器未注入（run_task 前校验） |
 
 ---
 

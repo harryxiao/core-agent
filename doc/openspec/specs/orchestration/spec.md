@@ -178,7 +178,7 @@
 - **THEN** 并行编排与异步能力之间的契约空白被闭合，扇出场景不再退化为同步串行阻塞
 
 ### Requirement: 任务入口与进度事件
-系统 SHALL 提供 `core-agent task <目标>` CLI 入口驱动编排器：流式产出任务进度事件（task_started / plan_ready / wave_started / subtask_started / subtask_completed / task_checkpoint / task_finished / task_failed），关键节点（拆解、验收、检查点、终态）写入 trace 审计；支持从检查点断点续跑（重建原计划与已完成子任务集，未完成子任务续跑，已完成子任务不重复执行）。
+系统 SHALL 提供 `core-agent task <目标>` CLI 入口与 TUI REPL `/task <目标>` 命令驱动编排器：流式产出任务进度事件（task_started / plan_ready / wave_started / subtask_started / subtask_completed / task_checkpoint / task_finished / task_failed），关键节点（拆解、验收、检查点、终态）写入 trace 审计；支持从检查点断点续跑（重建原计划与已完成子任务集，未完成子任务续跑，已完成子任务不重复执行）。
 
 #### Scenario: CLI 任务入口流式进度
 - **GIVEN** 一个复合目标
@@ -189,6 +189,11 @@
 - **GIVEN** 任务执行中断（进程被杀）且检查点已持久化
 - **WHEN** 以同一 task-id 从检查点恢复
 - **THEN** 重建原计划并跳过已完成子任务，仅续跑未完成子任务（幂等恢复），已完成子任务结果重建为依赖上下文
+
+#### Scenario: TUI 任务入口流式进度
+- **GIVEN** 用户处于 TUI 交互会话（REPL）
+- **WHEN** 输入 `/task <目标>`
+- **THEN** 任务经编排器流式执行，进度事件依序呈现于会话视图，失败事件可见；任务运行期间普通消息等待，不可并发放任务
 
 #### Scenario: 任务失败可见
 - **GIVEN** 某子任务验收失败

@@ -185,7 +185,31 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
             self._turn_busy = True  # handler 内同步置位（与忙检同上下文，无竞态窗口）
             # 本轮执行进 worker：handler 即刻返回，消息泵保持可响应
             # （审批 y/n、Ctrl+B 打断等后续输入才能被分发——泵内 await 会死锁）
+            if text.startswith("/task "):  # 任务命令：驱动编排器（不进普通对话）
+                goal = text[len("/task ") :].strip()
+                if not goal:
+                    self._turn_busy = False
+                    log.write("用法：/task <目标>")
+                    return
+                self.run_worker(self._run_task_turn(goal))
+                return
             self.run_worker(self._run_turn(text))
+
+        async def _run_task_turn(self, goal: str) -> None:
+            """任务轮：经 /task 驱动编排器，进度事件逐行落日志；结束复位忙态。"""
+            log = self.query_one("#output", RichLog)
+            status = self.query_one("#status", Static)
+            status.update("[dim]任务执行中…[/dim]")
+            try:
+                async for event in api.run_task(session_id, goal):
+                    line = _format_event(event)
+                    if line:
+                        log.write(line)
+            except UiError as err:
+                log.write(_format_event(_error_event(err)))
+            finally:
+                status.update("")
+                self._turn_busy = False
 
         async def _run_turn(self, text: str) -> None:
             """单轮执行：流式增量上 live、其余事件落日志；结束复位状态。"""
@@ -211,6 +235,37 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
     return ReplApp()
 
 
+def format_task_event(kind: str, payload: object) -> str | None:  # noqa: PLR0911, C901 — 一分支一返回
+    """编排进度事件 → 单行文本；无需展示的事件返回 None（CLI 与 TUI 共用）。"""
+    if not isinstance(payload, dict):
+        return None
+    data = cast(dict[str, Any], payload)
+    if kind == "task_started":
+        return f"[task] 任务 {data.get('task_id')}：{data.get('goal', '')}"
+    if kind == "plan_ready":
+        n = len(data.get("subtasks", []))
+        return f"[plan] 拆解 {n} 个子任务，波次 {data.get('waves')}"
+    if kind == "wave_started":
+        return f"[wave] 开始波次 {data.get('wave')}"
+    if kind == "subtask_started":
+        return f"[子任务 {data.get('subtask_id')}] {data.get('goal', '')}"
+    if kind == "subtask_completed":
+        if data.get("skipped"):
+            return f"[子任务 {data.get('subtask_id')}] ✓ 已完成（续跑跳过）"
+        mark = "✓" if data.get("ok") else "✗"
+        reason = f" — {data.get('reason', '')}" if not data.get("ok") else ""
+        return f"[子任务 {data.get('subtask_id')}] {mark}{reason}"
+    if kind == "task_checkpoint":
+        return f"[checkpoint] 波次 {data.get('wave')} 已持久化"
+    if kind == "task_failed":
+        return f"[task_failed] {data.get('code')}: {data.get('reason')}"
+    if kind == "task_finished":
+        outcomes = data.get("outcomes", [])
+        ok = sum(1 for o in outcomes if getattr(o, "ok", False))
+        return f"[task_finished] 任务完成（{ok}/{len(outcomes)} 子任务通过）"
+    return None
+
+
 def run_repl(api: UIAPILayer) -> None:
     """启动 Textual 交互会话循环（阻塞；懒 import textual）。"""
     build_app(api).run()
@@ -223,6 +278,8 @@ def _format_event(event: Event) -> str | None:
     剥离 session_id/trace_id/round/LoopResult 等后端事件。
     """
     payload = event.payload
+    if event.type.startswith("task."):  # 编排进度事件（/task 命令与 CLI task 同构）
+        return format_task_event(event.type.removeprefix("task."), payload)
     if event.type == "error":
         data = cast(dict[str, object], payload)
         return f"[{data.get('code', 'error')}] {data.get('message', '')}"

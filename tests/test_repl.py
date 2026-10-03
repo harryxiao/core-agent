@@ -7,7 +7,7 @@ import asyncio
 from core.configuration.models import LLMConfig
 from core.loop import LoopEvent, LoopResult
 from core.ui import Event, UIAPILayer, UiErrorCode
-from core.ui.repl import _format_event, barge_in_event, build_app, repl_loop
+from core.ui.repl import _format_event, barge_in_event, build_app, format_task_event, repl_loop
 
 
 class RecordingLoop:
@@ -144,3 +144,137 @@ def test_input_clears_after_submit() -> None:
 
     asyncio.run(drive())
     assert loop.inputs == ["hi"]
+
+
+# ---- TUI 任务入口（/task 命令驱动编排器，进度事件流式呈现） ----
+
+
+class _TaskOrchestrator:
+    """编排器桩：回放进度事件并记录目标。"""
+
+    def __init__(self, events: list[tuple[str, dict]]) -> None:
+        self._events = events
+        self.goals: list[str] = []
+
+    async def astream(self, task_id: str, goal: str, **kwargs: object):
+        self.goals.append(goal)
+        for kind, payload in self._events:
+            yield LoopEvent(kind, payload)
+
+
+def test_format_task_event_renders_progress_lines() -> None:
+    assert format_task_event("task_started", {"task_id": "t1", "goal": "复合目标"}) == (
+        "[task] 任务 t1：复合目标"
+    )
+    assert format_task_event("subtask_completed", {"subtask_id": "1", "ok": True}) == (
+        "[子任务 1] ✓"
+    )
+    assert (
+        format_task_event("subtask_completed", {"subtask_id": "2", "ok": False, "reason": "未达标"})
+        == "[子任务 2] ✗ — 未达标"
+    )
+    assert format_task_event("unknown_kind", {"x": 1}) is None
+
+
+def test_format_event_maps_task_prefixed_events() -> None:
+    assert _format_event(Event("task.task_started", {"task_id": "t1", "goal": "g"})) == (
+        "[task] 任务 t1：g"
+    )
+
+
+def test_task_command_drives_orchestrator_not_loop() -> None:
+    """/task 命令驱动编排器（不进普通对话），进度事件落日志，结束后忙态复位。"""
+    orch = _TaskOrchestrator(
+        [
+            ("task_started", {"task_id": "t1", "goal": "build it"}),
+            ("task_finished", {"outcomes": []}),
+        ]
+    )
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop, orchestrator=orch)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> list[str]:
+        from textual.widgets import RichLog  # noqa: PLC0415 — 断言处取类型
+
+        async with app.run_test() as pilot:
+            for ch in "/task build it":
+                await pilot.press(ch)
+            await pilot.press("enter")
+            for _ in range(50):  # 等 worker 跑完编排桩（事件即时产出）
+                await pilot.pause()
+                if orch.goals:
+                    break
+            for _ in range(5):
+                await pilot.pause()
+            await pilot.press("h", "i", "enter")  # 忙态复位后普通消息可继续
+            for _ in range(10):
+                await pilot.pause()
+            widget = app.query_one("#output", RichLog)
+            return [strip.text for strip in widget.lines]
+
+    lines = asyncio.run(drive())
+    assert orch.goals == ["build it"]
+    assert loop.inputs == ["hi"]  # /task 不进普通对话；结束后复位可继续
+    assert any("[task] 任务 t1：build it" in line for line in lines)
+    assert any("[task_finished]" in line for line in lines)
+
+
+def test_task_command_without_goal_shows_usage() -> None:
+    orch = _TaskOrchestrator([])
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> None:
+        async with app.run_test() as pilot:
+            for ch in "/task ":
+                await pilot.press(ch)
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+
+    asyncio.run(drive())
+    assert orch.goals == []  # 空目标不启动任务
+
+
+def test_task_command_busy_rejects_concurrent() -> None:
+    """/task 运行期间再发消息提示等待（不并发放任务）。"""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _BlockingOrchestrator:
+        """阻塞式编排器：started 后挂起，release 才收尾（忙态窗口确定）。"""
+
+        async def astream(self, task_id: str, goal: str, **kwargs: object):
+            started.set()
+            await release.wait()
+            yield LoopEvent("task_finished", {"outcomes": []})
+
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop, orchestrator=_BlockingOrchestrator())
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> None:
+        async with app.run_test() as pilot:
+            for ch in "/task slow":
+                await pilot.press(ch)
+            await pilot.press("enter")
+            for _ in range(50):
+                await pilot.pause()
+                if started.is_set():
+                    break
+            for ch in "hello":
+                await pilot.press(ch)  # 任务运行中：提示等待，不进 loop
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+            assert loop.inputs == []  # 任务未收尾（仍忙）：消息未执行
+            release.set()  # 放行收尾
+            for _ in range(20):
+                await pilot.pause()
+
+    asyncio.run(drive())
+    assert loop.inputs == []  # 忙时的 hello 未进普通对话
