@@ -106,12 +106,23 @@ def format_task_event(kind: str, payload: object) -> str | None:  # noqa: PLR091
     return None
 
 
-def _arg_summary(args: object) -> str:
-    """动作参数单行摘要：dict → k=v 逗号拼接；其余 str 化截断。"""
-    if isinstance(args, dict):
-        data = cast(dict[str, object], args)
-        return ", ".join(f"{k}={v}" for k, v in list(data.items())[:4])
-    return str(args or "")
+_TOOL_NAMES = {  # tool_id → Claude CLI 式友好名（用户可见层不暴露内部 id/参数）
+    "tools.code_run": "Bash",
+    "tools.file_read": "Read",
+    "tools.file_write": "Write",
+    "tools.file_patch": "Edit",
+    "tools.web_fetch": "WebFetch",
+}
+
+
+def _tool_name(tool_id: object) -> str:
+    """tool_id → 友好名；未映射的去掉 tools. 前缀兜底。"""
+    name = str(tool_id or "")
+    mapped = _TOOL_NAMES.get(name)
+    if mapped:
+        return mapped
+    short = name.removeprefix("tools.")
+    return short or name
 
 
 def _fmt_ms(ms: object) -> str:
@@ -128,9 +139,9 @@ def format_action_event(kind: str, payload: object) -> str | None:
     if not isinstance(payload, dict):
         return None
     data = cast(dict[str, Any], payload)
-    tool = str(data.get("tool_id", ""))
+    tool = _tool_name(data.get("tool_id"))
     if kind == "action_started":
-        return f"⏺ {tool}({_arg_summary(data.get('args'))})"
+        return f"⏺ {tool}"
     if kind == "action_completed":
         if data.get("ok"):
             return f"⏺ {tool} ✓ ({_fmt_ms(data.get('duration_ms'))})"
@@ -497,7 +508,7 @@ Collapsible > CollapsibleTitle:hover {
                 self._add(Static(f"✔ 任务完成（{ok}/{len(outcomes)} 子任务通过）", classes="ok"))
 
         def _add_action_widget(self, event: Event) -> None:
-            """工具动作事件 → ⏺ 折叠块：单行标题，完成落 ✓/✗+耗时，展开含参数/输出。"""
+            """工具动作事件 → ⏺ 折叠块：友好名单行标题，完成落 ✓/✗+耗时，展开含输出。"""
             payload = event.payload
             if not isinstance(payload, dict):
                 return
@@ -506,18 +517,13 @@ Collapsible > CollapsibleTitle:hover {
             kind = event.type.removeprefix("loop.action_")
             box = self._actions.get(key)
             if kind == "started":
-                tool = str(data.get("tool_id", ""))
-                box = Collapsible(
-                    title=f"⏺ {tool}({_arg_summary(data.get('args'))})", collapsed=True
-                )
+                box = Collapsible(title=f"⏺ {_tool_name(data.get('tool_id'))}", collapsed=True)
                 self._add(box)
-                args_text = str(data.get("args", ""))
-                box.mount(Static(f"参数：{args_text}", classes="hint"))
                 self._actions[key] = box
                 return
             if box is None:
                 return
-            tool = str(data.get("tool_id", ""))
+            tool = _tool_name(data.get("tool_id"))
             if data.get("ok"):
                 box.title = f"⏺ {tool} ✓ ({_fmt_ms(data.get('duration_ms'))})"
             else:

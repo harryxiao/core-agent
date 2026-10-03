@@ -387,6 +387,6 @@ def test_tui_action_widget_lifecycle() -> None:
             return _timeline_text(app)
 
     text = asyncio.run(drive())
-    assert "⏺ tools.code_run ✓ (1.5s)" in text  # 完成标题（开工标题被更新覆盖）
-    assert "参数：{'code': 'print(1)'}" in text  # 展开区：参数
+    assert "⏺ Bash ✓ (1.5s)" in text  # 友好名 + 完成标题（tools.code_run → Bash）
+    assert "参数" not in text  # 回显不含原始参数（args 不进用户可见层）
     assert "输出：1" in text  # 展开区：输出节选
