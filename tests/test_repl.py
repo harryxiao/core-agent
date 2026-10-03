@@ -320,6 +320,9 @@ def test_task_subtask_collapsible_lifecycle() -> None:
 
     async def drive() -> str:
         async with app.run_test() as pilot:
+            from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+            from textual.widgets import Collapsible  # noqa: PLC0415 — 可选依赖懒 import
+
             for ch in "/task 查答案":
                 await pilot.press(ch)
             await pilot.press("enter")
@@ -329,6 +332,9 @@ def test_task_subtask_collapsible_lifecycle() -> None:
                     break
             for _ in range(5):
                 await pilot.pause()
+            box = app.query_one("#timeline", Vertical).query_one(Collapsible)
+            contents = box.query_one(Collapsible.Contents)
+            assert contents.display is False  # 验收/判定/结果藏折叠区（不直接显示）
             return _timeline_text(app)
 
     text = asyncio.run(drive())
@@ -376,7 +382,8 @@ def test_tui_action_widget_lifecycle() -> None:
 
     async def drive() -> str:
         async with app.run_test() as pilot:
-            from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+            from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+            from textual.widgets import Collapsible, Input  # noqa: PLC0415 — 可选依赖懒 import
 
             inp = app.query_one("#input", Input)
             inp.focus()
@@ -384,6 +391,9 @@ def test_tui_action_widget_lifecycle() -> None:
             await pilot.press("enter")
             for _ in range(30):
                 await pilot.pause()
+            box = app.query_one("#timeline", Vertical).query_one(Collapsible)
+            contents = box.query_one(Collapsible.Contents)
+            assert contents.display is False  # 输出藏折叠区（不直接显示）
             return _timeline_text(app)
 
     text = asyncio.run(drive())

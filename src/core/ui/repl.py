@@ -299,8 +299,8 @@ Collapsible > CollapsibleTitle:hover {
             self._last_reply: str = ""  # 终态回复原文（Markdown 无公开源文本取口）
             self._approval_future: Any | None = None  # 挂起中的审批 Future[bool]
             self._turn_busy = False  # 本轮 worker 是否在跑（忙时新消息提示等待）
-            self._open: dict[str, tuple[Collapsible, str]] = {}  # 子任务折叠块 sid→(块, goal)
-            self._actions: dict[str, Collapsible] = {}  # 动作折叠块 round:tool→块
+            self._open: dict[str, tuple[Collapsible, Static, str]] = {}  # sid→(块, 详情, goal)
+            self._actions: dict[str, tuple[Collapsible, Static]] = {}  # round:tool→(块, 详情)
             self._spin_timer: Timer | None = None  # 工作状态行驱动
             self._spin_t0 = 0.0
             self._spin_idx = 0
@@ -508,51 +508,56 @@ Collapsible > CollapsibleTitle:hover {
                 self._add(Static(f"✔ 任务完成（{ok}/{len(outcomes)} 子任务通过）", classes="ok"))
 
         def _add_action_widget(self, event: Event) -> None:
-            """工具动作事件 → ⏺ 折叠块：友好名单行标题，完成落 ✓/✗+耗时，展开含输出。"""
+            """工具动作事件 → ⏺ 折叠块：友好名标题，完成落 ✓/✗+耗时，输出藏折叠区。"""
             payload = event.payload
             if not isinstance(payload, dict):
                 return
             data = cast(dict[str, Any], payload)
             key = f"{data.get('round')}:{data.get('tool_id')}"
             kind = event.type.removeprefix("loop.action_")
-            box = self._actions.get(key)
+            entry = self._actions.get(key)
             if kind == "started":
-                box = Collapsible(title=f"⏺ {_tool_name(data.get('tool_id'))}", collapsed=True)
+                detail = Static("", classes="hint")  # 输出占位（completed 填充）
+                box = Collapsible(
+                    detail, title=f"⏺ {_tool_name(data.get('tool_id'))}", collapsed=True
+                )
                 self._add(box)
-                self._actions[key] = box
+                self._actions[key] = (box, detail)
                 return
-            if box is None:
+            if entry is None:
                 return
+            box, detail = entry
             tool = _tool_name(data.get("tool_id"))
             if data.get("ok"):
                 box.title = f"⏺ {tool} ✓ ({_fmt_ms(data.get('duration_ms'))})"
             else:
                 box.title = f"⏺ {tool} ✗"
-            box.mount(Static(f"输出：{data.get('output', '')}", classes="hint"))
+            detail.update(f"输出：{data.get('output', '')}")
 
         def _open_subtask(self, sid: str, data: dict[str, Any]) -> None:
-            """子任务开工：单行折叠块 + 验收标准详情（点击展开）。"""
+            """子任务开工：单行折叠块 + 验收详情（构造期入折叠区，收尾 update 补判定）。"""
             goal = str(data.get("goal", ""))
-            box = Collapsible(title=f"▸ 子任务 {sid}  {goal}", collapsed=True)
+            detail = Static(f"验收：{data.get('acceptance') or '（无）'}", classes="hint")
+            box = Collapsible(detail, title=f"▸ 子任务 {sid}  {goal}", collapsed=True)
             self._add(box)
-            box.mount(Static(f"验收：{data.get('acceptance') or '（无）'}", classes="hint"))
-            self._open[sid] = (box, goal)
+            self._open[sid] = (box, detail, goal)
 
         def _complete_subtask(self, sid: str, data: dict[str, Any]) -> None:
-            """子任务收尾：标题落 ✓/✗，展开区补判定与结果节选。"""
+            """子任务收尾：标题落 ✓/✗，展开区 update 补判定与结果节选。"""
             entry = self._open.get(sid)
             if entry is None:
                 return
-            box, goal = entry
+            box, detail, goal = entry
             if data.get("skipped"):
                 box.title = f"▸ 子任务 {sid}  ✓ 已完成（续跑跳过）"
                 return
             mark = "✓" if data.get("ok") else "✗"
             box.title = f"▸ 子任务 {sid}  {mark} {goal}"
-            box.mount(Static(f"判定：{data.get('reason', '')}", classes="hint"))
+            lines = [str(detail.render()), f"判定：{data.get('reason', '')}"]
             reply = str(data.get("reply", "")).strip()
             if reply:
-                box.mount(Static(reply))
+                lines.append(reply)
+            detail.update("\n".join(lines))
 
         # ---- 普通消息轮 ----
 
