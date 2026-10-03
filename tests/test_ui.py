@@ -133,15 +133,18 @@ def _tui_app() -> object:
 
 
 def _timeline_text(app: object) -> str:
-    """时间线全量文本：Static 取渲染文本，Collapsible 取标题 + 内部 Static。"""
+    """时间线全量文本：Static 取渲染文本，Collapsible 取标题 + 内部 Static，
+    Markdown 取回原文（app._last_reply，Markdown 无公开源文本取口）。"""
     from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
-    from textual.widgets import Collapsible, Static  # noqa: PLC0415 — 可选依赖懒 import
+    from textual.widgets import Collapsible, Markdown, Static  # noqa: PLC0415 — 可选依赖懒 import
 
     parts: list[str] = []
     for child in app.query_one("#timeline", Vertical).children:
         if isinstance(child, Collapsible):
             parts.append(str(child.title))
             parts.extend(str(s.render()) for s in child.query(Static))
+        elif isinstance(child, Markdown):
+            parts.append(str(getattr(app, "_last_reply", "")))
         else:
             parts.append(str(child.render()))
     return "".join(parts)
@@ -164,10 +167,11 @@ def test_tui_empty_enter_does_not_exit() -> None:
     assert asyncio.run(_drive()) is True
 
 
-def test_tui_message_roundtrip_clears_status() -> None:
+def test_tui_message_roundtrip_stops_spinner() -> None:
+    """回车提交后输入清空、工作状态行（✻ spinner）回合收尾隐藏。"""
     app = _tui_app()
 
-    async def _drive() -> tuple[bool, object]:
+    async def _drive() -> tuple[bool, bool]:
         from textual.widgets import Input, Static  # noqa: PLC0415 — 可选依赖懒 import
 
         async with app.run_test() as pilot:
@@ -177,13 +181,13 @@ def test_tui_message_roundtrip_clears_status() -> None:
             await pilot.press("enter")
             await pilot.pause()
             running = app.is_running
-            status = app.query_one("#status", Static).content
+            spinner_hidden = app.query_one("#spinner", Static).display is False
             input_cleared = inp.value == ""
-        return running and input_cleared, status
+        return running and input_cleared, spinner_hidden
 
-    ok, status = asyncio.run(_drive())
+    ok, spinner_hidden = asyncio.run(_drive())
     assert ok is True
-    assert status == ""
+    assert spinner_hidden is True
 
 
 def test_tui_streams_deltas_then_flushes_once() -> None:
@@ -205,8 +209,9 @@ def test_tui_streams_deltas_then_flushes_once() -> None:
 
     app = build_app(api)
 
-    async def _drive() -> tuple[bool, int]:
-        from textual.widgets import Input, Static  # noqa: PLC0415 — 可选依赖懒 import
+    async def _drive() -> tuple[bool, int, str]:
+        from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+        from textual.widgets import Input, Markdown, Static  # noqa: PLC0415 — 可选依赖懒 import
 
         async with app.run_test() as pilot:
             inp = app.query_one("#input", Input)
@@ -215,13 +220,15 @@ def test_tui_streams_deltas_then_flushes_once() -> None:
             await pilot.press("enter")
             await pilot.pause()
             live_hidden = app.query_one("#live", Static).display is False
-            log_text = _timeline_text(app)
+            md_count = len(app.query_one("#timeline", Vertical).query(Markdown))
+            reply = str(app._last_reply)
             running = app.is_running
-        return live_hidden and running, log_text.count("你好")
+        return live_hidden and running, md_count, reply
 
-    ok, count = asyncio.run(_drive())
+    ok, md_count, reply = asyncio.run(_drive())
     assert ok is True
-    assert count == 1  # 全文只出现一次（live 流式落定，终态不重复）
+    assert md_count == 1  # 全文只渲染一次（live 流式落定，终态不重复）
+    assert reply == "你好"
 
 
 def test_tui_approval_prompt_y_n() -> None:

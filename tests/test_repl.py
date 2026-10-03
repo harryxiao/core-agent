@@ -229,7 +229,7 @@ def test_task_command_drives_orchestrator_not_loop() -> None:
     text = asyncio.run(drive())
     assert orch.goals == ["build it"]
     assert loop.inputs == ["hi"]  # /task 不进普通对话；结束后复位可继续
-    assert "▸ 任务 t1：build it" in text
+    assert "◍ 任务 t1：build it" in text
     assert "任务完成" in text  # task_finished 终态单行（✔ 任务完成…）
 
 

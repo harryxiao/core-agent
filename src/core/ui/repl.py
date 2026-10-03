@@ -3,21 +3,28 @@
 CLIBridge.connect() 落地为 Textual 交互会话循环；textual 仅此文件持有且懒 import
 （ADR-0040 MAL 隔离），上层（cli_bridge / UIAPILayer）不依赖具体 TUI 框架。
 
-时间线（#timeline）为混合 widget 流：用户输入灰底气泡（Static.bubble）、
-系统提示浅灰单行（Static.hint）、子任务/任务可折叠块（Collapsible 单行标题，
-点击展开验收/结果/判定详情）、终态高亮（.ok/.fail）。
+对标 Claude CLI 的呈现层：
+- core 主题（terracotta accent #d97757）+ 圆角输入框（focus 高亮）；
+- 工作状态行 ✻ label… (Ns)（set_interval 轮换 glyph，无内置 Spinner 组件）；
+- 回复流式逐字进 live 区、终态一次渲染为 Markdown（代码块语法高亮）；
+- 用户输入以 ❯ 前缀行回显；底部快捷键提示盒（F1 展开）；启动欢迎横幅；
+- 任务/子任务进度走折叠块（单行提示 + 展开详情）。
 
 对应接口：doc/03-interfaces/ui-interface.md §1（CLIBridge 交互会话面）。
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from .api import UIAPILayer
 from .errors import UiError
 from .models import Event
+
+_ACCENT = "#d97757"  # core 主题 accent（Claude CLI terracotta）
+_SPIN_GLYPHS = ["✻", "·", "•", "∘", "○"]  # 工作状态行轮换符号
 
 
 async def repl_loop(
@@ -121,16 +128,25 @@ def _format_event(event: Event) -> str | None:
 
 def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体推高复杂度
     """构建 Textual 应用（懒 import textual），暴露给 headless 冒烟测试驱动。"""
+    from rich.markup import escape  # noqa: PLC0415 — MAL 懒 import
     from textual.app import App, ComposeResult  # noqa: PLC0415 — MAL 懒 import
     from textual.containers import Horizontal, Vertical  # noqa: PLC0415 — MAL 懒 import
+    from textual.theme import Theme  # noqa: PLC0415 — MAL 懒 import
+    from textual.timer import Timer  # noqa: PLC0415 — MAL 懒 import
     from textual.widget import Widget  # noqa: PLC0415 — MAL 懒 import
-    from textual.widgets import Collapsible, Input, Static  # noqa: PLC0415 — MAL 懒 import
+    from textual.widgets import (  # noqa: PLC0415 — MAL 懒 import
+        Collapsible,
+        Input,
+        Markdown,
+        Static,
+    )
 
     session_id = api.create_session("cli")
     approval = api.approval  # 审批通道（None 表示非交互入口，confirm 门 fail-closed）
+    core_theme = Theme(name="core", primary=_ACCENT, accent=_ACCENT, secondary=_ACCENT, dark=True)
 
     class ReplApp(App[None]):
-        """core-agent 交互会话 TUI：时间线（气泡/折叠块）+ 流式 live + 输入行。"""
+        """core-agent 交互会话 TUI：时间线（❯ 行/Markdown/折叠块）+ 工作状态行。"""
 
         CSS = """
 #timeline {
@@ -138,11 +154,24 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
     overflow-y: auto;
     padding: 0 1;
 }
-#input-row {
+#live {
     height: auto;
+    padding: 0 2;
+    color: $text;
+}
+#input-box {
+    height: auto;
+    border: round $panel;
+    padding: 0 1;
+    margin: 0 1;
+}
+#input-box:focus-within {
+    border: round $accent;
 }
 #prompt {
     width: auto;
+    color: $accent;
+    text-style: bold;
 }
 #input {
     width: 1fr;
@@ -150,20 +179,26 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
     border: none;
     padding: 0;
 }
-#live {
-    height: auto;
-    padding: 0 1;
-}
-#status {
-    height: 1;
-    width: 1fr;
-}
-.bubble {  /* 用户输入：灰底气泡块 */
-    background: $panel;
-    color: $text;
-    padding: 0 1;
-    margin: 0 2 0 0;
+#hints {
+    dock: bottom;
+    border: round $panel;
     width: auto;
+    padding: 0 2;
+    margin: 0 1;
+    color: $text-muted;
+    align: center middle;
+}
+#spinner {
+    height: 1;
+    width: auto;
+    padding: 0 2;
+    color: $text-muted;
+}
+.echo {  /* 用户输入回显：❯ 前缀行（accent 前缀经 markup） */
+    color: $text;
+    width: auto;
+    padding: 0 1;
+    margin: 0 0 0 0;
 }
 .hint {  /* 系统/进度提示：浅灰单行 */
     color: $text-muted;
@@ -178,8 +213,14 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
     color: $error;
     width: auto;
 }
-Collapsible {  /* 子任务/工具：单行提示，点击展开 */
-    background: $surface;
+.welcome {  /* 启动横幅 */
+    border: round $panel;
+    padding: 0 1;
+    margin: 0 1 1 1;
+    color: $text-muted;
+}
+Collapsible {  /* 子任务/工具动作：单行提示，点击展开 */
+    background: transparent;
     border: none;
     padding: 0;
     width: 1fr;
@@ -187,33 +228,59 @@ Collapsible {  /* 子任务/工具：单行提示，点击展开 */
 }
 Collapsible > CollapsibleTitle {
     color: $text-muted;
-    background: $surface;
+    background: transparent;
     padding: 0 1;
+}
+Collapsible > CollapsibleTitle:hover {
+    background: $panel;
 }
 """
 
         # 退出走 App 默认 ctrl+q / ctrl+c；空回车不再退出（IME 确认等误触防护）
-        BINDINGS = [("ctrl+b", "barge_in", "打断")]
+        BINDINGS = [("ctrl+b", "barge_in", "打断"), ("f1", "hints", "快捷键")]
+
+        _HINTS_SHORT = "F1 快捷键 · Ctrl+B 打断 · Ctrl+Q 退出"
+        _HINTS_FULL = (
+            "F1 快捷键 · Ctrl+B 打断 · Ctrl+Q 退出 · /task <目标> 启动编排 · "
+            "审批 y 批准 / n 拒绝 · 点击子任务/动作行展开详情"
+        )
 
         def __init__(self) -> None:
             super().__init__()
-            self._live_buf: list[str] = []  # 流式增量缓冲（终态一次性落定进时间线）
+            self._live_buf: list[str] = []  # 流式增量缓冲（终态一次落 Markdown）
+            self._last_reply: str = ""  # 终态回复原文（Markdown 无公开源文本取口）
             self._approval_future: Any | None = None  # 挂起中的审批 Future[bool]
             self._turn_busy = False  # 本轮 worker 是否在跑（忙时新消息提示等待）
             self._open: dict[str, tuple[Collapsible, str]] = {}  # 子任务折叠块 sid→(块, goal)
+            self._spin_timer: Timer | None = None  # 工作状态行驱动
+            self._spin_t0 = 0.0
+            self._spin_idx = 0
+            self._spin_label = ""
+            self._hints_on = False
 
         def compose(self) -> ComposeResult:
             yield Vertical(id="timeline")
             yield Static(id="live")
-            with Horizontal(id="input-row"):
-                yield Static("> ", id="prompt")
-                placeholder = "输入消息（Ctrl+B 打断，Ctrl+Q 退出）；/task <目标> 启动编排任务"
-                yield Input(placeholder=placeholder, id="input")
-            yield Static(id="status")
+            yield Static(id="spinner")
+            with Vertical(id="input-box"), Horizontal():
+                yield Static("❯ ", id="prompt")
+                yield Input(placeholder="发送消息，或 /task <目标> 启动编排任务", id="input")
+            yield Static(self._HINTS_SHORT, id="hints")
 
         def on_mount(self) -> None:
+            self.register_theme(core_theme)
+            self.theme = "core"
             self.query_one("#live", Static).display = False  # 无流式增量时收起
+            self.query_one("#spinner", Static).display = False
             self.query_one("#input", Input).focus()
+            self._add(
+                Static(
+                    f"[{_ACCENT}]◍ core-agent[/] 已就绪\n"
+                    "/task <目标> 启动编排任务 · 高风险动作需 y/n 审批 · 点击折叠行展开详情",
+                    classes="welcome",
+                    markup=True,
+                )
+            )
             if approval is not None:
                 approval.handler = self._ask_approval  # 审批通道接终端 y/n
 
@@ -225,6 +292,35 @@ Collapsible > CollapsibleTitle {
             timeline.mount(widget)
             timeline.call_after_refresh(timeline.scroll_end, animate=False)
 
+        # ---- 工作状态行（✻ label… (Ns)，Claude CLI 式自转） ----
+
+        def _spin_start(self, label: str) -> None:
+            """启动（或改标签）工作状态行：glyph 轮换 + 秒计时。"""
+            if self._spin_timer is None:
+                self._spin_t0 = time.monotonic()
+                self._spin_timer = self.set_interval(0.12, self._spin_tick)
+            self._spin_label = label
+            self.query_one("#spinner", Static).display = True
+
+        def _spin_tick(self) -> None:
+            """轮换 glyph 并刷新计时（timer 驱动，不阻塞消息泵）。"""
+            self._spin_idx = (self._spin_idx + 1) % len(_SPIN_GLYPHS)
+            elapsed = int(time.monotonic() - self._spin_t0)
+            glyph = _SPIN_GLYPHS[self._spin_idx]
+            self.query_one("#spinner", Static).update(f"{glyph} {self._spin_label}… ({elapsed}s)")
+
+        def _spin_relabel(self, label: str) -> None:
+            """仅在运行中改标签（审批挂起等场景），不重启计时。"""
+            if self._spin_timer is not None:
+                self._spin_label = label
+
+        def _spin_stop(self) -> None:
+            """停止并隐藏工作状态行（回合收尾）。"""
+            if self._spin_timer is not None:
+                self._spin_timer.stop()
+                self._spin_timer = None
+            self.query_one("#spinner", Static).display = False
+
         async def _ask_approval(self, tool_id: str, args: dict[str, Any], reason: str) -> bool:
             """审批提示落时间线，输入 y/n 决断；同刻仅一单（重复请求 fail-closed）。"""
             if self._approval_future is not None and not self._approval_future.done():
@@ -235,20 +331,26 @@ Collapsible > CollapsibleTitle {
             self._approval_future = future
             self._add(Static(f"⚠ 需审批: {reason}", classes="fail"))
             self._add(Static("输入 y 批准 / n 拒绝", classes="hint"))
-            self.query_one("#status", Static).update("[yellow]等待审批…[/yellow]")
+            self._spin_relabel("等待审批")
             try:
                 return await future
             finally:
                 self._approval_future = None
-                self.query_one("#status", Static).update("[dim]思考中…[/dim]")
+                self._spin_relabel("思考中")
 
         def action_barge_in(self) -> None:
             line = _format_event(barge_in_event(api))
             if line:
                 self._add(Static(line, classes="hint"))
 
+        def action_hints(self) -> None:
+            """F1 切换底部快捷键提示盒（短行 ↔ 完整列表）。"""
+            self._hints_on = not self._hints_on
+            text = self._HINTS_FULL if self._hints_on else self._HINTS_SHORT
+            self.query_one("#hints", Static).update(text)
+
         def _show_delta(self, delta: str) -> None:
-            """流式增量进 live 区逐字上屏（时间线不逐字追加，终态一次落定）。"""
+            """流式增量进 live 区逐字上屏（时间线不逐字追加，终态一次落 Markdown）。"""
             live = self.query_one("#live", Static)
             if not self._live_buf:
                 live.display = True
@@ -256,10 +358,12 @@ Collapsible > CollapsibleTitle {
             live.update("".join(self._live_buf))
 
         def _flush_live(self) -> None:
-            """流式文本终态一次性落时间线，live 区复位（全文不重复落两次）。"""
+            """流式文本终态一次渲染为 Markdown 落时间线，live 区复位。"""
             live = self.query_one("#live", Static)
             if self._live_buf:
-                self._add(Static("".join(self._live_buf)))
+                text = "".join(self._live_buf)
+                self._last_reply = text
+                self._add(Markdown(text))
             self._live_buf = []
             live.update("")
             live.display = False
@@ -274,7 +378,9 @@ Collapsible > CollapsibleTitle {
                 message.input.clear()
                 answer = message.value.strip().lower()
                 if answer in ("y", "yes", "n", "no"):
-                    self._add(Static(f"> {answer}", classes="bubble"))
+                    self._add(
+                        Static(f"[{_ACCENT}]❯[/] {escape(answer)}", classes="echo", markup=True)
+                    )
                     pending.set_result(answer in ("y", "yes"))
                 else:
                     self._add(Static("请输入 y（批准）或 n（拒绝）", classes="hint"))
@@ -286,7 +392,9 @@ Collapsible > CollapsibleTitle {
             if self._turn_busy:
                 self._add(Static("处理中，请稍候（Ctrl+B 打断）", classes="hint"))
                 return
-            self._add(Static(f"> {text}", classes="bubble"))  # 用户输入气泡
+            self._add(  # 用户输入回显：❯ 前缀行（Claude CLI 式，无气泡）
+                Static(f"[{_ACCENT}]❯[/] {escape(text)}", classes="echo", markup=True)
+            )
             self._turn_busy = True  # handler 内同步置位（与忙检同上下文，无竞态窗口）
             # 本轮执行进 worker：handler 即刻返回，消息泵保持可响应
             # （审批 y/n、Ctrl+B 打断等后续输入才能被分发——泵内 await 会死锁）
@@ -304,7 +412,7 @@ Collapsible > CollapsibleTitle {
 
         async def _run_task_turn(self, goal: str) -> None:
             """任务轮：经 /task 驱动编排器，进度事件落时间线（单行提示+折叠块）。"""
-            self.query_one("#status", Static).update("[dim]任务执行中…[/dim]")
+            self._spin_start("任务执行中")
             try:
                 async for event in api.run_task(session_id, goal):
                     self._add_task_widget(event)
@@ -313,7 +421,7 @@ Collapsible > CollapsibleTitle {
                 if line:
                     self._add(Static(line, classes="fail"))
             finally:
-                self.query_one("#status", Static).update("")
+                self._spin_stop()
                 self._turn_busy = False
 
         def _add_task_widget(self, event: Event) -> None:  # noqa: PLR0911 — 一分支一事件
@@ -324,7 +432,7 @@ Collapsible > CollapsibleTitle {
             data = cast(dict[str, Any], payload)
             kind = event.type.removeprefix("task.")
             if kind == "task_started":
-                line = f"▸ 任务 {data.get('task_id')}：{data.get('goal', '')}"
+                line = f"◍ 任务 {data.get('task_id')}：{data.get('goal', '')}"
                 self._add(Static(line, classes="hint"))
                 return
             if kind == "plan_ready":
@@ -377,7 +485,7 @@ Collapsible > CollapsibleTitle {
 
         async def _run_turn(self, text: str) -> None:
             """单轮执行：流式增量上 live、终态/错误落时间线；结束复位状态。"""
-            self.query_one("#status", Static).update("[dim]思考中…[/dim]")
+            self._spin_start("思考中")
             try:
                 async for event in api.run_loop(session_id, text):
                     delta = _event_delta(event)
@@ -393,7 +501,7 @@ Collapsible > CollapsibleTitle {
                     self._add(Static(line, classes="fail"))
             finally:
                 self._flush_live()
-                self.query_one("#status", Static).update("")
+                self._spin_stop()
                 self._turn_busy = False
 
     return ReplApp()
