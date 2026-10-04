@@ -226,8 +226,7 @@ def build_runtime(  # noqa: PLR0915
             definition=ToolDef(
                 tool_id="tools.delegate",
                 description=(
-                    "将子任务委托给匹配的子 Agent（coding/research）执行，"
-                    "阻塞等待结果并回传汇总"
+                    "将子任务委托给匹配的子 Agent（coding/research）执行，阻塞等待结果并回传汇总"
                 ),
                 schema={
                     "type": "object",

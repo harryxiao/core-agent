@@ -44,9 +44,7 @@ class MultiAgentRouter:
             return best
         if self._fallback is not None:
             return self._fallback
-        raise OrchestrationError(
-            OrchestrationErrorCode.NO_AGENT_MATCH, f"无匹配 Agent: {task}"
-        )
+        raise OrchestrationError(OrchestrationErrorCode.NO_AGENT_MATCH, f"无匹配 Agent: {task}")
 
     async def handoff(self, target: str, handoff: TaskHandoff) -> LoopResult:
         """显式交接任务给指定 Agent，异步执行并返回完整 LoopResult；无匹配抛错。"""

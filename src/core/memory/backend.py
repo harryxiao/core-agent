@@ -44,9 +44,7 @@ class FileBackend:
     def search(self, query: str, layer: Layer | None = None) -> list[MemoryEntry]:
         # 候选集按层过滤；query 词元与 content/tags 重叠打分后降序返回
         with self._lock:
-            candidates = [
-                e for e in self._entries.values() if layer is None or e.layer == layer
-            ]
+            candidates = [e for e in self._entries.values() if layer is None or e.layer == layer]
             if not query:
                 return candidates
             tokens = set(query.lower().split())
