@@ -37,7 +37,6 @@ class LoopContext:
     """一轮循环中的上下文包（token 有硬上界）。"""
 
     messages: list[Any] = field(default_factory=list[Any])
-    memory: list[Any] = field(default_factory=list[Any])
     tools: list[Any] = field(default_factory=list[Any])
     trajectory: list[Any] = field(default_factory=list[Any])
     reply: str = ""

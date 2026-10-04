@@ -324,7 +324,7 @@ def test_perceive_does_not_retrieve_memory() -> None:
     loop = DefaultLoop(planner=lambda ctx: Action(args={"reply": "ok"}), memory=spy)  # type: ignore[arg-type]
     ctx = loop.perceive("查询内容")
     assert spy.reads == [], "perceive 不应触发 MemoryStore.read"
-    assert ctx.memory == []
+    assert not hasattr(ctx, "memory"), "LoopContext.memory 遗留字段已移除（A1）"
 
 
 # ---- 工具动作事件（action_started / action_completed，spec：异步流式执行） ----

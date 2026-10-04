@@ -69,7 +69,6 @@ class LoopEvent:
 @dataclass
 class LoopContext:
     messages: list[Message]     # 本轮消息流
-    memory: MemoryPack          # 已注入记忆快照（保留字段；检索由 ContextEngine.assemble 承担）
     tools: list[ToolSchema]     # 可调用工具 schema
     trajectory: list[Step]      # 本轮轨迹（供 Remember 写入）
     reply: str = ""

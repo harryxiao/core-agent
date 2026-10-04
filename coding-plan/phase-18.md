@@ -69,8 +69,8 @@
 - **B4 `ContextPack.skills` / `pending` 恒空**：`assembler.build`（assembler.py:34）从不填充 → 装配包只有 facts/constitution。落点＝交付物 #6/#7（SOP 提取、语义路由）上线后，装配器消费 `SkillRouter.route` 结果写入 `skills`。
 - **B5 `_trim` 保序截断**：`budget.py:56-64` 按顺序取前 N 到预算即止，非按相关度裁剪 → 高价值项可能被后到的低价值项挤出。落点＝预算裁剪改为「按多因子得分排序后截断」。
 - **B6 仅 reason 阶段装配**：`assembler.build` 唯一调用点＝planner `reason`（planner.py:124）→ perceive/act 阶段无信息供给。落点＝按需为 perceive（首轮召回）/ act（工具选择）扩展装配阶段。
-- **A1 `LoopContext.memory` 遗留字段**：Phase 17.5 §3.1（B2）撤掉 perceive 越权检索后，该字段无消费方（暂留作「已注入记忆快照」占位）。落点＝若确认无消费方则删除字段并同步 `loop-interface.md`。
-- **A3 `stage` 装饰性参数**：B2 后 `stage` 已不再是检索 query，仅作装配阶段标注、不参与任何选择。落点＝要么赋予 stage 语义（阶段化权重），要么在 `context-interface.md` / spec 中如实标注「暂不参与选择」。
+- **A1 `LoopContext.memory` 遗留字段** ✅ **已完成**（2026-10-04）：全仓确认无消费方后删除字段，同步 `loop-interface.md`（连带清除文档里的幽灵类型 `MemoryPack`）。
+- **A3 `stage` 装饰性参数** ✅ **已完成**（随 B2 / change 0038）：`context-interface.md` 与 `context/spec.md` 已如实标注 stage「暂不参与事实选择」。仍可选：赋予阶段化权重（留待按需）。
 
 ---
 
