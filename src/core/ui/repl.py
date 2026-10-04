@@ -7,8 +7,9 @@ CLIBridge.connect() 落地为 Textual 交互会话循环；textual 仅此文件�
 - core 主题（terracotta accent #d97757）+ 圆角输入框（focus 高亮）；
 - 输入区/提示盒整体钉底（dock: bottom），时间线独占剩余高度（防 1fr 撑满）；
 - 工作状态行 ✻ label… (Ns)（set_interval 轮换 glyph，无内置 Spinner 组件）；
-- 回复流式增量直接落时间线尾部同一滚动流（连续滚动输出，视口跟随），
-  终态原位替换为 Markdown（代码块语法高亮，无整屏重排）；
+- 回复流式增量直接落时间线尾部同一滚动流（连续滚动输出，视口跟随），每段即按
+  Markdown 增量渲染（标题/代码高亮流式即所见），段边界固化 append-only，
+  终态无整块替换、无重排跳变；
 - 用户输入以 ❯ 前缀行回显；底部快捷键提示盒（F1 展开）；启动欢迎横幅；
 - 任务/子任务进度走折叠块（单行提示 + 展开详情）。
 
@@ -292,10 +293,9 @@ Collapsible > CollapsibleTitle:hover {
 
         def __init__(self) -> None:
             super().__init__()
-            self._live_buf: list[str] = []  # 流式全文缓冲（终态一次落 Markdown）
-            self._stream_blocks: list[Static] = []  # 已固化流式块（append-only 不再重渲染）
+            self._live_buf: list[str] = []  # 流式全文缓冲（终态取 _last_reply）
             self._tail_buf: list[str] = []  # 进行中尾段增量（每 delta 热更新）
-            self._tail_widget: Static | None = None  # 尾段渲染块
+            self._tail_widget: Markdown | None = None  # 尾段渲染块
             self._last_reply: str = ""  # 终态回复原文（Markdown 无公开源文本取口）
             self._approval_future: Any | None = None  # 挂起中的审批 Future[bool]
             self._turn_busy = False  # 本轮 worker 是否在跑（忙时新消息提示等待）
@@ -377,7 +377,7 @@ Collapsible > CollapsibleTitle:hover {
 
             future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             self._approval_future = future
-            self._add(Static(f"⚠ 需审批: {reason}", classes="fail"))
+            self._add(Static(f"⚠ 需审批: {reason}", classes="fail", markup=False))
             self._add(Static("输入 y 批准 / n 拒绝", classes="hint"))
             self._spin_relabel("等待审批")
             try:
@@ -389,7 +389,7 @@ Collapsible > CollapsibleTitle:hover {
         def action_barge_in(self) -> None:
             line = _format_event(barge_in_event(api))
             if line:
-                self._add(Static(line, classes="hint"))
+                self._add(Static(line, classes="hint", markup=False))
 
         def action_hints(self) -> None:
             """F1 切换底部快捷键提示盒（短行 ↔ 完整列表）。"""
@@ -403,15 +403,22 @@ Collapsible > CollapsibleTitle:hover {
             self._live_buf.append(delta)
             self._tail_buf.append(delta)
             text = "".join(self._tail_buf)
-            if len(text) >= _TAIL_SPLIT or text.endswith("\n"):
+            if len(text) >= _TAIL_SPLIT or (text.endswith("\n") and not self._in_open_fence(text)):
                 self._freeze_tail(text)
                 return
             self._touch_tail(text)
 
+        @staticmethod
+        def _in_open_fence(text: str) -> bool:
+            """尾段是否处于未闭合代码围栏内（行首 ``` / ~~~ 数量为奇数）。"""
+            fences = sum(1 for line in text.split("\n") if line.lstrip().startswith(("```", "~~~")))
+            return fences % 2 == 1
+
         def _touch_tail(self, text: str) -> None:
-            """尾段热更新：仅重 wrap 有界尾文本，视口跟随滚动。"""
+            """尾段热更新：Markdown 增量渲染（与终态同格式，无替换跳变），
+            仅重解析有界尾文本，视口跟随滚动。"""
             if self._tail_widget is None:
-                self._tail_widget = Static(text)
+                self._tail_widget = Markdown(text)
                 self._add(self._tail_widget)  # _add 已带 scroll_end
                 return
             self._tail_widget.update(text)
@@ -419,29 +426,24 @@ Collapsible > CollapsibleTitle:hover {
             timeline.call_after_refresh(timeline.scroll_end, animate=False)
 
         def _freeze_tail(self, text: str) -> None:
-            """尾段固化：当前尾块补齐内容后冻结（不再重渲染），缓冲复位。"""
+            """尾段固化：当前尾块补齐内容后冻结（不再重渲染），缓冲复位。
+            固化块同为 Markdown（流式即所见终态样式，append-only 不重排）。"""
             if self._tail_widget is not None:
                 self._tail_widget.update(text)
-                self._stream_blocks.append(self._tail_widget)
             elif text:
-                widget = Static(text)
+                widget = Markdown(text)
                 self._add(widget)
-                self._stream_blocks.append(widget)
             self._tail_widget = None
             self._tail_buf = []
             timeline = self.query_one("#timeline", Vertical)
             timeline.call_after_refresh(timeline.scroll_end, animate=False)
 
         def _flush_live(self) -> None:
-            """流式终态：全部流式块原位替换为一次 Markdown 渲染，缓冲复位。"""
-            if self._live_buf:
-                text = "".join(self._live_buf)
-                self._last_reply = text
-                for widget in [*self._stream_blocks, self._tail_widget]:
-                    if widget is not None:
-                        widget.remove()
-                self._add(Markdown(text))
-            self._stream_blocks = []
+            """流式终态：尾段固化为最后一块 Markdown，已固化块原样保留。
+            全程同格式渲染，无终态整块替换、无重排跳变。"""
+            if self._tail_buf:
+                self._freeze_tail("".join(self._tail_buf))
+            self._last_reply = "".join(self._live_buf)
             self._tail_widget = None
             self._tail_buf = []
             self._live_buf = []
@@ -497,7 +499,7 @@ Collapsible > CollapsibleTitle:hover {
             except UiError as err:
                 line = _format_event(_error_event(err))
                 if line:
-                    self._add(Static(line, classes="fail"))
+                    self._add(Static(line, classes="fail", markup=False))
             finally:
                 self._spin_stop()
                 self._turn_busy = False
@@ -511,14 +513,15 @@ Collapsible > CollapsibleTitle:hover {
             kind = event.type.removeprefix("task.")
             if kind == "task_started":
                 line = f"◍ 任务 {data.get('task_id')}：{data.get('goal', '')}"
-                self._add(Static(line, classes="hint"))
+                self._add(Static(line, classes="hint", markup=False))
                 return
             if kind == "plan_ready":
                 n = len(data.get("subtasks", []))
-                self._add(Static(f"▸ 拆解 {n} 个子任务 · 波次 {data.get('waves')}", classes="hint"))
+                line = f"▸ 拆解 {n} 个子任务 · 波次 {data.get('waves')}"
+                self._add(Static(line, classes="hint", markup=False))
                 return
             if kind == "wave_started":
-                self._add(Static(f"▸ 波次 {data.get('wave')}", classes="hint"))
+                self._add(Static(f"▸ 波次 {data.get('wave')}", classes="hint", markup=False))
                 return
             if kind == "subtask_started":
                 self._open_subtask(str(data.get("subtask_id", "")), data)
@@ -528,7 +531,7 @@ Collapsible > CollapsibleTitle:hover {
                 return
             if kind == "task_failed":
                 line = f"✗ 任务失败 {data.get('code')}: {data.get('reason')}"
-                self._add(Static(line, classes="fail"))
+                self._add(Static(line, classes="fail", markup=False))
                 return
             if kind == "task_finished":
                 outcomes = data.get("outcomes", [])
@@ -545,7 +548,7 @@ Collapsible > CollapsibleTitle:hover {
             kind = event.type.removeprefix("loop.action_")
             entry = self._actions.get(key)
             if kind == "started":
-                detail = Static("", classes="hint")  # 输出占位（completed 填充）
+                detail = Static("", classes="hint", markup=False)  # 输出占位（completed 填充）
                 box = Collapsible(
                     detail, title=f"⏺ {_tool_name(data.get('tool_id'))}", collapsed=True
                 )
@@ -565,8 +568,12 @@ Collapsible > CollapsibleTitle:hover {
         def _open_subtask(self, sid: str, data: dict[str, Any]) -> None:
             """子任务开工：单行折叠块 + 验收详情（构造期入折叠区，收尾 update 补判定）。"""
             goal = str(data.get("goal", ""))
-            detail = Static(f"验收：{data.get('acceptance') or '（无）'}", classes="hint")
-            box = Collapsible(detail, title=f"▸ 子任务 {sid}  {goal}", collapsed=True)
+            detail = Static(
+                f"验收：{data.get('acceptance') or '（无）'}",
+                classes="hint",
+                markup=False,
+            )
+            box = Collapsible(detail, title=f"▸ 子任务 {sid}  {escape(goal)}", collapsed=True)
             self._add(box)
             self._open[sid] = (box, detail, goal)
 
@@ -580,7 +587,7 @@ Collapsible > CollapsibleTitle:hover {
                 box.title = f"▸ 子任务 {sid}  ✓ 已完成（续跑跳过）"
                 return
             mark = "✓" if data.get("ok") else "✗"
-            box.title = f"▸ 子任务 {sid}  {mark} {goal}"
+            box.title = f"▸ 子任务 {sid}  {mark} {escape(goal)}"
             lines = [str(detail.render()), f"判定：{data.get('reason', '')}"]
             reply = str(data.get("reply", "")).strip()
             if reply:
@@ -603,11 +610,11 @@ Collapsible > CollapsibleTitle:hover {
                         continue
                     line = _format_event(event)
                     if line:
-                        self._add(Static(line, classes="hint"))
+                        self._add(Static(line, classes="hint", markup=False))
             except UiError as err:
                 line = _format_event(_error_event(err))
                 if line:
-                    self._add(Static(line, classes="fail"))
+                    self._add(Static(line, classes="fail", markup=False))
             finally:
                 self._flush_live()
                 self._spin_stop()

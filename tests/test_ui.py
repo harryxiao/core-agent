@@ -261,7 +261,7 @@ def test_tui_streams_deltas_then_flushes_once() -> None:
             await pilot.pause()
             timeline = app.query_one("#timeline", Vertical)
             md_count = len(timeline.query(Markdown))
-            stream_reset = not app._stream_blocks and app._tail_widget is None
+            stream_reset = app._tail_widget is None
             reply = str(app._last_reply)
             running = app.is_running
         return running and stream_reset, md_count, reply
