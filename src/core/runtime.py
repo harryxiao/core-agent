@@ -41,7 +41,14 @@ from core.judgment import Compactor, DecisionRouter, Guardrail, JEVProvider
 from core.llm_provider import LLMProvider, StdlibLLMProvider
 from core.loop import Approver, DefaultLoop, LoopPlugin
 from core.loop.planner import LLMPlanner
-from core.memory import Crystallizer, FileBackend, MemoryBackend, MemoryEntry, MemoryStore
+from core.memory import (
+    Crystallizer,
+    FileBackend,
+    MemoryBackend,
+    MemoryEntry,
+    MemoryStore,
+    batch_embed,
+)
 from core.observability import Tracer
 from core.orchestration import (
     AgentProfile,
@@ -59,6 +66,7 @@ from core.orchestration import (
 from core.permission import PermissionGuard
 from core.plugin_registry import CoeffectResolver, EffectTracker, PluginInstaller
 from core.plugins import InstallDispatcher
+from core.rag import LLMEmbedder
 from core.skills import SkillLibrary, SkillRouter
 from core.tools import (
     Tool,
@@ -166,6 +174,17 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
     )
     backend = memory_backend if memory_backend is not None else FileBackend(_memory_path())
     effect_tracker = EffectTracker()
+    # 记忆 embedding 来源（0040）：llm.embedding_model 非空时以该模型**另构造** provider
+    # （聊天模型名打 /embeddings 通常 404），经 rag LLMEmbedder → batch_embed 适配为
+    # memory 的批量契约；密钥复用 api_key（已登记脱敏）。未设置则不注入 → 0039 词法路径，
+    # 远端不可达由调用期降级兜底，均不阻断启动。
+    if embedder is None and app.llm.embedding_model:
+        embed_provider = StdlibLLMProvider(
+            api_key=api_key,
+            base_url=app.llm.endpoint or None,
+            model=app.llm.embedding_model,
+        )
+        embedder = batch_embed(LLMEmbedder(embed_provider).embed)
     memory = MemoryStore(
         backend=backend,
         effect_tracker=effect_tracker,

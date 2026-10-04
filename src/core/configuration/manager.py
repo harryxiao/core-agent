@@ -48,6 +48,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.HIDDEN,
     ),
     ConfigSpec(
+        "llm.embedding_model",
+        "--llm.embedding-model",
+        "CORE_LLM_EMBEDDING_MODEL",
+        default="",
+        map_to="llm.embedding_model",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "im.gateway",
         "--im.gateway",
         "CORE_IM_GATEWAY",
@@ -335,6 +343,7 @@ class ConfigManager:
             endpoint=str(llm_raw.get("endpoint", "")),
             api_key_ref=str(llm_raw.get("api_key", "")),
             reasoning_effort=_opt_str(llm_raw.get("reasoning_effort")),
+            embedding_model=str(llm_raw.get("embedding_model", "")),
         )
         features_raw = cast(dict[str, Any], merged.get("features") or {})
         features = {str(k): bool(v) for k, v in features_raw.items()}
@@ -422,6 +431,7 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
             endpoint=str(llm_raw["endpoint"]),
             api_key_ref=str(llm_raw["api_key"]),
             reasoning_effort=_opt_str(llm_raw.get("reasoning_effort")),
+            embedding_model=str(llm_raw.get("embedding_model", "")),
         ),
         features=features,
         im=im,

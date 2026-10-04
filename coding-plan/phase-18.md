@@ -119,15 +119,17 @@
 
 ## 2. 里程碑验收
 
-> **进度快照（2026-10-04）**：遗留收口序 ①② 已完成——A1/A3 清账（commit `db204dc`）、
-> P0 装配器接线（`a35fbbf`）、P0b 人格→L0（`2f58ab1`），**B2 语义已在生产生效**。
-> 下一步 ③ ＝交付物 **#1/#2 + C7**（`MemoryEntry` 增字段、`read` 多因子重排、embedder
-> 适配器 + 向量缓存）：**规格先行**，已起草 ADR-0045 + change `0039-memory-multifactor-recall`
-> （未落代码）。**已按架构最优拆分**：`0039` 纯 memory（字段/多因子重排/适配器/向量缓存 +
-> `build_runtime` 的 `embedder` DI 参数，完全离线可验）→ `0040` 配置与装配（`llm.embedding_model`
-> 旋钮 + 构造 `LLMEmbedder` 注入）。C7 决策——embedder 经**单条→批量适配器**接入 + **写时
-> 向量缓存**（每 read 至多 1 次 query 向量化），默认词法降级、不引入本地语义模型；`importance`
-> **自动打分**留至 #4/#5（接 judgment `score`），本批仅加字段 + 参与排序。
+> **进度快照（2026-10-04，更新）**：遗留收口序 ①②③④ 已完成——A1/A3 清账（`db204dc`）、
+> P0 装配器接线（`a35fbbf`）、P0b 人格→L0（`2f58ab1`）、**#1/#2 + C7**（`13c00e7`）、
+> **B5 预算裁剪修正**（`8a1f531`），**B2 语义与语义检索均已在生产生效**。
+> 交付物 **#1/#2 + C7** 已按架构最优拆分落地并归档：`0039-memory-multifactor-recall`
+> （纯 memory：`MemoryEntry` 增 `importance`/`kind`、`read` 多因子重排
+> `relevance×recency×(1+log1p(reuse))×(1+importance)`、`memory/embedding.py` 单条→批量适配器、
+> 文本哈希向量缓存、`build_runtime` 的 `embedder` DI 参数）→ `0040-memory-embedding-config`
+> （`llm.embedding_model` 配置旋钮 + 以该模型**另构造** provider → `LLMEmbedder` → 注入；
+> 未设置/不可达回退词法，不阻断启动）。ADR-0045 已转 **Accepted**。
+> `importance` **自动打分**留至 #4/#5（接 judgment `score`），本批仅加字段 + 参与排序。
+> **B6 判为「按架构如此」关闭**（装配是 Reason 前一次性步骤），B4 判冗余待并入 #6/#7。
 
 - **记忆**：跨 3 轮以上长对话后，`read` 命中率提升（同一事实不因截断丢失），semantic 条目可见且可追溯 source trace_id。
 - **压缩**：注入 Compactor 后 `compact` 产出「摘要条目」而非「保留/丢弃布尔」，且摘要可逆。
@@ -174,7 +176,9 @@
     → ② 交付物 **#1/#2**（`importance`/`kind` + 多因子重排，**一并接 C7 embedder + 缓存策略**，先落 ADR）
     → ③ **B5** ✅ **已完成**（2026-10-04，`_trim` 跳过语义 + skills 余量）；
       **B6** 判为「按架构如此」**关闭**（装配是 Reason 前一次性步骤；残留并入 A3）
-    → ④ `0040-memory-embedding-config`（规格已备，待实现）
+    → ④ `0040-memory-embedding-config` ✅ **已完成**（2026-10-04：`llm.embedding_model`
+      配置旋钮（advanced 暴露面）+ 组合根以该模型另构造 provider → `LLMEmbedder` → 注入
+      `MemoryStore`；未设置/不可达回退词法。ADR-0045 转 Accepted）
     → **B4** 并入 #6/#7 或判冗余删除（不独立排期）。
     A1/A3 已清账（✅）。
 

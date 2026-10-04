@@ -39,6 +39,7 @@ class LLMConfig:
     endpoint: str
     api_key_ref: str  # api_key 的 ${VAR} 引用（非明文）
     reasoning_effort: str | None = None  # 推理档位 low/medium/high（可选）
+    embedding_model: str = ""  # 记忆检索向量化模型（可选；空=不注入 embedder，回退词法）
 
 
 @dataclass(frozen=True)

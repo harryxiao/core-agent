@@ -368,7 +368,7 @@
 
 ## ADR-0045：记忆检索语义化（embedder 接入契约 + 向量缓存策略）
 
-- **状态**：Proposed（2026-10-04；待 change `0039-memory-multifactor-recall`（seam）与 `0040-memory-embedding-config`（来源）落地后转 Accepted）
+- **状态**：Accepted（2026-10-04；change `0039-memory-multifactor-recall`（seam，已归档）与 `0040-memory-embedding-config`（来源，已归档）均已落地，593→597 tests 绿）
 - **上下文**：遗留项 C7（Phase 17.5 §3.1 走查）。`build_runtime` 构造 `MemoryStore` 时
   **未传 `embedder`**（`runtime.py:167-171`）→ 运行时恒走 `relevance._lexical_sim`
   （`relevance.py:73-77`），「语义检索」名存实亡。直接接入有三处障碍：① **契约不匹配**

@@ -148,6 +148,12 @@ LLM 归一化经 stdlib OpenAI 兼容 HTTP，配置项与主 Agent 配置同源�
 | `llm.endpoint` | API URL（如 `https://api.openai.com/v1`） |
 | `llm.api_key` | `${VAR}` 引用（如 `${OPENAI_API_KEY}`，明文拒绝） |
 
+可选增强（非必选）：
+
+| 键 | 说明 |
+|---|---|
+| `llm.embedding_model` | 记忆检索向量化模型（如 `text-embedding-3-small`），复用 `endpoint` 与密钥引用。未设置或不可达时记忆检索回退词法相似，不影响启动。 |
+
 覆盖层（CLI flag > env > yaml）：
 
 ```bash

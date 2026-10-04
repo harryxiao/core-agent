@@ -18,9 +18,9 @@ from core import entry
 from core.configuration import ConfigManager, ConfigurationError
 from core.context import DynamicAssembler
 from core.judgment import DecisionPrimitive, DecisionResult
-from core.llm_provider import LLMChunk, LLMError, LLMResponse, TokenUsage, ToolCall
+from core.llm_provider import Embedding, LLMChunk, LLMError, LLMResponse, TokenUsage, ToolCall
 from core.loop import Action, DefaultLoop, LLMPlanner, LoopContext
-from core.memory import MemoryStore
+from core.memory import MemoryEntry, MemoryStore
 from core.observability import Tracer
 from core.permission import PermissionGuard
 from core.runtime import build_runtime
@@ -61,15 +61,16 @@ class _FakeLLM:
         return self.completion(request)
 
 
-def _write_config(tmp_path) -> str:
+def _write_config(tmp_path, *, embedding_model: str = "") -> str:
     cfg = tmp_path / "config.yaml"
+    embed_line = f"  embedding_model: {embedding_model}\n" if embedding_model else ""
     cfg.write_text(
         "llm:\n"
         "  provider: litellm\n"
         "  model: test-model\n"
         "  endpoint: https://example.com/v1\n"
         "  api_key: ${OPENAI_API_KEY}\n"
-        "  reasoning_effort: low\n",
+        "  reasoning_effort: low\n" + embed_line,
         encoding="utf-8",
     )
     return str(cfg)
@@ -573,3 +574,59 @@ def test_build_runtime_embedder_di_passthrough(monkeypatch, tmp_path) -> None:
         ConfigManager(yaml_path=_write_config(tmp_path)), embedder=fake_embedder
     )
     assert runtime2.memory._embedder is fake_embedder
+
+
+def _fake_provider_cls(constructed: list[tuple[str, str | None]], *, fail: bool = False):
+    """假 provider 类：记录 (model, base_url)，embedding 返回定长向量或抛错（不触网）。"""
+
+    class _FakeProvider:
+        def __init__(self, *, api_key: str, base_url: str | None, model: str) -> None:
+            constructed.append((model, base_url))
+
+        def embedding(self, texts: list[str]) -> list[Embedding]:
+            if fail:
+                raise LLMError("embedding unreachable")  # noqa: TRY003 — 模拟端点不可达
+            return [Embedding(vector=[float(len(t))]) for t in texts]
+
+    return _FakeProvider
+
+
+def test_build_runtime_embedding_model_wires_batch_embedder(monkeypatch, tmp_path) -> None:
+    """llm.embedding_model 非空 → 该模型另构造 provider → 批量 embedder 注入 memory。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    constructed: list[tuple[str, str | None]] = []
+    monkeypatch.setattr("core.runtime.StdlibLLMProvider", _fake_provider_cls(constructed))
+
+    rt = build_runtime(
+        ConfigManager(yaml_path=_write_config(tmp_path, embedding_model="text-embed-3"))
+    )
+
+    # 独立 provider：embedding 用自己的模型名，复用 endpoint
+    assert ("text-embed-3", "https://example.com/v1") in constructed
+    assert ("test-model", "https://example.com/v1") in constructed
+    embedder = rt.memory._embedder
+    assert embedder is not None
+    assert embedder(["ab", "cde"]) == [[2.0], [3.0]]
+
+
+def test_build_runtime_embedding_unreachable_degrades_to_lexical(monkeypatch, tmp_path) -> None:
+    """embedding 不可达：启动不阻断，记忆检索降级词法仍可用。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    constructed: list[tuple[str, str | None]] = []
+    fake_cls = _fake_provider_cls(constructed, fail=True)
+    monkeypatch.setattr("core.runtime.StdlibLLMProvider", fake_cls)
+
+    rt = build_runtime(
+        ConfigManager(yaml_path=_write_config(tmp_path, embedding_model="text-embed-3"))
+    )
+
+    assert rt.memory._embedder is not None
+    rt.memory.write(
+        "L2",
+        MemoryEntry(id="m1", layer="L2", content="部署流程", tags=[], source="loop", trace_id="t1"),
+    )
+    assert [h.id for h in rt.memory.read("部署")] == ["m1"]
