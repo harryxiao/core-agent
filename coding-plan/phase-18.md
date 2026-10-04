@@ -233,6 +233,17 @@
 > 进程内信任边界（与既有 `approver`/`ApprovalChannel` 同一面）；`confirm` 无生产调用方（进化引擎
 > 的 pending 队列仍靠操作面驱动，先于本变更存在）。
 
+> **#10 观察期自动溶解 已完成并归档**（2026-10-04，change `0047-evolution-auto-dissolve`，
+> 660→669 tests 绿、ADR-0052 Accepted）：`dissolve()` 此前**无调用方**（spec「退化检测」在生产
+> 不可能发生）。现 `crystallize` **发布成功即开窗**（基线 = 该候选 `eval.held_out_score`），调用方
+> 经新增的 `engine.observe(target, score, *, now=None)` 持续采样；判据 = 样本 ≥ 3 **且** 均分 <
+> 基线 − 0.2（**绝对分差**，与 `Evaluator.margin` 同形状）→ **自动 `dissolve`**（技能标
+> `deprecated` + 回归证据随教训写回 L2）+ **冻结该方向一个冷却期**（300s，期内不累积不触发，
+> 冻结即清零样本以免冷却结束二次触发），返回 `EvolutionOutcome(status="dissolved")`。窗口与阈值
+> 集中在新增的 `ObservationRegistry`（不塞进 engine 私有 dict、不挂候选）；**引擎不内建采样调度**
+> （节奏属调用方，`now` 可注入使判定离线可断言）。**遗留**：无采样调度器；窗口进程内（重启即失）；
+> 重新发布覆盖旧窗口；基线为 0 的窗口在绝对容差下不会触发（宁可漏报不误杀）。
+
 - **记忆**：跨 3 轮以上长对话后，`read` 命中率提升（同一事实不因截断丢失），semantic 条目可见且可追溯 source trace_id。
 - **压缩**：注入 Compactor 后 `compact` 产出「摘要条目」而非「保留/丢弃布尔」，且摘要可逆。
 - **维度1**：一条日常任务轨迹走完「任务→SOP 提取→Skill 入库→下次类似任务语义命中」全链路（无人工 confirm）；一条重复任务触发 skill 迭代（version 升级）。
@@ -289,7 +300,10 @@
       Accepted；命中注入 `instructions` + `(id, version)` 反馈 + 复用 `VersionManager` 灰度/A/B）
       → **#9 架构级强制 HITL confirm** ✅ **已完成**（2026-10-04，change
       `0046-evolution-hitl-confirm`；ADR-0051 Accepted）
-      → **#10 观察期自动 dissolve**（evaluator 采样回归指标 + 超阈值自动溶解 + 冷却期）。
+      → **#10 观察期自动 dissolve** ✅ **已完成**（2026-10-04，change
+      `0047-evolution-auto-dissolve`；ADR-0052 Accepted）。
+    **Phase 18 遗留收口全部完成**（#6 → #10；维度1 技能库自动进化 + 维度2 架构级 HITL 与自动回滚
+    两条链路均已闭环）。
     A1/A3 已清账（✅）。
 
 ---

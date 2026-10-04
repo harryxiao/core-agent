@@ -95,6 +95,38 @@ class EvolutionEngine(Plugin):
 | **低风险** | `risk_level="low"` 忽略 `approval`，行为同今天——**仍须显式 confirm**（不引入低风险自动结晶） |
 | **可追溯** | 审批单携带 `target` / `trace_id` 并经 `ApprovalWorkflow` 归档（`list_archived`），不新增候选字段 |
 
+### 3.1 观察期回归自动溶解（auto-dissolve）
+
+```python
+@dataclass
+class ObservationWindow:
+    target: str                 # 观察目标（= 候选 target_plugin，与 dissolve() 同键）
+    baseline: float             # 结晶发布时的评测基线分
+    samples: list[float]        # 发布后的实测分（冻结时清零）
+    frozen_until: float         # 冻结冷却期截止
+    @property
+    def mean(self) -> float     # 观察均分（无样本 → 0.0）
+
+class ObservationRegistry:
+    def open(self, target: str, *, baseline: float) -> ObservationWindow: ...
+    def sample(self, target: str, score: float, *, now: float | None = None) -> bool:
+        """记样本，返回是否触发回归（未开窗 / 冻结期内 → 忽略并返回 False）。"""
+    def freeze(self, target: str, *, now: float | None = None) -> None: ...
+    def window(self, target: str) -> ObservationWindow | None: ...
+
+# EvolutionEngine
+def observe(self, target: str, score: float, *, now: float | None = None) -> EvolutionOutcome | None:
+    """观察期采样；回归超阈值 → 自动 dissolve + 冻结（返回 status="dissolved"，否则 None）。"""
+```
+
+| 维度 | 口径 |
+|---|---|
+| **开窗** | `crystallize` **发布成功后**开窗（基线 = 该候选 `eval.held_out_score`）；未开窗目标的采样被忽略（不建窗、不抛异常） |
+| **回归判据** | 样本数 ≥ `_OBSERVE_MIN_SAMPLES`(3) **且** 均分 < 基线 − `_REGRESSION_TOLERANCE`(0.2，绝对分差，与 `Evaluator.margin` 同形状) |
+| **冻结** | 溶解即冻结该目标 `_FREEZE_COOLDOWN_S`(300s) 并**清零样本**；冷却期内不累积、不触发，到期自动恢复采样 |
+| **留痕** | 回归证据（基线 / 观察均分 / 样本数）拼进 `dissolve` 的教训条目（L2，`tags` 含 `dissolve`） |
+| **不调度** | `observe` 只是采样接缝——采样节奏由调用方决定（worker 冷路径等）；`now` 可注入，判定离线可断言 |
+
 ---
 
 ## 4. 触发接口
@@ -116,6 +148,8 @@ class EvolutionTrigger:
 | `GATE_REJECTED` | 验证门拒绝（review / 运行时测试不过） |
 | `EVAL_REGRESSED` | 留出集退化（触发回滚） |
 | `CONFIRM_REQUIRED` | 架构级候选未获人工审批（无审批单 / 未批准 / 目标不符） |
+
+`EvolutionOutcome.status` 取值：`published` / `pending` / `manual` / `rejected` / `rollback` / `no_evidence` / `dissolved`（观察期自动溶解）。
 
 ---
 

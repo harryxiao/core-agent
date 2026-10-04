@@ -28,6 +28,7 @@ from .models import (
     GenerationCandidate,
     Trace,
 )
+from .observation import ObservationRegistry
 from .proposer import Proposer
 from .validator import Validator
 
@@ -51,6 +52,7 @@ class EvolutionEngine:
         library: SkillLibrary | None = None,
         memory: MemoryBackend | None = None,
         memory_crystallizer: Crystallizer | None = None,
+        observations: ObservationRegistry | None = None,
     ) -> None:
         self._diagnoser = diagnoser
         self._proposer = proposer
@@ -60,6 +62,7 @@ class EvolutionEngine:
         self._library = library
         self._memory = memory
         self._memory_crystallizer = memory_crystallizer
+        self._observations = observations if observations is not None else ObservationRegistry()
         self._pending: list[GenerationCandidate] = []
         self._gate: dict[int, GateReport] = {}
         self._eval: dict[int, EvalReport] = {}
@@ -144,9 +147,39 @@ class EvolutionEngine:
                 EvolutionErrorCode.EVAL_REGRESSED,
                 f"候选留出集退化（{candidate.target_plugin}）",
             )
-        if candidate.kind == "skill":
-            return self._crystallize_skill(candidate)
-        return self._crystallize_plugin(candidate)
+        outcome = (
+            self._crystallize_skill(candidate)
+            if candidate.kind == "skill"
+            else self._crystallize_plugin(candidate)
+        )
+        # 结晶发布即开启观察期（基线 = 该候选的留出评测分）：发布后由 observe() 持续采样
+        self.observations.open(candidate.target_plugin, baseline=eval_report.held_out_score)
+        return outcome
+
+    def observe(
+        self, target: str, score: float, *, now: float | None = None
+    ) -> EvolutionOutcome | None:
+        """观察期采样：回归超阈值 → 自动溶解 + 冻结该方向（返回 ``dissolved`` 结局）。
+
+        未开窗目标 / 未达判定门 / 冻结期内一律返回 ``None``（不抛异常）；回归证据随教训条目留痕。
+        """
+        if not self._observations.sample(target, score, now=now):
+            return None
+        window = self._observations.window(target)
+        if window is None:  # 理论不可达（sample 命中即已开窗）
+            return None
+        self.dissolve(
+            target,
+            f"观察期回归：均分 {window.mean:.3f} < 基线 {window.baseline:.3f} - 容差，"
+            f"样本 {len(window.samples)} 条",
+        )
+        self._observations.freeze(target, now=now)
+        return EvolutionOutcome(status="dissolved", skill_id=f"skills.evolution.{target}")
+
+    @property
+    def observations(self) -> ObservationRegistry:
+        """观察期窗口注册表（发布后回归采样的状态面）。"""
+        return self._observations
 
     def dissolve(self, plugin_id: str, reason: str) -> None:
         """溶解退化：技能标 deprecated，教训写回 L2。"""

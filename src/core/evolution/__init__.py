@@ -20,6 +20,7 @@ from .models import (
     Trace,
     TraceRef,
 )
+from .observation import ObservationRegistry, ObservationWindow
 from .proposer import Proposer
 from .validator import Validator
 from .worker import EvolutionWorker
@@ -40,6 +41,8 @@ __all__ = [
     "EvolutionWorker",
     "GateReport",
     "GenerationCandidate",
+    "ObservationRegistry",
+    "ObservationWindow",
     "Proposer",
     "QualityEvaluator",
     "QualityReport",

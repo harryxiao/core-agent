@@ -23,6 +23,8 @@ from core.evolution import (
     EvolutionErrorCode,
     EvolutionTrigger,
     GenerationCandidate,
+    ObservationRegistry,
+    ObservationWindow,
     Proposer,
     QualityEvaluator,
     Trace,
@@ -364,3 +366,113 @@ def test_low_risk_candidate_confirms_without_ticket() -> None:
     assert exc_info.value.code is EvolutionErrorCode.CANDIDATE_PENDING
     engine.confirm(candidate)
     assert engine.crystallize(candidate).status == "published"
+
+
+# ---- 观察期回归自动溶解（0047）----
+
+
+def _published(engine: EvolutionEngine) -> str:
+    """跑完整闭环并确认发布，返回观察目标（= 候选 target_plugin）。"""
+    candidate = _pending(engine)
+    engine.confirm(candidate)
+    assert engine.crystallize(candidate).status == "published"
+    return candidate.target_plugin
+
+
+def test_observation_open_and_mean() -> None:
+    registry = ObservationRegistry()
+    window = registry.open("memory.retrieve", baseline=1.0)
+    assert isinstance(window, ObservationWindow)
+    assert registry.window("memory.retrieve") is window
+    assert window.mean == 0.0  # 无样本
+    assert registry.window("nope") is None
+
+
+def test_observation_ignores_unopened_target() -> None:
+    """未开窗目标的采样被忽略：不建窗、不触发。"""
+    registry = ObservationRegistry()
+    assert registry.sample("memory.retrieve", 0.0) is False
+    assert registry.window("memory.retrieve") is None
+
+
+def test_observation_below_min_samples_not_regressed() -> None:
+    """样本不足不判定（单点暴跌不算）。"""
+    registry = ObservationRegistry()
+    registry.open("memory.retrieve", baseline=1.0)
+    assert registry.sample("memory.retrieve", 0.0) is False
+    assert registry.sample("memory.retrieve", 0.0) is False
+    assert registry.window("memory.retrieve").samples == [0.0, 0.0]
+
+
+def test_observation_regression_triggers_at_threshold() -> None:
+    """样本达下限且均分低于「基线 − 容差」→ 触发。"""
+    registry = ObservationRegistry()
+    registry.open("memory.retrieve", baseline=1.0)
+    assert registry.sample("memory.retrieve", 0.9) is False
+    assert registry.sample("memory.retrieve", 0.6) is False
+    assert registry.sample("memory.retrieve", 0.1) is True  # 均分 0.533 < 0.8
+
+
+def test_observation_no_regression_keeps_window() -> None:
+    registry = ObservationRegistry()
+    registry.open("memory.retrieve", baseline=1.0)
+    for _ in range(4):
+        assert registry.sample("memory.retrieve", 0.9) is False
+
+
+def test_observation_freeze_blocks_then_expires() -> None:
+    """冻结期（冷却）内不累积不触发；冷却期结束恢复采样。"""
+    registry = ObservationRegistry(cooldown_s=100.0)
+    registry.open("memory.retrieve", baseline=1.0)
+    registry.freeze("memory.retrieve", now=1000.0)
+    assert registry.window("memory.retrieve").samples == []  # 冻结即清零
+    for _ in range(3):
+        assert registry.sample("memory.retrieve", 0.0, now=1050.0) is False
+    assert registry.window("memory.retrieve").samples == []  # 冻结期内不累积
+    assert registry.sample("memory.retrieve", 0.0, now=1100.0) is False  # 冷却结束恢复累积
+    assert registry.window("memory.retrieve").samples == [0.0]
+    assert registry.sample("memory.retrieve", 0.0, now=1101.0) is False
+    assert registry.sample("memory.retrieve", 0.0, now=1102.0) is True  # 达下限 + 越线
+
+
+def test_crystallize_opens_observation_window() -> None:
+    """结晶发布后开窗（基线 = 该候选评测分）。"""
+    engine = _engine(library=SkillLibrary())
+    target = _published(engine)
+    window = engine.observations.window(target)
+    assert window is not None and window.baseline == 0.0
+
+
+def test_observe_regression_auto_dissolves_with_lesson() -> None:
+    library = SkillLibrary()
+    backend = _SpyBackend()
+    engine = _engine(library=library, memory=backend)
+    target = _published(engine)
+    window = engine.observations.window(target)
+    assert window is not None
+    window.baseline = 1.0  # 直接给个有意义的基线（默认评测分 0.0）
+
+    assert engine.observe(target, 0.9) is None
+    assert engine.observe(target, 0.5) is None
+    outcome = engine.observe(target, 0.0)
+
+    assert outcome is not None and outcome.status == "dissolved"
+    assert library.lookup(f"skills.evolution.{target}").status == "deprecated"
+    lesson = backend.put_entries[-1]
+    assert lesson.layer == "L2"
+    assert "基线 1.000" in lesson.content and "均分 0.467" in lesson.content
+    assert "样本 3" in lesson.content
+
+
+def test_observe_unopened_target_and_no_regression() -> None:
+    """未开窗 → None（不抛）；未回归 → None 且技能保持 active。"""
+    library = SkillLibrary()
+    engine = _engine(library=library)
+    assert engine.observe("memory.retrieve", 0.0) is None
+    target = _published(engine)
+    window = engine.observations.window(target)
+    assert window is not None
+    window.baseline = 0.1
+    for _ in range(3):
+        assert engine.observe(target, 0.9) is None
+    assert library.lookup(f"skills.evolution.{target}").status == "active"

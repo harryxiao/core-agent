@@ -79,7 +79,7 @@ class EvalReport:
 class EvolutionOutcome:
     """一次进化闭环的最终产物。"""
 
-    status: str  # published | pending | manual | rejected | rollback | no_evidence
+    status: str  # published | pending | manual | rejected | rollback | no_evidence | dissolved
     diagnosis: DiagnosisReport | None = None
     candidate: GenerationCandidate | None = None
     gate: GateReport | None = None
