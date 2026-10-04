@@ -88,7 +88,8 @@
 - **B4 `ContextPack.skills` / `pending` 恒空——前提部分不成立，判为冗余**：技能**已经**进
   prompt——planner 有 `skill_router` 回调（`runtime.py:191` → `planner.py:132 _skill_hints`
   → 「可用技能」块）。缺口仅是 `ContextPack.skills` 字段恒空（`build` 从不填充），**无功能
-  空洞**。落点＝并入交付物 #6/#7（SOP/语义路由）时顺带填充，或直接判定冗余删除；
+  空洞**。落点＝并入交付物 #7（语义路由）时顺带填充，或直接判定冗余删除；#6（SOP 提炼）落地时
+  确认该字段无消费者、未顺带填充；
   **不单列为独立任务**。
 - **B5 `_trim` 头部阻塞** ✅ **已完成**（2026-10-04）：原 `_trim` 遇首个放不下的项即
   `break` → 单项超预算会**连带掐断其后所有更小的低相关项**（头部饥饿）；且
@@ -129,7 +130,7 @@
 > （`llm.embedding_model` 配置旋钮 + 以该模型**另构造** provider → `LLMEmbedder` → 注入；
 > 未设置/不可达回退词法，不阻断启动）。ADR-0045 已转 **Accepted**。
 > `importance` **自动打分**留至 #4/#5（接 judgment `score`），本批仅加字段 + 参与排序。
-> **B6 判为「按架构如此」关闭**（装配是 Reason 前一次性步骤），B4 判冗余待并入 #6/#7。
+> **B6 判为「按架构如此」关闭**（装配是 Reason 前一次性步骤），B4 判冗余待并入 #7。
 > 
 > **#3 摘要式压缩 已完成并归档**（2026-10-04，change `0041-memory-summary-compaction`，
 > 608 tests 绿、ADR-0046 Accepted）：memory 新增 `Summarizer` DI 接缝（`memory/summarize.py`：
@@ -171,6 +172,26 @@
 > 「本轮无分值」时不生效（原计划只写「达阈值才提炼」）。
 > **遗留**：`forget` **无调度器**（只在 loop 压实触发时顺带执行，定时衰减循环需调度依赖，另立
 > 变更）；`session_id` 仍为空串（同 0041）；无并发锁。
+>
+> **#6 SOP 提炼 已完成并归档**（2026-10-04，change `0043-sop-skill-extraction`，
+> 616→626 tests 绿、ADR-0048 Accepted）：技能库**首次有了产出入口**——`src/core/skills/sop.py`
+> 新增 `SopExtractor`：成功任务的「任务文本 + 行动/结果序列」按组累积，累计 `_SOP_MIN_SAMPLES = 3`
+> 条即提炼一次，产物 `Skill(instructions=<提炼文本>, task_types=[组键], status="active")` 经
+> `SkillLibrary.register()` 入库（可被 `SkillRouter` 命中），提炼后清空该组；入库登记
+> `Effect(op="skills.register")`（`trace_id=skills.extract`）可按 trace 回滚移除。
+> **归组**先词法命中已有技能的 `task_types`（复用其作组键，为 #8 迭代提供增量），未命中用任务词元
+> 签名（`terms_of` 与 `SkillRouter` 同口径）。**接线**：loop 新增收尾钩子
+> `SopObserver = Callable[[str, list[str]], object]`（**loop 不 import skills**——架构红线），
+> 仅在**成功**收尾时提交（失败轮/超限终止轮不提交），钩子抛错记 `sop_extract_failed` 降级、
+> 不改本轮结果与终止语义；`build_runtime` 构造 `SopExtractor`（writer = 主模型，经
+> `sop_writer_with` 适配）注入主/子 loop。未注入 writer 时不累积、不提炼（零额外调用）。
+> **一处偏离原计划（已在 ADR-0048 记录）**：计划写「LLM 提炼走 judgment」，但 judgment 只有
+> choice / score / noul **决策**原语、**没有生成原语**——生成改走 DI 接缝（照 `memory/summarize.py`
+> 先例），judgment 在技能链路上的角色留在 #7 语义路由打分。
+> **遗留**：技能库仍是进程内注册表（无持久化，先于本变更存在）；样本仅进程内累积（不落盘）；
+> 无 judgment 质量门（只吸收成功轨迹 + 阈值 + 可逆回滚兜底，质量门归 #8）；**B4（`ContextPack.skills`
+> 恒空）本次未顺带填充**——`skills/spec.md` 与 context spec 均无「装配器填充技能字段」的 Requirement，
+> 该字段的收口归 #7（语义路由一并处理）或判冗余删除。
 
 - **记忆**：跨 3 轮以上长对话后，`read` 命中率提升（同一事实不因截断丢失），semantic 条目可见且可追溯 source trace_id。
 - **压缩**：注入 Compactor 后 `compact` 产出「摘要条目」而非「保留/丢弃布尔」，且摘要可逆。
@@ -220,7 +241,8 @@
     → ④ `0040-memory-embedding-config` ✅ **已完成**（2026-10-04：`llm.embedding_model`
       配置旋钮（advanced 暴露面）+ 组合根以该模型另构造 provider → `LLMEmbedder` → 注入
       `MemoryStore`；未设置/不可达回退词法。ADR-0045 转 Accepted）
-    → **B4** 并入 #6/#7 或判冗余删除（不独立排期）。
+    → **#6 SOP 提炼** ✅ **已完成**（2026-10-04，change `0043-sop-skill-extraction`；
+      ADR-0048 Accepted）→ **B4** 并入 #7 或判冗余删除（不独立排期）。
     A1/A3 已清账（✅）。
 
 ---

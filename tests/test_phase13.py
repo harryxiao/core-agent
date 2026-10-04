@@ -24,6 +24,7 @@ from core.memory import MemoryEntry, MemoryStore
 from core.observability import Tracer
 from core.permission import PermissionGuard
 from core.runtime import build_runtime
+from core.skills import SopExtractor
 from core.tools import Tool, ToolDef, ToolProvider
 
 
@@ -641,3 +642,25 @@ def test_build_runtime_wires_summarizer_and_context_compactor(monkeypatch, tmp_p
     compactor = runtime.loop._compactor
     assert compactor is not None, "loop 注入压实器（预算/轮数触发）"
     assert compactor._memory is runtime.memory, "压实器回写同一记忆存储"
+
+
+def test_build_runtime_wires_sop_extractor(monkeypatch, tmp_path) -> None:
+    """0043：build_runtime 把 SOP 提炼器接进 loop 收尾钩子（产物进 planner 同一技能库）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+
+    observer = runtime.loop._sop_observer
+    assert observer is not None, "loop 注入 SOP 收尾钩子"
+    extractor = observer.__self__
+    assert isinstance(extractor, SopExtractor), "钩子绑定 SopExtractor.observe"
+    assert extractor._writer is not None, "已配置模型 → 注入提炼接缝"
+    assert extractor._tracker is not None, "入库可逆（效应追踪已接）"
+
+    planner = runtime.loop._planner
+    assert planner._skill_router("summarize the report") == [], "提炼前技能库为空"
+
+    extractor._writer = lambda prompt: "1. 读输入\n2. 输出摘要"
+    for _ in range(3):
+        observer("summarize the report", ["assistant: tools.echo", "tool: ok"])
+
+    assert planner._skill_router("please summarize the report"), "提炼产物进同一技能库 → 路由命中"

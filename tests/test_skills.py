@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from core.memory import MemoryStore
+from core.plugin_registry import EffectTracker
 from core.skills import (
     Skill,
     SkillCrystallizer,
@@ -16,6 +17,7 @@ from core.skills import (
     SkillErrorCode,
     SkillLibrary,
     SkillRouter,
+    SopExtractor,
     VersionManager,
 )
 
@@ -161,3 +163,110 @@ def test_dissolve_marks_deprecated_and_writes_lesson() -> None:
     c.dissolve("s.x", "退化原因")
     assert s.status == "deprecated"
     assert memory.read("") != []
+
+
+# ---- SOP 提炼（0043） ----
+
+
+def _writer(text: str = "1. 读输入\n2. 提炼要点\n3. 输出摘要"):
+    """假提炼器：记录被提炼的任务+样本，返回固定 SOP 文本（不触网）。"""
+    calls: list[str] = []
+
+    def _write(prompt: str) -> str:
+        calls.append(prompt)
+        return text
+
+    _write.calls = calls  # type: ignore[attr-defined]
+    return _write
+
+
+def _steps(tool: str = "tools.echo") -> list[str]:
+    return [f'assistant: {{"tool_id": "{tool}", "args": {{"text": "x"}}}}', 'tool: {"data": "x"}']
+
+
+def test_sop_extract() -> None:
+    lib = SkillLibrary()
+    writer = _writer()
+    extractor = SopExtractor(lib, writer=writer, threshold=3)
+
+    assert extractor.observe("summarize the report", _steps()) is None, "未达阈值不提炼"
+    assert extractor.observe("summarize the report", _steps()) is None
+    skill = extractor.observe("summarize the report", _steps())
+
+    assert skill is not None, "第 3 次成功轨迹触发提炼"
+    assert skill.status == "active", "维度1 低风险自动发布"
+    assert skill.instructions.startswith("1. 读输入"), "instructions 承载 SOP 步骤"
+    assert skill.task_types and "summarize" in skill.task_types[0], "task_types 为归组键"
+    assert lib.lookup(skill.skill_id) is skill
+    assert len(writer.calls) == 1  # type: ignore[attr-defined]
+    assert "summarize the report" in writer.calls[0]  # type: ignore[attr-defined]
+
+    matches = SkillRouter(lib).match("please summarize the report")
+    assert matches and matches[0].skill.skill_id == skill.skill_id, "提炼产物可被路由命中"
+
+
+def test_sop_extract_below_threshold_and_failures_not_counted() -> None:
+    lib = SkillLibrary()
+    extractor = SopExtractor(lib, writer=_writer(), threshold=3)
+
+    for _ in range(5):
+        assert extractor.observe("same task", _steps(), ok=False) is None
+    assert lib.all_skills() == [], "失败轨迹不计入累积（不是 SOP）"
+
+    assert extractor.observe("same task", _steps()) is None
+    assert lib.all_skills() == []
+
+
+def test_sop_extract_groups_by_existing_task_types() -> None:
+    lib = SkillLibrary()
+    lib.register(
+        Skill(
+            skill_id="skills.data.summarize",
+            description="summarize text",
+            task_types=["report summarize"],
+            status="active",
+        )
+    )
+    extractor = SopExtractor(lib, writer=_writer(), threshold=2)
+
+    assert extractor.observe("summarize report", _steps()) is None
+    skill = extractor.observe("summarize report", _steps())
+
+    assert skill is not None
+    assert skill.task_types == ["report summarize"], "复用已有 task_type 作组键"
+    assert skill.skill_id != "skills.data.summarize", "提炼产物是独立新技能，不覆盖已有技能"
+
+
+def test_sop_extract_without_writer_degrades() -> None:
+    lib = SkillLibrary()
+    extractor = SopExtractor(lib, threshold=1)
+
+    assert extractor.observe("任何任务", _steps()) is None
+    assert lib.all_skills() == [], "未注入 writer → 不累积、不提炼"
+
+
+def test_sop_extract_empty_text_not_registered_and_samples_kept() -> None:
+    lib = SkillLibrary()
+    extractor = SopExtractor(lib, writer=_writer("   "), threshold=2)
+
+    assert extractor.observe("task a", _steps()) is None
+    assert extractor.observe("task a", _steps()) is None
+    assert lib.all_skills() == [], "空提炼不入库（不写半成品）"
+
+    extractor._writer = _writer("1. 步骤")  # type: ignore[assignment]
+    assert extractor.observe("task a", _steps()) is not None, "样本保留，下轮可再提炼"
+
+
+def test_sop_extract_is_reversible() -> None:
+    tracker = EffectTracker()
+    lib = SkillLibrary()
+    extractor = SopExtractor(lib, writer=_writer(), threshold=1, effect_tracker=tracker)
+
+    skill = extractor.observe("task a", _steps())
+    assert skill is not None and lib.all_skills() == [skill]
+
+    report = tracker.rollback("skills.extract")
+
+    assert report.undo_failed == []
+    assert lib.all_skills() == [], "按 trace 回滚 → 技能从库中移除"
+    tracker.rollback("skills.extract")  # 重复回滚不报错（幂等 undo）

@@ -69,7 +69,7 @@ from core.permission import PermissionGuard
 from core.plugin_registry import CoeffectResolver, EffectTracker, PluginInstaller
 from core.plugins import InstallDispatcher
 from core.rag import LLMEmbedder
-from core.skills import SkillLibrary, SkillRouter
+from core.skills import SkillLibrary, SkillRouter, SopExtractor, sop_writer_with
 from core.tools import (
     Tool,
     ToolDef,
@@ -187,15 +187,17 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
             model=app.llm.embedding_model,
         )
         embedder = batch_embed(LLMEmbedder(embed_provider).embed)
+
     # 记忆摘要接缝（0041）：LLM 提炼经 summarize_with 适配为 memory 的摘要契约
     # （与 embedding 同一依赖方向：memory 不 import LLM 抽象，组合根注入模型调用）。
-    summarizer = summarize_with(
-        lambda prompt: (
-            llm.completion(
-                LLMRequest(messages=[Message(role="user", content=prompt)], model=app.llm.model)
-            ).content
+    def _llm_text(prompt: str) -> str:
+        """prompt → 文本：摘要（memory）与提炼（skills）两条 DI 接缝共用的模型调用外壳。"""
+        response = llm.completion(
+            LLMRequest(messages=[Message(role="user", content=prompt)], model=app.llm.model)
         )
-    )
+        return response.content
+
+    summarizer = summarize_with(_llm_text)
     memory = MemoryStore(
         backend=backend,
         effect_tracker=effect_tracker,
@@ -220,6 +222,11 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
 
     skill_library = SkillLibrary()
     skill_router = SkillRouter(skill_library, memory=memory)
+    # SOP 提炼接线（0043）：成功任务收尾的轨迹经提炼器归组、达阈值提炼为技能入库——
+    # 此前技能库只有注册/路由/版本三段，无任何产生技能的入口（生产恒为空）。
+    sop_extractor = SopExtractor(
+        skill_library, writer=sop_writer_with(_llm_text), effect_tracker=effect_tracker
+    )
     dispatcher = InstallDispatcher(skill_library=skill_library, tool_provider=tools)
     installer = PluginInstaller(source_resolver=dispatcher.resolve, installer=dispatcher.install)
 
@@ -268,6 +275,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         router=router if jev is not None else None,
         approver=approver,
         compactor=context_compactor,
+        sop_observer=sop_extractor.observe,
     )
 
     evolution_engine = EvolutionEngine(
@@ -311,6 +319,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
                 router=router if jev is not None else None,
                 approver=approver,
                 compactor=context_compactor,
+                sop_observer=sop_extractor.observe,
             ),
         )
 

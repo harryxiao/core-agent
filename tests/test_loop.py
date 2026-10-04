@@ -529,3 +529,73 @@ def test_loop_forgetting_archives_stale_entries_on_compaction() -> None:
     assert layers["loop.prior"] == "L4", "压实触发 → 顺带遗忘陈旧低分条目"
     assert layers["loop.warm"] == "L2", "高复用条目不被遗忘"
     assert "loop.prior" in {e.id for e in memory.audit()}, "归档不删除，仍可审计"
+
+
+# ---- SOP 收尾钩子（0043） ----
+
+
+class _RecordingTracer:
+    """记录事件 kind，验证降级留痕。"""
+
+    def __init__(self) -> None:
+        self.kinds: list[str] = []
+
+    def record(self, event) -> None:  # noqa: ANN001
+        self.kinds.append(event.kind)
+
+
+def test_loop_fires_sop_observer_on_success() -> None:
+    seen: list[tuple[str, list[str]]] = []
+    provider = ToolProvider()
+    provider.register(_echo_tool())
+
+    def planner(ctx):
+        if ctx.rounds == 0:
+            return Action(tool_id="tools.echo", args={"text": "结论"})
+        return Action(args={"reply": "done"})
+
+    loop = DefaultLoop(
+        planner=planner,
+        tools=provider,
+        max_rounds=3,
+        sop_observer=lambda task, steps: seen.append((task, steps)),
+    )
+
+    loop.run("整理会议纪要")
+
+    assert len(seen) == 1, "成功收尾触发一次"
+    task, steps = seen[0]
+    assert task == "整理会议纪要", "钩子拿到任务文本"
+    assert any("tools.echo" in step for step in steps), "行动/结果序列承载工具调用"
+
+
+def test_loop_does_not_fire_sop_observer_on_failure() -> None:
+    seen: list[tuple[str, list[str]]] = []
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "unused"}),
+        max_rounds=0,
+        sop_observer=lambda task, steps: seen.append((task, steps)),
+    )
+
+    result = loop.run("超限任务")
+
+    assert result.failed, "轮数超限 → 本轮失败"
+    assert seen == [], "失败轮不触发 SOP 观察"
+
+
+def test_loop_sop_observer_error_does_not_break_round() -> None:
+    tracer = _RecordingTracer()
+
+    def boom(task: str, steps: list[str]) -> None:
+        raise RuntimeError("提炼器不可用")  # noqa: TRY003
+
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        tracer=tracer,
+        sop_observer=boom,
+    )
+
+    result = loop.run("任务")
+
+    assert not result.failed and result.reply == "done", "钩子抛错不影响本轮结果"
+    assert "sop_extract_failed" in tracer.kinds, "钩子抛错降级留痕"

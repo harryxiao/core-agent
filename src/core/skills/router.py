@@ -24,7 +24,7 @@ class SkillRouter:
 
     def match(self, task: str, *, top_k: int = 3) -> list[SkillMatch]:
         """按任务类型匹配，返回匹配度排序的 Top-K；无匹配返回空列表并记录未命中。"""
-        terms = _terms(task)
+        terms = terms_of(task)
         scored = [
             SkillMatch(skill=skill, score=self._score(skill, terms))
             for skill in self._library.all_skills()
@@ -62,5 +62,6 @@ class SkillRouter:
         )
 
 
-def _terms(text: str) -> list[str]:
+def terms_of(text: str) -> list[str]:
+    """任务/技能声明的词元（小写空白切分）：路由打分与 SOP 归组共用同一口径。"""
     return [t for t in text.lower().split() if t]

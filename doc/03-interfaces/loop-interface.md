@@ -116,6 +116,10 @@ def remember(self, trace_id: str, trajectory: list[Step]) -> None
   → 记忆固化（`memory.compact`：打分写回 + 价值门控 + 会话摘要归档）→ 遗忘（`memory.forget`：
   低分条目迁 L4 归档）；任一步失败降级不中断本轮（记 `maintenance_failed`），**终止语义不变**
   （仍按既有预算/轮数条件终止，不因压实而续跑）。
+- 成功收尾 → 触发 SOP 收尾钩子（注入 `sop_observer` 时）：提交「任务文本 + 行动/结果序列」，
+  由 `SopExtractor.observe` 归组累积、达阈值提炼技能入库（见 `skills-interface.md §6`）；
+  **失败轮（超限终止）不提交**，钩子抛错降级留痕（记 `sop_extract_failed`），不改变本轮结果与
+  终止语义；未注入钩子时行为完全不变。
 
 ---
 

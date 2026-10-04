@@ -90,7 +90,42 @@ class SkillCrystallizer:
 
 ---
 
-## 6. 错误码
+## 6. SOP 提炼接口
+
+把**同一类任务的多次成功轨迹**聚合、提炼为一条 `Skill`（技能库的产出入口；此前只有
+注册 / 路由 / 版本三段，没有任何产生技能的路径）。
+
+```python
+# 提炼接缝：prompt → SOP 文本（skills 不 import LLM 抽象，组合根注入模型调用）
+SopWriter = Callable[[str], str]
+
+def build_sop_prompt(task: str, steps: Sequence[str]) -> str:
+    """把一组成功轨迹渲染为提炼 prompt（逐条节选，token 有界）。"""
+
+def sop_writer_with(llm: Callable[[str], str]) -> SopWriter:
+    """把「prompt → 文本」的模型调用适配为提炼契约（同 memory.Summarizer 方向）。"""
+
+class SopExtractor:
+    def observe(self, task: str, steps: Sequence[str], *, ok: bool = True) -> Skill | None:
+        """提交一条轨迹；达阈值则提炼入库并返回技能，否则返回 None。"""
+```
+
+| 维度 | 口径 |
+|---|---|
+| **调用方** | `DefaultLoop` 收尾钩子（`SopObserver`）——成功收尾提交（任务文本, 行动/结果序列）；失败轨迹不提交 |
+| **归组键** | 优先词法命中已有技能的 `task_types` 并复用其作组键，否则「任务词元签名」（`terms_of` 与 SkillRouter 同口径）——确定性、离线可断言 |
+| **阈值** | 同组累计达 3 条（`_SOP_MIN_SAMPLES`）提炼一次，提炼后**清空该组**（下批重新累积） |
+| **产物** | `skill_id="skills.sop.<组键 blake2b-8hex>"`（确定性、同组重复提炼覆盖同一条）、`description="SOP：<组键>"`、`task_types=[组键]`、`instructions=<提炼文本>`、`status="active"` |
+| **发布口径** | `active`（维度1 技能库层属低风险自动发布）；`draft` 对路由不可见 → 不置 draft |
+| **降级** | 未注入 writer：不累积、不提炼（零额外模型调用）；提炼文本为空：不入库、样本保留待下轮 |
+| **可逆** | 入库登记 `Effect(op="skills.register", undo=移除)`（`trace_id="skills.extract"`）；回滚即移除，重复回滚幂等 |
+
+已知缺口（如实记录）：技能库无持久化（进程内注册表，重启即失）、无 judgment 质量门、
+样本仅进程内累积（不落盘）。质量门与版本迭代归 Phase 18 #8。
+
+---
+
+## 7. 错误码
 
 | 错误码 | 含义 |
 |---|---|
@@ -100,7 +135,7 @@ class SkillCrystallizer:
 
 ---
 
-## 7. 关联
+## 8. 关联
 
 - 模块：`02-modules/skills.md`
 - 规格：`openspec/specs/skills/spec.md`

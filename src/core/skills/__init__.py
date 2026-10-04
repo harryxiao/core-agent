@@ -12,6 +12,7 @@ from .errors import SkillError, SkillErrorCode
 from .library import SkillLibrary
 from .models import ABResult, Skill, SkillMatch
 from .router import SkillRouter
+from .sop import SopExtractor, SopWriter, build_sop_prompt, sop_writer_with
 from .version import VersionManager
 
 __all__ = [
@@ -23,5 +24,9 @@ __all__ = [
     "SkillLibrary",
     "SkillMatch",
     "SkillRouter",
+    "SopExtractor",
+    "SopWriter",
     "VersionManager",
+    "build_sop_prompt",
+    "sop_writer_with",
 ]

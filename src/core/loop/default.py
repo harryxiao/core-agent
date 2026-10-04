@@ -33,6 +33,10 @@ Middleware = Callable[[LoopContext, Action], Action | None]
 # 审批回调：不可逆动作经确认门判 confirm 时询问人工（tool_id, args, reason）→ 是否放行。
 Approver = Callable[[str, dict[str, Any], str], Awaitable[bool]]
 
+# SOP 收尾观察者：任务成功收尾时提交（任务文本, 行动/结果序列）→ 提炼产物（不返回值）。
+# loop 不 import skills（架构红线），生产侧注入 ``SopExtractor.observe``。
+SopObserver = Callable[[str, list[str]], object]
+
 
 _MAX_ACTION_EXCERPT = 400  # 动作事件 args/output 节选上界（事件面有界）
 
@@ -57,6 +61,21 @@ def _trajectory_line(item: Any) -> str:
     if error:
         parts.append(str(error))
     return " ".join(parts)
+
+
+def _task_text(ctx: LoopContext) -> str:
+    """本轮任务文本（perceive 写入的首条 user 消息）。"""
+    for message in ctx.messages:
+        if message.get("role") == "user":
+            return str(message.get("content", ""))
+    return ""
+
+
+def _action_steps(ctx: LoopContext) -> list[str]:
+    """行动/结果序列：首条 user 消息之后的上下文消息（助手动作 + 工具观察）逐条渲染。"""
+    return [
+        f"{message.get('role', '')}: {message.get('content', '')}" for message in ctx.messages[1:]
+    ]
 
 
 def _output_excerpt(value: Any) -> str:
@@ -84,6 +103,7 @@ class DefaultLoop(Plugin):
         router: DecisionRouter | None = None,
         approver: Approver | None = None,
         compactor: Compactor | None = None,
+        sop_observer: SopObserver | None = None,
         max_rounds: int = 10,
         token_budget: int = 65536,
     ) -> None:
@@ -96,6 +116,7 @@ class DefaultLoop(Plugin):
         self._router = router
         self._approver = approver
         self._compactor = compactor
+        self._sop_observer = sop_observer
         self._max_rounds = max_rounds
         self._token_budget = token_budget
 
@@ -201,6 +222,8 @@ class DefaultLoop(Plugin):
             if self._token_budget > 0 and ctx.token_used >= self._token_budget:
                 limit_reason = "TOKEN_BUDGET_EXCEEDED"
                 break
+        # 成功收尾钩子（失败轮即超限终止轮不提交：失败轨迹不是 SOP）
+        self._notify_sop(ctx, trace_id, ok=not limit_reason)
         if limit_reason:
             ctx.reply = f"{limit_reason}: 本轮终止"
             yield LoopEvent("loop_failed", {"reason": limit_reason, "trace_id": trace_id})
@@ -212,6 +235,19 @@ class DefaultLoop(Plugin):
             "loop_finished",
             LoopResult(reply=ctx.reply, trace_id=trace_id, failed=bool(limit_reason)),
         )
+
+    def _notify_sop(self, ctx: LoopContext, trace_id: str, *, ok: bool) -> None:
+        """成功收尾钩子：把任务文本 + 行动/结果序列交给注入的观察者（缺省不启用）。
+
+        ``ok=False`` 的失败轨迹不是 SOP（不提交）；观察者抛错仅降级留痕，不改变本轮
+        结果与终止语义。
+        """
+        if not ok or self._sop_observer is None:
+            return
+        try:
+            self._sop_observer(_task_text(ctx), _action_steps(ctx))
+        except Exception as err:  # noqa: BLE001 — 提炼失败降级，不影响本轮结果
+            self._trace(trace_id, "sop_extract_failed", {"error": str(err)})
 
     def _should_compact(self, ctx: LoopContext) -> bool:
         """轮数或 token 预算达阈值即触发压实（未注入压实器则永不触发）。
