@@ -78,6 +78,24 @@ class Compactor:
 
 ---
 
+## 4.1 SkillMatcher 接口
+
+技能语义匹配（decision adapter，同 `Compactor` 的落域口径：**只吃 dict，不 import skills**）。
+
+```python
+class SkillMatcher:
+    def score(self, task: str, skills: list[dict]) -> dict[str, float]:
+        """(任务文本, 候选技能快照) → {skill_id: 分值}；每候选一次 score 调用。"""
+```
+
+- **逐候选一次调用**：`score` 原语只给「条目集单一分数」（无 per-item 分数）→ K 个候选即 K 次
+  `decide()`，每次只送一条候选。
+- **容错**：单候选坏答案 / 调用失败 / 回退（回退答案给 SCORE 的分恒为 0.0）→ 该候选略过
+  （不产生 `score=0.0` 的伪命中，也不向调用方抛错）。
+- **用途**：`SkillRouter` 词法无命中时的语义兜底（见 skills-interface §4）；未配置 JEV 时不构造。
+
+---
+
 ## 5. Guardrail 接口
 
 ```python

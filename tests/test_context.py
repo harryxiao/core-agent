@@ -53,14 +53,6 @@ def test_enforce_skips_oversized_fact_keeps_smaller() -> None:
     assert out.token_used <= budget
 
 
-def test_enforce_allocates_remaining_budget_to_skills() -> None:
-    """skills 用**剩余**预算裁剪，而非恒 0（原 _trim(skills, 0) 使技能恒空）。"""
-    skill = {"source": "s", "content": "k" * 40}
-    pack = ContextPack(task="t", stage="s", facts=[], skills=[skill])
-    out = BudgetManager().enforce(pack, budget=100)
-    assert out.skills == [skill]
-
-
 def test_enforce_budget_exceeded_when_mandatory_over() -> None:
     pack = ContextPack(task="t", stage="s", constitution=["x" * 40], pending=["p" * 40])
     with pytest.raises(ContextError) as exc_info:

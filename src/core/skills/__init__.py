@@ -11,7 +11,7 @@ from .crystallizer import SkillCrystallizer
 from .errors import SkillError, SkillErrorCode
 from .library import SkillLibrary
 from .models import ABResult, Skill, SkillMatch
-from .router import SkillRouter
+from .router import SkillRouter, SkillScorer
 from .sop import SopExtractor, SopWriter, build_sop_prompt, sop_writer_with
 from .version import VersionManager
 
@@ -24,6 +24,7 @@ __all__ = [
     "SkillLibrary",
     "SkillMatch",
     "SkillRouter",
+    "SkillScorer",
     "SopExtractor",
     "SopWriter",
     "VersionManager",

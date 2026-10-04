@@ -12,7 +12,6 @@ class ContextPack:
     task: str
     stage: str                  # 装配阶段标注（暂不参与事实选择）
     facts: list[dict]           # L2 事实（按需检索）
-    skills: list[dict]          # L3 技能（按需）
     constitution: list[str]     # 宪章/约束（必保）
     pending: list[str]          # 未决事项/验收标准（必保）
     token_used: int             # 实际注入 token
@@ -95,7 +94,7 @@ class BudgetManager:
 ```
 
 - 保留策略：按**相关度降序**依次纳入可容纳项，**跳过**放不下的项（不掐断后续），
-  避免单个大项阻塞其后更小的低相关项；`skills` 用事实裁剪后的**剩余预算**。
+  避免单个大项阻塞其后更小的低相关项。
 
 ---
 

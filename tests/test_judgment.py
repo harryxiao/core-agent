@@ -27,6 +27,7 @@ from core.judgment import (
     JEVProvider,
     JudgmentError,
     JudgmentErrorCode,
+    SkillMatcher,
 )
 
 
@@ -272,3 +273,67 @@ def test_jev_provider_timeout() -> None:
     ):
         provider.query({}, {"choice": {"primitive": "choice"}})
     assert exc_info.value.code == JudgmentErrorCode.JUDGMENT_TIMEOUT
+
+
+# ---- 技能语义匹配（SkillMatcher，0044） ----
+
+
+def _scored_provider(
+    scores: dict[str, float], *, error: JudgmentError | None = None
+) -> _FakeProvider:
+    """按候选逐条作答的打分器替身：skill_id 无分 → 返回坏答案（缺 score 键）。"""
+
+    class _Provider(_FakeProvider):
+        def query(self, state: Any, questions: dict[str, Any]) -> dict[str, Any]:
+            self.queries.append((state, questions))
+            if error is not None:
+                raise error
+            skill_id = questions["score"]["items"][0]["skill_id"]
+            if skill_id not in scores:
+                return {"score": {"legend": "?", "probabilities": {}, "confidence": 0.5}}
+            return {
+                "score": {
+                    "score": scores[skill_id],
+                    "legend": "match",
+                    "probabilities": {},
+                    "confidence": 0.9,
+                }
+            }
+
+    return _Provider()
+
+
+def _candidates(*skill_ids: str) -> list[dict[str, Any]]:
+    return [{"skill_id": sid, "description": sid, "task_types": [sid]} for sid in skill_ids]
+
+
+def test_skill_matcher_scores_each_candidate_once() -> None:
+    provider = _scored_provider({"a": 0.9, "b": 0.3})
+    matcher = SkillMatcher(DecisionRouter(provider=provider, fallback=_FakeFallback()))
+    expected = {"a": 0.9, "b": 0.3}  # noqa: PLR2004
+    assert matcher.score("整理会议纪要", _candidates("a", "b")) == expected
+    # score 原语只给「条目集单一分数」→ 逐候选一次调用，每次只送一条候选
+    assert len(provider.queries) == 2  # noqa: PLR2004
+    assert all(len(q[1]["score"]["items"]) == 1 for q in provider.queries)
+
+
+def test_skill_matcher_skips_bad_answer() -> None:
+    provider = _scored_provider({"a": 0.9})
+    matcher = SkillMatcher(DecisionRouter(provider=provider, fallback=_FakeFallback()))
+    assert matcher.score("任务", _candidates("a", "b")) == {"a": 0.9}  # noqa: PLR2004
+
+
+def test_skill_matcher_returns_empty_on_provider_failure() -> None:
+    provider = _scored_provider(
+        {}, error=JudgmentError(JudgmentErrorCode.JUDGMENT_PROVIDER_UNREACHABLE, "boom")
+    )
+    matcher = SkillMatcher(DecisionRouter(provider=provider, fallback=_FakeFallback()))
+    # 回退答案给 SCORE 的分恒为 0.0 → 不产生伪命中
+    assert matcher.score("任务", _candidates("a")) == {}
+
+
+def test_skill_matcher_without_candidates_makes_no_call() -> None:
+    provider = _scored_provider({"a": 0.9})
+    matcher = SkillMatcher(DecisionRouter(provider=provider, fallback=_FakeFallback()))
+    assert matcher.score("任务", []) == {}
+    assert provider.queries == []

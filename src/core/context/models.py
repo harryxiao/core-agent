@@ -34,7 +34,6 @@ class ContextPack:
     task: str
     stage: str
     facts: list[dict[str, str]] = field(default_factory=list[dict[str, str]])
-    skills: list[dict[str, str]] = field(default_factory=list[dict[str, str]])
     constitution: list[str] = field(default_factory=list[str])
     pending: list[str] = field(default_factory=list[str])
     token_used: int = 0

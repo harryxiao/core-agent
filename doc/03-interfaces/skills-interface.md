@@ -63,17 +63,40 @@ class ABResult:
 ## 4. SkillRouter 接口
 
 ```python
+# 语义打分器接缝：(任务文本, 候选技能快照) → {skill_id: 分值}；缺省不启用（纯词法）
+# 快照为 dict（不含 skills 类型）——实现侧（judgment.SkillMatcher）不依赖本模块
+SkillScorer = Callable[[str, list[dict]], dict[str, float]]
+
 class SkillRouter:
+    def __init__(
+        self,
+        library: SkillLibrary,
+        *,
+        memory: MemoryStore | None = None,
+        scorer: SkillScorer | None = None,
+        threshold: float = 0.5,
+    ) -> None: ...
+
     def match(self, task: str, *, top_k: int = 3) -> list[SkillMatch]:
         """按任务类型匹配，返回匹配度排序的 Top-K。"""
 
 @dataclass
 class SkillMatch:
     skill: Skill
-    score: float                # 匹配度（语义 + 历史成功率 + 适用声明）
+    score: float                # 匹配度（词法命中率 / 语义分；历史成功率见 #8 缺口）
 ```
 
 无匹配时返回空列表，由 loop 回退通用流程并记录未命中（供新技能沉淀）。
+
+| 维度 | 口径 |
+|---|---|
+| **词法 fast path** | 词元包含匹配（命中率 = 命中词元 / 任务词元）；**命中即返回，零模型调用** |
+| **语义兜底触发** | 仅当词法**全无命中**时才调打分器（避免把辅助决策成本抬到每个推理轮） |
+| **候选集** | 仅 `active` / `gray` 技能（`draft` / `deprecated` 不打分） |
+| **阈值** | 语义分 ≥ `threshold`（缺省 0.5）才采纳，按分降序取 Top-K |
+| **降级** | 未注入打分器 / 打分器抛错 / 分值低于阈值 → 行为与纯词法一致（空结果 + 记 miss）；`match` 不向调用方抛异常 |
+| **miss 口径** | 有命中（词法或语义）则不记 miss；两者皆无才记（miss 是「无技能可用」信号，供新技能沉淀） |
+| **接线** | `build_runtime`：`scorer=SkillMatcher(router) if jev is not None else None`（未配置 JEV → 纯词法） |
 
 ---
 

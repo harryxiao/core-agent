@@ -34,8 +34,6 @@ class BudgetManager:
                 ContextErrorCode.BUDGET_EXCEEDED, "必保内容（宪章/未决事项）已超预算"
             )
         pack.facts = self._trim(pack.facts, budget - mandatory)
-        spent = mandatory + sum(estimate_tokens(str(f)) for f in pack.facts)
-        pack.skills = self._trim(pack.skills, budget - spent)
         pack.token_used = self._measure(pack)
         return pack
 
@@ -44,7 +42,6 @@ class BudgetManager:
         total += sum(estimate_tokens(str(c)) for c in pack.constitution)
         total += sum(estimate_tokens(str(p)) for p in pack.pending)
         total += sum(estimate_tokens(str(f)) for f in pack.facts)
-        total += sum(estimate_tokens(str(s)) for s in pack.skills)
         return total
 
     def _mandatory_tokens(self, pack: ContextPack) -> int:

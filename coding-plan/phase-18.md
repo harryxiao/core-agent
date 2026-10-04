@@ -85,12 +85,12 @@
   须一并落地避免返工。落点＝交付物 #1/#2 时一并接，带缓存策略；模型/密钥**只引用不读取**。
 - **C8 写侧无 consolidation/forgetting**：`remember` 只增不整合、不衰减（已覆盖于交付物
   #4/#5，此处仅登记落点，不重复实现）。
-- **B4 `ContextPack.skills` / `pending` 恒空——前提部分不成立，判为冗余**：技能**已经**进
-  prompt——planner 有 `skill_router` 回调（`runtime.py:191` → `planner.py:132 _skill_hints`
-  → 「可用技能」块）。缺口仅是 `ContextPack.skills` 字段恒空（`build` 从不填充），**无功能
-  空洞**。落点＝并入交付物 #7（语义路由）时顺带填充，或直接判定冗余删除；#6（SOP 提炼）落地时
-  确认该字段无消费者、未顺带填充；
-  **不单列为独立任务**。
+- **B4 `ContextPack.skills` 恒空——判冗余，已删除**（2026-10-04，change
+  `0044-semantic-skill-routing`）：技能**已经**进 prompt——planner 有 `skill_router` 回调
+  （`runtime.py` → `planner._skill_hints` → 「可用技能」块），该字段**无生产者、无消费者**。
+  用户定夺**删除该字段**（**不采纳**「装配器填充、planner 读 pack」：技能会与事实争同一预算，
+  「先裁 facts、skills 吃剩余」在记忆丰富时把技能挤出 prompt，比今天的恒注入退化）。
+  `pending` 不在范围（参与必保预算判定，非恒空字段）；**不单列为独立任务**。
 - **B5 `_trim` 头部阻塞** ✅ **已完成**（2026-10-04）：原 `_trim` 遇首个放不下的项即
   `break` → 单项超预算会**连带掐断其后所有更小的低相关项**（头部饥饿）；且
   `pack.skills = self._trim(pack.skills, 0)` 使 **skills 恒空**。修正：`break` → `continue`
@@ -193,6 +193,20 @@
 > 恒空）本次未顺带填充**——`skills/spec.md` 与 context spec 均无「装配器填充技能字段」的 Requirement，
 > 该字段的收口归 #7（语义路由一并处理）或判冗余删除。
 
+> **#7 语义路由 已完成并归档**（2026-10-04，change `0044-semantic-skill-routing`，
+> 626→637 tests 绿、ADR-0049 Accepted）：路由**词法 fast path + 语义兜底**——`SkillRouter` 增
+> `scorer` 接缝（`SkillScorer = Callable[[str, list[dict]], dict[str, float]]`，候选以 dict 快照
+> 传入）与 `threshold`；**仅词法全无命中**时才调打分器（避免把辅助决策成本抬到每个推理轮），
+> 语义分 ≥ 0.5 才采纳并按分降序返回，**语义命中不再记 miss**（miss 是「无技能可用」信号）。
+> 打分落 **judgment 域**（`judgment/skills.py::SkillMatcher`，照 `Compactor` 先例：**只吃 dict、
+> 不 import skills**；skills 侧也不 import judgment）：`score` 原语只给「条目集单一分数」→ 逐候选
+> 一次 `decide()`，坏答案/失败/回退（0.0）即略过。接线：`build_runtime` 仅在配置 JEV 时注入
+> `SkillMatcher(router).score`（未配置 → 纯词法，零行为变化；JEV 不可达时回退分 0.0 自然退化）。
+> **B4 收口（用户定夺）**：删除 `ContextPack.skills` 恒空字段 + `BudgetManager` 的裁剪/计量 +
+> `context-interface.md` 字段与保留策略中 skills 一句 + `test_context` 对应用例（规格中性：context
+> spec 从未提及 skills；构造方均未传该字段）。**遗留**：语义分只用于排序，**无历史成功率加权**
+> （需命中/结果反馈闭环，归 #8）；候选未预筛（miss 时对全部 active/gray 技能逐条打分，K = 技能数）。
+
 - **记忆**：跨 3 轮以上长对话后，`read` 命中率提升（同一事实不因截断丢失），semantic 条目可见且可追溯 source trace_id。
 - **压缩**：注入 Compactor 后 `compact` 产出「摘要条目」而非「保留/丢弃布尔」，且摘要可逆。
 - **维度1**：一条日常任务轨迹走完「任务→SOP 提取→Skill 入库→下次类似任务语义命中」全链路（无人工 confirm）；一条重复任务触发 skill 迭代（version 升级）。
@@ -242,7 +256,11 @@
       配置旋钮（advanced 暴露面）+ 组合根以该模型另构造 provider → `LLMEmbedder` → 注入
       `MemoryStore`；未设置/不可达回退词法。ADR-0045 转 Accepted）
     → **#6 SOP 提炼** ✅ **已完成**（2026-10-04，change `0043-sop-skill-extraction`；
-      ADR-0048 Accepted）→ **B4** 并入 #7 或判冗余删除（不独立排期）。
+      ADR-0048 Accepted）
+    → **#7 语义路由** ✅ **已完成**（2026-10-04，change `0044-semantic-skill-routing`；
+      ADR-0049 Accepted；**B4 判冗余 → 删除 `ContextPack.skills`**）
+    → **#8 Skill 迭代**（复用 `VersionManager` + A/B，记录命中与结果反馈；补历史成功率加权）
+      → **#9/#10**（`risk_level` 强制 confirm + 观察期自动 dissolve）。
     A1/A3 已清账（✅）。
 
 ---

@@ -17,14 +17,14 @@ import pytest
 from core import entry
 from core.configuration import ConfigManager, ConfigurationError
 from core.context import DynamicAssembler
-from core.judgment import DecisionPrimitive, DecisionResult
+from core.judgment import DecisionPrimitive, DecisionResult, SkillMatcher
 from core.llm_provider import Embedding, LLMChunk, LLMError, LLMResponse, TokenUsage, ToolCall
 from core.loop import Action, DefaultLoop, LLMPlanner, LoopContext
 from core.memory import MemoryEntry, MemoryStore
 from core.observability import Tracer
 from core.permission import PermissionGuard
 from core.runtime import build_runtime
-from core.skills import SopExtractor
+from core.skills import Skill, SopExtractor
 from core.tools import Tool, ToolDef, ToolProvider
 
 
@@ -664,3 +664,61 @@ def test_build_runtime_wires_sop_extractor(monkeypatch, tmp_path) -> None:
         observer("summarize the report", ["assistant: tools.echo", "tool: ok"])
 
     assert planner._skill_router("please summarize the report"), "提炼产物进同一技能库 → 路由命中"
+
+
+# ---- 0044 语义路由接线 ----
+
+
+def _write_jev_config(tmp_path) -> str:
+    """LLM + JEV 两段配置（judgment 打分能力开启）。"""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "llm:\n"
+        "  provider: litellm\n"
+        "  model: test-model\n"
+        "  endpoint: https://example.com/v1\n"
+        "  api_key: ${OPENAI_API_KEY}\n"
+        "  reasoning_effort: low\n"
+        "judgment:\n"
+        "  provider: jev\n"
+        "  model: systemone\n"
+        "  base_url: http://jev.local\n"
+        "  api_key: ${JEV_API_KEY}\n",
+        encoding="utf-8",
+    )
+    return str(cfg)
+
+
+def test_build_runtime_wires_skill_scorer_with_jev(monkeypatch, tmp_path) -> None:
+    """0044：配置 JEV → 语义打分器接进 SkillRouter（词法 miss 时兜底取用技能）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("JEV_API_KEY", "jev-sk")
+    runtime = build_runtime(ConfigManager(yaml_path=_write_jev_config(tmp_path)))
+
+    scorer = runtime.skill_router._scorer
+    assert scorer is not None, "JEV 配置 → 注入语义打分器"
+    assert isinstance(scorer.__self__, SkillMatcher), "注入 SkillMatcher.score 绑定方法"
+    assert scorer.__self__._router is runtime.router, "打分走同一 DecisionRouter"
+
+    runtime.skill_router._library.register(
+        Skill(
+            skill_id="skills.data.summarize",
+            description="SOP：summarize report",
+            task_types=["summarize report"],
+            instructions="1. 读输入\n2. 输出摘要",
+            status="active",
+        )
+    )
+    planner_router = runtime.loop._planner._skill_router
+    assert planner_router("整理会议纪要") == [], "词法不相交 → 无命中"
+
+    runtime.skill_router._scorer = lambda task, skills: {skills[0]["skill_id"]: 0.9}
+    assert planner_router("整理会议纪要") == ["skills.data.summarize"], "语义兜底 → 技能进 prompt"
+
+
+def test_build_runtime_without_jev_keeps_lexical_routing(monkeypatch, tmp_path) -> None:
+    """0044：未配置 JEV → 不注入打分器，路由零行为变化（纯词法）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+
+    assert runtime.skill_router._scorer is None

@@ -270,3 +270,90 @@ def test_sop_extract_is_reversible() -> None:
     assert report.undo_failed == []
     assert lib.all_skills() == [], "按 trace 回滚 → 技能从库中移除"
     tracker.rollback("skills.extract")  # 重复回滚不报错（幂等 undo）
+
+
+# ---- 语义路由（0044） ----
+
+
+def _summarize_library() -> SkillLibrary:
+    lib = SkillLibrary()
+    lib.register(
+        Skill(
+            skill_id="skills.data.summarize",
+            description="summarize text",
+            task_types=["report summarize"],
+            status="active",
+        )
+    )
+    return lib
+
+
+def _semantic(scores: dict[str, float], *, raises: bool = False):
+    """假打分器：记录被评分的候选，返回预设分值（不触网）。"""
+    calls: list[tuple[str, list[dict]]] = []
+
+    def _score(task: str, skills: list[dict]) -> dict[str, float]:
+        calls.append((task, skills))
+        if raises:
+            raise RuntimeError("打分器不可用")  # noqa: TRY003
+        return scores
+
+    _score.calls = calls  # type: ignore[attr-defined]
+    return _score
+
+
+def test_router_semantic_fallback_hits_on_lexical_miss() -> None:
+    scorer = _semantic({"skills.data.summarize": 0.9})
+    router = SkillRouter(_summarize_library(), scorer=scorer)
+
+    matches = router.match("整理会议纪要")
+
+    assert [m.skill.skill_id for m in matches] == ["skills.data.summarize"]
+    assert matches[0].score == 0.9  # noqa: PLR2004
+    assert router.misses == [], "语义命中视为命中，不记 miss"
+
+
+def test_router_lexical_hit_skips_semantic() -> None:
+    scorer = _semantic({"skills.data.summarize": 0.9})
+    router = SkillRouter(_summarize_library(), scorer=scorer)
+
+    matches = router.match("please summarize the report")
+
+    assert matches and matches[0].skill.skill_id == "skills.data.summarize"
+    assert scorer.calls == [], "词法 fast path：命中时不产生打分调用"  # type: ignore[attr-defined]
+
+
+def test_router_without_scorer_keeps_lexical_miss() -> None:
+    router = SkillRouter(_summarize_library())
+
+    assert router.match("整理会议纪要") == []
+    assert router.misses == ["整理会议纪要"]
+
+
+def test_router_semantic_below_threshold_records_miss() -> None:
+    router = SkillRouter(_summarize_library(), scorer=_semantic({"skills.data.summarize": 0.4}))
+
+    assert router.match("整理会议纪要") == []
+    assert router.misses == ["整理会议纪要"], "低于阈值不采纳 → 仍记 miss"
+
+
+def test_router_semantic_scorer_failure_degrades_to_lexical() -> None:
+    router = SkillRouter(_summarize_library(), scorer=_semantic({}, raises=True))
+
+    assert router.match("整理会议纪要") == [], "打分器故障不得中断路由"
+    assert router.misses == ["整理会议纪要"]
+
+
+def test_router_semantic_scores_only_active_and_gray() -> None:
+    lib = _summarize_library()
+    lib.register(
+        Skill(skill_id="skills.draft.x", description="draft", task_types=["x"], status="draft")
+    )
+    scorer = _semantic({"skills.data.summarize": 0.8, "skills.draft.x": 0.99})
+    router = SkillRouter(lib, scorer=scorer)
+
+    matches = router.match("整理会议纪要")
+
+    payload = scorer.calls[0][1]  # type: ignore[attr-defined]
+    assert [item["skill_id"] for item in payload] == ["skills.data.summarize"], "draft 不参与打分"
+    assert [m.skill.skill_id for m in matches] == ["skills.data.summarize"]

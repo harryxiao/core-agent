@@ -38,7 +38,7 @@ from core.evolution import (
     Proposer,
     Validator,
 )
-from core.judgment import Compactor, DecisionRouter, Guardrail, JEVProvider
+from core.judgment import Compactor, DecisionRouter, Guardrail, JEVProvider, SkillMatcher
 from core.llm_provider import LLMProvider, LLMRequest, Message, StdlibLLMProvider
 from core.loop import Approver, DefaultLoop, LoopPlugin
 from core.loop.planner import LLMPlanner
@@ -94,6 +94,7 @@ class Runtime:
     tracer: Tracer
     router: DecisionRouter
     loop: DefaultLoop
+    skill_router: SkillRouter
     installer: PluginInstaller
     evolution: EvolutionWorker
     orchestrator: TaskScheduler
@@ -221,7 +222,12 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         tools.register(tool)
 
     skill_library = SkillLibrary()
-    skill_router = SkillRouter(skill_library, memory=memory)
+    # 语义兜底（0044）：仅 JEV 配置时注入打分器；否则纯词法（词法命中零模型调用）
+    skill_router = SkillRouter(
+        skill_library,
+        memory=memory,
+        scorer=SkillMatcher(router).score if jev is not None else None,
+    )
     # SOP 提炼接线（0043）：成功任务收尾的轨迹经提炼器归组、达阈值提炼为技能入库——
     # 此前技能库只有注册/路由/版本三段，无任何产生技能的入口（生产恒为空）。
     sop_extractor = SopExtractor(
@@ -443,6 +449,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         tracer=tracer,
         router=router,
         loop=loop,
+        skill_router=skill_router,
         installer=installer,
         evolution=evolution,
         orchestrator=orchestrator,

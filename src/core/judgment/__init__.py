@@ -18,6 +18,7 @@ from .models import (
 )
 from .provider import JEVProvider
 from .router import DecisionRouter
+from .skills import SkillMatcher
 
 __all__ = [
     "Compactor",
@@ -30,4 +31,5 @@ __all__ = [
     "JEVProvider",
     "JudgmentError",
     "JudgmentErrorCode",
+    "SkillMatcher",
 ]
