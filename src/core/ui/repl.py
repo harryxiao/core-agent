@@ -7,7 +7,8 @@ CLIBridge.connect() 落地为 Textual 交互会话循环；textual 仅此文件�
 - core 主题（terracotta accent #d97757）+ 圆角输入框（focus 高亮）；
 - 输入区/提示盒整体钉底（dock: bottom），时间线独占剩余高度（防 1fr 撑满）；
 - 工作状态行 ✻ label… (Ns)（set_interval 轮换 glyph，无内置 Spinner 组件）；
-- 回复流式逐字进 live 区、终态一次渲染为 Markdown（代码块语法高亮）；
+- 回复流式增量直接落时间线尾部同一滚动流（连续滚动输出，视口跟随），
+  终态原位替换为 Markdown（代码块语法高亮，无整屏重排）；
 - 用户输入以 ❯ 前缀行回显；底部快捷键提示盒（F1 展开）；启动欢迎横幅；
 - 任务/子任务进度走折叠块（单行提示 + 展开详情）。
 
@@ -199,11 +200,6 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
     overflow-y: auto;
     padding: 0 1;
 }
-#live {
-    height: auto;
-    padding: 0 2;
-    color: $text;
-}
 #footer {  /* 输入区+提示盒钉底：时间线独占剩余空间（内层容器默认 1fr 会撑满全屏） */
     dock: bottom;
     height: auto;
@@ -296,6 +292,7 @@ Collapsible > CollapsibleTitle:hover {
         def __init__(self) -> None:
             super().__init__()
             self._live_buf: list[str] = []  # 流式增量缓冲（终态一次落 Markdown）
+            self._stream_widget: Static | None = None  # 时间线尾部进行中行
             self._last_reply: str = ""  # 终态回复原文（Markdown 无公开源文本取口）
             self._approval_future: Any | None = None  # 挂起中的审批 Future[bool]
             self._turn_busy = False  # 本轮 worker 是否在跑（忙时新消息提示等待）
@@ -309,7 +306,6 @@ Collapsible > CollapsibleTitle:hover {
 
         def compose(self) -> ComposeResult:
             yield Vertical(id="timeline")
-            yield Static(id="live")
             yield Static(id="spinner")
             with Vertical(id="footer"):  # 输入区+提示盒钉底，时间线独占剩余空间
                 with Horizontal(id="input-box"):
@@ -320,7 +316,6 @@ Collapsible > CollapsibleTitle:hover {
         def on_mount(self) -> None:
             self.register_theme(core_theme)
             self.theme = "core"
-            self.query_one("#live", Static).display = False  # 无流式增量时收起
             self.query_one("#spinner", Static).display = False
             self.query_one("#input", Input).focus()
             self._add(
@@ -400,23 +395,27 @@ Collapsible > CollapsibleTitle:hover {
             self.query_one("#hints", Static).update(text)
 
         def _show_delta(self, delta: str) -> None:
-            """流式增量进 live 区逐字上屏（时间线不逐字追加，终态一次落 Markdown）。"""
-            live = self.query_one("#live", Static)
-            if not self._live_buf:
-                live.display = True
+            """流式增量落时间线尾部进行中行：同一滚动流连续输出，视口跟随滚动。"""
             self._live_buf.append(delta)
-            live.update("".join(self._live_buf))
+            text = "".join(self._live_buf)
+            timeline = self.query_one("#timeline", Vertical)
+            if self._stream_widget is None:
+                self._stream_widget = Static(text)
+                self._add(self._stream_widget)  # _add 已带 scroll_end
+                return
+            self._stream_widget.update(text)
+            timeline.scroll_end(animate=False)
 
         def _flush_live(self) -> None:
-            """流式文本终态一次渲染为 Markdown 落时间线，live 区复位。"""
-            live = self.query_one("#live", Static)
+            """流式终态：进行中行原位替换为 Markdown（无整屏重排），缓冲复位。"""
             if self._live_buf:
                 text = "".join(self._live_buf)
                 self._last_reply = text
+                if self._stream_widget is not None:
+                    self._stream_widget.remove()
                 self._add(Markdown(text))
+            self._stream_widget = None
             self._live_buf = []
-            live.update("")
-            live.display = False
 
         # ---- 输入分发 ----
 

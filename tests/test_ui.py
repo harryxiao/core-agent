@@ -231,7 +231,7 @@ def test_tui_message_roundtrip_stops_spinner() -> None:
 
 
 def test_tui_streams_deltas_then_flushes_once() -> None:
-    """流式 reply_delta：live 区逐字上屏，终态全文只落日志一次（不重复）。"""
+    """流式 reply_delta：增量直接落时间线尾部同一滚动流，终态原位换 Markdown 一次。"""
     from core.loop import LoopResult  # noqa: PLC0415 — 流式事件构造
 
     api = UIAPILayer(
@@ -251,7 +251,7 @@ def test_tui_streams_deltas_then_flushes_once() -> None:
 
     async def _drive() -> tuple[bool, int, str]:
         from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
-        from textual.widgets import Input, Markdown, Static  # noqa: PLC0415 — 可选依赖懒 import
+        from textual.widgets import Input, Markdown  # noqa: PLC0415 — 可选依赖懒 import
 
         async with app.run_test() as pilot:
             inp = app.query_one("#input", Input)
@@ -259,15 +259,16 @@ def test_tui_streams_deltas_then_flushes_once() -> None:
             inp.value = "hi"
             await pilot.press("enter")
             await pilot.pause()
-            live_hidden = app.query_one("#live", Static).display is False
-            md_count = len(app.query_one("#timeline", Vertical).query(Markdown))
+            timeline = app.query_one("#timeline", Vertical)
+            md_count = len(timeline.query(Markdown))
+            stream_reset = app._stream_widget is None and app._live_buf == []
             reply = str(app._last_reply)
             running = app.is_running
-        return live_hidden and running, md_count, reply
+        return running and stream_reset, md_count, reply
 
     ok, md_count, reply = asyncio.run(_drive())
     assert ok is True
-    assert md_count == 1  # 全文只渲染一次（live 流式落定，终态不重复）
+    assert md_count == 1  # 终态全文只渲染一次（流式行原位替换，不重复）
     assert reply == "你好"
 
 
