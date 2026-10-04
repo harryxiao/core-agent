@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import time
+import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -218,6 +219,8 @@ class ConfigManager:
         result = self.validate_schema(config)
         if not result.ok:
             raise ConfigurationError("; ".join(result.errors))
+        for warning in result.warnings:
+            warnings.warn(warning, stacklevel=2)  # 仅告警不阻断（账本 E18）
         self._config = config
         return config
 
@@ -241,7 +244,23 @@ class ConfigManager:
             errors.append(
                 f"非法权限模式: permission.mode={mode}（可选：{'/'.join(_PERMISSION_MODES)}）"
             )
-        return ValidationResult(ok=not errors, errors=errors)
+        return ValidationResult(
+            ok=not errors, errors=errors, warnings=self._unknown_section_warnings(config)
+        )
+
+    def _known_sections(self) -> set[str]:
+        """已知顶层段：结构化段 + ConfigSpec 声明段 + 有运行时语义的 extra 已知段。"""
+        declared = {spec.map_to.split(".", 1)[0] for spec in self._specs if "." in spec.map_to}
+        return set(_STRUCTURED_SECTIONS) | set(_KNOWN_EXTRA_SECTIONS) | declared
+
+    def _unknown_section_warnings(self, config: AppConfig) -> list[str]:
+        """未知顶层段告警（仅告警不阻断）：段名不在已知段内 → 提示拼写并说明收纳位置。"""
+        known = self._known_sections()
+        return [
+            f"未知配置段: {key}（不在已知段 {', '.join(sorted(known))} 之内；"
+            f"已收纳进 extra 且未做校验 —— 若为拼写错误请订正）"
+            for key in sorted(set(config.extra) - known)
+        ]
 
     def _resolvable(self, ref: str) -> bool:
         """密钥引用能否经 env/keychain 解析（不返回明文）。"""
@@ -390,6 +409,13 @@ class ConfigManager:
         }
         return AppConfig(llm=llm, features=features, im=im, pet=pet, judgment=judgment, extra=extra)
 
+
+# 已知顶层段口径（change `0064` / 账本 E18）：
+#   _STRUCTURED_SECTIONS —— `_build_config` 逐段解析的五个结构化段；
+#   _KNOWN_EXTRA_SECTIONS —— 寄居 `extra` 但有运行时语义的已知段（本模块消费 permission.mode）；
+#   ConfigSpec 声明段（`map_to` 前缀）在 `_known_sections` 中并入 ⇒ 新增 Spec 自动进白名单。
+_STRUCTURED_SECTIONS = frozenset({"llm", "features", "im", "pet", "judgment"})
+_KNOWN_EXTRA_SECTIONS = frozenset({"permission"})
 
 # 权限模式四档口径来源：doc/openspec/specs/permission/spec.md「权限模式」
 # （配置层不 import 能力层，故词表在此复述；变更规格四档时两处同改）

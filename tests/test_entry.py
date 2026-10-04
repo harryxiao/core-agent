@@ -191,6 +191,20 @@ def test_config_validate_invalid(tmp_path, capsys: pytest.CaptureFixture[str]) -
     assert "无效" in capsys.readouterr().err
 
 
+def test_config_validate_warns_on_unknown_section(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """E18：未知段仅告警 —— 退出码仍为 0（不阻断），告警在 stderr 可见。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    path = _write_config(tmp_path)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "llmm:\n  model: typo\n", encoding="utf-8")
+    with pytest.warns(UserWarning, match="未知配置段: llmm"):
+        code = main(["--config", path, "config", "validate"])
+    assert code == 0
+    assert "配置有效" in capsys.readouterr().out
+
+
 def test_config_show_json_masks_secret(
     monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:

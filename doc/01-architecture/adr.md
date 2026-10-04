@@ -976,7 +976,38 @@
   ④ **行为中性**：拒绝码仍 `INVALID_ARGS`；错误消息**逐字不变**——`validate_input` 把缺参列在首位，`properties` 遍历序与旧实现一致，故 `errors[0]` 恒等于旧实现早返回的那条。差别仅在于旧实现遇错型立即返回、新路径收齐全部错误后取首条（**全量列表不外泄**，`ToolError` 单错误契约不变）。
   ⑤ **规格只改一处**：`constraints` spec 增「口径单一真源」bullet + 场景「工具层与校验中间件口径一致」；`tool-use` spec 的「参数校验」是**行为要求**且行为不变 → 不写 delta（同一句话写两遍正是本变更要消灭的形态）。
   ⑥ **防复发靠测试**：结构守护（`core.tools.provider` 不再有 `_matches_type`）+ 行为等价（缺参 / 错型两条路径拒绝口径一致）。
-- **后果**：✅ 校验口径单真源，分叉风险消除；✅ 工具层对外行为零变更（消息 / 错误码 / 早返回语义）；⚠️ `tools` 包新增对 `constraints` 的 import（层级合法，见 ②）；⚠️ `Validator.parse_output` 仍零生产调用方（planner 自解析）——属账本 **E13**，本变更不并入。
+- **后果**：✅ 校验口径单真源，分叉风险消除；✅ 工具层对外行为零变更（消息 / 错误码 / 早返回语义）；⚠️ `tools` 包新增对 `constraints` 的 import（层级合法，见 ②）；⚠️ `Validator.parse_output` 仍零生产调用方（planner 自解析）——属账本 **E13**，本变更不并入。**（2026-10-05 补记：E13 已由 change `0063` 判定关闭 —— 该零调用方为**有意**：规格「输出解析失败不执行」的生产实现是**动作感知**的 `LLMPlanner._parse`（失败 → 终止 Action：工具不执行 + 原因回灌下一轮），`parse_output` 无动作语义、接进 planner 反而是降级；判定与追踪号 `TC-CONS-05` 见 `03-interfaces/constraints-interface.md` §2。）**
+
+---
+
+## ADR-0063：未知配置段仅告警（顶层段名口径 + 白名单由 ConfigSpec 派生 / 不硬拒不静默）
+
+- **状态**：已采纳（change `0064-unknown-config-section-warning`；用户 2026-10-05 裁决「仅告警」）
+- **背景**：账本 E18（E8 第 5 条转出）—— `AppConfig.extra` 收纳「五个结构化段之外的一切」
+  （`llm` / `features` / `im` / `pet` / `judgment`），于是**拼错的段名**（如 `llmm:`）被**静默**吞进去：
+  既不报「未知配置键」，也不提示拼写错误。用户实际看到的是「缺失 LLM 配置项」这类**误导性**报错
+  ——错误现象与根因相隔一层。ADR-0059 决策 ④ 已把「收紧会拒绝既有自定义段」记下，本 ADR 落定形态。
+- **决策**：
+  ① **仅告警，不硬拒**（用户裁决）：收紧为白名单硬拒会**拒绝既有自定义段**，改变既有接受行为
+  （`extra` 的契约就是「结构化段之外的一切」）；完全静默又让拼写错误无处暴露。告警二者兼顾：
+  **启动不阻断**，但错误**可见**。
+  ② **白名单由单一真源派生**：已知段 = 五个结构化段 ∪ `ConfigSpec.map_to` 前缀 ∪
+  有运行时语义的 `extra` 已知段（`permission`，本模块消费 `permission.mode`）。
+  **不另维护一份段名清单**——新增 `ConfigSpec` 自动进白名单，杜绝「清单与 Spec 漂移」这一第二真源。
+  ③ **口径只到顶层段名**：不递归校验已知段内部的未知子键。——子段校验需要逐能力 schema，
+  属各能力自己的义务（如 `permission.mode` 的枚举由本模块代持已有先例）；顶层段名正是
+  「段名拼错」这一现象的**充分**作用域，判到子键会越界成「配置全量 schema 化」。
+  ④ **告警走 stdlib `warnings`**：`validate_schema` 只**产出** `ValidationResult.warnings`（纯函数、可断言），
+  **发出**放在 `load()`（`warnings.warn(..., stacklevel=2)`）——副作用不混进校验谓词，
+  且不依赖任何日志装配，CLI / 库调用方默认都能看到（零接线）。
+  ⑤ **段不丢弃**：告警后该段仍留在 `extra`（既有行为不变），故**不破坏**任何既有多余段的消费者。
+- **后果**：✅ 拼错段名从静默变可见，且**无破坏性**（不阻断、不丢弃）；✅ 白名单单一真源，
+  不会与 `_CONFIG_SPECS` 漂移；✅ 校验谓词保持纯函数（告警只是返回值里的一项）；
+  ⚠️ 首次在 configuration 引入 `warnings`（stdlib，无新依赖）；
+  ⚠️ 段名之外的拼写（如已知段内的子键拼错，`llm.endpont:`）仍不告警 —— 属决策 ③ 的作用域边界，
+  需要时另开（要逐能力 schema）。
+- **关联**：`configuration` spec「配置校验与生效」（MODIFIED）；
+  接口 `03-interfaces/configuration-interface.md` §2.1/§2.2；模块 `02-modules/configuration.md` §5。
 
 ---
 
@@ -1037,3 +1068,4 @@
 | ADR-0060 | 03-interfaces/beast-mode-interface.md, 02-modules/beast-mode.md |
 | ADR-0061 | 03-interfaces/skills-interface.md, 02-modules/skills.md |
 | ADR-0062 | 03-interfaces/constraints-interface.md, 03-interfaces/tool-use-interface.md, 02-modules/constraints.md, 02-modules/tool-use.md |
+| ADR-0063 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md |

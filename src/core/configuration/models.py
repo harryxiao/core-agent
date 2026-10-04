@@ -84,7 +84,8 @@ class AppConfig:
 
 @dataclass(frozen=True)
 class ValidationResult:
-    """schema 校验结果。"""
+    """schema 校验结果：``errors`` 阻断生效；``warnings`` 仅提示（不阻断）。"""
 
     ok: bool
     errors: list[str] = field(default_factory=list[str])
+    warnings: list[str] = field(default_factory=list[str])

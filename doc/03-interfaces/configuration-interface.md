@@ -39,7 +39,8 @@ class PetConfig:
 @dataclass
 class ValidationResult:
     ok: bool                       # 校验是否通过
-    errors: list[str]              # 失败原因（缺失 LLM 配置、yaml 明文密钥等）
+    errors: list[str]              # 失败原因（缺失 LLM 配置、yaml 明文密钥等）—— 阻断生效
+    warnings: list[str]            # 告警（未知配置段等）—— 仅提示，不阻断（change `0064`）
 
 class ConfigExposure(str, Enum):
     CORE = "core"                  # 核心（默认暴露）
@@ -108,4 +109,13 @@ def generate_yaml_defaults(specs=None) -> dict: ...
 | `permission.mode` | 总是（缺省 `interactive`） | 仅接受权限规格四档 `read-only` / `interactive` / `auto-approve` / `high-risk-block` |
 
 口径来源：`doc/openspec/specs/configuration/spec.md`「密钥分级与安全」「配置校验与生效」；`permission.mode` 四档定义方为 `doc/openspec/specs/permission/spec.md`「权限模式」。
-**未收紧**：`extra` 的未知配置键（宽松兜底，收紧会拒绝既有自定义段）。
+### 2.2 未知配置段：仅告警（change `0064`，账本 E18）
+
+**不再静默**：顶层段名不在**已知段**之内时，`validate_schema` 返回**告警**（含段名、已知段清单与「已收纳进 `extra` 且未做校验」提示），`load()` 经 `warnings.warn` 发出，**不阻断启动**、**不丢弃**该段（仍留在 `extra`）。
+
+- **已知段** = 五个结构化段（`llm` / `features` / `im` / `pet` / `judgment`）
+  + `ConfigSpec` 声明段（由 `map_to` 前缀导出）+ 有运行时语义的 `extra` 已知段（`permission`）。
+  新增 ConfigSpec 自动进白名单（单一真源，不另维护清单）。
+- **作用域**：只判**顶层段名**，不递归校验已知段内部的未知子键。
+- **为何不硬拒**：`extra` 是承诺给扩展的宽松兜底，收紧为白名单会**拒绝既有自定义段**
+  （改变既有接受行为）；而完全静默会让拼错的段名（`llmm:`）无处暴露（用户只看到「LLM 配置缺失」）。

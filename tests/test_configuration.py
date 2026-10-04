@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import pytest
@@ -526,3 +527,58 @@ def test_permission_modes_accepted(tmp_path: Path, mode: str) -> None:
     manager = _manager(tmp_path, _VALID_YAML, cli={"permission.mode": mode})
     manager.load()
     assert manager.permission_mode() == mode
+
+
+# ---- E18：未知配置段仅告警（change 0064） ----
+
+_UNKNOWN_SECTION_YAML = _VALID_YAML + "llmm:\n  model: typo\n"
+
+
+def _section_warnings(caught: list[warnings.WarningMessage]) -> list[str]:
+    return [str(w.message) for w in caught if "未知配置段" in str(w.message)]
+
+
+def test_unknown_section_warns_but_does_not_block(tmp_path: Path) -> None:
+    """拼错的段名（llmm）→ 启动不被阻断，告警含段名，且该段保留在 extra（不静默丢弃）。"""
+    manager = _manager(tmp_path, _UNKNOWN_SECTION_YAML)
+    with pytest.warns(UserWarning, match="未知配置段: llmm"):
+        config = manager.load()
+    assert config.extra["llmm"] == {"model": "typo"}
+    result = manager.validate_schema(config)
+    assert result.ok is True  # 告警 ≠ 阻断
+    assert any("llmm" in w for w in result.warnings)
+
+
+def test_known_sections_produce_no_warning(tmp_path: Path) -> None:
+    """已知段（五个结构化段 + permission）一律不告警。"""
+    yaml = (
+        _VALID_YAML
+        + "im:\n  gateway: wecom\n  corp_id: corp\n  secret: ${IM_SECRET}\n"
+        + "pet:\n  enabled: true\n"
+        + "judgment:\n  provider: jev\n  api_key: ${JUDGMENT_API_KEY}\n"
+        + "permission:\n  mode: read-only\n"
+    )
+    manager = _manager(tmp_path, yaml, environ={"IM_SECRET": "s", "JUDGMENT_API_KEY": "j"})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        manager.load()
+    assert _section_warnings(caught) == []
+
+
+def test_unknown_key_inside_known_section_does_not_warn(tmp_path: Path) -> None:
+    """口径只到顶层段名：已知段内部的未知子键不告警（不递归校验子段）。"""
+    yaml = (
+        "llm:\n  provider: openai\n  model: gpt-4o\n"
+        "  endpoint: https://api.openai.com/v1\n  api_key: ${OPENAI_API_KEY}\n"
+        "  typo_key: 1\n"
+    )
+    manager = _manager(tmp_path, yaml)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        manager.load()
+    assert _section_warnings(caught) == []
+
+
+def test_validation_result_warnings_default_empty() -> None:
+    """既有构造面不破：`ValidationResult(ok=True)` 的 warnings 缺省为空。"""
+    assert ValidationResult(ok=True).warnings == []
