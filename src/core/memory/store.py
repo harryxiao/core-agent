@@ -166,12 +166,17 @@ class MemoryStore:
             self._vectors.pop(next(iter(self._vectors)))
 
     def _truncate(self, entries: list[MemoryEntry], budget: int) -> list[MemoryEntry]:
+        """按相关度降序保留可容纳条目，**跳过**放不下的（不掐断后续）。
+
+        首条无条件保留（``selected and``），保证预算极小时至少返回最高相关的一条；
+        其后超预算的条目只跳过自身，不阻塞更小的低相关条目。
+        """
         selected: list[MemoryEntry] = []
         used = 0
         for entry in entries:
             cost = max(1, len(entry.content) // _TOKEN_DIVISOR)
             if selected and used + cost > budget:
-                break
+                continue
             selected.append(entry)
             used += cost
         return selected

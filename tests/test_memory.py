@@ -75,6 +75,17 @@ def test_read_budget_truncation() -> None:
     assert len(results) == 1
 
 
+def test_read_truncation_skips_oversized_entry() -> None:
+    """超预算的条目应**跳过**而非掐断其后更小的条目（与 B5 同族）。"""
+    store = MemoryStore()
+    store.write("L2", _entry("e1", "L2", "a" * 40))
+    store.write("L2", _entry("e2", "L2", "b" * 4000))
+    store.write("L2", _entry("e3", "L2", "c" * 40))
+    ids = [e.id for e in store.read("", budget=40)]
+    assert "e2" not in ids, "超预算的大条目被裁剪"
+    assert set(ids) == {"e1", "e3"}, "其后更小的条目未被掐断"
+
+
 def test_hot_and_cold_retrieval(tmp_path) -> None:
     path = tmp_path / "mem.jsonl"
     store = MemoryStore(backend=FileBackend(path))
