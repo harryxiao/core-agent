@@ -78,9 +78,9 @@
 - **THEN** 通过 TaskHandoff 交接，交接上下文由 context 模块打包
 
 #### Scenario: 无匹配 Agent
-- **GIVEN** 没有子 Agent 能处理当前子任务
-- **WHEN** 路由器返回无匹配
-- **THEN** 降级到备用 Agent 或转人工审批
+- **GIVEN** 没有子 Agent 能处理当前子任务，且无可用 fallback
+- **WHEN** 路由器打分无命中
+- **THEN** 抛出 NO_AGENT_MATCH，调度器捕获并标记子任务失败
 
 ### Requirement: 断点续跑
 系统 SHALL 支持长任务挂起、恢复与取消（断点续跑）：挂起时持久化执行上下文与中间结果，恢复时从断点继续而非重头执行，取消时释放已占用资源。

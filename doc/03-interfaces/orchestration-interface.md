@@ -151,11 +151,11 @@ class TaskHandoff:
     priority: int = 0           # 子任务优先级，就绪队列内降序调度
 
 class MultiAgentRouter:
-    def match(self, task: str) -> AgentProfile | None:
-        """按任务类型匹配最合适子 Agent；无匹配返回 None。"""
+    def match(self, task: str) -> AgentProfile:
+        """按能力标签打分匹配最佳子 Agent；无命中回落 fallback，均无则抛 NO_AGENT_MATCH。"""
 
-    def handoff(self, target: str, h: TaskHandoff) -> str:
-        """交接任务；返回子任务执行 trace_id。"""
+    async def handoff(self, target: str, handoff: TaskHandoff) -> LoopResult:
+        """显式交接任务给指定 Agent，异步执行并返回完整 LoopResult（见 loop-interface.md）；无匹配抛 NO_AGENT_MATCH。"""
 ```
 
 ---
@@ -167,7 +167,7 @@ class MultiAgentRouter:
 | `INVALID_TRANSITION` | 非法状态转移 |
 | `SUBTASK_VERIFY_FAILED` | 子任务校验失败（触发回退/重规划） |
 | `DEADLOOP_DETECTED` | 检测到死循环（触发 RECOVERING） |
-| `NO_AGENT_MATCH` | 无匹配子 Agent（降级/转人工） |
+| `NO_AGENT_MATCH` | 无匹配子 Agent（抛错，调度器捕获并标记子任务失败） |
 | `WAVE_FANOUT_LIMIT` | 并行度超限（同波次分批执行，受资源上限约束） |
 | `PROGRESS_NOT_MET` | 进度未达目标（触发重试/重规划，衔接 RECOVERING） |
 | `MISSING_SUCCESS_CHECKER` | 提供了成功标准但未注入判定器（配置错误，fail-fast，转 FAILED） |
