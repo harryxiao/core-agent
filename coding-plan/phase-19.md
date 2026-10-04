@@ -20,6 +20,7 @@
 - **A6（观察窗口覆盖语义）+ E13（`parse_output` 零调用方判定）+ E19（durability 过度承诺）已于 change `0063` 关闭**（纯文档、规格中性：已知语义登记 + 「有意不接线」判定 + 过度承诺订正）；E19 的裁决 = **订正文档承认现状**（该承诺规格里从来没有，静默降级会掩盖磁盘满）。
 - **E17（pet 无后台 daemon）已于 change `0065` 关闭 —— 判定「规格未要求」**：一手核实三件事 ① 规格无 daemon / 调度线程条款（Lifecycle 只写「**每次唤醒**…同步薄壳逐次执行」，Yielding 明写让行模型是「**同步 + 锁（RLock）**」）；② 文档自述「逐次执行**不常驻**」——「后台自治调度」是文档层过度承诺（与 E19 同型）；③ `core-agent pet <verb>` 是**一次性进程**（激活 → 打印 → 退出），进程内线程**必随进程结束** ⇒ 在那里 daemon 化是**错误解法**，唯一可承载常驻驱动的宿主是 `ui serve` 长驻进程。用户裁决**规格中性收口**：接口 §5 / 模块 §4 登记「`wake()` 由**宿主**驱动、内核不自建调度线程」，零代码。
 - **E18（`extra` 未知配置段）已于 change `0064` 关闭**（ADR-0063）：用户裁决**仅告警**（WARN 不阻断，兼容既有自定义段；硬拒会改变既有接受行为）——`ValidationResult.warnings` 产出 + `load()` 发出（stdlib `warnings`，零接线）；已知段白名单**由 `_CONFIG_SPECS` 派生**（单一真源，新增 Spec 自动进白名单）；口径**只到顶层段名**（子键未知不判，属各能力 schema 义务）。
+- **E11（LLM 可靠性）已于 change `0060` + `0066` 全关闭**：① 用例侧 —— 重试/超时/降级/断流 9 例**一次全绿**，`src/` 零改动（实现本就正确，缺的是验证，change `0060`）；② **连接复用已实现**（change `0066` / ADR-0064）—— **关键判定：这是「规格要求 X 而实现没有」**（规格「模型调用可靠性」正文与场景「连接复用」逐字要求 keep-alive 复用 + 失效自动重建）⇒ **改代码向规格靠拢，不订正规格**（与 E12 同型，对比 E17/E19 的「文档过度承诺」型）。实现：`http_pool.HTTPConnectionPool` 线程本地按 origin 复用 keep-alive（无锁）+ 失效重建恰一次 + 代理/3xx 回落 `urlopen` + 非 2xx 转 `HTTPError`（既有状态码映射零改动）+ 读尽才归还；`map_http_error` 补连接层 `OSError`/`HTTPException` → `LLMNetworkError`。
 - **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A5、E2/E4/E5 全归此（A4 已随 change `0055` 关闭、E3 已随 change `0057` 关闭）。
 - **一条值得单独记的形态问题**：`cli-contract-baseline.md` 的**内置工具契约与实现已对不上账**（见 E7）——契约列的 5 个工具在代码里从未存在。
 
@@ -60,7 +61,7 @@
 | E8 | E | ~~CLI 契约基线 §11 未决项~~ | ✅ 已关闭（change `0056`）：7 条逐条定性；`im.secret`/`judgment.api_key` 校验对称化 + `permission.mode` 枚举校验（余 `extra` 未知键 → **E18**） | 低 | — |
 | E9 | E | ~~文档层其他未闭合项~~ | ✅ 已关闭（change `0061`）：`data-model.md` §4 四实体按**源码回填** + rag/mcp/git 三条替换性锚点登记为 `TC-RAG-10` / `TC-MCP-06` / `TC-GIT-11`（锚点测试本已存在，补的是追踪号）+ retrospective/ADR 日期补记；余两项（远程制品仓库、market-registry）归 **C 类**（§5 已具名） | 低 | — |
 | E10 | E | 功能开关无运行时门控 | `build_runtime` 无条件构造全部模块，`is_enabled` 仅存语义 | 低 | 定夺哪些模块可关 |
-| E11 | E | LLM 可靠性：连接复用缺失 + 无测试 | 🔶 **部分关闭（change `0060`）**：重试/超时/降级/断流**用例已补**（9 例，`src/` 零改动 —— 实现本就正确，缺的是验证）；**余**连接复用未实现（`urllib` 每请求新建连接）→ **E11②** | 低 | 无 |
+| E11 | E | LLM 可靠性：连接复用缺失 + 无测试 | ✅ **已关闭**：① 用例已补（change `0060`，9 例，`src/` 零改动 —— 缺的是验证）；② **连接复用已实现**（change `0066` / ADR-0064：`http_pool.HTTPConnectionPool` 线程内按 origin 复用 keep-alive + 失效重建，真实 socket 用例 9 例） | 低 | 无 |
 | E12 | E | ~~崩溃恢复无真实 `kill -9` 用例~~ | ✅ 已关闭（change `0062`）：真子进程 `SIGKILL` 端到端 + **修持久化非原子写入缺陷**（`write_text` 先截断 → 半写即整体丢失 → 改 tmp + `os.replace` 原子提交 / 规格 delta） | 低 | — |
 | E18 | E | ~~`extra` 未知配置键无校验~~ | ✅ 已关闭（change `0064`，ADR-0063）：用户裁决**仅告警**（WARN 不阻断）——未知顶层段名告警、段仍在 `extra`、白名单由 `ConfigSpec` 派生 | 低 | — |
 | E19 | E | ~~durability 文档承诺的「持久化故障降级」未实现~~ | ✅ 已关闭（change `0063`）：**用户裁决订正文档承认现状**——该承诺**规格里从来没有**（只在模块文档），静默降级会掩盖磁盘满；`durability.md` §5 改写为「不静默降级，上层断点续跑承接」 | 低 | — |
@@ -321,12 +322,13 @@
 - **接缝**：重试/超时/降级打桩 `_call_provider`（保留 `acompletion` 的重试循环/`wait_for`/`models` 遍历）；断流打桩 `urlopen`（让真实 `_iter_sse_payloads` 参与，且必须传**惰性生成器**——`list()` 会让异常在进 provider 前就抛，等于没测）。
 - **衍生机制**：`skip_specs` 需与 `schema` 同现方被采信（仅 `skip_specs` 报 `expected string, received undefined`）——已由临时 `0060-probe` 探针核实，记入该 change design §4。
 
-#### 🔶 ② 未闭：连接复用（保持未闭，不为未实现的行为写用例）
+#### ✅ ② 已关闭（change `0066-llm-connection-reuse`／ADR-0064）
 
-- **现状**：规格正文已声明「底层连接复用（connection reuse / keep-alive）」，实现未落地 —— `urllib.request.urlopen` 每请求新建连接。
-- **关闭需**：`http.client.HTTPConnection` 长连接或自建池 + 失效重建 + 并发所有权模型，配 ADR（**实现变更 + spec delta**）。
-- **先决定夺**：stdlib provider 是「零依赖基线」，量产通常换 `litellm`/`openai` 适配器（`runtime.py` 已按 provider 名分流）→ **自建池的收益需先论证**，故不排期。
-- **规格处理**：本变更**既未删该条以掩盖差距、也未加「待办」注记污染规格** —— 差距留在账本此处。
+- **裁决与形态**：用户 2026-10-05 裁决**实现（stdlib 零依赖）**。**关键判定：这是「规格要求 X 而实现没有」**（与 E12 同型）—— 规格「模型调用可靠性」正文已声明「底层连接复用（connection reuse / keep-alive）」，场景「连接复用」逐字要求「复用底层 connection / keep-alive 连接，减少握手开销，**连接失效时自动重建**」⇒ **改代码向规格靠拢，不订正规格、不删条款**（对比 E17/E19 的「文档过度承诺」型）。
+- **实现**：新增 `src/core/llm_provider/http_pool.py` —— `HTTPTransport` 协议 + `HTTPConnectionPool`（`http.client` + `ssl`，均 stdlib）。**线程本地按 origin 复用**（空闲连接存 `threading.local()`，无锁；provider 同步传输本就在工作线程上跑，同线程连续调用即复用）；**失效重建恰一次**（`RemoteDisconnected`/`BadStatusLine`/reset/broken pipe，且仅在「复用连接」上、且尚未收到任何响应字节 ⇒ 不重复计费副作用）；**代理与 3xx 回落 `urlopen`**（`http.client` 不读代理环境变量、不跟随重定向）；**非 2xx 转 `urllib.error.HTTPError`**（既有状态码映射零改动）；**读尽才归还**（SSE 中途停止 ⇒ 关闭丢弃）。`StdlibLLMProvider(transport=...)` 为注入接缝（ADR-0040 的 DI 边界），三条传输路径（chat/embedding/SSE）统一走 `transport.send(...)`。
+- **错误口径**：`map_http_error` 补 `(OSError, http.client.HTTPException) → LLMNetworkError`（顺序在 `URLError` 之后；否则连接池路径会把「拒绝连接」落成**不可重试**的裸 `LLMError`）。
+- **测试**：新 `tests/test_llm_provider_reuse.py`（9 例，**真实本地 `http.server` 桩**在 `setup()` 计 accept 数）：两次调用 1 条连接（规格场景的可证伪形式）/ embeddings 共用 / 按 origin 分键 / 服务端静默关连接后自动重建 / 429 与拒绝连接归一 / 3xx 与代理回落 / SSE 走同一传输层。确定性：协程跑在**单工作线程**事件循环（`set_default_executor(max_workers=1)`），不靠时序。既有 8 个 mock `urlopen` 用例平移为注入假传输（断言口径逐字不变）。四门全绿（805 passed）。
+- **规格中性**：`skip_specs: true` —— 规格无需改（本变更实现其已声明条款），差距闭合记在账本即此处。
 
 ---
 
@@ -540,7 +542,7 @@
 | 文件 | 规模 | 核实结果（原文档已按此改） | 未做项去向 |
 |---|---|---|---|
 | `phase-0.md` | 14 框 | **13 已勾**：`:28-31`、`:33-36` 验收项与 `:127-131` 架构/压测/脱敏/降级均有 `tests/` 覆盖（`test_architecture.py:233`、`test_observability`/`test_configuration`/`test_permission` 等） | `:32` 功能开关门控 → **E10** |
-| `phase-1.md` | 14 框 | **12 已勾**（`test_llm_provider` / `test_memory` / `test_tool_use` / `test_plugin_registry.py:69,83` 等） | `:30` LLM 可靠性 → **E11**（① 用例已补 change `0060`；② 连接复用未实现）；`:35` 并发压实一致 → **A8** |
+| `phase-1.md` | 14 框 | **12 已勾**（`test_llm_provider` / `test_memory` / `test_tool_use` / `test_plugin_registry.py:69,83` 等） | `:30` LLM 可靠性 → **E11 全关闭**（① 用例 change `0060`；② 连接复用 change `0066`/ADR-0064）；`:35` 并发压实一致 → **A8** |
 | `phase-2.md` | 10 框 | **7 已勾**：durability `test_durability.py:37,105`、permission `test_permission.py:50,195,232`、架构 `test_architecture.py:268`、熔断 `test_constraints.py:75`、MCP 隔离 `test_mcp.py:117,160`、时间旅行与沙箱同族用例 | `:28` constraints 中间件 → **E1 ✅ 已关闭（change `0052`）**；`:31` mcp → **B1**；`:122` 真机崩溃恢复 → **E12** |
 | `phase-2.5.md` | 6 框 | **6 全勾**（`test_installable.py:49`、`test_cli_ops.py:67`、`test_mcp.py:220`、`test_permission.py:252`；归档 `2026-09-27-0028/0029`） | — |
 | `phase-17.5.md` | 8 框 | **3 已勾**（memory 召回注入等，由 change `0038` 闭合） | 其余 5 框 → **E3/E4** |
@@ -580,7 +582,7 @@
 6. **E1 + E7 + E8**（契约与中间件）：✅ **全闭** —— E1 见 change `0052`（ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；**E7/E8 见 change `0056`（ADR-0059）**：E7 裁决「规格为准」→ 纯文档订正；E8 三处缺口修复，第 5 条转出为 E18。
 7. **E3 / E6**（规格裁决）：✅ **全闭** —— 裁决「A 全做・解除 deferred」；**E3** 见 change `0057`（ADR-0060：神通注册 + 专属路由作用域 + 按兽 loop/共享记忆注入 + CLI 走组合根）；**E6** 无需代码（context 压实启发式已由 change `0041` 规格订正为有意行为，余两项转 A7/A8）。
 8. **A7 + E6（miss 复用）**（低优先，同族）：✅ **全闭** —— **A7** 见 change `0058`（ADR-0061：排序分 = 基础分 × 历史成功率因子；预筛转出 A11）；**E6** 无需代码（见上，规格已由 change `0041` 订正）。
-9. **A8 / A9 / A11 / E5 / E9 / E13 / E15–E16 / C 类**：随需（**A11 语义兜底候选预筛**（需先有比词法更粗的排序信号，**候选预筛**）/ E15 熔断阈值不可配 / E16 `AsyncNotifier` 无 channel）。✅ **E14 已关闭**（change `0059`，ADR-0062）。✅ **E11① 已关闭**（change `0060`：可靠性用例 9 例，`src/` 零改动；**E11② 连接复用**仍开）。✅ **A6 / E13 / E19 已关闭**（change `0063`，纯文档：已知语义登记 + 有意不接线判定 + 过度承诺订正）。✅ **E18 已关闭**（change `0064`，ADR-0063：未知配置段仅告警）。✅ **E17 已关闭**（change `0065`：规格未要求 daemon，登记「唤醒由宿主驱动」）。
+9. **A8 / A9 / A11 / E5 / E9 / E13 / E15–E16 / C 类**：随需（**A11 语义兜底候选预筛**（需先有比词法更粗的排序信号，**候选预筛**）/ E15 熔断阈值不可配 / E16 `AsyncNotifier` 无 channel）。✅ **E14 已关闭**（change `0059`，ADR-0062）。✅ **E11 全关闭**（① change `0060`：可靠性用例 9 例，`src/` 零改动；② change `0066`/ADR-0064：**连接复用已实现** —— 线程本地按 origin 复用 keep-alive + 失效重建，真实 socket 用例 9 例）。✅ **A6 / E13 / E19 已关闭**（change `0063`，纯文档：已知语义登记 + 有意不接线判定 + 过度承诺订正）。✅ **E18 已关闭**（change `0064`，ADR-0063：未知配置段仅告警）。✅ **E17 已关闭**（change `0065`：规格未要求 daemon，登记「唤醒由宿主驱动」）。
    ✅ **E9 已关闭**（change `0061`：`data-model.md` 四实体回填 + rag/mcp/git 锚点登记 TC-RAG-10/TC-MCP-06/TC-GIT-11 + 两处日期补记；纯文档、规格中性）。
    ✅ **E12 已关闭**（change `0062`：真子进程 `SIGKILL` 端到端 + **修持久化非原子写入**（tmp + `os.replace`）/ 规格 delta）；另新报 **E19**（durability 文档承诺的持久化故障降级未实现）→ **已由 change `0063` 关闭**（订正模块文档承认现状）。
 10. **真机动作**：活 LLM 全回路冒烟（§8 末）。

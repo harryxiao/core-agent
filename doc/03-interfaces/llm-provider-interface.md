@@ -103,6 +103,29 @@ class StdlibLLMProvider(LLMProvider):
 
 - 配置归一化：任意 OpenAI 兼容 API Key + Base URL（含 /v1）配置即路由到对应端点。
 
+### 3.1 传输层与连接复用（change `0066`）
+
+```python
+class HTTPTransport(Protocol):
+    def send(self, request: Request, *, timeout: float) -> AbstractContextManager[Any]: ...
+
+class HTTPConnectionPool:            # 默认传输：同 origin 复用 keep-alive 连接
+    def __init__(self) -> None: ...
+
+StdlibLLMProvider(..., transport: HTTPTransport | None = None)   # 注入接缝
+```
+
+- **连接复用**（规格「模型调用可靠性」场景「连接复用」）：三次调用路径（chat / embedding / SSE）统一经
+  `transport.send(...)`；空闲连接存 `threading.local()`，**线程内按 origin 复用** —— 连续调用不再重复 TCP + TLS 握手。
+- **回落 `urlopen`**：环境配了该 scheme 的代理（`http.client` 不读代理环境变量）、或响应为 3xx（`http.client`
+  不跟随重定向）时，交回 `urlopen`，保持既有代理 / 重定向语义。
+- **失效自动重建**：复用到的连接在「发请求 / 读状态行」阶段失效（服务端空闲超时、reset、管道已断）→ 关闭后**换新连接重发一次**；
+  未收到任何响应字节才重发，故不重复计费副作用。
+- **错误口径不变**：非 2xx 转 `urllib.error.HTTPError` 抛出 ⇒ 既有状态码映射（§5）继续生效；
+  `http.client` 连接层异常（无 urllib 包装）由 `map_http_error` 归一到 `LLMNetworkError`（可重试），**不泄漏裸 `OSError`**。
+- **读尽才归还**：未读尽的响应（如 SSE 中途停止）关闭丢弃，不回池。
+- 换传输实现（连接复用策略 / 自定义代理隧道 / 测试替身）只改注入点，provider 本体零改动 —— 对齐 ADR-0040 / ADR-0064。
+
 ---
 
 ## 4. 注册与工厂（依赖注入）

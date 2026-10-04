@@ -1011,6 +1011,42 @@
 
 ---
 
+## ADR-0064：LLM 传输层连接复用（线程本地按 origin 复用 / 代理与 3xx 回落 urlopen / 失效仅重建一次）
+
+- **状态**：已采纳（change `0066-llm-connection-reuse`；用户 2026-10-05 裁决「实现（stdlib 零依赖）」）
+- **背景**：账本 E11②（`0060` 收口时记下：「`urllib` 每请求新建连接」）。规格 llm-provider
+  「模型调用可靠性」**已声明**「复用底层 connection / keep-alive 连接，减少握手开销，连接失效时自动重建」，
+  但实现里三条传输路径（chat / embedding / SSE）各自 `urllib.request.urlopen` —— **每次调用一次 TCP+TLS 握手**，
+  与规格条款**不符**（本项与 E12 同型：规格要求 X 而实现没有 ⇒ 先改代码，不订正规格）。
+  用户否决「订正规格承认现状」，裁「实现」。
+- **决策**：
+  ① **只换传输、不动协议**：新增 `llm_provider/http_pool.py`（`HTTPConnectionPool`），三条路径统一走
+  `transport.send(request, timeout=...)` 上下文管理器；`StdlibLLMProvider.__init__(transport=...)` 是注入接缝
+  （DI 对齐 ADR-0040：三方/多实现边界须有抽象 + 隔离适配 + 注入点）。请求构建、SSE 解析、错误归一化、重试/降级**一律不动**。
+  ② **线程本地所有权**：空闲连接存 `threading.local()`，**不跨线程共享** ⇒ 无锁、无归还竞争。
+  provider 的同步传输本就在工作线程上跑（`asyncio.to_thread` / `run_in_executor`），同一线程的连续调用即复用；
+  **不做跨线程池**：跨线程复用需要锁 + 借用协议 + 半开状态，复杂度与其收益（线程池规模通常为 1~2）不成比例。
+  ③ **代理回落 `urlopen`**：环境为该 scheme 配了代理时**不入池**（`http.client` 不读代理环境变量）。
+  自实现 CONNECT 隧道是另一件事（属能力增量），回落既保语义又零风险。
+  ④ **3xx 回落 `urlopen`**：`http.client` 不跟随重定向；回落保持既有「跟随重定向」行为不变。
+  ⑤ **失效只重建一次**：复用到的连接若在**发请求 / 读状态行**阶段失效
+  （`RemoteDisconnected` / `BadStatusLine` / reset / broken pipe），关掉后**换新连接重发一次**；
+  限定「尚未收到任何响应字节」才重发 ⇒ 不会重复产生计费副作用，也不会把真故障（拒绝连接）吞成重试放大。
+  ⑥ **错误口径不裂**：`map_http_error` 补 `http.client.HTTPException` / 其余 `OSError` → `LLMNetworkError`
+  （与 `URLError` 同层级、可重试）；否则连接池路径会把「拒绝连接」落成**不可重试**的裸 `LLMError`。
+  非 2xx 一律**转 `urllib.error.HTTPError`** 抛出（含 code/reason/headers），使既有状态码映射（429/401/504…）零改动继续生效。
+  ⑦ **读尽才归还**：响应体读尽的连接才回池；未读尽（如 SSE 中途停止）**关闭丢弃**，防半读流污染下一次请求。
+- **后果**：✅ 规格场景「连接复用 / 失效自动重建」由**真实 socket 用例**证明（本地桩计 accept 数：两次调用 1 条连接；服务端关连接后自动重建）；
+  ✅ RAG 索引循环、多轮对话等连续调用省去重复握手的 RTT/TLS 开销；✅ 零第三方依赖（`http.client` + `ssl` 均 stdlib）；
+  ⚠️ 新引入「连接生命周期」这一状态（空闲超时由**服务端**决定，客户端只负责失效重建）；
+  ⚠️ 复用粒度是「线程 × origin」（非「进程 × origin」）——多线程下各持一条连接，属决策 ② 的作用域边界。
+- **关联**：`llm-provider` spec「模型调用可靠性」场景「连接复用」（**未改规格**，实现向规格靠拢）；
+  代码 `src/core/llm_provider/http_pool.py` / `stdlib_provider.py`；
+  接口 `03-interfaces/llm-provider-interface.md` §3；模块 `02-modules/llm-provider.md` §3.6；
+  测试 `tests/test_llm_provider_reuse.py`、`doc/04-testing/test-cases.md`（TC-LLM-06）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1069,3 +1105,4 @@
 | ADR-0061 | 03-interfaces/skills-interface.md, 02-modules/skills.md |
 | ADR-0062 | 03-interfaces/constraints-interface.md, 03-interfaces/tool-use-interface.md, 02-modules/constraints.md, 02-modules/tool-use.md |
 | ADR-0063 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md |
+| ADR-0064 | 03-interfaces/llm-provider-interface.md, 02-modules/llm-provider.md |

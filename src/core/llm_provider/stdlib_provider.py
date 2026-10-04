@@ -4,12 +4,16 @@
 零第三方运行时依赖；底层 HTTP 异常统一经 ``map_http_error`` 归一到 ``LLMError``
 层级；调用路径内置指数退避重试、超时控制与降级切换备用模型。
 
+传输走 ``HTTPConnectionPool``（同 origin 复用 keep-alive 连接）——见 ``http_pool`` 与 ADR-0064；
+``transport`` 构造参数是该层的注入接缝（测试替身 / 换实现均不改本文件）。
+
 对应接口：doc/03-interfaces/llm-provider-interface.md §3 / §5
 """
 
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -24,6 +28,7 @@ from .errors import (
     LLMTimeoutError,
     UnknownProviderError,
 )
+from .http_pool import HTTPConnectionPool, HTTPTransport
 from .models import Embedding, LLMChunk, LLMRequest, LLMResponse, TokenUsage, ToolCall
 from .provider import LLMProvider
 
@@ -47,13 +52,17 @@ def map_http_error(exc: Exception) -> LLMError:
     """把 urllib / HTTP 传输异常归一为领域异常（不泄漏原始异常结构）。
 
     顺序关键：``HTTPError``（状态码语义）→ ``TimeoutError``（超时）→
-    ``URLError``（网络不可达）→ 兜底 ``LLMError``。
+    ``URLError``（网络不可达）→ ``http.client`` / 其余 ``OSError``（连接层）→ 兜底 ``LLMError``。
+    后两类与 ``URLError`` 同口径（``LLMNetworkError``，可重试）：连接池直连 ``http.client``，
+    其连接的拒绝 / 重置 / 状态行异常不带 urllib 包装，须在此归一到同一层级。
     """
     if isinstance(exc, urllib.error.HTTPError):
         return _HTTP_STATUS_ERRORS.get(exc.code, LLMError)(str(exc))
     if isinstance(exc, TimeoutError):
         return LLMTimeoutError(str(exc))
     if isinstance(exc, urllib.error.URLError):
+        return LLMNetworkError(str(exc))
+    if isinstance(exc, (OSError, http.client.HTTPException)):
         return LLMNetworkError(str(exc))
     return LLMError(str(exc))
 
@@ -82,6 +91,7 @@ class StdlibLLMProvider(LLMProvider):
         max_retries: int = 3,
         fallback_models: list[str] | None = None,
         audit: Callable[[str, LLMResponse], None] | None = None,
+        transport: HTTPTransport | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url
@@ -90,6 +100,9 @@ class StdlibLLMProvider(LLMProvider):
         self._max_retries = max_retries
         self._fallback = fallback_models if fallback_models is not None else []
         self._audit = audit
+        self._transport: HTTPTransport = (
+            transport if transport is not None else HTTPConnectionPool()
+        )
 
     async def acompletion(self, request: LLMRequest) -> LLMResponse:
         models = [request.model, *self._fallback]
@@ -148,7 +161,7 @@ class StdlibLLMProvider(LLMProvider):
             try:
                 body = self._build_body(request, request.model, stream=True)
                 req = self._make_request(body, "chat/completions")
-                with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                with self._transport.send(req, timeout=self._timeout) as resp:
                     for payload in _iter_sse_payloads(resp):
                         _put(self._map_chunk(json.loads(payload)))
             except Exception as exc:  # noqa: BLE001 — 断流 / 底层异常统一归一
@@ -207,13 +220,13 @@ class StdlibLLMProvider(LLMProvider):
         )
 
     def _post_json(self, body: dict[str, Any]) -> dict[str, Any]:
-        req = self._make_request(body, "chat/completions")
-        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-            return cast(dict[str, Any], json.loads(resp.read().decode("utf-8")))
+        return self._send_json(self._make_request(body, "chat/completions"))
 
     def _post_embedding(self, body: dict[str, Any]) -> dict[str, Any]:
-        req = self._make_request(body, "embeddings")
-        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+        return self._send_json(self._make_request(body, "embeddings"))
+
+    def _send_json(self, req: urllib.request.Request) -> dict[str, Any]:
+        with self._transport.send(req, timeout=self._timeout) as resp:
             return cast(dict[str, Any], json.loads(resp.read().decode("utf-8")))
 
     def _map_response(self, raw: Any, model: str) -> LLMResponse:

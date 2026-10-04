@@ -54,6 +54,13 @@ L3 Loop ──► LLMProvider（抽象接口）──► LiteLLMProvider（默�
 
 - 复用 observability 链路，标注 provider / model 与调用结果，任意一次模型调用可追溯。
 
+### 3.6 连接复用（change `0066`）
+
+- 传输走 `HTTPConnectionPool`：**同 origin 复用 keep-alive 连接**（空闲连接存 `threading.local()`，线程内复用、无锁），
+  连续调用省去重复 TCP + TLS 握手；连接失效（服务端空闲超时 / reset）时**自动重建一次**。
+- 代理环境或 3xx 重定向回落 `urlopen`（保 stdlib 语义）；未读尽的响应（如 SSE 中途停止）连接关闭丢弃，不回池。
+- 注入接缝：`StdlibLLMProvider(transport=...)`，换传输策略不改 provider（ADR-0064）。
+
 ---
 
 ## 4. 错误处理
@@ -63,7 +70,8 @@ L3 Loop ──► LLMProvider（抽象接口）──► LiteLLMProvider（默�
 | 底层超时 | 归一化为 `LLM_TIMEOUT` 领域异常 |
 | 底层限流 | 归一化为 `LLM_RATE_LIMITED`，可重试 |
 | 底层鉴权失败 | 归一化为 `LLM_AUTH_ERROR` |
-| 网络异常 | 归一化为 `LLM_NETWORK_ERROR` |
+| 网络异常 | 归一化为 `LLM_NETWORK_ERROR`（含连接池路径的 `http.client` / `OSError` 连接层异常） |
+| 连接失效（复用连接被服务端关闭） | 自动重建并重发一次，调用方无感 |
 | 未知 provider / model | 路由失败，返回 `UNKNOWN_PROVIDER` |
 | 替换实现注册 | 走同一工厂，调用方零改动 |
 
@@ -76,4 +84,4 @@ L3 Loop ──► LLMProvider（抽象接口）──► LiteLLMProvider（默�
 - 内核 loop 调用点：`doc/02-modules/loop.md`
 - 横切：`doc/02-modules/observability.md`（调用审计）
 - 测试：`doc/04-testing/test-cases.md`（LLM Provider 系列）
-- ADR：`doc/01-architecture/adr.md`（ADR-0021）
+- ADR：`doc/01-architecture/adr.md`（ADR-0021、ADR-0044、ADR-0064）

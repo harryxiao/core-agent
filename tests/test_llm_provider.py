@@ -1,16 +1,19 @@
 """llm-provider 单元测试（对齐规格场景 + M1 验收锚点）。
 
 覆盖：错误归一化（伪造 HTTP 异常 → LLMError 层级）、错误码语义、
-同步薄壳与异步等价、registry 依赖注入、异步真并发、stdlib provider 传输（mock urlopen）、
+同步薄壳与异步等价、registry 依赖注入、异步真并发、stdlib provider 传输（注入假传输；
 模型调用可靠性（重试/指数退避、超时、降级切备用模型、流式断流；change 0060 / 账本 E11①）。
 """
 
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import time
 import urllib.error
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import Any
 from unittest import mock
 
@@ -83,6 +86,9 @@ def test_map_http_error_normalizes() -> None:
     assert type(map_http_error(_http_error(500))) is LLMError
     assert isinstance(map_http_error(TimeoutError()), LLMTimeoutError)
     assert isinstance(map_http_error(urllib.error.URLError("unreachable")), LLMNetworkError)
+    # 连接池直连 http.client：连接层异常（无 urllib 包装）同口径归一为可重试的网络错误
+    assert isinstance(map_http_error(http.client.RemoteDisconnected("")), LLMNetworkError)
+    assert isinstance(map_http_error(ConnectionResetError("reset")), LLMNetworkError)
     assert type(map_http_error(ValueError("?"))) is LLMError
 
 
@@ -135,11 +141,32 @@ def test_async_true_concurrency() -> None:
     assert elapsed < _SERIAL_THRESHOLD
 
 
-# ---- StdlibLLMProvider 传输（mock urlopen，不发真实网络）----
+# ---- StdlibLLMProvider 传输（注入假传输，不发真实网络）----
+# 连接复用（change 0066）后 provider 经 ``transport`` 接缝取响应，不再直接调 urlopen；
+# 真实 socket 上的复用 / 重建见 ``tests/test_llm_provider_reuse.py``。
 
 
-def _make_provider() -> StdlibLLMProvider:
-    return StdlibLLMProvider(api_key="k", base_url="https://example.com/v1", model="m")
+class _FakeTransport:
+    """传输替身：记录请求并按序交出预置响应（替代 mock urlopen）。"""
+
+    def __init__(self, *responses: Any) -> None:
+        self._responses = list(responses)
+        self.requests: list[Any] = []
+
+    @contextmanager
+    def send(self, request: Any, *, timeout: float) -> Generator[Any, None, None]:
+        self.requests.append(request)
+        yield self._responses[0] if len(self._responses) == 1 else self._responses.pop(0)
+
+    @property
+    def last(self) -> Any:
+        return self.requests[-1]
+
+
+def _make_provider(transport: Any = None) -> StdlibLLMProvider:
+    return StdlibLLMProvider(
+        api_key="k", base_url="https://example.com/v1", model="m", transport=transport
+    )
 
 
 def _fake_json_response(payload: dict) -> mock.MagicMock:
@@ -154,22 +181,19 @@ async def _collect_stream(provider: StdlibLLMProvider, request: LLMRequest) -> l
 
 
 def test_acompletion_posts_openai_shape() -> None:
-    provider = _make_provider()
     payload = {
         "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 2, "completion_tokens": 3},
     }
-    resp = _fake_json_response(payload)
-    with mock.patch(
-        "core.llm_provider.stdlib_provider.urllib.request.urlopen", return_value=resp
-    ) as urlopen:
-        result = asyncio.run(
-            provider.acompletion(LLMRequest(messages=[Message("user", "hi")], model="m"))
-        )
+    transport = _FakeTransport(_fake_json_response(payload))
+    provider = _make_provider(transport)
+    result = asyncio.run(
+        provider.acompletion(LLMRequest(messages=[Message("user", "hi")], model="m"))
+    )
 
     assert result.content == "hi"
     assert result.usage == TokenUsage(prompt_tokens=2, completion_tokens=3)
-    req = urlopen.call_args[0][0]
+    req = transport.last
     assert req.full_url == "https://example.com/v1/chat/completions"
     body = json.loads(req.data.decode("utf-8"))
     assert body["model"] == "m"
@@ -178,42 +202,34 @@ def test_acompletion_posts_openai_shape() -> None:
 
 
 def test_reasoning_effort_passthrough() -> None:
-    provider = _make_provider()
-    resp = _fake_json_response(
-        {"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]}
+    transport = _FakeTransport(
+        _fake_json_response({"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]})
     )
-    with mock.patch(
-        "core.llm_provider.stdlib_provider.urllib.request.urlopen", return_value=resp
-    ) as urlopen:
-        asyncio.run(
-            provider.acompletion(
-                LLMRequest(messages=[Message("user", "hi")], model="m", reasoning_effort="low")
-            )
+    provider = _make_provider(transport)
+    asyncio.run(
+        provider.acompletion(
+            LLMRequest(messages=[Message("user", "hi")], model="m", reasoning_effort="low")
         )
-    body = json.loads(urlopen.call_args[0][0].data.decode("utf-8"))
+    )
+    body = json.loads(transport.last.data.decode("utf-8"))
     assert body["reasoning_effort"] == "low"
 
 
 def test_astream_parses_sse() -> None:
-    provider = _make_provider()
     lines = [
         b'data: {"choices":[{"delta":{"content":"he"}}]}\n',
         b"\n",
         b'data: {"choices":[{"delta":{"content":"llo"}}]}\n',
         b"data: [DONE]\n",
     ]
-    resp = mock.MagicMock()
-    resp.__enter__.return_value = resp
-    resp.__iter__.return_value = iter(lines)
-    with mock.patch(
-        "core.llm_provider.stdlib_provider.urllib.request.urlopen", return_value=resp
-    ) as urlopen:
-        chunks = asyncio.run(
-            _collect_stream(provider, LLMRequest(messages=[Message("user", "hi")], model="m"))
-        )
+    transport = _FakeTransport(_stream_response(lines))
+    provider = _make_provider(transport)
+    chunks = asyncio.run(
+        _collect_stream(provider, LLMRequest(messages=[Message("user", "hi")], model="m"))
+    )
 
     assert chunks == ["he", "llo"]
-    body = json.loads(urlopen.call_args[0][0].data.decode("utf-8"))
+    body = json.loads(transport.last.data.decode("utf-8"))
     assert body["stream"] is True
 
 
@@ -238,11 +254,11 @@ def test_response_maps_native_tool_calls() -> None:
         ],
         "usage": {"prompt_tokens": 1, "completion_tokens": 2},
     }
-    resp = _fake_json_response(payload)
-    with mock.patch("core.llm_provider.stdlib_provider.urllib.request.urlopen", return_value=resp):
-        result = asyncio.run(
-            provider.acompletion(LLMRequest(messages=[Message("user", "hi")], model="m"))
-        )
+    transport = _FakeTransport(_fake_json_response(payload))
+    provider = _make_provider(transport)
+    result = asyncio.run(
+        provider.acompletion(LLMRequest(messages=[Message("user", "hi")], model="m"))
+    )
     assert result.tool_calls == [
         ToolCall(tool_id="tools.echo", arguments='{"text": "hi"}', call_id="call_1", index=0)
     ]
@@ -260,20 +276,17 @@ def test_astream_maps_tool_call_fragments() -> None:
         b'"function":{"arguments":" \\"hi\\"}"}}]}}]}\n',
         b"data: [DONE]\n",
     ]
-    resp = mock.MagicMock()
-    resp.__enter__.return_value = resp
-    resp.__iter__.return_value = iter(lines)
-    with mock.patch("core.llm_provider.stdlib_provider.urllib.request.urlopen", return_value=resp):
+    provider = _make_provider(_FakeTransport(_stream_response(lines)))
 
-        async def _collect_chunks() -> list[LLMChunk]:
-            return [
-                chunk
-                async for chunk in provider.astream(
-                    LLMRequest(messages=[Message("user", "hi")], model="m")
-                )
-            ]
+    async def _collect_chunks() -> list[LLMChunk]:
+        return [
+            chunk
+            async for chunk in provider.astream(
+                LLMRequest(messages=[Message("user", "hi")], model="m")
+            )
+        ]
 
-        chunks = asyncio.run(_collect_chunks())
+    chunks = asyncio.run(_collect_chunks())
     fragments = [c for c in chunks if c.tool_calls]
     assert [c.content for c in chunks if c.content] == []
     assert fragments[0].tool_calls == [
@@ -284,15 +297,12 @@ def test_astream_maps_tool_call_fragments() -> None:
 
 
 def test_aembedding_maps() -> None:
-    provider = _make_provider()
-    resp = _fake_json_response({"data": [{"embedding": [0.1, 0.2]}]})
-    with mock.patch(
-        "core.llm_provider.stdlib_provider.urllib.request.urlopen", return_value=resp
-    ) as urlopen:
-        embeddings = asyncio.run(provider.aembedding(["x"]))
+    transport = _FakeTransport(_fake_json_response({"data": [{"embedding": [0.1, 0.2]}]}))
+    provider = _make_provider(transport)
+    embeddings = asyncio.run(provider.aembedding(["x"]))
 
     assert embeddings[0].vector == [0.1, 0.2]
-    assert urlopen.call_args[0][0].full_url == "https://example.com/v1/embeddings"
+    assert transport.last.full_url == "https://example.com/v1/embeddings"
 
 
 # ---- 模型调用可靠性（change 0060 / 账本 E11①）----
@@ -434,40 +444,32 @@ def _stream_response(lines: Any) -> mock.MagicMock:
 
 def test_stream_without_done_marker_returns_partial() -> None:
     """断流（无 [DONE] 提前结束）：已接收内容部分返回，调用方不挂起。"""
-    provider = _make_provider()
     lines = [
         b'data: {"choices":[{"delta":{"content":"a"}}]}\n',
         b'data: {"choices":[{"delta":{"content":"b"}}]}\n',
     ]
-    with mock.patch(
-        "core.llm_provider.stdlib_provider.urllib.request.urlopen",
-        return_value=_stream_response(lines),
-    ):
-        chunks = asyncio.run(
-            _collect_stream(provider, LLMRequest(messages=[Message("user", "hi")], model="m"))
-        )
+    provider = _make_provider(_FakeTransport(_stream_response(lines)))
+    chunks = asyncio.run(
+        _collect_stream(provider, LLMRequest(messages=[Message("user", "hi")], model="m"))
+    )
     assert chunks == ["a", "b"]
 
 
 def test_stream_mid_transport_error_surfaces_partial_then_raises() -> None:
     """断流（传输中途异常）：先返回已收内容，再抛归一化错误，绝不无限挂起。"""
-    provider = _make_provider()
 
     def _lines() -> Any:
         yield b'data: {"choices":[{"delta":{"content":"a"}}]}\n'
         raise urllib.error.URLError("连接被切断")
 
-    with mock.patch(
-        "core.llm_provider.stdlib_provider.urllib.request.urlopen",
-        return_value=_stream_response(_lines()),
-    ):
-        got: list[str] = []
+    provider = _make_provider(_FakeTransport(_stream_response(_lines())))
+    got: list[str] = []
 
-        async def _run() -> None:
-            request = LLMRequest(messages=[Message("user", "hi")], model="m")
-            async for chunk in provider.astream(request):
-                got.append(chunk.content)  # noqa: PERF401 — 断流时须保留已收部分，推导式会丢
+    async def _run() -> None:
+        request = LLMRequest(messages=[Message("user", "hi")], model="m")
+        async for chunk in provider.astream(request):
+            got.append(chunk.content)  # noqa: PERF401 — 断流时须保留已收部分，推导式会丢
 
-        with pytest.raises(LLMNetworkError):
-            asyncio.run(_run())
+    with pytest.raises(LLMNetworkError):
+        asyncio.run(_run())
     assert got == ["a"]
