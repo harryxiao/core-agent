@@ -37,6 +37,8 @@ PetMode（后台自治循环扩展）
 
 - 宠物会话低优先级运行：主循环 busy 时 `suspend()` 让行，复用编排层任务状态机 `SUSPENDED`；异常退避为 `BACKOFF` 故障隔离。
 - 周期触发每次唤醒复用 `Loop.run()`，逐次执行不常驻；`dispatch(task)` 派发时主循环 busy 则让行，不抢锁。
+  **唤醒由宿主驱动**（内核只提供同步薄壳 `wake()`，不自建调度线程 —— change `0065`，账本 E17 关闭）：
+  规格无 daemon 条款（让行模型为「同步 + 锁」），且 `pet <verb>` 是一次性进程，进程内线程必随进程结束。
 
 ### 3.3 偏好追踪
 
@@ -66,6 +68,8 @@ PetMode（后台自治循环扩展）
 ```
 
 - 任务执行、偏好沉淀、反馈惊喜都回到既有 loop/memory 闭环，pet 只做"低优先级编排扩展"，不另起炉灶。
+- 闭环的**驱动者是宿主**：「每次唤醒」这一环由宿主入口（或长驻宿主）按自身周期调用 `wake()`，内核只保证
+  单次唤醒是同步薄壳、不常驻、可让行（change `0065` 登记为已知语义，非缺失）。
 - **生产装配**（change `0053`）：pet 依赖由组合根 `build_runtime` 组装 —— 一份 `Explorer`/`SafetyBounds`/`AsyncNotifier`
   + `PetManager`（落盘 `$CORE_STATE_DIR/pets.json`）+ `PetActivator`（注入 runtime 的 loop / memory）；
   `Runtime.pet_manager`/`pet_activator` 供 `entry._pet`（CLI）与 `UIAPILayer.activate_pet`（WebUI）共用，
