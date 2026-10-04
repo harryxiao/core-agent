@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 import pytest
 
+import core.tools.provider as provider_module
+from core.constraints import Validator
 from core.plugin_registry import CoeffectResolver, SecretRef
 from core.tools import (
     GateDecision,
@@ -515,3 +517,37 @@ def test_confirm_gate_fail_closed_without_approver() -> None:
     result = provider.invoke("tools.web_fetch", {"url": "https://a.example"}, trace_id="t")
     assert result.ok is False
     assert result.error is not None and result.error.code == ToolErrorCode.IRREVERSIBLE_BLOCKED
+
+
+# ---- 校验口径单一真源（change 0059 / 账本 E14） ----
+
+
+def test_type_matcher_has_single_implementation() -> None:
+    """校验原语只有一份实现：工具层不得再持有 `_matches_type` 副本。"""
+    assert not hasattr(provider_module, "_matches_type")
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_message"),
+    [
+        ({}, "缺少必需参数: ['text']"),
+        ({"text": 1}, "参数 text 类型不符，期望 string"),
+    ],
+)
+def test_tool_layer_and_validator_agree_on_rejection(args, expected_message) -> None:
+    """同一非法调用：工具层调用前校验与校验中间件给出同一口径的拒绝。"""
+    provider = _provider()
+    provider.register(_echo_tool())
+    result = provider.invoke("test.echo", args, trace_id="t")
+    assert result.error is not None and result.error.message == expected_message
+
+    errors = Validator().validate_input("test.echo", args, _ECHO_SCHEMA)
+    assert errors and errors[0] == expected_message
+
+
+def test_tool_layer_and_validator_both_accept_valid_args() -> None:
+    """合法调用两条路径都通过（委托不引入新拒绝）。"""
+    provider = _provider()
+    provider.register(_echo_tool())
+    assert provider.invoke("test.echo", {"text": "hi"}, trace_id="t").ok is True
+    assert Validator().validate_input("test.echo", {"text": "hi"}, _ECHO_SCHEMA) == []

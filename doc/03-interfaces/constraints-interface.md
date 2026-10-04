@@ -30,6 +30,10 @@ class Validator(Middleware):
         """把自由文本解析为结构化指令；失败抛 OutputParseError。"""
 ```
 
+**口径单一真源（change `0059`）**：`validate_input` 是「调用前 schema 校验（必填 / 类型）」
+**唯一实现**；工具层 `ToolProvider` 的调用前校验**委托**之（`tools → constraints`，与
+`loop → constraints` 同型），不得另实现副本。`parse_output` 仍无生产调用方（planner 自解析，账本 E13）。
+
 ---
 
 ## 3. CircuitBreaker 接口
@@ -99,5 +103,6 @@ class Rollback(Middleware):
 
 - 模块：`02-modules/constraints.md`
 - 生产接线（loop 侧适配层，按工具熔断）：`src/core/loop/constraints_adapter.py`（`ConstraintsChain`）
+- 生产接线（工具层校验口径委托）：`src/core/tools/provider.py`（`_validate_args` → `Validator.validate_input`）
 - 测试：`tests/test_constraints_wiring.py`
 - 规格：`openspec/specs/constraints/spec.md`

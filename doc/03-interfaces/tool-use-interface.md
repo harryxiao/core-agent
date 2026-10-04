@@ -37,6 +37,9 @@ class ToolProvider:
         已批准、跳过重复询问）；无 approver 时 fail-closed 返回 IRREVERSIBLE_BLOCKED。"""
 ```
 
+调用前 schema 校验（必填 / 类型）**口径单一真源**为 `constraints.Validator.validate_input`，
+`ToolProvider` 委托之、不另实现副本（change `0059`；拒绝码 `INVALID_ARGS` 与错误消息不变）。
+
 `ToolResult`：
 
 ```python
@@ -110,4 +113,5 @@ class SafetyGate:
 
 - 模块：`02-modules/tool-use.md`
 - 插件契约：`plugin-registry-interface.md`
+- 校验口径（委托）：`constraints-interface.md` §2（`Validator.validate_input`）
 - 规格：`openspec/specs/tool-use/spec.md`

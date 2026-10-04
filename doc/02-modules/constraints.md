@@ -38,6 +38,9 @@ MiddlewareChain（横切，洋葱模型）
 - **输入校验**：工具调用前校验参数 schema、coeffect 权限、类型约束。
 - **输出校验**：把模型自由文本输出解析为结构化指令；解析失败则重试或请求修正，**绝不带病执行**。
 - 非法调用返回结构化错误（对齐 `tool-use` 的错误码）。
+- **口径单一真源（change `0059`）**：调用前的 schema 校验（必填 / 类型）唯一实现为
+  `Validator.validate_input`；工具层 `ToolProvider._validate_args` **委托**之（不另实现副本），
+  两条路径的拒绝口径一致。
 
 ### 3.2 异常容错中间件
 
@@ -68,7 +71,7 @@ MiddlewareChain（横切，洋葱模型）
 **实际接线（生产，change 0052 / ADR-0055）**：loop 只落地两个接缝——
 ① **动作前链**（loop `middlewares`）：`CircuitBreaker`（**按 `tool_id` 隔离**）的 `before` 命中 OPEN
 即转「终止 Action」短路本轮；② **结果侧观察者**（loop `action_observers`）：动作完成后回灌 `record_result`
-（**只计执行类失败**，策略性拒绝不计入）。校验由工具层 `ToolProvider._validate_args` 承担、上下文压缩由
+（**只计执行类失败**，策略性拒绝不计入）。校验由工具层 `ToolProvider._validate_args` **委托本模块 `Validator`** 承担（change `0059`）、上下文压缩由
 `core.context.Compactor` 承担（语义等价/同构，均在本模块之外）；`RetryPolicy` 与 `Fallback` 为库能力、
 **生产未接线**（副作用幂等风险 / 无生产 `fallback_fn`）。完整洋葱（`Pipeline.execute` 的逆序 `after`）
 为可插拔能力，生产接缝按需使用；适配层 `src/core/loop/constraints_adapter.py`。

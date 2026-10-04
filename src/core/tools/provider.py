@@ -1,8 +1,9 @@
 """工具提供者（tool-use 核心）。
 
-统一调用入口（invoke / ainvoke 同构）：schema 参数校验 → coeffect 解析
-（缺失拒绝）→ 确认门（不可逆/高风险阻止）→ 执行（超时保护）→ 写类工具
-效应记录（可逆撤销）；回滚委托 :class:`EffectTracker` 按 trace 逆序撤销。
+统一调用入口（invoke / ainvoke 同构）：schema 参数校验（口径委托
+:class:`~core.constraints.Validator`，单一真源）→ coeffect 解析（缺失拒绝）→
+确认门（不可逆/高风险阻止）→ 执行（超时保护）→ 写类工具效应记录（可逆撤销）；
+回滚委托 :class:`EffectTracker` 按 trace 逆序撤销。
 
 对应接口：doc/03-interfaces/tool-use-interface.md §2
 """
@@ -15,6 +16,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
+from core.constraints import Validator
 from core.plugin_registry import (
     CoeffectMissing,
     CoeffectResolver,
@@ -30,23 +32,6 @@ from .tool import Tool
 
 # 审批回调：确认门判 confirm 时询问人工（tool_id, args, reason）→ 是否放行。
 Approver = Callable[[str, dict[str, Any], str], Awaitable[bool]]
-
-
-def _matches_type(value: Any, expected: str) -> bool:  # noqa: PLR0911
-    """按 JSON Schema 类型标签校验单个参数值。"""
-    if expected == "string":
-        return isinstance(value, str)
-    if expected == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
-    if expected == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
-    if expected == "boolean":
-        return isinstance(value, bool)
-    if expected == "array":
-        return isinstance(value, list)
-    if expected == "object":
-        return isinstance(value, dict)
-    return True  # 未识别的类型标签不校验
 
 
 class ToolProvider:
@@ -170,17 +155,10 @@ class ToolProvider:
     # ---- 内部辅助 ----
 
     def _validate_args(self, tool: Tool, args: dict[str, Any]) -> ToolError | None:
-        schema = tool.definition.schema
-        missing = [k for k in schema.get("required", []) if k not in args]
-        if missing:
-            return ToolError(ToolErrorCode.INVALID_ARGS, f"缺少必需参数: {missing}")
-        for key, spec in schema.get("properties", {}).items():
-            if key not in args:
-                continue
-            expected = spec.get("type")
-            if expected is None or _matches_type(args[key], expected):
-                continue
-            return ToolError(ToolErrorCode.INVALID_ARGS, f"参数 {key} 类型不符，期望 {expected}")
+        """调用前 schema 校验：口径委托 constraints.Validator（单一真源，本层不另实现副本）。"""
+        errors = Validator().validate_input(tool.definition.tool_id, args, tool.definition.schema)
+        if errors:
+            return ToolError(ToolErrorCode.INVALID_ARGS, errors[0])
         return None
 
     async def _call(self, tool: Tool, args: dict[str, Any]) -> Any:

@@ -78,6 +78,9 @@ Provider.active_tools() -> [ToolDef...]   # 供 loop 的 Reason 阶段注入
 Provider.invoke(tool_id, args) -> Result  # 统一调用入口（含效应追踪 + 校验 + 确认门）
 ```
 
+调用前 schema 校验**不在此层实现**：口径唯一真源为 `constraints.Validator.validate_input`，
+`ToolProvider` **委托**之（`tools → constraints`，与 `loop → constraints` 同型；change `0059`）。
+
 ---
 
 ## 5. 错误处理

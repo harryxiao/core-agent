@@ -965,6 +965,21 @@
 
 ---
 
+## ADR-0062：校验口径单一真源（工具层委托 constraints Validator / 行为中性）
+
+- **状态**：已采纳（change 0059）
+- **背景**：账本 E14 —— 「调用前 schema 校验」有**两份实现**：`tools/provider.py:_matches_type` 与 `constraints/validator.py:_matches_type` **逐字节相同**，`ToolProvider._validate_args` 与 `Validator.validate_input` **语义逐行等价**（同 `required` 早返回、同 `properties` 遍历、同错误消息模板）。这是 E1 走查的残留：E1 订正「校验空转」后确认**校验实由工具层承担**，而 constraints 的 `Validator` 是**同一口径的第二份实现**（其 `before` 从未接进 loop 链，见 ADR-0055）。两处真源 ⇒ 任何一侧单独演化都会让「工具层拒绝」与「校验中间件拒绝」**静默分叉**。
+- **决策**：
+  ① **真源留在 `constraints`**：该义务（「工具调用前校验输入 schema」）在 constraints spec 中已写成自己的 Requirement，故口径归属 `Validator.validate_input`。
+  ② **方向 `tools → constraints`**（一手核验）：`BASE_MODULES` 不含 `tools`；phase1 禁集只有 `tools → {memory, llm_provider}`；phase2 禁集只有 `constraints → {loop, skills, orchestration}`；且 `constraints` 全包不 import `tools`（无环）。与 ADR-0055 的 `loop → constraints` **同型**：横切能力被使用方 import。反方向会污染横切层对 L1 的依赖，否决。
+  ③ **复用既有公开 API**：`Validator.validate_input(tool, args, schema) -> list[str]`（`Validator` 为无状态 Protocol 实现）；不新造模块级校验函数（YAGNI）。provider 保留 `_validate_args` 方法壳作适配器（`list[str]` → `ToolError`）。
+  ④ **行为中性**：拒绝码仍 `INVALID_ARGS`；错误消息**逐字不变**——`validate_input` 把缺参列在首位，`properties` 遍历序与旧实现一致，故 `errors[0]` 恒等于旧实现早返回的那条。差别仅在于旧实现遇错型立即返回、新路径收齐全部错误后取首条（**全量列表不外泄**，`ToolError` 单错误契约不变）。
+  ⑤ **规格只改一处**：`constraints` spec 增「口径单一真源」bullet + 场景「工具层与校验中间件口径一致」；`tool-use` spec 的「参数校验」是**行为要求**且行为不变 → 不写 delta（同一句话写两遍正是本变更要消灭的形态）。
+  ⑥ **防复发靠测试**：结构守护（`core.tools.provider` 不再有 `_matches_type`）+ 行为等价（缺参 / 错型两条路径拒绝口径一致）。
+- **后果**：✅ 校验口径单真源，分叉风险消除；✅ 工具层对外行为零变更（消息 / 错误码 / 早返回语义）；⚠️ `tools` 包新增对 `constraints` 的 import（层级合法，见 ②）；⚠️ `Validator.parse_output` 仍零生产调用方（planner 自解析）——属账本 **E13**，本变更不并入。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1021,3 +1036,4 @@
 | ADR-0059 | 03-interfaces/configuration-interface.md |
 | ADR-0060 | 03-interfaces/beast-mode-interface.md, 02-modules/beast-mode.md |
 | ADR-0061 | 03-interfaces/skills-interface.md, 02-modules/skills.md |
+| ADR-0062 | 03-interfaces/constraints-interface.md, 03-interfaces/tool-use-interface.md, 02-modules/constraints.md, 02-modules/tool-use.md |

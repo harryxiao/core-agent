@@ -61,7 +61,7 @@
 | E12 | E | 崩溃恢复无真实 `kill -9` 用例 | 仅内存 store 模拟的 resume 幂等单测，无子进程重启端到端 | 低 | 无 |
 | E18 | E | `extra` 未知配置键无校验 | 拼错的段名静默吞进 `extra`，不报「未知配置键」（E8 第 5 条转出，change `0056` 裁决未收紧） | 低 | 定夺「仅告警」vs「硬拒」 |
 | E13 | E | `Validator.parse_output` 零生产调用方 | `LLMPlanner._parse` 自解析（`json.loads` + `_PARSE_FAILED`），未走 constraints 解析中间件 | 低 | 无（随需） |
-| E14 | E | 校验码重复 | `ToolProvider._validate_args` ↔ `constraints.Validator.validate_input` 语义等价（`_matches_type` 双拷贝） | 低 | 工具层委托 Validator（`tools → constraints` 合法） |
+| E14 | E | ~~校验码重复~~ | ✅ 已关闭（change `0059`）：`_matches_type` 双拷贝删除，工具层调用前校验**委托** `Validator.validate_input`（单一真源，行为中性 / ADR-0062） | 低 | — |
 | E15 | E | 熔断阈值/冷却不可配 | 适配层用类默认（5 / 30s），`configuration/` 无 constraints 段 | 低 | E10 配置门控 |
 | E16 | E | `AsyncNotifier` 无 channel | pet 通知仅入队，`flush()` 投递未接；IM 通道（`im`）为依赖 | 低 | IM 通知通道 |
 | E17 | E | pet 无后台 daemon | 宠物仍显式 `wake()`，无自建调度线程 | 低 | 无（daemon 化属另一变更） |
@@ -302,6 +302,26 @@
 
 ---
 
+### E14 校验码重复 — ✅ 已关闭（change `0059`，ADR-0062）
+
+- **现象**：同一套「schema / 类型 / 必填」校验有两份实现——`tools/provider.py:_matches_type` 与
+  `constraints/validator.py:_matches_type` **逐字节相同**；`ToolProvider._validate_args` 与
+  `Validator.validate_input` **语义逐行等价**（同 `required` 早返回、同 `properties` 遍历、同消息模板）。
+  这是 E1 走查的残留：E1 订正「校验空转」后确认校验实由**工具层**承担，而 `Validator` 是同一口径的
+  **第二份实现**（其 `before` 从未接进 loop 链，ADR-0055「有意未接」）。
+- **关闭动作（已落地）**：真源留 `constraints`（该义务在 constraints spec 中即其 Requirement）→
+  `ToolProvider._validate_args` 改为委托 `Validator().validate_input(tool_id, args, schema)`，
+  删除 provider 内 `_matches_type` 副本。**行为中性**：拒绝码 `INVALID_ARGS` 与两条错误消息逐字不变
+  （`validate_input` 把缺参列首位、`properties` 序一致 ⇒ `errors[0]` 恒等于旧实现早返回那条）。
+- **方向核验（一手）**：`tools → constraints` 合法——`tests/test_architecture.py` 的 `BASE_MODULES`
+  不含 `tools`；phase1 禁集只有 `tools → {memory, llm_provider}`；phase2 禁集只有
+  `constraints → {loop, skills, orchestration}`；`constraints` 全包不 import `tools`（无环）。
+  与 change `0052` 的 `loop → constraints` 同型（横切能力被使用方 import）。
+- **验证**：`tests/test_tool_use.py` 增结构守护（`core.tools.provider` 不再有 `_matches_type`）
+  + 行为等价（缺参 / 错型两条路径拒绝口径一致）+ 合法参数两条路径皆通过；四门全绿（780 passed）。
+- **明确不做**：`Validator.parse_output`（planner 自解析、零调用方 → **E13**）；不改 `tool-use` 规格
+  （行为中性，口径只在 constraints 侧记一次）。
+
 ### E18 `extra` 未知配置键无校验（E8 第 5 条转出）
 
 - **现象**：`AppConfig.extra`（`models.py:82`）收纳「五类结构化段之外的一切」，拼错的段名（如 `llmm:`）被静默吞入，不报「未知配置键」；`permission.mode` 亦寄居其中。
@@ -436,7 +456,7 @@
 6. **E1 + E7 + E8**（契约与中间件）：✅ **全闭** —— E1 见 change `0052`（ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；**E7/E8 见 change `0056`（ADR-0059）**：E7 裁决「规格为准」→ 纯文档订正；E8 三处缺口修复，第 5 条转出为 E18。
 7. **E3 / E6**（规格裁决）：✅ **全闭** —— 裁决「A 全做・解除 deferred」；**E3** 见 change `0057`（ADR-0060：神通注册 + 专属路由作用域 + 按兽 loop/共享记忆注入 + CLI 走组合根）；**E6** 无需代码（context 压实启发式已由 change `0041` 规格订正为有意行为，余两项转 A7/A8）。
 8. **A7 + E6（miss 复用）**（低优先，同族）：✅ **全闭** —— **A7** 见 change `0058`（ADR-0061：排序分 = 基础分 × 历史成功率因子；预筛转出 A11）；**E6** 无需代码（见上，规格已由 change `0041` 订正）。
-9. **A6 / A8 / A9 / A11 / E5 / E9 / E13–E18 / C 类**：随需（**A11 语义兜底候选预筛**（需先有比词法更粗的排序信号）/ E13 `Validator.parse_output` 零调用方 / E14 校验码重复 / E15 熔断阈值不可配 / E16 `AsyncNotifier` 无 channel / E17 pet 无后台 daemon / **E18 `extra` 未知键校验**）。
+9. **A6 / A8 / A9 / A11 / E5 / E9 / E13 / E15–E18 / C 类**：随需（**A11 语义兜底候选预筛**（需先有比词法更粗的排序信号）/ E13 `Validator.parse_output` 零调用方 / E15 熔断阈值不可配 / E16 `AsyncNotifier` 无 channel / E17 pet 无后台 daemon / **E18 `extra` 未知键校验**）。✅ **E14 已关闭**（change `0059`，ADR-0062）。
 10. **真机动作**：活 LLM 全回路冒烟（§8 末）。
 
 ---
