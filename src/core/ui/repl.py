@@ -28,6 +28,7 @@ from .models import Event
 _ACCENT = "#d97757"  # core 主题 accent（Claude CLI terracotta）
 _SPIN_GLYPHS = ["✻", "·", "•", "∘", "○"]  # 工作状态行轮换符号
 _MS_PER_SECOND = 1000  # 耗时人类可读换算
+_TAIL_SPLIT = 2000  # 流式尾段字符阈值：超过/行边界即固化（每 delta 重 wrap 有界）
 
 
 async def repl_loop(
@@ -291,8 +292,10 @@ Collapsible > CollapsibleTitle:hover {
 
         def __init__(self) -> None:
             super().__init__()
-            self._live_buf: list[str] = []  # 流式增量缓冲（终态一次落 Markdown）
-            self._stream_widget: Static | None = None  # 时间线尾部进行中行
+            self._live_buf: list[str] = []  # 流式全文缓冲（终态一次落 Markdown）
+            self._stream_blocks: list[Static] = []  # 已固化流式块（append-only 不再重渲染）
+            self._tail_buf: list[str] = []  # 进行中尾段增量（每 delta 热更新）
+            self._tail_widget: Static | None = None  # 尾段渲染块
             self._last_reply: str = ""  # 终态回复原文（Markdown 无公开源文本取口）
             self._approval_future: Any | None = None  # 挂起中的审批 Future[bool]
             self._turn_busy = False  # 本轮 worker 是否在跑（忙时新消息提示等待）
@@ -395,26 +398,52 @@ Collapsible > CollapsibleTitle:hover {
             self.query_one("#hints", Static).update(text)
 
         def _show_delta(self, delta: str) -> None:
-            """流式增量落时间线尾部进行中行：同一滚动流连续输出，视口跟随滚动。"""
+            """流式增量落时间线同一滚动流：尾段热更新（有界 wrap），
+            行边界/超阈值时固化为 append-only 块，超长输出不卡顿不抖动。"""
             self._live_buf.append(delta)
-            text = "".join(self._live_buf)
-            timeline = self.query_one("#timeline", Vertical)
-            if self._stream_widget is None:
-                self._stream_widget = Static(text)
-                self._add(self._stream_widget)  # _add 已带 scroll_end
+            self._tail_buf.append(delta)
+            text = "".join(self._tail_buf)
+            if len(text) >= _TAIL_SPLIT or text.endswith("\n"):
+                self._freeze_tail(text)
                 return
-            self._stream_widget.update(text)
-            timeline.scroll_end(animate=False)
+            self._touch_tail(text)
+
+        def _touch_tail(self, text: str) -> None:
+            """尾段热更新：仅重 wrap 有界尾文本，视口跟随滚动。"""
+            if self._tail_widget is None:
+                self._tail_widget = Static(text)
+                self._add(self._tail_widget)  # _add 已带 scroll_end
+                return
+            self._tail_widget.update(text)
+            timeline = self.query_one("#timeline", Vertical)
+            timeline.call_after_refresh(timeline.scroll_end, animate=False)
+
+        def _freeze_tail(self, text: str) -> None:
+            """尾段固化：当前尾块补齐内容后冻结（不再重渲染），缓冲复位。"""
+            if self._tail_widget is not None:
+                self._tail_widget.update(text)
+                self._stream_blocks.append(self._tail_widget)
+            elif text:
+                widget = Static(text)
+                self._add(widget)
+                self._stream_blocks.append(widget)
+            self._tail_widget = None
+            self._tail_buf = []
+            timeline = self.query_one("#timeline", Vertical)
+            timeline.call_after_refresh(timeline.scroll_end, animate=False)
 
         def _flush_live(self) -> None:
-            """流式终态：进行中行原位替换为 Markdown（无整屏重排），缓冲复位。"""
+            """流式终态：全部流式块原位替换为一次 Markdown 渲染，缓冲复位。"""
             if self._live_buf:
                 text = "".join(self._live_buf)
                 self._last_reply = text
-                if self._stream_widget is not None:
-                    self._stream_widget.remove()
+                for widget in [*self._stream_blocks, self._tail_widget]:
+                    if widget is not None:
+                        widget.remove()
                 self._add(Markdown(text))
-            self._stream_widget = None
+            self._stream_blocks = []
+            self._tail_widget = None
+            self._tail_buf = []
             self._live_buf = []
 
         # ---- 输入分发 ----
