@@ -40,7 +40,7 @@ from core.judgment import Compactor, DecisionRouter, Guardrail, JEVProvider
 from core.llm_provider import LLMProvider, StdlibLLMProvider
 from core.loop import Approver, DefaultLoop, LoopPlugin
 from core.loop.planner import LLMPlanner
-from core.memory import Crystallizer, FileBackend, MemoryBackend, MemoryStore
+from core.memory import Crystallizer, FileBackend, MemoryBackend, MemoryEntry, MemoryStore
 from core.observability import Tracer
 from core.orchestration import (
     AgentProfile,
@@ -194,6 +194,20 @@ def build_runtime(  # noqa: PLR0915, C901
     profile_engine.load_global()
     profile_engine.load_project()
     profile = profile_engine.assemble()
+    # 人格分区 → L0 记忆层（core-profile spec「双语义分区」）：稳定 id 幂等写入，
+    # 避免每次启动重复；L0 层优先级最高，读时随候选带出、受预算截断约束。
+    if profile.personality:
+        memory.write(
+            "L0",
+            MemoryEntry(
+                id="core-profile:personality",
+                layer="L0",
+                content="\n".join(profile.personality),
+                tags=["core-profile", "personality"],
+                source="core-profile",
+                trace_id="core-profile:startup",
+            ),
+        )
     if assembler is None:
         assembler = DynamicAssembler(
             memory=memory,

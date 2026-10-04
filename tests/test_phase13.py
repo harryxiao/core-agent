@@ -128,6 +128,27 @@ def test_build_runtime_wires_core_profile_into_assembler(monkeypatch, tmp_path) 
     assert any("本项目用 uv 管理" in f["content"] for f in pack.facts)
 
 
+def test_build_runtime_writes_personality_to_l0_memory(monkeypatch, tmp_path) -> None:
+    """core-profile spec「双语义分区」：人格分区落 L0 记忆层（P0b），稳定 id 幂等写入。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    core_dir = tmp_path / ".core"
+    core_dir.mkdir()
+    (core_dir / "Core.md").write_text(
+        "## 人格\n- 身份：严谨的工程助手\n- 沟通风格：简洁直接\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)  # 无项目级 Core.md
+
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+    l0 = [e for e in runtime.memory.read("人格", budget=2048) if e.layer == "L0"]
+    assert any("严谨的工程助手" in e.content for e in l0), "人格应落入 L0 记忆层"
+
+    # 幂等：再次装配（同 HOME/state）不新增条目——稳定 id 覆盖
+    runtime2 = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+    l0_ids = [e.id for e in runtime2.memory.read("人格", budget=2048) if e.layer == "L0"]
+    assert l0_ids == ["core-profile:personality"]
+
+
 def test_build_runtime_memory_persists_to_state_dir(monkeypatch, tmp_path) -> None:
     """默认装配的记忆后端落盘到 $CORE_STATE_DIR（新后端可重载检索，不因进程退出丢失）。"""
     import os  # noqa: PLC0415 — 断言用环境变量
