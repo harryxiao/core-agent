@@ -53,6 +53,7 @@
 | TC-MCP-03 | CORE-MCP-R3 | 调用远程写工具 | 受确认门 + 可逆追踪约束 |
 | TC-MCP-04 | CORE-MCP-R4 | stdio 与 http 传输 | 两种均可连通 |
 | TC-MCP-05 | —— | server 掉线 | `DEGRADED`，不阻塞其他工具 |
+| TC-MCP-06 | mcp「传输层抽象与依赖注入隔离」 | 经 `transport_factory` 注入替身传输（`FakeTransport`） | `MCPClient` 及调用方零改动切换传输实现（锚点：`tests/test_mcp.py`；生产 stdio 分派见 `test_mcp_stdio.py`，http/streamable-http 未接 → C 类） |
 
 ## 6. 进化引擎（TC-EVO）
 
@@ -211,6 +212,7 @@
 | TC-RAG-07 | CORE-RAG-R5 | 将检索片段注入生成请求 | 片段经 context 装配器按预算裁剪后注入提示词，由 llm-provider 生成 |
 | TC-RAG-08 | CORE-RAG-R5 | 语义检索无相关片段时构建生成请求 | 降级为纯 LLM 生成，不阻断流程 |
 | TC-RAG-09 | CORE-RAG-R6 | 一次查询同时涉及知识文档与代码结构 | 文档语义检索走 RAG，代码结构理解走 codebase-memory-mcp，互不重叠 |
+| TC-RAG-10 | rag「存储与 Embedding 依赖注入隔离」 | 以替身实现注入 `Embedder` / `VectorStore`（`_FixedEmbedder` / `InMemoryVectorStore`） | `Retriever` 及调用方零改动（锚点：`tests/test_rag.py::test_retriever_delegates_to_store`）；**替换向量库**一侧仅单实现（生产 sqlite-vec 未接 → C 类），登记为半覆盖 |
 
 ---
 
@@ -228,6 +230,7 @@
 | TC-GIT-08 | CORE-GIT-R5 | 远程操作认证失败（凭据过期/无权限） | 明确报错并提示原因，不泄露凭据与私有仓库地址 |
 | TC-GIT-09 | CORE-GIT-R5 | 远程操作因网络抖动中断且可重试 | 按指数退避自动重试，达上限后失败并保持工作区一致 |
 | TC-GIT-10 | CORE-GIT-R5 | 远程操作结束（完成或失败） | 释放底层连接资源，避免连接泄漏 |
+| TC-GIT-11 | git「GitClient 抽象接口与依赖注入隔离」 | 以替身后端注入（`GitClient(backend=FakeBackend())`） | `GitClient` 及内核 loop 零改动切换底层 git 实现（锚点：`tests/test_git.py`；生产 `build_backend()` 见 `src/core/git/backend.py:50`） |
 
 ---
 

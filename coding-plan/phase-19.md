@@ -55,7 +55,7 @@
 | E6 | E | ~~规格 deferred 未解除（context 判定升级等）~~ | ✅ 已关闭：context 压实「留待后续」已由 change `0041` 规格订正（启发式为**有意降级路径**，LLM 提炼归 memory 通道）；余两项转 **A7 / A8** | 低 | — |
 | E7 | E | ~~内置工具契约与实现漂移~~ | ✅ 已关闭（change `0056`）：裁决「规格为准」——契约列 5 个工具**从未存在**（非承诺项），订正 `cli-contract-baseline.md` §10 | 中（契约裁决） | — |
 | E8 | E | ~~CLI 契约基线 §11 未决项~~ | ✅ 已关闭（change `0056`）：7 条逐条定性；`im.secret`/`judgment.api_key` 校验对称化 + `permission.mode` 枚举校验（余 `extra` 未知键 → **E18**） | 低 | — |
-| E9 | E | 文档层其他未闭合项 | data-model 待补实体、替换性测试锚点等 | 低 | 无 |
+| E9 | E | ~~文档层其他未闭合项~~ | ✅ 已关闭（change `0061`）：`data-model.md` §4 四实体按**源码回填** + rag/mcp/git 三条替换性锚点登记为 `TC-RAG-10` / `TC-MCP-06` / `TC-GIT-11`（锚点测试本已存在，补的是追踪号）+ retrospective/ADR 日期补记；余两项（远程制品仓库、market-registry）归 **C 类**（§5 已具名） | 低 | — |
 | E10 | E | 功能开关无运行时门控 | `build_runtime` 无条件构造全部模块，`is_enabled` 仅存语义 | 低 | 定夺哪些模块可关 |
 | E11 | E | LLM 可靠性：连接复用缺失 + 无测试 | 🔶 **部分关闭（change `0060`）**：重试/超时/降级/断流**用例已补**（9 例，`src/` 零改动 —— 实现本就正确，缺的是验证）；**余**连接复用未实现（`urllib` 每请求新建连接）→ **E11②** | 低 | 无 |
 | E12 | E | 崩溃恢复无真实 `kill -9` 用例 | 仅内存 store 模拟的 resume 幂等单测，无子进程重启端到端 | 低 | 无 |
@@ -277,6 +277,21 @@
 | 远程制品仓库与凭证 / market-registry 远端服务 | `adr.md:293,302` | 真后端类 → 归 **C** |
 | `doc/00-product/retrospective.md:86-90`「实现落地（src=0 是唯一短板）」 | retrospective | **已过时**（当时 `src/` 为空骨架）→ 属 D 类文档订正 |
 
+#### ✅ 已关闭（change `0061-doc-layer-closeout`）
+
+- **一手核实的关键订正**：四项里**只有两项是真缺口**，另两项本就已在账本他处具名 ——
+  ① 四实体**均已落地为真实类型**（`core/im/models.py:27`、`core/constraints/models.py:16/24/34`），
+  缺的只是 `data-model.md` 回填；② 三条替换性锚点**测试早已存在**
+  （`Retriever(_FixedEmbedder(), store)` / `MCPClient(transport_factory=…)` / `GitClient(backend=FakeBackend())`），
+  原判「ADT 可替换性**无守护测试**」**不成立** —— 缺的是 `test-cases.md` 的**追踪号**（规格→用例不可达）。
+- **关闭动作**：`data-model.md` §4 按源码回填四实体（含权威位置 + 字段，可一步核对）；
+  `test-cases.md` 补 `TC-RAG-10` / `TC-MCP-06` / `TC-GIT-11` 三条（挂靠三条「…依赖注入隔离」Requirement）；
+  ADR-0040 后果行与 `retrospective.md` §六.1 各加**日期补记**（历史正文不改写 —— 那是伪造决策记录）。
+- **改判归属**：远程制品仓库/凭证 与 market-registry 远端服务 → **C 类**（§5 已具名，非文档缺口）。
+- **规格中性**：规格/接口/源码三者本就一致，本变更只补登记层 → `skip_specs: true`，`src/`+`tests/` **零改动**。
+- **有意不造重复用例**：`_FixedEmbedder` / `FakeTransport` / `FakeBackend` 就是「替换 X」本身，
+  再造同义测试是重复建设；rag「替换向量库」一侧仅单实现（生产 sqlite-vec → C 类），追踪行**如实标为半覆盖**。
+
 ### E10 功能开关无运行时门控（Phase 0 验收未达成）
 
 - **现象**：`phase-0.md:32` 要求「功能开关缺省关闭：未启用的模块**完全不初始化**（不 import 副作用、不注册）」。实测：`ConfigManager.is_enabled` 的缺省 off 语义已实现并测试（`tests/test_configuration.py:85`），但 `runtime.py` 的 `build_runtime` **无条件构造全部模块**——无 `is_enabled` 门控、无「未启用则不构造/不注册」的证据。
@@ -471,6 +486,7 @@
 7. **E3 / E6**（规格裁决）：✅ **全闭** —— 裁决「A 全做・解除 deferred」；**E3** 见 change `0057`（ADR-0060：神通注册 + 专属路由作用域 + 按兽 loop/共享记忆注入 + CLI 走组合根）；**E6** 无需代码（context 压实启发式已由 change `0041` 规格订正为有意行为，余两项转 A7/A8）。
 8. **A7 + E6（miss 复用）**（低优先，同族）：✅ **全闭** —— **A7** 见 change `0058`（ADR-0061：排序分 = 基础分 × 历史成功率因子；预筛转出 A11）；**E6** 无需代码（见上，规格已由 change `0041` 订正）。
 9. **A6 / A8 / A9 / A11 / E5 / E9 / E13 / E15–E18 / C 类**：随需（**A11 语义兜底候选预筛**（需先有比词法更粗的排序信号）/ E13 `Validator.parse_output` 零调用方 / E15 熔断阈值不可配 / E16 `AsyncNotifier` 无 channel / E17 pet 无后台 daemon / **E18 `extra` 未知键校验**）。✅ **E14 已关闭**（change `0059`，ADR-0062）。✅ **E11① 已关闭**（change `0060`：可靠性用例 9 例，`src/` 零改动；**E11② 连接复用**仍开）。
+   ✅ **E9 已关闭**（change `0061`：`data-model.md` 四实体回填 + rag/mcp/git 锚点登记 TC-RAG-10/TC-MCP-06/TC-GIT-11 + 两处日期补记；纯文档、规格中性）。
 10. **真机动作**：活 LLM 全回路冒烟（§8 末）。
 
 ---

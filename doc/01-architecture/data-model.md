@@ -123,19 +123,25 @@
 | 2 | Profile/Bundle/Patch | composition(L5) vs plugin-registry(L0) | 静态分发产物（name/version/hash/plugin_refs） vs 运行时组合结果（active/coeffect_sources/compose()） | L5 分发侧保留原名；L0 运行时组合侧加 `Compose` 前缀 |
 | 3 | Trace | loop / evolution / observability | 执行轨迹 vs 诊断输入（消费 loop 轨迹） vs 遥测 | loop 持有 `Trace` 主语义；evolution 不新建类型（消费）；observability 已用 `TraceEvent` 区分 |
 | 4 | Task | orchestration vs distributed | 编排任务（TaskState/Subtask/Plan） vs 委派任务（Task/TaskHandle） | orchestration 保留 `Task` 主语义；distributed 委派侧改 `RemoteTask`（`TaskHandle` 保留） |
-| 5 | Session | im 引用未定义 | IM 会话上下文 | 本文补定义（见 §4） |
+| 5 | Session | im 引用未定义 | IM 会话上下文 | 已落地为 `core/im/models.py:Session`（见 §4） |
 
 ---
 
-## 4. 待补定义实体
+## 4. 曾待补定义实体（已按源码回填）
 
-以下实体被接口引用但无定义，本文补语义（字段以编码阶段落地为准）：
+本节原记「以下实体被接口引用但无定义……**字段以编码阶段落地为准**」。编码阶段已结束，
+四实体均已落地为真实类型，故按**源码**回填（每行给出权威位置，读者可一步核对）：
 
-| 实体 | 引用方 | 补定义语义 |
-|---|---|---|
-| Session | im-interface（reply(session, text)） | IM 会话上下文：platform + session_key + 群组标记 |
-| ExecContext | constraints-interface（中间件） | 中间件执行上下文（请求/响应 + 链路信息） |
-| ExecRequest / ExecResponse | constraints-interface（中间件） | 中间件执行请求 / 响应包装 |
+| 实体 | 权威定义（源码） | 字段 | 语义 |
+|---|---|---|---|
+| Session | `core/im/models.py:27` | `session_key` / `platform` / `user_id` / `history` | 会话隔离：按 `平台:用户/群` 独立，多平台多用户互不串扰 |
+| ExecContext | `core/constraints/models.py:16` | `trace_id` / `payload` | 执行上下文：贯穿一条执行链路的轻量载体 |
+| ExecRequest | `core/constraints/models.py:24` | `tool` / `args` / `schema` / `trace_id` | 输入侧请求：工具名 + 参数 + schema + 追溯 id |
+| ExecResponse | `core/constraints/models.py:34` | `ok` / `data` / `error` / `effect_id` | 输出侧响应：成功携数据 / 失败携错误码 |
+
+> 接口层消费方：`ExecContext` / `ExecRequest` / `ExecResponse` 由
+> `doc/03-interfaces/constraints-interface.md` 的 `Middleware.before/after` 与 `Pipeline` 消费；
+> `Session` 由 `doc/03-interfaces/im-interface.md` 的 `reply(session, text)` 消费。
 
 ---
 
