@@ -104,6 +104,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_skill_parser(sub)
     _add_session_parser(sub)
     _add_memory_parser(sub)
+    _add_evolve_parser(sub)
     _add_run_parser(sub)
     _add_task_parser(sub)
     _add_release_parser(sub)
@@ -178,6 +179,12 @@ def _add_memory_parser(sub: Any) -> None:
     memory = sub.add_parser("memory", help="记忆维护")
     mem_sub = memory.add_subparsers(dest="memory_cmd", metavar="<memory-cmd>")
     mem_sub.add_parser("maintain", help="触发一次记忆维护（压实 + 遗忘归档）")
+
+
+def _add_evolve_parser(sub: Any) -> None:
+    evolve = sub.add_parser("evolve", help="进化冷路径")
+    ev_sub = evolve.add_subparsers(dest="evolve_cmd", metavar="<evolve-cmd>")
+    ev_sub.add_parser("run", help="强制跑一轮进化冷路径（诊断/提案 dry-run）")
 
 
 def _add_run_parser(sub: Any) -> None:
@@ -668,6 +675,25 @@ def _memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def _evolve(args: argparse.Namespace) -> int:
+    """`evolve run`：装配 runtime → **强制**跑一轮进化冷路径，打印结局。"""
+    if args.evolve_cmd != "run":
+        print("用法: core-agent evolve run", file=sys.stderr)
+        return 1
+    try:
+        runtime = build_runtime(ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)))
+    except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
+        print(f"装配失败: {exc}", file=sys.stderr)
+        return 1
+    outcome = runtime.evolution.maybe_run(force=True)
+    if outcome is None:
+        print("进化冷路径完成：无候选（no_op）")
+    else:
+        target = f"，目标 {outcome.skill_id}" if outcome.skill_id else ""
+        print(f"进化冷路径完成：{outcome.status}{target}")
+    return 0
+
+
 def _run(args: argparse.Namespace) -> int:
     prompt = _read_prompt(args)
     if prompt is None:
@@ -877,6 +903,7 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "recall": _recall,
     "session": _session,
     "memory": _memory,
+    "evolve": _evolve,
     "run": _run,
     "task": _task,
     "config": _config,

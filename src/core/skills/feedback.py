@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .persist import read_state, write_state
+from core.persistence import read_state, write_state
 
 
 @dataclass

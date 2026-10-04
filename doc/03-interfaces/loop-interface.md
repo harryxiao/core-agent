@@ -37,6 +37,8 @@ class LoopPlugin(Plugin):
 class DefaultLoop(Plugin):
     coeffects = ["model:adapter", "memory:store", "tools:provider", "constitution:v1"]
     # 构造面（节拍相关）：maintenance_interval=900.0s（<=0 关闭）、clock=time.monotonic（可注入，便于测试）
+    # 注入面（可选）：cold_path: Callable[[], None]（收尾节拍的进化冷路径机会；缺省未注入则不做，
+    #   loop 不 import evolution——只拿回调，组合根注入闭包，见 evolution-interface §4.1）
 
     def run(self, user_input: str, *, session_id: str = "") -> LoopResult:
         trace_id = new_trace_id()
@@ -52,7 +54,7 @@ class DefaultLoop(Plugin):
         self.remember(
             trace_id, [*ctx.trajectory, {"reply": ctx.reply}], session_id=session_id
         )  # 无行动不记忆；末条 reply 供语义检索；条目带会话归属
-        # 收尾维护节拍：距上次维护达 maintenance_interval 才触发一次遗忘（失败降级不中断本轮）
+        # 收尾维护节拍：距上次维护达 maintenance_interval 才触发一次——①记忆遗忘 ②冷路径机会（各自失败降级）
         return LoopResult(reply=ctx.reply, trace_id=trace_id)
 ```
 

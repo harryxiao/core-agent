@@ -35,6 +35,7 @@ from core.evolution import (
     EvolutionEngine,
     EvolutionTrigger,
     EvolutionWorker,
+    ObservationRegistry,
     Proposer,
     Validator,
 )
@@ -347,6 +348,22 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         skill_router=loop_hints,
         tools=tools,
     )
+    evolution_engine = EvolutionEngine(
+        diagnoser=Diagnoser(),
+        proposer=Proposer(),
+        validator=Validator(),
+        evaluator=Evaluator(),
+        library=skill_library,
+        memory=backend,
+        memory_crystallizer=Crystallizer(),
+        observations=ObservationRegistry(path=_skill_state_path("observations.json")),
+    )
+    evolution = EvolutionWorker(tracer=tracer, engine=evolution_engine, trigger=EvolutionTrigger())
+
+    def _cold_path() -> None:
+        """收尾维护节拍的冷路径机会：跑一轮进化（阈值门在 worker 内，未达则不做事）。"""
+        evolution.maybe_run()
+
     loop = DefaultLoop(
         planner=planner,
         memory=memory,
@@ -357,18 +374,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         approver=approver,
         compactor=context_compactor,
         turn_observer=loop_turn,
+        cold_path=_cold_path,
     )
-
-    evolution_engine = EvolutionEngine(
-        diagnoser=Diagnoser(),
-        proposer=Proposer(),
-        validator=Validator(),
-        evaluator=Evaluator(),
-        library=skill_library,
-        memory=backend,
-        memory_crystallizer=Crystallizer(),
-    )
-    evolution = EvolutionWorker(tracer=tracer, engine=evolution_engine, trigger=EvolutionTrigger())
 
     # 子 Agent 独立 loop：各自 ToolProvider（不含 tools.delegate，结构上杜绝再委托），
     # 共享 memory / tracer / gate / approver（知识沉淀与权限口径统一）

@@ -108,11 +108,14 @@ class ObservationWindow:
     def mean(self) -> float     # 观察均分（无样本 → 0.0）
 
 class ObservationRegistry:
+    def __init__(self, *, path: Path | None = None, ...) -> None:
+        """``path`` 注入则落盘（基线 / 样本 / 冻结截止），启动恢复；缺省纯内存。"""
     def open(self, target: str, *, baseline: float) -> ObservationWindow: ...
     def sample(self, target: str, score: float, *, now: float | None = None) -> bool:
         """记样本，返回是否触发回归（未开窗 / 冻结期内 → 忽略并返回 False）。"""
     def freeze(self, target: str, *, now: float | None = None) -> None: ...
     def window(self, target: str) -> ObservationWindow | None: ...
+    def targets(self) -> list[str]: ...   # 已开窗目标（供采样侧按目标归因上报）
 
 # EvolutionEngine
 def observe(self, target: str, score: float, *, now: float | None = None) -> EvolutionOutcome | None:
@@ -125,7 +128,9 @@ def observe(self, target: str, score: float, *, now: float | None = None) -> Evo
 | **回归判据** | 样本数 ≥ `_OBSERVE_MIN_SAMPLES`(3) **且** 均分 < 基线 − `_REGRESSION_TOLERANCE`(0.2，绝对分差，与 `Evaluator.margin` 同形状) |
 | **冻结** | 溶解即冻结该目标 `_FREEZE_COOLDOWN_S`(300s) 并**清零样本**；冷却期内不累积、不触发，到期自动恢复采样 |
 | **留痕** | 回归证据（基线 / 观察均分 / 样本数）拼进 `dissolve` 的教训条目（L2，`tags` 含 `dissolve`） |
-| **不调度** | `observe` 只是采样接缝——采样节奏由调用方决定（worker 冷路径等）；`now` 可注入，判定离线可断言 |
+| **采样来源** | 生产侧由 `EvolutionWorker._sample_observations` 供数：每轮 `run_cycle` 后对本批 trace 中**已开窗**目标按 `plugin_id` 归因算批次成功率并各上报一次；无归因 trace 的目标不采样（线上代理指标，与留出评测分近似可比） |
+| **持久化** | 注入 `path` 则窗口（含**冻结截止**）落盘、启动恢复——冻结期跨进程仍有效；缺省纯内存（零行为变化） |
+| **不调度** | `observe` 只是采样接缝——采样节奏由调用方决定（worker 冷路径）；`now` 可注入，判定离线可断言 |
 
 ---
 
@@ -136,6 +141,26 @@ class EvolutionTrigger:
     def maybe_run(self, traces: list[Trace], *, force: bool = False) -> bool:
         """累计 N 轮或强制时触发；后台低优先级执行。"""
 ```
+
+### 4.1 冷路径驱动面（cold path driving，change `0051`）
+
+`EvolutionWorker` 是冷路径的唯一消费者，但其 `on_trace_complete` / `maybe_run` **在生产必须有驱动面**
+（否则 L4 整条冷路径离线）。系统提供两个驱动入口，二者都只调 `maybe_run`——**是否真正跑一轮由
+`EvolutionTrigger` 阈值门决定**（显式入口以 `force` 跳过阈值门）：
+
+```python
+class EvolutionWorker:
+    def maybe_run(self, *, force: bool = False) -> EvolutionOutcome | None:
+        """阈值命中或强制时 replay 累积 trace → run_cycle，并按批次指标采样观察窗口；未达阈值返回 None。"""
+```
+
+| 入口 | 形状 | 停止语义 |
+|---|---|---|
+| loop 收尾维护节拍 | 组合根把冷路径回调注入 `DefaultLoop(cold_path=...)`；与记忆维护**共用节拍闸门**（`maintenance_interval`），各自失败降级、不中断本轮 | 节拍只给**机会**，阈值门决定是否做事（未达阈值 `maybe_run()` 返回 `None`） |
+| CLI `core-agent evolve run` | 装配 runtime → `maybe_run(force=True)` → 打印结局 | **一次性动作**，不启常驻进程、不改运行态；装配失败 → stderr + 退出码 1 |
+
+- **阈值门不搬进驱动面**：节奏语义（累计 trace 数）仍归 `EvolutionTrigger`，两处阈值必然漂移。
+- **分层**：loop 属 L3、evolution 属 L4 → loop 只持 `Callable[[], None]`，装配由 `runtime.py` 做。
 
 ---
 

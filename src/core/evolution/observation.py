@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
+
+from core.persistence import read_state, write_state
 
 # 回归判定门：观察样本下限 + 绝对分差容差（与 Evaluator.margin 同一形状）
 _OBSERVE_MIN_SAMPLES = 3
@@ -36,7 +39,7 @@ class ObservationWindow:
 
 
 class ObservationRegistry:
-    """观察期窗口注册表：开窗 / 采样判定 / 冻结。窗口仅进程内（不持久化）。"""
+    """观察期窗口注册表：开窗 / 采样判定 / 冻结；可落盘（注入 ``path``，缺省纯内存）。"""
 
     def __init__(
         self,
@@ -44,21 +47,29 @@ class ObservationRegistry:
         min_samples: int = _OBSERVE_MIN_SAMPLES,
         tolerance: float = _REGRESSION_TOLERANCE,
         cooldown_s: float = _FREEZE_COOLDOWN_S,
+        path: Path | None = None,
     ) -> None:
         self._min_samples = min_samples
         self._tolerance = tolerance
         self._cooldown_s = cooldown_s
+        self._path = path
         self._windows: dict[str, ObservationWindow] = {}
+        self._load()
 
     def open(self, target: str, *, baseline: float) -> ObservationWindow:
         """开窗（重新发布即重新起算基线，覆盖旧窗口）。"""
         window = ObservationWindow(target=target, baseline=baseline)
         self._windows[target] = window
+        self._persist()
         return window
 
     def window(self, target: str) -> ObservationWindow | None:
         """取窗口；未开窗返回 None。"""
         return self._windows.get(target)
+
+    def targets(self) -> list[str]:
+        """当前已开窗的目标（供采样侧按目标归因上报）。"""
+        return list(self._windows)
 
     def sample(self, target: str, score: float, *, now: float | None = None) -> bool:
         """记一次观察样本，返回**是否触发回归**（未开窗 / 冻结期内的样本一律忽略）。"""
@@ -68,6 +79,7 @@ class ObservationRegistry:
         if (now if now is not None else time.time()) < window.frozen_until:
             return False
         window.samples.append(score)
+        self._persist()
         return self._regressed(window)
 
     def freeze(self, target: str, *, now: float | None = None) -> None:
@@ -77,6 +89,38 @@ class ObservationRegistry:
             return
         window.samples.clear()
         window.frozen_until = (now if now is not None else time.time()) + self._cooldown_s
+        self._persist()
+
+    # ---- 落盘 ----
+
+    def _load(self) -> None:
+        """恢复落盘窗口（含冻结截止）；缺失 / 损坏 / 结构不符 → 无窗口（不抛）。"""
+        raw = read_state(self._path)
+        try:
+            self._windows = {
+                str(target): ObservationWindow(
+                    target=str(target),
+                    baseline=float(item["baseline"]),
+                    samples=[float(score) for score in item.get("samples", [])],
+                    frozen_until=float(item.get("frozen_until", 0.0)),
+                )
+                for target, item in raw.items()
+            }
+        except (AttributeError, KeyError, TypeError, ValueError):
+            self._windows = {}
+
+    def _persist(self) -> None:
+        write_state(
+            self._path,
+            {
+                target: {
+                    "baseline": window.baseline,
+                    "samples": list(window.samples),
+                    "frozen_until": window.frozen_until,
+                }
+                for target, window in self._windows.items()
+            },
+        )
 
     def _regressed(self, window: ObservationWindow) -> bool:
         """样本达下限且均分低于「基线 − 容差」。"""

@@ -21,11 +21,11 @@ from collections.abc import Callable, Sequence
 from hashlib import blake2b
 from pathlib import Path
 
+from core.persistence import read_state, write_state
 from core.plugin_registry import Effect, EffectTracker
 
 from .library import SkillLibrary
 from .models import Skill
-from .persist import read_state, write_state
 from .router import terms_of
 
 # 提炼器契约：prompt → SOP 文本（同 ``memory.Summarizer`` 的「prompt → 文本」方向）

@@ -47,8 +47,21 @@ class EvolutionWorker:
         if not self._trigger.maybe_run(traces, force=force):
             return None
         outcome = self._engine.run_cycle(traces)
+        self._sample_observations(traces)
         self._completed.clear()
         return outcome
+
+    def _sample_observations(self, traces: list[Trace]) -> None:
+        """冷路径批次采样：对本批 trace 中**已开窗**的目标按 ``plugin_id`` 归因上报成功率。
+
+        每个目标每轮至多上报一次样本；无归因 trace 的目标不采样（零样本）。批次成功率是
+        线上代理指标，与留出评测分近似可比（见 evolution/spec「观察期回归自动溶解」）。
+        """
+        for target in self._engine.observations.targets():
+            attributed = [trace for trace in traces if trace.plugin_id == target]
+            if not attributed:
+                continue
+            self._engine.observe(target, sum(t.success for t in attributed) / len(attributed))
 
     def _collect(self) -> list[Trace]:
         traces: list[Trace] = []

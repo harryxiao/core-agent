@@ -723,3 +723,40 @@ def test_maintenance_cadence_disabled_and_failure_degrades() -> None:
     result = loop.run("任务")  # 不抛
     assert result.reply == "done"
     assert boom.calls == 1
+
+
+def test_cold_path_cadence_calls_injected_callback() -> None:
+    """达维护间隔 → 冷路径回调被调用一次（含未注入记忆时）；未达间隔不调用。"""
+    now = [0.0]
+    calls: list[str] = []
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        cold_path=lambda: calls.append("tick"),
+        clock=lambda: now[0],
+        maintenance_interval=60.0,
+    )
+    _run_once(loop)
+    assert calls == []
+    now[0] = 60.0
+    _run_once(loop)
+    assert calls == ["tick"]
+    now[0] = 100.0
+    _run_once(loop)
+    assert calls == ["tick"]
+
+
+def test_cold_path_failure_degrades() -> None:
+    """冷路径回调抛错 → 降级留痕，本轮正常收尾（不抛给调用方）。"""
+
+    def _boom() -> None:
+        raise RuntimeError("冷路径异常")
+
+    now = [0.0]
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        cold_path=_boom,
+        clock=lambda: now[0],
+        maintenance_interval=1.0,
+    )
+    now[0] = 10.0
+    assert loop.run("任务").reply == "done"

@@ -22,6 +22,7 @@ from core.evolution import (
     EvolutionError,
     EvolutionErrorCode,
     EvolutionTrigger,
+    EvolutionWorker,
     GenerationCandidate,
     ObservationRegistry,
     ObservationWindow,
@@ -30,6 +31,7 @@ from core.evolution import (
     Trace,
     Validator,
 )
+from core.observability import TraceLogger, Tracer
 from core.permission import ApprovalRequest, ApprovalTicket, ApprovalWorkflow
 from core.skills import Skill, SkillLibrary
 
@@ -59,6 +61,7 @@ def _engine(  # noqa: PLR0913 — 测试构造辅助
     diagnoser: Diagnoser | None = None,
     proposer: Proposer | None = None,
     memory: object | None = None,
+    observations: ObservationRegistry | None = None,
 ) -> EvolutionEngine:
     return EvolutionEngine(
         diagnoser=diagnoser or Diagnoser(),
@@ -67,6 +70,7 @@ def _engine(  # noqa: PLR0913 — 测试构造辅助
         evaluator=evaluator or Evaluator(),
         library=library,
         memory=memory,  # type: ignore[arg-type]
+        observations=observations,
     )
 
 
@@ -476,3 +480,91 @@ def test_observe_unopened_target_and_no_regression() -> None:
     for _ in range(3):
         assert engine.observe(target, 0.9) is None
     assert library.lookup(f"skills.evolution.{target}").status == "active"
+
+
+# ---- 冷路径驱动 + 窗口持久化 + 批次采样（0051）----
+
+
+def _worker_engine(registry: ObservationRegistry, **kw: object) -> tuple[EvolutionWorker, Tracer]:
+    """造一个「tracer + worker + 指定窗口注册表」的冷路径装置。"""
+    tracer = Tracer()
+    engine = _engine(observations=registry, **kw)  # type: ignore[arg-type]
+    return EvolutionWorker(tracer=tracer, engine=engine), tracer
+
+
+def _log_tool(tracer: Tracer, trace_id: str, tool: str, *, ok: bool) -> None:
+    TraceLogger(tracer).log_tool_call(trace_id, tool, {}, {"ok": ok}, 1.0)
+
+
+def test_observation_window_persists_across_restart(tmp_path) -> None:
+    path = tmp_path / "observations.json"
+    registry = ObservationRegistry(path=path, cooldown_s=100.0)
+    registry.open("memory.retrieve", baseline=1.0)
+    registry.sample("memory.retrieve", 0.9, now=1000.0)
+    registry.freeze("memory.retrieve", now=1000.0)
+
+    revived = ObservationRegistry(path=path, cooldown_s=100.0)
+    window = revived.window("memory.retrieve")
+
+    assert window is not None
+    assert (window.baseline, window.samples, window.frozen_until) == (1.0, [], 1100.0)
+    assert revived.sample("memory.retrieve", 0.0, now=1050.0) is False, "冻结期跨进程仍有效"
+
+
+def test_observation_registry_pure_memory_without_path(tmp_path) -> None:
+    registry = ObservationRegistry()
+    registry.open("memory.retrieve", baseline=1.0)
+    registry.sample("memory.retrieve", 0.0)
+
+    assert list(tmp_path.iterdir()) == [], "未注入路径 → 不落盘"
+
+
+def test_observation_registry_corrupt_state_degrades(tmp_path) -> None:
+    path = tmp_path / "observations.json"
+    path.write_text("{ not json", encoding="utf-8")
+
+    registry = ObservationRegistry(path=path)
+
+    assert registry.window("memory.retrieve") is None, "损坏落盘 → 无窗口（不抛）"
+    registry.open("memory.retrieve", baseline=1.0)
+    assert ObservationRegistry(path=path).window("memory.retrieve") is not None
+
+
+def test_worker_samples_open_windows_by_plugin() -> None:
+    """每轮 cycle 后按 plugin_id 归因上报批次成功率；无归因的目标不采样。"""
+    registry = ObservationRegistry()
+    registry.open("memory.retrieve", baseline=1.0)
+    registry.open("tools.web_fetch", baseline=1.0)
+    worker, tracer = _worker_engine(registry)
+    trace_id = tracer.start_trace("t1")
+    _log_tool(tracer, trace_id, "memory.retrieve", ok=False)
+    _log_tool(tracer, trace_id, "memory.retrieve", ok=True)
+    worker.on_trace_complete(trace_id)
+
+    worker.maybe_run(force=True)
+
+    assert registry.window("memory.retrieve").samples == [0.5]  # noqa: PLR2004 — 1/2 成功
+    assert registry.window("tools.web_fetch").samples == [], "无归因 trace 不采样"
+
+
+def test_worker_sampling_drives_auto_dissolve() -> None:
+    """批次成功率连续低于基线 → 达下限即自动溶解（端到端：采样来源 → observe → dissolve）。"""
+    library = SkillLibrary()
+    backend = _SpyBackend()
+    registry = ObservationRegistry()
+    engine = _engine(library=library, memory=backend, observations=registry)
+    target = _published(engine)
+    window = registry.window(target)
+    assert window is not None
+    window.baseline = 1.0  # 直接给个有意义的基线（默认评测分 0.0）
+
+    tracer = Tracer()
+    worker = EvolutionWorker(tracer=tracer, engine=engine)
+    for i in range(3):
+        trace_id = tracer.start_trace(f"t{i}")
+        _log_tool(tracer, trace_id, target, ok=False)  # 批次成功率 0.0
+        worker.on_trace_complete(trace_id)
+        worker.maybe_run(force=True)
+
+    assert library.lookup(f"skills.evolution.{target}").status == "deprecated", "回归即自动溶解"
+    assert "基线 1.000" in backend.put_entries[-1].content

@@ -25,6 +25,7 @@ _TOP_LEVEL_COMMANDS = {
     "config",
     "mcp",
     "plugin",
+    "evolve",
     "skill",
     "session",
     "memory",
@@ -424,4 +425,39 @@ def test_memory_maintain_reports_build_failure(
 
     monkeypatch.setattr("core.entry.build_runtime", _boom)
     assert main(["--config", _write_config(tmp_path), "memory", "maintain"]) == 1
+    assert "装配失败" in capsys.readouterr().err
+
+
+def test_evolve_run_triggers_cold_path(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`evolve run`：装配 runtime → 强制跑一轮冷路径并打印结局。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    calls: list[bool] = []
+
+    class _FakeEvolution:
+        def maybe_run(self, *, force: bool = False) -> object:
+            calls.append(force)
+            return type("_O", (), {"status": "no_evidence", "skill_id": None})()
+
+    class _FakeRuntime:
+        evolution = _FakeEvolution()
+
+    monkeypatch.setattr("core.entry.build_runtime", lambda *a, **kw: _FakeRuntime())
+    assert main(["--config", _write_config(tmp_path), "evolve", "run"]) == 0
+    assert calls == [True], "显式入口跳过阈值门"
+    out = capsys.readouterr().out
+    assert "no_evidence" in out
+
+
+def test_evolve_run_reports_build_failure(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """装配失败 → stderr 提示 + 退出码 1。"""
+
+    def _boom(*a, **kw):
+        raise RuntimeError("配置缺失")
+
+    monkeypatch.setattr("core.entry.build_runtime", _boom)
+    assert main(["--config", _write_config(tmp_path), "evolve", "run"]) == 1
     assert "装配失败" in capsys.readouterr().err

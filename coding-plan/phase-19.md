@@ -11,7 +11,7 @@
 ## 0. 结论
 
 - **无任何一项阻塞核心回路**：669 tests 覆盖的回路（记忆读写/压实/固化/遗忘、技能提炼/路由/迭代、进化四阶段 + HITL + 自动溶解）在生产路径上均已接通。
-- **A3（skills 半边）已于 change `0050` 关闭**（技能库/反馈/SOP 样本/灰度态落盘，ADR-0053）；evolution 半边（观察窗口）随 A5。
+- **A3 全闭（skills 半边 change `0050`，evolution 半边 change `0051`）**；**A5 + 本次新增发现 A10 已于 change `0051` 关闭**（冷路径驱动面 = loop 节拍 + `evolve run`；观察窗口落盘 + 批次成功率采样；ADR-0054）。
 - **A2+E2（会话维度）已于 change `0048` 关闭**（标识透传 + `compact` 接真 + 按会话读取）；**A1 已于 change `0049` 关闭**（收尾维护节拍 + `memory maintain`）。A 类剩 A3–A9。
 - **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）**；E 类中只有 **E1（constraints 中间件）** 与 **E2（per-session）** 有真实行为影响，其余为「接线缺失」。
 - **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A4/A5、E2/E4/E5 全归此。
@@ -35,13 +35,14 @@
 |---|---|---|---|---|---|
 | A1 | A | ~~`forget` 无调度器~~ | ✅ 已关闭（change `0049`）：loop 收尾维护节拍触发 `forget` + `core-agent memory maintain` 显式入口 | 中 | — |
 | A2 | A | ~~生产 `session_id` 恒空串~~ | ✅ 已关闭（change `0048`）：标识透传至 `remember`，压实/固化/遗忘按会话归组 | 中 | — |
-| A3 | A | 进程内无持久化 | 🔶 **skills 半边已闭**（change `0050`：技能库/反馈/SOP 样本/灰度态落盘）；evolution 半边（观察窗口）随 A5 | 中 | 观察窗口随 A5 一并落盘 |
+| A3 | A | ~~进程内无持久化~~ | ✅ 已关闭（change `0050` + `0051`）：技能库/反馈/SOP 样本/灰度态 + 观察窗口全落盘 | 中 | — |
 | A4 | A | `EvolutionEngine.confirm` 无生产调用方 | 候选待办队列无驱动面，HITL 门在生产不触达 | 中 | 操作面（CLI/UI）驱动 pending 队列 |
-| A5 | A | `observe` 无采样调度器 | 观察期窗口开了，但无人按节拍喂回归样本 | 中 | 采样来源（evaluator 或外部上报） |
+| A5 | A | ~~`observe` 无采样调度器~~ | ✅ 已关闭（change `0051`）：冷路径批次成功率按 `plugin_id` 归因采样 | 中 | — |
 | A6 | A | 观察窗口按 target 覆盖 | 重发布即重开窗口、丢旧样本 | 低 | 窗口历史留痕（可选） |
 | A7 | A | 语义分未接历史成功率加权 | 排序只用语义分；候选未预筛，miss 轮逐条打分 | 低 | 数据源已就位（`SkillFeedback`） |
 | A8 | A | memory「并发压实一致性」无实现 | 规格有此 Requirement，实现未做 | 低 | 出现并发调用方 |
 | A9 | A | `context.stage` 语义化残留 | 装配阶段标注不参与事实选择 | 低 | B6 决策的后续 |
+| A10 | A | ~~进化冷路径无驱动面~~ | ✅ 已关闭（change `0051`）：loop 收尾节拍 + `core-agent evolve run` | 中高 | — |
 | E1 | E | constraints 中间件链从未注入 loop | `_apply_middlewares` 空转，生产零 `middlewares=` | **中高** | 写 constraints→loop 适配层 |
 | E2 | E | ~~UI 无每会话 loop/memory~~ | ✅ 已关闭（change `0048`，会话维度部分）：标识透传 + 单店按会话归组 | 中（与 A2 同根） | — |
 | E3 | E | 神通（beast）runtime 桥接缺失 | 20 神通从未进运行时 SkillLibrary；handoff 整段短路 | 中 | 先定夺 R4/R5 规格 deferred 是否解除 |
@@ -80,7 +81,7 @@
 - **关闭动作**：✅ **已由 change `0048-session-scoped-memory` 闭合**（与 E2 合并做）：loop 三入口收 `session_id` 并写入 L2 条目；`UIAPILayer.compact` 直调 `MemoryStore.compact`；`get_memory` 按会话归属过滤。spec delta：`loop`/`memory`/`ui` 三份（29 specs 全绿），测试 674 passed。
 - **前置**：无（原「与 E2 同根，建议合并做」已按此执行）。
 
-### A3 进程内无持久化 — 🔶 skills 半边已闭（change `0050`）
+### A3 进程内无持久化 — ✅ 已关闭（change `0050` + `0051`）
 
 - **现象**（五处同源）：
   - `SkillLibrary` 注册表 —— SOP 提炼入库的技能随进程消失；
@@ -91,8 +92,12 @@
 - **根因**：Phase 18 有意把持久化排除（先跑通闭环逻辑，再补落盘）；与 Phase 13/16 的「进程内态」同类（E4 的 `PetManager` 同族）。
 - **关闭动作**：定存储选型（复用 `FileBackend` 或新 backend）→ 逐类补 spec 持久化 Requirement → 与「依赖与重开顺序」第 3 步的 serve 常驻进程一并落地。
 - **关闭进度**：🔶 **skills 半边已由 change `0050-persist-skills-state` 闭合**（存储选型 = 沿用既有 `path: Path | None` + `_load`/`_persist` 惯例，共用 `skills/persist.py` 两个纯函数、单文件 JSON 快照、零第三方依赖，决策见 **ADR-0053**）：`SkillLibrary` / `SkillFeedback` / `SopExtractor` / `VersionManager` 四类各加可选 `path`（缺省纯内存，向后兼容），`build_runtime` 注入 `$CORE_STATE_DIR/{skills,skill-feedback,sop-samples,skill-versions}.json`；spec 补「技能态持久化」Requirement（29 specs 全绿），测试 685 passed。
-- **剩余部分**：evolution 侧**观察窗口 / 候选队列**仍进程内 —— 归 **A5**（采样来源落地时一并落盘；窗口不落盘则重启即丢，见 A5 前置）。
-- **前置**：无（存储选型已定，ADR-0053）。
+- **evolution 半边闭合**：🔶 **已由 change `0051-evolution-cold-path` 闭合** —— `ObservationRegistry` 加可选
+  `path`，落盘 `{target: {baseline, samples, frozen_until}}`（**冻结截止一并落盘**，否则重启即解冻、冷却期形同虚设），
+  缺省纯内存；`build_runtime` 注入 `$CORE_STATE_DIR/observations.json`。两个纯函数 `read_state` / `write_state`
+  同时从中立化提升到 `src/core/persistence.py`（技能态与进化态共用，决策见 **ADR-0054**）。
+- **剩余**：候选 `pending` 队列仍进程内 —— 属 A4（审批操作面）范畴，非持久化缺口。
+- **前置**：无（存储选型已定，ADR-0053 / ADR-0054）。
 
 ### A4 `EvolutionEngine.confirm` 无生产调用方
 
@@ -101,12 +106,16 @@
 - **关闭动作**：在操作面（CLI 命令 / UI 审批面板）接 pending 队列 → 构造 `ApprovalTicket` → 调 `confirm`。
 - **前置**：审批单来源（`permission` 审批流的发起端）。
 
-### A5 `observe` 无采样调度器
+### A5 `observe` 无采样调度器 — ✅ 已关闭（change `0051`）
 
 - **现象**：`EvolutionEngine.observe(target, score, *, now=...)` 是采样接缝，但**无生产调用方**（grep 无命中）→ 观察期窗口开而不采，自动溶解在生产侧不会被触发。
 - **根因**：Phase 18 #10 明确不把调度器放进引擎（保持引擎纯粹、`now` 可注入以便测试）。
-- **关闭动作**：定采样来源——① `Evaluator` 评测轮次回灌；② 外部（用户反馈 / 线上指标）上报。二者均需接线点。
-- **前置**：A3（窗口持久化）宜先行，否则重启即丢窗口。
+- **关闭动作（已落地）**：采样来源取**已有数据的最近似口径** —— `EvolutionWorker._sample_observations` 在每轮
+  `run_cycle` 后，对本批 trace 中**已开窗**目标按 `plugin_id` 归因算**批次成功率**并各上报一次（线上代理指标、
+  零额外评测成本）；无归因 trace 的目标不采样。**已知口径张力（如实记录）**：批次成功率与留出评测分不是同一指标，
+  绝对分差容差 `0.2` 只是近似可比 —— 宁漏报不误杀（溶解是不可逆方向的重动作）。**不采纳**「`Evaluator` 评测轮次
+  回灌」（要再造一条无人驱动的评测）与「外部上报」（生产无上游）。
+- **前置**：A3 进化半边（已随本次一并落盘）。
 
 ### A6 观察窗口按 target 覆盖
 
@@ -130,6 +139,19 @@
 
 - **现象**：`ContextPack` 的 `stage` 字段是装配阶段标注，暂不参与事实选择（B6 关闭时的残留项，原并入 A3 清账）。
 - **关闭动作**：需要「按阶段差异化选事实」时再语义化。
+- **前置**：无。
+
+### A10 进化冷路径无驱动面 — ✅ 已关闭（change `0051`）
+
+- **现象**（本次会话走查新增）：`EvolutionWorker.on_trace_complete` / `maybe_run` 全仓**仅 `runtime.py`（构造）与
+  `tests/` 引用** —— CLI 无对应命令、loop 无节拍、无定时器 → L4 整条冷路径离线：`run_cycle`（诊断→提案）、
+  `crystallize`（发布 + **开窗**）在生产都不会发生。**这是 A5 的上游**：`observe` 无调用方，但即便把采样接进
+  worker，也仍然没人驱动 worker。
+- **根因**：同一个形态问题 —— 零件「进程内、无状态、**无驱动**」。与 A1（`forget` 无调度器）同源，只是这一处漏在 L4。
+- **关闭动作**：两个诚实答案（无真实常驻宿主：`HarnessHost` 每条 CLI 命令各起一份、serve 非长驻调度器）——
+  ① **loop 收尾维护节拍**给出一次冷路径机会（组合根注入 `Callable[[], None]`，与记忆维护**共用节拍闸门**
+    `maintenance_interval`；loop 不 import evolution，DI 红线不破）；② CLI **`core-agent evolve run`** 一次性入口
+    （装配 runtime → `maybe_run(force=True)` → 打印结局）。**阈值门仍归 `EvolutionTrigger`**，驱动面只给「机会」。
 - **前置**：无。
 
 ---
@@ -329,7 +351,7 @@
 1. **D + F + G 清尾**（无依赖、低成本）：G 类订正 deferred 措辞 + F 类逐项勾销/定性 + README 同步 —— 使账本自身可达且不误导。 ✅ **已完成**（G 类 7 组订正；D1/D3/D5 关闭、D4 部分；F 类 6 组核实：41 框勾销 / 11 项转出 E·A·B；README 已同步）。
 2. **A2 + E2 合并做**（同一根因）：会话标识透传 + 每会话独立 loop/memory + `UIAPILayer.compact` 接真。 ✅ **已完成**（change `0048-session-scoped-memory`：标识透传 + `compact` 接真 + `get_memory` 按会话过滤；**未采**每会话独立实例，理由见该 change design 决策 1/2）。
 3. **A1**（记忆驱动侧）：遗忘节拍。宜在 A2 之后（会话维度不生效时，衰减分组也是错的）。 ✅ **已完成**（change `0049-memory-maintenance-cadence`：loop 收尾维护节拍 + `memory maintain` CLI）。
-4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义；建议与「serve 常驻进程」一并做（`debug-gaps.md` §4 已提）。 🔶 **A3 skills 半边已完成**（change `0050`：技能库/反馈/SOP 样本/灰度态落盘 + ADR-0053）；**下一步 A3 evolution 半边 + A5**（观察窗口落盘 + 采样来源）。
+4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义。 ✅ **A3 全闭 + A5 + A10 已完成**（change `0050` 技能态落盘 / ADR-0053；change `0051` 进化冷路径驱动面 + 观察窗口落盘 + 批次成功率采样 / **ADR-0054**；A10 为本次走查新增的「冷路径无驱动面」发现）。⏭ **下一步 A4**（`confirm` 生产调用方 / pending 队列驱动面）+ **E4**（pet 运行时注入整族）。
 5. **B1**（独立轨）：随时可先写重开 ADR（不需代码），是唯一可并行推进的阻塞级项。
 6. **E1 + E7 + E8**（契约与中间件）：E1 有真实行为影响（熔断/校验空转），建议提前；E7/E8 需先定夺契约再动。
 7. **E3 / E6**（规格裁决）：先定夺 beast R4/R5 与 context 判定升级是否解除 deferred，再决定是否接 runtime。

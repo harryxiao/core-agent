@@ -14,9 +14,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from core.persistence import read_state, write_state
+
 from .errors import SkillError, SkillErrorCode
 from .models import Skill
-from .persist import read_state, write_state
 
 
 def _domain(skill_id: str) -> str:

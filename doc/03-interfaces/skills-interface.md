@@ -211,10 +211,10 @@ class SopExtractor:
 
 技能态是**可变快照**（技能字段会被迭代改写、灰度状态会被覆盖、样本组提炼后清空），故用
 **单文件 JSON 整体重写**而非追加日志；四个状态组件各持自己的 `path` 与序列化形状，只把
-「字节进字节出」交给 `skills/persist.py` 的两个纯函数（标准库 JSON，零第三方依赖）。
+「字节进字节出」交给 `core/persistence.py` 的两个纯函数（标准库 JSON，零第三方依赖；**change `0051` 转入中立模块**，见下）。
 
 ```python
-# skills/persist.py —— 无状态纯函数：read/write 都接受 path=None（= 不落盘）
+# core/persistence.py —— 无状态纯函数：read/write 都接受 path=None（= 不落盘）
 def read_state(path: Path | None) -> Any:
     """读快照；None / 文件缺失 / 非法 JSON → None（不抛）。"""
 
@@ -235,6 +235,10 @@ def write_state(path: Path | None, data: Any) -> None:
 | **损坏降级** | 落盘缺失 / 非法 JSON / 结构不符 → 空态启动（不抛、不阻断）；技能态是可重建的派生数据，不为它拒绝启动 |
 | **原子性** | 临时文件 + `os.replace` 整文件替换，避免半写文件被读到 |
 | **口径不变** | 持久化只跨进程保态，**不改变**路由 / 版本选择 / 迭代判定语义 |
+
+> **helper 归属（change `0051`）**：两个纯函数原在 `src/core/skills/persist.py`；进化侧（`ObservationRegistry`）
+> 成为第二个消费者后，留在 skills 包会迫使 evolution 反向 import skills 内部模块（依赖方向错），故提升到
+> `src/core/persistence.py`——中性模块，**不 import 任何能力包、不构成横切能力**（决策记 ADR-0054）。
 
 ---
 
