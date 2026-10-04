@@ -59,18 +59,47 @@
 
 **D.（P2 可选，本 Phase 不实现）** 自动课程（Voyager 式自主目标生成），为「自动迭代内部其余模块」铺路。
 
-**E. 遗留任务（来自 Phase 17.5 §3.1 走查，与 A/B 同层，按需并入本 Phase）**
+**E. 遗留任务（来自 Phase 17.5 §3.1 走查 + 2026-10-04 复核修正）**
 
-> 2026-10-04 走查结论：以下为 Phase 17.5（接线补丁）实施后仍存留的架构级欠账，
-> 均落在 L2 记忆 / L3 上下文工程本层职责内，不越层；在此登记并闭环。
+> 2026-10-04 复核结论：以下为 Phase 17.5（接线补丁）实施后仍存留的架构级欠账。
+> 复核发现一个**被遗漏的前置（P0）**，且原「C7→B4→B5→B6」顺序**不成立**——已按真实
+> 依赖重排（见 §5-11）。**P0 完成前，B4/B5/B6 及 B2 的语义在生产均不可见。**
 
-- **C7 embedder 接入**：`runtime.py:164` 构造 `MemoryStore` 未传 embedder → 运行时恒走词法 `_lexical_sim`，「语义检索」名存实亡。落点＝交付物 #2「read 多因子化」时经 `CoeffectResolver` 注入 embedder（模型/密钥**只引用不读取**，不进日志/记忆）。
-- **C8 写侧无 consolidation/forgetting**：`remember` 只增不整合、不衰减（已覆盖于交付物 #4/#5，此处仅登记落点，不重复实现）。
-- **B4 `ContextPack.skills` / `pending` 恒空**：`assembler.build`（assembler.py:34）从不填充 → 装配包只有 facts/constitution。落点＝交付物 #6/#7（SOP 提取、语义路由）上线后，装配器消费 `SkillRouter.route` 结果写入 `skills`。
-- **B5 `_trim` 保序截断**：`budget.py:56-64` 按顺序取前 N 到预算即止，非按相关度裁剪 → 高价值项可能被后到的低价值项挤出。落点＝预算裁剪改为「按多因子得分排序后截断」。
-- **B6 仅 reason 阶段装配**：`assembler.build` 唯一调用点＝planner `reason`（planner.py:124）→ perceive/act 阶段无信息供给。落点＝按需为 perceive（首轮召回）/ act（工具选择）扩展装配阶段。
-- **A1 `LoopContext.memory` 遗留字段** ✅ **已完成**（2026-10-04）：全仓确认无消费方后删除字段，同步 `loop-interface.md`（连带清除文档里的幽灵类型 `MemoryPack`）。
-- **A3 `stage` 装饰性参数** ✅ **已完成**（随 B2 / change 0038）：`context-interface.md` 与 `context/spec.md` 已如实标注 stage「暂不参与事实选择」。仍可选：赋予阶段化权重（留待按需）。
+- **P0（前置，最关键）装配器整条路径在生产是死路径**：`build_runtime` 两处调用
+  （`entry.py:281`、`:688`）均**未传 `assembler=`** → 生产侧 `planner._assembler is None`
+  （`runtime.py:191/231` 仅把 None 透传）→ **L2 事实注入从不发生**。且宪法/项目信息素材的
+  加载器 `GlobalProfileLoader`/`ProjectProfileLoader`（`core_profile/loader.py`）
+  **无任何生产调用方**。即 Phase 17.5 §3.1 只改了装配器内部（query 修正），**没把它接上
+  runtime**——B2 目前在生产不可见。落点＝`build_runtime` 构造 `DynamicAssembler(memory=memory,
+  constitution=..., project_info=...)` 并传入主/子 planner，接入 profile loader 取素材。
+  spec 已有「宪法约束注入」「项目信息注入」两条 Requirement 兜底（属**补齐已声明未实现项**，
+  非新需求）。**B5/B6 亦依赖此项才生效。**
+- **C7 embedder 接入（非机械接线，须先决策）**：`runtime.py` 构造 `MemoryStore` 未传 embedder
+  → 运行时恒走词法 `_lexical_sim`，「语义检索」名存实亡。但：
+  ① **契约不匹配**——`MemoryStore.embedder` 是**批量可调用** `(list[str]) -> list[list[float]]`
+  （`store.py:38`、`relevance.py:62`），rag 的 `Embedder.embed(text) -> list[float]`
+  （`embedder.py:38`）是**单条** → 需适配器；
+  ② **成本**——`relevance._similarity` 每次 read 对**每个候选**调 embedder → **N+1 次
+  embedding/read**，须定策略（写时缓存向量 or 离线 `HashEmbedder`）→ **先落决策（建议 ADR）**；
+  ③ **强耦合**——与交付物 #1/#2（`importance`/`kind` + 多因子重排）是同一件事的两半，
+  须一并落地避免返工。落点＝交付物 #1/#2 时一并接，带缓存策略；模型/密钥**只引用不读取**。
+- **C8 写侧无 consolidation/forgetting**：`remember` 只增不整合、不衰减（已覆盖于交付物
+  #4/#5，此处仅登记落点，不重复实现）。
+- **B4 `ContextPack.skills` / `pending` 恒空——前提部分不成立，判为冗余**：技能**已经**进
+  prompt——planner 有 `skill_router` 回调（`runtime.py:191` → `planner.py:132 _skill_hints`
+  → 「可用技能」块）。缺口仅是 `ContextPack.skills` 字段恒空（`build` 从不填充），**无功能
+  空洞**。落点＝并入交付物 #6/#7（SOP/语义路由）时顺带填充，或直接判定冗余删除；
+  **不单列为独立任务**。
+- **B5 `_trim` 保序截断**：`budget.py:56-64` 按顺序取前 N 到预算即止，非按相关度裁剪
+  → 高价值项可能被后到的低价值项挤出。落点＝预算裁剪改为「按多因子得分排序后截断」。
+  **依赖 P0 生效。**
+- **B6 仅 reason 阶段装配**：`assembler.build` 唯一调用点＝planner `reason`（`planner.py:124`）
+  → perceive/act 阶段无信息供给。落点＝按需为 perceive（首轮召回）/ act（工具选择）扩展装配
+  阶段。**依赖 P0 生效。**
+- **A1 `LoopContext.memory` 遗留字段** ✅ **已完成**（2026-10-04，commit db204dc）：全仓确认
+  无消费方后删除字段，同步 `loop-interface.md`（连带清除文档里的幽灵类型 `MemoryPack`）。
+- **A3 `stage` 装饰性参数** ✅ **已完成**（随 B2 / change 0038）：`context-interface.md` 与
+  `context/spec.md` 已如实标注 stage「暂不参与事实选择」。仍可选：赋予阶段化权重（留待按需）。
 
 ---
 
@@ -115,7 +144,13 @@
 8. **维度1 Skill 迭代**：记录 skill 命中 + 执行反馈，发现不完善触发迭代（`version` 升级 + `ABResult` 对比），迭代后自动发布。
 9. **维度2 confirm 收口**：`engine` 确认架构级候选（`kind="plugin"`）一律 `confirm`，不引入低风险自动结晶；`risk_level` 仅用于「技能库 vs 架构」风险域判据。
 10. **auto-dissolve 自动回滚**：结晶后登记观察期，evaluator 持续采样回归指标，超阈值自动 `dissolve`，并写审计 trace。
-11. **遗留欠账收口**：按 §1.3-E 逐项并入（优先 C7 embedder 接入 → B4 装配消费 skills → B5 相关度裁剪 → B6 多阶段装配 → A1/A3 字段与参数收口）。
+11. **遗留欠账收口（按真实依赖，2026-10-04 修正序）**：
+    ① **P0（前置）** 把 `DynamicAssembler` 接进 `build_runtime` + 接 profile loader
+    （让 B2/B5/B6 生效，补齐已声明未实现的「宪法注入/项目信息注入」）
+    → ② 交付物 **#1/#2**（`importance`/`kind` + 多因子重排，**一并接 C7 embedder + 缓存策略**，先落 ADR）
+    → ③ **B5/B6**（随装配器阶段化）
+    → **B4** 并入 #6/#7 或判冗余删除（不独立排期）。
+    A1/A3 已清账（✅）。
 
 ---
 
