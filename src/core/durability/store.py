@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from dataclasses import asdict
 from pathlib import Path
@@ -75,6 +76,11 @@ class CheckpointStore:
             self._persist()
 
     def _persist(self) -> None:
+        """原子提交：写同目录临时文件后 ``os.replace`` 替换。
+
+        写入中途被终止（进程崩溃 / 半写）时，读者看到的仍是**上一版完整文件**，
+        既有检查点不会部分覆盖或整体丢失（规格 durability「崩溃恢复」）。
+        """
         if self._path is None:
             return
         lines = [
@@ -88,7 +94,9 @@ class CheckpointStore:
             )
             for cid in self._checkpoints
         ]
-        self._path.write_text("\n".join(lines), encoding="utf-8")
+        tmp = self._path.with_name(self._path.name + ".tmp")
+        tmp.write_text("\n".join(lines), encoding="utf-8")
+        os.replace(tmp, self._path)
 
     def _load(self) -> None:
         if self._path is None:

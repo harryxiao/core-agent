@@ -119,7 +119,7 @@ pytest -q
 
 - [x] 架构测试：四模块不得反向依赖 loop/skills/orchestration
 - [x] 熔断测试：连续失败触发 `CIRCUIT_OPEN`，短路期间无真实调用（**生产接线已端到端证明**：change `0052`，`tests/test_constraints_wiring.py::test_e2e_breaker_opens_through_loop` —— 达阈值后工具 handler 调用计数停住）
-- [ ] 崩溃恢复测试：kill -9 后重启，`resume()` 恢复且无重复副作用（部分：`tests/test_durability.py:55/67` 有 resume 幂等单测（内存 store 模拟），**无真实 `kill -9` 子进程重启用例** → `phase-19.md` E12）
+- [x] 崩溃恢复测试：kill -9 后重启，`resume()` 恢复且无重复副作用（**已补齐**：change `0062`，`tests/test_durability_crash.py` —— 真子进程 `SIGKILL` → 另一进程重载存储 → 取最近有效检查点 → 按游标幂等续跑；**并修掉持久化非原子写入缺陷**：`write_text` 先截断致半写即整体丢失，改为 tmp + `os.replace` 原子提交）
 - [x] 时间旅行测试：回滚到历史检查点，副作用级回滚与快照一致
 - [x] 沙箱测试：沙箱内高危动作被拦截/降级，销毁后资源清零
 - [x] MCP 隔离测试：远端连接故障不阻断宿主，心跳断线可重连
