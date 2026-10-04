@@ -40,8 +40,8 @@ from core.evolution import (
 )
 from core.judgment import Compactor, DecisionRouter, Guardrail, JEVProvider, SkillMatcher
 from core.llm_provider import LLMProvider, LLMRequest, Message, StdlibLLMProvider
-from core.loop import Approver, DefaultLoop, LoopPlugin
-from core.loop.planner import LLMPlanner
+from core.loop import Approver, DefaultLoop, LoopPlugin, TurnObserver
+from core.loop.planner import LLMPlanner, SkillHint
 from core.memory import (
     Crystallizer,
     FileBackend,
@@ -69,7 +69,16 @@ from core.permission import PermissionGuard
 from core.plugin_registry import CoeffectResolver, EffectTracker, PluginInstaller
 from core.plugins import InstallDispatcher
 from core.rag import LLMEmbedder
-from core.skills import SkillLibrary, SkillRouter, SopExtractor, sop_writer_with
+from core.skills import (
+    Skill,
+    SkillFeedback,
+    SkillIterator,
+    SkillLibrary,
+    SkillRouter,
+    SopExtractor,
+    skill_hint,
+    sop_writer_with,
+)
 from core.tools import (
     Tool,
     ToolDef,
@@ -95,6 +104,9 @@ class Runtime:
     router: DecisionRouter
     loop: DefaultLoop
     skill_router: SkillRouter
+    skill_feedback: SkillFeedback
+    skill_iterator: SkillIterator
+    skill_extractor: SopExtractor
     installer: PluginInstaller
     evolution: EvolutionWorker
     orchestrator: TaskScheduler
@@ -233,6 +245,47 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
     sop_extractor = SopExtractor(
         skill_library, writer=sop_writer_with(_llm_text), effect_tracker=effect_tracker
     )
+    # 技能迭代接线（0045）：命中注入 + 执行反馈 + 迭代闭环。反馈是进程内统计（不落盘、
+    # 不写记忆）；迭代复用 VersionManager 的灰度/A/B（0048 决策 ⑥ 记的「能力已存在、
+    # 无调用者」在此接上调用者），改写走与 SOP 同一注入接缝（skills 不 import LLM 抽象）。
+    skill_feedback = SkillFeedback()
+    skill_iterator = SkillIterator(
+        skill_library,
+        skill_feedback,
+        writer=sop_writer_with(_llm_text),
+        tracker=effect_tracker,
+    )
+
+    def _loop_hooks() -> tuple[Callable[[str], list[SkillHint]], TurnObserver]:
+        """每 loop 一组钩子闭包（命中注入 + 收尾反馈）：状态不跨 loop 共享。
+
+        路由 → 版本解析 → 记命中 → 纯 dict 快照（loop 不 import skills）；收尾按本轮
+        实际注入的 ``(技能, 版本)`` 记结果并顺势定夺/触发迭代，再把轨迹转交 SOP 观察者。
+        """
+        surfaced: list[tuple[Skill, str]] = []
+
+        def hints(task: str) -> list[SkillHint]:
+            result: list[SkillHint] = []
+            for matched in skill_router.match(task):
+                skill = matched.skill
+                version, text = skill_iterator.resolve(skill)
+                skill_feedback.record_hit(skill.skill_id, version=version)
+                surfaced.append((skill, version))
+                result.append(skill_hint(skill.skill_id, version, text))
+            return result
+
+        def on_turn(task: str, steps: list[str], ok: bool) -> None:
+            for skill, version in surfaced:
+                skill_feedback.record_outcome(skill.skill_id, version=version, ok=ok)
+                skill_iterator.decide(skill)  # 两版本样本齐备 → A/B 定夺
+                if not ok:
+                    skill_iterator.consider(skill)  # 失败轮触发迭代（阈值门在迭代器内）
+            surfaced.clear()
+            sop_extractor.observe(task, steps, ok=ok)
+
+        return hints, on_turn
+
+    loop_hints, loop_turn = _loop_hooks()
     dispatcher = InstallDispatcher(skill_library=skill_library, tool_provider=tools)
     installer = PluginInstaller(source_resolver=dispatcher.resolve, installer=dispatcher.install)
 
@@ -269,7 +322,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         model=app.llm.model,
         reasoning_effort=app.llm.reasoning_effort,
         assembler=assembler,
-        skill_router=lambda task: [m.skill.skill_id for m in skill_router.match(task)],
+        skill_router=loop_hints,
         tools=tools,
     )
     loop = DefaultLoop(
@@ -281,7 +334,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         router=router if jev is not None else None,
         approver=approver,
         compactor=context_compactor,
-        sop_observer=sop_extractor.observe,
+        turn_observer=loop_turn,
     )
 
     evolution_engine = EvolutionEngine(
@@ -306,12 +359,13 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         return provider
 
     def _agent_loop(provider: ToolProvider) -> LoopPlugin:
+        agent_hints, agent_turn = _loop_hooks()
         sub_planner = LLMPlanner(
             llm,
             model=app.llm.model,
             reasoning_effort=app.llm.reasoning_effort,
             assembler=assembler,
-            skill_router=lambda task: [m.skill.skill_id for m in skill_router.match(task)],
+            skill_router=agent_hints,
             tools=provider,
         )
         return cast(
@@ -325,7 +379,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
                 router=router if jev is not None else None,
                 approver=approver,
                 compactor=context_compactor,
-                sop_observer=sop_extractor.observe,
+                turn_observer=agent_turn,
             ),
         )
 
@@ -450,6 +504,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         router=router,
         loop=loop,
         skill_router=skill_router,
+        skill_feedback=skill_feedback,
+        skill_iterator=skill_iterator,
+        skill_extractor=sop_extractor,
         installer=installer,
         evolution=evolution,
         orchestrator=orchestrator,

@@ -234,7 +234,9 @@ def test_llm_planner_returns_action_and_carries_context(tmp_path) -> None:
         fake,
         reasoning_effort="low",
         assembler=assembler,
-        skill_router=lambda task: ["skills.x.y"],
+        skill_router=lambda task: [
+            {"skill_id": "skills.x.y", "version": "v2", "instructions": "1. 读输入"}
+        ],
         tools=provider,
     )
 
@@ -248,6 +250,9 @@ def test_llm_planner_returns_action_and_carries_context(tmp_path) -> None:
     tools = request.tools or []
     assert tools and tools[0]["type"] == "function"
     assert tools[0]["function"]["name"] == "tools.echo"
+    system = request.messages[0].content
+    assert "skills.x.y（v2）" in system, "技能块含 id 与版本"
+    assert "1. 读输入" in system, "命中注入 instructions（0045）"
     assert tools[0]["function"]["parameters"] == provider.active_tools()[0].schema
     system = request.messages[0].content
     assert "规则A" in system
@@ -645,14 +650,14 @@ def test_build_runtime_wires_summarizer_and_context_compactor(monkeypatch, tmp_p
 
 
 def test_build_runtime_wires_sop_extractor(monkeypatch, tmp_path) -> None:
-    """0043：build_runtime 把 SOP 提炼器接进 loop 收尾钩子（产物进 planner 同一技能库）。"""
+    """0043/0045：build_runtime 把 SOP 提炼器接进 loop 收尾钩子（产物进 planner 同一技能库）。"""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
 
-    observer = runtime.loop._sop_observer
-    assert observer is not None, "loop 注入 SOP 收尾钩子"
-    extractor = observer.__self__
-    assert isinstance(extractor, SopExtractor), "钩子绑定 SopExtractor.observe"
+    observer = runtime.loop._turn_observer
+    assert observer is not None, "loop 注入收尾钩子"
+    extractor = runtime.skill_extractor
+    assert isinstance(extractor, SopExtractor)
     assert extractor._writer is not None, "已配置模型 → 注入提炼接缝"
     assert extractor._tracker is not None, "入库可逆（效应追踪已接）"
 
@@ -661,7 +666,7 @@ def test_build_runtime_wires_sop_extractor(monkeypatch, tmp_path) -> None:
 
     extractor._writer = lambda prompt: "1. 读输入\n2. 输出摘要"
     for _ in range(3):
-        observer("summarize the report", ["assistant: tools.echo", "tool: ok"])
+        observer("summarize the report", ["assistant: tools.echo", "tool: ok"], True)
 
     assert planner._skill_router("please summarize the report"), "提炼产物进同一技能库 → 路由命中"
 
@@ -713,7 +718,8 @@ def test_build_runtime_wires_skill_scorer_with_jev(monkeypatch, tmp_path) -> Non
     assert planner_router("整理会议纪要") == [], "词法不相交 → 无命中"
 
     runtime.skill_router._scorer = lambda task, skills: {skills[0]["skill_id"]: 0.9}
-    assert planner_router("整理会议纪要") == ["skills.data.summarize"], "语义兜底 → 技能进 prompt"
+    hints = planner_router("整理会议纪要")
+    assert [h["skill_id"] for h in hints] == ["skills.data.summarize"], "语义兜底 → 技能进 prompt"
 
 
 def test_build_runtime_without_jev_keeps_lexical_routing(monkeypatch, tmp_path) -> None:
@@ -722,3 +728,50 @@ def test_build_runtime_without_jev_keeps_lexical_routing(monkeypatch, tmp_path) 
     runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
 
     assert runtime.skill_router._scorer is None
+
+
+# ---- 0045 技能迭代接线 ----
+
+
+def test_build_runtime_wires_skill_iteration(monkeypatch, tmp_path) -> None:
+    """0045：命中注入 instructions → 收尾反馈累计 → 失败率不达标自动迭代（复用 VersionManager）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+
+    library = runtime.skill_router._library
+    library.register(
+        Skill(
+            skill_id="skills.sop.x",
+            description="SOP：summarize report",
+            task_types=["summarize report"],
+            instructions="1. 读输入",
+            status="active",
+        )
+    )
+    planner_router = runtime.loop._planner._skill_router
+    runtime.skill_iterator._writer = lambda prompt: "1. 改进步骤"
+    rounds: list[list[dict[str, str]]] = []
+    for _ in range(3):
+        rounds.append(planner_router("summarize report"))  # 每轮推理前路由命中（loop 真实节奏）
+        runtime.loop._turn_observer("summarize report", ["assistant: x"], False)
+
+    assert [h["instructions"] for h in rounds[0]] == ["1. 读输入"], "命中注入 instructions"
+    assert rounds[0][0]["version"] == "v1"
+
+    stats = runtime.skill_feedback.stats("skills.sop.x")
+    assert (stats.hits, stats.fail) == (3, 3), "命中与失败累计（钩子带来 ok=False）"
+    iterator = runtime.skill_iterator
+    assert iterator._drafts["skills.sop.x"]["v2"] == "1. 改进步骤", "自动迭代出草稿"
+    assert iterator._versions._gray["skills.sop.x"][0] == "v2", "草稿进入灰度"
+
+    # 灰度是概率分流（样本归属不确定）→ 显式补足两版本样本后再定夺
+    samples = runtime.skill_iterator._min_samples
+    for _ in range(samples):
+        runtime.skill_feedback.record_outcome("skills.sop.x", version="v1", ok=False)
+    for _ in range(samples):
+        runtime.skill_feedback.record_outcome("skills.sop.x", version="v2", ok=True)
+    result = runtime.skill_iterator.decide(library.lookup("skills.sop.x"))
+
+    assert result is not None and result.decision == "promote", "A/B 指标接的是反馈成功率"
+    assert library.lookup("skills.sop.x").version == "v2"
+    assert library.lookup("skills.sop.x").instructions == "1. 改进步骤"

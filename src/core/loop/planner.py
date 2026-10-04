@@ -23,6 +23,17 @@ from .protocol import Action, LoopContext
 # 解析模型输出失败时的结构化错误码（终端回复，不中断循环）。
 _PARSE_FAILED = "LLM_PLAN_PARSE_FAILED"
 
+# 命中技能提示：**纯数据**快照（loop 不 import skills —— 架构红线），由组合根组装
+SkillHint = dict[str, str]  # {"skill_id": ..., "version": ..., "instructions": ...}
+
+
+def _format_skill_hint(hint: SkillHint) -> str:
+    """渲染一条技能提示：``- <id>（<版本>）：<步骤>``；步骤为空时只留 id 与版本。"""
+    head = f"- {hint['skill_id']}（{hint.get('version', '')}）"
+    steps = hint.get("instructions", "").strip()
+    return f"{head}：{steps}" if steps else head
+
+
 _SYSTEM_PROMPT = (
     "你是 CORE-Harness 无特权核心的推理规划器，把用户任务推理为下一步动作。\n"
     '输出格式二选一：①自然语言回复；②JSON 工具调用 {"tool_id": "...", "args": {...}}。'
@@ -39,7 +50,7 @@ class LLMPlanner:
         model: str | None = None,
         reasoning_effort: str | None = None,
         assembler: DynamicAssembler | None = None,
-        skill_router: Callable[[str], list[str]] | None = None,
+        skill_router: Callable[[str], list[SkillHint]] | None = None,
         tools: ToolProvider | None = None,
     ) -> None:
         self._llm = llm
@@ -131,7 +142,7 @@ class LLMPlanner:
                 )
         skills = self._skill_hints(self._task(ctx))
         if skills:
-            blocks.append("可用技能：\n" + "\n".join(f"- {skill}" for skill in skills))
+            blocks.append("可用技能：\n" + "\n".join(_format_skill_hint(s) for s in skills))
         if self._tools is not None:
             schemas = [f"- {t.tool_id}: {t.description}" for t in self._tools.active_tools()]
             blocks.append("可用工具：\n" + "\n".join(schemas))
@@ -153,7 +164,7 @@ class LLMPlanner:
             for t in self._tools.active_tools()
         ]
 
-    def _skill_hints(self, task: str) -> list[str]:
+    def _skill_hints(self, task: str) -> list[SkillHint]:
         if self._skill_router is None:
             return []
         return self._skill_router(task)

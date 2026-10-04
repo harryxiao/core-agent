@@ -207,6 +207,20 @@
 > spec 从未提及 skills；构造方均未传该字段）。**遗留**：语义分只用于排序，**无历史成功率加权**
 > （需命中/结果反馈闭环，归 #8）；候选未预筛（miss 时对全部 active/gray 技能逐条打分，K = 技能数）。
 
+> **#8 技能迭代 已完成并归档**（2026-10-04，change `0045-skill-iteration`，637→649 tests 绿、
+> ADR-0050 Accepted）：补上三处断链——① `instructions` **首次真正进 prompt**（组合根把命中快照
+> `skill_hint`（id + 版本 + 步骤节选 ≤ 400 字符）交给 planner 渲染技能块，`SkillHint` 为纯 dict，
+> loop 不 import skills）；② 命中/结果**按 `(skill_id, version)` 进程内累计**（`SkillFeedback` /
+> `SkillStats`，`success_rate` 即 A/B 指标口径）；③ `VersionManager` 首获**生产调用者**
+> （`SkillIterator`：`promote` 灰度 0.3 / `select` 选版 / `ab_test` 定夺）。触发门 = 样本 ≥ 3 且
+> 失败率 ≥ 0.5 且已注入改写器（复用 `SopWriter` 接缝，skills 不 import LLM 抽象）；**退化只丢草稿**
+> （草稿版本非库中 `Skill.version` → `_deprecate` 自然 no-op，技能不被误标 deprecated）；落地登记
+> `Effect(op="skills.iterate")` 可逆。`loop` 收尾钩子由 `SopObserver(task, steps)`（成功专语义）扩为
+> **`TurnObserver(task, steps, ok)`**（成功/失败都提交，`SopExtractor.observe` 仍只吸收成功），
+> 事件更名 `turn_observer_failed`；两钩子**每 loop 一组闭包**（含子 Agent loop），状态不跨 loop 共享。
+> **遗留**：改写 prompt 无失败轨迹（轨迹级诊断属 evolution 维度2）；样本进程内、跨进程归零；
+> 无 cooldown；成功率只区分成败；**排序仍未接历史成功率加权**（数据源已具备）。
+
 - **记忆**：跨 3 轮以上长对话后，`read` 命中率提升（同一事实不因截断丢失），semantic 条目可见且可追溯 source trace_id。
 - **压缩**：注入 Compactor 后 `compact` 产出「摘要条目」而非「保留/丢弃布尔」，且摘要可逆。
 - **维度1**：一条日常任务轨迹走完「任务→SOP 提取→Skill 入库→下次类似任务语义命中」全链路（无人工 confirm）；一条重复任务触发 skill 迭代（version 升级）。
@@ -259,7 +273,8 @@
       ADR-0048 Accepted）
     → **#7 语义路由** ✅ **已完成**（2026-10-04，change `0044-semantic-skill-routing`；
       ADR-0049 Accepted；**B4 判冗余 → 删除 `ContextPack.skills`**）
-    → **#8 Skill 迭代**（复用 `VersionManager` + A/B，记录命中与结果反馈；补历史成功率加权）
+    → **#8 Skill 迭代** ✅ **已完成**（2026-10-04，change `0045-skill-iteration`；ADR-0050
+      Accepted；命中注入 `instructions` + `(id, version)` 反馈 + 复用 `VersionManager` 灰度/A/B）
       → **#9/#10**（`risk_level` 强制 confirm + 观察期自动 dissolve）。
     A1/A3 已清账（✅）。
 

@@ -58,6 +58,12 @@ class ABResult:
     decision: str               # "promote" | "revert" | "keep"
 ```
 
+| 维度 | 口径 |
+|---|---|
+| **调用方** | `SkillIterator`（0045）——灰度 `promote`、选版 `select`、A/B `ab_test` 的唯一生产调用者；此前三段能力齐备但无调用方（ADR-0048 决策 ⑥ 记的缺口） |
+| **A/B 指标** | 各版本**成功率**——`VersionManager(library, metrics=lambda sid, ver: feedback.success_rate(sid, ver))`，越高越好，与 `b > a → promote` 语义一致 |
+| **stable 优先** | `select` 按 A/B 胜者 > 灰度 > 稳定版 > 技能当前版本取序，草稿仅按灰度比例分流 |
+
 ---
 
 ## 4. SkillRouter 接口
@@ -98,6 +104,46 @@ class SkillMatch:
 | **miss 口径** | 有命中（词法或语义）则不记 miss；两者皆无才记（miss 是「无技能可用」信号，供新技能沉淀） |
 | **接线** | `build_runtime`：`scorer=SkillMatcher(router) if jev is not None else None`（未配置 JEV → 纯词法） |
 
+### 4.1 命中注入与迭代闭环（0045）
+
+```python
+# 命中快照：**纯 dict**（loop 渲染用，不暴露 skills 类型）+ 步骤节选上界（token 有界）
+def skill_hint(skill_id: str, version: str, instructions: str) -> dict[str, str]:
+    """{"skill_id", "version", "instructions"(≤ _MAX_HINT_CHARS=400)}"""
+
+@dataclass
+class SkillStats:
+    hits: int = 0; ok: int = 0; fail: int = 0   # total / failure_rate 为派生属性
+    # total = ok + fail（命中但未收尾不计）；failure_rate 无样本 → 0.0
+
+class SkillFeedback:
+    def record_hit(self, skill_id: str, *, version: str) -> None: ...
+    def record_outcome(self, skill_id: str, *, version: str, ok: bool) -> None: ...
+    def stats(self, skill_id: str, *, version: str | None = None) -> SkillStats: ...
+    def success_rate(self, skill_id: str, version: str) -> float: ...
+
+class SkillIterator:
+    def resolve(self, skill: Skill) -> tuple[str, str]:   # (版本, instructions)
+    def consider(self, skill: Skill) -> str | None:       # 不达标 → 草稿 + 灰度
+    def decide(self, skill: Skill) -> ABResult | None:    # 双版本样本齐 → A/B 定夺
+
+def build_iterate_prompt(skill: Skill, stats: SkillStats) -> str: ...
+```
+
+| 维度 | 口径 |
+|---|---|
+| **命中口径** | 技能进入 prompt 的那一轮记一次命中；结果按该轮**实际注入的版本**记成功/失败（版本维是 A/B 的前提） |
+| **反馈存储** | 仅进程内（不落盘、不写记忆），不影响本轮推理结果与终止语义；未注入记录器 → 零行为变化 |
+| **触发门** | 样本数 ≥ `_ITERATE_MIN_SAMPLES`(3) **且** 失败率 ≥ `_ITERATE_FAILURE_RATE`(0.5)，且已注入 writer，且改写文本非空——任一不满足即不迭代（零额外模型调用） |
+| **灰度** | 草稿以 `_GRAY_RATIO`(0.3) 比例分流：`resolve` 按 `VersionManager.select` 返回版本，其余任务仍用原版本 |
+| **定夺** | 两版本样本各 ≥ 下限才 `ab_test`；胜者为草稿则落地（版本号 + `instructions` 一并写回），否则**只丢草稿**——草稿版本非库中 `Skill.version`，`_deprecate` 自然 no-op，**技能不被误标 deprecated** |
+| **可逆** | 落地登记 `Effect(op="skills.iterate", undo=恢复原版本与原 instructions)`（`trace_id="skills.iterate"`）；已被后续迭代覆盖则不回溯（幂等） |
+| **接线** | `build_runtime`：命中钩子（路由 → 版本解析 → 记命中/快照）与收尾钩子（记结果 → `decide` → 失败再 `consider` → 转交 SOP 观察者）**每 loop 一组闭包**，状态不跨 loop 共享 |
+
+已知缺口（如实记录）：改写 prompt 无失败轨迹（只有现行 steps + 计数，轨迹级诊断属 evolution 维度2）；
+样本进程内、跨进程归零；草稿被丢弃后需重新累计样本（无 cooldown）；成功率只区分成败，不检测
+`instructions` 是否被模型实际采纳。
+
 ---
 
 ## 5. 结晶/溶解接口
@@ -135,7 +181,7 @@ class SopExtractor:
 
 | 维度 | 口径 |
 |---|---|
-| **调用方** | `DefaultLoop` 收尾钩子（`SopObserver`）——成功收尾提交（任务文本, 行动/结果序列）；失败轨迹不提交 |
+| **调用方** | `DefaultLoop` 收尾钩子（`TurnObserver`）——每轮收尾都提交（任务文本, 行动/结果序列, ok）；`observe` 对 `ok=False` 直接丢弃（失败轨迹不是 SOP），由组合根再转交技能反馈 |
 | **归组键** | 优先词法命中已有技能的 `task_types` 并复用其作组键，否则「任务词元签名」（`terms_of` 与 SkillRouter 同口径）——确定性、离线可断言 |
 | **阈值** | 同组累计达 3 条（`_SOP_MIN_SAMPLES`）提炼一次，提炼后**清空该组**（下批重新累积） |
 | **产物** | `skill_id="skills.sop.<组键 blake2b-8hex>"`（确定性、同组重复提炼覆盖同一条）、`description="SOP：<组键>"`、`task_types=[组键]`、`instructions=<提炼文本>`、`status="active"` |

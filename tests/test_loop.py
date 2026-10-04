@@ -544,8 +544,8 @@ class _RecordingTracer:
         self.kinds.append(event.kind)
 
 
-def test_loop_fires_sop_observer_on_success() -> None:
-    seen: list[tuple[str, list[str]]] = []
+def test_loop_fires_turn_observer_on_success() -> None:
+    seen: list[tuple[str, list[str], bool]] = []
     provider = ToolProvider()
     provider.register(_echo_tool())
 
@@ -558,44 +558,45 @@ def test_loop_fires_sop_observer_on_success() -> None:
         planner=planner,
         tools=provider,
         max_rounds=3,
-        sop_observer=lambda task, steps: seen.append((task, steps)),
+        turn_observer=lambda task, steps, ok: seen.append((task, steps, ok)),
     )
 
     loop.run("整理会议纪要")
 
     assert len(seen) == 1, "成功收尾触发一次"
-    task, steps = seen[0]
+    task, steps, ok = seen[0]
+    assert ok is True, "成功轮 ok=True"
     assert task == "整理会议纪要", "钩子拿到任务文本"
     assert any("tools.echo" in step for step in steps), "行动/结果序列承载工具调用"
 
 
-def test_loop_does_not_fire_sop_observer_on_failure() -> None:
-    seen: list[tuple[str, list[str]]] = []
+def test_loop_fires_turn_observer_on_failure() -> None:
+    seen: list[tuple[str, list[str], bool]] = []
     loop = DefaultLoop(
         planner=lambda ctx: Action(args={"reply": "unused"}),
         max_rounds=0,
-        sop_observer=lambda task, steps: seen.append((task, steps)),
+        turn_observer=lambda task, steps, ok: seen.append((task, steps, ok)),
     )
 
     result = loop.run("超限任务")
 
     assert result.failed, "轮数超限 → 本轮失败"
-    assert seen == [], "失败轮不触发 SOP 观察"
+    assert len(seen) == 1 and seen[0][2] is False, "失败轮也提交（ok=False，供反馈判定）"
 
 
-def test_loop_sop_observer_error_does_not_break_round() -> None:
+def test_loop_turn_observer_error_does_not_break_round() -> None:
     tracer = _RecordingTracer()
 
-    def boom(task: str, steps: list[str]) -> None:
-        raise RuntimeError("提炼器不可用")  # noqa: TRY003
+    def boom(task: str, steps: list[str], ok: bool) -> None:
+        raise RuntimeError("观察者不可用")  # noqa: TRY003
 
     loop = DefaultLoop(
         planner=lambda ctx: Action(args={"reply": "done"}),
         tracer=tracer,
-        sop_observer=boom,
+        turn_observer=boom,
     )
 
     result = loop.run("任务")
 
     assert not result.failed and result.reply == "done", "钩子抛错不影响本轮结果"
-    assert "sop_extract_failed" in tracer.kinds, "钩子抛错降级留痕"
+    assert "turn_observer_failed" in tracer.kinds, "钩子抛错降级留痕"

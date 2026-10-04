@@ -15,10 +15,13 @@ from core.skills import (
     SkillCrystallizer,
     SkillError,
     SkillErrorCode,
+    SkillFeedback,
+    SkillIterator,
     SkillLibrary,
     SkillRouter,
     SopExtractor,
     VersionManager,
+    skill_hint,
 )
 
 # ---- 注册校验 ----
@@ -357,3 +360,184 @@ def test_router_semantic_scores_only_active_and_gray() -> None:
     payload = scorer.calls[0][1]  # type: ignore[attr-defined]
     assert [item["skill_id"] for item in payload] == ["skills.data.summarize"], "draft 不参与打分"
     assert [m.skill.skill_id for m in matches] == ["skills.data.summarize"]
+
+
+# ---- 执行反馈 / 命中注入 / 迭代闭环（0045） ----
+
+_SID = "skills.sop.deadbeef"
+
+
+def _sop_library() -> SkillLibrary:
+    lib = SkillLibrary()
+    lib.register(
+        Skill(
+            skill_id=_SID,
+            description="SOP：summarize report",
+            task_types=["summarize report"],
+            instructions="1. 读输入\n2. 输出摘要",
+            status="active",
+        )
+    )
+    return lib
+
+
+def _iterator(
+    lib: SkillLibrary,
+    feedback: SkillFeedback,
+    *,
+    writer=None,  # noqa: ANN001 — 测试替身
+    rng=None,  # noqa: ANN001 — 测试替身
+    tracker: EffectTracker | None = None,
+) -> SkillIterator:
+    """注入确定性 rng 的 VersionManager（灰度分流可断言）。"""
+    versions = VersionManager(
+        lib,
+        metrics=lambda skill_id, version: feedback.success_rate(skill_id, version),
+        rng=rng if rng is not None else lambda: 1.0,
+    )
+    return SkillIterator(lib, feedback, writer=writer, versions=versions, tracker=tracker)
+
+
+def _drafted(
+    *,
+    fails: int,
+    oks: int,
+    text: str = "1. 先读输入\n2. 再输出摘要",
+    rng=None,  # noqa: ANN001
+    tracker: EffectTracker | None = None,
+) -> tuple[SkillLibrary, SkillFeedback, SkillIterator]:
+    """技能已进入迭代：草稿 v2 已灰度（返回库/反馈/迭代器）。"""
+    lib = _sop_library()
+    feedback = SkillFeedback()
+    for _ in range(fails):
+        feedback.record_outcome(_SID, version="v1", ok=False)
+    for _ in range(oks):
+        feedback.record_outcome(_SID, version="v1", ok=True)
+    it = _iterator(lib, feedback, writer=lambda prompt: text, rng=rng, tracker=tracker)
+    assert it.consider(lib.lookup(_SID)) == "v2"
+    return lib, feedback, it
+
+
+def test_feedback_accumulates_per_version() -> None:
+    feedback = SkillFeedback()
+    feedback.record_hit(_SID, version="v1")
+    feedback.record_outcome(_SID, version="v1", ok=True)
+    feedback.record_outcome(_SID, version="v2", ok=False)
+
+    assert feedback.stats(_SID, version="v1").hits == 1
+    assert feedback.stats(_SID, version="v1").ok == 1
+    assert feedback.stats(_SID, version="v2").fail == 1
+    assert feedback.stats(_SID).total == 2  # noqa: PLR2004 — 不指定版本 → 各版本合计
+    assert feedback.success_rate(_SID, "v1") == 1.0
+    assert feedback.success_rate(_SID, "v2") == 0.0
+    assert feedback.success_rate("skills.unknown", "v1") == 0.0, "无样本 → 0.0"
+
+
+def test_skill_hint_truncates_instructions() -> None:
+    hint = skill_hint(_SID, "v2", "步" * 500)
+
+    assert hint["skill_id"] == _SID and hint["version"] == "v2"
+    assert len(hint["instructions"]) == 400, "instructions 按上界截断"  # noqa: PLR2004
+    assert skill_hint(_SID, "v1", "")["instructions"] == ""
+
+
+def test_iterator_consider_creates_draft_and_gray() -> None:
+    lib = _sop_library()
+    feedback = SkillFeedback()
+    for _ in range(3):
+        feedback.record_outcome(_SID, version="v1", ok=False)
+    it = _iterator(lib, feedback, writer=lambda prompt: "1. 改进步骤")
+
+    assert it.consider(lib.lookup(_SID)) == "v2", "失败率达阈值 → 生成下一版"
+    assert lib.lookup(_SID).version == "v1", "草稿不写回技能本体"
+
+
+def test_iterator_consider_skips_below_samples() -> None:
+    lib = _sop_library()
+    feedback = SkillFeedback()
+    calls: list[str] = []
+    feedback.record_outcome(_SID, version="v1", ok=False)
+    feedback.record_outcome(_SID, version="v1", ok=False)
+    it = _iterator(lib, feedback, writer=lambda prompt: calls.append(prompt) or "x")
+
+    assert it.consider(lib.lookup(_SID)) is None
+    assert calls == [], "样本不足 → 不调用改写器"
+
+
+def test_iterator_consider_skips_below_failure_rate() -> None:
+    lib = _sop_library()
+    feedback = SkillFeedback()
+    for _ in range(3):
+        feedback.record_outcome(_SID, version="v1", ok=True)
+    calls: list[str] = []
+    it = _iterator(lib, feedback, writer=lambda prompt: calls.append(prompt) or "x")
+
+    assert it.consider(lib.lookup(_SID)) is None, "执行正常 → 不迭代"
+    assert calls == []
+
+
+def test_iterator_consider_without_writer_is_noop() -> None:
+    lib = _sop_library()
+    feedback = SkillFeedback()
+    for _ in range(3):
+        feedback.record_outcome(_SID, version="v1", ok=False)
+
+    assert _iterator(lib, feedback).consider(lib.lookup(_SID)) is None, "未注入改写器 → 零调用"
+
+
+def test_iterator_consider_empty_text_not_drafted() -> None:
+    lib = _sop_library()
+    feedback = SkillFeedback()
+    for _ in range(3):
+        feedback.record_outcome(_SID, version="v1", ok=False)
+    it = _iterator(lib, feedback, writer=lambda prompt: "   ")
+
+    assert it.consider(lib.lookup(_SID)) is None, "空改写文本不入草稿"
+    assert it.resolve(lib.lookup(_SID)) == ("v1", "1. 读输入\n2. 输出摘要")
+
+
+def test_iterator_resolve_splits_by_gray_ratio() -> None:
+    lib, _, it = _drafted(fails=3, oks=0, rng=lambda: 0.0)
+
+    assert it.resolve(lib.lookup(_SID)) == ("v2", "1. 先读输入\n2. 再输出摘要"), "命中灰度"
+
+    lib2, _, it2 = _drafted(fails=3, oks=0, rng=lambda: 0.99)
+    assert it2.resolve(lib2.lookup(_SID)) == ("v1", "1. 读输入\n2. 输出摘要"), "未命中灰度 → 原版"
+
+
+def test_iterator_decide_promotes_better_version() -> None:
+    tracker = EffectTracker()
+    lib, feedback, it = _drafted(fails=2, oks=1, rng=lambda: 0.0, tracker=tracker)
+    for _ in range(3):
+        feedback.record_outcome(_SID, version="v2", ok=True)
+
+    result = it.decide(lib.lookup(_SID))
+
+    assert result is not None and result.decision == "promote"
+    assert lib.lookup(_SID).version == "v2", "胜者成为当前版本"
+    assert lib.lookup(_SID).instructions == "1. 先读输入\n2. 再输出摘要"
+
+    tracker.rollback("skills.iterate")
+    assert lib.lookup(_SID).version == "v1", "回滚恢复原版本"
+    assert lib.lookup(_SID).instructions == "1. 读输入\n2. 输出摘要"
+
+
+def test_iterator_decide_discards_worse_version() -> None:
+    lib, feedback, it = _drafted(fails=3, oks=2, rng=lambda: 0.0)
+    for _ in range(2):
+        feedback.record_outcome(_SID, version="v2", ok=False)
+    feedback.record_outcome(_SID, version="v2", ok=True)
+
+    result = it.decide(lib.lookup(_SID))
+
+    assert result is not None and result.decision == "revert"
+    skill = lib.lookup(_SID)
+    assert (skill.version, skill.status) == ("v1", "active"), "退化只丢草稿，技能不弃用"
+    assert skill.instructions == "1. 读输入\n2. 输出摘要"
+
+
+def test_iterator_decide_requires_both_versions_sampled() -> None:
+    lib, _, it = _drafted(fails=3, oks=0, rng=lambda: 0.0)
+
+    assert it.decide(lib.lookup(_SID)) is None, "草稿无样本 → 不定夺"
+    assert lib.lookup(_SID).version == "v1"

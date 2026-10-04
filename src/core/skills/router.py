@@ -24,6 +24,18 @@ SkillScorer = Callable[[str, list[dict[str, Any]]], dict[str, float]]
 # 语义分低于此值不采纳（否则任何任务都能挂上某条技能，技能块被灌水进 prompt）
 _SEMANTIC_MIN_SCORE = 0.5
 
+# 命中快照里 instructions 的字符上界（token 有界；与 _MAX_STEP_CHARS 同口径）
+_MAX_HINT_CHARS = 400
+
+
+def skill_hint(skill_id: str, version: str, instructions: str) -> dict[str, str]:
+    """命中技能的提示快照——loop 渲染用**纯数据**（不暴露 skills 类型）。"""
+    return {
+        "skill_id": skill_id,
+        "version": version,
+        "instructions": instructions[:_MAX_HINT_CHARS],
+    }
+
 
 class SkillRouter:
     """技能路由：任务 → 匹配度排序的 Top-K 技能。"""

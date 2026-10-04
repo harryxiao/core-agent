@@ -9,9 +9,11 @@
 
 from .crystallizer import SkillCrystallizer
 from .errors import SkillError, SkillErrorCode
+from .feedback import SkillFeedback, SkillStats
+from .iteration import SkillIterator, build_iterate_prompt
 from .library import SkillLibrary
 from .models import ABResult, Skill, SkillMatch
-from .router import SkillRouter, SkillScorer
+from .router import SkillRouter, SkillScorer, skill_hint
 from .sop import SopExtractor, SopWriter, build_sop_prompt, sop_writer_with
 from .version import VersionManager
 
@@ -21,13 +23,18 @@ __all__ = [
     "SkillCrystallizer",
     "SkillError",
     "SkillErrorCode",
+    "SkillFeedback",
+    "SkillIterator",
     "SkillLibrary",
     "SkillMatch",
+    "SkillStats",
     "SkillRouter",
     "SkillScorer",
     "SopExtractor",
     "SopWriter",
     "VersionManager",
+    "build_iterate_prompt",
     "build_sop_prompt",
+    "skill_hint",
     "sop_writer_with",
 ]

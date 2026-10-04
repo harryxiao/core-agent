@@ -33,9 +33,10 @@ Middleware = Callable[[LoopContext, Action], Action | None]
 # 审批回调：不可逆动作经确认门判 confirm 时询问人工（tool_id, args, reason）→ 是否放行。
 Approver = Callable[[str, dict[str, Any], str], Awaitable[bool]]
 
-# SOP 收尾观察者：任务成功收尾时提交（任务文本, 行动/结果序列）→ 提炼产物（不返回值）。
-# loop 不 import skills（架构红线），生产侧注入 ``SopExtractor.observe``。
-SopObserver = Callable[[str, list[str]], object]
+# 收尾观察者：每轮收尾时提交（任务文本, 行动/结果序列, 本轮成功与否）→ 观察产物（不返回值）。
+# 成功与失败都提交（失败信号是技能迭代的判据）；loop 不 import skills（架构红线），
+# 生产侧注入组合根闭包（内部再分发到 SopExtractor / 技能反馈）。
+TurnObserver = Callable[[str, list[str], bool], object]
 
 
 _MAX_ACTION_EXCERPT = 400  # 动作事件 args/output 节选上界（事件面有界）
@@ -103,7 +104,7 @@ class DefaultLoop(Plugin):
         router: DecisionRouter | None = None,
         approver: Approver | None = None,
         compactor: Compactor | None = None,
-        sop_observer: SopObserver | None = None,
+        turn_observer: TurnObserver | None = None,
         max_rounds: int = 10,
         token_budget: int = 65536,
     ) -> None:
@@ -116,7 +117,7 @@ class DefaultLoop(Plugin):
         self._router = router
         self._approver = approver
         self._compactor = compactor
-        self._sop_observer = sop_observer
+        self._turn_observer = turn_observer
         self._max_rounds = max_rounds
         self._token_budget = token_budget
 
@@ -222,8 +223,8 @@ class DefaultLoop(Plugin):
             if self._token_budget > 0 and ctx.token_used >= self._token_budget:
                 limit_reason = "TOKEN_BUDGET_EXCEEDED"
                 break
-        # 成功收尾钩子（失败轮即超限终止轮不提交：失败轨迹不是 SOP）
-        self._notify_sop(ctx, trace_id, ok=not limit_reason)
+        # 收尾钩子：成功/失败都提交（失败信号供技能迭代判据；SOP 提炼仍只吸收成功）
+        self._notify_turn(ctx, trace_id, ok=not limit_reason)
         if limit_reason:
             ctx.reply = f"{limit_reason}: 本轮终止"
             yield LoopEvent("loop_failed", {"reason": limit_reason, "trace_id": trace_id})
@@ -236,18 +237,18 @@ class DefaultLoop(Plugin):
             LoopResult(reply=ctx.reply, trace_id=trace_id, failed=bool(limit_reason)),
         )
 
-    def _notify_sop(self, ctx: LoopContext, trace_id: str, *, ok: bool) -> None:
-        """成功收尾钩子：把任务文本 + 行动/结果序列交给注入的观察者（缺省不启用）。
+    def _notify_turn(self, ctx: LoopContext, trace_id: str, *, ok: bool) -> None:
+        """收尾钩子：把任务文本 + 行动/结果序列 + 本轮成败交给注入的观察者（缺省不启用）。
 
-        ``ok=False`` 的失败轨迹不是 SOP（不提交）；观察者抛错仅降级留痕，不改变本轮
-        结果与终止语义。
+        ``ok=False`` 也提交（失败是技能迭代的判据），是否消费由观察者自决；观察者抛错
+        仅降级留痕，不改变本轮结果与终止语义。
         """
-        if not ok or self._sop_observer is None:
+        if self._turn_observer is None:
             return
         try:
-            self._sop_observer(_task_text(ctx), _action_steps(ctx))
-        except Exception as err:  # noqa: BLE001 — 提炼失败降级，不影响本轮结果
-            self._trace(trace_id, "sop_extract_failed", {"error": str(err)})
+            self._turn_observer(_task_text(ctx), _action_steps(ctx), ok)
+        except Exception as err:  # noqa: BLE001 — 观察失败降级，不影响本轮结果
+            self._trace(trace_id, "turn_observer_failed", {"error": str(err)})
 
     def _should_compact(self, ctx: LoopContext) -> bool:
         """轮数或 token 预算达阈值即触发压实（未注入压实器则永不触发）。
