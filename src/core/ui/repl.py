@@ -30,6 +30,7 @@ _ACCENT = "#d97757"  # core 主题 accent（Claude CLI terracotta）
 _SPIN_GLYPHS = ["✻", "·", "•", "∘", "○"]  # 工作状态行轮换符号
 _MS_PER_SECOND = 1000  # 耗时人类可读换算
 _TAIL_SPLIT = 2000  # 流式尾段字符阈值：超过/行边界即固化（每 delta 重 wrap 有界）
+_TAIL_FENCE_CAP = 8000  # 未闭合围栏内尾段硬上限：超此值强固化兜底，约束内存
 
 
 async def repl_loop(
@@ -399,11 +400,20 @@ Collapsible > CollapsibleTitle:hover {
 
         def _show_delta(self, delta: str) -> None:
             """流式增量落时间线同一滚动流：尾段热更新（有界 wrap），
-            行边界/超阈值时固化为 append-only 块，超长输出不卡顿不抖动。"""
+            行边界/超阈值时固化为 append-only 块，超长输出不卡顿不抖动；
+            代码围栏未闭合时延后固化，避免大代码块被拆断。"""
             self._live_buf.append(delta)
             self._tail_buf.append(delta)
             text = "".join(self._tail_buf)
-            if len(text) >= _TAIL_SPLIT or (text.endswith("\n") and not self._in_open_fence(text)):
+            if self._in_open_fence(text):
+                # 围栏未闭合：不按行/常规阈值固化（避免大代码块被拦腰截断），
+                # 仅超硬上限时兜底固化，约束内存与重 wrap 代价
+                if len(text) >= _TAIL_FENCE_CAP:
+                    self._freeze_tail(text)
+                    return
+                self._touch_tail(text)
+                return
+            if len(text) >= _TAIL_SPLIT or text.endswith("\n"):
                 self._freeze_tail(text)
                 return
             self._touch_tail(text)

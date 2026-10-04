@@ -272,6 +272,41 @@ def test_tui_streams_deltas_then_flushes_once() -> None:
     assert reply == "你好"
 
 
+def test_tui_large_code_fence_not_split() -> None:
+    """大代码块（超 _TAIL_SPLIT、未超硬上限）流式期间不按行固化，整块不拆断。"""
+    from core.loop import LoopResult  # noqa: PLC0415 — 流式事件构造
+    from core.ui.repl import _TAIL_FENCE_CAP, _TAIL_SPLIT, build_app  # noqa: PLC0415
+
+    body = "\n".join(f"print({i})" for i in range(400))
+    payload = f"```python\n{body}\n```\n"
+    assert _TAIL_SPLIT < len(payload) < _TAIL_FENCE_CAP
+    events = [LoopEvent("loop_started", {"trace_id": "t1"})]
+    events += [
+        LoopEvent("reply_delta", {"text": chunk}) for chunk in payload.splitlines(keepends=True)
+    ]
+    events.append(LoopEvent("loop_finished", LoopResult(reply=payload, trace_id="t1")))
+    api = UIAPILayer(loop=FakeLoop(events))
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def _drive() -> tuple[int, str]:
+        from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+        from textual.widgets import Input, Markdown  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            inp.value = "hi"
+            await pilot.press("enter")
+            await pilot.pause()
+            md_count = len(app.query_one("#timeline", Vertical).query(Markdown))
+            return md_count, str(app._last_reply)
+
+    md_count, reply = asyncio.run(_drive())
+    assert md_count == 1  # 大围栏整块一块，未被拆成多段
+    assert reply == payload
+
+
 def test_tui_approval_prompt_y_n() -> None:
     """高风险审批：TUI 弹 y/n 提示；非法输入重输提示不决断，y 批准。"""
     channel = ApprovalChannel()
