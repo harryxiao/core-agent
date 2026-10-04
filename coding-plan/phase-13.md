@@ -88,7 +88,7 @@ permission / judgment ─────┘                                      �
 - [x] `src/core/loop/planner.py`（`LLMPlanner`）落地：context+skills+toolschema → LLM → Action，`reply` 来自 LLM
 - [x] `DefaultLoop` 加 `tracer` 注入：每步发 `TraceEvent`（loop_started / step_completed / loop_finished）
 - [x] `PermissionGuard` 替代 `SafetyGate` 默认：不可逆动作过审批门，被拒短路
-- [ ] constraints middlewares 注入 loop：schema 校验 / 熔断中间件链按序执行（deferred：constraints.Middleware 为 ExecRequest/ExecResponse 形状，与 loop 中间件 Callable[[LoopContext,Action],Action|None] 不同，需适配层，随 Phase 14）
+- [x] constraints middlewares 注入 loop：按 `tool_id` 隔离的熔断链接入 loop（动作前链 `middlewares` + 结果侧观察者 `action_observers`，适配层 `core/loop/constraints_adapter.py`）—— **已由 change `0052` 关闭**（ADR-0055）。schema 校验由工具层 `ToolProvider._validate_args` 承担（与 `Validator.validate_input` 等价），故未重复接入。
 - [x] judgment 三决策点 DI 接线：loop（choice）/ memory（score）/ permission（noul）注入断言被调用；未配 provider fallback 兜底
 - [x] `entry.py run` 改用 runtime 装配（`reply` 来自 LLM，走真闭环）；serve/repl 运行时装配 + 每会话独立 loop+memory+tools deferred
 - [x] 密钥安全：api_key 经 resolve_secret 注入，绝不进日志/记忆/轨迹

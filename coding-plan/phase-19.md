@@ -13,14 +13,15 @@
 - **无任何一项阻塞核心回路**：669 tests 覆盖的回路（记忆读写/压实/固化/遗忘、技能提炼/路由/迭代、进化四阶段 + HITL + 自动溶解）在生产路径上均已接通。
 - **A3 全闭（skills 半边 change `0050`，evolution 半边 change `0051`）**；**A5 + 本次新增发现 A10 已于 change `0051` 关闭**（冷路径驱动面 = loop 节拍 + `evolve run`；观察窗口落盘 + 批次成功率采样；ADR-0054）。
 - **A2+E2（会话维度）已于 change `0048` 关闭**（标识透传 + `compact` 接真 + 按会话读取）；**A1 已于 change `0049` 关闭**（收尾维护节拍 + `memory maintain`）。A 类剩 A3–A9。
-- **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）**；E 类中只有 **E1（constraints 中间件）** 与 **E2（per-session）** 有真实行为影响，其余为「接线缺失」。
+- **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）**；E 类中曾判定有真实行为影响的 **E1（constraints 熔断）** 与 **E2（per-session）** **均已关闭**（E2 → change `0048`；E1 → change `0052`），其余为「接线缺失」。
+- **E1 已于 change `0052` 关闭**（constraints 熔断按 `tool_id` 接入 loop：结果侧观察者 + 按工具熔断 + 只计执行失败；ADR-0055）；核销时一并**订正**了账本原「校验空转」的说法（校验实由工具层承担）。
 - **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A4/A5、E2/E4/E5 全归此。
 - **一条值得单独记的形态问题**：`cli-contract-baseline.md` 的**内置工具契约与实现已对不上账**（见 E7）——契约列的 5 个工具在代码里从未存在。
 
 | 类别 | 项数 | 最高优先级 | 是否阻塞调试 |
 |---|---|---|---|
 | A Phase 18 收口遗留 | 9 | 中 | 否 |
-| E 早期 Phase 未闭合项 | 12 | 中（E1/E2） | 否 |
+| E 早期 Phase 未闭合项 | 12 | 中 | 否 |
 | B Phase 12 MCP（DEFERRED） | 1 | **阻塞级（需 ADR）** | 否（可绕开） |
 | C 真实外部后端未接 | ~20 处 | 低 | 否 |
 | D 文档与仓库杂项 | 5（3 已关闭） | 无 | 否 |
@@ -43,7 +44,7 @@
 | A8 | A | memory「并发压实一致性」无实现 | 规格有此 Requirement，实现未做 | 低 | 出现并发调用方 |
 | A9 | A | `context.stage` 语义化残留 | 装配阶段标注不参与事实选择 | 低 | B6 决策的后续 |
 | A10 | A | ~~进化冷路径无驱动面~~ | ✅ 已关闭（change `0051`）：loop 收尾节拍 + `core-agent evolve run` | 中高 | — |
-| E1 | E | constraints 中间件链从未注入 loop | `_apply_middlewares` 空转，生产零 `middlewares=` | **中高** | 写 constraints→loop 适配层 |
+| E1 | E | ~~constraints 中间件链从未注入 loop~~ | ✅ 已关闭（change `0052`）：按 `tool_id` 熔断接入 loop（动作前链 + 结果侧观察者）；**校验实由工具层承担**（原「校验空转」订正） | 中高 | — |
 | E2 | E | ~~UI 无每会话 loop/memory~~ | ✅ 已关闭（change `0048`，会话维度部分）：标识透传 + 单店按会话归组 | 中（与 A2 同根） | — |
 | E3 | E | 神通（beast）runtime 桥接缺失 | 20 神通从未进运行时 SkillLibrary；handoff 整段短路 | 中 | 先定夺 R4/R5 规格 deferred 是否解除 |
 | E4 | E | pet 运行时注入整族缺失 | 跨进程存活 / DI / wake / 三入口四项全缺 | 中 | A3（存储选型） |
@@ -55,7 +56,10 @@
 | E10 | E | 功能开关无运行时门控 | `build_runtime` 无条件构造全部模块，`is_enabled` 仅存语义 | 低 | 定夺哪些模块可关 |
 | E11 | E | LLM 可靠性：连接复用缺失 + 无测试 | 重试/超时/降级/断流有代码无测试；连接复用未实现 | 低 | 无 |
 | E12 | E | 崩溃恢复无真实 `kill -9` 用例 | 仅内存 store 模拟的 resume 幂等单测，无子进程重启端到端 | 低 | 无 |
-| B1 | B | Phase 12 MCP 安装/传输/安全 | 唯一 DEFERRED Phase，`mcp *` CLI 未接 | **阻塞级** | **先 ADR 裁决 mcp SDK 依赖** |
+| E13 | E | `Validator.parse_output` 零生产调用方 | `LLMPlanner._parse` 自解析（`json.loads` + `_PARSE_FAILED`），未走 constraints 解析中间件 | 低 | 无（随需） |
+| E14 | E | 校验码重复 | `ToolProvider._validate_args` ↔ `constraints.Validator.validate_input` 语义等价（`_matches_type` 双拷贝） | 低 | 工具层委托 Validator（`tools → constraints` 合法） |
+| E15 | E | 熔断阈值/冷却不可配 | 适配层用类默认（5 / 30s），`configuration/` 无 constraints 段 | 低 | E10 配置门控 |
+| B1 | B | Phase 12 MCP 安装/传输/安全 | 🔶 阻塞前提**已解除**（ADR-0043 裁决 + change `0033` 重开并合入 spec delta）；**剩余 = M2 代码**（transport 生产实现 / client 分流 / 消费侧安全） | **阻塞级** | 无（待排期实现 M2） |
 | C1 | C | 真实外部后端 ~20 处「未接」 | 抽象 + fake 已落地，真后端待接 | 低 | 见 `debug-gaps.md` §2.3 |
 | D1 | D | ~~README §2 状态行待核实~~ | ✅ 已关闭：Phase 18 行刷新为 ✅；`17.5` 行改为「🔶 部分完成（遗留见 E3/E4）」 | 无 | — |
 | D2 | D | `coding-plan/phase-3-prompt.md` 未跟踪 | 一次性 prompt 残留 | 无 | 删除或 `git add` |
@@ -160,11 +164,12 @@
 
 > 全部经「文档自陈 + `src/` 调用点 / 归档反向核对」判定为**明确未做**。已闭合但文档未销账的旧记见 §8（G 类）。
 
-### E1 constraints 中间件链从未注入 loop（Phase 13 遗留）
+### E1 constraints 中间件链从未注入 loop（Phase 13 遗留）— ✅ 已关闭（change `0052`）
 
-- **现象**：`DefaultLoop` 有完整的中间件链（`loop/default.py:31` `Middleware = Callable[[LoopContext, Action], Action|None]`、`:445 _apply_middlewares`），但**生产侧零注入**——`grep -rn "middlewares=" src/` 仅命中 `tests/test_loop.py:61` → schema 校验 / 熔断 / 压缩三类中间件在生产路径上是**空转能力**。
-- **根因**：`constraints.Middleware` 的形状是 `ExecRequest/ExecResponse`，与 loop 的 `(LoopContext, Action) → Action|None` 不同，需适配层；`phase-13.md:91` 标注「随 Phase 14」，但 Phase 14 的 checklist 已全 `[x]` 且**未包含此项** → 掉档。
-- **关闭动作**：写 constraints→loop 适配层并在 `build_runtime` 注入；补 `CIRCUIT_OPEN` 短路用例（`phase-2.md:121` 的验收框同属此项）。
+- **现象**：`DefaultLoop` 有完整中间件链（`loop/default.py` 的 `Middleware` / `_apply_middlewares`），但**生产零注入**——`grep -rn "middlewares=" src/` 空 → 熔断在生产无任何等价物。
+- **根因**：`constraints.Middleware` 形状（`ExecRequest/ExecResponse`）与 loop 的 `(LoopContext, Action) → Action|None` 不同，需适配层；`phase-13.md:91` 标「随 Phase 14」但掉档。
+- **订正（本次一手核实）**：账本原写的「**校验空转**」**不成立**——校验生产已由工具层 `ToolProvider._validate_args` 承担（与 `Validator.validate_input` 逐行等价）；上下文压缩亦已接线（`compactor=`）。真实残留 = **熔断**。
+- **关闭动作**：✅ **已按 change `0052-constraints-middleware-wiring` 闭合**（ADR-0055）——① loop 增**加法式结果侧接缝** `action_observers`（`Middleware` before-only 契约不变）；② 新增 `core/loop/constraints_adapter.py` 的 `ConstraintsChain`（**按 `tool_id` 隔离**熔断、**只计执行类失败**、策略性拒绝不计入）；③ 组合根注入主/子 loop（共享同一实例，熔断态 per-runtime）。**有意未接**：`Validator`（被工具层吸收）、`RetryPolicy`/`Fallback`（幂等风险 / 无生产 `fallback_fn`）。
 - **前置**：无。
 
 ### E2 UI 无「每会话独立 loop / memory / tools」（Phase 13 遗留）— ✅ 已关闭（会话维度部分，change `0048`）
@@ -270,8 +275,15 @@
 - **范围**：transport 生产实现（stdio/http）、client 安装分流、消费侧安全接线（本地 stdio 过 `SandboxManager`、远端 http 走出站白名单、不可逆工具走确认门）。
 - **阻塞原因**：mcp SDK 离线不可装 + 「核心零第三方运行时依赖红线」须 ADR 裁决。
 - **现状（已核到行）**：`build_transport` 仍占位抛 `MCP_CONNECT_FAILED`（`src/core/mcp/transport.py:117`）；`MCPClient.add` 硬编码 http（`src/core/mcp/client.py:138`）；CLI `mcp serve/list/add/remove` 未接（落 stub）；`mcp remove` 的资源释放随传输实现一并做。
-- **关闭动作**：**先 ADR**（评估 mcp SDK 依赖定位）→ 落 `0033` ADDED delta → 接线。
-- **参考**：`coding-plan/phase-12.md`（`:79-86` 为待办清单）；归档 `doc/openspec/changes/archive/2026-09-29-0033-mcp-install-security-DEFERRED/`。
+- **关闭动作（已推进两步）**：① **ADR 已就绪** —— `ADR-0043`（2026-10-01）裁决「stdio = stdlib 手写（零新依赖），
+  http/streamable-http = 懒 import 可选依赖 `[mcp]`」，守住 litellm-only 红线；② **spec delta 已合** —— change `0033`
+  同日**重开**（状态由 DEFERRED 改 Reopened）并归档于 `archive/2026-10-01-0033-mcp-install-security/`，ADDED「MCP 客户端
+  消费安全」+ MODIFIED「MCP Server 安装与移除」已入 base `doc/openspec/specs/mcp/spec.md:153`。
+- **剩余（唯一待办）**：`0033/tasks.md` 的 **2.x–5.2（M2 代码）** —— ① stdio transport（stdlib 手写 `create_subprocess_exec`
+  JSON-RPC）；② http/streamable-http（懒 import SDK）；③ `MCPClient.add` 按来源分流构建 `MCPEndpoint`；④ 消费侧安全接线
+  （stdio 过 `SandboxManager` / http 出站白名单 / 不可逆工具确认门）。**规模 = 一个完整实现切片**，非「接线几十行」。
+- **参考**：`coding-plan/phase-12.md` §5–§7（重开后的顺序 / 验收清单 / 测试要点）；
+  `archive/2026-10-01-0033-mcp-install-security/`（proposal + tasks 为待办真源）。
 
 ---
 
@@ -317,7 +329,7 @@
 |---|---|---|---|
 | `phase-0.md` | 14 框 | **13 已勾**：`:28-31`、`:33-36` 验收项与 `:127-131` 架构/压测/脱敏/降级均有 `tests/` 覆盖（`test_architecture.py:233`、`test_observability`/`test_configuration`/`test_permission` 等） | `:32` 功能开关门控 → **E10** |
 | `phase-1.md` | 14 框 | **12 已勾**（`test_llm_provider` / `test_memory` / `test_tool_use` / `test_plugin_registry.py:69,83` 等） | `:30` LLM 可靠性 → **E11**；`:35` 并发压实一致 → **A8** |
-| `phase-2.md` | 10 框 | **7 已勾**：durability `test_durability.py:37,105`、permission `test_permission.py:50,195,232`、架构 `test_architecture.py:268`、熔断 `test_constraints.py:75`、MCP 隔离 `test_mcp.py:117,160`、时间旅行与沙箱同族用例 | `:28` constraints 中间件 → **E1**；`:31` mcp → **B1**；`:122` 真机崩溃恢复 → **E12** |
+| `phase-2.md` | 10 框 | **7 已勾**：durability `test_durability.py:37,105`、permission `test_permission.py:50,195,232`、架构 `test_architecture.py:268`、熔断 `test_constraints.py:75`、MCP 隔离 `test_mcp.py:117,160`、时间旅行与沙箱同族用例 | `:28` constraints 中间件 → **E1 ✅ 已关闭（change `0052`）**；`:31` mcp → **B1**；`:122` 真机崩溃恢复 → **E12** |
 | `phase-2.5.md` | 6 框 | **6 全勾**（`test_installable.py:49`、`test_cli_ops.py:67`、`test_mcp.py:220`、`test_permission.py:252`；归档 `2026-09-27-0028/0029`） | — |
 | `phase-17.5.md` | 8 框 | **3 已勾**（memory 召回注入等，由 change `0038` 闭合） | 其余 5 框 → **E3/E4** |
 | `cli-contract-baseline.md` §11 | 6 条（非复选框） | 逐条定性（1 条已在代码中闭环） | → **E8** |
@@ -352,8 +364,8 @@
 2. **A2 + E2 合并做**（同一根因）：会话标识透传 + 每会话独立 loop/memory + `UIAPILayer.compact` 接真。 ✅ **已完成**（change `0048-session-scoped-memory`：标识透传 + `compact` 接真 + `get_memory` 按会话过滤；**未采**每会话独立实例，理由见该 change design 决策 1/2）。
 3. **A1**（记忆驱动侧）：遗忘节拍。宜在 A2 之后（会话维度不生效时，衰减分组也是错的）。 ✅ **已完成**（change `0049-memory-maintenance-cadence`：loop 收尾维护节拍 + `memory maintain` CLI）。
 4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义。 ✅ **A3 全闭 + A5 + A10 已完成**（change `0050` 技能态落盘 / ADR-0053；change `0051` 进化冷路径驱动面 + 观察窗口落盘 + 批次成功率采样 / **ADR-0054**；A10 为本次走查新增的「冷路径无驱动面」发现）。⏭ **下一步 A4**（`confirm` 生产调用方 / pending 队列驱动面）+ **E4**（pet 运行时注入整族）。
-5. **B1**（独立轨）：随时可先写重开 ADR（不需代码），是唯一可并行推进的阻塞级项。
-6. **E1 + E7 + E8**（契约与中间件）：E1 有真实行为影响（熔断/校验空转），建议提前；E7/E8 需先定夺契约再动。
+5. **B1**（独立轨）：重开 ADR 与 spec delta **均已完成**（ADR-0043 + change `0033` 重开归档）；**剩余为实现（M2 代码切片）**，可随时开工（无阻塞前置）。
+6. **E1 + E7 + E8**（契约与中间件）：✅ **E1 已完成**（change `0052`，ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；E7/E8 需先定夺契约再动。
 7. **E3 / E6**（规格裁决）：先定夺 beast R4/R5 与 context 判定升级是否解除 deferred，再决定是否接 runtime。
 8. **A7 + E6（miss 复用）**（低优先，同族）：数据源已就位，可一并做。
 9. **A6 / A8 / A9 / E5 / E9 / C 类**：随需。

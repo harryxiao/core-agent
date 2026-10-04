@@ -11,6 +11,10 @@ LLM 输出是自由文本，直接驱动执行会引入非法指令、格式错�
 
 本模块在 **loop 的推理→行动之间**与**行动→记忆之间**插入中间件链，把自由输出转化为结构化、可验证、可容错的执行指令。
 
+> 生产实际接入：loop 的**动作前链**（`middlewares`）与**结果侧观察者**（`action_observers`）两个接缝；
+> 校验在工具层（`ToolProvider._validate_args`）、压缩在 context 层（`core.context.Compactor`）各就其位。
+> 见下方 §4「实际接线」与 ADR-0055。
+
 ---
 
 ## 2. 内部组成
@@ -60,6 +64,14 @@ MiddlewareChain（横切，洋葱模型）
 
 - 中间件可插拔、可排序，由 profile 配置。
 - 每个中间件自身也是插件，遵守 plugin-registry 契约（可世代化、可进化）。
+
+**实际接线（生产，change 0052 / ADR-0055）**：loop 只落地两个接缝——
+① **动作前链**（loop `middlewares`）：`CircuitBreaker`（**按 `tool_id` 隔离**）的 `before` 命中 OPEN
+即转「终止 Action」短路本轮；② **结果侧观察者**（loop `action_observers`）：动作完成后回灌 `record_result`
+（**只计执行类失败**，策略性拒绝不计入）。校验由工具层 `ToolProvider._validate_args` 承担、上下文压缩由
+`core.context.Compactor` 承担（语义等价/同构，均在本模块之外）；`RetryPolicy` 与 `Fallback` 为库能力、
+**生产未接线**（副作用幂等风险 / 无生产 `fallback_fn`）。完整洋葱（`Pipeline.execute` 的逆序 `after`）
+为可插拔能力，生产接缝按需使用；适配层 `src/core/loop/constraints_adapter.py`。
 
 ---
 

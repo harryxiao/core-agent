@@ -42,6 +42,11 @@ TurnObserver = Callable[[str, list[str], bool], object]
 # loop 不 import evolution（架构红线），生产侧注入组合根闭包（内部调 EvolutionWorker.maybe_run）。
 ColdPath = Callable[[], None]
 
+# 结果侧观察者：每个非终止动作完成后回调（上下文, 动作, 执行结果）→ 无返回值；仅通知，
+# 单个观察者异常降级留痕、不改本轮结局。loop 不 import constraints（架构红线），
+# 生产侧注入组合根适配层闭包。
+ActionObserver = Callable[[LoopContext, Action, ActionResult], None]
+
 
 _MAINTENANCE_INTERVAL_S = 900.0  # 记忆维护节拍（秒）：默认 15 分钟
 _MAX_ACTION_EXCERPT = 400  # 动作事件 args/output 节选上界（事件面有界）
@@ -105,6 +110,7 @@ class DefaultLoop(Plugin):
         tools: ToolProvider | None = None,
         gate: SafetyGate | None = None,
         middlewares: list[Middleware] | None = None,
+        action_observers: list[ActionObserver] | None = None,
         tracer: Tracer | None = None,
         router: DecisionRouter | None = None,
         approver: Approver | None = None,
@@ -121,6 +127,7 @@ class DefaultLoop(Plugin):
         self._tools = tools
         self._gate = gate if gate is not None else SafetyGate()
         self._middlewares = list(middlewares or [])
+        self._action_observers = list(action_observers or [])
         self._tracer = tracer
         self._router = router
         self._approver = approver
@@ -224,6 +231,7 @@ class DefaultLoop(Plugin):
                         "output": _output_excerpt(result.error if result.failed else result.data),
                     },
                 )
+            self._notify_action_result(ctx, action, result, trace_id)
             self._record_observation(ctx, action, result)
             if result.failed:
                 self.rollback(trace_id)
@@ -487,3 +495,15 @@ class DefaultLoop(Plugin):
                 return self.decline(action)
             action = decided
         return action
+
+    def _notify_action_result(
+        self, ctx: LoopContext, action: Action, result: ActionResult, trace_id: str
+    ) -> None:
+        """结果侧观察者：非终止动作完成后按注册序回调；异常降级留痕、不改本轮结局。"""
+        if action.is_terminal or not self._action_observers:
+            return
+        for observer in self._action_observers:
+            try:
+                observer(ctx, action, result)
+            except Exception as err:  # noqa: BLE001 — 观察者失败降级不中断本轮
+                self._trace(trace_id, "action_observer_failed", {"error": str(err)})

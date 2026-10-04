@@ -42,6 +42,7 @@ from core.evolution import (
 from core.judgment import Compactor, DecisionRouter, Guardrail, JEVProvider, SkillMatcher
 from core.llm_provider import LLMProvider, LLMRequest, Message, StdlibLLMProvider
 from core.loop import Approver, DefaultLoop, LoopPlugin, TurnObserver
+from core.loop.constraints_adapter import build_constraints_chain
 from core.loop.planner import LLMPlanner, SkillHint
 from core.memory import (
     Crystallizer,
@@ -364,6 +365,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         """收尾维护节拍的冷路径机会：跑一轮进化（阈值门在 worker 内，未达则不做事）。"""
         evolution.maybe_run()
 
+    constraints_chain = build_constraints_chain()
+
     loop = DefaultLoop(
         planner=planner,
         memory=memory,
@@ -375,6 +378,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         compactor=context_compactor,
         turn_observer=loop_turn,
         cold_path=_cold_path,
+        middlewares=[constraints_chain.middleware],
+        action_observers=[constraints_chain.observe_result],
     )
 
     # 子 Agent 独立 loop：各自 ToolProvider（不含 tools.delegate，结构上杜绝再委托），
@@ -409,6 +414,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
                 approver=approver,
                 compactor=context_compactor,
                 turn_observer=agent_turn,
+                middlewares=[constraints_chain.middleware],
+                action_observers=[constraints_chain.observe_result],
             ),
         )
 

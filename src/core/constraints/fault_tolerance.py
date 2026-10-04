@@ -30,16 +30,22 @@ class CircuitBreaker(Middleware):
 
     name = "constraints.circuit_breaker"
 
-    def __init__(self, failure_threshold: int = 5, cooldown_s: float = 30.0) -> None:
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        cooldown_s: float = 30.0,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
         self._threshold = failure_threshold
         self._cooldown_s = cooldown_s
+        self._clock = clock if clock is not None else time.monotonic
         self._failures = 0
         self._state = _CLOSED
         self._opened_at = 0.0
 
     @property
     def state(self) -> str:
-        if self._state == _OPEN and time.monotonic() - self._opened_at >= self._cooldown_s:
+        if self._state == _OPEN and self._clock() - self._opened_at >= self._cooldown_s:
             self._state = _HALF_OPEN
         return self._state
 
@@ -59,7 +65,7 @@ class CircuitBreaker(Middleware):
                 self._state = _CLOSED
             else:
                 self._state = _OPEN
-                self._opened_at = time.monotonic()
+                self._opened_at = self._clock()
             return
         if success:
             self._failures = 0
@@ -67,7 +73,7 @@ class CircuitBreaker(Middleware):
         self._failures += 1
         if self._failures >= self._threshold:
             self._state = _OPEN
-            self._opened_at = time.monotonic()
+            self._opened_at = self._clock()
 
 
 class RetryPolicy(Middleware):

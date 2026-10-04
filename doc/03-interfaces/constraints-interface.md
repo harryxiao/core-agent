@@ -46,6 +46,15 @@ class CircuitBreaker(Middleware):
     def state(self) -> str:   # "CLOSED" | "OPEN" | "HALF_OPEN"
 ```
 
+构造面：`failure_threshold=5` / `cooldown_s=30.0` / `clock`（缺省 `time.monotonic`，可注入便于测试）。
+
+**生产接线**：由 `src/core/loop/constraints_adapter.py` 的 `ConstraintsChain` **按 `tool_id` 隔离**接进 loop
+（每工具一个实例，`dict[str, CircuitBreaker]`——单计数器直连会让一个坏工具全局开闸）；`before` 命中 OPEN
+即转「终止 Action」短路本轮，`record_result` 由结果侧观察者（`action_observers`）回灌。
+**只计执行类失败**（`TIMEOUT` / `EXECUTION_FAILED` / 未知码）；策略性拒绝（`INVALID_ARGS` /
+`COEFFECT_MISSING` / `GATE_DENIED` / `IRREVERSIBLE_BLOCKED` / `NO_TOOL_PROVIDER`）不计入、也不影响其他工具。
+决策见 ADR-0055。
+
 ---
 
 ## 4. RetryPolicy 接口
@@ -89,4 +98,6 @@ class Rollback(Middleware):
 ## 7. 关联
 
 - 模块：`02-modules/constraints.md`
+- 生产接线（loop 侧适配层，按工具熔断）：`src/core/loop/constraints_adapter.py`（`ConstraintsChain`）
+- 测试：`tests/test_constraints_wiring.py`
 - 规格：`openspec/specs/constraints/spec.md`

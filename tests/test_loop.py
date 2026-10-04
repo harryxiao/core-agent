@@ -185,6 +185,85 @@ def test_e2e_loop_drives_tool_and_memory() -> None:
     assert memory.audit(result.trace_id) != []
 
 
+# ---- 结果侧观察者（change 0052 / E1）----
+
+
+def _echo_action_loop(*, observers, tracer=None):
+    provider = ToolProvider()
+    provider.register(_echo_tool())
+
+    def planner(ctx):
+        if ctx.rounds == 0:
+            return Action(tool_id="tools.echo", args={"text": "hi"})
+        return Action(args={"reply": "ok"})
+
+    return DefaultLoop(planner=planner, tools=provider, action_observers=observers, tracer=tracer)
+
+
+def test_action_observers_called_in_order_with_result() -> None:
+    calls: list[tuple[str, bool]] = []
+    loop = _echo_action_loop(
+        observers=[
+            lambda ctx, action, result: calls.append((action.tool_id, result.failed)),
+            lambda ctx, action, result: calls.append((action.tool_id, result.failed)),
+        ]
+    )
+    loop.run("hi")
+    assert calls == [("tools.echo", False), ("tools.echo", False)]
+
+
+def test_action_observer_failure_degrades_without_breaking_round() -> None:
+    tracer = _RecordingTracer()
+
+    def boom(ctx, action, result):
+        raise RuntimeError("observer boom")  # noqa: TRY003 — 测试用哨兵异常
+
+    loop = _echo_action_loop(observers=[boom], tracer=tracer)
+    result = loop.run("hi")
+    assert result.reply == "ok"  # 本轮照常完成
+    assert "action_observer_failed" in tracer.kinds
+
+
+def test_terminal_action_skips_observers() -> None:
+    calls: list[object] = []
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        action_observers=[lambda ctx, a, r: calls.append(a)],
+    )
+    loop.run("hi")
+    assert calls == []
+
+
+def test_middleware_can_rewrite_action() -> None:
+    """回归：中间件改写动作（非拒绝）仍生效，改写后的参数抵达执行。"""
+    received: list[dict] = []
+    provider = ToolProvider()
+    provider.register(
+        Tool(
+            definition=ToolDef(
+                tool_id="tools.rec",
+                description="",
+                schema={"type": "object"},
+                coeffects=[],
+                reversible=True,
+            ),
+            handler=lambda **kw: received.append(kw) or "ok",
+        )
+    )
+
+    def planner(ctx):
+        if ctx.rounds == 0:
+            return Action(tool_id="tools.rec", args={"text": "orig"})
+        return Action(args={"reply": "done"})
+
+    def rewrite(ctx, action):
+        return Action(tool_id=action.tool_id, args={"text": "rewritten"})
+
+    loop = DefaultLoop(planner=planner, tools=provider, middlewares=[rewrite])
+    loop.run("hi")
+    assert received == [{"text": "rewritten"}]
+
+
 def test_remember_stores_readable_reply_not_dict_repr() -> None:
     """remember 落 L2 的正文含终态回复语义，且无 dict repr 噪声（F7）。"""
     provider = ToolProvider()

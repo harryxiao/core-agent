@@ -106,6 +106,29 @@ def test_build_runtime_assembles_all_deps(monkeypatch, tmp_path) -> None:
     assert delegate.timeout_s >= min_delegate_timeout
 
 
+# ---- constraints 中间件链注入（change 0052 / E1）----
+
+
+def test_build_runtime_injects_shared_constraints_chain(monkeypatch, tmp_path) -> None:
+    """组合根把同一 constraints 链注入主 loop 与所有子 agent loop（熔断态 per-runtime）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+
+    assert runtime.loop._middlewares, "主 loop 必须注入 constraints 中间件链"
+    assert runtime.loop._action_observers, "主 loop 必须注入结果侧观察者"
+    main_chain = runtime.loop._middlewares[0].__self__
+
+    router = runtime.orchestrator._router
+    profiles = list(router._agents.values())
+    if router._fallback is not None:
+        profiles.append(router._fallback)
+    assert profiles, "应有子 agent 画像"
+    for profile in profiles:
+        sub = profile.loop
+        assert sub._middlewares[0].__self__ is main_chain, "子 loop 必须共享同一熔断链"
+        assert sub._action_observers[0].__self__ is main_chain
+
+
 def test_build_runtime_wires_core_profile_into_assembler(monkeypatch, tmp_path) -> None:
     """P0：两级 Core.md 的宪法/项目信息经 build_runtime 接进装配器。
 

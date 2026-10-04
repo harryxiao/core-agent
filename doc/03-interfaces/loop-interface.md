@@ -39,6 +39,10 @@ class DefaultLoop(Plugin):
     # 构造面（节拍相关）：maintenance_interval=900.0s（<=0 关闭）、clock=time.monotonic（可注入，便于测试）
     # 注入面（可选）：cold_path: Callable[[], None]（收尾节拍的进化冷路径机会；缺省未注入则不做，
     #   loop 不 import evolution——只拿回调，组合根注入闭包，见 evolution-interface §4.1）
+    # 注入面（可选）：middlewares: list[Callable[[LoopContext, Action], Action | None]]（动作前链，
+    #   返回 None 即拒绝短路、返回 Action 则放行/改写）；action_observers:
+    #   list[Callable[[LoopContext, Action, ActionResult], None]]（结果侧观察者，仅通知、异常降级留痕；
+    #   loop 不 import constraints——生产侧由组合根注入适配层，见 constraints-interface §7 / ADR-0055）
 
     def run(self, user_input: str, *, session_id: str = "") -> LoopResult:
         trace_id = new_trace_id()
@@ -132,6 +136,12 @@ def remember(self, trace_id: str, trajectory: list[Step]) -> None
   渲染进 system prompt 的技能块——`- <skill_id>（<版本>）：<instructions 节选>`（步骤为空只留
   `id（版本）`）。`SkillHint` 是**纯 dict**（`skill_id` / `version` / `instructions`），loop 不
   import skills（架构红线）；未注入或未命中时 prompt 不含技能块。
+- 横切中间件双接缝：①**动作前链** `middlewares`（`(LoopContext, Action) -> Action | None`）——按注册序执行，
+  返回 `None` 即拒绝短路（记入已拒绝回复、本轮终止），返回 Action 则放行/改写；
+  ②**结果侧观察者** `action_observers`（`(LoopContext, Action, ActionResult) -> None`）——每个**非终止**
+  动作完成后按注册序回调，**仅通知**：单个观察者抛出降级留痕（记 `action_observer_failed`），
+  **不改变本轮结局与终止语义**；终止动作（空 `tool_id`）不触发。二者缺省为空 = 零行为变化；
+  生产接线（按 `tool_id` 隔离熔断）见 `constraints-interface.md` §7 与 ADR-0055。
 - 收尾钩子：每轮收尾调注入的 `turn_observer(task, steps, ok)`——**成功与失败都提交**（`ok=False`
   即超限终止轮，失败信号供技能迭代判据），由组合根分发到技能反馈与 SOP 提炼
   （`SopExtractor.observe` 仍只吸收成功，见 `skills-interface.md §6`）；钩子抛错降级留痕
