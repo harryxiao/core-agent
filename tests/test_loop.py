@@ -183,6 +183,24 @@ def test_e2e_loop_drives_tool_and_memory() -> None:
     assert memory.audit(result.trace_id) != []
 
 
+def test_remember_stores_readable_reply_not_dict_repr() -> None:
+    """remember 落 L2 的正文含终态回复语义，且无 dict repr 噪声（F7）。"""
+    provider = ToolProvider()
+    provider.register(_echo_tool())
+    memory = MemoryStore()
+
+    def planner(ctx):
+        if ctx.rounds == 0:
+            return Action(tool_id="tools.echo", args={"text": "hi"})
+        return Action(args={"reply": "季度总结已完成"})
+
+    loop = DefaultLoop(planner=planner, tools=provider, memory=memory)
+    result = loop.run("q")
+    entries = memory.audit(result.trace_id)
+    assert entries and "季度总结已完成" in entries[0].content
+    assert "'round'" not in entries[0].content
+
+
 def test_loop_feeds_observation_back_to_planner() -> None:
     """观察回灌：工具轮的调用与执行结果进入下一轮 planner 上下文（ReAct 多轮前提）。"""
     provider = ToolProvider()

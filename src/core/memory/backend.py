@@ -14,6 +14,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .protocol import IndexEntry, Layer, MemoryEntry, MemoryId
+from .relevance import tokens
 
 
 class FileBackend:
@@ -47,11 +48,11 @@ class FileBackend:
             candidates = [e for e in self._entries.values() if layer is None or e.layer == layer]
             if not query:
                 return candidates
-            tokens = set(query.lower().split())
+            query_tokens = tokens(query)
             scored: list[tuple[int, MemoryEntry]] = []
             for entry in candidates:
                 haystack = f"{entry.content} {' '.join(entry.tags)}".lower()
-                score = sum(1 for tok in tokens if tok in haystack)
+                score = sum(1 for tok in query_tokens if tok in haystack)
                 scored.append((score, entry))
             scored.sort(key=lambda pair: pair[0], reverse=True)
             return [entry for _, entry in scored]

@@ -48,6 +48,23 @@ def test_read_relevance_order() -> None:
     assert [e.id for e in results] == ["e1", "e2"]
 
 
+def test_read_cjk_semantic_recall() -> None:
+    """中文整句检索：二元切分让相关条目胜出（旧 split() 对中文整句近零召回）。"""
+    store = MemoryStore()
+    store.write("L2", _entry("e1", "L2", "用户偏好用 uv 管理依赖"))
+    store.write("L2", _entry("e2", "L2", "今天天气不错"))
+    results = store.read("依赖管理", budget=100)
+    assert results[0].id == "e1"
+
+
+def test_backend_search_cjk_bigram_rank() -> None:
+    """后端 search 亦按中文二元组打分：命中条目排前。"""
+    backend = FileBackend()
+    backend.put(_entry("e1", "L2", "季度总结报告"))
+    backend.put(_entry("e2", "L2", "无关内容"))
+    assert backend.search("季度")[0].id == "e1"
+
+
 def test_read_budget_truncation() -> None:
     store = MemoryStore()
     store.write("L2", _entry("e1", "L2", "x" * 100))

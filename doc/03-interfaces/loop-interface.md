@@ -42,7 +42,7 @@ class DefaultLoop(Plugin):
             if result.failed:
                 self.rollback(trace_id)          # 回滚本轮
             ctx = self.observe(ctx, result)
-        self.remember(trace_id, ctx.trajectory)  # 无行动不记忆
+        self.remember(trace_id, [*ctx.trajectory, {"reply": ctx.reply}])  # 无行动不记忆；末条 reply 供语义检索
         return LoopResult(reply=ctx.reply, trace_id=trace_id)
 ```
 
@@ -90,6 +90,7 @@ def reason(self, ctx: LoopContext) -> Action
 def act(self, action: Action, trace_id: str) -> ActionResult   # 经 EffectTracker.record
 def observe(self, ctx: LoopContext, result: ActionResult) -> LoopContext
 def remember(self, trace_id: str, trajectory: list[Step]) -> None
+    # 轨迹项 {round, ok, error} 渲染为可读行；末条 {reply} 提供可检索正文
 ```
 
 ---

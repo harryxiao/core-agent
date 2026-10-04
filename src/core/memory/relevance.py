@@ -25,7 +25,22 @@ _W_FRESH = 0.1
 _W_REUSE = 0.2
 _W_LAYER = 0.2
 
-_TOKEN_RE = re.compile(r"\w+")
+# 检索分词：非中文词元沿用 \w+ 语义（排除汉字，保留其他 Unicode 词字符），
+# 连续汉字另按二元组切分——中文无空格，整句 \w+ / split() 会退化成单一词元，
+# 令中文检索近乎零召回。
+_CJK_RUN = re.compile(r"[\u4e00-\u9fff]+")
+_WORD = re.compile(r"[^\W\u4e00-\u9fff]+")
+
+
+def tokens(text: str) -> set[str]:
+    """检索分词：非中文词元 + 中文二元组（提高中文 query/content 重叠召回）。"""
+    out = set(_WORD.findall(text.lower()))
+    for run in _CJK_RUN.findall(text):
+        if len(run) == 1:
+            out.add(run)
+        else:
+            out.update(run[i : i + 2] for i in range(len(run) - 1))
+    return out
 
 
 def relevance(
@@ -56,11 +71,10 @@ def _similarity(
 
 
 def _lexical_sim(entry: MemoryEntry, query: str) -> float:
-    entry_tokens = set(_TOKEN_RE.findall(entry.content.lower()))
-    query_tokens = set(_TOKEN_RE.findall(query.lower()))
+    query_tokens = tokens(query)
     if not query_tokens:
         return 0.0
-    return len(entry_tokens & query_tokens) / len(query_tokens)
+    return len(tokens(entry.content) & query_tokens) / len(query_tokens)
 
 
 def _cosine(a: list[float], b: list[float]) -> float:

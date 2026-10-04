@@ -43,6 +43,20 @@ def _args_excerpt(args: dict[str, Any]) -> dict[str, Any] | str:
     return text[:_MAX_ACTION_EXCERPT]
 
 
+def _trajectory_line(item: Any) -> str:
+    """轨迹项渲染为记忆行：``reply`` 取语义正文，dict 取轮次/成败/错误，其余退化为 str。"""
+    if not isinstance(item, dict):
+        return str(item)
+    data = cast(dict[str, Any], item)
+    if "reply" in data:
+        return str(data["reply"])
+    parts = [f"round {data.get('round')}", "ok" if data.get("ok") else "failed"]
+    error = data.get("error")
+    if error:
+        parts.append(str(error))
+    return " ".join(parts)
+
+
 def _output_excerpt(value: Any) -> str:
     """动作输出节选：str 化截断（失败时 error，成功时 data）。"""
     return str(value or "")[:_MAX_ACTION_EXCERPT]
@@ -184,7 +198,7 @@ class DefaultLoop(Plugin):
         if limit_reason:
             ctx.reply = f"{limit_reason}: 本轮终止"
             yield LoopEvent("loop_failed", {"reason": limit_reason, "trace_id": trace_id})
-        self.remember(trace_id, ctx.trajectory)
+        self.remember(trace_id, [*ctx.trajectory, {"reply": ctx.reply}])
         self._trace(trace_id, "loop_finished", {"reply": ctx.reply, "failed": bool(limit_reason)})
         if not streamed:  # 未流式外发过 delta 才补一次全文（非流式 planner 兼容路径）
             yield LoopEvent("reply_delta", {"text": ctx.reply})
@@ -263,10 +277,16 @@ class DefaultLoop(Plugin):
         return ctx
 
     def remember(self, trace_id: str, trajectory: list[Any]) -> None:
+        """把本轮轨迹沉淀为 L2 记忆（无行动不记忆）。
+
+        轨迹项渲染为可读行（轮次/成败/错误），末条 ``reply`` 提供可检索的语义内容。
+        """
         if not trajectory or self._memory is None:
             return
-        parts = [str(item) for item in trajectory if str(item)]
-        summary = " | ".join(parts)[:2048]
+        lines = [line for item in trajectory if (line := _trajectory_line(item))]
+        if not lines:
+            return
+        summary = "\n".join(lines)[:2048]
         self._memory.write(
             "L2",
             MemoryEntry(
