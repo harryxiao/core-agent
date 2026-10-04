@@ -90,12 +90,23 @@
   → 「可用技能」块）。缺口仅是 `ContextPack.skills` 字段恒空（`build` 从不填充），**无功能
   空洞**。落点＝并入交付物 #6/#7（SOP/语义路由）时顺带填充，或直接判定冗余删除；
   **不单列为独立任务**。
-- **B5 `_trim` 保序截断**：`budget.py:56-64` 按顺序取前 N 到预算即止，非按相关度裁剪
-  → 高价值项可能被后到的低价值项挤出。落点＝预算裁剪改为「按多因子得分排序后截断」。
-  **依赖 P0 生效。**
-- **B6 仅 reason 阶段装配**：`assembler.build` 唯一调用点＝planner `reason`（`planner.py:124`）
-  → perceive/act 阶段无信息供给。落点＝按需为 perceive（首轮召回）/ act（工具选择）扩展装配
-  阶段。**依赖 P0 生效。**
+- **B5 `_trim` 头部阻塞** ✅ **已完成**（2026-10-04）：原 `_trim` 遇首个放不下的项即
+  `break` → 单项超预算会**连带掐断其后所有更小的低相关项**（头部饥饿）；且
+  `pack.skills = self._trim(pack.skills, 0)` 使 **skills 恒空**。修正：`break` → `continue`
+  （跳过放不下的项，保留其后可容纳项）+ skills 改用「事实裁剪后的**剩余预算**」。
+  **排序职责仍归上游**（`pack.facts` = 项目信息 + `memory.read` 的 `rank` 降序结果），
+  `budget.py` 只持有无分数的 dict，故不做重排——原落点写的「按得分排序后截断」改为
+  「保序 + 跳过」，更小且不重复承担排序。纯实现修正，规格无涉（spec 只要求「超预算裁剪
+  低相关度内容」）。测试 `tests/test_context.py` +2（跳过大项保小项 / skills 用余量）。
+- **B6 仅 reason 阶段装配 —— 前提不成立，判为「按架构如此」（关闭）**：`assembler.build`
+  唯一调用点＝planner `reason`（`planner.py:124`），这是**数据流的必然**而非缺口——
+  `用户输入 ─► Loop.perceive ─► ContextEngine.assemble(+retrieve 注入) ─► LLM(Reason)
+  ─► PermissionGuard ─► Loop.act ─► ToolProvider.invoke ─► Loop.remember`：装配是 **Reason
+  前的一次性步骤**，`perceive` 在其**上游**（B2 已明确把检索移出 perceive），`act`
+  消费的是 Reason 已决策的动作（工具选择发生在 Reason，tool schema 在彼处注入）。
+  context spec 亦无 perceive/act 阶段装配的 Requirement（`stage` 定位为「装配阶段标注、
+  暂不参与事实选择」）。**结论：不实现**；唯一残留（`stage` 语义化/阶段化权重）并入
+  **A3**（已登记为可选），不独立排期。
 - **P0b 人格 → L0 记忆层** ✅ **已完成**（2026-10-04）：`build_runtime` 在装配画像后，将
   人格分区以稳定 id `core-profile:personality` **幂等**写入 L0（`source=core-profile`）；
   测试锁定幂等（两次装配同 id 不重复）。L0 优先级最高，读时随候选带出、受预算截断约束。
@@ -161,7 +172,9 @@
     ① **P0 + P0b** 接装配器 + 两级 Core.md 注入 + 人格→L0 ✅ **已完成**
     （2026-10-04；B2/B5/B6 已随之在生产生效）
     → ② 交付物 **#1/#2**（`importance`/`kind` + 多因子重排，**一并接 C7 embedder + 缓存策略**，先落 ADR）
-    → ③ **B5/B6**（随装配器阶段化）
+    → ③ **B5** ✅ **已完成**（2026-10-04，`_trim` 跳过语义 + skills 余量）；
+      **B6** 判为「按架构如此」**关闭**（装配是 Reason 前一次性步骤；残留并入 A3）
+    → ④ `0040-memory-embedding-config`（规格已备，待实现）
     → **B4** 并入 #6/#7 或判冗余删除（不独立排期）。
     A1/A3 已清账（✅）。
 

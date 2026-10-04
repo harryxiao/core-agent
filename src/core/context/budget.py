@@ -34,7 +34,8 @@ class BudgetManager:
                 ContextErrorCode.BUDGET_EXCEEDED, "必保内容（宪章/未决事项）已超预算"
             )
         pack.facts = self._trim(pack.facts, budget - mandatory)
-        pack.skills = self._trim(pack.skills, 0)
+        spent = mandatory + sum(estimate_tokens(str(f)) for f in pack.facts)
+        pack.skills = self._trim(pack.skills, budget - spent)
         pack.token_used = self._measure(pack)
         return pack
 
@@ -54,12 +55,17 @@ class BudgetManager:
 
     @staticmethod
     def _trim(items: list[dict[str, str]], budget: int) -> list[dict[str, str]]:
+        """按序保留可容纳项，**跳过**放不下的项（不掐断后续）。
+
+        入参按相关度降序（见 ``DynamicAssembler``）：单项超预算只裁该项本身，
+        不阻塞其后更小的低相关项，避免头部大项造成整体饥饿。
+        """
         kept: list[dict[str, str]] = []
         used = 0
         for item in items:
             cost = estimate_tokens(str(item))
             if used + cost > budget:
-                break
+                continue
             kept.append(item)
             used += cost
         return kept

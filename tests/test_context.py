@@ -39,6 +39,28 @@ def test_enforce_trims_low_priority_facts() -> None:
     assert out.token_used <= budget
 
 
+def test_enforce_skips_oversized_fact_keeps_smaller() -> None:
+    """放不下的项应**跳过**而非掐断后续——避免头部大项阻塞（B5）。"""
+    big = {"source": "m", "content": "x" * 400}
+    small1 = {"source": "m", "content": "a" * 40}
+    small2 = {"source": "m", "content": "b" * 40}
+    pack = ContextPack(task="t", stage="s", facts=[small1, big, small2])
+    budget = 40
+    out = BudgetManager().enforce(pack, budget=budget)
+    contents = [f["content"] for f in out.facts]
+    assert small1["content"] in contents and small2["content"] in contents, "小项应被填充"
+    assert big["content"] not in contents, "超预算大项被裁剪"
+    assert out.token_used <= budget
+
+
+def test_enforce_allocates_remaining_budget_to_skills() -> None:
+    """skills 用**剩余**预算裁剪，而非恒 0（原 _trim(skills, 0) 使技能恒空）。"""
+    skill = {"source": "s", "content": "k" * 40}
+    pack = ContextPack(task="t", stage="s", facts=[], skills=[skill])
+    out = BudgetManager().enforce(pack, budget=100)
+    assert out.skills == [skill]
+
+
 def test_enforce_budget_exceeded_when_mandatory_over() -> None:
     pack = ContextPack(task="t", stage="s", constitution=["x" * 40], pending=["p" * 40])
     with pytest.raises(ContextError) as exc_info:
