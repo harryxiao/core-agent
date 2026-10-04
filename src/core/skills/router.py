@@ -14,6 +14,7 @@ from typing import Any
 
 from core.memory import MemoryEntry, MemoryStore
 
+from .feedback import SkillFeedback
 from .library import SkillLibrary
 from .models import Skill, SkillMatch
 
@@ -29,6 +30,10 @@ _MAX_HINT_CHARS = 400
 
 # 专属技能 skill_id 的节数（`beast.<域>.<技能>`）——形状即约定（非另建注册表）
 _DEDICATED_SEGMENTS = 3
+
+# 历史成功率因子的下限（有样本时）：零成功仍保留一半排序分，避免「一次失败即永不入选」的
+# 正反馈（失败 → 不入选 → 无新样本 → 永久失败）
+_SUCCESS_FLOOR = 0.5
 
 
 def skill_hint(skill_id: str, version: str, instructions: str) -> dict[str, str]:
@@ -49,11 +54,13 @@ class SkillRouter:
         *,
         memory: MemoryStore | None = None,
         scorer: SkillScorer | None = None,
+        feedback: SkillFeedback | None = None,
         threshold: float = _SEMANTIC_MIN_SCORE,
     ) -> None:
         self._library = library
         self._memory = memory
         self._scorer = scorer
+        self._feedback = feedback
         self._threshold = threshold
         self.misses: list[str] = []
 
@@ -66,6 +73,9 @@ class SkillRouter:
         ``domain`` 是**专属技能作用域**（缺省 = 通用视角）：三节 ``beast.<域>.<技能>`` 形式的
         专属技能仅当 ``domain == "beast.<域>"`` 时进候选——主 Agent 不带 domain，故神兽神通
         不会灌进主 prompt（beast-mode spec「Innate Skills and Dedicated Routing」）。
+
+        返回的 ``score`` 是**排序分** = 基础分 × 历史成功率因子（见 ``_rank``）；**命中判定**
+        （词法 > 0、语义 ≥ 阈值）一律判基础分——加权不改「算不算命中」（skills spec「技能路由」）。
         """
         terms = terms_of(task)
         candidates = [
@@ -75,6 +85,8 @@ class SkillRouter:
         ]
         scored = [SkillMatch(skill=s, score=self._score(s, terms)) for s in candidates]
         scored = [m for m in scored if m.score > 0] or self._semantic(task, candidates)
+        # 判定已由基础分完成，此处只把排序分换成复合分（加权不改命中口径）
+        scored = [SkillMatch(skill=m.skill, score=self._rank(m.skill, m.score)) for m in scored]
         scored.sort(key=lambda m: m.score, reverse=True)
         if not scored:
             self._record_miss(task)
@@ -95,6 +107,20 @@ class SkillRouter:
             for skill in candidates
             if (value := scores.get(skill.skill_id, 0.0)) >= self._threshold
         ]
+
+    def _rank(self, skill: Skill, base: float) -> float:
+        """排序分 = 基础分 × 历史成功率因子（`SkillMatch.score` 自述口径的「历史成功率」项）。
+
+        因子：**无样本恒为 1.0**（冷启动中性——``success_rate`` 无样本返回 0.0，直接相乘会把
+        全部新技能归零）；有样本时 ``下限 + (1 - 下限) × 成功率``（``skill.version`` 的统计，
+        旧版本历史不计入）。未注入反馈记录器 → 恒 1.0（与纯基础分一致）。
+        """
+        if self._feedback is None:
+            return base
+        stats = self._feedback.stats(skill.skill_id, version=skill.version)
+        if stats.total == 0:
+            return base
+        return base * (_SUCCESS_FLOOR + (1.0 - _SUCCESS_FLOOR) * (stats.ok / stats.total))
 
     def _score(self, skill: Skill, terms: list[str]) -> float:
         if not terms:

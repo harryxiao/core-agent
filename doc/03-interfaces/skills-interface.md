@@ -86,16 +86,17 @@ class SkillRouter:
         *,
         memory: MemoryStore | None = None,
         scorer: SkillScorer | None = None,
+        feedback: SkillFeedback | None = None,
         threshold: float = 0.5,
     ) -> None: ...
 
     def match(self, task: str, *, domain: str | None = None, top_k: int = 3) -> list[SkillMatch]:
-        """按任务类型匹配，返回匹配度排序的 Top-K；domain 为专属技能作用域。"""
+        """按任务类型匹配，返回**排序分**降序的 Top-K；domain 为专属技能作用域。"""
 
 @dataclass
 class SkillMatch:
     skill: Skill
-    score: float                # 匹配度（词法命中率 / 语义分；历史成功率见 #8 缺口）
+    score: float                # 排序分 = 基础分（词法命中率 / 语义分）× 历史成功率因子
 ```
 
 无匹配时返回空列表，由 loop 回退通用流程并记录未命中（供新技能沉淀）。
@@ -109,6 +110,8 @@ class SkillMatch:
 | **阈值** | 语义分 ≥ `threshold`（缺省 0.5）才采纳，按分降序取 Top-K |
 | **降级** | 未注入打分器 / 打分器抛错 / 分值低于阈值 → 行为与纯词法一致（空结果 + 记 miss）；`match` 不向调用方抛异常 |
 | **miss 口径** | 有命中（词法或语义）则不记 miss；两者皆无才记（miss 是「无技能可用」信号，供新技能沉淀） |
+| **排序分** | 基础分 × 历史成功率因子。因子：**无样本 = 1.0**（冷启动中性，不惩罚新技能）；有样本 = `0.5 + 0.5 × 成功率`（当前 `skill.version` 的统计，下限 0.5 防「一次失败即永不入选」的正反馈）。未注入 `SkillFeedback` → 因子恒 1.0 |
+| **判定 vs 排序** | 命中判定（词法 > 0、语义 ≥ 阈值）一律判**基础分**；因子**只**影响排序——加权不得静默改变「算不算命中」的口径 |
 | **接线** | `build_runtime`：`scorer=SkillMatcher(router) if jev is not None else None`（未配置 JEV → 纯词法） |
 
 ### 4.1 命中注入与迭代闭环（0045）

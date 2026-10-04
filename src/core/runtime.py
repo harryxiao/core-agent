@@ -270,11 +270,15 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
     # 技能态落盘（0050）：四类运行态注入 $CORE_STATE_DIR 下状态文件 → 重启恢复；
     # 此前技能库/反馈/样本/灰度全活进程内，结晶链路每进程从零开始（账本 A3）。
     skill_library = SkillLibrary(path=_skill_state_path("skills.json"))
+    # 技能反馈（0045）先于路由构造：既是路由排序的历史成功率来源（0058），
+    # 也是迭代器/版本指标的数据源——同一实例，避免「迭代看一套数、路由看另一套数」。
+    skill_feedback = SkillFeedback(path=_skill_state_path("skill-feedback.json"))
     # 语义兜底（0044）：仅 JEV 配置时注入打分器；否则纯词法（词法命中零模型调用）
     skill_router = SkillRouter(
         skill_library,
         memory=memory,
         scorer=SkillMatcher(router).score if jev is not None else None,
+        feedback=skill_feedback,
     )
     # SOP 提炼接线（0043）：成功任务收尾的轨迹经提炼器归组、达阈值提炼为技能入库——
     # 此前技能库只有注册/路由/版本三段，无任何产生技能的入口（生产恒为空）。
@@ -284,12 +288,12 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         effect_tracker=effect_tracker,
         path=_skill_state_path("sop-samples.json"),
     )
-    # 技能迭代接线（0045）：命中注入 + 执行反馈 + 迭代闭环。反馈默认落盘（缺省进程内，
-    # 0050 注入路径）；迭代复用 VersionManager 的灰度/A/B（0048 决策 ⑥ 记的「能力已存在、
-    # 无调用者」在此接上调用者），改写走与 SOP 同一注入接缝（skills 不 import LLM 抽象）。
+    # 技能迭代接线（0045）：命中注入 + 执行反馈 + 迭代闭环。反馈落盘见上（0050 注入路径，
+    # 0058 起同时供路由排序）；迭代复用 VersionManager 的灰度/A/B（0048 决策 ⑥ 记的
+    # 「能力已存在、无调用者」在此接上调用者），改写走与 SOP 同一注入接缝
+    # （skills 不 import LLM 抽象）。
     # 版本管理器在此显式构造并注入（0050 决策 4）：`SkillIterator` 内部自建的那份拿不到，
     # 落盘需由组合根持有；顺带把「灰度/A-B 指标 = 各版本成功率」口径显式化。
-    skill_feedback = SkillFeedback(path=_skill_state_path("skill-feedback.json"))
     skill_iterator = SkillIterator(
         skill_library,
         skill_feedback,
