@@ -102,6 +102,15 @@ def _checkpoint_path() -> Path:
     return base / "checkpoints.jsonl"
 
 
+def _memory_path() -> Path:
+    """记忆落盘路径：$CORE_STATE_DIR（缺省 ~/.core/state）/memory.jsonl。
+
+    与检查点共用全局状态目录约定；env 覆盖便于测试隔离。
+    """
+    base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
+    return base / "memory.jsonl"
+
+
 def build_runtime(  # noqa: PLR0915
     config: ConfigManager,
     *,
@@ -144,7 +153,7 @@ def build_runtime(  # noqa: PLR0915
         mode=config.permission_mode(),
         guardrail=Guardrail(router) if jev is not None else None,
     )
-    backend = memory_backend if memory_backend is not None else FileBackend()
+    backend = memory_backend if memory_backend is not None else FileBackend(_memory_path())
     effect_tracker = EffectTracker()
     memory = MemoryStore(
         backend=backend,

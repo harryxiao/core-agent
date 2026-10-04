@@ -101,6 +101,32 @@ def test_build_runtime_assembles_all_deps(monkeypatch, tmp_path) -> None:
     }
 
 
+def test_build_runtime_memory_persists_to_state_dir(monkeypatch, tmp_path) -> None:
+    """默认装配的记忆后端落盘到 $CORE_STATE_DIR（新后端可重载检索，不因进程退出丢失）。"""
+    import os  # noqa: PLC0415 — 断言用环境变量
+    from pathlib import Path  # noqa: PLC0415 — 断言用落盘路径
+
+    from core.memory import FileBackend, MemoryEntry  # noqa: PLC0415 — 重载后端
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+    runtime.memory.write(
+        "L2",
+        MemoryEntry(
+            id="m1",
+            layer="L2",
+            content="持久化验证内容",
+            tags=["t"],
+            source="loop",
+            trace_id="tr1",
+        ),
+    )
+    path = Path(os.environ["CORE_STATE_DIR"]) / "memory.jsonl"
+    assert path.exists()  # 默认后端已落盘（而非纯内存）
+    reloaded = MemoryStore(backend=FileBackend(path))
+    assert [e.id for e in reloaded.read("持久化验证内容")] == ["m1"]
+
+
 def test_build_runtime_rejects_missing_config(tmp_path) -> None:
     with pytest.raises(ConfigurationError):
         build_runtime(ConfigManager(yaml_path=str(tmp_path / "missing.yaml")))
