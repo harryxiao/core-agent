@@ -23,7 +23,6 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
 
-from core.beast import BeastActivator
 from core.cli_ops import CLICommandDispatcher
 from core.configuration import (
     AppConfig,
@@ -55,7 +54,7 @@ from core.pet.core import PetManager
 from core.pet.library import load_persona, load_personas
 from core.plugin_registry import DomainError, PluginInstaller, PluginKind, PluginSource
 from core.plugins import InstallDispatcher
-from core.runtime import build_runtime
+from core.runtime import Runtime, build_runtime
 from core.skills import SkillLibrary
 from core.tools import StubPlugin, ToolProvider
 from core.ui import CLIBridge, DesktopBridge, UIAPILayer, UiError, WebBridge
@@ -1007,14 +1006,35 @@ def _load_persona(persons_dir: str, name: str | None):
     return load_persona(path)
 
 
+def _beast_runtime(args: argparse.Namespace) -> Runtime | None:
+    """装配运行时（与 `_pet` 同口径）：配置/装配失败转 stderr 并返回 None。
+
+    0057 前 summon/recall 造裸 `BeastActivator()`——那是空装配（无 loop / 无记忆 / 无神通
+    路由），与规格 R4「独立 loop + 共享记忆」不符。
+    """
+    try:
+        return build_runtime(ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)))
+    except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
+        print(f"装配失败: {exc}", file=sys.stderr)
+        return None
+
+
 def _summon(args: argparse.Namespace) -> int:
-    session = asyncio.run(BeastActivator().activate_from_cli(args.beast, list(args.task or [])))
+    runtime = _beast_runtime(args)
+    if runtime is None:
+        return 1
+    session = asyncio.run(
+        runtime.beast_activator.activate_from_cli(args.beast, list(args.task or []))
+    )
     print(f"已召唤神兽 {session.beast.agent_id}（状态 {session.state.value}）")
     return 0
 
 
 def _recall(args: argparse.Namespace) -> int:
-    session = BeastActivator().recall_from_cli(args.beast)
+    runtime = _beast_runtime(args)
+    if runtime is None:
+        return 1
+    session = runtime.beast_activator.recall_from_cli(args.beast)
     print(f"已召回神兽 {session.beast.agent_id}（状态 {session.state.value}）")
     return 0
 

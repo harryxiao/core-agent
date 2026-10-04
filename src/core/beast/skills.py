@@ -1,9 +1,10 @@
 """神兽独有神通（innate-skills，能力层）。
 
 每兽一神通，以 Skill 契约落地并注册进全局 SkillLibrary，命名空间
-``beast.<拼音>``（skill_id 三节：``beast.<拼音>.<skill>``）。runtime 调用
-deferred（loop 只消费 ToolProvider，不接 SkillLibrary）；本模块只做
-「定义 + 注册」，专属路由语义由 BeastSession 按 agent_id 前缀过滤候选。
+``beast.<拼音>``（skill_id 三节：``beast.<拼音>.<skill>``）。本模块只做
+「定义 + 注册」；runtime 路由由组合根接线（0057）——神兽 loop 以
+``SkillRouter.match(task, domain=beast.agent_id)`` 在**自身域内**路由，
+非本域（含主 Agent）候选池不含专属神通。
 
 对应规格：doc/openspec/specs/beast-mode/spec.md（Innate Skills and Dedicated Routing）
 """

@@ -937,6 +937,20 @@
   ④ **`extra` 宽松性不动**（用户裁决 B）：`extra` 是「五类结构化段之外一切」的兜底，收紧为白名单会拒绝用户既有自定义段、改变既有接受行为；**未确认键校验**转出为独立后续行（待定夺「仅告警」还是「硬拒」）。
   ⑤ **`None → ""` 归一**：`_build_config` 三个引用的 `str(x or "")`，否则 yaml 中 `api_key:` 空值经 `str(None)` 变成 `"None"` 字符串，会被判为「明文密钥」而非「缺失」——**错误文案失真**，与本变更承诺的「指明缺失或不可解析」矛盾。
 - **后果**：✅ 密钥引用校验口径一致，空 / 不可解析的 IM、决策模型密钥不再静默通过（安全缺口闭合）；✅ `permission.mode` 非法取值在加载期被拒并列出四档；✅ 无新依赖、无分层破坏；✅ 契约基线恢复可信（E7 全闭）；⚠️ **校验变严**是行为变更：既有「IM 段 + 空 secret」或非法 `permission.mode` 的仓外配置将从静默接受变为启动报错（已核对仓内无用例依赖宽松行为）；⚠️ 四档词表两处字面量（决策 ③）；⚠️ `extra` 未知键仍静默接受。
+## ADR-0060：神兽运行时桥接（专用路由作用域 / 惰性 loop 装配 / 共享记忆注入）
+
+- **状态**：已采纳（change 0057）
+- **背景**：`beast-mode` spec R4/R5 正文自述「runtime 调用 deferred」——神兽的独立 loop、共享记忆命名空间、神通注册、专属路由四项在生产装配**一处未接**：`BeastManager.summon` 造裸 `BeastSession`（echo loop + 无记忆，`remember()` 必抛）、`register_innate_skills` 零调用方、`SkillRouter.match` 无域过滤、CLI `summon/recall` 造裸 `BeastActivator`。且**「只注册不路由」不是中性半成品**：注册后专属神通会进主 Agent 候选并灌入主 prompt。
+- **决策**：
+  ① **作用域强制下沉到路由期**：`SkillRouter.match(task, *, domain=None)` —— 三节 `beast.<域>.<技能>` 为专属技能，仅 `domain == "beast.<域>"` 时进候选。理由：候选池在路由手里，这是**唯一有主体**的位置；否决「在 BeastManager 过滤」（它拿不到候选，会造第二真源）与「靠调用方自觉」（无强制力、直接违反 R5）。`domain=None` 为既有调用方保零行为变更。
+  ② **形状即约定**：专属性以 `skill_id` 三节且首节 `beast` 判定，不另建注册表——与 `Beast.agent_id` / `innate_skill` 天然对齐，避免与技能库落盘产生第二真源。
+  ③ **惰性 loop_factory**：不预建 20 个 loop（常驻无用），`BeastManager.summon` 按需 `loop_factory(beast)` 造；每次 summon 新 loop（记忆在共享 `MemoryStore`，loop 无跨会话状态）。
+  ④ **专用路由器**：神兽用 `MultiAgentRouter([])` 独立实例，不与 coding/research 子 Agent 的 `agent_router` 混（神兽走显式 `handoff` target，不需要 fallback 语义）。
+  ⑤ **钩子工厂参数化**：`_loop_hooks(domain=None)` 三处共用（主 loop / 通用子 Agent / 神兽），神兽传 `beast.agent_id`；**共享**同一 `skill_feedback`/`sop_extractor`/`skill_iterator`——神通的进化与通用技能同构，不搞第二套。
+  ⑥ **CLI 同口径**：`entry._summon/_recall` 改走 `build_runtime`（与 `_pet` 一致），不再造空装配。
+- **后果**：✅ R4/R5 的 deferred 解除，四项生产可触达并有端到端测试；✅ 主 Agent prompt 不被 20 条神通灌水（token 有界）；✅ 召唤即真跑 LLM loop（**这是 R4 本意**，非回归；LLM 不可达时 planner 降级为「LLM 调用失败」回复，不抛裸异常）；⚠️ 每次 CLI 进程仍是无状态装配 → `recall <beast>` 在该进程内必 `BEAST_NOT_MANIFEST`（**既有性质**，多兽跨命令状态另属后续行）；⚠️ 词法路由的噪声项（如领域串里的 `/`）会让任务命中他兽技能——属打分口径，不属作用域（作用域只保证非本域**专属**神通不可达）。
+- **关联**：`beast-mode` spec R4/R5（MODIFIED）；接口 `03-interfaces/beast-mode-interface.md` §6/§8/§10。
+
 ---
 
 ## 变更追踪
@@ -993,3 +1007,4 @@
 | ADR-0057 | 03-interfaces/mcp-interface.md, 03-interfaces/permission-interface.md, 02-modules/mcp.md |
 | ADR-0058 | 03-interfaces/evolution-interface.md, 02-modules/evolution.md |
 | ADR-0059 | 03-interfaces/configuration-interface.md |
+| ADR-0060 | 03-interfaces/beast-mode-interface.md, 02-modules/beast-mode.md |

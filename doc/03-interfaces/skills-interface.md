@@ -89,8 +89,8 @@ class SkillRouter:
         threshold: float = 0.5,
     ) -> None: ...
 
-    def match(self, task: str, *, top_k: int = 3) -> list[SkillMatch]:
-        """按任务类型匹配，返回匹配度排序的 Top-K。"""
+    def match(self, task: str, *, domain: str | None = None, top_k: int = 3) -> list[SkillMatch]:
+        """按任务类型匹配，返回匹配度排序的 Top-K；domain 为专属技能作用域。"""
 
 @dataclass
 class SkillMatch:
@@ -105,6 +105,7 @@ class SkillMatch:
 | **词法 fast path** | 词元包含匹配（命中率 = 命中词元 / 任务词元）；**命中即返回，零模型调用** |
 | **语义兜底触发** | 仅当词法**全无命中**时才调打分器（避免把辅助决策成本抬到每个推理轮） |
 | **候选集** | 仅 `active` / `gray` 技能（`draft` / `deprecated` 不打分） |
+| **专属作用域** | 三节 `beast.<域>.<技能>` 形式的 skill_id 为**专属技能**，仅当 `domain == "beast.<域>"` 时进候选（`domain=None` = 通用视角，默认）；形状即约定，不另建注册表 |
 | **阈值** | 语义分 ≥ `threshold`（缺省 0.5）才采纳，按分降序取 Top-K |
 | **降级** | 未注入打分器 / 打分器抛错 / 分值低于阈值 → 行为与纯词法一致（空结果 + 记 miss）；`match` 不向调用方抛异常 |
 | **miss 口径** | 有命中（词法或语义）则不记 miss；两者皆无才记（miss 是「无技能可用」信号，供新技能沉淀） |

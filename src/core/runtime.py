@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from core.beast import BeastActivator, BeastManager, BeastRegistry, register_innate_skills
+from core.beast.models import Beast
 from core.configuration import ConfigManager
 from core.configuration.models import AppConfig
 from core.context import Compactor as ContextCompactor
@@ -125,6 +127,8 @@ class Runtime:
     crash_recovery: CrashRecovery
     pet_manager: PetManager
     pet_activator: PetActivator
+    beast_manager: BeastManager
+    beast_activator: BeastActivator
 
     def recover(self) -> list[RestoreHandle]:
         """启动时扫描检查点，恢复无 done 标记的任务（返回续跑句柄）。"""
@@ -298,17 +302,26 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         tracker=effect_tracker,
     )
 
-    def _loop_hooks() -> tuple[Callable[[str], list[SkillHint]], TurnObserver]:
+    # 神通注册（0057）：20 神兽独有神通进全局技能库，供**按兽作用域**路由（见 _beast_loop）。
+    # 此前 build_innate_skills/register_innate_skills 零生产调用方（账本 E3）。
+    beast_registry = BeastRegistry()
+    register_innate_skills(skill_library, beast_registry)
+
+    def _loop_hooks(
+        domain: str | None = None,
+    ) -> tuple[Callable[[str], list[SkillHint]], TurnObserver]:
         """每 loop 一组钩子闭包（命中注入 + 收尾反馈）：状态不跨 loop 共享。
 
         路由 → 版本解析 → 记命中 → 纯 dict 快照（loop 不 import skills）；收尾按本轮
         实际注入的 ``(技能, 版本)`` 记结果并顺势定夺/触发迭代，再把轨迹转交 SOP 观察者。
+
+        ``domain`` 透传技能路由的专属作用域（神兽传自身 agent_id，其余不传）。
         """
         surfaced: list[tuple[Skill, str]] = []
 
         def hints(task: str) -> list[SkillHint]:
             result: list[SkillHint] = []
-            for matched in skill_router.match(task):
+            for matched in skill_router.match(task, domain=domain):
                 skill = matched.skill
                 version, text = skill_iterator.resolve(skill)
                 skill_feedback.record_hit(skill.skill_id, version=version)
@@ -439,6 +452,39 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
                 approver=approver,
                 compactor=context_compactor,
                 turn_observer=agent_turn,
+                middlewares=[constraints_chain.middleware],
+                action_observers=[constraints_chain.observe_result],
+            ),
+        )
+
+    def _beast_loop(beast: Beast) -> LoopPlugin:
+        """按兽装配独立 loop：域内技能路由（专属神通） + 共享记忆/闸门/追踪。
+
+        与 ``_agent_loop`` 同构，唯一差异是 ``_loop_hooks(beast.agent_id)`` —— 神兽只在
+        自身域内看到自己的神通（beast-mode spec R4/R5）。
+        """
+        beast_hints, beast_turn = _loop_hooks(beast.agent_id)
+        provider = _agent_tools()
+        beast_planner = LLMPlanner(
+            llm,
+            model=app.llm.model,
+            reasoning_effort=app.llm.reasoning_effort,
+            assembler=assembler,
+            skill_router=beast_hints,
+            tools=provider,
+        )
+        return cast(
+            LoopPlugin,
+            DefaultLoop(
+                planner=beast_planner,
+                memory=memory,
+                tools=provider,
+                gate=guard,
+                tracer=tracer,
+                router=router if jev is not None else None,
+                approver=approver,
+                compactor=context_compactor,
+                turn_observer=beast_turn,
                 middlewares=[constraints_chain.middleware],
                 action_observers=[constraints_chain.observe_result],
             ),
@@ -581,6 +627,16 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         notifier=pet_notifier.notify,
     )
 
+    # 神兽运行时桥接（0057）：专用路由器（画像不与 coding/research 混）+ 惰性按兽 loop +
+    # 共享记忆；三入口（CLI / 斜杠 / 自然语言）至此落到**同一**已装配 manager。
+    beast_manager = BeastManager(
+        registry=beast_registry,
+        router=MultiAgentRouter([]),
+        loop_factory=_beast_loop,
+        memory=memory,
+    )
+    beast_activator = BeastActivator(beast_manager)
+
     return Runtime(
         app=app,
         config=config,
@@ -603,6 +659,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         crash_recovery=crash_recovery,
         pet_manager=pet_manager,
         pet_activator=pet_activator,
+        beast_manager=beast_manager,
+        beast_activator=beast_activator,
     )
 
 

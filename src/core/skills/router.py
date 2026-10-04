@@ -1,8 +1,8 @@
 """技能路由（SkillRouter）。
 
 按任务类型匹配最合适技能，返回匹配度排序的 Top-K；无匹配回退通用流程，
-记录未命中（供后续新技能沉淀）。词法匹配是 fast path（零模型调用）；
-词法**全无命中**时经注入的语义打分器兜底（缺省不启用）。
+记录未命中（供后续新技能沉淀）。专属技能（`beast.<域>.<技能>`）按 domain 作用域过滤。
+词法匹配是 fast path（零模型调用）；词法**全无命中**时经注入的语义打分器兜底（缺省不启用）。
 
 对应接口：doc/03-interfaces/skills-interface.md §4
 """
@@ -26,6 +26,9 @@ _SEMANTIC_MIN_SCORE = 0.5
 
 # 命中快照里 instructions 的字符上界（token 有界；与 _MAX_STEP_CHARS 同口径）
 _MAX_HINT_CHARS = 400
+
+# 专属技能 skill_id 的节数（`beast.<域>.<技能>`）——形状即约定（非另建注册表）
+_DEDICATED_SEGMENTS = 3
 
 
 def skill_hint(skill_id: str, version: str, instructions: str) -> dict[str, str]:
@@ -54,14 +57,22 @@ class SkillRouter:
         self._threshold = threshold
         self.misses: list[str] = []
 
-    def match(self, task: str, *, top_k: int = 3) -> list[SkillMatch]:
+    def match(self, task: str, *, domain: str | None = None, top_k: int = 3) -> list[SkillMatch]:
         """按任务类型匹配，返回匹配度排序的 Top-K；无匹配返回空列表并记录未命中。
 
         词法命中即返回（fast path，零模型调用）；词法全无命中时才走语义兜底，
         语义有命中即视为命中（不记未命中）。
+
+        ``domain`` 是**专属技能作用域**（缺省 = 通用视角）：三节 ``beast.<域>.<技能>`` 形式的
+        专属技能仅当 ``domain == "beast.<域>"`` 时进候选——主 Agent 不带 domain，故神兽神通
+        不会灌进主 prompt（beast-mode spec「Innate Skills and Dedicated Routing」）。
         """
         terms = terms_of(task)
-        candidates = [s for s in self._library.all_skills() if s.status in ("active", "gray")]
+        candidates = [
+            s
+            for s in self._library.all_skills()
+            if s.status in ("active", "gray") and _dedicated_domain(s.skill_id) in (None, domain)
+        ]
         scored = [SkillMatch(skill=s, score=self._score(s, terms)) for s in candidates]
         scored = [m for m in scored if m.score > 0] or self._semantic(task, candidates)
         scored.sort(key=lambda m: m.score, reverse=True)
@@ -116,6 +127,18 @@ def _snapshot(skill: Skill) -> dict[str, Any]:
         "description": skill.description,
         "task_types": list(skill.task_types),
     }
+
+
+def _dedicated_domain(skill_id: str) -> str | None:
+    """专属技能（``beast.<域>.<技能>`` 三节）的归属域 ``beast.<域>``；通用技能返回 ``None``。
+
+    以 skill_id **形状**判定（而非另建注册表）：与 ``Beast.agent_id = "beast.<拼音>"`` /
+    ``innate_skill = "beast.<拼音>.<技能>"`` 天然对齐，路由期即可按域过滤。
+    """
+    parts = skill_id.split(".")
+    if len(parts) == _DEDICATED_SEGMENTS and parts[0] == "beast":
+        return f"{parts[0]}.{parts[1]}"
+    return None
 
 
 def terms_of(text: str) -> list[str]:

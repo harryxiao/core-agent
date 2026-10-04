@@ -17,7 +17,7 @@
 - **A4 已于 change `0055` 关闭**（候选 `candidate_id` 稳定身份 + 门禁/评测随候选落盘为一条记录 + `core-agent evolve pending|confirm|reject` 操作面；high 风险候选由操作面签发审批单；ADR-0058）。
 - **E1 已于 change `0052` 关闭**（constraints 熔断按 `tool_id` 接入 loop：结果侧观察者 + 按工具熔断 + 只计执行失败；ADR-0055）；核销时一并**订正**了账本原「校验空转」的说法（校验实由工具层承担）。
 - **E7（契约基线漂移）+ E8（配置校验三处缺口）已于 change `0056` 关闭**（密钥引用同口径 + `permission.mode` 枚举校验 + 基线文档订正；ADR-0059），E8 第 5 条转出为 **E18**。
-- **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A5、E2/E4/E5 全归此（A4 已随 change `0055` 关闭）。
+- **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A5、E2/E4/E5 全归此（A4 已随 change `0055` 关闭、E3 已随 change `0057` 关闭）。
 - **一条值得单独记的形态问题**：`cli-contract-baseline.md` 的**内置工具契约与实现已对不上账**（见 E7）——契约列的 5 个工具在代码里从未存在。
 
 | 类别 | 项数 | 最高优先级 | 是否阻塞调试 |
@@ -48,10 +48,10 @@
 | A10 | A | ~~进化冷路径无驱动面~~ | ✅ 已关闭（change `0051`）：loop 收尾节拍 + `core-agent evolve run` | 中高 | — |
 | E1 | E | ~~constraints 中间件链从未注入 loop~~ | ✅ 已关闭（change `0052`）：按 `tool_id` 熔断接入 loop（动作前链 + 结果侧观察者）；**校验实由工具层承担**（原「校验空转」订正） | 中高 | — |
 | E2 | E | ~~UI 无每会话 loop/memory~~ | ✅ 已关闭（change `0048`，会话维度部分）：标识透传 + 单店按会话归组 | 中（与 A2 同根） | — |
-| E3 | E | 神通（beast）runtime 桥接缺失 | 20 神通从未进运行时 SkillLibrary；handoff 整段短路 | 中 | 先定夺 R4/R5 规格 deferred 是否解除 |
+| E3 | E | ~~神通（beast）runtime 桥接缺失~~ | ✅ 已关闭（change `0057`）：20 神通注册进全局技能库 + 专属路由**作用域强制**（`SkillRouter.match(domain=)`）+ 按兽装配 loop/共享记忆注入 + CLI `summon/recall` 走组合根 | 中 | — |
 | E4 | E | ~~pet 运行时注入整族缺失~~ | ✅ 已关闭（change `0053`）：pet 纳入组合根（真 loop/共享记忆注入）+ 注册表落盘 + WebUI NL 入口 | 中 | — |
 | E5 | E | 主 Agent 自动迭代内部模块 | Phase 17 单列后**从未排期** | 低 | 无（能力已前置） |
-| E6 | E | 规格 deferred 未解除（context 判定升级等） | 见 §3 E6 | 低 | 规格裁决 |
+| E6 | E | ~~规格 deferred 未解除（context 判定升级等）~~ | ✅ 已关闭：context 压实「留待后续」已由 change `0041` 规格订正（启发式为**有意降级路径**，LLM 提炼归 memory 通道）；余两项转 **A7 / A8** | 低 | — |
 | E7 | E | ~~内置工具契约与实现漂移~~ | ✅ 已关闭（change `0056`）：裁决「规格为准」——契约列 5 个工具**从未存在**（非承诺项），订正 `cli-contract-baseline.md` §10 | 中（契约裁决） | — |
 | E8 | E | ~~CLI 契约基线 §11 未决项~~ | ✅ 已关闭（change `0056`）：7 条逐条定性；`im.secret`/`judgment.api_key` 校验对称化 + `permission.mode` 枚举校验（余 `extra` 未知键 → **E18**） | 低 | — |
 | E9 | E | 文档层其他未闭合项 | data-model 待补实体、替换性测试锚点等 | 低 | 无 |
@@ -192,16 +192,22 @@
 - **关闭动作**：✅ **已按 A2 合并方案闭合（change `0048`）**——采「会话标识透传 + 单店按会话归组」（**不做**每会话独立 `(loop, memory)` 实例：单实例并发服务多会话时标识随调用走、天然不串号，组合根与生命周期不动；见 change `0048` design 决策 1/2）。据此 `run_loop` 透传标识、`get_memory` 按会话过滤、`compact` 接真。
 - **前置**：无。
 
-### E3 神通（beast）runtime 桥接缺失（Phase 10 + 17.5 同源）
+### E3 神通（beast）runtime 桥接缺失 — ✅ 已关闭（change `0057`，ADR-0060）
 
-- **现象**（四项同源）：
-  - `register_innate_skills`（`beast/skills.py:35`）**零生产调用者**（仅 `tests/test_beast.py:82`）→ 20 个 `beast.*` 神通从未进过运行时 `SkillLibrary`，`skill_router` 自然永不命中（prompt 的「可用技能」块里不会出现神通）。
-  - `BeastManager` 的 handoff 段被**整段跳过**：`entry.py:834` 构造 `BeastActivator()` **未传 router** → `beast/manager.py:52` `router is None` 短路，召唤不走真实交接。
-  - `BeastSession` 未注入 loop/memory → `source=beast.<agent_id>` 命名空间隔离失效，`remember` 直接抛 `BEAST_MEMORY_WRITE_FAILED`。
-  - `SkillRouter.match` 无 domain 参数（`phase-10.md:86`）→ 专属路由（他兽不可路由）只有语义、无 runtime scoping。
-- **规格面**：beast-mode spec 的 `CORE-BEAST-R4/R5`（`doc/openspec/specs/beast-mode/spec.md:54,69,72,82`）**正文显式写着 runtime 调用 deferred** → 这是**规格已知缺口**，不是实现走样（`requirements.md:300-301`、`beast-mode-interface.md:6,144`、`adr.md:338` 一致）。
-- **关闭动作**：`build_runtime` 侧注册神通 + 注入 router/loop/memory；随之销掉 C 类里 beast 那几行「未接」。
-- **前置**：需先定夺「R4/R5 的 deferred 是否解除」——若解除，改 spec 正文；若维持，本项只做注册不接 runtime。
+- **现象**（四项同源，2026-10-04 复核全部属实）：
+  - `register_innate_skills`（`beast/skills.py`）**零生产调用者**（仅 `tests/test_beast.py`）→ 20 个 `beast.*` 神通从未进过运行时 `SkillLibrary`。
+  - `BeastManager` 的 handoff 段被**整段跳过**：`entry._summon` 构造裸 `BeastActivator()`（未传 router）→ `manager.py` `router is None` 短路。
+  - `BeastSession` 未注入 loop/memory → 命名空间隔离失效，`remember` 直接抛 `BEAST_MEMORY_WRITE_FAILED`。
+  - `SkillRouter.match` 无 domain 参数 → 专属路由只有语义、无 runtime scoping。
+- **裁决（用户 2026-10-04）**：**A 全做・解除 deferred**。理由：**「只注册不路由」不是中性半成品**——`SkillRouter.match` 的候选池是全局 `SkillLibrary`，注册后专属神通会进主 Agent 候选并灌进主 prompt，即把系统推入「违反自己规格 R5」的状态。故四项必须一次闭合。
+- **关闭动作（已落地）**：
+  ① **规格**：beast-mode MODIFIED R4/R5，删去「runtime 调用 deferred」，写明组合根装配义务与**路由期作用域强制**口径；
+  ② **注册**：`build_runtime` 构造 `BeastRegistry` → `register_innate_skills(skill_library, registry)`；
+  ③ **作用域**：`SkillRouter.match(task, *, domain=None)` —— 三节 `beast.<域>.<技能>` 为专属技能，仅 `domain == "beast.<域>"` 进候选（形状即约定，不另建注册表）；主 Agent / 通用子 Agent 传缺省 → **看不到任何专属神通**；
+  ④ **注入**：`BeastManager(registry, router=MultiAgentRouter([]), loop_factory=_beast_loop, memory=memory)`，按兽惰性装配独立 loop（`_loop_hooks(beast.agent_id)` 域内路由）+ 共享 `MemoryStore`；`Runtime` 增 `beast_manager`/`beast_activator`；`entry._summon/_recall` 改走 `build_runtime`（与 `_pet` 同口径）。
+- **验证**：新增 `tests/test_beast_wiring.py`（7 例：注册面 / 主 Agent 不可见 / 域内可见 / 通用技能不被误伤 / 组合根暴露面 / 注入生效 / 端到端 summon 跑真 loop + 记忆隔离）；四门全绿（768 passed）。
+- **已知接受项**：① CLI 每进程无状态装配 → `recall <beast>` 在该进程内必 `BEAST_NOT_MANIFEST`（**既有性质**，多兽跨命令状态另属后续行）；② 词法路由噪声项（如领域串里的 `/`）可能让他兽技能命中，属打分口径而非作用域（作用域只保证非本域**专属**神通不可达）。
+- **未纳入本变更**：多兽并行调度与 `TaskScheduler` 的配合、神兽专用权限策略、`/summon` 斜杠与 WebUI 自然语言入口的真实 UI 接线。
 
 ### E4 pet 运行时注入整族缺失（Phase 17.5 §3.2）— ✅ 已关闭（change `0053`）
 
@@ -227,13 +233,13 @@
 - **关闭动作**：需要时单独立项（前置能力——技能迭代闭环——已由 `0045` 就位）。
 - **前置**：无。
 
-### E6 规格层 deferred 未解除项
+### E6 规格层 deferred 未解除项 — ✅ 已关闭（规格订正 + 两项转出）
 
-| 项 | 出处 | 说明 |
-|---|---|---|
-| context「上下文自动压实」判定仍是启发式关键词，未升级为 LLM 判定 | `doc/openspec/specs/context/spec.md:45-49`；archive `0041` 已知缺口「判定升级留待 #4」 | 归档记「留待后续」但**从未排期** |
-| M3 遗留：技能 miss 只沉淀、不复用 | `adr.md:525` | miss 数据未回流到路由；与 **A7** 同族 |
-| memory 并发压实一致性（规格有实现无） | `doc/openspec/specs/memory/spec.md:102-105` | = **A8**，此处仅备案出处 |
+| 项 | 结论 |
+|---|---|
+| context「上下文自动压实」判定仍是启发式关键词，未升级为 LLM 判定 | ✅ **规格已订正**（change `0041`，commit `cb61ef3`）：`context/spec.md` 正文已写明本压实器为**启发式降级路径**（关键词识别结论/决策/未决事项），「LLM 提炼统一由记忆压实通道承担，此处不新增模型调用」——即「启发式」是**规格认定的有意行为**，非未兑现的承诺，deferred 不复存在（memory 侧 LLM 摘要通道已由 `cb61ef3` 实现并接线）。**无代码动作**。 |
+| M3 遗留：技能 miss 只沉淀、不复用 | → **A7**（§2 A 类），此处仅备案。 |
+| memory 并发压实一致性（规格有实现无） | → **A8**，此处仅备案。 |
 
 ### E7 内置工具契约与实现漂移 — ✅ 已关闭（change `0056`，纯文档订正）
 
@@ -364,7 +370,7 @@
 | ci_cd | 门禁执行器 + 真实制品仓库 | `adr.md:293`、`debug-gaps.md:49` |
 | plugin_registry | market-registry 远端服务 + 多源 resolver + git 版本锁定 | `adr.md:302` |
 
-> **立场不变**：抽象不锁选型，待有真实选型需求时逐项接线。注意其中 **pet·beast 三行**同时是运行时的**接线**缺口（E3/E4），不只是后端缺口。
+> **立场不变**：抽象不锁选型，待有真实选型需求时逐项接线。注意其中 **pet·beast 三行**曾是运行时的**接线**缺口（E3/E4）——**两者均已关闭**（change `0053` / `0057`），现余的只是后端本身。
 
 ---
 
@@ -420,10 +426,10 @@
 1. **D + F + G 清尾**（无依赖、低成本）：G 类订正 deferred 措辞 + F 类逐项勾销/定性 + README 同步 —— 使账本自身可达且不误导。 ✅ **已完成**（G 类 7 组订正；D1/D3/D5 关闭、D4 部分；F 类 6 组核实：41 框勾销 / 11 项转出 E·A·B；README 已同步）。
 2. **A2 + E2 合并做**（同一根因）：会话标识透传 + 每会话独立 loop/memory + `UIAPILayer.compact` 接真。 ✅ **已完成**（change `0048-session-scoped-memory`：标识透传 + `compact` 接真 + `get_memory` 按会话过滤；**未采**每会话独立实例，理由见该 change design 决策 1/2）。
 3. **A1**（记忆驱动侧）：遗忘节拍。宜在 A2 之后（会话维度不生效时，衰减分组也是错的）。 ✅ **已完成**（change `0049-memory-maintenance-cadence`：loop 收尾维护节拍 + `memory maintain` CLI）。
-4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义。 ✅ **A3 全闭 + A5 + A10 + E4 已完成**（change `0050` 技能态落盘 / ADR-0053；change `0051` 进化冷路径驱动面 + 观察窗口落盘 + 批次成功率采样 / **ADR-0054**；A10 为本次走查新增的「冷路径无驱动面」发现；**E4** 见 change `0053` —— pet 纳入组合根 + 注册表落盘 + WebUI NL 入口 / **ADR-0056**）。✅ **A4 已完成**（change `0055-evolution-confirm-surface`：候选稳定身份 + 队列落盘 + `evolve` 操作面签发审批单 / **ADR-0058**）→ 本步**全闭**。⏭ **下一步第 7 步：E3 / E6 规格裁决**。
+4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义。 ✅ **A3 全闭 + A5 + A10 + E4 已完成**（change `0050` 技能态落盘 / ADR-0053；change `0051` 进化冷路径驱动面 + 观察窗口落盘 + 批次成功率采样 / **ADR-0054**；A10 为本次走查新增的「冷路径无驱动面」发现；**E4** 见 change `0053` —— pet 纳入组合根 + 注册表落盘 + WebUI NL 入口 / **ADR-0056**）。✅ **A4 已完成**（change `0055-evolution-confirm-surface`：候选稳定身份 + 队列落盘 + `evolve` 操作面签发审批单 / **ADR-0058**）→ 本步**全闭**。
 5. **B1**（独立轨）：🔶 **client 侧已关闭**（change `0054-mcp-stdio-transport`，ADR-0057 —— stdio 传输 / `add` 分流 / 消费侧安全接线 / 组合根装配；ADR-0043 的 ADR + spec delta 早已就绪）。**余 4 行后续**：B2 http 会话（需 SDK）/ B3 服务端 stdio / B4 CLI 接线 / B5 白名单配置。
-6. **E1 + E7 + E8**（契约与中间件）：✅ **全闭** —— E1 见 change `0052`（ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；**E7/E8 见 change `0056`（ADR-0059）**：E7 裁决「规格为准」→ 纯文档订正；E8 三处缺口修复，第 5 条转出为 E13。
-7. **E3 / E6**（规格裁决）：先定夺 beast R4/R5 与 context 判定升级是否解除 deferred，再决定是否接 runtime。
+6. **E1 + E7 + E8**（契约与中间件）：✅ **全闭** —— E1 见 change `0052`（ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；**E7/E8 见 change `0056`（ADR-0059）**：E7 裁决「规格为准」→ 纯文档订正；E8 三处缺口修复，第 5 条转出为 E18。
+7. **E3 / E6**（规格裁决）：✅ **全闭** —— 裁决「A 全做・解除 deferred」；**E3** 见 change `0057`（ADR-0060：神通注册 + 专属路由作用域 + 按兽 loop/共享记忆注入 + CLI 走组合根）；**E6** 无需代码（context 压实启发式已由 change `0041` 规格订正为有意行为，余两项转 A7/A8）。
 8. **A7 + E6（miss 复用）**（低优先，同族）：数据源已就位，可一并做。
 9. **A6 / A8 / A9 / E5 / E9 / E13–E18 / C 类**：随需（E13 `Validator.parse_output` 零调用方 / E14 校验码重复 / E15 熔断阈值不可配 / E16 `AsyncNotifier` 无 channel / E17 pet 无后台 daemon / **E18 `extra` 未知键校验**）。
 10. **真机动作**：活 LLM 全回路冒烟（§8 末）。

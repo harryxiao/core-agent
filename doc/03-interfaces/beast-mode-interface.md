@@ -2,8 +2,8 @@
 
 > 编排层扩展（前台重大任务，pet-mode 的对偶）的接口文档。神兽（beast）是 20 个预定义
 > 的山海经神兽，每个神兽有独有神通，用于前台重大任务；运行时能力分两层——L1 工具共享
-> 全局 `ToolProvider`（真实可用）、L3 神通以 Skill 注册进全局 `SkillLibrary`（loop→skill
-> 运行时调用 deferred）。
+> 全局 `ToolProvider`（真实可用）、L3 神通以 Skill 注册进全局 `SkillLibrary` 并由神兽 loop
+> **域内真实路由**（0057 接线：`SkillRouter.match(domain=beast.agent_id)`）。
 >
 > 对应规格：`doc/openspec/specs/beast-mode/spec.md`（Beast Registry / Beast Session
 > Lifecycle / Summon via Handoff / Independent Sub-Agent with Shared Capability /
@@ -103,6 +103,7 @@
 
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
+| `__init__` | `__init__(*, registry=None, router=None, loop_factory=None, memory=None)` | `loop_factory` 按兽造独立 loop，`memory` 为共享记忆（缺省不注入 = 库层零行为变化） |
 | `summon` | `async summon(agent_id: str, task: str = "") -> BeastSession` | 召唤 = 显形激活 + 异步 `handoff` 交接，完成后自动回归 `RECALLED`；未知神兽复用 `NO_AGENT_MATCH` |
 | `recall` | `recall(agent_id: str) -> BeastSession` | 召回神兽 |
 | `get` | `get(agent_id: str) -> BeastSession \| None` | 按 `agent_id` 取会话 |
@@ -140,14 +141,32 @@
 | `build_innate_skills` | `build_innate_skills(registry: BeastRegistry) -> list[Skill]` | 构建 20 神兽独有神通列表 |
 | `register_innate_skills` | `register_innate_skills(library: SkillLibrary, registry: BeastRegistry) -> int` | 注册进全局 `SkillLibrary`，返回条数 |
 
-> 专属路由语义：某兽独有神通仅该兽可路由，他兽不可路由（由 `BeastSession` 按 agent_id
-> 前缀过滤候选）；loop→skill 运行时调用 deferred（loop 只消费 `ToolProvider`，不接
-> `SkillLibrary`）。
+> 专属路由语义（0057 起**路由期强制**）：`skill_id` 为三节 `beast.<域>.<技能>` 者是专属技能，
+> 仅当 `SkillRouter.match(task, domain="beast.<域>")` 时进候选；他兽域与主 Agent（`domain=None`）
+> 都**看不到**（作用域保证非本域专属神通不可达，非调用方自觉）。主 Agent 与通用子 Agent
+> 传递缺省 `domain`，故专属神通不灌主 prompt。
+
+---
+
+## §10 组合根装配（0057）
+
+模块：`src/core/runtime.py`。`build_runtime` 在技能面接线处注册神通，并在收尾构造神兽面：
+
+| 产物 | 装配 |
+| --- | --- |
+| 注册 | `BeastRegistry()` → `register_innate_skills(skill_library, registry)`（名册每兽一枚） |
+| 钩子 | `_loop_hooks(domain=None)`：主 loop 与通用子 Agent 用缺省；`_beast_loop(beast)` 传 `beast.agent_id` |
+| `Runtime.beast_manager` | `BeastManager(registry=…, router=MultiAgentRouter([]), loop_factory=_beast_loop, memory=memory)` |
+| `Runtime.beast_activator` | `BeastActivator(beast_manager)` —— CLI `summon`/`recall` 经 `build_runtime` 取此实例（`entry._summon/_recall`） |
+
+神兽 loop 与主 loop 同构（共享 `memory`/`tracer`/`guard`/`approver`/约束链），唯一差异是
+技能路由的域名作用域与工具面（子 loop 工具面不含 `tools.delegate`）。
 
 ---
 
 ## §9 关联
 
 - 规格：`doc/openspec/specs/beast-mode/spec.md`
-- 变更：`doc/openspec/changes/archive/2026-09-28-0034-beast-mode/`（已归档）
+- 变更：`doc/openspec/changes/archive/2026-09-28-0034-beast-mode/`（已归档）、
+  `2026-10-04-0057-beast-runtime-bridge/`（运行时桥接，ADR-0060）
 - 复用接口：`orchestration-interface.md`（`MultiAgentRouter.handoff` / `AgentProfile` / `TaskHandoff` / `NO_AGENT_MATCH`）、`skills-interface.md`（`SkillLibrary` / `Skill`）、`memory-interface.md`（`MemoryEntry.source`）、`loop-interface.md`（`LoopPlugin` / `LoopResult` / `LoopResult.failed`）、`cli-ops-interface.md`（`CommandGroup`）

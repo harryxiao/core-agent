@@ -20,7 +20,7 @@ BeastMode（前台重大任务执行层）
 ├── BeastRegistry   只读注册表：20 神兽，agent_id = beast.<拼音>
 ├── BeastSession    会话句柄：DORMANT → MANIFEST → ACTIVE → RECALLED 四态
 ├── BeastManager    召唤管理：summon/recall，dict[agent_id, BeastSession] 多实例
-├── 独有神通（L3 Skill）  以 Skill 注册进全局 SkillLibrary（loop→skill 运行时调用 deferred）
+├── 独有神通（L3 Skill）  以 Skill 注册进全局 SkillLibrary（神兽 loop **域内路由**，0057）
 └── 共享能力（L1）        复用全局 ToolProvider（真实可用）
 ```
 
@@ -46,7 +46,11 @@ BeastMode（前台重大任务执行层）
 ### 3.4 独立子 Agent + 共享能力
 
 - 神兽作为独立子 Agent 运行，**独立记忆**（记忆写入 L2 facts 层），同时**复用主 Agent 通用能力**（L1 工具共享全局 `ToolProvider`）。
-- 独有神通（L3 Skill）以 Skill 注册进全局 `SkillLibrary`，经 loop→skill 运行时调用 deferred，与共享能力分层不冲突。
+- 独有神通（L3 Skill）以 Skill 注册进全局 `SkillLibrary`，由神兽 loop **域内真实路由**（0057）：
+  `skill_id` 三节 `beast.<域>.<技能>` 者为专属技能，仅 `domain == "beast.<域>"` 时进候选——他兽域与
+  主 Agent 都看不到（路由期作用域强制），与共享能力分层不冲突、且不灌主 prompt。
+- **组合根装配**（0057）：`build_runtime` 注册神通并以 `loop_factory` 按兽惰性装配独立 loop +
+  注入共享 `MemoryStore`；CLI `summon`/`recall` 经 `build_runtime` 取 `Runtime.beast_activator`。
 
 ### 3.5 异步并发 + 自动回归
 
@@ -86,5 +90,5 @@ BeastMode（前台重大任务执行层）
 
 - 接口契约：`doc/03-interfaces/beast-mode-interface.md`
 - 规格：`doc/openspec/specs/beast-mode/spec.md`
-- 复用接口：`orchestration-interface.md`（`MultiAgentRouter.handoff` 交接语义）、`skills`/`skillhub`（`SkillLibrary` 注册神通）、`memory-interface.md`（`MemoryEntry.source`）
+- 复用接口：`orchestration-interface.md`（`MultiAgentRouter.handoff` 交接语义）、`skills`/`skillhub`（`SkillLibrary` 注册神通 + `SkillRouter` 域作用域）、`memory-interface.md`（`MemoryEntry.source`）、`loop-interface.md`（独立 `LoopPlugin`）
 - 对偶：`doc/02-modules/pet.md`（后台重复简单任务）

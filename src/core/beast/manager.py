@@ -3,13 +3,18 @@
 维护 ``dict[agent_id, BeastSession]`` 多实例：可同时显形多兽并行执行
 （兽间并行、互不阻塞）；同兽重复召唤拒绝（兽内串行、无同兽双实例）。
 召唤 = 复用编排层 ``MultiAgentRouter.handoff`` 交接语义（神兽即内置
-``AgentProfile``），不另造第二真源。
+``AgentProfile``），不另造第二真源。会话按 ``loop_factory`` 惰性装配独立 loop
+（按兽作用域路由神通）并注入共享 ``MemoryStore``——缺省不注入（库层零行为变化）。
 
 对应规格：doc/openspec/specs/beast-mode/spec.md（Beast Session Lifecycle / Summon via Handoff）
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
+from core.loop import LoopPlugin
+from core.memory import MemoryStore
 from core.orchestration import (
     AgentProfile,
     MultiAgentRouter,
@@ -19,7 +24,7 @@ from core.orchestration import (
 )
 
 from .errors import BeastError, BeastErrorCode
-from .models import BeastSessionState
+from .models import Beast, BeastSessionState
 from .registry import BeastRegistry
 from .session import BeastSession
 
@@ -32,9 +37,13 @@ class BeastManager:
         *,
         registry: BeastRegistry | None = None,
         router: MultiAgentRouter | None = None,
+        loop_factory: Callable[[Beast], LoopPlugin] | None = None,
+        memory: MemoryStore | None = None,
     ) -> None:
         self._registry = registry if registry is not None else BeastRegistry()
         self._router = router
+        self._loop_factory = loop_factory
+        self._memory = memory
         self._sessions: dict[str, BeastSession] = {}
 
     async def summon(self, agent_id: str, task: str = "") -> BeastSession:
@@ -46,7 +55,9 @@ class BeastManager:
             )
         session = self._sessions.get(beast.agent_id)
         if session is None:
-            session = BeastSession(beast)
+            # 按兽装配独立 loop（域内技能路由作用域）+ 注入共享记忆（命名空间隔离靠 source 标签）
+            loop = self._loop_factory(beast) if self._loop_factory is not None else None
+            session = BeastSession(beast, loop=loop, memory=self._memory)
             self._sessions[beast.agent_id] = session
         session.summon()  # 已在岗（MANIFEST/ACTIVE）→ BEAST_ALREADY_MANIFEST
         if self._router is not None:
