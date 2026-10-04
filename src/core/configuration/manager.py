@@ -290,6 +290,17 @@ class ConfigManager:
             return False
         return self._config.features.get(module, False)
 
+    def is_disabled(self, module: str) -> bool:
+        """模块级 feature flag 的**装配裁剪**判据：只有显式 false 才为真（缺省不关）。
+
+        与 ``is_enabled`` 极性相反、用途不同 —— ``is_enabled`` 是「显式开启查询」（缺省 false，
+        供缺省关的模块自查二级开关）；本谓词服务于**缺省装配**的可选模块，由组合根消费
+        （门控名单归组合根：``core.runtime.GATABLE_MODULES``，配置层不认识模块名）。
+        """
+        if self._config is None:
+            return False
+        return self._config.features.get(module) is False
+
     def permission_mode(self) -> str:
         """权限模式查询：缺省 interactive（对齐 permission「权限模式」四档，取值已过校验）。"""
         if self._config is None:

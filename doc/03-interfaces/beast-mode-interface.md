@@ -158,6 +158,7 @@
 | 钩子 | `_loop_hooks(domain=None)`：主 loop 与通用子 Agent 用缺省；`_beast_loop(beast)` 传 `beast.agent_id` |
 | `Runtime.beast_manager` | `BeastManager(registry=…, router=MultiAgentRouter([]), loop_factory=_beast_loop, memory=memory)` |
 | `Runtime.beast_activator` | `BeastActivator(beast_manager)` —— CLI `summon`/`recall` 经 `build_runtime` 取此实例（`entry._summon/_recall`） |
+| **门控**（change `0067`） | `features.beast: false` ⇒ 注册与上两行**都不发生**（`Runtime.beast_manager`/`beast_activator` 为空），`summon`/`recall` 报「beast 模块已关闭」 |
 
 神兽 loop 与主 loop 同构（共享 `memory`/`tracer`/`guard`/`approver`/约束链），唯一差异是
 技能路由的域名作用域与工具面（子 loop 工具面不含 `tools.delegate`）。

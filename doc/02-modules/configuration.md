@@ -42,7 +42,12 @@ Configuration（横切）
 ### 3.3 必选 LLM 与功能裁剪
 
 - LLM 配置（provider/model/endpoint/api_key）为**必选项**：缺失或 api_key 未解析时阻断启动，报明确错误指明缺失项。
-- 模块级 feature flag（features 段）：关闭的模块不加载、不初始化，实现功能裁剪，其依赖资源不占用。
+- 模块级 feature flag（features 段，change `0067`）：**门控名单内**（`pet` / `beast` / `evolution`，
+  名单为组合根单一真源 `core.runtime.GATABLE_MODULES`）的可选模块**缺省装配** —— 未声明即开，
+  仅显式 `false`（yaml / env `CORE_FEATURE_*` / CLI `--feature`）才**完全不装配**：不构造实例、
+  不产生装配期副作用（`beast` 不注册神通、`pet` 不读 `pets.json`）、CLI 入口拒绝。谓词
+  `is_disabled`（缺省不关）与 `is_enabled`（显式开启查询，缺省 false）极性相反、用途不同。
+  feature flag 只管**装配**，不改模块自身二级开关（`pet.enabled`）。
 - 未配置 judgment 段（或 provider 为空）时决策能力关闭，回退主 LLM 兜底。
 
 ### 3.4 密钥分级与安全
@@ -89,4 +94,5 @@ AppConfig ──validate_schema──► 校验通过才生效；yaml 明文密�
 - 接口契约：`doc/03-interfaces/configuration-interface.md`
 - 规格：`doc/openspec/specs/configuration/spec.md`
 - 上游挂载：`doc/02-modules/llm-provider.md`（LLM 配置语义）、`doc/02-modules/judgment.md`（judgment.* ConfigSpec）、`doc/02-modules/pet.md`（pet.* ConfigSpec）
-- 消费：`doc/03-interfaces/cli-ops-interface.md`（ParamMapper 消费 ConfigSpec 单一真源）
+- 消费：`doc/03-interfaces/cli-ops-interface.md`（ParamMapper 消费 ConfigSpec 单一真源）、
+  `doc/02-modules/pet.md` / `doc/02-modules/beast-mode.md`（组合根按门控名单裁剪可选模块装配，change `0067`）

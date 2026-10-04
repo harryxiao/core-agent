@@ -207,6 +207,7 @@ class EvolutionWorker:
 | 入口 | 形状 | 停止语义 |
 |---|---|---|
 | loop 收尾维护节拍 | 组合根把冷路径回调注入 `DefaultLoop(cold_path=...)`；与记忆维护**共用节拍闸门**（`maintenance_interval`），各自失败降级、不中断本轮 | 节拍只给**机会**，阈值门决定是否做事（未达阈值 `maybe_run()` 返回 `None`） |
+| 门控（change `0067`） | `features.evolution: false` ⇒ 组合根**不建**引擎/worker，`DefaultLoop(cold_path=None)` —— 冷路径连同其唯一消费者一起消失（不是「装配了但不做事」）；`evolve` 四子命令同时拒绝 | 门控关闭时 `Runtime.evolution` 为空，`Runtime.loop._cold_path` 为 `None` |
 | CLI `core-agent evolve run` | 装配 runtime → `maybe_run(force=True)` → 打印结局 | **一次性动作**，不启常驻进程、不改运行态；装配失败 → stderr + 退出码 1 |
 
 - **阈值门不搬进驱动面**：节奏语义（累计 trace 数）仍归 `EvolutionTrigger`，两处阈值必然漂移。

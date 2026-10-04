@@ -101,10 +101,19 @@ from core.tools import (
     web_fetch,
 )
 
+# 门控名单（change 0067 / 账本 E10）：组合根装配的**可选**模块 —— 本元组是单一真源，
+# configuration 层不认识模块名。名单内模块缺省装配（未声明即开，兼容既有行为），仅显式
+# `features.<模块>: false` 才完全**不装配**（不构造实例、不产生装配期副作用、入口拒绝）；
+# 名单外的名字不触发任何裁剪。见 configuration spec「功能开关（feature flag）」。
+GATABLE_MODULES: tuple[str, ...] = ("pet", "beast", "evolution")
+
 
 @dataclass
 class Runtime:
-    """组合根产物：已装配运行系统，所有依赖非空。"""
+    """组合根产物：已装配运行系统。
+
+    除 `GATABLE_MODULES` 三项对应的字段（见各字段旁注，关闭时为空）外，所有依赖非空。
+    """
 
     app: AppConfig
     config: ConfigManager
@@ -120,15 +129,15 @@ class Runtime:
     skill_extractor: SopExtractor
     installer: PluginInstaller
     mcp_client: MCPClient
-    evolution: EvolutionWorker
+    evolution: EvolutionWorker | None  # 空 = features.evolution: false（未装配）
     orchestrator: TaskScheduler
     checkpoints: CheckpointManager
     time_travel: TimeTravel
     crash_recovery: CrashRecovery
-    pet_manager: PetManager
-    pet_activator: PetActivator
-    beast_manager: BeastManager
-    beast_activator: BeastActivator
+    pet_manager: PetManager | None  # 空 = features.pet: false（未装配）
+    pet_activator: PetActivator | None
+    beast_manager: BeastManager | None  # 空 = features.beast: false（未装配）
+    beast_activator: BeastActivator | None
 
     def recover(self) -> list[RestoreHandle]:
         """启动时扫描检查点，恢复无 done 标记的任务（返回续跑句柄）。"""
@@ -308,8 +317,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
 
     # 神通注册（0057）：20 神兽独有神通进全局技能库，供**按兽作用域**路由（见 _beast_loop）。
     # 此前 build_innate_skills/register_innate_skills 零生产调用方（账本 E3）。
-    beast_registry = BeastRegistry()
-    register_innate_skills(skill_library, beast_registry)
+    beast_registry: BeastRegistry | None = None
+    if not config.is_disabled("beast"):  # 门控：关闭时**连注册也不做**（注册即装配期副作用）
+        beast_registry = BeastRegistry()
+        register_innate_skills(skill_library, beast_registry)
 
     def _loop_hooks(
         domain: str | None = None,
@@ -390,22 +401,32 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         skill_router=loop_hints,
         tools=tools,
     )
-    evolution_engine = EvolutionEngine(
-        diagnoser=Diagnoser(),
-        proposer=Proposer(),
-        validator=Validator(),
-        evaluator=Evaluator(),
-        library=skill_library,
-        memory=backend,
-        memory_crystallizer=Crystallizer(),
-        observations=ObservationRegistry(path=_skill_state_path("observations.json")),
-        pending=PendingQueue(path=_skill_state_path("evolution-pending.json")),
-    )
-    evolution = EvolutionWorker(tracer=tracer, engine=evolution_engine, trigger=EvolutionTrigger())
+    # 门控（0067）：evolution 关闭 ⇒ 引擎/worker 不建，loop 冷路径一并置 None
+    # （不为「未装配」造空转闭包 —— DefaultLoop 本就接受 cold_path=None）。
+    evolution: EvolutionWorker | None = None
+    cold_path: Callable[[], None] | None = None
+    if not config.is_disabled("evolution"):
+        evolution_engine = EvolutionEngine(
+            diagnoser=Diagnoser(),
+            proposer=Proposer(),
+            validator=Validator(),
+            evaluator=Evaluator(),
+            library=skill_library,
+            memory=backend,
+            memory_crystallizer=Crystallizer(),
+            observations=ObservationRegistry(path=_skill_state_path("observations.json")),
+            pending=PendingQueue(path=_skill_state_path("evolution-pending.json")),
+        )
+        evolution_worker = EvolutionWorker(
+            tracer=tracer, engine=evolution_engine, trigger=EvolutionTrigger()
+        )
+        evolution = evolution_worker
 
-    def _cold_path() -> None:
-        """收尾维护节拍的冷路径机会：跑一轮进化（阈值门在 worker 内，未达则不做事）。"""
-        evolution.maybe_run()
+        def _cold_path() -> None:
+            """收尾维护节拍的冷路径机会：跑一轮进化（阈值门在 worker 内，未达则不做事）。"""
+            evolution_worker.maybe_run()
+
+        cold_path = _cold_path
 
     constraints_chain = build_constraints_chain()
 
@@ -419,7 +440,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         approver=approver,
         compactor=context_compactor,
         turn_observer=loop_turn,
-        cold_path=_cold_path,
+        cold_path=cold_path,
         middlewares=[constraints_chain.middleware],
         action_observers=[constraints_chain.observe_result],
     )
@@ -607,39 +628,46 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
 
     # DefaultLoop 与 LoopPlugin 协议签名存在既有错位（astream/act async 方向相反），
     # 全仓以 cast 桥接（见 entry._build_ui）；此处沿用，行为不变。
-    pet_loop = cast(LoopPlugin, loop)
-    pet_explorer = Explorer()
-    pet_safety = SafetyBounds()
-    pet_notifier = AsyncNotifier()
-    pet_manager = PetManager(
-        _pet_state_path(),
-        factory=lambda record: PetSession.restore(
-            record,
+    # 门控（0067）：pet 关闭 ⇒ 注册表不建（**不读** pets.json）、激活器不接。
+    pet_manager: PetManager | None = None
+    pet_activator: PetActivator | None = None
+    if not config.is_disabled("pet"):
+        pet_loop = cast(LoopPlugin, loop)
+        pet_explorer = Explorer()
+        pet_safety = SafetyBounds()
+        pet_notifier = AsyncNotifier()
+        pet_manager = PetManager(
+            _pet_state_path(),
+            factory=lambda record: PetSession.restore(
+                record,
+                loop=pet_loop,
+                memory=memory,
+                explorer=pet_explorer,
+                safety=pet_safety,
+                notifier=pet_notifier.notify,
+            ),
+        )
+        pet_activator = PetActivator(
+            pet_manager,
             loop=pet_loop,
             memory=memory,
             explorer=pet_explorer,
             safety=pet_safety,
             notifier=pet_notifier.notify,
-        ),
-    )
-    pet_activator = PetActivator(
-        pet_manager,
-        loop=pet_loop,
-        memory=memory,
-        explorer=pet_explorer,
-        safety=pet_safety,
-        notifier=pet_notifier.notify,
-    )
+        )
 
     # 神兽运行时桥接（0057）：专用路由器（画像不与 coding/research 混）+ 惰性按兽 loop +
     # 共享记忆；三入口（CLI / 斜杠 / 自然语言）至此落到**同一**已装配 manager。
-    beast_manager = BeastManager(
-        registry=beast_registry,
-        router=MultiAgentRouter([]),
-        loop_factory=_beast_loop,
-        memory=memory,
-    )
-    beast_activator = BeastActivator(beast_manager)
+    beast_manager: BeastManager | None = None
+    beast_activator: BeastActivator | None = None
+    if beast_registry is not None:  # 同一判据：注册表在则 beast 模块在（门控判据见上）
+        beast_manager = BeastManager(
+            registry=beast_registry,
+            router=MultiAgentRouter([]),
+            loop_factory=_beast_loop,
+            memory=memory,
+        )
+        beast_activator = BeastActivator(beast_manager)
 
     return Runtime(
         app=app,

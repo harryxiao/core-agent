@@ -74,6 +74,10 @@ PetMode（后台自治循环扩展）
   + `PetManager`（落盘 `$CORE_STATE_DIR/pets.json`）+ `PetActivator`（注入 runtime 的 loop / memory）；
   `Runtime.pet_manager`/`pet_activator` 供 `entry._pet`（CLI）与 `UIAPILayer.activate_pet`（WebUI）共用，
   缺省（无组合根）仍走 echo loop 兜底、行为不变。
+- **门控**（change `0067`，账本 E10）：`features.pet: false` 时 pet **完全不装配** —— 不构造
+  `PetManager`（**不读** `pets.json`）、`Runtime.pet_manager`/`pet_activator` 为空、`pet` CLI 与
+  WebUI 入口一并拒绝。**两级开关各管各的**：`features.pet` 管**装配**（缺省开），`pet.enabled`
+  管**启用**（缺省关，`ConfigSpec` 单一真源）；前者关时后者无意义，前者开而后者关即今日形态。
 
 ---
 

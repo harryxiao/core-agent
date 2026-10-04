@@ -281,6 +281,14 @@
 | TC-SKILLHUB-05 | CORE-SKH-R3 | 发布技能被审核 rejected | 状态回退，允许修改后重传 |
 | TC-SKILLHUB-06 | CORE-SKH-R5 | 指定 source 路由到市场源 | 路由到对应源；源不健康回退官方源；源不存在拒绝路由 |
 
+## 24. 配置管理（TC-CONF）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-CONF-01 | CORE-CFG-R3 | 配置未声明 `features` 段（或缺省）启动装配 | 门控名单内模块（`pet`/`beast`/`evolution`）照常装配 —— 缺省开、与门控落地前行为一致（锚点：`tests/test_feature_gating.py::test_default_assembles_every_gatable_module`） |
+| TC-CONF-02 | CORE-CFG-R3 | `features.pet: false`（或 `beast`/`evolution`）启动装配 | 该模块**完全不装配**：不构造实例、不产生装配期副作用（`beast` 不注册神通、`pet` **不读** `pets.json`）、loop 冷路径置空（Evolution），入口拒绝（锚点：同文件 `test_disabled_*` 组） |
+| TC-CONF-03 | CORE-CFG-R3 | `features.pet` 缺省开而 `pet.enabled=false` 时调用 `pet` CLI | 模块**已装配**（装配面非空），CLI 仍报「宠物模式未启用」—— feature flag 只管装配、不改二级启用开关（锚点：既有 `tests/test_entry.py::test_pet_disabled_by_default` + `tests/test_feature_gating.py::test_cli_refuses_disabled_module[pet]`） |
+
 ---
 
 ## 关联

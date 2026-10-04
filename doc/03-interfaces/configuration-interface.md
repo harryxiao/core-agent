@@ -77,7 +77,10 @@ class ConfigManager:
         """从 env/keychain 解析敏感密钥引用（${VAR}），不落明文。"""
 
     def is_enabled(self, module: str) -> bool:
-        """feature flag 查询：关闭的模块不加载、不初始化。"""
+        """feature flag 查询：显式开启才为真（缺省 false；供缺省关的模块自查二级开关）。"""
+
+    def is_disabled(self, module: str) -> bool:
+        """装配裁剪判据（change 0067）：只有显式 `features.<模块>: false` 才为真（缺省不关）。"""
 
     def permission_mode(self) -> str:
         """权限模式查询（缺省 interactive；取值已在校验期限于四档），映射 config.permission.mode。"""
@@ -109,7 +112,24 @@ def generate_yaml_defaults(specs=None) -> dict: ...
 | `permission.mode` | 总是（缺省 `interactive`） | 仅接受权限规格四档 `read-only` / `interactive` / `auto-approve` / `high-risk-block` |
 
 口径来源：`doc/openspec/specs/configuration/spec.md`「密钥分级与安全」「配置校验与生效」；`permission.mode` 四档定义方为 `doc/openspec/specs/permission/spec.md`「权限模式」。
-### 2.2 未知配置段：仅告警（change `0064`，账本 E18）
+### 2.2 两个开关谓词（change `0067`，账本 E10）
+
+`features` 段有三条输入通道（yaml `features:` / env `CORE_FEATURE_<模块>` / CLI `--feature <模块>[=<布尔>]`），
+消费它的是**两个极性相反**的谓词：
+
+| 谓词 | 真值条件 | 缺省 | 用途 |
+|---|---|---|---|
+| `is_enabled(module)` | `features.<模块>` 显式为**真** | `false` | 「显式开启查询」：供**缺省关**的模块自查二级开关（如 `pet.enabled`） |
+| `is_disabled(module)` | `features.<模块>` 显式为**假** | `false`（即不关） | **装配裁剪**：门控名单内**缺省装配**的可选模块，由组合根消费 |
+
+**装配裁剪契约**（规格「功能开关（feature flag）」）：门控名单 `core.runtime.GATABLE_MODULES`
+（当前 `pet` / `beast` / `evolution`）是**组合根单一真源** —— 配置层不认识模块名。名单内模块
+**缺省装配**（未声明即开，兼容既有行为），仅显式 `false` 才完全不装配；名单外的名字不触发任何裁剪。
+关闭的含义是**彻底**的：不构造实例、不产生装配期副作用（`beast` 连 20 神通都不注册、`pet` 不读
+`pets.json`）、`loop` 冷路径一并置 `None`、CLI 入口拒绝（stderr 说明 + 退出码 0）。
+feature flag 只管**装配**，不改模块自身的二级启用开关（`features.pet` 缺省开 ≠ `pet.enabled` 开）。
+
+### 2.3 未知配置段：仅告警（change `0064`，账本 E18）
 
 **不再静默**：顶层段名不在**已知段**之内时，`validate_schema` 返回**告警**（含段名、已知段清单与「已收纳进 `extra` 且未做校验」提示），`load()` 经 `warnings.warn` 发出，**不阻断启动**、**不丢弃**该段（仍留在 `extra`）。
 

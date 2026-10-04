@@ -1047,6 +1047,42 @@
 
 ---
 
+## ADR-0065：功能开关运行时门控（门控名单归组合根 / 缺省装配 / 只管装配不改二级开关）
+
+- **背景**：规格「功能开关（feature flag）」逐字要求「关闭的模块不加载、不初始化」，三条输入通道
+  （yaml `features:` / env `CORE_FEATURE_*` / CLI `--feature`）早已齐备，但**零消费者** ——
+  `ConfigManager.is_enabled` 无生产调用方，`build_runtime` 无条件构造全部模块（账本 E10）。
+- **决策**：
+  ① **门控名单归组合根**（`core.runtime.GATABLE_MODULES = ("pet", "beast", "evolution")`）：配置层
+  属 `BASE_MODULES`，不该认识能力模块名；名单与装配点同处一地即单一真源。configuration 只提供
+  **极性纯净**的谓词。
+  ② **新增 `is_disabled(module)` 而不改 `is_enabled` 的语义**：`is_enabled`（显式开启查询，缺省 false）
+  已被接口文档与测试锁定，且正是缺省关模块（`pet.enabled`）需要的极性；装配裁剪是相反的极性，
+  故另起谓词（`features.get(module) is False`，缺省**不关**）。
+  ③ **缺省装配**（用户裁决 2026-10-05）：名单内模块**未声明即开**，仅显式 `false` 才不装配 ——
+  兼容现状（features 段当前无使用者 ⇒ 既有行为逐位不变），代价是与 `phase-0` 原文「缺省关闭」
+  的字面不符，已在规格里订正为「白名单内缺省开」。
+  ④ **关闭是彻底的**：不构造实例、不产生装配期副作用（`beast` 连 `register_innate_skills` 都不做、
+  `pet` 不读 `pets.json`）、loop 冷路径**置 `None`**（不造空转闭包）、CLI 入口拒绝
+  （stderr 说明 + 退出 0，对齐既有 `pet.enabled` 未启用形态）。
+  ⑤ **两级开关分层，互不覆盖**：`features.<模块>` 管**装配**、模块自身开关（`pet.enabled`）管**启用**；
+  feature flag 不越权改后者。副产品：WebUI 的 `activate_pet` 与 CLI 的准入判据首次一致
+  （此前组合根永远装配 pet ⇒ WebUI 无条件可用，而 CLI 认 `pet.enabled`）。
+  ⑥ **不做**：`mcp` 门控（装配惰性，随 B4 CLI 接线落）、`im` 门控（无装配点）、`features` 未知模块名
+  告警（与 E18 同族，名单在组合根 ⇒ 配置层无从判名）、`features` 值非布尔强转（既有语义）。
+- **后果**：✅ 规格契约有了可验证落点（`tests/test_feature_gating.py` 18 例：缺省装配 / 关闭面为空 /
+  不注册神通 / 不读注册表 / 冷路径置空 / 核心面不受影响 / 六入口拒绝）；✅ 缺省即装配 ⇒ 对既有部署
+  **零行为变化**；✅ 名单单一真源，加模块只改组合根一处。
+  ⚠️ `Runtime` 五个字段变可空（字段集与顺序未动）；⚠️ 门控名单是**组合根知道的模块名清单**，
+  与「能力模块可插拔」的理想尚有距离（未来插件化时名单应随注册表派生）。
+- **关联**：`configuration` spec「功能开关（feature flag）」（**MODIFIED**：装配语义 + 缺省开 + 单一真源名单）；
+  代码 `src/core/configuration/manager.py`（`is_disabled`）/ `src/core/runtime.py`（名单 + 三处裁剪）/
+  `src/core/entry.py`（`_module_disabled` + 六入口）；接口 `03-interfaces/configuration-interface.md` §2.2；
+  模块 `02-modules/configuration.md` §3.3 / `02-modules/pet.md` / `02-modules/beast-mode.md`；
+  测试 `tests/test_feature_gating.py`、`doc/04-testing/test-cases.md`（TC-CONF-01…03）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1106,3 +1142,4 @@
 | ADR-0062 | 03-interfaces/constraints-interface.md, 03-interfaces/tool-use-interface.md, 02-modules/constraints.md, 02-modules/tool-use.md |
 | ADR-0063 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md |
 | ADR-0064 | 03-interfaces/llm-provider-interface.md, 02-modules/llm-provider.md |
+| ADR-0065 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md, 02-modules/pet.md, 02-modules/beast-mode.md |

@@ -21,16 +21,17 @@
 - **E17（pet 无后台 daemon）已于 change `0065` 关闭 —— 判定「规格未要求」**：一手核实三件事 ① 规格无 daemon / 调度线程条款（Lifecycle 只写「**每次唤醒**…同步薄壳逐次执行」，Yielding 明写让行模型是「**同步 + 锁（RLock）**」）；② 文档自述「逐次执行**不常驻**」——「后台自治调度」是文档层过度承诺（与 E19 同型）；③ `core-agent pet <verb>` 是**一次性进程**（激活 → 打印 → 退出），进程内线程**必随进程结束** ⇒ 在那里 daemon 化是**错误解法**，唯一可承载常驻驱动的宿主是 `ui serve` 长驻进程。用户裁决**规格中性收口**：接口 §5 / 模块 §4 登记「`wake()` 由**宿主**驱动、内核不自建调度线程」，零代码。
 - **E18（`extra` 未知配置段）已于 change `0064` 关闭**（ADR-0063）：用户裁决**仅告警**（WARN 不阻断，兼容既有自定义段；硬拒会改变既有接受行为）——`ValidationResult.warnings` 产出 + `load()` 发出（stdlib `warnings`，零接线）；已知段白名单**由 `_CONFIG_SPECS` 派生**（单一真源，新增 Spec 自动进白名单）；口径**只到顶层段名**（子键未知不判，属各能力 schema 义务）。
 - **E11（LLM 可靠性）已于 change `0060` + `0066` 全关闭**：① 用例侧 —— 重试/超时/降级/断流 9 例**一次全绿**，`src/` 零改动（实现本就正确，缺的是验证，change `0060`）；② **连接复用已实现**（change `0066` / ADR-0064）—— **关键判定：这是「规格要求 X 而实现没有」**（规格「模型调用可靠性」正文与场景「连接复用」逐字要求 keep-alive 复用 + 失效自动重建）⇒ **改代码向规格靠拢，不订正规格**（与 E12 同型，对比 E17/E19 的「文档过度承诺」型）。实现：`http_pool.HTTPConnectionPool` 线程本地按 origin 复用 keep-alive（无锁）+ 失效重建恰一次 + 代理/3xx 回落 `urlopen` + 非 2xx 转 `HTTPError`（既有状态码映射零改动）+ 读尽才归还；`map_http_error` 补连接层 `OSError`/`HTTPException` → `LLMNetworkError`。
+- **E10（功能开关运行时门控）已于 change `0067` 关闭**（ADR-0065）：用户裁决**缺省装配**——门控名单内可选模块（`pet`/`beast`/`evolution`）**未声明即装配**（保持既有行为），仅显式 `features.<模块>: false` 才**完全不装配**（不构造实例、不注册神通、不读状态文件、`cold_path` 置 `None`、7 个 CLI 入口拒绝并退出 0）。名单由组合根 `runtime.GATABLE_MODULES` **单一真源**维护（配置层不认识模块名）；新增查询谓词 `is_disabled`（与 `is_enabled` 极性相反、用途不同，后者语义不变）。**口径订正**：phase-0「功能开关缺省关闭」的字面与裁决不符，规格已订正为「白名单内缺省开」。
 - **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A5、E2/E4/E5 全归此（A4 已随 change `0055` 关闭、E3 已随 change `0057` 关闭）。
 - **一条值得单独记的形态问题**：`cli-contract-baseline.md` 的**内置工具契约与实现已对不上账**（见 E7）——契约列的 5 个工具在代码里从未存在。
 
 | 类别 | 项数 | 最高优先级 | 是否阻塞调试 |
 |---|---|---|---|
 | A Phase 18 收口遗留 | 11 | 中 | 否 |
-| E 早期 Phase 未闭合项 | 18 | 中 | 否 |
+| E 早期 Phase 未闭合项 | 20 | 中 | 否 |
 | B Phase 12 MCP（部分关闭） | 5 | 低（B1 client 侧已闭） | 否（可绕开） |
 | C 真实外部后端未接 | ~20 处 | 低 | 否 |
-| D 文档与仓库杂项 | 5（3 已关闭） | 无 | 否 |
+| D 文档与仓库杂项 | 6（3 已关闭） | 无 | 否 |
 | F 验收勾选状态 | ✅ 已清尾（6 组核实完毕） | 无 | 否 |
 | G 已闭合但未销账 | 7 组 | 无（仅订正文档） | 否 |
 
@@ -60,7 +61,7 @@
 | E7 | E | ~~内置工具契约与实现漂移~~ | ✅ 已关闭（change `0056`）：裁决「规格为准」——契约列 5 个工具**从未存在**（非承诺项），订正 `cli-contract-baseline.md` §10 | 中（契约裁决） | — |
 | E8 | E | ~~CLI 契约基线 §11 未决项~~ | ✅ 已关闭（change `0056`）：7 条逐条定性；`im.secret`/`judgment.api_key` 校验对称化 + `permission.mode` 枚举校验（余 `extra` 未知键 → **E18**） | 低 | — |
 | E9 | E | ~~文档层其他未闭合项~~ | ✅ 已关闭（change `0061`）：`data-model.md` §4 四实体按**源码回填** + rag/mcp/git 三条替换性锚点登记为 `TC-RAG-10` / `TC-MCP-06` / `TC-GIT-11`（锚点测试本已存在，补的是追踪号）+ retrospective/ADR 日期补记；余两项（远程制品仓库、market-registry）归 **C 类**（§5 已具名） | 低 | — |
-| E10 | E | 功能开关无运行时门控 | `build_runtime` 无条件构造全部模块，`is_enabled` 仅存语义 | 低 | 定夺哪些模块可关 |
+| E10 | E | ~~功能开关无运行时门控~~ | ✅ 已关闭（change `0067` / ADR-0065）：门控名单（`pet`/`beast`/`evolution`）归**组合根**单一真源（`runtime.GATABLE_MODULES`）；用户裁决**缺省装配**（兼容现状），仅显式 `features.<模块>: false` 才完全不装配（不构造 / 不注册技能 / 不读状态文件 / 冷路径置空 / 入口拒绝）；新增谓词 `is_disabled`（`is_enabled` 语义不变） | 低 | — |
 | E11 | E | LLM 可靠性：连接复用缺失 + 无测试 | ✅ **已关闭**：① 用例已补（change `0060`，9 例，`src/` 零改动 —— 缺的是验证）；② **连接复用已实现**（change `0066` / ADR-0064：`http_pool.HTTPConnectionPool` 线程内按 origin 复用 keep-alive + 失效重建，真实 socket 用例 9 例） | 低 | 无 |
 | E12 | E | ~~崩溃恢复无真实 `kill -9` 用例~~ | ✅ 已关闭（change `0062`）：真子进程 `SIGKILL` 端到端 + **修持久化非原子写入缺陷**（`write_text` 先截断 → 半写即整体丢失 → 改 tmp + `os.replace` 原子提交 / 规格 delta） | 低 | — |
 | E18 | E | ~~`extra` 未知配置键无校验~~ | ✅ 已关闭（change `0064`，ADR-0063）：用户裁决**仅告警**（WARN 不阻断）——未知顶层段名告警、段仍在 `extra`、白名单由 `ConfigSpec` 派生 | 低 | — |
@@ -70,6 +71,8 @@
 | E15 | E | 熔断阈值/冷却不可配 | 适配层用类默认（5 / 30s），`configuration/` 无 constraints 段 | 低 | E10 配置门控 |
 | E16 | E | `AsyncNotifier` 无 channel | pet 通知仅入队，`flush()` 投递未接；IM 通道（`im`）为依赖 | 低 | IM 通知通道 |
 | E17 | E | ~~pet 无后台 daemon~~ | ✅ 已关闭（change `0065`，**规格未要求**）：`wake()` 由**宿主**驱动、内核不常驻；接口 §5 / 模块 §4 登记为已知语义 | 低 | — |
+| E20 | E | `features` 未知模块名无告警 + 值非布尔被强转 | 白名单在组合根（配置层不认识模块名）⇒ 拼错的模块名静默生效/失效；`bool("off")` 为真 ⇒ `features.pet: "off"` 实为开 | 低 | E10 收口（change `0067`） |
+| E21 | E | `entry._pet` 的 `pet.enabled` 判据忽略 config.yaml | CLI 用 `resolve(cli=, env=)`（无 yaml 层）判启用，而 `build_runtime` 同谓词含 yaml 层 ⇒ CLI/WebUI/装配三方准入不一致，违反文档优先级链 | 低 | E10 收口（change `0067`） |
 | B1 | B | Phase 12 MCP 安装/传输/安全（client 侧） | 🔶 **部分关闭（change `0054`）**：stdio 传输 + `add` 分流 + 沙箱/白名单/确认门接线 + 组合根装配已落地（ADR-0057）；**余** http 会话 → B2、服务端 stdio → B3、CLI 接线 → B4、白名单配置 → B5 | 低 | 无 |
 | B2 | B | 远端 http/streamable-http 会话 | `build_http_transport` 仅落地「白名单守卫 + SDK 缺失降级 + 会话待接入报错」；`Mcp-Session-Id`/SSE/headers 未实现 | 低 | mcp SDK（离线不可装） |
 | B3 | B | `MCPServer.serve` stdio 事件循环 | 服务端方向（本机作 MCP server 暴露工具）未实现；client 方向 `0054` 已通 | 低 | 无 |
@@ -81,6 +84,7 @@
 | D3 | D | ~~根目录 `config.yaml` 未跟踪~~ | ✅ 已关闭：`git check-ignore` 原为**零命中**（仅「没 add 过」）→ 已补 `.gitignore` 守卫 | 无 | — |
 | D4 | D | `.claude/settings*.json`（部分关闭） | ✅ `settings_deepseek/glm.json` 已 ignore；⚠ `settings.json` **已跟踪且已修改**（非本项目改动）仍待确认归属 | 无 | 确认 settings.json 改动归属 |
 | D5 | D | ~~本文件未入 README 索引~~ | ✅ 已关闭：已登记 `README` §1（清单 22 份）+ §2（第 19 行） | 无 | — |
+| D6 | D | `doc/02-modules/llm-provider.md` 称「LiteLLM 默认实现」 | 默认实现实为 `StdlibLLMProvider`（`runtime.py:207`；`llm_provider/__init__.py:4` 自述）；§1/§3.2 措辞待订正 | 无 | 文档订正 |
 
 ---
 
@@ -310,12 +314,14 @@
 - **有意不造重复用例**：`_FixedEmbedder` / `FakeTransport` / `FakeBackend` 就是「替换 X」本身，
   再造同义测试是重复建设；rag「替换向量库」一侧仅单实现（生产 sqlite-vec → C 类），追踪行**如实标为半覆盖**。
 
-### E10 功能开关无运行时门控（Phase 0 验收未达成）
+### E10 功能开关无运行时门控（Phase 0 验收未达成）— ✅ 已关闭（change `0067`，ADR-0065）
 
-- **现象**：`phase-0.md:32` 要求「功能开关缺省关闭：未启用的模块**完全不初始化**（不 import 副作用、不注册）」。实测：`ConfigManager.is_enabled` 的缺省 off 语义已实现并测试（`tests/test_configuration.py:85`），但 `runtime.py` 的 `build_runtime` **无条件构造全部模块**——无 `is_enabled` 门控、无「未启用则不构造/不注册」的证据。
-- **根因**：Phase 0 只交付了配置侧开关语义，运行时侧门控从未接线（Phase 13 组合根建立时也未补）。
-- **关闭动作**：`build_runtime` 按 `is_enabled` 门控各模块构造；补「关闭时不构造」断言用例。
-- **前置**：需先定夺「哪些模块允许关闭」（部分模块是核心回路必需，强行可关会破环）。
+- **现象**：`phase-0.md:32` 要求「未启用的模块**完全不初始化**」。实测 `ConfigManager.is_enabled` 的缺省 off 语义已实现并测试（`tests/test_configuration.py:85`），但 `runtime.py` 的 `build_runtime` **无条件构造全部模块**——无门控、无「未启用则不构造/不注册」证据。
+- **根因**：Phase 0 只交付配置侧开关语义，运行时侧门控从未接线（Phase 13 组合根建立时也未补）。
+- **裁决**：用户选「**可选模块缺省开**」（兼容现状）——门控名单内模块未声明即装配，仅显式 `features.<模块>: false` 才关闭。**口径订正**：phase-0「功能开关缺省关闭」的字面与裁决不符，规格订正为「白名单内缺省开」。
+- **关闭动作**（change `0067`）：门控名单 `runtime.GATABLE_MODULES = ("pet", "beast", "evolution")` 归**组合根**单一真源（配置层不认识模块名）；新增 `ConfigManager.is_disabled`（极性相反、用途不同；`is_enabled` 语义不变）；三处装配点按名单裁剪——`beast` 关闭时**连 `register_innate_skills` 也不做**、`pet` 关闭时不读状态文件、`evolution` 关闭时 `cold_path=None`；7 个 CLI 入口（`evolve run/pending/confirm/reject`、`pet *`、`summon`/`recall`）统一拒绝并退出 0（说明含模块名与开关名）。18 例新测试（含「关闭时空面」与「缺省即装配」对照，证明否定断言非空转）。
+- **分层**：`features.pet`（装配，缺省开）与 `pet.enabled`（启用，缺省关）**两层并存**、不重复；核心模块（`runtime`/`loop`/`memory`/`tools` 等）不在名单，不可关。
+- **遗留**（本次走查新报，见 §1 表 E20/E21）：① `features` 未知模块名无告警 + 值非布尔被 `bool()` 强转；② `entry._pet` 的 `pet.enabled` 判据**忽略 config.yaml**（`resolve(cli=, env=)` 无 yaml 层），违反文档优先级链。
 
 ### E11 LLM 可靠性：连接复用缺失 + 重试/超时/降级/断流无测试（Phase 1 验收未达成）
 
@@ -541,6 +547,7 @@
 - **D3** ✅ 已关闭：核查发现 `git check-ignore` 对 `config.yaml` **零命中**（未被忽略，只是没 `git add`）→ 一次 `git add -A` 即会入库真实端点载体。已在 `.gitignore` 补 `/config.yaml` 守卫（密钥红线）。
 - **D4** 🔶 部分关闭：`settings_deepseek.json` / `settings_glm.json` 已加入 `.gitignore`；**`settings.json` 例外**——它**已被跟踪**且有未提交改动（非本项目代码改动），gitignore 对已跟踪文件无效 → 归属仍需人工确认（保留此项）。
 - **D5** ✅ 已关闭：本文件已登记进 README §1（文档清单 22 份）与 §2（Phase 总览第 19 行）。
+- **D6** `doc/02-modules/llm-provider.md` §1/§3.2/§3.3 称「**LiteLLM 作默认实现**」，实际默认是 `StdlibLLMProvider`（`runtime.py:207`；`llm_provider/__init__.py:4` 自述「StdlibLLMProvider（OpenAI 兼容 stdlib）作默认实现」）→ 措辞待订正（change `0066` 走查新报）。
 
 ---
 
@@ -591,7 +598,7 @@
 6. **E1 + E7 + E8**（契约与中间件）：✅ **全闭** —— E1 见 change `0052`（ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；**E7/E8 见 change `0056`（ADR-0059）**：E7 裁决「规格为准」→ 纯文档订正；E8 三处缺口修复，第 5 条转出为 E18。
 7. **E3 / E6**（规格裁决）：✅ **全闭** —— 裁决「A 全做・解除 deferred」；**E3** 见 change `0057`（ADR-0060：神通注册 + 专属路由作用域 + 按兽 loop/共享记忆注入 + CLI 走组合根）；**E6** 无需代码（context 压实启发式已由 change `0041` 规格订正为有意行为，余两项转 A7/A8）。
 8. **A7 + E6（miss 复用）**（低优先，同族）：✅ **全闭** —— **A7** 见 change `0058`（ADR-0061：排序分 = 基础分 × 历史成功率因子；预筛转出 A11）；**E6** 无需代码（见上，规格已由 change `0041` 订正）。
-9. **A8 / A11 / E5 / E9 / E13 / E15–E16 / C 类**：随需（**A11 语义兜底候选预筛**（需先有比词法更粗的排序信号，**候选预筛**）/ E15 熔断阈值不可配 / E16 `AsyncNotifier` 无 channel）。✅ **E14 已关闭**（change `0059`，ADR-0062）。✅ **E11 全关闭**（① change `0060`：可靠性用例 9 例，`src/` 零改动；② change `0066`/ADR-0064：**连接复用已实现** —— 线程本地按 origin 复用 keep-alive + 失效重建，真实 socket 用例 9 例）。✅ **A6 / E13 / E19 已关闭**（change `0063`，纯文档：已知语义登记 + 有意不接线判定 + 过度承诺订正）。✅ **E18 已关闭**（change `0064`，ADR-0063：未知配置段仅告警）。✅ **E17 已关闭**（change `0065`：规格未要求 daemon，登记「唤醒由宿主驱动」）。✅ **A9 已关闭**（**规格明文认可现状**：`context/spec.md:9` 逐字写 stage 不参与事实选择（change `0038` 写入），文档与实现三层一致 ⇒ 零变更销账）。
+9. **A8 / A11 / E5 / E9 / E13 / E15–E16 / C 类**：随需（**A11 语义兜底候选预筛**（需先有比词法更粗的排序信号，**候选预筛**）/ E15 熔断阈值不可配 / E16 `AsyncNotifier` 无 channel）。✅ **E14 已关闭**（change `0059`，ADR-0062）。✅ **E11 全关闭**（① change `0060`：可靠性用例 9 例，`src/` 零改动；② change `0066`/ADR-0064：**连接复用已实现** —— 线程本地按 origin 复用 keep-alive + 失效重建，真实 socket 用例 9 例）。✅ **A6 / E13 / E19 已关闭**（change `0063`，纯文档：已知语义登记 + 有意不接线判定 + 过度承诺订正）。✅ **E18 已关闭**（change `0064`，ADR-0063：未知配置段仅告警）。✅ **E17 已关闭**（change `0065`：规格未要求 daemon，登记「唤醒由宿主驱动」）。✅ **A9 已关闭**（**规格明文认可现状**：`context/spec.md:9` 逐字写 stage 不参与事实选择（change `0038` 写入），文档与实现三层一致 ⇒ 零变更销账）。✅ **E10 已关闭**（change `0067`／ADR-0065：门控名单（`pet`/`beast`/`evolution`）归组合根单一真源 + **缺省装配**（未声明即开，仅显式 `false` 才不装配）+ 7 入口拒绝）。
    ✅ **E9 已关闭**（change `0061`：`data-model.md` 四实体回填 + rag/mcp/git 锚点登记 TC-RAG-10/TC-MCP-06/TC-GIT-11 + 两处日期补记；纯文档、规格中性）。
    ✅ **E12 已关闭**（change `0062`：真子进程 `SIGKILL` 端到端 + **修持久化非原子写入**（tmp + `os.replace`）/ 规格 delta）；另新报 **E19**（durability 文档承诺的持久化故障降级未实现）→ **已由 change `0063` 关闭**（订正模块文档承认现状）。
 10. **真机动作**：活 LLM 全回路冒烟（§8 末）。

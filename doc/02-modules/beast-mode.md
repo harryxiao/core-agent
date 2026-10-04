@@ -51,6 +51,9 @@ BeastMode（前台重大任务执行层）
   主 Agent 都看不到（路由期作用域强制），与共享能力分层不冲突、且不灌主 prompt。
 - **组合根装配**（0057）：`build_runtime` 注册神通并以 `loop_factory` 按兽惰性装配独立 loop +
   注入共享 `MemoryStore`；CLI `summon`/`recall` 经 `build_runtime` 取 `Runtime.beast_activator`。
+- **门控**（change `0067`，账本 E10）：`features.beast: false` 时 beast 完全不装配 —— 不建
+  `BeastRegistry`、**连 20 神通的注册都不做**（注册即装配期副作用），`Runtime.beast_manager`/
+  `beast_activator` 为空、`summon`/`recall` 入口拒绝；主 Agent 技能面与域作用域语义不受影响。
 
 ### 3.5 异步并发 + 自动回归
 

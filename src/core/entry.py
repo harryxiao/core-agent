@@ -721,7 +721,10 @@ def _evolve_run(args: argparse.Namespace) -> int:
     runtime = _evolve_runtime(args)
     if runtime is None:
         return 1
-    outcome = runtime.evolution.maybe_run(force=True)
+    evolution = runtime.evolution
+    if evolution is None:
+        return _module_disabled("evolution")
+    outcome = evolution.maybe_run(force=True)
     if outcome is None:
         print("进化冷路径完成：无候选（no_op）")
     else:
@@ -737,7 +740,10 @@ def _evolve_pending(args: argparse.Namespace) -> int:
     runtime = _evolve_runtime(args)
     if runtime is None:
         return 1
-    candidates = runtime.evolution.engine.pending()
+    evolution = runtime.evolution
+    if evolution is None:
+        return _module_disabled("evolution")
+    candidates = evolution.engine.pending()
     if not candidates:
         print("待确认队列为空")
         return 0
@@ -767,7 +773,10 @@ def _evolve_confirm(args: argparse.Namespace) -> int:
     runtime = _evolve_runtime(args)
     if runtime is None:
         return 1
-    engine = runtime.evolution.engine
+    evolution = runtime.evolution
+    if evolution is None:
+        return _module_disabled("evolution")
+    engine = evolution.engine
     candidate = _resolve_candidate(args, engine)
     if candidate is None:
         return 1
@@ -807,10 +816,13 @@ def _evolve_reject(args: argparse.Namespace) -> int:
     runtime = _evolve_runtime(args)
     if runtime is None:
         return 1
-    candidate = _resolve_candidate(args, runtime.evolution.engine)
+    evolution = runtime.evolution
+    if evolution is None:
+        return _module_disabled("evolution")
+    candidate = _resolve_candidate(args, evolution.engine)
     if candidate is None:
         return 1
-    runtime.evolution.engine.reject(candidate, reason=args.note)
+    evolution.engine.reject(candidate, reason=args.note)
     print(f"已拒绝：{candidate.target_plugin}（{candidate.candidate_id}）")
     return 0
 
@@ -924,6 +936,19 @@ def _read_prompt(args: argparse.Namespace) -> str | None:
     return None
 
 
+def _module_disabled(module: str) -> int:
+    """已关闭模块的入口拒绝（`features.<模块>: false`）：说明 + 退出 0。
+
+    对齐既有 `pet.enabled` 未启用形态：请求的功能不可用不是进程错误；文案含模块名与开关名，
+    便于脚本判读（见 configuration spec「功能开关（feature flag）」）。
+    """
+    print(
+        f"{module} 模块已关闭（features.{module}=false，移除该项或改为 true 即恢复缺省装配）",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def _pet(args: argparse.Namespace) -> int:  # noqa: PLR0911 — CLI 分支各自退出码
     cli = _cli_overrides(args)
     if not _as_bool(resolve("pet.enabled", cli=cli, env=os.environ)):
@@ -947,6 +972,9 @@ def _pet(args: argparse.Namespace) -> int:  # noqa: PLR0911 — CLI 分支各自
         print(f"装配失败: {exc}", file=sys.stderr)
         return 1
     manager = runtime.pet_manager
+    activator = runtime.pet_activator
+    if manager is None or activator is None:
+        return _module_disabled("pet")
     if verb == "list":
         _print_pets(manager, persons_dir)
         return 0
@@ -957,9 +985,7 @@ def _pet(args: argparse.Namespace) -> int:  # noqa: PLR0911 — CLI 分支各自
         manager.stop(rest[0])
         print(f"已停止宠物会话 {rest[0]}")
         return 0
-    session = runtime.pet_activator.activate_from_cli(
-        verb, rest, persona=_load_persona(persons_dir, name)
-    )
+    session = activator.activate_from_cli(verb, rest, persona=_load_persona(persons_dir, name))
     print(f"已激活宠物会话 {session.session_id}（verb={verb}，状态 {session.state.value}）")
     return 0
 
@@ -1023,9 +1049,10 @@ def _summon(args: argparse.Namespace) -> int:
     runtime = _beast_runtime(args)
     if runtime is None:
         return 1
-    session = asyncio.run(
-        runtime.beast_activator.activate_from_cli(args.beast, list(args.task or []))
-    )
+    activator = runtime.beast_activator
+    if activator is None:
+        return _module_disabled("beast")
+    session = asyncio.run(activator.activate_from_cli(args.beast, list(args.task or [])))
     print(f"已召唤神兽 {session.beast.agent_id}（状态 {session.state.value}）")
     return 0
 
@@ -1034,7 +1061,10 @@ def _recall(args: argparse.Namespace) -> int:
     runtime = _beast_runtime(args)
     if runtime is None:
         return 1
-    session = runtime.beast_activator.recall_from_cli(args.beast)
+    activator = runtime.beast_activator
+    if activator is None:
+        return _module_disabled("beast")
+    session = activator.recall_from_cli(args.beast)
     print(f"已召回神兽 {session.beast.agent_id}（状态 {session.state.value}）")
     return 0
 

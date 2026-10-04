@@ -125,6 +125,8 @@ class PetActivator:
 > **生产装配**（change `0053`）：三入口由组合根产出的 `Runtime.pet_activator` 驱动 —— CLI 经 `entry._pet`（`pet <verb>`）、
 > WebUI 经 `UIAPILayer.activate_pet(user_input) -> session_id`；`/pet` 斜杠面板在 UI 层（候选来自 `list_tools`），不进内核。
 > `PetManager` 经 `Runtime.pet_manager` 共享并落盘 `$CORE_STATE_DIR/pets.json`（注册表跨进程存活）。
+> **门控（change `0067`）**：`features.pet: false` ⇒ 以上三入口一并不可用（组合根不产出
+> `pet_manager`/`pet_activator`，CLI 报「pet 模块已关闭」、WebUI 报「宠物激活器未接」）。
 
 ---
 
