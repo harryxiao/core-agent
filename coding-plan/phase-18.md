@@ -108,6 +108,16 @@
 
 ## 2. 里程碑验收
 
+> **进度快照（2026-10-04）**：遗留收口序 ①② 已完成——A1/A3 清账（commit `db204dc`）、
+> P0 装配器接线（`a35fbbf`）、P0b 人格→L0（`2f58ab1`），**B2 语义已在生产生效**。
+> 下一步 ③ ＝交付物 **#1/#2 + C7**（`MemoryEntry` 增字段、`read` 多因子重排、embedder
+> 适配器 + 向量缓存）：**规格先行**，已起草 ADR-0045 + change `0039-memory-multifactor-recall`
+> （未落代码）。**已按架构最优拆分**：`0039` 纯 memory（字段/多因子重排/适配器/向量缓存 +
+> `build_runtime` 的 `embedder` DI 参数，完全离线可验）→ `0040` 配置与装配（`llm.embedding_model`
+> 旋钮 + 构造 `LLMEmbedder` 注入）。C7 决策——embedder 经**单条→批量适配器**接入 + **写时
+> 向量缓存**（每 read 至多 1 次 query 向量化），默认词法降级、不引入本地语义模型；`importance`
+> **自动打分**留至 #4/#5（接 judgment `score`），本批仅加字段 + 参与排序。
+
 - **记忆**：跨 3 轮以上长对话后，`read` 命中率提升（同一事实不因截断丢失），semantic 条目可见且可追溯 source trace_id。
 - **压缩**：注入 Compactor 后 `compact` 产出「摘要条目」而非「保留/丢弃布尔」，且摘要可逆。
 - **维度1**：一条日常任务轨迹走完「任务→SOP 提取→Skill 入库→下次类似任务语义命中」全链路（无人工 confirm）；一条重复任务触发 skill 迭代（version 升级）。

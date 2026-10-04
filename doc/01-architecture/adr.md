@@ -366,6 +366,50 @@
 
 ---
 
+## ADR-0045：记忆检索语义化（embedder 接入契约 + 向量缓存策略）
+
+- **状态**：Proposed（2026-10-04；待 change `0039-memory-multifactor-recall`（seam）与 `0040-memory-embedding-config`（来源）落地后转 Accepted）
+- **上下文**：遗留项 C7（Phase 17.5 §3.1 走查）。`build_runtime` 构造 `MemoryStore` 时
+  **未传 `embedder`**（`runtime.py:167-171`）→ 运行时恒走 `relevance._lexical_sim`
+  （`relevance.py:73-77`），「语义检索」名存实亡。直接接入有三处障碍：① **契约不匹配**
+  ——`MemoryStore.embedder` 是**批量可调用** `(list[str]) -> list[list[float]]`
+  （`store.py:38`、`relevance.py:49`），而 rag `Embedder.embed(text) -> list[float]`
+  （`rag/embedder.py:32`）是**单条**；② **成本**——`relevance._similarity` 对**每个候选**
+  调 `embedder([entry.content, query])`（`relevance.py:66`）→ 每次 `read` **N+1 次
+  embedding**，且 query 被逐候选重复向量化；③ **来源**——`StdlibLLMProvider.aembedding`
+  复用同一 provider 的模型名打 `/embeddings`（`stdlib_provider.py:168-176`），聊天模型通常
+  不支持 embedding，须**独立 embedding 模型**配置。另：本地语义模型
+  （sentence-transformers+BGE）与「核心零三方依赖」红线（ADR-0044）冲突，不引入。
+- **决策**：
+  ① **适配器归 memory 层**：新增 `memory/embedding.py::batch_embed(single: Callable[[str],
+  list[float]]) -> Callable[[list[str]], list[list[float]]]`，把单条可调用适配为批量契约；
+  memory **不 import rag**（L2 不依赖 rag 抽象），runtime 装配时传入一个单条可调用
+  （如 `rag.Embedder.embed` 或 `LLMEmbedder.embed`）。
+  ② **向量缓存放 `MemoryStore`**：`read` 时 query **只向量化一次**；候选条目向量按
+  `(entry.id, hash(content))` 缓存于 `self._vectors`，`content` 未变即复用；缓存为**进程内
+  易失**（重启重建，不落盘、不改后端 schema）。
+  ③ **embedder 来源经 llm-provider（远端），不引入本地语义模型**：新增可选配置
+  `llm.embedding_model`（复用 `llm.endpoint` 与密钥引用）；设置时 runtime 以该 model 构造
+  独立 provider → `LLMEmbedder` → `batch_embed` → `MemoryStore(embedder=...)`；未设置或
+  不可达 → `embedder=None` → 词法降级（`relevance` 已内建 try/except 降级，
+  `relevance.py:64-70`）。**投递拆分**：①②（seam/缓存/重排）在 `0039`（memory 能力内、
+  离线可验）；③（配置旋钮 + 组合根装配）在 `0040`——memory 不感知 `embedding_model`
+  （ADR-0040 MAL：memory 说抽象不说具体）。
+  ④ **密钥只引用不读取**：embedding 复用 `llm.api_key_ref`，密钥经 `resolve_secret` 注入并
+  登记脱敏，不进日志/记忆（沿用项目密钥红线）。
+- **后果**：✅ 语义相似经远端 embedding 生效，且每 `read` 至多 1 次 query 向量化 + 未变条目
+  零重算（N+1 → 1 + 增量 miss）；契约不匹配以适配器一次性收敛；memory↛rag 依赖方向保持。
+  ✅ 默认安装仍是词法（`embedder=None`），零新依赖、离线可测（测试注入 fake embedder）；
+  embedding 仅在显式配置 `llm.embedding_model` 时启用。⚠️ embedding 走远端 API → 需网络
+  可达与额度，不可达时静默降级词法（排障须看日志）；⚠️ 向量缓存易失，重启后首次 `read` 有
+  冷 miss，`content` 变更以 hash 失效；⚠️ `importance` 的**打分来源**不在本 ADR 范围
+  （属 change 0039 的 ranking 设计，先由调用方写入、后续可接 judgment `score` 原语）。
+- **不采纳**：① 本地 sentence-transformers/BGE（与零三方依赖红线冲突，语料亦不足）；
+  ② 在 `relevance` 内逐候选调用 embedder（保留 N+1，成本不可接受）；③ 向量持久化落盘
+  （引入 schema/迁移成本，收益有限，先用易失缓存）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -405,3 +449,4 @@
 | ADR-0042 | 03-interfaces/judgment-interface.md |
 | ADR-0043 | 03-interfaces/mcp-interface.md |
 | ADR-0044 | 03-interfaces/llm-provider-interface.md |
+| ADR-0045 | 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md |
