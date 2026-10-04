@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Literal
+from uuid import uuid4
 
 
 @dataclass
@@ -54,6 +55,8 @@ class GenerationCandidate:
     kind: Literal["skill", "plugin"]
     status: str = "pending"  # pending | confirmed | rejected（候选不得自动发布）
     risk_level: Literal["low", "high"] = "low"  # 风险域：架构级(plugin)=high 必审；技能库级=low
+    # 稳定身份：构造即固化、不依赖对象标识 —— 待确认队列跨进程可用（见 pending.py）
+    candidate_id: str = field(default_factory=lambda: uuid4().hex[:12])
 
 
 @dataclass

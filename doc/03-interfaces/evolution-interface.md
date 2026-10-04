@@ -81,7 +81,8 @@ class EvolutionEngine(Plugin):
         if not g.passed: return EvolutionOutcome(status="rejected", diagnosis=d)
         e = self.evaluator.evaluate(c)
         if e.verdict != "publish": return EvolutionOutcome(status="rollback", eval=e)
-        return self.crystallize(c)          # 过门 → 结晶（经 MemoryStore + Registry）
+        # 过门候选进**人工确认队列**（不自动发布）——见 §3.2
+        return EvolutionOutcome(status="pending", candidate=c, gate=g, eval=e)
 
     def confirm(self, candidate: GenerationCandidate, *,
                 approval: ApprovalTicket | None = None) -> None:
@@ -131,6 +132,54 @@ def observe(self, target: str, score: float, *, now: float | None = None) -> Evo
 | **采样来源** | 生产侧由 `EvolutionWorker._sample_observations` 供数：每轮 `run_cycle` 后对本批 trace 中**已开窗**目标按 `plugin_id` 归因算批次成功率并各上报一次；无归因 trace 的目标不采样（线上代理指标，与留出评测分近似可比） |
 | **持久化** | 注入 `path` 则窗口（含**冻结截止**）落盘、启动恢复——冻结期跨进程仍有效；缺省纯内存（零行为变化） |
 | **不调度** | `observe` 只是采样接缝——采样节奏由调用方决定（worker 冷路径）；`now` 可注入，判定离线可断言 |
+
+### 3.2 人工确认队列与操作面（change `0055`）
+
+```python
+@dataclass
+class PendingItem:                       # 一条候选记录：候选 + 门禁/评测结论（同生共死）
+    candidate: GenerationCandidate
+    gate: GateReport | None = None
+    eval: EvalReport | None = None       # 参数名对齐领域词表（遮蔽内建 eval）
+
+class PendingQueue:
+    def __init__(self, *, path: Path | None = None) -> None:
+        """``path`` 注入则整体落盘（候选 + 门禁 + 评测）并在启动时恢复；缺省纯内存。"""
+    def record(self, candidate, gate=None, eval=None) -> None:
+        """登记一条候选（同 id 覆盖：门禁先行、评测补充）并落盘。"""
+    def flush(self) -> None:                          # 候选状态变更后重写
+    def records(self) -> list[PendingItem]: ...       # 台账快照（含已确认/已拒绝痕迹）
+    def pending(self) -> list[GenerationCandidate]:   # 只含 status == "pending"
+    def find(self, candidate_id: str) -> GenerationCandidate | None: ...
+    def gate_of(self, candidate_id: str) -> GateReport | None: ...
+    def eval_of(self, candidate_id: str) -> EvalReport | None: ...
+
+# EvolutionEngine 增量
+def pending(self) -> list[GenerationCandidate]: ...   # 待确认快照（status == "pending"）
+def find(self, candidate_id: str) -> GenerationCandidate | None: ...
+def reject(self, candidate: GenerationCandidate, *, reason: str | None = None) -> None:
+    """人工拒绝：置 rejected + 落盘（可留 L2 教训）；被拒候选 crystallize 抛 CANDIDATE_PENDING。"""
+```
+
+| 维度 | 口径 |
+|---|---|
+| **稳定身份** | `GenerationCandidate.candidate_id`（UUID 前 12 位，**构造即固化**）——`Proposer._generation` 是进程内自增，跨进程不唯一，**不可作键**；门禁/评测检索一律按它 |
+| **结论随候选** | 门禁与评测报告与候选**同一条记录**落盘：不留「候选在而结论缺」的半状态（否则重启后 `crystallize` 误判 `GATE_REJECTED` / `EVAL_REGRESSED`） |
+| **待确认子集** | `pending()` 只列 `status == "pending"`；`confirm`/`reject` 后即出队，记录留在台账充当最小审计痕迹 |
+| **拒绝语义** | `reject` 置 `rejected` 并落盘；被拒候选 `crystallize` 抛 `CANDIDATE_PENDING` |
+| **持久化** | 组合根注入 `$CORE_STATE_DIR/evolution-pending.json`；缺省纯内存（零行为变化）；落盘缺失/损坏降级为**空台账**（不抛、不阻断启动） |
+
+操作面（CLI，`core-agent evolve`）：
+
+| 命令 | 语义 |
+|---|---|
+| `evolve pending` | 列出待确认候选（id / 风险域 / 目标 / 问题摘要）；空则打印「待确认队列为空」 |
+| `evolve confirm <id>` | 确认并**立即发布结晶**（两步在一次动作内）；`risk_level="high"` 时**本命令即审批签发端**：构造 `ApprovalRequest(op="evolution.publish", target=候选目标, ...)` → `ApprovalWorkflow.approve()` → 携带获批单调 `confirm` |
+| `evolve reject <id> [--note TEXT]` | 拒绝候选（不再发布，可附理由） |
+
+- **非待确认态不得复活**：`confirm`/`reject` 对不存在或非 `pending` 的候选一律给出反馈 + 非零退出。
+- **签发端在操作面、判定仍在引擎**：操作面即「人工」这一事实的来源；引擎只收单据做判定（`confirm` 三重门语义一字不动）。
+- **驱动面不变**：`evolve run` 仍是「跑一轮」（§4.1），跑出 `pending` 时提示候选 id。
 
 ---
 
@@ -190,4 +239,5 @@ class EvolutionWorker:
 
 - 模块：`02-modules/evolution.md`
 - 记忆结晶：`memory-interface.md`
+- 队列实现：`src/core/evolution/pending.py`
 - 规格：`openspec/specs/evolution/spec.md`

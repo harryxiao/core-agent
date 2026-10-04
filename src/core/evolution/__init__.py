@@ -21,6 +21,7 @@ from .models import (
     TraceRef,
 )
 from .observation import ObservationRegistry, ObservationWindow
+from .pending import PendingItem, PendingQueue
 from .proposer import Proposer
 from .validator import Validator
 from .worker import EvolutionWorker
@@ -42,6 +43,8 @@ __all__ = [
     "GateReport",
     "GenerationCandidate",
     "ObservationRegistry",
+    "PendingItem",
+    "PendingQueue",
     "ObservationWindow",
     "Proposer",
     "QualityEvaluator",

@@ -915,6 +915,17 @@
   ⑤ **组合根装配**：`build_runtime` 建 `SandboxPolicy()` + `SandboxManager(policy=…)` + `MCPClient(sandbox=…, policy=…)`，注入 `InstallDispatcher`；`Runtime` 增 `mcp_client` 字段。空白名单 = fail-closed 全拒出站（安全默认）；白名单配置化记后续。
 - **后果**：✅ 本地 stdio MCP **零新依赖**直接可用（连/发现/调用/销毁/超时全链）；✅ 消费侧安全接线落地（沙箱配额 + 出站白名单 + 确认门已有等价物的验证）；✅ `Transport` 抽象 / `build_transport` seam 不变，测试仍可注入 `FakeTransport`；⚠️ http 真实会话与 `MCPServer.serve` stdio 事件循环待接入；⚠️ `MCPClient._named` 仍进程内（CLI 跨进程可见性待端点注册表落盘）；⚠️ 出站白名单暂不可配置；⚠️ stdio 子进程 fs 隔离仅到 rlimit。**不采纳**：asyncio 版 stdio（同步契约下更复杂）；让 transport 自写 rlimit（重复内核安全实现）；为 http 写未验证的 SDK 适配层。
 
+## ADR-0058：人工确认队列持久化 + 稳定候选身份 + 操作面签发审批单
+
+- **状态**：Accepted（2026-10-04；change `0055-evolution-confirm-surface`，750 tests 绿）
+- **上下文**：账本 A4 —— `EvolutionEngine.confirm`（HITL 闸门）自 `0046` 起**无生产调用方**，`crystallize` 同样无。change `0051` 的 `evolve run` 只把冷路径推到 `pending` 就断链。落地时须裁决三件事：① **队列在哪** —— CLI 每条命令各起一份 `HarnessHost`（`0051` 已记），`_pending` 是进程内列表，跨命令不可见；② **检索键是什么** —— 门禁/评测报告原以 `id(candidate)` 为键存于引擎私有字典，**跨进程必然失配**，重启后 `crystallize` 会把该发布的候选误判为未过门/退化；③ **审批单谁签发** —— `risk_level="high"` 候选需一张获批审批单，而其发起端（permission 审批流）在生产从未被调用。
+- **决策**：
+  ① **候选带稳定身份**：`GenerationCandidate.candidate_id`（UUID 前 12 位，`field(default_factory=...)` 构造即固化）；门禁/评测检索一律按它。**不采纳** `(generation, target_plugin)`：`Proposer._generation` 进程内自增，两次冷路径各产出 `generation=1` 的同目标候选，组合键并不唯一。
+  ② **结论随候选整体落盘**：新增 `PendingQueue`（`evolution/pending.py`）以「一条记录 = 候选 + `GateReport` + `EvalReport`」为形状，复用 `core/persistence.py` 的 JSON 原子写（零第三方依赖，与 `ObservationRegistry` 同模式；ADR-0054 已确立「组件自持序列化、persistence 只做中性 IO」）。不留「候选在而结论缺」的半状态 —— 那正是要修的误判来源。**已否决**「只落候选、评测重跑」：留出评测不可复现（基准集非确定注入）。
+  ③ **`pending()` 只列 `status=="pending"`**：原 `_pending` 只增不减（第二次 `confirm` 会静默重复放行）；已确认/已拒绝的记录留台账充当最小审计痕迹，不另建归档结构。
+  ④ **`reject` 落引擎、签发审批单落操作面**：候选状态词表属 evolution 域，故 `EvolutionEngine.reject(candidate, *, reason=None)` 是引擎方法（域外不认字面量）；而审批单的**签发**（`ApprovalWorkflow.create → approve`）放在 CLI —— 操作面即「人工」这一事实的来源，引擎只收单据做判定（`confirm` 三重门语义一字不动）。**已否决**引擎自造审批单：那等于 HITL 门自己给自己盖章。
+  ⑤ **操作面一次动作完成确认+发布**：`core-agent evolve confirm <id>` 内联 `confirm` → `crystallize`（分成两条命令只会让人漏掉第二步，而漏掉第二步正是本变更要修的病）；非 `pending` 态候选一律反馈 + 非零退出（不得复活已拒绝/已确认的候选）。
+- **后果**：✅ L4 的「过门候选 → 人工确认 → 结晶发布」在生产**首次端到端可达**（`confirm` / `crystallize` 各有生产调用方）；✅ 待确认事项跨进程可见、可处置（重启不误判）；✅ 零新依赖（stdlib JSON）；✅ 未注入路径纯内存，既有 750 tests 语义不变；⚠️ `ApprovalWorkflow` 归档仍进程内（跨进程复查「谁批的」待 permission 域的另一议题）；⚠️ 台账随确认次数单调增长、无回收策略（当前无消费者）；⚠️ `evolve confirm` 接受完整 12 位 id，不做前缀匹配（避免歧义匹配的隐性错误）。
 ---
 
 ## 变更追踪
@@ -969,3 +980,4 @@
 | ADR-0055 | 03-interfaces/loop-interface.md, 03-interfaces/constraints-interface.md, 02-modules/constraints.md |
 | ADR-0056 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |
 | ADR-0057 | 03-interfaces/mcp-interface.md, 03-interfaces/permission-interface.md, 02-modules/mcp.md |
+| ADR-0058 | 03-interfaces/evolution-interface.md, 02-modules/evolution.md |

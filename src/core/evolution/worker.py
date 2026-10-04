@@ -35,6 +35,11 @@ class EvolutionWorker:
         self._trigger = trigger if trigger is not None else EvolutionTrigger()
         self._completed: list[str] = []
 
+    @property
+    def engine(self) -> EvolutionEngine:
+        """被驱动的进化引擎（操作面据此驱动人工确认队列）。"""
+        return self._engine
+
     def on_trace_complete(self, trace_id: str) -> None:
         """热路径回调：登记一条已完成 trace（仅登记，不触发、不阻塞）。"""
         self._completed.append(trace_id)

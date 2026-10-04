@@ -22,13 +22,12 @@ from .diagnoser import Diagnoser
 from .errors import EvolutionError, EvolutionErrorCode
 from .evaluator import Evaluator
 from .models import (
-    EvalReport,
     EvolutionOutcome,
-    GateReport,
     GenerationCandidate,
     Trace,
 )
 from .observation import ObservationRegistry
+from .pending import PendingQueue
 from .proposer import Proposer
 from .validator import Validator
 
@@ -53,6 +52,7 @@ class EvolutionEngine:
         memory: MemoryBackend | None = None,
         memory_crystallizer: Crystallizer | None = None,
         observations: ObservationRegistry | None = None,
+        pending: PendingQueue | None = None,
     ) -> None:
         self._diagnoser = diagnoser
         self._proposer = proposer
@@ -63,9 +63,8 @@ class EvolutionEngine:
         self._memory = memory
         self._memory_crystallizer = memory_crystallizer
         self._observations = observations if observations is not None else ObservationRegistry()
-        self._pending: list[GenerationCandidate] = []
-        self._gate: dict[int, GateReport] = {}
-        self._eval: dict[int, EvalReport] = {}
+        # 候选与结论台账：身份是 candidate_id（非 id(obj)），故跨进程可驱动（见 pending.py）
+        self._pending = pending if pending is not None else PendingQueue()
 
     def load(self) -> None:
         """加载引擎；无状态资源，no-op。"""
@@ -87,16 +86,15 @@ class EvolutionEngine:
             return EvolutionOutcome(status="manual", diagnosis=diagnosis)
         candidate = self._proposer.propose(diagnosis)
         gate = self._validator.validate(candidate)
-        self._gate[id(candidate)] = gate
         if not gate.passed:
+            self._pending.record(candidate, gate)
             return EvolutionOutcome(
                 status="rejected", diagnosis=diagnosis, candidate=candidate, gate=gate
             )
         eval_report = self._evaluator.evaluate(candidate)
-        self._eval[id(candidate)] = eval_report
+        self._pending.record(candidate, gate, eval_report)
         if eval_report.verdict != "publish":
             return EvolutionOutcome(status="rollback", candidate=candidate, eval=eval_report)
-        self._pending.append(candidate)
         return EvolutionOutcome(
             status="pending",
             diagnosis=diagnosis,
@@ -127,6 +125,7 @@ class EvolutionEngine:
                     f"{candidate.target_plugin}）",
                 )
         candidate.status = "confirmed"
+        self._pending.flush()
 
     def crystallize(self, candidate: GenerationCandidate) -> EvolutionOutcome:
         """结晶入库：须已确认、过验证门、留出集不退化。"""
@@ -135,13 +134,13 @@ class EvolutionEngine:
                 EvolutionErrorCode.CANDIDATE_PENDING,
                 f"候选未过人工确认（{candidate.target_plugin}）",
             )
-        gate = self._gate.get(id(candidate))
+        gate = self._pending.gate_of(candidate.candidate_id)
         if gate is None or not gate.passed:
             raise EvolutionError(
                 EvolutionErrorCode.GATE_REJECTED,
                 f"候选未过验证门（{candidate.target_plugin}）",
             )
-        eval_report = self._eval.get(id(candidate))
+        eval_report = self._pending.eval_of(candidate.candidate_id)
         if eval_report is None or eval_report.verdict != "publish":
             raise EvolutionError(
                 EvolutionErrorCode.EVAL_REGRESSED,
@@ -200,8 +199,28 @@ class EvolutionEngine:
             )
 
     def pending(self) -> list[GenerationCandidate]:
-        """人工确认队列快照。"""
-        return list(self._pending)
+        """待人工确认队列快照（只含 ``status="pending"`` 的候选）。"""
+        return self._pending.pending()
+
+    def find(self, candidate_id: str) -> GenerationCandidate | None:
+        """按稳定身份定位候选（供操作面驱动；不存在返回 ``None``）。"""
+        return self._pending.find(candidate_id)
+
+    def reject(self, candidate: GenerationCandidate, *, reason: str | None = None) -> None:
+        """人工拒绝候选：置 ``rejected`` 并落盘（留 L2 教训），后续发布被拒。"""
+        candidate.status = "rejected"
+        self._pending.flush()
+        if self._memory is not None and reason:
+            self._memory.put(
+                MemoryEntry(
+                    id=f"evolution.rejected.{candidate.candidate_id}",
+                    layer="L2",
+                    content=f"候选被拒（{candidate.target_plugin}）：{reason}",
+                    tags=["evolution", "reject"],
+                    source="evolution",
+                    trace_id="evolution",
+                )
+            )
 
     def _crystallize_skill(self, candidate: GenerationCandidate) -> EvolutionOutcome:
         skill = Skill(

@@ -69,6 +69,19 @@ L4 让 CORE **会进化**。它只读地观测 L3 循环的运行轨迹，通过
   （技能标 `deprecated`、回归证据随教训写回 L2）；溶解后该方向**冻结一个冷却期**（期内不累积、
   不触发，避免溶解/重结晶抖动）。窗口仅进程内，采样节奏由调用方决定（引擎不内建调度）。
 
+### 3.6 人工确认队列（跨进程可驱动，change `0055`）
+
+- 过门候选**不自动发布**：候选连同其验证门报告与留出评测报告整体进 `PendingQueue`，
+  由**人工**在操作面上确认后才 `crystallize` 发布。
+- **稳定身份**：候选携带 `candidate_id`（构造即固化）——队列检索**不依赖对象标识**
+  （`Proposer._generation` 是进程内自增、跨进程不唯一），故待确认事项可**跨进程**列出与处置。
+- **落盘**：组合根注入 `$CORE_STATE_DIR/evolution-pending.json`（候选 + 门禁 + 评测**整体**快照，
+  复用 `core/persistence.py` 的 JSON 原子写，零第三方依赖）；缺省纯内存（零行为变化）。
+- **操作面**：CLI `core-agent evolve pending|confirm <id>|reject <id>`。`confirm` 一次动作完成
+  「确认 + 发布」；`risk_level="high"` 时由操作面**签发**审批单（`ApprovalWorkflow.create → approve`）
+  后再调 `confirm` —— 签发端在操作面（「人工」这一事实的来源），判定仍在引擎。
+  非待确认态（不存在 / 已确认 / 已拒绝）一律反馈 + 非零退出，**不得复活**。
+
 ---
 
 ## 4. 触发时机（异步、低优先级）
@@ -92,6 +105,7 @@ L4 让 CORE **会进化**。它只读地观测 L3 循环的运行轨迹，通过
 
 ## 6. 关联
 
+- 队列实现：`src/core/evolution/pending.py`
 - 规格：`doc/openspec/specs/evolution/spec.md`
 - 记忆结晶：`doc/02-modules/memory.md`
 - 接口：`doc/03-interfaces/evolution-interface.md`

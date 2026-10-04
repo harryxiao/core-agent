@@ -12,10 +12,11 @@
 
 - **无任何一项阻塞核心回路**：669 tests 覆盖的回路（记忆读写/压实/固化/遗忘、技能提炼/路由/迭代、进化四阶段 + HITL + 自动溶解）在生产路径上均已接通。
 - **A3 全闭（skills 半边 change `0050`，evolution 半边 change `0051`）**；**A5 + 本次新增发现 A10 已于 change `0051` 关闭**（冷路径驱动面 = loop 节拍 + `evolve run`；观察窗口落盘 + 批次成功率采样；ADR-0054）。
-- **A2+E2（会话维度）已于 change `0048` 关闭**（标识透传 + `compact` 接真 + 按会话读取）；**A1 已于 change `0049` 关闭**（收尾维护节拍 + `memory maintain`）。A 类剩 A3–A9。
+- **A2+E2（会话维度）已于 change `0048` 关闭**（标识透传 + `compact` 接真 + 按会话读取）；**A1 已于 change `0049` 关闭**（收尾维护节拍 + `memory maintain`）。A 类剩 A6–A9。
 - **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）** —— **B1 的 client 侧（stdio 传输 + 安装分流 + 消费侧安全接线）已于 change `0054` 关闭**（ADR-0057），余 http 会话 / 服务端 stdio / CLI 接线 / 白名单配置 4 行后续；E 类中曾判定有真实行为影响的 **E1（constraints 熔断）** 与 **E2（per-session）** **均已关闭**（E2 → change `0048`；E1 → change `0052`），其余为「接线缺失」。
+- **A4 已于 change `0055` 关闭**（候选 `candidate_id` 稳定身份 + 门禁/评测随候选落盘为一条记录 + `core-agent evolve pending|confirm|reject` 操作面；high 风险候选由操作面签发审批单；ADR-0058）。
 - **E1 已于 change `0052` 关闭**（constraints 熔断按 `tool_id` 接入 loop：结果侧观察者 + 按工具熔断 + 只计执行失败；ADR-0055）；核销时一并**订正**了账本原「校验空转」的说法（校验实由工具层承担）。
-- **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A4/A5、E2/E4/E5 全归此。
+- **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A5、E2/E4/E5 全归此（A4 已随 change `0055` 关闭）。
 - **一条值得单独记的形态问题**：`cli-contract-baseline.md` 的**内置工具契约与实现已对不上账**（见 E7）——契约列的 5 个工具在代码里从未存在。
 
 | 类别 | 项数 | 最高优先级 | 是否阻塞调试 |
@@ -37,7 +38,7 @@
 | A1 | A | ~~`forget` 无调度器~~ | ✅ 已关闭（change `0049`）：loop 收尾维护节拍触发 `forget` + `core-agent memory maintain` 显式入口 | 中 | — |
 | A2 | A | ~~生产 `session_id` 恒空串~~ | ✅ 已关闭（change `0048`）：标识透传至 `remember`，压实/固化/遗忘按会话归组 | 中 | — |
 | A3 | A | ~~进程内无持久化~~ | ✅ 已关闭（change `0050` + `0051`）：技能库/反馈/SOP 样本/灰度态 + 观察窗口全落盘 | 中 | — |
-| A4 | A | `EvolutionEngine.confirm` 无生产调用方 | 候选待办队列无驱动面，HITL 门在生产不触达 | 中 | 操作面（CLI/UI）驱动 pending 队列 |
+| A4 | A | ~~`EvolutionEngine.confirm` 无生产调用方~~ | ✅ 已关闭（change `0055`）：候选稳定身份 + 门禁/评测随候选落盘 + `evolve pending\|confirm\|reject` 操作面签发审批单 | 中 | — |
 | A5 | A | ~~`observe` 无采样调度器~~ | ✅ 已关闭（change `0051`）：冷路径批次成功率按 `plugin_id` 归因采样 | 中 | — |
 | A6 | A | 观察窗口按 target 覆盖 | 重发布即重开窗口、丢旧样本 | 低 | 窗口历史留痕（可选） |
 | A7 | A | 语义分未接历史成功率加权 | 排序只用语义分；候选未预筛，miss 轮逐条打分 | 低 | 数据源已就位（`SkillFeedback`） |
@@ -106,15 +107,19 @@
   `path`，落盘 `{target: {baseline, samples, frozen_until}}`（**冻结截止一并落盘**，否则重启即解冻、冷却期形同虚设），
   缺省纯内存；`build_runtime` 注入 `$CORE_STATE_DIR/observations.json`。两个纯函数 `read_state` / `write_state`
   同时从中立化提升到 `src/core/persistence.py`（技能态与进化态共用，决策见 **ADR-0054**）。
-- **剩余**：候选 `pending` 队列仍进程内 —— 属 A4（审批操作面）范畴，非持久化缺口。
+- **剩余**：候选 `pending` 队列曾仍进程内 —— 属 A4，已随 change `0055` 的「队列落盘 + 操作面」一并关闭（非本项缺口）。
 - **前置**：无（存储选型已定，ADR-0053 / ADR-0054）。
 
-### A4 `EvolutionEngine.confirm` 无生产调用方
+### A4 `EvolutionEngine.confirm` 无生产调用方 — ✅ 已关闭（change `0055`）
 
 - **现象**：`confirm(candidate, *, approval=...)` 的三重门（present + `is_approved` + target 匹配）已在 `0046` 实现并被测试覆盖，但**生产侧无调用者**（grep 仅命中 permission gate 的同名方法）→ 维度 2 的 HITL 闸门在生产路径上尚不触达。
 - **根因**：候选 `pending` 队列需要「操作面」驱动（谁来发起 confirm、审批单从哪来），Phase 18 #9 有意只做闸门本身。
-- **关闭动作**：在操作面（CLI 命令 / UI 审批面板）接 pending 队列 → 构造 `ApprovalTicket` → 调 `confirm`。
-- **前置**：审批单来源（`permission` 审批流的发起端）。
+- **关闭动作（方案较原记扩围，缘由如下）**：原记「在操作面接 pending 队列 → 构造 `ApprovalTicket` → 调 `confirm`」在**每条命令各起一份装配**的 CLI 上不可行，且跨进程**根本不可能**——队列态与门禁/评测结论原以 `id(candidate)` 为键存于引擎私有字典，`Proposer._generation` 又是进程内自增（两次 `evolve run` 会产出同 `generation`/同 target 的两个候选）。故一并落地三件事：
+  1. **稳定身份**：`GenerationCandidate.candidate_id`（UUID 前 12 位 hex，构造即固化），门禁/评测检索改按 `candidate_id`；
+  2. **队列落盘**：`PendingQueue` 把「候选 + `GateReport` + `EvalReport`」作为**一条记录**整体落盘（`$CORE_STATE_DIR/evolution-pending.json`），缺省纯内存；`pending()` 只列 `status="pending"`，已确认/已拒绝的留痕不额外归档；
+  3. **操作面**：`core-agent evolve pending|confirm <id>|reject <id> [--note]`；`confirm` = 确认 + 结晶发布一步；`risk_level="high"` 的候选由**操作面**（人）签发 `ApprovalTicket` 后交引擎判定（引擎语义一字不动）；未知 id → stderr + 退出码 1，不复活。
+  **副产品**：`crystallize`（过门发布）由此获得**首个生产调用方**（此前为死路径）。决策见 **ADR-0058**。
+- **前置**：审批单来源（`permission` 审批流的发起端）—— 已由 `core/im/gateway.py` 的同形先例 + 本变更在 CLI 侧签发满足。
 
 ### A5 `observe` 无采样调度器 — ✅ 已关闭（change `0051`）
 
@@ -403,7 +408,7 @@
 1. **D + F + G 清尾**（无依赖、低成本）：G 类订正 deferred 措辞 + F 类逐项勾销/定性 + README 同步 —— 使账本自身可达且不误导。 ✅ **已完成**（G 类 7 组订正；D1/D3/D5 关闭、D4 部分；F 类 6 组核实：41 框勾销 / 11 项转出 E·A·B；README 已同步）。
 2. **A2 + E2 合并做**（同一根因）：会话标识透传 + 每会话独立 loop/memory + `UIAPILayer.compact` 接真。 ✅ **已完成**（change `0048-session-scoped-memory`：标识透传 + `compact` 接真 + `get_memory` 按会话过滤；**未采**每会话独立实例，理由见该 change design 决策 1/2）。
 3. **A1**（记忆驱动侧）：遗忘节拍。宜在 A2 之后（会话维度不生效时，衰减分组也是错的）。 ✅ **已完成**（change `0049-memory-maintenance-cadence`：loop 收尾维护节拍 + `memory maintain` CLI）。
-4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义。 ✅ **A3 全闭 + A5 + A10 + E4 已完成**（change `0050` 技能态落盘 / ADR-0053；change `0051` 进化冷路径驱动面 + 观察窗口落盘 + 批次成功率采样 / **ADR-0054**；A10 为本次走查新增的「冷路径无驱动面」发现；**E4** 见 change `0053` —— pet 纳入组合根 + 注册表落盘 + WebUI NL 入口 / **ADR-0056**）。⏭ **下一步 A4**（`confirm` 生产调用方 / pending 队列驱动面）。
+4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义。 ✅ **A3 全闭 + A5 + A10 + E4 已完成**（change `0050` 技能态落盘 / ADR-0053；change `0051` 进化冷路径驱动面 + 观察窗口落盘 + 批次成功率采样 / **ADR-0054**；A10 为本次走查新增的「冷路径无驱动面」发现；**E4** 见 change `0053` —— pet 纳入组合根 + 注册表落盘 + WebUI NL 入口 / **ADR-0056**）。✅ **A4 已完成**（change `0055-evolution-confirm-surface`：候选稳定身份 + 队列落盘 + `evolve` 操作面签发审批单 / **ADR-0058**）→ 本步**全闭**。⏭ **下一步第 6 步：E7/E8 契约裁决**（须先定夺契约）。
 5. **B1**（独立轨）：🔶 **client 侧已关闭**（change `0054-mcp-stdio-transport`，ADR-0057 —— stdio 传输 / `add` 分流 / 消费侧安全接线 / 组合根装配；ADR-0043 的 ADR + spec delta 早已就绪）。**余 4 行后续**：B2 http 会话（需 SDK）/ B3 服务端 stdio / B4 CLI 接线 / B5 白名单配置。
 6. **E1 + E7 + E8**（契约与中间件）：✅ **E1 已完成**（change `0052`，ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；E7/E8 需先定夺契约再动。
 7. **E3 / E6**（规格裁决）：先定夺 beast R4/R5 与 context 判定升级是否解除 deferred，再决定是否接 runtime。

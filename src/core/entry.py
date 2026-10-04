@@ -42,9 +42,15 @@ from core.deployment import (
     ReleaseManager,
     ServeStateStore,
 )
+from core.evolution import EvolutionError, GenerationCandidate
 from core.loop import LoopPlugin
 from core.orchestration import Plan, TaskScheduler, plan_from_dict
-from core.permission import ApprovalChannel
+from core.permission import (
+    ApprovalChannel,
+    ApprovalRequest,
+    ApprovalTicket,
+    ApprovalWorkflow,
+)
 from core.pet.core import PetManager
 from core.pet.library import load_persona, load_personas
 from core.plugin_registry import DomainError, PluginInstaller, PluginKind, PluginSource
@@ -185,6 +191,14 @@ def _add_evolve_parser(sub: Any) -> None:
     evolve = sub.add_parser("evolve", help="进化冷路径")
     ev_sub = evolve.add_subparsers(dest="evolve_cmd", metavar="<evolve-cmd>")
     ev_sub.add_parser("run", help="强制跑一轮进化冷路径（诊断/提案 dry-run）")
+    ev_sub.add_parser("pending", help="列出待人工确认的候选")
+    confirm = ev_sub.add_parser("confirm", help="确认候选并发布结晶")
+    confirm.add_argument("candidate_id", help="候选身份（见 evolve pending）")
+    confirm.add_argument("--approver", default="human", metavar="NAME")
+    confirm.add_argument("--note", metavar="TEXT")
+    reject = ev_sub.add_parser("reject", help="拒绝候选（不再发布）")
+    reject.add_argument("candidate_id", help="候选身份（见 evolve pending）")
+    reject.add_argument("--note", metavar="TEXT")
 
 
 def _add_run_parser(sub: Any) -> None:
@@ -676,15 +690,37 @@ def _memory(args: argparse.Namespace) -> int:
     return 0
 
 
+_EVOLVE_USAGE = "用法: core-agent evolve {run|pending|confirm <id>|reject <id>}"
+
+
 def _evolve(args: argparse.Namespace) -> int:
-    """`evolve run`：装配 runtime → **强制**跑一轮进化冷路径，打印结局。"""
-    if args.evolve_cmd != "run":
-        print("用法: core-agent evolve run", file=sys.stderr)
+    """进化冷路径操作面：跑一轮 / 看待确认 / 确认发布 / 拒绝。"""
+    handlers = {
+        "run": _evolve_run,
+        "pending": _evolve_pending,
+        "confirm": _evolve_confirm,
+        "reject": _evolve_reject,
+    }
+    handler = handlers.get(args.evolve_cmd or "")
+    if handler is None:
+        print(_EVOLVE_USAGE, file=sys.stderr)
         return 1
+    return handler(args)
+
+
+def _evolve_runtime(args: argparse.Namespace) -> Any | None:
+    """装配 runtime；失败转 stderr 并返回 ``None``（调用方给退出码 1）。"""
     try:
-        runtime = build_runtime(ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)))
+        return build_runtime(ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)))
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
         print(f"装配失败: {exc}", file=sys.stderr)
+        return None
+
+
+def _evolve_run(args: argparse.Namespace) -> int:
+    """`evolve run`：**强制**跑一轮进化冷路径，打印结局。"""
+    runtime = _evolve_runtime(args)
+    if runtime is None:
         return 1
     outcome = runtime.evolution.maybe_run(force=True)
     if outcome is None:
@@ -692,6 +728,91 @@ def _evolve(args: argparse.Namespace) -> int:
     else:
         target = f"，目标 {outcome.skill_id}" if outcome.skill_id else ""
         print(f"进化冷路径完成：{outcome.status}{target}")
+        if outcome.status == "pending" and outcome.candidate is not None:
+            print(f"待确认候选：{outcome.candidate.candidate_id}（core-agent evolve pending）")
+    return 0
+
+
+def _evolve_pending(args: argparse.Namespace) -> int:
+    """`evolve pending`：列出待人工确认的候选。"""
+    runtime = _evolve_runtime(args)
+    if runtime is None:
+        return 1
+    candidates = runtime.evolution.engine.pending()
+    if not candidates:
+        print("待确认队列为空")
+        return 0
+    print(f"待确认候选 {len(candidates)} 项：")
+    for candidate in candidates:
+        print(
+            f"  {candidate.candidate_id}  风险={candidate.risk_level}  "
+            f"目标={candidate.target_plugin}  {candidate.delta.get('issue', '')}"
+        )
+    return 0
+
+
+def _resolve_candidate(args: argparse.Namespace, engine: Any) -> GenerationCandidate | None:
+    """定位候选；不存在或已不在待确认态则反馈并非零退出。"""
+    candidate = engine.find(args.candidate_id)
+    if candidate is None:
+        print(f"候选不在待确认队列: {args.candidate_id}", file=sys.stderr)
+        return None
+    if candidate.status != "pending":
+        print(f"候选不处于待确认状态（{candidate.status}）: {args.candidate_id}", file=sys.stderr)
+        return None
+    return candidate
+
+
+def _evolve_confirm(args: argparse.Namespace) -> int:
+    """`evolve confirm`：确认候选并发布结晶（架构级候选由本操作面签发审批单）。"""
+    runtime = _evolve_runtime(args)
+    if runtime is None:
+        return 1
+    engine = runtime.evolution.engine
+    candidate = _resolve_candidate(args, engine)
+    if candidate is None:
+        return 1
+    approval = _sign_approval(candidate, approver=args.approver, note=args.note)
+    try:
+        engine.confirm(candidate, approval=approval)
+        outcome = engine.crystallize(candidate)
+    except EvolutionError as exc:
+        print(f"确认失败: {exc}", file=sys.stderr)
+        return 1
+    print(f"已确认并发布：{outcome.status}（{candidate.target_plugin}）")
+    return 0
+
+
+def _sign_approval(
+    candidate: GenerationCandidate, *, approver: str, note: str | None
+) -> ApprovalTicket | None:
+    """架构级候选的审批单签发：本操作面即「人工」来源（技能库级无需工单）。"""
+    if candidate.risk_level != "high":
+        return None
+    workflow = ApprovalWorkflow()
+    ticket = workflow.create(
+        ApprovalRequest(
+            op="evolution.publish",
+            target=candidate.target_plugin,
+            impact_summary=str(candidate.delta.get("issue", "")),
+            rollback_plan="dissolve 回 L3（技能标 deprecated + 教训写回 L2）",
+            trace_id="evolution",
+        )
+    )
+    workflow.approve(ticket, approver=approver, note=note)
+    return ticket
+
+
+def _evolve_reject(args: argparse.Namespace) -> int:
+    """`evolve reject`：拒绝候选（不再发布）。"""
+    runtime = _evolve_runtime(args)
+    if runtime is None:
+        return 1
+    candidate = _resolve_candidate(args, runtime.evolution.engine)
+    if candidate is None:
+        return 1
+    runtime.evolution.engine.reject(candidate, reason=args.note)
+    print(f"已拒绝：{candidate.target_plugin}（{candidate.candidate_id}）")
     return 0
 
 

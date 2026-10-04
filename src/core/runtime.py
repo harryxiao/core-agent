@@ -36,6 +36,7 @@ from core.evolution import (
     EvolutionTrigger,
     EvolutionWorker,
     ObservationRegistry,
+    PendingQueue,
     Proposer,
     Validator,
 )
@@ -381,6 +382,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         memory=backend,
         memory_crystallizer=Crystallizer(),
         observations=ObservationRegistry(path=_skill_state_path("observations.json")),
+        pending=PendingQueue(path=_skill_state_path("evolution-pending.json")),
     )
     evolution = EvolutionWorker(tracer=tracer, engine=evolution_engine, trigger=EvolutionTrigger())
 
