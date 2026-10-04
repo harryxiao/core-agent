@@ -9,8 +9,9 @@ L0-L4 分层记忆、热/冷温度检索、无行动不记忆、结晶/溶解、
 
 from .backend import FileBackend
 from .crystallizer import Crystallizer, PluginCandidate
+from .embedding import batch_embed
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
-from .relevance import relevance
+from .relevance import rank, recency_decay, relevance
 from .store import MemoryStore
 
 __all__ = [
@@ -23,5 +24,8 @@ __all__ = [
     "MemoryId",
     "MemoryStore",
     "PluginCandidate",
+    "batch_embed",
+    "rank",
+    "recency_decay",
     "relevance",
 ]

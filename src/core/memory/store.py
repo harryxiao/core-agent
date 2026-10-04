@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from collections.abc import Callable
 from dataclasses import asdict
@@ -17,10 +18,13 @@ from core.plugin_registry import Effect, EffectTracker
 
 from .backend import FileBackend
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
-from .relevance import relevance
+from .relevance import rank
 
 # 粗略 token 估算：约 4 字符 ≈ 1 token（read 预算截断用）
 _TOKEN_DIVISOR = 4
+
+# 向量缓存上界（超出按 FIFO 逐出）；进程内易失，不落盘
+_VEC_CACHE_MAX = 4096
 
 
 class MemoryStore:
@@ -43,6 +47,8 @@ class MemoryStore:
         self._embedder = embedder
         self._compactor = compactor
         self._hot: dict[str, MemoryEntry] = {}
+        self._vectors: dict[str, list[float]] = {}
+        self._embed_failed = False
 
     def load(self) -> None:
         return None
@@ -60,12 +66,16 @@ class MemoryStore:
             cold = []
         candidates = {entry.id: entry for entry in cold}
         candidates.update(self._hot)
+        embedder = self._memo_embedder() if self._embedder is not None else None
         ranked = sorted(
             candidates.values(),
-            key=lambda e: relevance(e, query, self._embedder),
+            key=lambda e: rank(e, query, embedder),
             reverse=True,
         )
-        return self._truncate(ranked, budget)
+        selected = self._truncate(ranked, budget)
+        for entry in selected:
+            entry.reuse_count += 1  # 复用即强化（进程内强化，不落盘避免写放大）
+        return selected
 
     def write(self, layer: Layer, entry: MemoryEntry) -> MemoryId | None:
         if not entry.source or not entry.trace_id:
@@ -118,6 +128,42 @@ class MemoryStore:
         )
 
     # ---- 内部辅助 ----
+
+    def _memo_embedder(self) -> Callable[[list[str]], list[list[float]]]:
+        """批量 embedder 的**文本级向量缓存**包装：命中即复用，未变内容零重算。
+
+        每次 ``read`` 对 query 至多向量化一次；条目内容未变则复用缓存向量。首次调用
+        失败即置 ``_embed_failed`` 短路（后续直接抛、不再触网），交由 ``relevance`` 的
+        词法降级兜底。
+        """
+
+        def _embed(texts: list[str]) -> list[list[float]]:
+            if self._embed_failed:
+                raise RuntimeError("embedder unavailable")  # noqa: TRY003 — 触发词法降级
+            keys = [hashlib.blake2b(t.encode("utf-8"), digest_size=16).hexdigest() for t in texts]
+            out: list[list[float]] = [self._vectors.get(k, []) for k in keys]
+            missing = [
+                (i, k, t)
+                for i, (k, t) in enumerate(zip(keys, texts, strict=True))
+                if k not in self._vectors
+            ]
+            if missing:
+                try:
+                    vecs = self._embedder([t for _, _, t in missing])  # type: ignore[misc]
+                except Exception:
+                    self._embed_failed = True
+                    raise
+                for (i, k, _), vec in zip(missing, vecs, strict=True):
+                    self._vectors[k] = vec
+                    out[i] = vec
+                self._trim_vectors()
+            return out
+
+        return _embed
+
+    def _trim_vectors(self) -> None:
+        while len(self._vectors) > _VEC_CACHE_MAX:
+            self._vectors.pop(next(iter(self._vectors)))
 
     def _truncate(self, entries: list[MemoryEntry], budget: int) -> list[MemoryEntry]:
         selected: list[MemoryEntry] = []

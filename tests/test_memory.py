@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 
 from core.memory import (
@@ -15,6 +16,7 @@ from core.memory import (
     MemoryEntry,
     MemoryStore,
 )
+from core.memory.embedding import batch_embed
 
 
 def _entry(
@@ -119,3 +121,89 @@ def test_concurrent_writes_no_loss() -> None:
     with ThreadPoolExecutor(max_workers=16) as pool:
         list(pool.map(worker, range(n)))
     assert len(store.index().entries) == n
+
+
+# ---- Phase 18 #1/#2：字段 + 多因子重排 + 语义相似（change 0039） ----
+
+
+def test_memory_entry_new_fields_default_and_legacy_load(tmp_path) -> None:
+    """新字段有默认值；旧 JSONL 记录（缺字段）经默认值加载，无需迁移。"""
+    fresh = _entry("e1", "L2", "x")
+    assert fresh.importance == 0.0
+    assert fresh.kind == "episodic"
+
+    legacy = json.dumps(
+        {
+            "id": "old",
+            "layer": "L2",
+            "content": "legacy fact",
+            "tags": [],
+            "source": "loop",
+            "trace_id": "t",
+            "reuse_count": 0,
+            "ts": 1.0,
+            "session_id": "",
+        }
+    )
+    path = tmp_path / "mem.jsonl"
+    path.write_text(legacy + "\n", encoding="utf-8")
+    loaded = MemoryStore(backend=FileBackend(path)).read("legacy")
+    assert [e.id for e in loaded] == ["old"]
+    assert loaded[0].kind == "episodic" and loaded[0].importance == 0.0
+
+
+def test_read_ranks_by_importance() -> None:
+    """同等相似度下，importance 更高的条目排前（乘性调制）。"""
+    store = MemoryStore()
+    store.write("L2", _entry("low", "L2", "apple banana"))
+    imp = _entry("high", "L2", "apple banana")
+    imp.importance = 0.9
+    store.write("L2", imp)
+    assert store.read("apple banana", budget=100)[0].id == "high"
+
+
+def test_read_reinforces_reuse_count() -> None:
+    """read 命中即 reuse_count +1（复用即强化）。"""
+    store = MemoryStore()
+    store.write("L2", _entry("e1", "L2", "hello"))
+    store.read("hello", budget=100)
+    store.read("hello", budget=100)
+    assert store.audit()[0].reuse_count == 2  # noqa: PLR2004 — 两次 read 各强化一次
+
+
+def test_read_embeds_query_once_and_caches_vectors() -> None:
+    """注入 embedder：query 只向量化一次，未变条目向量复用缓存。"""
+    batches: list[list[str]] = []
+
+    def embedder(texts: list[str]) -> list[list[float]]:
+        batches.append(list(texts))
+        return [[float(len(t)), 1.0] for t in texts]
+
+    store = MemoryStore(embedder=embedder)
+    for i in range(3):
+        store.write("L2", _entry(f"e{i}", "L2", f"fact {i}"))
+    store.read("query", budget=100)
+    embedded = [t for batch in batches for t in batch]
+    assert embedded.count("query") == 1, "每次检索 query 只向量化一次"
+    assert len(embedded) == 4, "3 条内容 + 1 次 query"  # noqa: PLR2004
+
+    before = len(batches)
+    store.read("query", budget=100)  # 条目与 query 均已缓存 → 无新向量化
+    assert len(batches) == before, "未变条目与 query 复用缓存，不重复向量化"
+
+
+def test_read_degrades_to_lexical_when_embedder_raises() -> None:
+    """embedder 抛错时降级词法，检索不中断。"""
+
+    def embedder(texts: list[str]) -> list[list[float]]:
+        raise RuntimeError("embedder down")  # noqa: TRY003 — 模拟 embedding 服务不可达
+
+    store = MemoryStore(embedder=embedder)
+    store.write("L2", _entry("e1", "L2", "apple"))
+    assert [e.id for e in store.read("apple", budget=100)] == ["e1"]
+
+
+def test_batch_embed_adapter() -> None:
+    """单条可调用 → MemoryStore 的批量契约。"""
+    batch = batch_embed(lambda t: [float(len(t))])
+    assert batch(["ab", "cde"]) == [[2.0], [3.0]]

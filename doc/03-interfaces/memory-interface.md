@@ -44,22 +44,39 @@ class MemoryEntry:
     reuse_count: int = 0    # 复用次数（结晶阈值依据）
     ts: float = 0.0          # 时间戳
     session_id: str = ""     # 会话 ID（跨轮记忆归组，缺省空串）
+    importance: float = 0.0                          # 主观重要度 [0,1]（缺省 0 不调制）
+    kind: Literal["episodic", "semantic"] = "episodic"  # 事件 / 提炼事实
 ```
 
 ---
 
 ## 3. 相关性打分
 
+检索排序得分 ``rank`` 由**语义/结构**（加性）与**时间/复用/重要度**（乘性）两部分构成：
+
 ```python
-def relevance(entry, query) -> float:
-    """relevance = w1·sim(entry, query)   # 语义相似
-                 + w2·freshness(entry)   # 新鲜度
-                 + w3·log(1 + reuse_count)  # 复用频次
-                 + w4·layer_priority(entry.layer)  # 层权重
+def rank(entry, query, embedder=None) -> float:
+    """rank = relevance(entry, query)          # 语义相似 × 层结构权重（加性）
+                × recency_decay(entry)        # 新鲜度衰减 1/(1 + age/天)
+                × (1 + log(1 + reuse_count))  # 复用频次
+                × (1 + importance)            # 主观重要度
+    """
+
+def relevance(entry, query, embedder=None) -> float:
+    """relevance = w1·sim(entry, query) + w4·layer_priority(entry.layer)
+
+    仅含语义与层结构；时间/复用/重要度由 ``rank`` 乘性调制（避免双重计数）。
     """
 ```
 
 默认层优先级：`L0(1.0) > L3(0.8) > L2(0.6) > L1(0.4) > L4(0.2)`。
+
+- ``sim`` 默认**词法相似**（token 重叠，离线可测）；注入 ``embedder`` 则升级为**余弦相似**，
+  embedder 抛错时**降级词法**、检索不中断。
+- **embedder 契约**：批量可调用 ``(list[str]) -> list[list[float]]``。单条可调用（如 rag
+  ``Embedder.embed``）经 ``memory/embedding.py::batch_embed`` 适配；memory **不依赖 rag**。
+- **向量缓存**：``read`` 对 query **至多向量化一次**；条目按 ``content`` 哈希缓存向量，
+  内容未变即复用；缓存**进程内易失**（不落盘）。
 
 ---
 
@@ -95,6 +112,7 @@ MVP 实现：`FileBackend`（`memory/*.md` + `memory/*.jsonl`）。
 
 - 密钥/敏感内容**只存引用**，绝不进入任何记忆层。
 - `read` 返回 token 硬性 ≤ budget，超限截断并标记被截断项。
+- `read` 命中即 `reuse_count += 1`（复用即强化；进程内强化，不落盘避免写放大）。
 
 ---
 

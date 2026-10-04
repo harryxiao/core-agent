@@ -30,6 +30,8 @@ class MemoryEntry:
     reuse_count: int = 0  # 复用次数（结晶阈值依据）
     ts: float = 0.0  # 时间戳
     session_id: str = ""  # 会话 ID（跨轮记忆归组，缺省空串）
+    importance: float = 0.0  # 主观重要度 [0,1]（缺省 0 不调制；自动打分留 Phase 18 #4/#5）
+    kind: Literal["episodic", "semantic"] = "episodic"  # 事件 / 提炼事实
 
 
 @dataclass

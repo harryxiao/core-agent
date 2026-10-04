@@ -10,6 +10,7 @@ Compactor / Guardrail）→ LLMPlanner → PermissionGuard → DefaultLoop，供
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -120,13 +121,14 @@ _DELEGATE_TIMEOUT_S = 600.0
 _DELEGATE_DEPTH: ContextVar[int] = ContextVar("delegate_depth", default=0)
 
 
-def build_runtime(  # noqa: PLR0915, C901
+def build_runtime(  # noqa: PLR0915, PLR0913, C901
     config: ConfigManager,
     *,
     assembler: DynamicAssembler | None = None,
     tracer: Tracer | None = None,
     memory_backend: MemoryBackend | None = None,
     approver: Approver | None = None,
+    embedder: Callable[[list[str]], list[list[float]]] | None = None,
 ) -> Runtime:
     """装配全量依赖：ConfigManager.load → resolve_secret → 各层组件 → DefaultLoop。
 
@@ -168,6 +170,7 @@ def build_runtime(  # noqa: PLR0915, C901
         backend=backend,
         effect_tracker=effect_tracker,
         compactor=Compactor(router) if jev is not None else None,
+        embedder=embedder,
     )
     resolver = CoeffectResolver()
     resolver.register("filesystem:read", True)

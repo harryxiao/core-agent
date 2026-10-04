@@ -555,3 +555,21 @@ def test_entry_run_wires_runtime(monkeypatch) -> None:
     assert calls["kwargs"]["memory"] is not None
     assert calls["kwargs"]["approval"] is None  # 非交互入口无审批通道（fail-closed）
     assert calls["build_kwargs"]["approver"] is None
+
+
+def test_build_runtime_embedder_di_passthrough(monkeypatch, tmp_path) -> None:
+    """build_runtime 透传 embedder DI 参数；默认 None（词法路径不变）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    def fake_embedder(texts: list[str]) -> list[list[float]]:
+        return [[0.0] for _ in texts]
+
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+    assert runtime.memory._embedder is None
+
+    runtime2 = build_runtime(
+        ConfigManager(yaml_path=_write_config(tmp_path)), embedder=fake_embedder
+    )
+    assert runtime2.memory._embedder is fake_embedder
