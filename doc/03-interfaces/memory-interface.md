@@ -30,6 +30,10 @@ class MemoryStore(Plugin):
     def index(self) -> IndexEntry:
         """返回 L1 最小索引。"""
 
+    def compact(self, query: str = "", budget: int = 4096) -> "DecisionResult | None":
+        """压实记忆：注入 summarizer 时按 ``session_id`` 聚合 L2 episodic 提炼为 semantic 摘要
+        并归档原条目；注入 compactor 时逐条目打分写回 ``importance`` 并做价值门控（全部可撤销）。"""
+
     def audit(self, trace_id: str | None = None) -> list[MemoryEntry]:
         """审计写入记录。"""
 ```
@@ -63,7 +67,7 @@ class MemoryEntry:
     trace_id: str
     reuse_count: int = 0    # 复用次数（结晶阈值依据）
     ts: float = 0.0          # 时间戳
-    session_id: str = ""     # 会话 ID（跨轮记忆归组，缺省空串）
+    session_id: str = ""     # 会话归属：产生该条目的会话（缺省空串 = 未归属）；压实/固化/遗忘按此归组
     importance: float = 0.0                          # 主观重要度 [0,1]（缺省 0 不调制）
     kind: Literal["episodic", "semantic"] = "episodic"  # 事件 / 提炼事实
 ```

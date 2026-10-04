@@ -89,16 +89,19 @@ class LoopPlugin(Protocol):
         "constitution:v1",
     ]
 
-    def run(self, user_input: str) -> LoopResult:
+    def run(self, user_input: str, *, session_id: str = "") -> LoopResult:
         """同步执行入口：经事件循环桥接 arun（薄壳），调用方零改动。"""
         ...
 
-    async def arun(self, user_input: str) -> LoopResult:
+    async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
         """异步执行入口：与 run 同构，事件循环内非阻塞。"""
         ...
 
-    async def astream(self, user_input: str) -> AsyncIterator[LoopEvent]:
-        """流式执行入口：按生命周期顺序产出 LoopEvent 事件流。"""
+    async def astream(self, user_input: str, *, session_id: str = "") -> AsyncIterator[LoopEvent]:
+        """流式执行入口：按生命周期顺序产出 LoopEvent 事件流。
+
+        ``session_id`` 为本轮的会话归属（缺省空串 = 未归属），随调用传递、不驻留实例。
+        """
         ...
 
     # ---- 阶段方法（私有，但为策略替换点）----
@@ -119,6 +122,6 @@ class LoopPlugin(Protocol):
         """把动作结果写回上下文，推进循环。"""
         ...
 
-    def remember(self, trace_id: str, trajectory: list[Any]) -> None:
-        """写本轮轨迹/教训入 L2/L3（每轮必做，无行动不记忆）。"""
+    def remember(self, trace_id: str, trajectory: list[Any], *, session_id: str = "") -> None:
+        """写本轮轨迹/教训入 L2/L3（每轮必做，无行动不记忆），条目带会话归属。"""
         ...

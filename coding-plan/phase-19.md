@@ -11,6 +11,7 @@
 ## 0. 结论
 
 - **无任何一项阻塞核心回路**：669 tests 覆盖的回路（记忆读写/压实/固化/遗忘、技能提炼/路由/迭代、进化四阶段 + HITL + 自动溶解）在生产路径上均已接通。
+- **A2+E2（会话维度）已于 change `0048` 关闭**（标识透传 + `compact` 接真 + 按会话读取），A 类剩 A1/A3–A9。
 - **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）**；E 类中只有 **E1（constraints 中间件）** 与 **E2（per-session）** 有真实行为影响，其余为「接线缺失」。
 - **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A4/A5、E2/E4/E5 全归此。
 - **一条值得单独记的形态问题**：`cli-contract-baseline.md` 的**内置工具契约与实现已对不上账**（见 E7）——契约列的 5 个工具在代码里从未存在。
@@ -32,7 +33,7 @@
 | 编号 | 类别 | 项 | 现象（一句话） | 优先级 | 前置 |
 |---|---|---|---|---|---|
 | A1 | A | `forget` 无调度器 | 衰减只在 loop 压实触发时顺带执行，无定时循环 | 中 | 引入调度依赖（或复用 loop 节拍） |
-| A2 | A | 生产 `session_id` 恒空串 | 压实/固化/遗忘按单一 `""` 组聚合，会话维度实际未生效 | 中 | 会话标识从 UI 透传到 `remember` |
+| A2 | A | ~~生产 `session_id` 恒空串~~ | ✅ 已关闭（change `0048`）：标识透传至 `remember`，压实/固化/遗忘按会话归组 | 中 | — |
 | A3 | A | 进程内无持久化 | 技能库 / 反馈统计 / 观察窗口 / SOP 样本 / 灰度态均随进程消失 | 中 | 存储选型 + spec 补 Requirement |
 | A4 | A | `EvolutionEngine.confirm` 无生产调用方 | 候选待办队列无驱动面，HITL 门在生产不触达 | 中 | 操作面（CLI/UI）驱动 pending 队列 |
 | A5 | A | `observe` 无采样调度器 | 观察期窗口开了，但无人按节拍喂回归样本 | 中 | 采样来源（evaluator 或外部上报） |
@@ -41,7 +42,7 @@
 | A8 | A | memory「并发压实一致性」无实现 | 规格有此 Requirement，实现未做 | 低 | 出现并发调用方 |
 | A9 | A | `context.stage` 语义化残留 | 装配阶段标注不参与事实选择 | 低 | B6 决策的后续 |
 | E1 | E | constraints 中间件链从未注入 loop | `_apply_middlewares` 空转，生产零 `middlewares=` | **中高** | 写 constraints→loop 适配层 |
-| E2 | E | UI 无每会话 loop/memory/tools | 单例共享 loop 与记忆命名空间 | 中（与 A2 同根） | 无 |
+| E2 | E | ~~UI 无每会话 loop/memory~~ | ✅ 已关闭（change `0048`，会话维度部分）：标识透传 + 单店按会话归组 | 中（与 A2 同根） | — |
 | E3 | E | 神通（beast）runtime 桥接缺失 | 20 神通从未进运行时 SkillLibrary；handoff 整段短路 | 中 | 先定夺 R4/R5 规格 deferred 是否解除 |
 | E4 | E | pet 运行时注入整族缺失 | 跨进程存活 / DI / wake / 三入口四项全缺 | 中 | A3（存储选型） |
 | E5 | E | 主 Agent 自动迭代内部模块 | Phase 17 单列后**从未排期** | 低 | 无（能力已前置） |
@@ -71,12 +72,12 @@
 - **关闭动作**：二选一——① 复用 loop 节拍（每 N 轮触发，最省依赖）；② 引入调度器（须 ADR，因涉及横切能力）。
 - **前置**：无（可随时做）。
 
-### A2 生产 `session_id` 恒空串（含 `UIAPILayer.compact` no-op）
+### A2 生产 `session_id` 恒空串（含 `UIAPILayer.compact` no-op）— ✅ 已关闭（change `0048`）
 
 - **现象**：`MemoryEntry.session_id` 缺省空串（`src/core/memory/protocol.py:32`），而生产侧 `loop/runtime` **从不设置它**（grep 无引用）→ 压实/固化/遗忘全部按单一 `""` 组聚合，「按会话」维度的语义在实际运行中退化为「全局单组」。
 - **次生**：`UIAPILayer.compact(session_id)` 仍是 no-op（`src/core/ui/api.py:119-121`，注释自陈「MemoryStore 无显式 compact」），ui spec 无该 Requirement，故未擅自接线。
-- **关闭动作**：把 session 标识从 UI 会话（`HarnessHost` 侧）透传到 `remember`/`compact`；随后 `UIAPILayer.compact` 接真 `memory.compact`。**属跨 capability 变更**（ui + memory + loop 契约），须 spec delta。**与 E2 同根，建议合并做。**
-- **前置**：无。
+- **关闭动作**：✅ **已由 change `0048-session-scoped-memory` 闭合**（与 E2 合并做）：loop 三入口收 `session_id` 并写入 L2 条目；`UIAPILayer.compact` 直调 `MemoryStore.compact`；`get_memory` 按会话归属过滤。spec delta：`loop`/`memory`/`ui` 三份（29 specs 全绿），测试 674 passed。
+- **前置**：无（原「与 E2 同根，建议合并做」已按此执行）。
 
 ### A3 进程内无持久化
 
@@ -141,11 +142,11 @@
 - **关闭动作**：写 constraints→loop 适配层并在 `build_runtime` 注入；补 `CIRCUIT_OPEN` 短路用例（`phase-2.md:121` 的验收框同属此项）。
 - **前置**：无。
 
-### E2 UI 无「每会话独立 loop / memory / tools」（Phase 13 遗留）
+### E2 UI 无「每会话独立 loop / memory / tools」（Phase 13 遗留）— ✅ 已关闭（会话维度部分，change `0048`）
 
 - **现象**：`UIAPILayer` 只持**一个共享** `self._loop` / `self._memory`（`ui/api.py:52-53`），`self._sessions` 仅存 mode 字符串（`:61`）→ 多会话共用同一 loop 与同一记忆命名空间。
 - **根因**：`phase-13.md:93` 把「serve/repl 运行时装配 + 每会话独立 loop+memory+tools」标为 deferred。
-- **关闭动作**：**与 A2 同根，建议合并做**——会话对象持 `(loop, memory)`，`run_loop` 取会话对应实例，`session_id` 透传到 `remember`。
+- **关闭动作**：✅ **已按 A2 合并方案闭合（change `0048`）**——采「会话标识透传 + 单店按会话归组」（**不做**每会话独立 `(loop, memory)` 实例：单实例并发服务多会话时标识随调用走、天然不串号，组合根与生命周期不动；见 change `0048` design 决策 1/2）。据此 `run_loop` 透传标识、`get_memory` 按会话过滤、`compact` 接真。
 - **前置**：无。
 
 ### E3 神通（beast）runtime 桥接缺失（Phase 10 + 17.5 同源）
@@ -323,7 +324,7 @@
 ## 9. 依赖与建议重开顺序
 
 1. **D + F + G 清尾**（无依赖、低成本）：G 类订正 deferred 措辞 + F 类逐项勾销/定性 + README 同步 —— 使账本自身可达且不误导。 ✅ **已完成**（G 类 7 组订正；D1/D3/D5 关闭、D4 部分；F 类 6 组核实：41 框勾销 / 11 项转出 E·A·B；README 已同步）。
-2. **A2 + E2 合并做**（同一根因）：会话标识透传 + 每会话独立 loop/memory + `UIAPILayer.compact` 接真。
+2. **A2 + E2 合并做**（同一根因）：会话标识透传 + 每会话独立 loop/memory + `UIAPILayer.compact` 接真。 ✅ **已完成**（change `0048-session-scoped-memory`：标识透传 + `compact` 接真 + `get_memory` 按会话过滤；**未采**每会话独立实例，理由见该 change design 决策 1/2）。
 3. **A1**（记忆驱动侧）：遗忘节拍。宜在 A2 之后（会话维度不生效时，衰减分组也是错的）。
 4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义；建议与「serve 常驻进程」一并做（`debug-gaps.md` §4 已提）。
 5. **B1**（独立轨）：随时可先写重开 ADR（不需代码），是唯一可并行推进的阻塞级项。

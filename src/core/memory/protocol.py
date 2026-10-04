@@ -66,6 +66,10 @@ class MemoryStore(Protocol):
         """审计写入记录。"""
         ...
 
+    def compact(self, query: str = "", budget: int = 4096) -> Any:
+        """压实记忆：会话摘要提炼（按 ``session_id`` 聚合）+ 重要性打分写回（可撤销）。"""
+        ...
+
 
 class Crystallizer(Protocol):
     """结晶 / 溶解钩子（联动 L4 Evolution Engine）。"""

@@ -16,7 +16,7 @@ class RecordingLoop:
     def __init__(self) -> None:
         self.inputs: list[str] = []
 
-    async def astream(self, user_input: str):
+    async def astream(self, user_input: str, *, session_id: str = ""):
         self.inputs.append(user_input)
         yield LoopEvent("loop_finished", {"reply": f"echo:{user_input}"})
 
@@ -357,7 +357,7 @@ def test_tui_action_widget_lifecycle() -> None:
     class _ActionLoop:
         """回放一轮工具动作事件 + 终态回复的 loop 替身。"""
 
-        async def astream(self, user_input: str):
+        async def astream(self, user_input: str, *, session_id: str = ""):
             from core.loop import LoopEvent  # noqa: PLC0415 — 事件构造
 
             yield LoopEvent("loop_started", {"trace_id": "t1"})

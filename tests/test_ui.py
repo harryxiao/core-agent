@@ -8,6 +8,7 @@ import pytest
 
 from core.configuration.models import LLMConfig
 from core.loop import LoopEvent
+from core.memory import MemoryEntry
 from core.permission import ApprovalChannel
 from core.ui import CLIBridge, DesktopBridge, Event, UIAPILayer, UiError, UiErrorCode, WebBridge
 
@@ -18,7 +19,7 @@ class FakeLoop:
     def __init__(self, events: list[LoopEvent]) -> None:
         self._events = events
 
-    async def astream(self, user_input: str):
+    async def astream(self, user_input: str, *, session_id: str = ""):
         for event in self._events:
             yield event
 
@@ -352,7 +353,7 @@ def test_tui_approval_resolves_from_real_message_path() -> None:
     class _ApprovalLoop:
         """astream 中途经审批通道挂起（模拟 web_fetch 确认门）。"""
 
-        async def astream(self, user_input: str):
+        async def astream(self, user_input: str, *, session_id: str = ""):
             yield LoopEvent("loop_started", {"trace_id": "t1"})
             approved = await channel.ask("tools.web_fetch", {"url": "https://x"}, "出站抓取")
             yield LoopEvent("reply_delta", {"text": "已批准" if approved else "被拒绝"})
@@ -447,3 +448,83 @@ def test_run_task_unknown_session() -> None:
         _collect_task(api, "nope", "目标")
 
     assert err.value.code == UiErrorCode.UI_SESSION_NOT_FOUND
+
+
+# ---- 会话维度：透传 / 压实 / 按会话读取（spec：三模统一内核启动） ----
+
+
+class _SessionSpyLoop:
+    """记录 astream 收到的会话标识的 loop 替身。"""
+
+    def __init__(self) -> None:
+        self.sessions: list[str] = []
+
+    async def astream(self, user_input: str, *, session_id: str = ""):
+        self.sessions.append(session_id)
+        yield LoopEvent("loop_finished", {"reply": "done"})
+
+
+class _MemorySpy:
+    """记录 compact 实参、按写入顺序返回条目的记忆替身。"""
+
+    def __init__(self, entries: list[MemoryEntry]) -> None:
+        self._entries = entries
+        self.compacted: list[str] = []
+        self.reads: list[tuple[str, int]] = []
+
+    def read(self, query: str, budget: int = 0) -> list[MemoryEntry]:
+        self.reads.append((query, budget))
+        return list(self._entries)
+
+    def write(self, layer: str, entry: MemoryEntry) -> str:
+        return entry.id
+
+    def compact(self, query: str = "", budget: int = 4096) -> None:
+        self.compacted.append(query)
+
+
+def _entry(entry_id: str, session_id: str, content: str) -> MemoryEntry:
+    return MemoryEntry(
+        id=entry_id,
+        layer="L2",
+        content=content,
+        tags=["loop"],
+        source="loop",
+        trace_id=f"t-{entry_id}",
+        session_id=session_id,
+    )
+
+
+def test_run_loop_passes_session_id_to_loop() -> None:
+    """API 层生成的会话标识无改写透传至内核循环。"""
+    spy = _SessionSpyLoop()
+    api = UIAPILayer(loop=spy)  # type: ignore[arg-type]
+    api.set_llm_config(_llm())
+    session_id = api.create_session("cli")
+    _collect(api, session_id, "你好")
+    assert spy.sessions == [session_id]
+
+
+def test_compact_triggers_store_compaction() -> None:
+    """compact(session_id) 触发存储层真实压实（非 no-op）。"""
+    spy = _MemorySpy([])
+    api = UIAPILayer(memory=spy)  # type: ignore[arg-type]
+    session_id = api.create_session("cli")
+    api.compact(session_id)
+    assert spy.compacted == [session_id]
+
+
+def test_get_memory_filters_by_session() -> None:
+    """get_memory 只返回归属该会话的条目（其他会话与未归属条目不可见）。"""
+    spy = _MemorySpy(
+        [
+            _entry("a", "s-1", "本会话记忆"),
+            _entry("b", "s-2", "他会话记忆"),
+            _entry("c", "", "未归属记忆"),
+        ]
+    )
+    api = UIAPILayer(memory=spy)  # type: ignore[arg-type]
+    session_id = api.create_session("cli")
+    assert api.get_memory(session_id) == {"entries": []}
+    spy._entries.append(_entry("d", session_id, "归属本会话"))
+    assert api.get_memory(session_id) == {"entries": ["归属本会话"]}

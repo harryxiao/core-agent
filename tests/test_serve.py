@@ -20,7 +20,7 @@ class FakeLoop:
     def __init__(self, events: list[LoopEvent]) -> None:
         self._events = events
 
-    async def astream(self, user_input: str):
+    async def astream(self, user_input: str, *, session_id: str = ""):
         for event in self._events:
             yield event
 

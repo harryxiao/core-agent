@@ -600,3 +600,36 @@ def test_loop_turn_observer_error_does_not_break_round() -> None:
 
     assert not result.failed and result.reply == "done", "钩子抛错不影响本轮结果"
     assert "turn_observer_failed" in tracer.kinds, "钩子抛错降级留痕"
+
+
+# ---- 会话标识随记忆沉淀落账（spec：执行循环「记忆沉淀携带会话标识」） ----
+
+
+class _RecordingMemory:
+    """记录写入条目的记忆替身（只关心沉淀结果）。"""
+
+    def __init__(self) -> None:
+        self.written: list[MemoryEntry] = []
+
+    def read(self, query: str, budget: int = 0) -> list[MemoryEntry]:
+        return []
+
+    def write(self, layer: str, entry: MemoryEntry) -> str:
+        self.written.append(entry)
+        return entry.id
+
+
+def test_memory_carries_session_id() -> None:
+    """会话标识随调用传递并写入 L2 条目（不驻留循环实例）。"""
+    memory = _RecordingMemory()
+    loop = DefaultLoop(planner=lambda ctx: Action(args={"reply": "done"}), memory=memory)  # type: ignore[arg-type]
+    loop.run("任务", session_id="s-1")
+    assert [entry.session_id for entry in memory.written] == ["s-1"]
+
+
+def test_memory_session_defaults_empty() -> None:
+    """未指定会话标识时归缺省空串分组（与既有语义兼容）。"""
+    memory = _RecordingMemory()
+    loop = DefaultLoop(planner=lambda ctx: Action(args={"reply": "done"}), memory=memory)  # type: ignore[arg-type]
+    loop.run("任务")
+    assert [entry.session_id for entry in memory.written] == [""]

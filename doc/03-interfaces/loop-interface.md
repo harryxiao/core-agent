@@ -15,14 +15,20 @@ class LoopPlugin(Plugin):
     # 装配依赖（coeffects）：模型适配器 + 记忆存储 + 工具提供者 + 元规则
     coeffects = ["model:adapter", "memory:store", "tools:provider", "constitution:v1"]
 
-    def run(self, user_input: str) -> LoopResult:
+    def run(self, user_input: str, *, session_id: str = "") -> LoopResult:
         """执行一轮完整闭环：感知 → 推理 → 行动 → 记忆。"""
 
-    async def arun(self, user_input: str) -> LoopResult:
+    async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
         """异步执行入口：与 run 同构，事件循环内非阻塞，可并发驱动多个循环。"""
 
-    def astream(self, user_input: str) -> AsyncIterator[LoopEvent]:
-        """流式执行入口：按生命周期顺序产出 LoopEvent 事件流。"""
+    def astream(
+        self, user_input: str, *, session_id: str = ""
+    ) -> AsyncIterator[LoopEvent]:
+        """流式执行入口：按生命周期顺序产出 LoopEvent 事件流。
+
+        ``session_id`` 为本轮会话归属（缺省空串 = 未归属），随调用传递、不驻留实例，
+        由「记忆」步写入 L2 条目的 ``session_id``（供压实/固化/遗忘按会话归组）。
+        """
 ```
 
 默认实现 `DefaultLoop`（骨架见 `02-modules/loop.md` 第 4 章）：
@@ -31,7 +37,7 @@ class LoopPlugin(Plugin):
 class DefaultLoop(Plugin):
     coeffects = ["model:adapter", "memory:store", "tools:provider", "constitution:v1"]
 
-    def run(self, user_input: str) -> LoopResult:
+    def run(self, user_input: str, *, session_id: str = "") -> LoopResult:
         trace_id = new_trace_id()
         ctx = self.perceive(user_input)          # 拼上下文（有上界）；记忆检索由 ContextEngine.assemble 承担
         while not ctx.done():
@@ -42,7 +48,9 @@ class DefaultLoop(Plugin):
             if result.failed:
                 self.rollback(trace_id)          # 回滚本轮
             ctx = self.observe(ctx, result)
-        self.remember(trace_id, [*ctx.trajectory, {"reply": ctx.reply}])  # 无行动不记忆；末条 reply 供语义检索
+        self.remember(
+            trace_id, [*ctx.trajectory, {"reply": ctx.reply}], session_id=session_id
+        )  # 无行动不记忆；末条 reply 供语义检索；条目带会话归属
         return LoopResult(reply=ctx.reply, trace_id=trace_id)
 ```
 

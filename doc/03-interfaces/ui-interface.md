@@ -22,9 +22,11 @@ class UIAPILayer:
     def run_task(self, session_id: str, goal: str) -> AsyncIterator[Event]:
         """SSE 流式输出编排任务进度事件（task.*）；编排器未注入时 UI_ORCHESTRATOR_UNSET。"""
 
-    # 记忆
-    def get_memory(self, session_id: str) -> dict: ...
-    def compact(self, session_id: str) -> None: ...
+    # 记忆（会话维度：session_id 由 create_session 生成并无改写透传至 loop 与记忆写入）
+    def get_memory(self, session_id: str) -> dict:
+        """读会话记忆：只返回归属该会话的条目（他会话与未归属条目不可见）。"""
+    def compact(self, session_id: str) -> None:
+        """压实该会话记忆：触发存储层真实压实（按会话聚合摘要 + 重要度写回，可撤销）。"""
 
     # 工具
     def list_tools(self) -> list[Tool]: ...
@@ -64,8 +66,8 @@ class UIAPILayer:
 | `POST /session` | create_session | `create_session(mode)` | 新建会话 |
 | `POST /run` | run_loop | `run_loop(session_id, user_input)` | SSE 流式 loop 事件 |
 | `POST /barge-in` | barge_in | `barge_in()` | 打断当前语音播报 |
-| `GET /memory` | get_memory | `get_memory(session_id)` | 读会话记忆 |
-| `POST /session/compact` | compact | `compact(session_id)` | 压实上下文 |
+| `GET /memory` | get_memory | `get_memory(session_id)` | 读会话记忆（只含本会话归属条目） |
+| `POST /session/compact` | compact | `compact(session_id)` | 压实该会话记忆（存储层真实压实，可撤销） |
 | `GET /tools` | list_tools | `list_tools()` | 列出工具 |
 | `POST /tools/invoke` | invoke_tool | `invoke_tool(tool_id, args)` | 调用工具 |
 | `GET /llm-config` | get_llm_config | `get_llm_config()` | 读 LLM 配置 |

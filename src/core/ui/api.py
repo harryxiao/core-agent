@@ -90,7 +90,8 @@ class UIAPILayer:
                     UiErrorCode.UI_MODALITY_MISSING,
                     f"模型不具备 {modality} 模态理解能力",
                 )
-        async for loop_event in cast(AsyncIterator[LoopEvent], self._loop.astream(user_input)):
+        stream = self._loop.astream(user_input, session_id=session_id)
+        async for loop_event in cast(AsyncIterator[LoopEvent], stream):
             yield self._map_event(session_id, loop_event)
 
     async def run_task(self, session_id: str, goal: str) -> AsyncIterator[Event]:
@@ -109,16 +110,18 @@ class UIAPILayer:
     # ---- 记忆 ----
 
     def get_memory(self, session_id: str) -> dict[str, object]:
-        """返回会话记忆（按 session 检索）。"""
+        """返回会话记忆（只含归属该会话的条目；未归属/他会话条目不可见）。"""
         self._require_session(session_id)
         if self._memory is None:
             return {"entries": []}
         entries = self._memory.read(session_id, budget=2048)
-        return {"entries": [entry.content for entry in entries]}
+        return {"entries": [e.content for e in entries if e.session_id == session_id]}
 
     def compact(self, session_id: str) -> None:
-        """压缩会话记忆（MemoryStore 无显式 compact，no-op）。"""
+        """压缩会话记忆：触发存储层真实压实（按会话聚合摘要 + 重要度写回，可撤销）。"""
         self._require_session(session_id)
+        if self._memory is not None:
+            self._memory.compact(session_id)
 
     # ---- 工具 ----
 

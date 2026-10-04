@@ -134,14 +134,14 @@ class DefaultLoop(Plugin):
 
     # ---- 三入口（异步为主、同步薄壳）----
 
-    def run(self, user_input: str) -> LoopResult:
-        return asyncio.run(self.arun(user_input))
+    def run(self, user_input: str, *, session_id: str = "") -> LoopResult:
+        return asyncio.run(self.arun(user_input, session_id=session_id))
 
-    async def arun(self, user_input: str) -> LoopResult:
+    async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
         reply = ""
         trace_id = ""
         failed = False
-        async for event in self.astream(user_input):
+        async for event in self.astream(user_input, session_id=session_id):
             if event.type == "loop_started":
                 trace_id = str(event.payload.get("trace_id", ""))
             elif event.type == "loop_finished":
@@ -168,7 +168,7 @@ class DefaultLoop(Plugin):
                 yield item
 
     async def astream(  # noqa: C901 — 主管线多分支长管道（事件面七类）
-        self, user_input: str
+        self, user_input: str, *, session_id: str = ""
     ) -> AsyncIterator[LoopEvent]:
         trace_id = uuid.uuid4().hex
         yield LoopEvent("loop_started", {"trace_id": trace_id})
@@ -228,7 +228,7 @@ class DefaultLoop(Plugin):
         if limit_reason:
             ctx.reply = f"{limit_reason}: 本轮终止"
             yield LoopEvent("loop_failed", {"reason": limit_reason, "trace_id": trace_id})
-        self.remember(trace_id, [*ctx.trajectory, {"reply": ctx.reply}])
+        self.remember(trace_id, [*ctx.trajectory, {"reply": ctx.reply}], session_id=session_id)
         self._trace(trace_id, "loop_finished", {"reply": ctx.reply, "failed": bool(limit_reason)})
         if not streamed:  # 未流式外发过 delta 才补一次全文（非流式 planner 兼容路径）
             yield LoopEvent("reply_delta", {"text": ctx.reply})
@@ -354,10 +354,11 @@ class DefaultLoop(Plugin):
         ctx.token_used += len(str(result.data)) // 4
         return ctx
 
-    def remember(self, trace_id: str, trajectory: list[Any]) -> None:
+    def remember(self, trace_id: str, trajectory: list[Any], *, session_id: str = "") -> None:
         """把本轮轨迹沉淀为 L2 记忆（无行动不记忆）。
 
-        轨迹项渲染为可读行（轮次/成败/错误），末条 ``reply`` 提供可检索的语义内容。
+        轨迹项渲染为可读行（轮次/成败/错误），末条 ``reply`` 提供可检索的语义内容；
+        ``session_id`` 记入条目，供压实/固化/遗忘按会话归组（缺省空串 = 未归属）。
         """
         if not trajectory or self._memory is None:
             return
@@ -374,6 +375,7 @@ class DefaultLoop(Plugin):
                 tags=["loop", "trajectory"],
                 source="loop",
                 trace_id=trace_id,
+                session_id=session_id,
             ),
         )
 
