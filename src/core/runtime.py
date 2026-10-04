@@ -111,6 +111,10 @@ def _memory_path() -> Path:
     return base / "memory.jsonl"
 
 
+# 子 Agent 委托运行完整子循环（多次 LLM 往返 + 工具轮），远超 ToolDef 默认 30s
+_DELEGATE_TIMEOUT_S = 600.0
+
+
 def build_runtime(  # noqa: PLR0915
     config: ConfigManager,
     *,
@@ -246,6 +250,7 @@ def build_runtime(  # noqa: PLR0915
                 },
                 coeffects=[],
                 reversible=False,
+                timeout_s=_DELEGATE_TIMEOUT_S,
             ),
             handler=_delegate,
         )

@@ -99,6 +99,9 @@ def test_build_runtime_assembles_all_deps(monkeypatch, tmp_path) -> None:
         "tools.web_fetch",
         "tools.delegate",
     }
+    delegate = next(t for t in runtime.tools.active_tools() if t.tool_id == "tools.delegate")
+    min_delegate_timeout = 120.0  # 委托跑完整子循环，远超 ToolDef 默认 30s
+    assert delegate.timeout_s >= min_delegate_timeout
 
 
 def test_build_runtime_memory_persists_to_state_dir(monkeypatch, tmp_path) -> None:
