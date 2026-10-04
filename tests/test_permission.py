@@ -26,6 +26,7 @@ from core.permission import (
     RiskLevel,
     SandboxManager,
     SandboxPolicy,
+    is_approved,
 )
 
 
@@ -131,6 +132,61 @@ def test_approval_archived() -> None:
     ticket = workflow.create(_request())
     workflow.archive(ticket)  # 归档可回溯
     assert ticket in workflow.list_archived()
+
+
+# ---- 审批判定谓词（is_approved，进化 HITL 门用）----
+
+
+def test_is_approved_pending_false() -> None:
+    """待批单据不算批准（fail-closed 的前提）。"""
+    assert is_approved(ApprovalWorkflow().create(_request())) is False
+
+
+def test_is_approved_after_approve() -> None:
+    workflow = ApprovalWorkflow()
+    ticket = workflow.create(_request())
+    workflow.approve(ticket, approver="alice")
+    assert is_approved(ticket) is True
+
+
+def test_is_approved_rejected_and_superseded_false() -> None:
+    workflow = ApprovalWorkflow()
+    rejected = workflow.create(_request())
+    workflow.reject(rejected, note="不可逆")
+    assert is_approved(rejected) is False
+    superseded = workflow.create(_request())
+    workflow.edit_plan(superseded, _request(), note="改计划")
+    assert is_approved(superseded) is False
+
+
+def test_is_approved_expired_and_timeout_false() -> None:
+    """过期 / 超时单据不算批准。"""
+    workflow = ApprovalWorkflow()
+    expired = workflow.create(
+        ApprovalRequest(
+            op="delete",
+            target="/prod",
+            impact_summary="x",
+            rollback_plan="y",
+            trace_id="t1",
+            ttl_seconds=0.0,
+        )
+    )
+    with pytest.raises(AccessControlError):
+        workflow.ask(expired, approver=lambda t: ApprovalResult(approved=True))
+    assert is_approved(expired) is False
+
+    timed_out = workflow.create(_request())
+    with pytest.raises(AccessControlError):
+        workflow.ask(timed_out)  # 无 approver
+    assert is_approved(timed_out) is False
+
+
+def test_is_approved_requires_result() -> None:
+    """状态被人为置为 approved 但缺 result 复核 → 不算批准。"""
+    ticket = ApprovalWorkflow().create(_request())
+    ticket.status = "approved"
+    assert is_approved(ticket) is False
 
 
 # ---- 沙箱 ----

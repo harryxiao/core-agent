@@ -28,6 +28,7 @@ from core.evolution import (
     Trace,
     Validator,
 )
+from core.permission import ApprovalRequest, ApprovalTicket, ApprovalWorkflow
 from core.skills import Skill, SkillLibrary
 
 
@@ -273,3 +274,93 @@ def test_dissolve_deprecates_skill_and_writes_lesson() -> None:
     assert library.lookup("skills.evolution.memory.retrieve").status == "deprecated"
     assert len(backend.put_entries) == 1
     assert backend.put_entries[0].layer == "L2"
+
+
+# ---- HITL confirm 门（0046：架构级候选强制人工审批）----
+
+
+def _pending(engine: EvolutionEngine) -> GenerationCandidate:
+    """跑一次闭环得到过门候选（status="pending"）。"""
+    outcome = engine.run_cycle([_trace("1", success=False, plugin_id="memory.retrieve")])
+    assert outcome.status == "pending" and outcome.candidate is not None
+    return outcome.candidate
+
+
+def _ticket(target: str, *, approved: bool = True) -> ApprovalTicket:
+    """造一张目标为 target 的审批单（经审批流真实流转）。"""
+    workflow = ApprovalWorkflow()
+    ticket = workflow.create(
+        ApprovalRequest(
+            op="evolution.crystallize",
+            target=target,
+            impact_summary="架构级候选结晶",
+            rollback_plan="dissolve 回 L3",
+            trace_id="evolution",
+        )
+    )
+    if approved:
+        workflow.approve(ticket, approver="alice")
+    else:
+        workflow.reject(ticket, note="不可逆，退回")
+    return ticket
+
+
+def test_proposer_marks_risk_level_by_kind() -> None:
+    """风险域由提案阶段按 kind 固化：plugin → high，skill → low。"""
+    diagnosis = DiagnosisReport(target_plugin="memory.retrieve", issue="x")
+    assert Proposer(kind="plugin").propose(diagnosis).risk_level == "high"
+    assert Proposer(kind="skill").propose(diagnosis).risk_level == "low"
+
+
+def test_high_risk_candidate_without_approval_stays_pending() -> None:
+    engine = _engine(proposer=Proposer(kind="plugin"))
+    candidate = _pending(engine)
+    with pytest.raises(EvolutionError) as exc_info:
+        engine.confirm(candidate)
+    assert exc_info.value.code is EvolutionErrorCode.CONFIRM_REQUIRED
+    assert candidate.status == "pending"
+    with pytest.raises(EvolutionError) as exc_info:
+        engine.crystallize(candidate)
+    assert exc_info.value.code is EvolutionErrorCode.CANDIDATE_PENDING
+
+
+def test_high_risk_candidate_confirms_with_approved_ticket() -> None:
+    library = SkillLibrary()
+    engine = _engine(library=library, proposer=Proposer(kind="plugin"))
+    candidate = _pending(engine)
+    engine.confirm(candidate, approval=_ticket(candidate.target_plugin))
+    assert candidate.status == "confirmed"
+    assert engine.crystallize(candidate).status == "published"
+
+
+def test_rejected_approval_blocks_high_risk_candidate() -> None:
+    engine = _engine(proposer=Proposer(kind="plugin"))
+    candidate = _pending(engine)
+    with pytest.raises(EvolutionError) as exc_info:
+        engine.confirm(candidate, approval=_ticket(candidate.target_plugin, approved=False))
+    assert exc_info.value.code is EvolutionErrorCode.CONFIRM_REQUIRED
+    assert candidate.status == "pending"
+
+
+def test_approval_target_mismatch_blocks_confirm() -> None:
+    """别的插件的批准单不得解锁本候选。"""
+    engine = _engine(proposer=Proposer(kind="plugin"))
+    candidate = _pending(engine)
+    assert candidate.target_plugin == "memory.retrieve"
+    with pytest.raises(EvolutionError) as exc_info:
+        engine.confirm(candidate, approval=_ticket("memory.write"))
+    assert exc_info.value.code is EvolutionErrorCode.CONFIRM_REQUIRED
+    assert candidate.status == "pending"
+
+
+def test_low_risk_candidate_confirms_without_ticket() -> None:
+    """技能库级候选仍须显式 confirm，但不要求权限工单（不引入低风险自动结晶）。"""
+    library = SkillLibrary()
+    engine = _engine(library=library)
+    candidate = _pending(engine)
+    assert candidate.risk_level == "low"
+    with pytest.raises(EvolutionError) as exc_info:
+        engine.crystallize(candidate)
+    assert exc_info.value.code is EvolutionErrorCode.CANDIDATE_PENDING
+    engine.confirm(candidate)
+    assert engine.crystallize(candidate).status == "published"

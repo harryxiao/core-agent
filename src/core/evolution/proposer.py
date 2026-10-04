@@ -31,4 +31,6 @@ class Proposer:
             delta={"issue": diagnosis.issue},
             kind=self._kind,
             status="pending",
+            # 风险域随候选固化：架构级（plugin）必审，技能库级（skill）亦须人工确认
+            risk_level="high" if self._kind == "plugin" else "low",
         )

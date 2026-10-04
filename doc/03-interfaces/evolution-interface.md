@@ -47,6 +47,9 @@ class GenerationCandidate:
     delta: dict                 # 变更内容（补丁/新技能）
     kind: Literal["skill", "plugin"]
     status: str = "pending"     # 候选状态：pending → confirmed（待人工确认，不自动发布）
+    risk_level: Literal["low", "high"] = "low"
+    # 风险域（提案阶段按 kind 固化）：plugin → high（架构级，强制人工审批）；
+    # skill → low（技能库级，仍须显式 confirm，只是不要求权限工单）
 
 @dataclass
 class GateReport:
@@ -79,7 +82,18 @@ class EvolutionEngine(Plugin):
         e = self.evaluator.evaluate(c)
         if e.verdict != "publish": return EvolutionOutcome(status="rollback", eval=e)
         return self.crystallize(c)          # 过门 → 结晶（经 MemoryStore + Registry）
+
+    def confirm(self, candidate: GenerationCandidate, *,
+                approval: ApprovalTicket | None = None) -> None:
+        """人工确认候选（放行发布）；risk_level="high" 须携带目标一致的已批准审批单。"""
 ```
+
+| 维度 | 口径 |
+|---|---|
+| **门禁** | `risk_level="high"`（`kind="plugin"`）→ 三重校验：**有单 + 已批准 + `request.target` 与候选一致**；任一不满足抛 `CONFIRM_REQUIRED`（fail-closed，候选保持 `pending`） |
+| **判定** | 审批判定走 permission 域的 `is_approved(ticket)`（状态词表不泄漏到本域） |
+| **低风险** | `risk_level="low"` 忽略 `approval`，行为同今天——**仍须显式 confirm**（不引入低风险自动结晶） |
+| **可追溯** | 审批单携带 `target` / `trace_id` 并经 `ApprovalWorkflow` 归档（`list_archived`），不新增候选字段 |
 
 ---
 
@@ -101,6 +115,7 @@ class EvolutionTrigger:
 | `CANDIDATE_PENDING` | 候选未过人工确认（禁止自动发布） |
 | `GATE_REJECTED` | 验证门拒绝（review / 运行时测试不过） |
 | `EVAL_REGRESSED` | 留出集退化（触发回滚） |
+| `CONFIRM_REQUIRED` | 架构级候选未获人工审批（无审批单 / 未批准 / 目标不符） |
 
 ---
 

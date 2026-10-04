@@ -221,6 +221,18 @@
 > **遗留**：改写 prompt 无失败轨迹（轨迹级诊断属 evolution 维度2）；样本进程内、跨进程归零；
 > 无 cooldown；成功率只区分成败；**排序仍未接历史成功率加权**（数据源已具备）。
 
+> **#9 架构级候选强制人工审批 已完成并归档**（2026-10-04，change `0046-evolution-hitl-confirm`，
+> 649→660 tests 绿、ADR-0051 Accepted）：`confirm()` 此前是**裸 setter**（任何调用方一句话放行，
+> 与权限审批流零联动）。现 `GenerationCandidate.risk_level` 由提案阶段按 `kind` **固化**
+> （plugin → `high` / skill → `low`）；`confirm(candidate, *, approval=None)` 对 `high` 做**三重
+> 校验**——有单 + 已批准 + `request.target` 与候选一致，任一不满足抛新增错误码
+> `CONFIRM_REQUIRED`（fail-closed，候选保持 `pending`，`crystallize` 的 `CANDIDATE_PENDING`
+> 兜底）。审批判定谓词 `is_approved(ticket)` 落在 **permission 域**（状态词表不跨域复制），
+> evolution 只做**门禁校验**（不建单、不等待、不推进单据生命周期）。`low`（技能库级）行为不变：
+> 仍须**显式**人工 `confirm`，**不引入低风险自动结晶**。**遗留**：审批归档与候选队列不落盘；
+> 进程内信任边界（与既有 `approver`/`ApprovalChannel` 同一面）；`confirm` 无生产调用方（进化引擎
+> 的 pending 队列仍靠操作面驱动，先于本变更存在）。
+
 - **记忆**：跨 3 轮以上长对话后，`read` 命中率提升（同一事实不因截断丢失），semantic 条目可见且可追溯 source trace_id。
 - **压缩**：注入 Compactor 后 `compact` 产出「摘要条目」而非「保留/丢弃布尔」，且摘要可逆。
 - **维度1**：一条日常任务轨迹走完「任务→SOP 提取→Skill 入库→下次类似任务语义命中」全链路（无人工 confirm）；一条重复任务触发 skill 迭代（version 升级）。
@@ -275,7 +287,9 @@
       ADR-0049 Accepted；**B4 判冗余 → 删除 `ContextPack.skills`**）
     → **#8 Skill 迭代** ✅ **已完成**（2026-10-04，change `0045-skill-iteration`；ADR-0050
       Accepted；命中注入 `instructions` + `(id, version)` 反馈 + 复用 `VersionManager` 灰度/A/B）
-      → **#9/#10**（`risk_level` 强制 confirm + 观察期自动 dissolve）。
+      → **#9 架构级强制 HITL confirm** ✅ **已完成**（2026-10-04，change
+      `0046-evolution-hitl-confirm`；ADR-0051 Accepted）
+      → **#10 观察期自动 dissolve**（evaluator 采样回归指标 + 超阈值自动溶解 + 冷却期）。
     A1/A3 已清账（✅）。
 
 ---

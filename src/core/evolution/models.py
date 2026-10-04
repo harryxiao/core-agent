@@ -53,6 +53,7 @@ class GenerationCandidate:
     delta: dict[str, Any]
     kind: Literal["skill", "plugin"]
     status: str = "pending"  # pending | confirmed | rejected（候选不得自动发布）
+    risk_level: Literal["low", "high"] = "low"  # 风险域：架构级(plugin)=high 必审；技能库级=low
 
 
 @dataclass

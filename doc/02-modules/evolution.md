@@ -43,6 +43,10 @@ L4 让 CORE **会进化**。它只读地观测 L3 循环的运行轨迹，通过
 
 - 每次通过验证门的产物是一个**世代（generation）**：不可变、带 delta、带验证/评测报告。
 - 未过门的候选**不进入运行**；过门的可发布、可回滚（切换世代）。
+- **风险域随候选固化**（`risk_level`：`plugin`=架构级 `high` / `skill`=技能库级 `low`）。
+  架构级候选 `confirm` **强制人工审批**：#9 起 `confirm(candidate, *, approval=None)` 要求一张
+  目标一致的**已批准**权限审批单（判定走 permission 域 `is_approved`），缺失/未批准/目标不符一律
+  fail-closed（`CONFIRM_REQUIRED`）；技能库级仍须**显式**人工确认——**不存在低风险自动结晶**。
 
 ### 3.3 验证门（Validation Gate）
 
@@ -77,6 +81,7 @@ L4 让 CORE **会进化**。它只读地观测 L3 循环的运行轨迹，通过
 | 诊断无法归因到单插件 | 扩大样本；仍无法归因则标记为"系统级"，人工介入 |
 | 候选过不了验证门 | 丢弃，教训写 L2/L3 |
 | 留出集退化 | 自动回滚，冻结该方向（冷却期） |
+| 架构级候选未获审批 | `CONFIRM_REQUIRED`，候选保持 `pending`，不结晶（fail-closed） |
 | 回滚失败 | QUARANTINE + 人工介入 |
 
 ---

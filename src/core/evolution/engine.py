@@ -14,6 +14,7 @@ import contextlib
 from typing import Any
 
 from core.memory import Crystallizer, MemoryBackend, MemoryEntry
+from core.permission import ApprovalTicket, is_approved
 from core.skills import Skill, SkillLibrary
 
 from .collector import Collector
@@ -101,8 +102,27 @@ class EvolutionEngine:
             eval=eval_report,
         )
 
-    def confirm(self, candidate: GenerationCandidate) -> None:
-        """人工确认候选，放行发布。"""
+    def confirm(
+        self, candidate: GenerationCandidate, *, approval: ApprovalTicket | None = None
+    ) -> None:
+        """人工确认候选，放行发布。
+
+        ``risk_level="high"``（架构级）的候选**强制走人工审批**：须携带一张目标一致的已批准
+        权限审批单，缺失/未批准/目标不符一律 fail-closed（抛 ``CONFIRM_REQUIRED``，候选保持
+        ``pending``）。``risk_level="low"``（技能库级）仍须显式调用本方法——**不引入低风险自动结晶**。
+        """
+        if candidate.risk_level == "high":
+            if approval is None or not is_approved(approval):
+                raise EvolutionError(
+                    EvolutionErrorCode.CONFIRM_REQUIRED,
+                    f"架构级候选未获人工审批（{candidate.target_plugin}）",
+                )
+            if approval.request.target != candidate.target_plugin:
+                raise EvolutionError(
+                    EvolutionErrorCode.CONFIRM_REQUIRED,
+                    f"审批单目标与候选不符（{approval.request.target} != "
+                    f"{candidate.target_plugin}）",
+                )
         candidate.status = "confirmed"
 
     def crystallize(self, candidate: GenerationCandidate) -> EvolutionOutcome:

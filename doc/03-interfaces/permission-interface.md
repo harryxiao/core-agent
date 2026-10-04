@@ -47,6 +47,13 @@ class ApprovalWorkflow:
     def archive(self, ticket: ApprovalTicket) -> None:
         """审批归档，可回溯'谁在何时批准了什么'。"""
 
+def is_approved(ticket: ApprovalTicket) -> bool:
+    """审批单是否经人工批准（status 与 result 双重复核）。
+
+    状态词表属本模块——供域外（如 evolution 的 HITL confirm 门）判定「批了吗」，
+    不必依赖 ``"approved"`` 字面量。
+    """
+
 @dataclass
 class ApprovalRequest:
     op: str

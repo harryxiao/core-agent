@@ -18,6 +18,7 @@ class EvolutionErrorCode(StrEnum):
     CANDIDATE_PENDING = "CANDIDATE_PENDING"
     GATE_REJECTED = "GATE_REJECTED"
     EVAL_REGRESSED = "EVAL_REGRESSED"
+    CONFIRM_REQUIRED = "CONFIRM_REQUIRED"
 
 
 class EvolutionError(Exception):

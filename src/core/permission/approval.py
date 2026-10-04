@@ -24,6 +24,15 @@ _STATUS_TIMEOUT = "timeout"
 _STATUS_SUPERSEDED = "superseded"
 
 
+def is_approved(ticket: ApprovalTicket) -> bool:
+    """审批单是否经人工批准（状态与结果双重复核）。
+
+    状态词表属本模块（域外不认字面量）——供进化 HITL 门等域外判定「批了吗」。
+    """
+    approved = ticket.result is not None and ticket.result.approved
+    return ticket.status == _STATUS_APPROVED and approved
+
+
 class ApprovalWorkflow:
     """审批单生命周期与归档。"""
 
