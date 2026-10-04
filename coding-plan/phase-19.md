@@ -11,6 +11,7 @@
 ## 0. 结论
 
 - **无任何一项阻塞核心回路**：669 tests 覆盖的回路（记忆读写/压实/固化/遗忘、技能提炼/路由/迭代、进化四阶段 + HITL + 自动溶解）在生产路径上均已接通。
+- **A3（skills 半边）已于 change `0050` 关闭**（技能库/反馈/SOP 样本/灰度态落盘，ADR-0053）；evolution 半边（观察窗口）随 A5。
 - **A2+E2（会话维度）已于 change `0048` 关闭**（标识透传 + `compact` 接真 + 按会话读取）；**A1 已于 change `0049` 关闭**（收尾维护节拍 + `memory maintain`）。A 类剩 A3–A9。
 - **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）**；E 类中只有 **E1（constraints 中间件）** 与 **E2（per-session）** 有真实行为影响，其余为「接线缺失」。
 - **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A4/A5、E2/E4/E5 全归此。
@@ -34,7 +35,7 @@
 |---|---|---|---|---|---|
 | A1 | A | ~~`forget` 无调度器~~ | ✅ 已关闭（change `0049`）：loop 收尾维护节拍触发 `forget` + `core-agent memory maintain` 显式入口 | 中 | — |
 | A2 | A | ~~生产 `session_id` 恒空串~~ | ✅ 已关闭（change `0048`）：标识透传至 `remember`，压实/固化/遗忘按会话归组 | 中 | — |
-| A3 | A | 进程内无持久化 | 技能库 / 反馈统计 / 观察窗口 / SOP 样本 / 灰度态均随进程消失 | 中 | 存储选型 + spec 补 Requirement |
+| A3 | A | 进程内无持久化 | 🔶 **skills 半边已闭**（change `0050`：技能库/反馈/SOP 样本/灰度态落盘）；evolution 半边（观察窗口）随 A5 | 中 | 观察窗口随 A5 一并落盘 |
 | A4 | A | `EvolutionEngine.confirm` 无生产调用方 | 候选待办队列无驱动面，HITL 门在生产不触达 | 中 | 操作面（CLI/UI）驱动 pending 队列 |
 | A5 | A | `observe` 无采样调度器 | 观察期窗口开了，但无人按节拍喂回归样本 | 中 | 采样来源（evaluator 或外部上报） |
 | A6 | A | 观察窗口按 target 覆盖 | 重发布即重开窗口、丢旧样本 | 低 | 窗口历史留痕（可选） |
@@ -79,7 +80,7 @@
 - **关闭动作**：✅ **已由 change `0048-session-scoped-memory` 闭合**（与 E2 合并做）：loop 三入口收 `session_id` 并写入 L2 条目；`UIAPILayer.compact` 直调 `MemoryStore.compact`；`get_memory` 按会话归属过滤。spec delta：`loop`/`memory`/`ui` 三份（29 specs 全绿），测试 674 passed。
 - **前置**：无（原「与 E2 同根，建议合并做」已按此执行）。
 
-### A3 进程内无持久化
+### A3 进程内无持久化 — 🔶 skills 半边已闭（change `0050`）
 
 - **现象**（五处同源）：
   - `SkillLibrary` 注册表 —— SOP 提炼入库的技能随进程消失；
@@ -89,7 +90,9 @@
   - `VersionManager` 灰度 / A/B 状态。
 - **根因**：Phase 18 有意把持久化排除（先跑通闭环逻辑，再补落盘）；与 Phase 13/16 的「进程内态」同类（E4 的 `PetManager` 同族）。
 - **关闭动作**：定存储选型（复用 `FileBackend` 或新 backend）→ 逐类补 spec 持久化 Requirement → 与「依赖与重开顺序」第 3 步的 serve 常驻进程一并落地。
-- **前置**：存储选型决策（可先 ADR）。
+- **关闭进度**：🔶 **skills 半边已由 change `0050-persist-skills-state` 闭合**（存储选型 = 沿用既有 `path: Path | None` + `_load`/`_persist` 惯例，共用 `skills/persist.py` 两个纯函数、单文件 JSON 快照、零第三方依赖，决策见 **ADR-0053**）：`SkillLibrary` / `SkillFeedback` / `SopExtractor` / `VersionManager` 四类各加可选 `path`（缺省纯内存，向后兼容），`build_runtime` 注入 `$CORE_STATE_DIR/{skills,skill-feedback,sop-samples,skill-versions}.json`；spec 补「技能态持久化」Requirement（29 specs 全绿），测试 685 passed。
+- **剩余部分**：evolution 侧**观察窗口 / 候选队列**仍进程内 —— 归 **A5**（采样来源落地时一并落盘；窗口不落盘则重启即丢，见 A5 前置）。
+- **前置**：无（存储选型已定，ADR-0053）。
 
 ### A4 `EvolutionEngine.confirm` 无生产调用方
 
@@ -326,7 +329,7 @@
 1. **D + F + G 清尾**（无依赖、低成本）：G 类订正 deferred 措辞 + F 类逐项勾销/定性 + README 同步 —— 使账本自身可达且不误导。 ✅ **已完成**（G 类 7 组订正；D1/D3/D5 关闭、D4 部分；F 类 6 组核实：41 框勾销 / 11 项转出 E·A·B；README 已同步）。
 2. **A2 + E2 合并做**（同一根因）：会话标识透传 + 每会话独立 loop/memory + `UIAPILayer.compact` 接真。 ✅ **已完成**（change `0048-session-scoped-memory`：标识透传 + `compact` 接真 + `get_memory` 按会话过滤；**未采**每会话独立实例，理由见该 change design 决策 1/2）。
 3. **A1**（记忆驱动侧）：遗忘节拍。宜在 A2 之后（会话维度不生效时，衰减分组也是错的）。 ✅ **已完成**（change `0049-memory-maintenance-cadence`：loop 收尾维护节拍 + `memory maintain` CLI）。
-4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义；建议与「serve 常驻进程」一并做（`debug-gaps.md` §4 已提）。
+4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义；建议与「serve 常驻进程」一并做（`debug-gaps.md` §4 已提）。 🔶 **A3 skills 半边已完成**（change `0050`：技能库/反馈/SOP 样本/灰度态落盘 + ADR-0053）；**下一步 A3 evolution 半边 + A5**（观察窗口落盘 + 采样来源）。
 5. **B1**（独立轨）：随时可先写重开 ADR（不需代码），是唯一可并行推进的阻塞级项。
 6. **E1 + E7 + E8**（契约与中间件）：E1 有真实行为影响（熔断/校验空转），建议提前；E7/E8 需先定夺契约再动。
 7. **E3 / E6**（规格裁决）：先定夺 beast R4/R5 与 context 判定升级是否解除 deferred，再决定是否接 runtime。

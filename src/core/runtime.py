@@ -76,6 +76,7 @@ from core.skills import (
     SkillLibrary,
     SkillRouter,
     SopExtractor,
+    VersionManager,
     skill_hint,
     sop_writer_with,
 )
@@ -135,6 +136,15 @@ def _memory_path() -> Path:
     """
     base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
     return base / "memory.jsonl"
+
+
+def _skill_state_path(name: str) -> Path:
+    """技能态落盘路径：$CORE_STATE_DIR（缺省 ~/.core/state）/<name>。
+
+    同检查点 / 记忆的状态目录约定；技能态是可变快照，故用单文件 JSON（见 skills.persist）。
+    """
+    base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
+    return base / name
 
 
 # 子 Agent 委托运行完整子循环（多次 LLM 往返 + 工具轮），远超 ToolDef 默认 30s
@@ -233,7 +243,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
     for tool in builtin_tools:
         tools.register(tool)
 
-    skill_library = SkillLibrary()
+    # 技能态落盘（0050）：四类运行态注入 $CORE_STATE_DIR 下状态文件 → 重启恢复；
+    # 此前技能库/反馈/样本/灰度全活进程内，结晶链路每进程从零开始（账本 A3）。
+    skill_library = SkillLibrary(path=_skill_state_path("skills.json"))
     # 语义兜底（0044）：仅 JEV 配置时注入打分器；否则纯词法（词法命中零模型调用）
     skill_router = SkillRouter(
         skill_library,
@@ -243,16 +255,26 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
     # SOP 提炼接线（0043）：成功任务收尾的轨迹经提炼器归组、达阈值提炼为技能入库——
     # 此前技能库只有注册/路由/版本三段，无任何产生技能的入口（生产恒为空）。
     sop_extractor = SopExtractor(
-        skill_library, writer=sop_writer_with(_llm_text), effect_tracker=effect_tracker
+        skill_library,
+        writer=sop_writer_with(_llm_text),
+        effect_tracker=effect_tracker,
+        path=_skill_state_path("sop-samples.json"),
     )
-    # 技能迭代接线（0045）：命中注入 + 执行反馈 + 迭代闭环。反馈是进程内统计（不落盘、
-    # 不写记忆）；迭代复用 VersionManager 的灰度/A/B（0048 决策 ⑥ 记的「能力已存在、
+    # 技能迭代接线（0045）：命中注入 + 执行反馈 + 迭代闭环。反馈默认落盘（缺省进程内，
+    # 0050 注入路径）；迭代复用 VersionManager 的灰度/A/B（0048 决策 ⑥ 记的「能力已存在、
     # 无调用者」在此接上调用者），改写走与 SOP 同一注入接缝（skills 不 import LLM 抽象）。
-    skill_feedback = SkillFeedback()
+    # 版本管理器在此显式构造并注入（0050 决策 4）：`SkillIterator` 内部自建的那份拿不到，
+    # 落盘需由组合根持有；顺带把「灰度/A-B 指标 = 各版本成功率」口径显式化。
+    skill_feedback = SkillFeedback(path=_skill_state_path("skill-feedback.json"))
     skill_iterator = SkillIterator(
         skill_library,
         skill_feedback,
         writer=sop_writer_with(_llm_text),
+        versions=VersionManager(
+            skill_library,
+            metrics=lambda skill_id, version: skill_feedback.success_rate(skill_id, version),
+            path=_skill_state_path("skill-versions.json"),
+        ),
         tracker=effect_tracker,
     )
 

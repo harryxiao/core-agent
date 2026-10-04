@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from core.memory import MemoryStore
@@ -541,3 +543,106 @@ def test_iterator_decide_requires_both_versions_sampled() -> None:
 
     assert it.decide(lib.lookup(_SID)) is None, "草稿无样本 → 不定夺"
     assert lib.lookup(_SID).version == "v1"
+
+
+# ---- 技能态持久化（0050） ----
+
+
+def _sop(lib: SkillLibrary, path: Path) -> SopExtractor:
+    """提炼器桩：writer 固定返回一段 SOP 文本，阈值 3（覆盖「样本跨进程累积」）。"""
+    return SopExtractor(
+        lib,
+        writer=lambda _prompt: "1. 读输入\n2. 输出摘要",
+        threshold=3,
+        path=path,
+    )
+
+
+def test_library_persists_across_restart(tmp_path) -> None:
+    path = tmp_path / "skills.json"
+    lib = SkillLibrary(path=path)
+    lib.register(
+        Skill(
+            skill_id="skills.sop.x",
+            description="SOP：x",
+            task_types=["x"],
+            instructions="1. 读输入。",
+            version="v2",
+            status="active",
+        )
+    )
+
+    revived = SkillLibrary(path=path).lookup("skills.sop.x")
+
+    assert (revived.version, revived.status, revived.instructions) == (
+        "v2",
+        "active",
+        "1. 读输入。",
+    ), "重启后技能全字段恢复"
+
+
+def test_feedback_persists_across_restart(tmp_path) -> None:
+    path = tmp_path / "skill-feedback.json"
+    feedback = SkillFeedback(path=path)
+    feedback.record_hit("s.x", version="v1")
+    feedback.record_outcome("s.x", version="v1", ok=True)
+    feedback.record_outcome("s.x", version="v1", ok=False)
+
+    revived = SkillFeedback(path=path).stats("s.x", version="v1")
+
+    assert (revived.hits, revived.ok, revived.fail) == (1, 1, 1), "重启后计数恢复"
+
+
+def test_sop_samples_persist_across_restart(tmp_path) -> None:
+    path = tmp_path / "sop-samples.json"
+    lib = SkillLibrary()
+    first = _sop(lib, path)
+    assert first.observe("读文档并摘要", ["step1"]) is None, "不足阈值不提炼"
+
+    # 模拟进程重启：同一路径重建，样本应从 1 条续起（再提交 2 条即达阈值 3）
+    revived_lib = SkillLibrary()
+    second = _sop(revived_lib, path)
+    second.observe("读文档并摘要", ["step2"])
+    skill = second.observe("读文档并摘要", ["step3"])
+
+    assert skill is not None, "样本跨重启累积，达阈值即提炼"
+    assert revived_lib.lookup(skill.skill_id) is skill
+
+
+def test_version_state_persists_across_restart(tmp_path) -> None:
+    path = tmp_path / "skill-versions.json"
+    lib = SkillLibrary()
+    lib.register(Skill(skill_id="s.x", description="x", version="v1"))
+    manager = VersionManager(lib, metrics=lambda _sid, ver: 1.0 if ver == "v1" else 0.0, path=path)
+    manager.ab_test("s.x", "v1", "v2")
+
+    revived = VersionManager(lib, path=path)
+
+    assert revived.select("s.x", {}) == "v1", "重启后 A/B 胜者仍生效"
+
+    gray_path = tmp_path / "skill-gray.json"
+    gray = VersionManager(lib, path=gray_path)
+    gray.promote("s.x", "v9", 1.0)
+    assert VersionManager(lib, path=gray_path).select("s.x", {}) == "v9", "重启后灰度仍生效"
+
+
+def test_no_path_means_pure_memory(tmp_path) -> None:
+    lib = SkillLibrary()
+    lib.register(Skill(skill_id="s.x", description="x"))
+    feedback = SkillFeedback()
+    feedback.record_outcome("s.x", version="v1", ok=True)
+    _sop(lib, path=None).observe("t", ["step"])  # type: ignore[arg-type]  # 显式传 None
+    VersionManager(lib).promote("s.x", "v2", 0.5)
+
+    assert list(tmp_path.iterdir()) == [], "未注入路径 → 不产生任何落盘文件"
+
+
+def test_corrupt_state_degrades_to_empty(tmp_path) -> None:
+    path = tmp_path / "skills.json"
+    path.write_text("{ not json", encoding="utf-8")
+
+    lib = SkillLibrary(path=path)
+    assert lib.all_skills() == [], "损坏落盘 → 空态启动（不抛异常）"
+
+    lib.register(Skill(skill_id="s.x", description="x"))
+    assert SkillLibrary(path=path).all_skills() != [], "后续写入覆盖损坏文件"

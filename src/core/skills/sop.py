@@ -7,6 +7,9 @@
 生成走 DI 接缝（``SopWriter``：prompt → 文本），**skills 不 import 任何 LLM / rag 抽象**
 （照 ``memory/summarize.py`` 先例、ADR-0048 同一依赖方向），生产侧由 L5 组合根注入模型调用。
 
+样本累积可落盘（注入 ``path``）：提交 / 清组即落盘、启动即恢复（样本跨进程续攒）；
+缺省 ``path=None`` 纯内存（见 ``persist``）。
+
 对应接口：doc/03-interfaces/skills-interface.md §6
 """
 
@@ -16,11 +19,13 @@ import contextlib
 import time
 from collections.abc import Callable, Sequence
 from hashlib import blake2b
+from pathlib import Path
 
 from core.plugin_registry import Effect, EffectTracker
 
 from .library import SkillLibrary
 from .models import Skill
+from .persist import read_state, write_state
 from .router import terms_of
 
 # 提炼器契约：prompt → SOP 文本（同 ``memory.Summarizer`` 的「prompt → 文本」方向）
@@ -66,12 +71,15 @@ class SopExtractor:
         writer: SopWriter | None = None,
         threshold: int = _SOP_MIN_SAMPLES,
         effect_tracker: EffectTracker | None = None,
+        path: Path | None = None,
     ) -> None:
         self._library = library
         self._writer = writer
         self._threshold = threshold
         self._tracker = effect_tracker
+        self._path = path
         self._samples: dict[str, list[list[str]]] = {}
+        self._load()
 
     def observe(self, task: str, steps: Sequence[str], *, ok: bool = True) -> Skill | None:
         """提交一条轨迹；达阈值则提炼入库并返回技能，否则返回 None。
@@ -84,6 +92,7 @@ class SopExtractor:
         key = self._group_key(task)
         group = self._samples.setdefault(key, [])
         group.append(list(steps))
+        self._persist()
         if len(group) < self._threshold:
             return None
         text = self._writer(build_sop_prompt(task, [step for traj in group for step in traj]))
@@ -99,7 +108,24 @@ class SopExtractor:
         self._library.register(skill)
         self._track(skill)
         del self._samples[key]  # 提炼后清组，下批重新累积
+        self._persist()
         return skill
+
+    # ---- 落盘 ----
+
+    def _load(self) -> None:
+        """恢复落盘样本；缺失 / 损坏 / 结构不符 → 空态（不抛，见 ``persist``）。"""
+        raw = read_state(self._path)
+        try:
+            self._samples = {
+                str(key): [[str(chunk) for chunk in traj] for traj in trajs]
+                for key, trajs in raw.items()
+            }
+        except (AttributeError, TypeError, ValueError):
+            self._samples = {}
+
+    def _persist(self) -> None:
+        write_state(self._path, self._samples)
 
     # ---- 内部辅助 ----
 

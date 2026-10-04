@@ -3,6 +3,9 @@
 技能世代版本：灰度发布（新版本仅对 ratio 比例任务生效）、A/B 并行对比
 （指标量化），B 退化自动回退稳定版并标记 deprecated。
 
+灰度 / A-B / 稳定版状态可落盘（注入 ``path``）：变更即落盘、启动即恢复；
+缺省 ``path=None`` 纯内存（见 ``persist``）。
+
 对应接口：doc/03-interfaces/skills-interface.md §3
 """
 
@@ -10,10 +13,13 @@ from __future__ import annotations
 
 import random
 from collections.abc import Callable
+from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from .library import SkillLibrary
 from .models import ABResult
+from .persist import read_state, write_state
 
 MetricFn = Callable[[str, str], float]
 
@@ -27,17 +33,21 @@ class VersionManager:
         *,
         metrics: MetricFn | None = None,
         rng: Callable[[], float] | None = None,
+        path: Path | None = None,
     ) -> None:
         self._library = library
         self._metrics = metrics
         self._rng = rng if rng is not None else random.random
+        self._path = path
         self._gray: dict[str, tuple[str, float]] = {}
         self._stable: dict[str, str] = {}
         self._ab: dict[str, ABResult] = {}
+        self._load()
 
     def promote(self, skill_id: str, version: str, ratio: float) -> None:
         """灰度发布：新版本仅对 ratio 比例任务生效。"""
         self._gray[skill_id] = (version, ratio)
+        self._persist()
 
     def ab_test(self, skill_id: str, v_a: str, v_b: str) -> ABResult:
         """A/B 并行对比；B 指标退化自动回退稳定版 A 并标记 B deprecated。"""
@@ -55,6 +65,7 @@ class VersionManager:
             result = ABResult(winner=v_a, metric_delta=delta, decision="keep")
             self._stable[skill_id] = v_a
         self._ab[skill_id] = result
+        self._persist()
         return result
 
     def select(self, skill_id: str, ctx: dict[str, Any]) -> str:
@@ -71,6 +82,34 @@ class VersionManager:
         if stable is not None:
             return stable
         return self._current(skill_id)
+
+    # ---- 落盘 ----
+
+    def _load(self) -> None:
+        """恢复落盘状态；缺失 / 损坏 / 结构不符 → 空态（不抛，见 ``persist``）。"""
+        raw = read_state(self._path)
+        try:
+            gray = {
+                str(skill_id): (str(version), float(ratio))
+                for skill_id, (version, ratio) in raw.get("gray", {}).items()
+            }
+            stable = {str(skill_id): str(version) for skill_id, version in raw["stable"].items()}
+            ab = {str(skill_id): ABResult(**item) for skill_id, item in raw["ab"].items()}
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return
+        self._gray.update(gray)
+        self._stable.update(stable)
+        self._ab.update(ab)
+
+    def _persist(self) -> None:
+        write_state(
+            self._path,
+            {
+                "gray": {sid: [ver, ratio] for sid, (ver, ratio) in self._gray.items()},
+                "stable": self._stable,
+                "ab": {sid: asdict(result) for sid, result in self._ab.items()},
+            },
+        )
 
     # ---- 内部辅助 ----
 

@@ -25,8 +25,11 @@ class Skill:
 
 ```python
 class SkillLibrary:
+    def __init__(self, path: Path | None = None) -> None:
+        """``path`` 注入落盘位置（``None`` = 纯内存）；启动即恢复（见 §7）。"""
+
     def register(self, skill: Skill) -> None:
-        """入库；schema 非法抛 INVALID_SKILL_SCHEMA。"""
+        """入库；schema 非法抛 INVALID_SKILL_SCHEMA；注入 path 时落盘。"""
 
     def lookup(self, skill_id: str) -> Skill: ...
 
@@ -42,6 +45,9 @@ class SkillLibrary:
 
 ```python
 class VersionManager:
+    def __init__(self, library=None, *, metrics=None, rng=None, path: Path | None = None) -> None:
+        """``path`` 注入落盘位置（``None`` = 纯内存）；灰度/A-B/稳定版随变更落盘（见 §7）。"""
+
     def promote(self, skill_id: str, version: str, ratio: float) -> None:
         """灰度发布：新版本仅对 ratio 比例任务生效。"""
 
@@ -117,6 +123,9 @@ class SkillStats:
     # total = ok + fail（命中但未收尾不计）；failure_rate 无样本 → 0.0
 
 class SkillFeedback:
+    def __init__(self, path: Path | None = None) -> None:
+        """``path`` 注入落盘位置（``None`` = 纯内存）；计数随写入落盘（见 §7）。"""
+
     def record_hit(self, skill_id: str, *, version: str) -> None: ...
     def record_outcome(self, skill_id: str, *, version: str, ok: bool) -> None: ...
     def stats(self, skill_id: str, *, version: str | None = None) -> SkillStats: ...
@@ -133,7 +142,7 @@ def build_iterate_prompt(skill: Skill, stats: SkillStats) -> str: ...
 | 维度 | 口径 |
 |---|---|
 | **命中口径** | 技能进入 prompt 的那一轮记一次命中；结果按该轮**实际注入的版本**记成功/失败（版本维是 A/B 的前提） |
-| **反馈存储** | 仅进程内（不落盘、不写记忆），不影响本轮推理结果与终止语义；未注入记录器 → 零行为变化 |
+| **反馈存储** | 缺省仅进程内（不写记忆）；注入 `path` 时落盘 `$CORE_STATE_DIR/skill-feedback.json` 并在启动恢复（0050，见 §7）。不影响本轮推理结果与终止语义；未注入记录器 → 零行为变化 |
 | **触发门** | 样本数 ≥ `_ITERATE_MIN_SAMPLES`(3) **且** 失败率 ≥ `_ITERATE_FAILURE_RATE`(0.5)，且已注入 writer，且改写文本非空——任一不满足即不迭代（零额外模型调用） |
 | **灰度** | 草稿以 `_GRAY_RATIO`(0.3) 比例分流：`resolve` 按 `VersionManager.select` 返回版本，其余任务仍用原版本 |
 | **定夺** | 两版本样本各 ≥ 下限才 `ab_test`；胜者为草稿则落地（版本号 + `instructions` 一并写回），否则**只丢草稿**——草稿版本非库中 `Skill.version`，`_deprecate` 自然 no-op，**技能不被误标 deprecated** |
@@ -141,8 +150,8 @@ def build_iterate_prompt(skill: Skill, stats: SkillStats) -> str: ...
 | **接线** | `build_runtime`：命中钩子（路由 → 版本解析 → 记命中/快照）与收尾钩子（记结果 → `decide` → 失败再 `consider` → 转交 SOP 观察者）**每 loop 一组闭包**，状态不跨 loop 共享 |
 
 已知缺口（如实记录）：改写 prompt 无失败轨迹（只有现行 steps + 计数，轨迹级诊断属 evolution 维度2）；
-样本进程内、跨进程归零；草稿被丢弃后需重新累计样本（无 cooldown）；成功率只区分成败，不检测
-`instructions` 是否被模型实际采纳。
+草稿被丢弃后需重新累计样本（无 cooldown）；成功率只区分成败，不检测 `instructions` 是否被模型实际采纳；
+反馈/样本/灰度状态虽已落盘（0050），但**不做跨进程并发写入的合并**（沿用整文件覆盖语义）。
 
 ---
 
@@ -175,6 +184,10 @@ def sop_writer_with(llm: Callable[[str], str]) -> SopWriter:
     """把「prompt → 文本」的模型调用适配为提炼契约（同 memory.Summarizer 方向）。"""
 
 class SopExtractor:
+    def __init__(self, library, *, writer=None, threshold=3, effect_tracker=None,
+                 path: Path | None = None) -> None:
+        """``path`` 注入样本落盘位置（``None`` = 纯内存）；样本随提交/清组落盘（见 §7）。"""
+
     def observe(self, task: str, steps: Sequence[str], *, ok: bool = True) -> Skill | None:
         """提交一条轨迹；达阈值则提炼入库并返回技能，否则返回 None。"""
 ```
@@ -189,12 +202,43 @@ class SopExtractor:
 | **降级** | 未注入 writer：不累积、不提炼（零额外模型调用）；提炼文本为空：不入库、样本保留待下轮 |
 | **可逆** | 入库登记 `Effect(op="skills.register", undo=移除)`（`trace_id="skills.extract"`）；回滚即移除，重复回滚幂等 |
 
-已知缺口（如实记录）：技能库无持久化（进程内注册表，重启即失）、无 judgment 质量门、
-样本仅进程内累积（不落盘）。质量门与版本迭代归 Phase 18 #8。
+已知缺口（如实记录）：无 judgment 质量门（质量门与版本迭代归 Phase 18 #8）。技能库与样本
+已可落盘（0050，见 §7），缺省仍纯内存——生产由 `build_runtime` 注入路径。
 
 ---
 
-## 7. 错误码
+## 7. 技能态持久化（0050）
+
+技能态是**可变快照**（技能字段会被迭代改写、灰度状态会被覆盖、样本组提炼后清空），故用
+**单文件 JSON 整体重写**而非追加日志；四个状态组件各持自己的 `path` 与序列化形状，只把
+「字节进字节出」交给 `skills/persist.py` 的两个纯函数（标准库 JSON，零第三方依赖）。
+
+```python
+# skills/persist.py —— 无状态纯函数：read/write 都接受 path=None（= 不落盘）
+def read_state(path: Path | None) -> Any:
+    """读快照；None / 文件缺失 / 非法 JSON → None（不抛）。"""
+
+def write_state(path: Path | None, data: Any) -> None:
+    """原子写快照（同目录临时文件 + os.replace）；None → 不写盘。"""
+```
+
+| 落盘文件（`$CORE_STATE_DIR/`） | 组件 | 形状 |
+|---|---|---|
+| `skills.json` | `SkillLibrary` | `[Skill 字段全量]`（`asdict`） |
+| `skill-feedback.json` | `SkillFeedback` | `{skill_id: {version: {hits, ok, fail}}}` |
+| `sop-samples.json` | `SopExtractor` | `{组键: [[步骤…]…]}` |
+| `skill-versions.json` | `VersionManager` | `{gray, stable, ab}` |
+
+| 维度 | 口径 |
+|---|---|
+| **缺省纯内存** | `path=None` → 不落盘（既有纯内存构造零改动）；生产由 `build_runtime` 注入 `$CORE_STATE_DIR` 路径（同 `_memory_path()` 约定，env 可覆盖） |
+| **损坏降级** | 落盘缺失 / 非法 JSON / 结构不符 → 空态启动（不抛、不阻断）；技能态是可重建的派生数据，不为它拒绝启动 |
+| **原子性** | 临时文件 + `os.replace` 整文件替换，避免半写文件被读到 |
+| **口径不变** | 持久化只跨进程保态，**不改变**路由 / 版本选择 / 迭代判定语义 |
+
+---
+
+## 8. 错误码
 
 | 错误码 | 含义 |
 |---|---|
@@ -204,7 +248,7 @@ class SopExtractor:
 
 ---
 
-## 8. 关联
+## 9. 关联
 
 - 模块：`02-modules/skills.md`
 - 规格：`openspec/specs/skills/spec.md`

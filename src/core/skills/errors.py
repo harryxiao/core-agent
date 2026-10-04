@@ -4,7 +4,7 @@
 路由无匹配返回空列表（不抛异常），前置条件不满足返回 False（由调用方
 拒绝并携带 PRECONDITION_FAILED）。
 
-对应接口：doc/03-interfaces/skills-interface.md §6
+对应接口：doc/03-interfaces/skills-interface.md §8
 """
 
 from __future__ import annotations
