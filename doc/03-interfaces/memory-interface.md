@@ -43,6 +43,7 @@ class MemoryEntry:
     trace_id: str
     reuse_count: int = 0    # 复用次数（结晶阈值依据）
     ts: float
+    session_id: str = ""     # 会话 ID（跨轮记忆归组，缺省空串）
 ```
 
 ---
