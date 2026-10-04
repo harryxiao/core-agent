@@ -51,6 +51,10 @@ class PetSession:
 
 > 让行/休眠不新增枚举：复用 orchestration 任务状态机 `SUSPENDED`（宿主 loop 状态），宠物自身会话态仅 `IDLE / ACTIVE / BACKOFF / TERMINATED` 四态。
 
+> **依赖注入与快照**（change `0053`）：`loop`/记忆/探索/安全/通知依赖由组合根（`build_runtime`）经 `PetActivator` 注入，
+> 生产激活的宠物因此持有 runtime 的真实 loop 与共享记忆后端（偏好落 L2、唤醒走真 loop）。`snapshot()` / `restore(record, **deps)`
+> 支持会话快照与恢复（注册表落盘用）；缺省依赖全 `None` → echo loop / 无记忆兜底，行为不变。
+
 ---
 
 ## 2. Persona 人格与随机任务开关（pet.md）
@@ -117,6 +121,10 @@ class PetActivator:
     def activate_from_nl(self, user_input: str) -> PetSession: ...
         """WebUI 自然语言经 UIAPILayer.run_loop()/IMGateway.on_message，Agent 理解后绑定任务。"""
 ```
+
+> **生产装配**（change `0053`）：三入口由组合根产出的 `Runtime.pet_activator` 驱动 —— CLI 经 `entry._pet`（`pet <verb>`）、
+> WebUI 经 `UIAPILayer.activate_pet(user_input) -> session_id`；`/pet` 斜杠面板在 UI 层（候选来自 `list_tools`），不进内核。
+> `PetManager` 经 `Runtime.pet_manager` 共享并落盘 `$CORE_STATE_DIR/pets.json`（注册表跨进程存活）。
 
 ---
 

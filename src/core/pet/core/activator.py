@@ -10,7 +10,12 @@ pet <verb> CLI argv（cli-ops-interface CommandGroup 扩展）、WebUI 自然语
 
 from __future__ import annotations
 
-from .layers import PersonaLayer
+from collections.abc import Callable
+
+from core.loop import LoopPlugin
+from core.memory import MemoryStore
+
+from .layers import ExplorerLayer, PersonaLayer, SafetyLayer
 from .manager import PetManager
 from .models import PetTask, PetTaskKind
 from .session import PetSession
@@ -33,8 +38,24 @@ _CLI_VERBS = {
 class PetActivator:
     """三入口统一激活：均返回已启动的 PetSession，落点同一生命周期。"""
 
-    def __init__(self, manager: PetManager | None = None) -> None:
+    def __init__(  # noqa: PLR0913 — 注入面均为可选依赖注入
+        self,
+        manager: PetManager | None = None,
+        *,
+        loop: LoopPlugin | None = None,
+        memory: MemoryStore | None = None,
+        explorer: ExplorerLayer | None = None,
+        safety: SafetyLayer | None = None,
+        notifier: Callable[[str], None] | None = None,
+        busy: Callable[[], bool] | None = None,
+    ) -> None:
         self._manager = manager if manager is not None else PetManager()
+        self._loop = loop
+        self._memory = memory
+        self._explorer = explorer
+        self._safety = safety
+        self._notifier = notifier
+        self._busy = busy
 
     def activate_from_slash(self, tool_id: str) -> PetSession:
         """`/pet` 候选来自 UIAPILayer.list_tools()，不进内核接口。"""
@@ -59,7 +80,15 @@ class PetActivator:
         return self._activate(PetTask(kind=kind, goal=user_input))
 
     def _activate(self, task: PetTask, *, persona: PersonaLayer | None = None) -> PetSession:
-        session = PetSession(persona=persona)
+        session = PetSession(
+            persona=persona,
+            loop=self._loop,
+            memory=self._memory,
+            explorer=self._explorer,
+            safety=self._safety,
+            notifier=self._notifier,
+            busy=self._busy,
+        )
         session.start(task)
         self._manager.register(session)
         return session

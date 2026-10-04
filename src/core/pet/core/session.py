@@ -13,13 +13,14 @@ from __future__ import annotations
 import uuid
 from collections import deque
 from collections.abc import Callable
+from typing import Any, cast
 
 from core.loop import DefaultLoop, LoopPlugin, LoopResult
 from core.memory import MemoryEntry, MemoryStore
 
 from .errors import PetError, PetErrorCode
 from .layers import ExplorerLayer, PersonaLayer, SafetyLayer
-from .models import PetSessionState, PetTask
+from .models import PetSessionState, PetTask, PetTaskKind
 
 
 class PetSession:
@@ -54,6 +55,66 @@ class PetSession:
         self._wake_count = 0
         self._last_trace_id = ""
         self._preferences: dict[str, str] = {}
+
+    # ---- 快照 / 恢复（注册表落盘用） ----
+
+    def snapshot(self) -> dict[str, Any]:
+        """序列化会话可持久化态（id/状态/故障/让行/唤醒计数/偏好/任务队列）。"""
+        return {
+            "session_id": self.session_id,
+            "state": self.state.value,
+            "fault": self._fault,
+            "yielding": self._yielding,
+            "wake_count": self._wake_count,
+            "preferences": dict(self._preferences),
+            "tasks": [
+                {"kind": task.kind.value, "goal": task.goal, "priority": task.priority}
+                for task in self._tasks
+            ],
+        }
+
+    @classmethod
+    def restore(  # noqa: PLR0913 — 恢复面与 __init__ 注入面对称
+        cls,
+        record: dict[str, Any],
+        *,
+        loop: LoopPlugin | None = None,
+        memory: MemoryStore | None = None,
+        persona: PersonaLayer | None = None,
+        explorer: ExplorerLayer | None = None,
+        safety: SafetyLayer | None = None,
+        notifier: Callable[[str], None] | None = None,
+        busy: Callable[[], bool] | None = None,
+        feedback_period: int = 5,
+    ) -> PetSession:
+        """从快照恢复会话（保留 id/状态/任务/偏好/唤醒计数）；依赖可再注入（缺省回退兜底）。"""
+        session = cls(
+            session_id=record.get("session_id"),
+            loop=loop,
+            memory=memory,
+            persona=persona,
+            explorer=explorer,
+            safety=safety,
+            notifier=notifier,
+            busy=busy,
+            feedback_period=feedback_period,
+        )
+        session.state = PetSessionState(record.get("state", PetSessionState.IDLE.value))
+        session._fault = str(record.get("fault", ""))
+        session._yielding = bool(record.get("yielding", False))
+        session._wake_count = int(record.get("wake_count", 0))
+        raw_preferences = cast("dict[str, Any]", record.get("preferences") or {})
+        session._preferences = {str(k): str(v) for k, v in raw_preferences.items()}
+        raw_tasks = cast("list[dict[str, Any]]", record.get("tasks") or [])
+        session._tasks = deque(
+            PetTask(
+                kind=PetTaskKind(task["kind"]),
+                goal=str(task["goal"]),
+                priority=int(task.get("priority", 0)),
+            )
+            for task in raw_tasks
+        )
+        return session
 
     # ---- 生命周期 ----
 

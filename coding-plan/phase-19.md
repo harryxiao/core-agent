@@ -47,7 +47,7 @@
 | E1 | E | ~~constraints 中间件链从未注入 loop~~ | ✅ 已关闭（change `0052`）：按 `tool_id` 熔断接入 loop（动作前链 + 结果侧观察者）；**校验实由工具层承担**（原「校验空转」订正） | 中高 | — |
 | E2 | E | ~~UI 无每会话 loop/memory~~ | ✅ 已关闭（change `0048`，会话维度部分）：标识透传 + 单店按会话归组 | 中（与 A2 同根） | — |
 | E3 | E | 神通（beast）runtime 桥接缺失 | 20 神通从未进运行时 SkillLibrary；handoff 整段短路 | 中 | 先定夺 R4/R5 规格 deferred 是否解除 |
-| E4 | E | pet 运行时注入整族缺失 | 跨进程存活 / DI / wake / 三入口四项全缺 | 中 | A3（存储选型） |
+| E4 | E | ~~pet 运行时注入整族缺失~~ | ✅ 已关闭（change `0053`）：pet 纳入组合根（真 loop/共享记忆注入）+ 注册表落盘 + WebUI NL 入口 | 中 | — |
 | E5 | E | 主 Agent 自动迭代内部模块 | Phase 17 单列后**从未排期** | 低 | 无（能力已前置） |
 | E6 | E | 规格 deferred 未解除（context 判定升级等） | 见 §3 E6 | 低 | 规格裁决 |
 | E7 | E | 内置工具契约与实现漂移 | 契约列 5 个工具全仓零出现 | 中（契约裁决） | 先定夺契约 |
@@ -59,6 +59,8 @@
 | E13 | E | `Validator.parse_output` 零生产调用方 | `LLMPlanner._parse` 自解析（`json.loads` + `_PARSE_FAILED`），未走 constraints 解析中间件 | 低 | 无（随需） |
 | E14 | E | 校验码重复 | `ToolProvider._validate_args` ↔ `constraints.Validator.validate_input` 语义等价（`_matches_type` 双拷贝） | 低 | 工具层委托 Validator（`tools → constraints` 合法） |
 | E15 | E | 熔断阈值/冷却不可配 | 适配层用类默认（5 / 30s），`configuration/` 无 constraints 段 | 低 | E10 配置门控 |
+| E16 | E | `AsyncNotifier` 无 channel | pet 通知仅入队，`flush()` 投递未接；IM 通道（`im`）为依赖 | 低 | IM 通知通道 |
+| E17 | E | pet 无后台 daemon | 宠物仍显式 `wake()`，无自建调度线程 | 低 | 无（daemon 化属另一变更） |
 | B1 | B | Phase 12 MCP 安装/传输/安全 | 🔶 阻塞前提**已解除**（ADR-0043 裁决 + change `0033` 重开并合入 spec delta）；**剩余 = M2 代码**（transport 生产实现 / client 分流 / 消费侧安全） | **阻塞级** | 无（待排期实现 M2） |
 | C1 | C | 真实外部后端 ~20 处「未接」 | 抽象 + fake 已落地，真后端待接 | 低 | 见 `debug-gaps.md` §2.3 |
 | D1 | D | ~~README §2 状态行待核实~~ | ✅ 已关闭：Phase 18 行刷新为 ✅；`17.5` 行改为「🔶 部分完成（遗留见 E3/E4）」 | 无 | — |
@@ -190,15 +192,22 @@
 - **关闭动作**：`build_runtime` 侧注册神通 + 注入 router/loop/memory；随之销掉 C 类里 beast 那几行「未接」。
 - **前置**：需先定夺「R4/R5 的 deferred 是否解除」——若解除，改 spec 正文；若维持，本项只做注册不接 runtime。
 
-### E4 pet 运行时注入整族缺失（Phase 17.5 §3.2）
+### E4 pet 运行时注入整族缺失（Phase 17.5 §3.2）— ✅ 已关闭（change `0053`）
 
 - **现象**（四项同根：`src/core/runtime.py` 零 pet 引用）：
-  - **跨进程存活**：`entry.py:768` 每次调用**新建** `PetManager()`，进程退出即丢 → `pet gather` 后新进程 `pet list` 看不见、`pet stop` 失效。
-  - **依赖注入**：`entry.py:769` `PetActivator(manager=manager)` **未注入** loop/memory/explorer/safety/notifier → `observe()/prefer()` 偏好落不到 L2。
+  - **跨进程存活**：`entry.py:818` 每次调用**新建** `PetManager()`，进程退出即丢 → `pet gather` 后新进程 `pet list` 看不见、`pet stop` 失效。
+  - **依赖注入**：`entry.py:819` `PetActivator(manager=manager)` **未注入** loop/memory/explorer/safety/notifier → `observe()/prefer()` 偏好落不到 L2。
   - **wake 无触发**：即便唤醒，`PetSession` 默认是 echo 的 `DefaultLoop`（非真实 loop）。
   - **三入口**：`ui/api.py` 零 pet 引用 → WebUI 自然语言激活（`activate_from_nl`）未接。
-- **关闭动作**：`build_runtime` 构造 pet 依赖并按需注入 + `PetManager` 落盘。
-- **前置**：A3（存储选型）。
+- **关闭动作（已落地）**：`build_runtime` 组装 `Explorer`/`SafetyBounds`/`AsyncNotifier` +
+  `PetManager`（落盘 `$CORE_STATE_DIR/pets.json`）+ `PetActivator`（注入 runtime 的 loop/memory），
+  `Runtime` 增 `pet_manager`/`pet_activator`；`entry._pet`（CLI）与 `UIAPILayer.activate_pet`（WebUI NL）共用之；
+  `PetSession.snapshot()/restore()` 支撑注册表快照恢复（`factory` 使加载记录恢复为活会话）。ADR-0056。
+- **前置**：A3（存储选型）已闭。
+- **未纳入本变更（记后续）**：① `AsyncNotifier` 无 channel → `flush()` 投递未接（记 **E16**）；
+  ② 无后台 daemon（pet 仍显式 `wake`，记 **E17**）。
+- **已知接受项**：`DefaultLoop` ↔ `LoopPlugin` 协议签名错位（`astream`/`act` 的 async 方向相反）沿用全仓既有
+  `cast` 桥接，**非本次引入**。
 
 ### E5 主 Agent 自动迭代内部模块（Phase 17 遗留，从未排期）
 
@@ -363,7 +372,7 @@
 1. **D + F + G 清尾**（无依赖、低成本）：G 类订正 deferred 措辞 + F 类逐项勾销/定性 + README 同步 —— 使账本自身可达且不误导。 ✅ **已完成**（G 类 7 组订正；D1/D3/D5 关闭、D4 部分；F 类 6 组核实：41 框勾销 / 11 项转出 E·A·B；README 已同步）。
 2. **A2 + E2 合并做**（同一根因）：会话标识透传 + 每会话独立 loop/memory + `UIAPILayer.compact` 接真。 ✅ **已完成**（change `0048-session-scoped-memory`：标识透传 + `compact` 接真 + `get_memory` 按会话过滤；**未采**每会话独立实例，理由见该 change design 决策 1/2）。
 3. **A1**（记忆驱动侧）：遗忘节拍。宜在 A2 之后（会话维度不生效时，衰减分组也是错的）。 ✅ **已完成**（change `0049-memory-maintenance-cadence`：loop 收尾维护节拍 + `memory maintain` CLI）。
-4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义。 ✅ **A3 全闭 + A5 + A10 已完成**（change `0050` 技能态落盘 / ADR-0053；change `0051` 进化冷路径驱动面 + 观察窗口落盘 + 批次成功率采样 / **ADR-0054**；A10 为本次走查新增的「冷路径无驱动面」发现）。⏭ **下一步 A4**（`confirm` 生产调用方 / pending 队列驱动面）+ **E4**（pet 运行时注入整族）。
+4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义。 ✅ **A3 全闭 + A5 + A10 + E4 已完成**（change `0050` 技能态落盘 / ADR-0053；change `0051` 进化冷路径驱动面 + 观察窗口落盘 + 批次成功率采样 / **ADR-0054**；A10 为本次走查新增的「冷路径无驱动面」发现；**E4** 见 change `0053` —— pet 纳入组合根 + 注册表落盘 + WebUI NL 入口 / **ADR-0056**）。⏭ **下一步 A4**（`confirm` 生产调用方 / pending 队列驱动面）。
 5. **B1**（独立轨）：重开 ADR 与 spec delta **均已完成**（ADR-0043 + change `0033` 重开归档）；**剩余为实现（M2 代码切片）**，可随时开工（无阻塞前置）。
 6. **E1 + E7 + E8**（契约与中间件）：✅ **E1 已完成**（change `0052`，ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；E7/E8 需先定夺契约再动。
 7. **E3 / E6**（规格裁决）：先定夺 beast R4/R5 与 context 判定升级是否解除 deferred，再决定是否接 runtime。

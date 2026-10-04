@@ -68,6 +68,10 @@ from core.orchestration import (
     plan_to_dict,
 )
 from core.permission import PermissionGuard
+from core.pet.core import PetActivator, PetManager, PetSession
+from core.pet.explore import Explorer
+from core.pet.notify import AsyncNotifier
+from core.pet.safety import SafetyBounds
 from core.plugin_registry import CoeffectResolver, EffectTracker, PluginInstaller
 from core.plugins import InstallDispatcher
 from core.rag import LLMEmbedder
@@ -116,6 +120,8 @@ class Runtime:
     checkpoints: CheckpointManager
     time_travel: TimeTravel
     crash_recovery: CrashRecovery
+    pet_manager: PetManager
+    pet_activator: PetActivator
 
     def recover(self) -> list[RestoreHandle]:
         """启动时扫描检查点，恢复无 done 标记的任务（返回续跑句柄）。"""
@@ -147,6 +153,15 @@ def _skill_state_path(name: str) -> Path:
     """
     base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
     return base / name
+
+
+def _pet_state_path() -> Path:
+    """宠物注册表落盘路径：$CORE_STATE_DIR（缺省 ~/.core/state）/pets.json。
+
+    同检查点 / 技能态的状态目录约定；注册表是可变快照，故用单文件 JSON（见 pet.core.manager）。
+    """
+    base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
+    return base / "pets.json"
 
 
 # 子 Agent 委托运行完整子循环（多次 LLM 往返 + 工具轮），远超 ToolDef 默认 30s
@@ -530,6 +545,32 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         tracer=tracer,
     )
 
+    # DefaultLoop 与 LoopPlugin 协议签名存在既有错位（astream/act async 方向相反），
+    # 全仓以 cast 桥接（见 entry._build_ui）；此处沿用，行为不变。
+    pet_loop = cast(LoopPlugin, loop)
+    pet_explorer = Explorer()
+    pet_safety = SafetyBounds()
+    pet_notifier = AsyncNotifier()
+    pet_manager = PetManager(
+        _pet_state_path(),
+        factory=lambda record: PetSession.restore(
+            record,
+            loop=pet_loop,
+            memory=memory,
+            explorer=pet_explorer,
+            safety=pet_safety,
+            notifier=pet_notifier.notify,
+        ),
+    )
+    pet_activator = PetActivator(
+        pet_manager,
+        loop=pet_loop,
+        memory=memory,
+        explorer=pet_explorer,
+        safety=pet_safety,
+        notifier=pet_notifier.notify,
+    )
+
     return Runtime(
         app=app,
         config=config,
@@ -549,6 +590,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         checkpoints=checkpoints,
         time_travel=time_travel,
         crash_recovery=crash_recovery,
+        pet_manager=pet_manager,
+        pet_activator=pet_activator,
     )
 
 

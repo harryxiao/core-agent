@@ -45,7 +45,7 @@ from core.deployment import (
 from core.loop import LoopPlugin
 from core.orchestration import Plan, TaskScheduler, plan_from_dict
 from core.permission import ApprovalChannel
-from core.pet.core import PetActivator, PetManager
+from core.pet.core import PetManager
 from core.pet.library import load_persona, load_personas
 from core.plugin_registry import DomainError, PluginInstaller, PluginKind, PluginSource
 from core.plugins import InstallDispatcher
@@ -306,6 +306,7 @@ def _build_ui(args: argparse.Namespace, *, interactive: bool = False) -> UIAPILa
         config=runtime.config,
         approval=approval,
         orchestrator=runtime.orchestrator,  # /task 命令驱动同一编排器
+        pet_activator=runtime.pet_activator,  # WebUI 自然语言宠物激活
     )
     api.set_llm_config(runtime.app.llm)
     return api
@@ -803,7 +804,7 @@ def _read_prompt(args: argparse.Namespace) -> str | None:
     return None
 
 
-def _pet(args: argparse.Namespace) -> int:
+def _pet(args: argparse.Namespace) -> int:  # noqa: PLR0911 — CLI 分支各自退出码
     cli = _cli_overrides(args)
     if not _as_bool(resolve("pet.enabled", cli=cli, env=os.environ)):
         print(
@@ -815,14 +816,17 @@ def _pet(args: argparse.Namespace) -> int:
     verb: str | None = args.verb
     name, rest = _split_pet_name(list(args.rest or []))
 
-    manager = PetManager()
-    activator = PetActivator(manager=manager)
-
     if verb is None:
         print(
             "用法: core-agent pet <verb> [--name NAME] [...]（gather|info|explore|walk|list|stop）"
         )
         return 0
+    try:
+        runtime = build_runtime(ConfigManager(yaml_path=args.config, cli=cli))
+    except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
+        print(f"装配失败: {exc}", file=sys.stderr)
+        return 1
+    manager = runtime.pet_manager
     if verb == "list":
         _print_pets(manager, persons_dir)
         return 0
@@ -833,7 +837,9 @@ def _pet(args: argparse.Namespace) -> int:
         manager.stop(rest[0])
         print(f"已停止宠物会话 {rest[0]}")
         return 0
-    session = activator.activate_from_cli(verb, rest, persona=_load_persona(persons_dir, name))
+    session = runtime.pet_activator.activate_from_cli(
+        verb, rest, persona=_load_persona(persons_dir, name)
+    )
     print(f"已激活宠物会话 {session.session_id}（verb={verb}，状态 {session.state.value}）")
     return 0
 

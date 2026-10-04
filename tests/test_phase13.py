@@ -553,6 +553,7 @@ def test_entry_run_wires_runtime(monkeypatch) -> None:
             self.tools = object()
             self.config = object()
             self.orchestrator = object()
+            self.pet_activator = object()
             self.app = SimpleNamespace(llm=SimpleNamespace(api_key_ref="${KEY}"))
 
     def _fake_build(config, **kwargs):

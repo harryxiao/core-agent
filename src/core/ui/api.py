@@ -18,6 +18,7 @@ from core.loop import DefaultLoop, LoopEvent, LoopPlugin
 from core.memory import MemoryStore
 from core.orchestration import TaskScheduler
 from core.permission import ApprovalChannel
+from core.pet.core import PetActivator
 from core.tools import ToolDef, ToolProvider, ToolResult
 
 from .errors import UiError, UiErrorCode
@@ -48,6 +49,7 @@ class UIAPILayer:
         supported_modalities: set[str] | None = None,
         approval: ApprovalChannel | None = None,
         orchestrator: TaskScheduler | None = None,
+        pet_activator: PetActivator | None = None,
     ) -> None:
         self._loop = loop if loop is not None else DefaultLoop()
         self._memory = memory
@@ -58,6 +60,7 @@ class UIAPILayer:
         )
         self._approval = approval
         self._orchestrator = orchestrator
+        self._pet_activator = pet_activator
         self._sessions: dict[str, str] = {}
         self._llm_config: LLMConfig | None = None
 
@@ -122,6 +125,14 @@ class UIAPILayer:
         self._require_session(session_id)
         if self._memory is not None:
             self._memory.compact(session_id)
+
+    # ---- 宠物（WebUI 自然语言入口） ----
+
+    def activate_pet(self, user_input: str) -> str:
+        """WebUI 自然语言「启动宠物 + 任务」入口；返回已激活宠物会话 id。"""
+        if self._pet_activator is None:
+            raise UiError(UiErrorCode.UI_PET_UNSET, "宠物激活器未接")
+        return self._pet_activator.activate_from_nl(user_input).session_id
 
     # ---- 工具 ----
 

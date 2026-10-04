@@ -17,10 +17,11 @@ pet-mode 为 core-agent 提供后台自治循环扩展与宿主层三入口交�
 
 ```
 PetMode（后台自治循环扩展）
-├── PetSession     会话句柄：IDLE / ACTIVE / BACKOFF / TERMINATED 四态
+├── PetSession     会话句柄：IDLE / ACTIVE / BACKOFF / TERMINATED 四态（含 snapshot/restore）
 ├── Persona        宠物人设：dataclass + render_prompt()
 ├── PetTask        任务载体：PetTaskKind（INFORMATION_GATHERING / IDLE_EXPLORATION）
-└── PetActivator   三入口激活：/pet 斜杠 / pet <verb> CLI / WebUI 自然语言
+├── PetManager     多宠物注册表：独立启停 + 故障隔离（可选落盘，跨进程存活）
+└── PetActivator   三入口激活：/pet 斜杠 / pet <verb> CLI / WebUI 自然语言（注入 loop/记忆/探索/安全/通知）
 ```
 
 ---
@@ -65,6 +66,10 @@ PetMode（后台自治循环扩展）
 ```
 
 - 任务执行、偏好沉淀、反馈惊喜都回到既有 loop/memory 闭环，pet 只做"低优先级编排扩展"，不另起炉灶。
+- **生产装配**（change `0053`）：pet 依赖由组合根 `build_runtime` 组装 —— 一份 `Explorer`/`SafetyBounds`/`AsyncNotifier`
+  + `PetManager`（落盘 `$CORE_STATE_DIR/pets.json`）+ `PetActivator`（注入 runtime 的 loop / memory）；
+  `Runtime.pet_manager`/`pet_activator` 供 `entry._pet`（CLI）与 `UIAPILayer.activate_pet`（WebUI）共用，
+  缺省（无组合根）仍走 echo loop 兜底、行为不变。
 
 ---
 
@@ -86,3 +91,4 @@ PetMode（后台自治循环扩展）
 - 规格：`doc/openspec/specs/pet-mode/spec.md`
 - 复用接口：`loop-interface.md`（`Loop.run` 同步薄壳）、`ui-interface.md`、`im-interface.md`、`cli-ops-interface.md`、`memory-interface.md`（`MemoryEntry.source`）、`orchestration-interface.md`（任务状态机 `SUSPENDED`）
 - 对偶：`doc/02-modules/beast-mode.md`（前台重大任务）
+- 组合根：`src/core/runtime.py`（装配 pet 依赖 + `_pet_state_path`）；ADR-0056

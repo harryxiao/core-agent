@@ -146,6 +146,58 @@ def test_activator_three_entries() -> None:
     assert manager.get(slash.session_id) is slash
 
 
+def test_session_snapshot_restore_roundtrip() -> None:
+    """snapshot→restore 保真：id / 状态 / 任务队列 / 偏好 / 唤醒计数。"""
+    session = PetSession(session_id="s1", loop=FakeLoop(), memory=FakeMemory())
+    session.start(_task())
+    session.observe("theme:dark")
+    session.wake()
+    restored = PetSession.restore(session.snapshot(), loop=FakeLoop())
+    assert restored.session_id == "s1"
+    assert restored.state is PetSessionState.ACTIVE
+    assert restored.prefer("theme") == "dark"
+    assert len(restored._tasks) == 1  # noqa: SLF001 — 快照保真断言
+    assert restored._wake_count == 1  # noqa: SLF001 — 快照保真断言
+
+
+def test_manager_persists_registry_across_instances(tmp_path) -> None:
+    """注册表落盘：注册后新 manager 加载可见；stop 后落盘同步。"""
+    path = tmp_path / "pets.json"
+    first = PetManager(path)
+    pet = PetSession(session_id="p1", loop=FakeLoop())
+    pet.start(_task())
+    first.register(pet)
+
+    reloaded = PetManager(path)
+    assert [p.session_id for p in reloaded.list()] == ["p1"]
+    assert reloaded.get("p1").state is PetSessionState.ACTIVE
+
+    reloaded.stop("p1")
+    assert PetManager(path).get("p1").state is PetSessionState.TERMINATED
+
+
+def test_manager_restores_via_factory(tmp_path) -> None:
+    """factory 注入 → 加载的记录恢复为带真依赖的活会话（identity）。"""
+    path = tmp_path / "pets.json"
+    PetManager(path).register(PetSession(session_id="p1", loop=FakeLoop()))
+
+    live_loop = FakeLoop()
+    restored = PetManager(path, factory=lambda rec: PetSession.restore(rec, loop=live_loop))
+    assert restored.get("p1")._loop is live_loop  # noqa: SLF001 — 注入生效断言
+
+
+def test_activator_injects_dependencies() -> None:
+    """activator 注入的依赖透传到激活的会话（偏好可落 L2）。"""
+    loop = FakeLoop()
+    memory = FakeMemory()
+    activator = PetActivator(PetManager(), loop=loop, memory=memory)
+    session = activator.activate_from_cli("gather", ["今日新闻"])
+    assert session._loop is loop  # noqa: SLF001 — 注入生效断言
+    assert session._memory is memory  # noqa: SLF001 — 注入生效断言
+    session.observe("theme:dark")
+    assert memory.written, "偏好应经注入的记忆后端落 L2"
+
+
 def test_manager_multi_pet_isolation() -> None:
     manager = PetManager()
     a = PetSession(loop=FakeLoop())
