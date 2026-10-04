@@ -307,6 +307,26 @@ def test_irreversible_action_without_approver_fail_closed() -> None:
     assert executed == []
 
 
+def test_perceive_does_not_retrieve_memory() -> None:
+    """检索归属 ContextEngine.assemble；perceive 只观察，不做记忆检索（架构图 :117）。"""
+
+    class _SpyMemory:
+        def __init__(self) -> None:
+            self.reads: list[tuple[str, int]] = []
+
+        def read(self, query: str, budget: int = 0) -> list[object]:
+            self.reads.append((query, budget))
+            return [{"source": "s", "content": "c"}]
+
+        # 无 write：perceive 若试图写记忆会 AttributeError 直接暴露
+
+    spy = _SpyMemory()
+    loop = DefaultLoop(planner=lambda ctx: Action(args={"reply": "ok"}), memory=spy)  # type: ignore[arg-type]
+    ctx = loop.perceive("查询内容")
+    assert spy.reads == [], "perceive 不应触发 MemoryStore.read"
+    assert ctx.memory == []
+
+
 # ---- 工具动作事件（action_started / action_completed，spec：异步流式执行） ----
 
 

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from core.context import (
@@ -135,3 +137,21 @@ def test_assembler_missing_project_degrades() -> None:
     assembler = DynamicAssembler()
     pack = assembler.build("t", "s", budget=100)
     assert pack.facts == []
+
+
+def test_assembler_recalls_facts_by_task() -> None:
+    """检索 query 为任务目标（task-keyed），非阶段名——对齐架构图数据流 :117。"""
+
+    class _SpyMemory:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def read(self, query: str, budget: int = 0) -> list[SimpleNamespace]:
+            self.queries.append(query)
+            return [SimpleNamespace(source="episodic", content=f"fact:{query}")]
+
+    spy = _SpyMemory()
+    assembler = DynamicAssembler(memory=spy)  # type: ignore[arg-type]
+    pack = assembler.build("部署流水线", "reason", budget=1000)
+    assert spy.queries == ["部署流水线"], "应以任务为目标 query 检索，而非阶段名"
+    assert any(f["content"] == "fact:部署流水线" for f in pack.facts)

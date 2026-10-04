@@ -33,7 +33,7 @@ class DefaultLoop(Plugin):
 
     def run(self, user_input: str) -> LoopResult:
         trace_id = new_trace_id()
-        ctx = self.perceive(user_input)          # 检索记忆 + 拼上下文（有上界）
+        ctx = self.perceive(user_input)          # 拼上下文（有上界）；记忆检索由 ContextEngine.assemble 承担
         while not ctx.done():
             action = self.reason(ctx)            # 模型决策
             if action.is_irreversible and not await self.approve(action):
@@ -69,7 +69,7 @@ class LoopEvent:
 @dataclass
 class LoopContext:
     messages: list[Message]     # 本轮消息流
-    memory: MemoryPack          # 检索结果 + L1 索引（有 token 上界）
+    memory: MemoryPack          # 已注入记忆快照（保留字段；检索由 ContextEngine.assemble 承担）
     tools: list[ToolSchema]     # 可调用工具 schema
     trajectory: list[Step]      # 本轮轨迹（供 Remember 写入）
     reply: str = ""

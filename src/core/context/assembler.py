@@ -1,6 +1,6 @@
 """动态上下文装配（DynamicAssembler）。
 
-按任务阶段按需装配上下文：宪法分区必保注入、L2 事实按需检索、项目信息
+按任务按需装配上下文：宪法分区必保注入、L2 事实按任务检索、项目信息
 未命中静默降级；超预算交 BudgetManager 裁剪。
 
 对应接口：doc/03-interfaces/context-interface.md §2
@@ -32,12 +32,12 @@ class DynamicAssembler:
         self._project_info = list(project_info or [])
 
     def build(self, task: str, stage: str, *, budget: int) -> ContextPack:
-        """按阶段装配上下文：宪法 + 项目信息必保，事实按需检索，超预算裁剪。"""
+        """按任务装配上下文：宪法 + 项目信息必保，事实按任务检索（query=task），超预算裁剪。"""
         project = [{"source": "project", "content": line} for line in self._project_info]
         pack = ContextPack(
             task=task,
             stage=stage,
-            facts=project + self._gather_facts(stage, budget),
+            facts=project + self._gather_facts(task, budget),
             constitution=list(self._constitution),
             pending=[],
         )
@@ -53,9 +53,10 @@ class DynamicAssembler:
 
     # ---- 内部辅助 ----
 
-    def _gather_facts(self, stage: str, budget: int) -> list[dict[str, str]]:
+    def _gather_facts(self, query: str, budget: int) -> list[dict[str, str]]:
+        """以任务目标为检索 query 召回 L2 事实（stage 不参与检索，架构图 :117）。"""
         if self._memory is None:
             return []
         return [
-            {"source": e.source, "content": e.content} for e in self._memory.read(stage, budget)
+            {"source": e.source, "content": e.content} for e in self._memory.read(query, budget)
         ]

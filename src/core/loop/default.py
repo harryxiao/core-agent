@@ -210,11 +210,10 @@ class DefaultLoop(Plugin):
     # ---- 阶段方法 ----
 
     def perceive(self, user_input: str) -> LoopContext:
-        memory = self._memory.read(user_input, budget=2048) if self._memory is not None else []
+        # 检索归 ContextEngine.assemble（架构图 :117）；perceive 只观察，不检索记忆。
         tools = self._tools.active_tools() if self._tools is not None else []
         return LoopContext(
             messages=[{"role": "user", "content": user_input}],
-            memory=memory,
             tools=tools,
             token_used=len(user_input) // 4,
         )

@@ -10,7 +10,7 @@
 @dataclass
 class ContextPack:
     task: str
-    stage: str                  # 当前任务阶段
+    stage: str                  # 装配阶段标注（暂不参与事实选择）
     facts: list[dict]           # L2 事实（按需检索）
     skills: list[dict]          # L3 技能（按需）
     constitution: list[str]     # 宪章/约束（必保）
@@ -26,7 +26,7 @@ class ContextPack:
 ```python
 class DynamicAssembler:
     def build(self, task: str, stage: str, *, budget: int) -> ContextPack:
-        """按任务阶段按需装配上下文；超预算裁剪低相关度内容。"""
+        """按任务装配上下文（事实以 task 为 query 召回）；超预算裁剪低相关度内容。"""
 
     def fetch_detail(self, pointer: str) -> str:
         """按信息地图指针跳转取细节。"""
