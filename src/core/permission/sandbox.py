@@ -131,6 +131,37 @@ class SandboxManager:
                 PermissionErrorCode.SANDBOX_UNAVAILABLE, f"沙箱不可用: {exc}"
             ) from exc
 
+    def spawn(
+        self,
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+        budget: ResourceBudget | None = None,
+    ) -> subprocess.Popen[str]:
+        """以资源配额拉起**常驻**子进程，返回可交互句柄（长连接消费者用）。
+
+        与 :meth:`run` 的一次性执行互补：``run`` 跑完即返回结果，无法承载需要持续
+        stdin/stdout 的长连接（如本地 stdio MCP 服务端）。句柄归调用方持有并负责终止；
+        进程受 POSIX rlimit（内存/CPU）约束，拉起失败降级 SANDBOX_UNAVAILABLE。
+
+        .. note:: 仅施加 rlimit；可移植的文件系统 jail 需 OS 设施（namespaces/bwrap），
+           与 :meth:`run` 的终端域同款限制。
+        """
+        budget = budget if budget is not None else ResourceBudget()
+        try:
+            return subprocess.Popen(
+                cmd,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                preexec_fn=_apply_resource_limits(budget),
+            )
+        except Exception as exc:  # noqa: BLE001 — 后端故障统一降级 SANDBOX_UNAVAILABLE
+            raise AccessControlError(
+                PermissionErrorCode.SANDBOX_UNAVAILABLE, f"沙箱不可用: {exc}"
+            ) from exc
+
     @staticmethod
     def _target(cmd: list[str]) -> str:
         return cmd[0] if cmd else ""

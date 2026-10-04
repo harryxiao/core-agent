@@ -15,7 +15,13 @@ from .models import (
     ServerHandle,
 )
 from .server import MCPServer
-from .transport import FakeTransport, Transport, build_transport
+from .transport import (
+    FakeTransport,
+    StdioTransport,
+    Transport,
+    build_http_transport,
+    build_transport,
+)
 
 __all__ = [
     "CallResult",
@@ -33,6 +39,8 @@ __all__ = [
     "ServerCapabilities",
     "ServerConnection",
     "ServerHandle",
+    "StdioTransport",
     "Transport",
+    "build_http_transport",
     "build_transport",
 ]

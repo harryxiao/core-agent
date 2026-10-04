@@ -226,6 +226,43 @@ def test_sandbox_quota_exceeded() -> None:
     assert exc_info.value.code is PermissionErrorCode.QUOTA_EXCEEDED
 
 
+# ---- 沙箱常驻进程（change 0054：MCP stdio 等长连接消费者） ----
+
+
+def test_sandbox_spawn_runs_persistent_process() -> None:
+    """spawn 拉起常驻子进程：可交互、存活至调用方终止。"""
+    manager = SandboxManager()
+    proc = manager.spawn(
+        [sys.executable, "-c", "print('ready', flush=True); import sys; sys.stdin.readline()"]
+    )
+    assert proc.poll() is None  # 常驻：未自行退出
+    assert proc.stdout is not None
+    assert proc.stdout.readline().strip() == "ready"
+    assert proc.stdin is not None
+    proc.stdin.write("go\n")
+    proc.stdin.flush()
+    proc.wait(timeout=5)
+    assert proc.poll() is not None
+
+
+def test_sandbox_spawn_applies_resource_limits() -> None:
+    """常驻子进程受 rlimit 约束：超 CPU 配额被信号终止。"""
+    manager = SandboxManager()
+    proc = manager.spawn(
+        [sys.executable, "-c", "while True: pass"], budget=ResourceBudget(max_cpu_seconds=1)
+    )
+    proc.wait(timeout=20)
+    assert proc.returncode is not None and proc.returncode < 0  # 被信号终止
+
+
+def test_sandbox_spawn_unavailable_is_structured() -> None:
+    """拉起失败 → SANDBOX_UNAVAILABLE，不降级到宿主直跑。"""
+    manager = SandboxManager()
+    with pytest.raises(AccessControlError) as exc_info:
+        manager.spawn(["/nonexistent/definitely-not-a-binary"])
+    assert exc_info.value.code is PermissionErrorCode.SANDBOX_UNAVAILABLE
+
+
 # ---- 策略门 ----
 
 

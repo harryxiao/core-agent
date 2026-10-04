@@ -13,6 +13,11 @@ dependencies = [
 core-agent = "core.entry:main"
 
 [project.optional-dependencies]
+# 远端 MCP（http/streamable-http）传输的可选依赖（ADR-0043）：仅连远程 MCP 时安装，
+# 本地 stdio 走 stdlib 手写，核心运行时保持零第三方依赖（ADR-0044）。
+mcp = [
+    "mcp>=1",
+]
 dev = [
     "pytest>=8",
     "pytest-bdd>=7",

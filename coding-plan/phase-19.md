@@ -13,7 +13,7 @@
 - **无任何一项阻塞核心回路**：669 tests 覆盖的回路（记忆读写/压实/固化/遗忘、技能提炼/路由/迭代、进化四阶段 + HITL + 自动溶解）在生产路径上均已接通。
 - **A3 全闭（skills 半边 change `0050`，evolution 半边 change `0051`）**；**A5 + 本次新增发现 A10 已于 change `0051` 关闭**（冷路径驱动面 = loop 节拍 + `evolve run`；观察窗口落盘 + 批次成功率采样；ADR-0054）。
 - **A2+E2（会话维度）已于 change `0048` 关闭**（标识透传 + `compact` 接真 + 按会话读取）；**A1 已于 change `0049` 关闭**（收尾维护节拍 + `memory maintain`）。A 类剩 A3–A9。
-- **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）**；E 类中曾判定有真实行为影响的 **E1（constraints 熔断）** 与 **E2（per-session）** **均已关闭**（E2 → change `0048`；E1 → change `0052`），其余为「接线缺失」。
+- **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）** —— **B1 的 client 侧（stdio 传输 + 安装分流 + 消费侧安全接线）已于 change `0054` 关闭**（ADR-0057），余 http 会话 / 服务端 stdio / CLI 接线 / 白名单配置 4 行后续；E 类中曾判定有真实行为影响的 **E1（constraints 熔断）** 与 **E2（per-session）** **均已关闭**（E2 → change `0048`；E1 → change `0052`），其余为「接线缺失」。
 - **E1 已于 change `0052` 关闭**（constraints 熔断按 `tool_id` 接入 loop：结果侧观察者 + 按工具熔断 + 只计执行失败；ADR-0055）；核销时一并**订正**了账本原「校验空转」的说法（校验实由工具层承担）。
 - **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A4/A5、E2/E4/E5 全归此。
 - **一条值得单独记的形态问题**：`cli-contract-baseline.md` 的**内置工具契约与实现已对不上账**（见 E7）——契约列的 5 个工具在代码里从未存在。
@@ -22,7 +22,7 @@
 |---|---|---|---|
 | A Phase 18 收口遗留 | 9 | 中 | 否 |
 | E 早期 Phase 未闭合项 | 12 | 中 | 否 |
-| B Phase 12 MCP（DEFERRED） | 1 | **阻塞级（需 ADR）** | 否（可绕开） |
+| B Phase 12 MCP（部分关闭） | 5 | 低（B1 client 侧已闭） | 否（可绕开） |
 | C 真实外部后端未接 | ~20 处 | 低 | 否 |
 | D 文档与仓库杂项 | 5（3 已关闭） | 无 | 否 |
 | F 验收勾选状态 | ✅ 已清尾（6 组核实完毕） | 无 | 否 |
@@ -61,7 +61,11 @@
 | E15 | E | 熔断阈值/冷却不可配 | 适配层用类默认（5 / 30s），`configuration/` 无 constraints 段 | 低 | E10 配置门控 |
 | E16 | E | `AsyncNotifier` 无 channel | pet 通知仅入队，`flush()` 投递未接；IM 通道（`im`）为依赖 | 低 | IM 通知通道 |
 | E17 | E | pet 无后台 daemon | 宠物仍显式 `wake()`，无自建调度线程 | 低 | 无（daemon 化属另一变更） |
-| B1 | B | Phase 12 MCP 安装/传输/安全 | 🔶 阻塞前提**已解除**（ADR-0043 裁决 + change `0033` 重开并合入 spec delta）；**剩余 = M2 代码**（transport 生产实现 / client 分流 / 消费侧安全） | **阻塞级** | 无（待排期实现 M2） |
+| B1 | B | Phase 12 MCP 安装/传输/安全（client 侧） | 🔶 **部分关闭（change `0054`）**：stdio 传输 + `add` 分流 + 沙箱/白名单/确认门接线 + 组合根装配已落地（ADR-0057）；**余** http 会话 → B2、服务端 stdio → B3、CLI 接线 → B4、白名单配置 → B5 | 低 | 无 |
+| B2 | B | 远端 http/streamable-http 会话 | `build_http_transport` 仅落地「白名单守卫 + SDK 缺失降级 + 会话待接入报错」；`Mcp-Session-Id`/SSE/headers 未实现 | 低 | mcp SDK（离线不可装） |
+| B3 | B | `MCPServer.serve` stdio 事件循环 | 服务端方向（本机作 MCP server 暴露工具）未实现；client 方向 `0054` 已通 | 低 | 无 |
+| B4 | B | `mcp` CLI 接线 + 端点注册表落盘 | CLI `mcp serve/list/add/remove` 仍 stub；`MCPClient.add`/`InstallDispatcher` 已通（`0054`），缺 CLI→installer 与端点持久化 | 低 | 无 |
+| B5 | B | 出站白名单不可配 | `SandboxPolicy(host_allowlist)` 可注入且默认拒绝，但 `configuration/` 无 `permission.sandbox.host_allowlist` 段 | 低 | E10 配置门控 |
 | C1 | C | 真实外部后端 ~20 处「未接」 | 抽象 + fake 已落地，真后端待接 | 低 | 见 `debug-gaps.md` §2.3 |
 | D1 | D | ~~README §2 状态行待核实~~ | ✅ 已关闭：Phase 18 行刷新为 ✅；`17.5` 行改为「🔶 部分完成（遗留见 E3/E4）」 | 无 | — |
 | D2 | D | `coding-plan/phase-3-prompt.md` 未跟踪 | 一次性 prompt 残留 | 无 | 删除或 `git add` |
@@ -279,20 +283,47 @@
 
 ---
 
-## 4. B 类：Phase 12 MCP（DEFERRED，唯一阻塞级重开项）
+## 4. B 类：Phase 12 MCP（B1 client 侧已关闭，余 4 行后续）
 
 - **范围**：transport 生产实现（stdio/http）、client 安装分流、消费侧安全接线（本地 stdio 过 `SandboxManager`、远端 http 走出站白名单、不可逆工具走确认门）。
-- **阻塞原因**：mcp SDK 离线不可装 + 「核心零第三方运行时依赖红线」须 ADR 裁决。
-- **现状（已核到行）**：`build_transport` 仍占位抛 `MCP_CONNECT_FAILED`（`src/core/mcp/transport.py:117`）；`MCPClient.add` 硬编码 http（`src/core/mcp/client.py:138`）；CLI `mcp serve/list/add/remove` 未接（落 stub）；`mcp remove` 的资源释放随传输实现一并做。
-- **关闭动作（已推进两步）**：① **ADR 已就绪** —— `ADR-0043`（2026-10-01）裁决「stdio = stdlib 手写（零新依赖），
-  http/streamable-http = 懒 import 可选依赖 `[mcp]`」，守住 litellm-only 红线；② **spec delta 已合** —— change `0033`
-  同日**重开**（状态由 DEFERRED 改 Reopened）并归档于 `archive/2026-10-01-0033-mcp-install-security/`，ADDED「MCP 客户端
-  消费安全」+ MODIFIED「MCP Server 安装与移除」已入 base `doc/openspec/specs/mcp/spec.md:153`。
-- **剩余（唯一待办）**：`0033/tasks.md` 的 **2.x–5.2（M2 代码）** —— ① stdio transport（stdlib 手写 `create_subprocess_exec`
-  JSON-RPC）；② http/streamable-http（懒 import SDK）；③ `MCPClient.add` 按来源分流构建 `MCPEndpoint`；④ 消费侧安全接线
-  （stdio 过 `SandboxManager` / http 出站白名单 / 不可逆工具确认门）。**规模 = 一个完整实现切片**，非「接线几十行」。
-- **参考**：`coding-plan/phase-12.md` §5–§7（重开后的顺序 / 验收清单 / 测试要点）；
-  `archive/2026-10-01-0033-mcp-install-security/`（proposal + tasks 为待办真源）。
+
+### B1 MCP client 侧：stdio 传输 + 安装分流 + 消费侧安全接线 — 🔶 部分关闭（change `0054`）
+
+- **已关闭（change `0054-mcp-stdio-transport`，2026-10-04，**ADR-0057**）**：
+  ① `StdioTransport` —— stdlib 手写换行分帧 JSON-RPC（`subprocess.Popen` + 读线程 + `queue` 超时按 `id` 配对），**零新依赖**；
+  ② `SandboxManager.spawn(cmd, env, budget) -> Popen` —— 常驻子进程受 rlimit 约束，`permission` 仍是内核沙箱唯一 owner（复用 `_apply_resource_limits`，不重复实现）；
+  ③ `build_transport` 按端点分派（stdio → `StdioTransport`；http/streamable-http → `build_http_transport`；未知 → 结构化 `MCP_CONNECT_FAILED`），**原占位抛错消除**；
+  ④ `MCPClient.add` 按来源形状分流（`http(s)://` → http 端点，命令行 → stdio 端点；显式 `transport`/`command` 覆盖推断）+ ctor 注入 `sandbox`/`budget`/`policy`；
+  ⑤ `MCPClient._call` 直通传输层结构化 `MCPError`（不再被兜底分支重包为 `MCP_UNAVAILABLE`）；`connect` 失败即 `close` 传输（不留半开连接）；
+  ⑥ `plugins/install.py:_install_mcp` 传 `transport`/`command`/`args`（原硬编码 http 且丢参）；
+  ⑦ 组合根装配 `SandboxPolicy → SandboxManager(policy=…) → MCPClient(sandbox=…, policy=…)` 并注入 `InstallDispatcher`；`Runtime` 增 `mcp_client` 字段；
+  ⑧ `pyproject.toml` optional extra `mcp = ["mcp>=1"]`（ADR-0043 的 http 半边依赖声明）。
+- **消费侧确认门经验证已成立**：`MCPToolAdapter` 适配的远端工具带 `coeffects=["network:outbound"]` + `reversible=False`，`PolicyEngine` 对 `network:` 前缀判 `HIGH_RISK` → `PermissionGuard.confirm` → `GateDecision("confirm")`。**无需新代码，仅补验证用例。**
+- **ADR-0043 订正**：ADR-0043 字面写 stdio 用 `asyncio.create_subprocess_exec`，实际按同步 `Transport` 契约（`connect/call/ping/close`）落为**同步 stdlib**（`SandboxManager.spawn` + 读线程），已由 **ADR-0057** 记录理由（全 MCP/工具链同步，引 asyncio 会污染调用面）。
+- **原阻塞原因（已解除）**：mcp SDK 离线不可装 + 「核心零第三方运行时依赖红线」→ 已由 ADR-0043 裁决（stdio stdlib 手写；http 懒 import 可选 extra）。
+- **原现状（已消除）**：`build_transport` 占位抛 `MCP_CONNECT_FAILED` 与 `MCPClient.add` 硬编码 http 两条，均已在 `0054` 消除。
+
+### B2 远端 http/streamable-http 会话 — ⏭ 待开工
+
+- **残留**：`build_http_transport` 目前只完成**可离线验证的半边** —— 出站白名单守卫（非白名单 host → `PERMISSION_DENIED`）、SDK 缺失的清晰降级（`MCP_CONNECT_FAILED` 提示 `pip install core-agent[mcp]`）、已装 SDK 时明确报「会话待接入」。**真正的 http 会话未实现**（`Mcp-Session-Id` 复用、SSE 流解析、`headers` 透传）。
+- **阻塞**：`mcp` SDK 为可选依赖，当前环境离线不可装 → 无法端到端验证，按 CLAUDE.md §2 不留投机实现。
+- **附**：`pyproject.toml` 的 `[project.optional-dependencies].mcp = ["mcp>=1"]` 已随 change `0054` 声明，但 **`uv.lock` 未含该项**（本环境离线；`uv lock --offline` 会把既有 1600 行解析结果误删，已回滚）→ **联网后需执行 `uv lock`** 使锁文件与 `pyproject.toml` 一致。
+
+### B3 `MCPServer.serve` stdio 事件循环 — ⏭ 待开工
+
+- **残留**：服务端方向（本机作为 MCP server 暴露工具 + 白名单）的 stdio 事件循环未实现；client 方向已在 `0054` 打通。
+- **规模**：独立切片，与 B1 无强耦合（可复用同一换行分帧约定）。
+
+### B4 `mcp` CLI 接线 + 端点注册表持久化 — ⏭ 待开工
+
+- **残留**：CLI `mcp serve/list/add/remove` 仍为 stub。`0054` 已把 `MCPClient.add` 与 `InstallDispatcher` 打通，缺的是 **CLI → installer 接线** 与**已安装端点的注册表落盘**（`remove` 的资源释放已随 `close` 终止子进程具备）。
+
+### B5 出站白名单配置项 — ⏭ 待开工
+
+- **残留**：`SandboxPolicy(host_allowlist=…)` 已在 `0054` 可注入且生效（默认空 = 全部拒绝，安全默认），但 `configuration/` 无 `permission.sandbox.host_allowlist` 段 → 生产无法配置放行。
+- **前置**：E10 配置门控（与 E15 熔断阈值不可配同源）。
+
+- **参考**：`coding-plan/phase-12.md` §5–§7；`archive/2026-10-01-0033-mcp-install-security/`（原始 tasks 真源）、`archive/2026-10-04-0054-mcp-stdio-transport/`（B1 client 侧关闭凭据）。
 
 ---
 
@@ -373,7 +404,7 @@
 2. **A2 + E2 合并做**（同一根因）：会话标识透传 + 每会话独立 loop/memory + `UIAPILayer.compact` 接真。 ✅ **已完成**（change `0048-session-scoped-memory`：标识透传 + `compact` 接真 + `get_memory` 按会话过滤；**未采**每会话独立实例，理由见该 change design 决策 1/2）。
 3. **A1**（记忆驱动侧）：遗忘节拍。宜在 A2 之后（会话维度不生效时，衰减分组也是错的）。 ✅ **已完成**（change `0049-memory-maintenance-cadence`：loop 收尾维护节拍 + `memory maintain` CLI）。
 4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义。 ✅ **A3 全闭 + A5 + A10 + E4 已完成**（change `0050` 技能态落盘 / ADR-0053；change `0051` 进化冷路径驱动面 + 观察窗口落盘 + 批次成功率采样 / **ADR-0054**；A10 为本次走查新增的「冷路径无驱动面」发现；**E4** 见 change `0053` —— pet 纳入组合根 + 注册表落盘 + WebUI NL 入口 / **ADR-0056**）。⏭ **下一步 A4**（`confirm` 生产调用方 / pending 队列驱动面）。
-5. **B1**（独立轨）：重开 ADR 与 spec delta **均已完成**（ADR-0043 + change `0033` 重开归档）；**剩余为实现（M2 代码切片）**，可随时开工（无阻塞前置）。
+5. **B1**（独立轨）：🔶 **client 侧已关闭**（change `0054-mcp-stdio-transport`，ADR-0057 —— stdio 传输 / `add` 分流 / 消费侧安全接线 / 组合根装配；ADR-0043 的 ADR + spec delta 早已就绪）。**余 4 行后续**：B2 http 会话（需 SDK）/ B3 服务端 stdio / B4 CLI 接线 / B5 白名单配置。
 6. **E1 + E7 + E8**（契约与中间件）：✅ **E1 已完成**（change `0052`，ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；E7/E8 需先定夺契约再动。
 7. **E3 / E6**（规格裁决）：先定夺 beast R4/R5 与 context 判定升级是否解除 deferred，再决定是否接 runtime。
 8. **A7 + E6（miss 复用）**（低优先，同族）：数据源已就位，可一并做。

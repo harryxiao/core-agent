@@ -44,6 +44,7 @@ from core.llm_provider import LLMProvider, LLMRequest, Message, StdlibLLMProvide
 from core.loop import Approver, DefaultLoop, LoopPlugin, TurnObserver
 from core.loop.constraints_adapter import build_constraints_chain
 from core.loop.planner import LLMPlanner, SkillHint
+from core.mcp import MCPClient
 from core.memory import (
     Crystallizer,
     FileBackend,
@@ -67,7 +68,7 @@ from core.orchestration import (
     TaskScheduler,
     plan_to_dict,
 )
-from core.permission import PermissionGuard
+from core.permission import PermissionGuard, SandboxManager, SandboxPolicy
 from core.pet.core import PetActivator, PetManager, PetSession
 from core.pet.explore import Explorer
 from core.pet.notify import AsyncNotifier
@@ -115,6 +116,7 @@ class Runtime:
     skill_iterator: SkillIterator
     skill_extractor: SopExtractor
     installer: PluginInstaller
+    mcp_client: MCPClient
     evolution: EvolutionWorker
     orchestrator: TaskScheduler
     checkpoints: CheckpointManager
@@ -325,7 +327,13 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         return hints, on_turn
 
     loop_hints, loop_turn = _loop_hooks()
-    dispatcher = InstallDispatcher(skill_library=skill_library, tool_provider=tools)
+    # MCP 消费侧安全（0054）：stdio 子进程经沙箱资源配额拉起、http 出站经白名单；
+    # 策略与沙箱共用一个实例（同口径）。空白名单 = fail-closed 全拒出站（安全默认）。
+    mcp_policy = SandboxPolicy()
+    mcp_client = MCPClient(sandbox=SandboxManager(policy=mcp_policy), policy=mcp_policy)
+    dispatcher = InstallDispatcher(
+        skill_library=skill_library, tool_provider=tools, mcp_client=mcp_client
+    )
     installer = PluginInstaller(source_resolver=dispatcher.resolve, installer=dispatcher.install)
 
     # 上下文装配接线（P0）：两级 Core.md 的宪法 → constitution:v1 coeffect、
@@ -585,6 +593,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         skill_iterator=skill_iterator,
         skill_extractor=sop_extractor,
         installer=installer,
+        mcp_client=mcp_client,
         evolution=evolution,
         orchestrator=orchestrator,
         checkpoints=checkpoints,

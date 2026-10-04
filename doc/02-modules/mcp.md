@@ -32,6 +32,8 @@ L3 Loop ──► ToolProvider ──► [本地工具 | MCP 适配工具]
 ```
 
 - **MCPClient**：负责发现（initialize/list_tools）、传输（stdio 子进程 / HTTP）、协议编解码。
+  经组合根（`runtime.py`）装配：注入 `SandboxManager` + `SandboxPolicy`，stdio 子进程受沙箱配额、
+  http 出站受白名单管控（`Runtime.mcp_client`）。
 - **MCP 适配器**：把远程 tool 包装成 `ToolDef`，符合四要素契约，注册进 PluginRegistry。
 - **MCPServer**：负责握手（initialize/list_tools/call_tool）、传输（stdio / Streamable HTTP）、把本地工具经白名单包装为 MCP tool。
 
@@ -48,8 +50,17 @@ L3 Loop ──► ToolProvider ──► [本地工具 | MCP 适配工具]
 
 | 传输 | 说明 | 适用 |
 |---|---|---|
-| **stdio** | 子进程标准输入输出 JSON-RPC | 本地、无网络暴露 |
+| **stdio** | 子进程标准输入输出 JSON-RPC（换行分帧） | 本地、无网络暴露 |
 | **Streamable HTTP** | 远程连接，单连接多会话复用（Mcp-Session-Id） | 跨机、云 MCP |
+
+**生产实现现状**（ADR-0043 / ADR-0057，`src/core/mcp/transport.py`）：
+
+- **stdio 已落地**：`StdioTransport` 为 stdlib 手写（`subprocess` + 换行分帧 + 读线程 + 队列超时），
+  零新依赖；子进程经 `SandboxManager.spawn` 以资源配额拉起，`close` 终止回收。
+- **http/streamable-http 部分落地**：连接前经网络出站白名单校验（非白名单 → `PERMISSION_DENIED`），
+  `mcp` SDK 走可选 extra `[mcp]` 懒加载（未装 → `MCP_CONNECT_FAILED` 提示安装）；
+  **会话层（`Mcp-Session-Id` 复用 + SSE 分帧）待接入**。
+- `MCPClient.add` 按来源形状分流：`http(s)://` URL → http 端点；本地命令行 → stdio 端点。
 
 ### 3.3 与本地工具同等的安全约束
 

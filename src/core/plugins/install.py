@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from core.mcp import MCPClient, MCPToolAdapter, ServerHandle
 from core.plugin_registry import (
@@ -74,9 +74,18 @@ class InstallDispatcher:
         )
 
     def _install_mcp(self, asset: InstallableAsset) -> None:
-        url = str(asset.manifest.get("url") or asset.manifest.get("endpoint") or "")
-        name = str(asset.manifest.get("name") or "mcp")
-        handle = self._mcp.add(url, name)
+        manifest = asset.manifest
+        command = manifest.get("command")
+        raw_args = cast("list[Any]", manifest.get("args") or [])
+        source = str(manifest.get("url") or manifest.get("endpoint") or command or "")
+        name = str(manifest.get("name") or "mcp")
+        handle = self._mcp.add(
+            source,
+            name,
+            transport=manifest.get("transport"),
+            command=str(command) if command else None,
+            args=[str(arg) for arg in raw_args] or None,
+        )
         for remote in self._mcp.list_tools(handle):
             definition = self._adapter.adapt(remote, handle)
             self._tools.register(self._remote_tool(definition, handle, remote.name))

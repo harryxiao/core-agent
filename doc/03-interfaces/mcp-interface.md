@@ -17,13 +17,27 @@ class MCPClient(Plugin):
     def call_tool(self, handle, name: str, args: dict) -> CallResult: ...
     def read_resource(self, handle, uri: str) -> str: ...
     def get_prompt(self, handle, name: str, args: dict) -> str: ...
-    def add(self, source: str, name: str) -> ServerHandle:
-        """安装并连接 MCP server（复用 PluginSource(mcp-endpoint)），进入连接管理。"""
+    def add(
+        self, source: str, name: str, *,
+        transport: TransportKind | None = None,
+        command: str | None = None,
+        args: list[str] | None = None,
+    ) -> ServerHandle:
+        """安装并连接 MCP server（复用 PluginSource(mcp-endpoint)），进入连接管理。
+
+        按**来源形状分流**构建端点：显式 transport/command 优先；否则 `http(s)://` URL →
+        http 端点，本地命令行（`shlex` 切分）→ stdio 端点。
+        """
     def remove(self, name: str) -> None:
         """移除命名 server：关闭连接并释放资源（幂等）。"""
     def named(self, name: str) -> ServerHandle | None:
         """按名称查找已命名 server。"""
 ```
+
+> 构造函数：`MCPClient(transport_factory=None, *, sandbox=None, budget=None, policy=None)`。
+> `transport_factory` 供测试注入替身；`sandbox`/`budget`/`policy` 为**消费侧安全**注入面
+> —— stdio 子进程经 `SandboxManager` 以资源配额拉起，http 出站经 `SandboxPolicy` 白名单校验
+> （组合根装配，见 ADR-0057）。
 
 ---
 
@@ -56,7 +70,18 @@ class Transport(Protocol):
     def ping(self) -> bool: ...
 ```
 
-> 生产实现（stdio / http / streamable-http）懒 import；测试用 `FakeTransport` 注入断线 / 超时 / 异常，不碰真实网络。
+生产实现由 `build_transport(endpoint, *, sandbox=None, budget=None, policy=None)` 按端点分派：
+
+- **`StdioTransport`（stdlib 手写，零新依赖）**：MCP stdio 为**换行分帧** JSON-RPC。经
+  `SandboxManager.spawn` 以资源配额拉起常驻子进程，后台读线程把 stdout 行解为消息入队，
+  `call` 按 `id` 配对；超时取资源配额 `timeout_s` → `REMOTE_TIMEOUT`；`close` 终止并回收子进程。
+- **`build_http_transport`（`mcp` SDK 懒加载）**：连接前经 `SandboxPolicy.check_outbound`
+  校验 host（非白名单 → `PERMISSION_DENIED`）；`mcp` 未安装 → `MCP_CONNECT_FAILED` 并提示
+  `pip install core-agent[mcp]`。**会话层（`Mcp-Session-Id` 复用 + SSE 分帧）待接入**。
+- 未知 transport → `MCP_CONNECT_FAILED`。
+
+> `StdioTransport` 为**同步**实现（`Transport` 契约为同步；`asyncio` 反需线程桥接）。
+> 测试仍可经 `MCPClient(transport_factory=…)` 注入 `FakeTransport` 断线 / 超时 / 异常，不碰真实网络。
 
 ---
 
@@ -124,4 +149,6 @@ class MCPServer(Plugin):
 - 模块：`02-modules/mcp.md`
 - 工具契约：`tool-use-interface.md`
 - MCP Server 模式方案：`07-mcp-server/mcp-server.md`
+- 传输实现：`src/core/mcp/transport.py`（`StdioTransport` / `build_http_transport`）
+- 决策：ADR-0043（SDK 依赖定位）、ADR-0057（stdio 生产实现 + 消费侧安全接线）
 - 规格：`openspec/specs/mcp/spec.md`

@@ -76,24 +76,24 @@ observability(不可逆工具审计) ──────────────�
 
 ## 6. 里程碑验收清单（重开后）
 
-- [ ] ADR 落地：`mcp` SDK 依赖定位明确（懒 import 可选依赖 / 边界依赖），守住「litellm 唯一运行时三方依赖」红线
-- [ ] 「MCP 客户端消费安全」ADDED delta 落 base spec（`openspec/specs/mcp/spec.md` 含三场景：stdio 沙箱 / http 白名单 / 不可逆确认）
-- [ ] `build_transport` 生产实现：stdio（command+args 拉起子进程）+ http/streamable-http（连接 + `Mcp-Session-Id` 复用），替换占位抛错
-- [ ] `MCPClient.add` 按 transport 分流构建 `MCPEndpoint`（stdio `command+args` / http `url+headers`），不再硬编码 http
-- [ ] 消费侧安全：本地 stdio 子进程过 `SandboxManager`（资源配额 + 受限文件系统 + 出站白名单）；远端 http 走出站网络白名单
-- [ ] `MCPToolAdapter` 标注 coeffects + `reversible=False`（4.3 已有基础，补确认门 + observability 审计接线）
-- [ ] `mcp remove` 释放连接/会话/socket 资源，含本地子进程销毁
-- [ ] 门禁四件套全绿：ruff check ✓ · ruff format --check ✓ · pyright 0 errors · pytest 全通过（含本 Phase 新增用例）
+- [x] ADR 落地：`mcp` SDK 依赖定位明确（懒 import 可选依赖 / 边界依赖），守住「litellm 唯一运行时三方依赖」红线 —— **ADR-0043**（+ `[mcp]` optional extra，change `0054`；stdio 同步化订正见 **ADR-0057**）
+- [x] 「MCP 客户端消费安全」ADDED delta 落 base spec（`openspec/specs/mcp/spec.md` 含三场景：stdio 沙箱 / http 白名单 / 不可逆确认）—— **change `0033` 重开时已入 base**；change `0054` 另 ADDED「MCP 传输实现与沙箱常驻进程」
+- [ ] `build_transport` 生产实现：stdio（command+args 拉起子进程）+ http/streamable-http（连接 + `Mcp-Session-Id` 复用），替换占位抛错 → **stdio 已闭**（change `0054`，占位抛错消除 + 按端点分派）；**http 会话 + `Mcp-Session-Id` 复用未做**（`phase-19.md` B2）
+- [x] `MCPClient.add` 按 transport 分流构建 `MCPEndpoint`（stdio `command+args` / http `url+headers`），不再硬编码 http —— **change `0054`**（按来源形状分流 + 显式 transport/command 覆盖）
+- [ ] 消费侧安全：本地 stdio 子进程过 `SandboxManager`（资源配额 + 受限文件系统 + 出站白名单）；远端 http 走出站网络白名单 → **配额 + 出站白名单已闭**（change `0054`：`SandboxManager.spawn` 常驻子进程受 rlimit；`build_http_transport` 连接前校验 host）；**受限文件系统（fs jail）未做**（0054 明示非目标）
+- [x] `MCPToolAdapter` 标注 coeffects + `reversible=False`（4.3 已有基础，补确认门 + observability 审计接线）—— 确认门**经验证成立**（change `0054`：`network:` coeffect → `HIGH_RISK` → `GateDecision("confirm")`，无需新代码）；observability 审计接线未做
+- [ ] `mcp remove` 释放连接/会话/socket 资源，含本地子进程销毁 → **`close` 终止并回收子进程已闭**（change `0054`）；**CLI `mcp remove` 接线未做**（`phase-19.md` B4）
+- [x] 门禁四件套全绿：ruff check ✓ · ruff format --check ✓ · pyright 0 errors · pytest 全通过（含本 Phase 新增用例）—— 以 change `0054` 收官核验（732 passed / 0 errors）
 
 ## 7. 测试要点（重开后）
 
-- [ ] stdio transport：拉起本地子进程（fake 命令），`initialize` 握手 + 工具发现；子进程销毁（`mcp remove` 后进程退出）
-- [ ] http transport：连接 + `Mcp-Session-Id` 会话复用；非白名单 host 拒绝
-- [ ] stdio 沙箱越界：子进程越界文件访问 / 超额资源被拒绝（`SandboxManager` 断言）
-- [ ] http 出站白名单：非白名单 host → 拒绝
-- [ ] 不可逆工具确认：`reversible=False` 外部工具触发 permission 确认门，来源标注外部 MCP，审计落盘
-- [ ] 安装分流：stdio 来源（command+args）与 http 来源（url+headers）分别构建正确 `MCPEndpoint`
-- [ ] 移除清理：`mcp remove` 后连接/会话/socket 释放，相关工具标记不可用
+- [x] stdio transport：拉起本地子进程（fake 命令），`initialize` 握手 + 工具发现；子进程销毁（`mcp remove` 后进程退出）—— change `0054`，`tests/test_mcp_stdio.py`（真实子进程端到端）
+- [ ] http transport：连接 + `Mcp-Session-Id` 会话复用；非白名单 host 拒绝 → **非白名单拒绝已闭**（change `0054`）；**会话复用未做**（`phase-19.md` B2）
+- [ ] stdio 沙箱越界：子进程越界文件访问 / 超额资源被拒绝（`SandboxManager` 断言）→ **超额资源已闭**（change `0054`，rlimit 用例）；**越界文件访问未做**（fs jail 非目标）
+- [x] http 出站白名单：非白名单 host → 拒绝 —— change `0054`（`build_http_transport` 连接前校验，`PERMISSION_DENIED`）
+- [x] 不可逆工具确认：`reversible=False` 外部工具触发 permission 确认门，来源标注外部 MCP，审计落盘 —— 确认门已验证（change `0054`：`test_adapted_mcp_tool_triggers_confirm_gate`）；审计落盘未做
+- [x] 安装分流：stdio 来源（command+args）与 http 来源（url+headers）分别构建正确 `MCPEndpoint` —— change `0054`（`MCPClient.add` 按来源形状分流）
+- [ ] 移除清理：`mcp remove` 后连接/会话/socket 释放，相关工具标记不可用 → **资源释放已闭**（change `0054`）；**CLI 接线 + 工具标记未做**（`phase-19.md` B4）
 
 ## 8. 提交规范
 

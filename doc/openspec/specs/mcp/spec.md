@@ -13,6 +13,11 @@ MCP（Model Context Protocol）集成层为智能体提供双向模型上下文�
 - **WHEN** 注册新的 Transport 实现
 - **THEN** MCPClient / MCPServer 及所有调用方无需改动即可切换
 
+#### Scenario: 生产传输按端点分派
+- **GIVEN** 一个 MCPEndpoint（transport 为 stdio 或 http/streamable-http）
+- **WHEN** `build_transport` 构建传输
+- **THEN** stdio 分派到 stdlib 手写 StdioTransport，http/streamable-http 分派到 SDK 传输，未知 transport 返回结构化错误；测试仍可经 `transport_factory` 注入替身
+
 ### Requirement: MCP 连接管理
 系统 SHALL 支持 MCP 服务端的注册、连接、心跳与断线重连。
 
@@ -150,6 +155,11 @@ MCP（Model Context Protocol）集成层为智能体提供双向模型上下文�
 - **WHEN** 执行 mcp remove
 - **THEN** 停用并卸载该服务端，释放连接/会话/socket 资源（含本地子进程销毁），相关工具标记不可用
 
+#### Scenario: 按来源形状构建端点
+- **GIVEN** 一个 MCP 服务端来源字符串（`http(s)://` URL 或本地命令行）
+- **WHEN** `MCPClient.add` 安装该来源
+- **THEN** URL 构建 http 端点（url+headers），命令行构建 stdio 端点（command+args）；显式 transport/command 覆盖形状推断
+
 ### Requirement: MCP 客户端消费安全
 系统 SHALL 在作为 MCP client 消费外部（三方/本地）MCP 服务端时实施安全管控：本地 stdio 子进程经沙箱隔离（资源配额 + 受限文件系统 + 网络出站白名单）；远端 http 经网络出站白名单校验；其暴露工具经 MCPToolAdapter 标注 coeffects（network:outbound 等）并默认 reversible=False，走与本地工具一致的 permission 确认门与 observability 审计，不绕过内核安全链路。
 
@@ -167,3 +177,31 @@ MCP（Model Context Protocol）集成层为智能体提供双向模型上下文�
 - **GIVEN** 外部 MCP 服务端暴露一个不可逆/写类工具
 - **WHEN** 模型调用该工具
 - **THEN** 触发 permission 确认门，来源标注为外部 MCP 服务端，审计落盘
+
+### Requirement: MCP 传输实现与沙箱常驻进程
+系统 SHALL 为 MCP client 提供生产传输实现：本地 stdio 采用 stdlib 手写 JSON-RPC（`subprocess` + 换行分帧，零新依赖），经 `SandboxManager` 以资源配额拉起**常驻**子进程，连接关闭即终止并回收；远端 http/streamable-http 采用 `mcp` SDK **懒加载**（可选依赖组 `[mcp]`），连接前经网络出站白名单校验，非白名单 host 以 `PERMISSION_DENIED` 拒绝，SDK 缺失时以 `MCP_CONNECT_FAILED` 提示安装。
+
+#### Scenario: stdio 常驻子进程握手与调用
+- **GIVEN** 一个本地 stdio MCP 服务端端点（command+args）
+- **WHEN** MCPClient 连接并调用其工具
+- **THEN** 经 JSON-RPC 完成 initialize 握手与 tools/list、tools/call，请求/响应按 id 配对
+
+#### Scenario: stdio 子进程随连接销毁
+- **GIVEN** 一个已连接的本地 stdio MCP 服务端
+- **WHEN** 关闭该连接
+- **THEN** 子进程被终止并回收，无残留进程
+
+#### Scenario: 远端 http 出站白名单拒绝
+- **GIVEN** 一个远端 http MCP 端点，其 host 不在网络白名单内
+- **WHEN** 发起连接
+- **THEN** 以 PERMISSION_DENIED 拒绝，不建立连接
+
+#### Scenario: 未安装 SDK 时的清晰降级
+- **GIVEN** 一个远端 http MCP 端点，其 host 在白名单内，但环境未安装 mcp SDK
+- **WHEN** 发起连接
+- **THEN** 抛 MCP_CONNECT_FAILED，并提示安装 `core-agent[mcp]` 可选依赖
+
+#### Scenario: 传输超时结构化
+- **GIVEN** 一个已连接的 stdio MCP 服务端，其响应超出资源配额超时
+- **WHEN** 发起调用
+- **THEN** 返回结构化 REMOTE_TIMEOUT，不永久阻塞调用方

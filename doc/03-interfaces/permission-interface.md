@@ -92,7 +92,16 @@ class ApprovalChannel:
 ```python
 class SandboxManager:
     def run(self, cmd: str | list[str], *, env: dict, budget: ResourceBudget) -> SandboxResult:
-        """在独立沙箱中执行命令/代码，执行完自动销毁。"""
+        """在独立沙箱中执行命令/代码，执行完自动销毁（一次性执行）。"""
+
+    def spawn(self, cmd: list[str], env: dict | None = None,
+              budget: ResourceBudget | None = None) -> subprocess.Popen[str]:
+        """以资源配额（POSIX rlimit）拉起**常驻**子进程，返回可交互句柄。
+
+        与 run 互补：run 跑完即返回结果，无法承载需要持续 stdin/stdout 的长连接
+        （如本地 stdio MCP 服务端）。句柄归调用方持有并负责终止；拉起失败降级
+        `SANDBOX_UNAVAILABLE`。仅施加 rlimit —— 可移植的 fs jail 需 OS 设施（namespaces/bwrap）。
+        """
 
     def create(self, kind: str = "local-subprocess") -> SandboxHandle: ...
     def destroy(self, handle: SandboxHandle) -> None: ...
