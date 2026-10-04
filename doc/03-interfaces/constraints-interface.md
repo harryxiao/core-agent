@@ -32,7 +32,16 @@ class Validator(Middleware):
 
 **口径单一真源（change `0059`）**：`validate_input` 是「调用前 schema 校验（必填 / 类型）」
 **唯一实现**；工具层 `ToolProvider` 的调用前校验**委托**之（`tools → constraints`，与
-`loop → constraints` 同型），不得另实现副本。`parse_output` 仍无生产调用方（planner 自解析，账本 E13）。
+`loop → constraints` 同型），不得另实现副本。
+
+**`parse_output` 无生产调用方 —— 有意，非遗漏（change `0063` 判定，账本 E13 关闭）**：
+规格「输入输出校验」的「调用后把自由文本解析为结构化指令，解析失败绝不带病执行」在生产由
+`LLMPlanner._parse`（`src/core/loop/planner.py`）实现——它是**动作感知**的：区分「工具调用」与
+「回复」；解析失败即产出**终止 Action**（`reply = LLM_PLAN_PARSE_FAILED: …`），工具**不执行**，
+失败原因随观察回灌给模型 ⇒ 即规格场景的「不执行，请求模型修正」（追踪：`TC-CONS-05`）。
+`Validator.parse_output` 是**无动作语义**的通用 JSON 解析（只保证解析出对象，判不了
+`tool_id` / `reply` 契约），接进 planner 反而**降级**解析能力。故保留为该中间件契约的输出侧
+API（有单测覆盖），不接线——不是「实现未用」，而是「不该用」。
 
 ---
 

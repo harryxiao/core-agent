@@ -37,6 +37,9 @@ MiddlewareChain（横切，洋葱模型）
 
 - **输入校验**：工具调用前校验参数 schema、coeffect 权限、类型约束。
 - **输出校验**：把模型自由文本输出解析为结构化指令；解析失败则重试或请求修正，**绝不带病执行**。
+  生产实现落在 `loop` 的 `LLMPlanner._parse`（动作感知：解析失败 → 终止 Action，工具不执行，
+  失败原因回灌下一轮）；本模块的 `Validator.parse_output` 为通用 JSON 解析，**有意不接线**
+  （change `0063` 判定，见 `doc/03-interfaces/constraints-interface.md` §2）。
 - 非法调用返回结构化错误（对齐 `tool-use` 的错误码）。
 - **口径单一真源（change `0059`）**：调用前的 schema 校验（必填 / 类型）唯一实现为
   `Validator.validate_input`；工具层 `ToolProvider._validate_args` **委托**之（不另实现副本），
@@ -82,7 +85,7 @@ MiddlewareChain（横切，洋葱模型）
 
 | 场景 | 行为 |
 |---|---|
-| 输出解析失败 | 重试（有限次）→ 请求模型修正 → 标记 FAILED |
+| 输出解析失败 | 不执行工具，以解析失败 reply 收尾 → 失败原因回灌下一轮请求模型修正（生产实现：`LLMPlanner._parse`） |
 | 熔断器打开 | 快速失败，短路后续调用，冷却后自动半开 |
 | 重试超过上限 | 触发 Fallback → 仍失败则 Rollback + 转人工 |
 | 回滚失败 | 进入 QUARANTINE（对齐 plugin-registry） |
