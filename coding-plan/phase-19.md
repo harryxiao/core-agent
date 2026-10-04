@@ -16,13 +16,14 @@
 - **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）** —— **B1 的 client 侧（stdio 传输 + 安装分流 + 消费侧安全接线）已于 change `0054` 关闭**（ADR-0057），余 http 会话 / 服务端 stdio / CLI 接线 / 白名单配置 4 行后续；E 类中曾判定有真实行为影响的 **E1（constraints 熔断）** 与 **E2（per-session）** **均已关闭**（E2 → change `0048`；E1 → change `0052`），其余为「接线缺失」。
 - **A4 已于 change `0055` 关闭**（候选 `candidate_id` 稳定身份 + 门禁/评测随候选落盘为一条记录 + `core-agent evolve pending|confirm|reject` 操作面；high 风险候选由操作面签发审批单；ADR-0058）。
 - **E1 已于 change `0052` 关闭**（constraints 熔断按 `tool_id` 接入 loop：结果侧观察者 + 按工具熔断 + 只计执行失败；ADR-0055）；核销时一并**订正**了账本原「校验空转」的说法（校验实由工具层承担）。
+- **E7（契约基线漂移）+ E8（配置校验三处缺口）已于 change `0056` 关闭**（密钥引用同口径 + `permission.mode` 枚举校验 + 基线文档订正；ADR-0059），E8 第 5 条转出为 **E18**。
 - **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A5、E2/E4/E5 全归此（A4 已随 change `0055` 关闭）。
 - **一条值得单独记的形态问题**：`cli-contract-baseline.md` 的**内置工具契约与实现已对不上账**（见 E7）——契约列的 5 个工具在代码里从未存在。
 
 | 类别 | 项数 | 最高优先级 | 是否阻塞调试 |
 |---|---|---|---|
 | A Phase 18 收口遗留 | 9 | 中 | 否 |
-| E 早期 Phase 未闭合项 | 12 | 中 | 否 |
+| E 早期 Phase 未闭合项 | 18 | 中 | 否 |
 | B Phase 12 MCP（部分关闭） | 5 | 低（B1 client 侧已闭） | 否（可绕开） |
 | C 真实外部后端未接 | ~20 处 | 低 | 否 |
 | D 文档与仓库杂项 | 5（3 已关闭） | 无 | 否 |
@@ -51,12 +52,13 @@
 | E4 | E | ~~pet 运行时注入整族缺失~~ | ✅ 已关闭（change `0053`）：pet 纳入组合根（真 loop/共享记忆注入）+ 注册表落盘 + WebUI NL 入口 | 中 | — |
 | E5 | E | 主 Agent 自动迭代内部模块 | Phase 17 单列后**从未排期** | 低 | 无（能力已前置） |
 | E6 | E | 规格 deferred 未解除（context 判定升级等） | 见 §3 E6 | 低 | 规格裁决 |
-| E7 | E | 内置工具契约与实现漂移 | 契约列 5 个工具全仓零出现 | 中（契约裁决） | 先定夺契约 |
-| E8 | E | CLI 契约基线 §11 未决项 | flag 接线 / secret 校验 / extra 透传等 | 低 | 逐条定夺 |
+| E7 | E | ~~内置工具契约与实现漂移~~ | ✅ 已关闭（change `0056`）：裁决「规格为准」——契约列 5 个工具**从未存在**（非承诺项），订正 `cli-contract-baseline.md` §10 | 中（契约裁决） | — |
+| E8 | E | ~~CLI 契约基线 §11 未决项~~ | ✅ 已关闭（change `0056`）：7 条逐条定性；`im.secret`/`judgment.api_key` 校验对称化 + `permission.mode` 枚举校验（余 `extra` 未知键 → **E18**） | 低 | — |
 | E9 | E | 文档层其他未闭合项 | data-model 待补实体、替换性测试锚点等 | 低 | 无 |
 | E10 | E | 功能开关无运行时门控 | `build_runtime` 无条件构造全部模块，`is_enabled` 仅存语义 | 低 | 定夺哪些模块可关 |
 | E11 | E | LLM 可靠性：连接复用缺失 + 无测试 | 重试/超时/降级/断流有代码无测试；连接复用未实现 | 低 | 无 |
 | E12 | E | 崩溃恢复无真实 `kill -9` 用例 | 仅内存 store 模拟的 resume 幂等单测，无子进程重启端到端 | 低 | 无 |
+| E18 | E | `extra` 未知配置键无校验 | 拼错的段名静默吞进 `extra`，不报「未知配置键」（E8 第 5 条转出，change `0056` 裁决未收紧） | 低 | 定夺「仅告警」vs「硬拒」 |
 | E13 | E | `Validator.parse_output` 零生产调用方 | `LLMPlanner._parse` 自解析（`json.loads` + `_PARSE_FAILED`），未走 constraints 解析中间件 | 低 | 无（随需） |
 | E14 | E | 校验码重复 | `ToolProvider._validate_args` ↔ `constraints.Validator.validate_input` 语义等价（`_matches_type` 双拷贝） | 低 | 工具层委托 Validator（`tools → constraints` 合法） |
 | E15 | E | 熔断阈值/冷却不可配 | 适配层用类默认（5 / 30s），`configuration/` 无 constraints 段 | 低 | E10 配置门控 |
@@ -233,16 +235,16 @@
 | M3 遗留：技能 miss 只沉淀、不复用 | `adr.md:525` | miss 数据未回流到路由；与 **A7** 同族 |
 | memory 并发压实一致性（规格有实现无） | `doc/openspec/specs/memory/spec.md:102-105` | = **A8**，此处仅备案出处 |
 
-### E7 内置工具契约与实现漂移
+### E7 内置工具契约与实现漂移 — ✅ 已关闭（change `0056`，纯文档订正）
 
 - **现象**：`cli-contract-baseline.md:260` 的「内置工具 tools.* 9 个」把 `code_run / web_scan / web_execute_js / ask_user / process / memory` 全列为**未实现**。2026-10-04 实测：
   - `tools.code_run` **已实现**（`tools/builtin.py:187`）→ 文档过时；
   - `web_scan` / `web_execute_js` / `ask_user` / `tools.process` / `tools.memory` 在全仓**零出现** → 不是「未实现」，而是「**从未存在**」；
   - 实际实现集：`file_read` / `file_write` / `file_patch` / `code_run` / `web_fetch`（`builtin.py`）+ `install` / `uninstall` / `list`（`install_tools.py`）→ 与契约基线的**名字与集合都已对不上账**。
-- **关闭动作**：**先定夺契约**——若这 5 个仍是承诺项，须补规格 + 实现；否则订正 `cli-contract-baseline.md`（及其来源 spec）对账。
-- **前置**：契约裁决（可能牵动 spec）。
+- **关闭动作（已落地）**：裁决依据是**层级**而非「谁更新」——`doc/openspec/specs/tool-use` 是规范文件、`cli-contract-baseline.md` 是 Phase 早期 `temp/plan_cli_ops/*` 推演稿（文件自附溯源），故**规格赢**。该 5 个名字在 `src/` 与 `specs/` **零出现**（从未存在），不是「未实现」；真实集合 8 个与规格对得上账。→ 订正 `cli-contract-baseline.md` §10 工具清单 + 头部标注「设计态快照、非规范文件」，**未**按过时清单补实现。
+- **前置**：无（裁决已由 change `0056` 完成）。
 
-### E8 CLI 契约基线 §11 未决项（契约层待定夺）
+### E8 CLI 契约基线 §11 未决项 — ✅ 已关闭（change `0056`；第 5 条转出 E13）
 
 来源 `cli-contract-baseline.md` §11（其中「config set 写回 + revalidate」已闭环）：
 
@@ -252,7 +254,8 @@
 - `features` 无固定清单 → `--feature` 的补全/帮助无法静态枚举。
 - `extra` 透传无校验 → 拼错的配置段名被静默吞进 `extra`，不报「未知配置键」。
 - `streamable-http` transport 是否支持（= **B1** 子项）。
-- **关闭动作**：逐条定夺后或改契约、或补实现。
+- **关闭动作（已落地，逐条定性）**：① flag 接线 —— 实测**已接线**（`_CONFIG_SPECS` 声明全部 `--llm.*`/`--im.*`）；② 已闭合；③ `secret_ref` 不对称 —— **已修**（`im.secret`/`judgment.api_key` 与 `llm.api_key` 同口径：非空 + 可解析）；④ features 无固定清单 —— 定性为**设计如此**；⑤ `extra` 未知键 —— **按用户裁决 B 未收紧**（收紧会拒绝既有自定义段），转出为 **E18**；⑥ streamable-http —— = **B2**；⑦ `permission.mode` 枚举 —— **已定并已强制**（四档 `read-only`/`interactive`/`auto-approve`/`high-risk-block`，校验期拒绝其他取值）。
+- **前置**：无。
 
 ### E9 其他文档层的未闭合项
 
@@ -285,6 +288,15 @@
 - **根因**：durability 用例跑在进程内（快而稳），真实崩溃语义（半写日志、store 未 flush、锁残留）从未被验证。
 - **关闭动作**：补 subprocess 用例——子进程写一半被 `SIGKILL` → 重启 → `resume()` 恢复且副作用不重复。
 - **前置**：无（低成本，可顺手在 E1 之前做）。
+
+---
+
+### E18 `extra` 未知配置键无校验（E8 第 5 条转出）
+
+- **现象**：`AppConfig.extra`（`models.py:82`）收纳「五类结构化段之外的一切」，拼错的段名（如 `llmm:`）被静默吞入，不报「未知配置键」；`permission.mode` 亦寄居其中。
+- **根因**：`extra` 是设计态的宽松兜底；收紧为白名单会**拒绝既有自定义段**（改变既有接受行为）。
+- **关闭动作**：先定夺形态 —— **仅告警**（未知键记 WARN 不阻断，兼容性最好）vs **硬拒**（严格，可能破坏既有部署）；定夺后入 spec（configuration「配置校验与生效」）+ 实现。
+- **前置**：形态裁决（可能牵动 spec）。
 
 ---
 
@@ -408,12 +420,12 @@
 1. **D + F + G 清尾**（无依赖、低成本）：G 类订正 deferred 措辞 + F 类逐项勾销/定性 + README 同步 —— 使账本自身可达且不误导。 ✅ **已完成**（G 类 7 组订正；D1/D3/D5 关闭、D4 部分；F 类 6 组核实：41 框勾销 / 11 项转出 E·A·B；README 已同步）。
 2. **A2 + E2 合并做**（同一根因）：会话标识透传 + 每会话独立 loop/memory + `UIAPILayer.compact` 接真。 ✅ **已完成**（change `0048-session-scoped-memory`：标识透传 + `compact` 接真 + `get_memory` 按会话过滤；**未采**每会话独立实例，理由见该 change design 决策 1/2）。
 3. **A1**（记忆驱动侧）：遗忘节拍。宜在 A2 之后（会话维度不生效时，衰减分组也是错的）。 ✅ **已完成**（change `0049-memory-maintenance-cadence`：loop 收尾维护节拍 + `memory maintain` CLI）。
-4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义。 ✅ **A3 全闭 + A5 + A10 + E4 已完成**（change `0050` 技能态落盘 / ADR-0053；change `0051` 进化冷路径驱动面 + 观察窗口落盘 + 批次成功率采样 / **ADR-0054**；A10 为本次走查新增的「冷路径无驱动面」发现；**E4** 见 change `0053` —— pet 纳入组合根 + 注册表落盘 + WebUI NL 入口 / **ADR-0056**）。✅ **A4 已完成**（change `0055-evolution-confirm-surface`：候选稳定身份 + 队列落盘 + `evolve` 操作面签发审批单 / **ADR-0058**）→ 本步**全闭**。⏭ **下一步第 6 步：E7/E8 契约裁决**（须先定夺契约）。
+4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义。 ✅ **A3 全闭 + A5 + A10 + E4 已完成**（change `0050` 技能态落盘 / ADR-0053；change `0051` 进化冷路径驱动面 + 观察窗口落盘 + 批次成功率采样 / **ADR-0054**；A10 为本次走查新增的「冷路径无驱动面」发现；**E4** 见 change `0053` —— pet 纳入组合根 + 注册表落盘 + WebUI NL 入口 / **ADR-0056**）。✅ **A4 已完成**（change `0055-evolution-confirm-surface`：候选稳定身份 + 队列落盘 + `evolve` 操作面签发审批单 / **ADR-0058**）→ 本步**全闭**。⏭ **下一步第 7 步：E3 / E6 规格裁决**。
 5. **B1**（独立轨）：🔶 **client 侧已关闭**（change `0054-mcp-stdio-transport`，ADR-0057 —— stdio 传输 / `add` 分流 / 消费侧安全接线 / 组合根装配；ADR-0043 的 ADR + spec delta 早已就绪）。**余 4 行后续**：B2 http 会话（需 SDK）/ B3 服务端 stdio / B4 CLI 接线 / B5 白名单配置。
-6. **E1 + E7 + E8**（契约与中间件）：✅ **E1 已完成**（change `0052`，ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；E7/E8 需先定夺契约再动。
+6. **E1 + E7 + E8**（契约与中间件）：✅ **全闭** —— E1 见 change `0052`（ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；**E7/E8 见 change `0056`（ADR-0059）**：E7 裁决「规格为准」→ 纯文档订正；E8 三处缺口修复，第 5 条转出为 E13。
 7. **E3 / E6**（规格裁决）：先定夺 beast R4/R5 与 context 判定升级是否解除 deferred，再决定是否接 runtime。
 8. **A7 + E6（miss 复用）**（低优先，同族）：数据源已就位，可一并做。
-9. **A6 / A8 / A9 / E5 / E9 / C 类**：随需。
+9. **A6 / A8 / A9 / E5 / E9 / E13–E18 / C 类**：随需（E13 `Validator.parse_output` 零调用方 / E14 校验码重复 / E15 熔断阈值不可配 / E16 `AsyncNotifier` 无 channel / E17 pet 无后台 daemon / **E18 `extra` 未知键校验**）。
 10. **真机动作**：活 LLM 全回路冒烟（§8 末）。
 
 ---

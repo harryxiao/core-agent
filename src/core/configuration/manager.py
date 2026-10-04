@@ -222,14 +222,12 @@ class ConfigManager:
         return config
 
     def validate_schema(self, config: AppConfig) -> ValidationResult:
-        """schema 校验：拒绝 yaml 明文密钥，校验 LLM 必选项完整性。"""
+        """schema 校验：密钥引用同口径（明文/空/不可解析）、LLM 必选项与权限模式枚举。"""
         errors: list[str] = []
-        if _looks_like_secret(config.llm.api_key_ref):
-            errors.append("llm.api_key 必须为 ${VAR} 引用，禁止明文密钥")
-        if config.im is not None and _looks_like_secret(config.im.secret_ref):
-            errors.append("im.secret 必须为 ${VAR} 引用，禁止明文密钥")
-        if config.judgment is not None and _looks_like_secret(config.judgment.api_key_ref):
-            errors.append("judgment.api_key 必须为 ${VAR} 引用，禁止明文密钥")
+        for label, ref in _secret_refs(config):
+            error = _secret_ref_error(label, ref, resolvable=self._resolvable(ref))
+            if error is not None:
+                errors.append(error)
         for key, value in (
             ("provider", config.llm.provider),
             ("model", config.llm.model),
@@ -237,14 +235,21 @@ class ConfigManager:
         ):
             if not value:
                 errors.append(f"缺失 LLM 配置项: llm.{key}")
-        if not config.llm.api_key_ref:
-            errors.append("缺失 LLM 配置项: llm.api_key")
-        else:
-            try:
-                self.resolve_secret(config.llm.api_key_ref)
-            except ConfigurationError:
-                errors.append("llm.api_key 引用无法解析")
+        perm = cast("dict[str, Any]", config.extra.get("permission") or {})
+        mode = str(perm.get("mode", _DEFAULT_PERMISSION_MODE))
+        if mode not in _PERMISSION_MODES:
+            errors.append(
+                f"非法权限模式: permission.mode={mode}（可选：{'/'.join(_PERMISSION_MODES)}）"
+            )
         return ValidationResult(ok=not errors, errors=errors)
+
+    def _resolvable(self, ref: str) -> bool:
+        """密钥引用能否经 env/keychain 解析（不返回明文）。"""
+        try:
+            self.resolve_secret(ref)
+        except ConfigurationError:
+            return False
+        return True
 
     # ---- 密钥与开关 ----
 
@@ -267,11 +272,11 @@ class ConfigManager:
         return self._config.features.get(module, False)
 
     def permission_mode(self) -> str:
-        """权限模式查询：缺省 interactive（对齐 permission「权限模式」四档）。"""
+        """权限模式查询：缺省 interactive（对齐 permission「权限模式」四档，取值已过校验）。"""
         if self._config is None:
-            return "interactive"
+            return _DEFAULT_PERMISSION_MODE
         perm = cast(dict[str, Any], self._config.extra.get("permission") or {})
-        return str(perm.get("mode", "interactive"))
+        return str(perm.get("mode", _DEFAULT_PERMISSION_MODE))
 
     # ---- 变更即生效 ----
 
@@ -341,7 +346,7 @@ class ConfigManager:
             provider=str(llm_raw.get("provider", "")),
             model=str(llm_raw.get("model", "")),
             endpoint=str(llm_raw.get("endpoint", "")),
-            api_key_ref=str(llm_raw.get("api_key", "")),
+            api_key_ref=str(llm_raw.get("api_key") or ""),
             reasoning_effort=_opt_str(llm_raw.get("reasoning_effort")),
             embedding_model=str(llm_raw.get("embedding_model", "")),
         )
@@ -353,7 +358,7 @@ class ConfigManager:
             im = IMConfig(
                 gateway=str(im_raw.get("gateway", "")),
                 corp_id=str(im_raw.get("corp_id", "")),
-                secret_ref=str(im_raw.get("secret", "")),
+                secret_ref=str(im_raw.get("secret") or ""),
             )
         pet = None
         pet_raw = cast(dict[str, Any], merged.get("pet") or {})
@@ -375,7 +380,7 @@ class ConfigManager:
                 provider=str(judgment_raw.get("provider", "")),
                 model=str(judgment_raw.get("model", "")),
                 base_url=str(judgment_raw.get("base_url", "")),
-                api_key_ref=str(judgment_raw.get("api_key", "")),
+                api_key_ref=str(judgment_raw.get("api_key") or ""),
                 confidence_threshold=(
                     threshold_raw if isinstance(threshold_raw, (int, float)) else 0.7
                 ),
@@ -384,6 +389,33 @@ class ConfigManager:
             k: v for k, v in merged.items() if k not in {"llm", "features", "im", "pet", "judgment"}
         }
         return AppConfig(llm=llm, features=features, im=im, pet=pet, judgment=judgment, extra=extra)
+
+
+# 权限模式四档口径来源：doc/openspec/specs/permission/spec.md「权限模式」
+# （配置层不 import 能力层，故词表在此复述；变更规格四档时两处同改）
+_PERMISSION_MODES = ("read-only", "interactive", "auto-approve", "high-risk-block")
+_DEFAULT_PERMISSION_MODE = "interactive"
+
+
+def _secret_ref_error(label: str, ref: str, *, resolvable: bool) -> str | None:
+    """单个密钥引用的校验结论（明文 / 空 / 不可解析 → 错误文案；合规 → None）。"""
+    if _looks_like_secret(ref):
+        return f"{label} 必须为 ${{VAR}} 引用，禁止明文密钥"
+    if not ref:
+        return f"缺失密钥引用: {label}"
+    if not resolvable:
+        return f"{label} 引用无法解析"
+    return None
+
+
+def _secret_refs(config: AppConfig) -> list[tuple[str, str]]:
+    """待校验的密钥引用：主 LLM 必选，IM / 决策模型按段的参与条件（见 configuration spec）。"""
+    refs = [("llm.api_key", config.llm.api_key_ref)]
+    if config.im is not None:
+        refs.append(("im.secret", config.im.secret_ref))
+    if config.judgment is not None and config.judgment.provider:
+        refs.append(("judgment.api_key", config.judgment.api_key_ref))
+    return refs
 
 
 def _parse_ref(ref: str) -> str | None:

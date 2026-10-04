@@ -3,6 +3,9 @@
 > 本文件是「coding-plan 最后一环」的 CLI 契约基线交付物，供 claude code 在开始编码前对齐命令面、参数面、配置面的统一契约。
 > 生成方式：走查 specs(25)/changes(27)/interfaces(23)/modules(18) + 源码实测（configuration 模块），经去重、按 L0-L5 分层、正向推演后敲定。
 >
+> ⚠️ **本文件是 Phase 早期的「设计态快照」，非规范文件**：与实现冲突时**以 `doc/openspec/specs/` 为准**
+> （例：§10 的内置工具清单长期与实现/规格不一致，已于 change `0056` 订正）。
+>
 > **溯源锚点（源码实测，非推演）**：
 > - `_ENV_OVERRIDES` 7 键：`src/core/configuration/manager.py` L24-33
 > - `_FEATURE_ENV_PREFIX = "CORE_FEATURES_"`：manager.py L35
@@ -261,7 +264,7 @@ CLI flag  >  env var  >  config.yaml  >  默认值
 | 类别 | 成员 | 暴露方式 |
 |---|---|---|
 | UIAPILayer 9 方法 | create_session / run_loop / barge_in / get_memory / compact / list_tools / invoke_tool / get_llm_config / set_llm_config | 三桥统一 API；create_session / run_loop 另经 CLI 子命令（session create / run）暴露，其余经 SSE/WS |
-| 内置工具 tools.* 9 个 | file_read/file_write/file_patch（✅已实现）；code_run/web_scan/web_execute_js/ask_user/process/memory（**未实现**） | 工具 ID，经 ToolProvider.invoke 调用 |
+| 内置工具 tools.* | **实测 8 个**：file_read / file_write / file_patch / code_run / web_fetch（`tools/builtin.py`）+ install / uninstall / list（`tools/install_tools.py`）—— **均已实现**，与 `specs/tool-use` 一致。原列 web_scan / web_execute_js / ask_user / process / memory **在 src 与 specs 中零出现（从未存在）**，非承诺项（change `0056` 订正） | 工具 ID，经 ToolProvider.invoke 调用 |
 | 对话指令 | SafetyGate.confirm(confirm/deny/auto) / ApprovalWorkflow.ask / tools.ask_user | 运行时交互，非 CLI |
 | SSE 事件契约 | session.created / loop.perception / reasoning / action / result / error | Web/桌面流式协议，CLI 基线必选联动项 |
 | 五阶段 loop | LoopPlugin.run/arun/astream + perceive/reason/act/observe/remember | 运行时协议，非 CLI |
@@ -270,13 +273,13 @@ CLI flag  >  env var  >  config.yaml  >  默认值
 
 ## 11. 风险 / 待确认
 
-1. **CLI flag 层是否实现**：env 覆盖机制已实测，但 `--llm-*`/`--im-*` 等 flag 是否已接线（三模入口未实现 → 大概率仅设计态）。
+1. ~~**CLI flag 层是否实现**~~ ✅ **已接线**：`_CONFIG_SPECS` 声明 `--llm.provider/model/endpoint/api-key/embedding-model`、`--im.gateway/corp-id/secret`、`--permission-mode`、`--pet-enabled/--pet-dir` 等（change `0056` 实测订正）。
 2. **config set 写回 + revalidate**：~~写回是否会重跑 `validate_schema`，未确认。~~ ✅ 已确认：`write_patch` 写回后重读重校验（`apply_change` 先拒明文密钥，`${VAR}` 引用原样保留）。
-3. **secret 校验不对称**：`secret_ref` 不强制非空/可解析，可能导致"空 secret 也能过校验"。
-4. **features 无固定清单**：任意 `CORE_FEATURES_*` 可注册，CLI `--feature` 的补全/帮助无法静态枚举。
-5. **extra 透传无校验**：拼写错误的段名会被静默吞进 `extra`，不会报"未知配置键"。
-6. **streamable-http transport**：MCP serve 是否已支持，需确认。
-7. **permission-mode 枚举成员**：M6 横切 permission 的具体枚举值需确认。
+3. ~~**secret 校验不对称**~~ ✅ **已修**（change `0056`）：`im.secret` / `judgment.api_key` 与 `llm.api_key` 同口径（非空 + 可解析）；详见 `specs/configuration`「密钥分级与安全」。
+4. **features 无固定清单**（✅ 定性为**设计如此**，非缺口）：任意 `CORE_FEATURES_*` 可注册，CLI `--feature` 的补全/帮助无法静态枚举。
+5. **extra 透传无校验**（🔶 **仍开放**：change `0056` 按用户裁决**未**收紧——收紧为白名单会拒绝既有自定义段、破坏既有部署；已转出为账本后续行，待定夺「仅告警」还是「硬拒」）。
+6. **streamable-http transport**：= 账本 **B2**（需可选依赖 `mcp`，当前离线不可装）→ 见 `phase-19.md` §4。
+7. ~~**permission-mode 枚举成员**~~ ✅ **已定并已强制**（change `0056`）：权限规格定为 read-only / interactive / auto-approve / high-risk-block 四档，配置校验期拒绝其他取值。
 
 ---
 

@@ -70,7 +70,7 @@ class ConfigManager:
         """以 config.yaml 为单一收口加载：CLI 覆盖 env 覆盖 yaml 值，未定义项取默认值兜底。"""
 
     def validate_schema(self, config: AppConfig) -> ValidationResult:
-        """schema 校验：拒绝 yaml 明文密钥，校验通过才返回有效配置。"""
+        """schema 校验：密钥引用同口径（明文 / 空 / 不可解析）、LLM 必选项、权限模式枚举。"""
 
     def resolve_secret(self, ref: str) -> str:
         """从 env/keychain 解析敏感密钥引用（${VAR}），不落明文。"""
@@ -79,7 +79,7 @@ class ConfigManager:
         """feature flag 查询：关闭的模块不加载、不初始化。"""
 
     def permission_mode(self) -> str:
-        """权限模式查询（缺省 interactive），映射 config.permission.mode。"""
+        """权限模式查询（缺省 interactive；取值已在校验期限于四档），映射 config.permission.mode。"""
 
     def apply_change(self, patch: dict) -> AppConfig:
         """变更即生效：写入失败回滚到变更前完整配置，不留半写状态。"""
@@ -95,3 +95,17 @@ def generate_cli_flags(specs=None) -> list[str]: ...
 def generate_env_vars(specs=None) -> list[str]: ...
 def generate_yaml_defaults(specs=None) -> dict: ...
 ```
+
+### 2.1 校验口径（change `0056`）
+
+`validate_schema` 对**密钥引用**与**枚举型配置项**的判定一律在加载期完成（不通过即阻断启动）：
+
+| 配置项 | 参与条件 | 判定 |
+|---|---|---|
+| `llm.api_key` | 总是 | 明文 → 拒；空 → 拒；不可解析 → 拒 |
+| `im.secret` | 仅当 `im` 段存在 | 同上 |
+| `judgment.api_key` | 仅当 `judgment.provider` 非空（能力启用） | 同上 |
+| `permission.mode` | 总是（缺省 `interactive`） | 仅接受权限规格四档 `read-only` / `interactive` / `auto-approve` / `high-risk-block` |
+
+口径来源：`doc/openspec/specs/configuration/spec.md`「密钥分级与安全」「配置校验与生效」；`permission.mode` 四档定义方为 `doc/openspec/specs/permission/spec.md`「权限模式」。
+**未收紧**：`extra` 的未知配置键（宽松兜底，收紧会拒绝既有自定义段）。

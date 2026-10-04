@@ -457,3 +457,72 @@ def test_judgment_plaintext_secret_rejected(tmp_path: Path) -> None:
         manager.load()
     assert "judgment.api_key" in str(exc_info.value)
     assert "sk-RAW-JEV" not in str(exc_info.value)
+
+
+# ---- change 0056：密钥引用校验对称化 + permission.mode 枚举校验 ----
+
+
+def _im_yaml(secret_line: str) -> str:
+    return (
+        "llm:\n  provider: openai\n  model: gpt-4o\n  endpoint: e\n"
+        "  api_key: ${OPENAI_API_KEY}\n"
+        f"im:\n  gateway: feishu\n  corp_id: corp1\n{secret_line}\n"
+    )
+
+
+def test_im_empty_secret_rejected(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, _im_yaml("  secret:"))
+    with pytest.raises(ConfigurationError) as exc_info:
+        manager.load()
+    assert "im.secret" in str(exc_info.value)
+
+
+def test_im_unresolvable_secret_rejected(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, _im_yaml("  secret: ${IM_SECRET}"))
+    with pytest.raises(ConfigurationError) as exc_info:
+        manager.load()
+    assert "im.secret" in str(exc_info.value)
+
+
+def test_im_secret_resolvable_passes(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, _im_yaml("  secret: ${IM_SECRET}"), environ={"IM_SECRET": "im-sk"})
+    config = manager.load()
+    assert config.im is not None
+    assert config.im.secret_ref == "${IM_SECRET}"
+
+
+def test_im_absent_skips_secret_check(tmp_path: Path) -> None:
+    assert _manager(tmp_path, _VALID_YAML).load().im is None
+
+
+def test_judgment_empty_key_rejected_when_provider_set(tmp_path: Path) -> None:
+    manager = _manager(
+        tmp_path,
+        _VALID_YAML + "judgment:\n  provider: jev\n  model: m\n",
+    )
+    with pytest.raises(ConfigurationError) as exc_info:
+        manager.load()
+    assert "judgment.api_key" in str(exc_info.value)
+
+
+def test_judgment_inert_section_skips_key_check(tmp_path: Path) -> None:
+    """provider 为空的惰性段不校验 api_key（规格「未配置或 provider 为空 → 能力关闭」）。"""
+    config = _manager(tmp_path, _VALID_YAML + "judgment:\n  base_url: http://jev.local\n").load()
+    assert config.judgment is not None
+    assert config.judgment.api_key_ref == ""
+
+
+def test_illegal_permission_mode_rejected(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, _VALID_YAML, cli={"permission.mode": "yolo"})
+    with pytest.raises(ConfigurationError) as exc_info:
+        manager.load()
+    message = str(exc_info.value)
+    assert "permission.mode" in message
+    assert "read-only" in message and "high-risk-block" in message
+
+
+@pytest.mark.parametrize("mode", ["read-only", "interactive", "auto-approve", "high-risk-block"])
+def test_permission_modes_accepted(tmp_path: Path, mode: str) -> None:
+    manager = _manager(tmp_path, _VALID_YAML, cli={"permission.mode": mode})
+    manager.load()
+    assert manager.permission_mode() == mode

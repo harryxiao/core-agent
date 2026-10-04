@@ -926,6 +926,17 @@
   ④ **`reject` 落引擎、签发审批单落操作面**：候选状态词表属 evolution 域，故 `EvolutionEngine.reject(candidate, *, reason=None)` 是引擎方法（域外不认字面量）；而审批单的**签发**（`ApprovalWorkflow.create → approve`）放在 CLI —— 操作面即「人工」这一事实的来源，引擎只收单据做判定（`confirm` 三重门语义一字不动）。**已否决**引擎自造审批单：那等于 HITL 门自己给自己盖章。
   ⑤ **操作面一次动作完成确认+发布**：`core-agent evolve confirm <id>` 内联 `confirm` → `crystallize`（分成两条命令只会让人漏掉第二步，而漏掉第二步正是本变更要修的病）；非 `pending` 态候选一律反馈 + 非零退出（不得复活已拒绝/已确认的候选）。
 - **后果**：✅ L4 的「过门候选 → 人工确认 → 结晶发布」在生产**首次端到端可达**（`confirm` / `crystallize` 各有生产调用方）；✅ 待确认事项跨进程可见、可处置（重启不误判）；✅ 零新依赖（stdlib JSON）；✅ 未注入路径纯内存，既有 750 tests 语义不变；⚠️ `ApprovalWorkflow` 归档仍进程内（跨进程复查「谁批的」待 permission 域的另一议题）；⚠️ 台账随确认次数单调增长、无回收策略（当前无消费者）；⚠️ `evolve confirm` 接受完整 12 位 id，不做前缀匹配（避免歧义匹配的隐性错误）。
+## ADR-0059：密钥引用校验对称化 + 枚举型配置项取值校验（契约基线对账）
+
+- **状态**：Accepted（2026-10-04；change `0056-config-validation-symmetry`，761 tests 绿）
+- **上下文**：账本 E7/E8 —— 契约层与实现对不上账。一手核对后两者性质不同：**E7 是文档漂移**（`cli-contract-baseline.md` §10 把 `code_run` 标「未实现」、并列出 `web_scan`/`web_execute_js`/`ask_user`/`process`/`memory` 五个**从未存在**的名字，而 `specs/tool-use` 只要求 `code_run` + `web_fetch`，与实测 8 个工具 ID 逐一对得上）；**E8 有三处「规格已承诺、实现未做」**：`im.secret` / `judgment.api_key` 只查明文不查空值与可解析（而 `llm.api_key` 三重校验），`permission.mode` 未校验取值（而 permission 规格明列四档并写明映射 `config.permission.mode`）。
+- **决策**：
+  ① **冲突裁决以规格为准，不以「谁更新」为准**：基线文件溯源到 Phase 早期 `temp/plan_cli_ops/*` 推演稿，属**设计态快照**；故订正文档并在头部标注「非规范文件」，**不**按过时清单补实现（那等于让推演稿反向定义产品范围）。
+  ② **密钥引用同口径**：`_secret_refs` 统一产出 `llm.api_key` / `im.secret`（段存在时）/ `judgment.api_key`（`provider` 非空时），判定链 `明文 → 空 → 不可解析` 由 `_secret_ref_error` 单点给出，错误文案不再因引用不同而形状不一。**可选段语义保留**：IM 段缺失不校验、judgment 惰性段（`provider` 为空）不校验。
+  ③ **枚举口径「规格定义、配置强制」**：`permission.mode` 四档词表在 configuration 侧以常量复述并在注释指明来源（`_PERMISSION_MODES`），**不 import** permission —— 配置层不得依赖能力层（分层红线）。代价是词表双写，可接受。
+  ④ **`extra` 宽松性不动**（用户裁决 B）：`extra` 是「五类结构化段之外一切」的兜底，收紧为白名单会拒绝用户既有自定义段、改变既有接受行为；**未确认键校验**转出为独立后续行（待定夺「仅告警」还是「硬拒」）。
+  ⑤ **`None → ""` 归一**：`_build_config` 三个引用的 `str(x or "")`，否则 yaml 中 `api_key:` 空值经 `str(None)` 变成 `"None"` 字符串，会被判为「明文密钥」而非「缺失」——**错误文案失真**，与本变更承诺的「指明缺失或不可解析」矛盾。
+- **后果**：✅ 密钥引用校验口径一致，空 / 不可解析的 IM、决策模型密钥不再静默通过（安全缺口闭合）；✅ `permission.mode` 非法取值在加载期被拒并列出四档；✅ 无新依赖、无分层破坏；✅ 契约基线恢复可信（E7 全闭）；⚠️ **校验变严**是行为变更：既有「IM 段 + 空 secret」或非法 `permission.mode` 的仓外配置将从静默接受变为启动报错（已核对仓内无用例依赖宽松行为）；⚠️ 四档词表两处字面量（决策 ③）；⚠️ `extra` 未知键仍静默接受。
 ---
 
 ## 变更追踪
@@ -981,3 +992,4 @@
 | ADR-0056 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |
 | ADR-0057 | 03-interfaces/mcp-interface.md, 03-interfaces/permission-interface.md, 02-modules/mcp.md |
 | ADR-0058 | 03-interfaces/evolution-interface.md, 02-modules/evolution.md |
+| ADR-0059 | 03-interfaces/configuration-interface.md |
