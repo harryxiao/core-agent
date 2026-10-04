@@ -33,6 +33,7 @@
 | 插件/资产安装 | plugin install/uninstall/list | L0 扩展 PluginSource | 补 M1/M3 |
 | 技能市场 | skill search/install/remove | L3 skillhub | install=plugin --kind skill 别名 |
 | 会话/运行 | session create + run | L1 UIAPILayer | 命令面核心锚点 |
+| 记忆维护 | memory maintain | L2 memory | 补（change `0049`：一次性压实 + 遗忘） |
 | 分发 | release publish/upgrade/rollback | L5 ReleaseManager | 补 |
 | 宠物 | pet <verb> | 编排层扩展 pet-mode | 补 M6（三入口之一，子动词面见 pet-mode-interface §3） |
 | 神兽 | summon <beast> [task] / recall <beast> | 编排层扩展 beast-mode | 补 M7（前台重大任务，三入口见 beast-mode spec） |
@@ -101,6 +102,7 @@
 |---|---|---|---|
 | 25 | `core-agent session create [--profile P]` | 新建会话 | UIAPILayer.create_session() |
 | 26 | `core-agent run [--prompt "..." \| --file task.md] [--session ID] [--max-turns N]` | 运行一轮/一个任务 | UIAPILayer.run_loop() + AgentLoop.max_turns |
+| 26b | `core-agent memory maintain` | 触发一次记忆维护（压实 + 遗忘归档），打印归档条数 | MemoryStore.compact() + forget() |
 
 ### 2.8 分发（L5 ReleaseManager · 3）
 

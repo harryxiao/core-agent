@@ -11,7 +11,7 @@
 ## 0. 结论
 
 - **无任何一项阻塞核心回路**：669 tests 覆盖的回路（记忆读写/压实/固化/遗忘、技能提炼/路由/迭代、进化四阶段 + HITL + 自动溶解）在生产路径上均已接通。
-- **A2+E2（会话维度）已于 change `0048` 关闭**（标识透传 + `compact` 接真 + 按会话读取），A 类剩 A1/A3–A9。
+- **A2+E2（会话维度）已于 change `0048` 关闭**（标识透传 + `compact` 接真 + 按会话读取）；**A1 已于 change `0049` 关闭**（收尾维护节拍 + `memory maintain`）。A 类剩 A3–A9。
 - **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）**；E 类中只有 **E1（constraints 中间件）** 与 **E2（per-session）** 有真实行为影响，其余为「接线缺失」。
 - **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A4/A5、E2/E4/E5 全归此。
 - **一条值得单独记的形态问题**：`cli-contract-baseline.md` 的**内置工具契约与实现已对不上账**（见 E7）——契约列的 5 个工具在代码里从未存在。
@@ -32,7 +32,7 @@
 
 | 编号 | 类别 | 项 | 现象（一句话） | 优先级 | 前置 |
 |---|---|---|---|---|---|
-| A1 | A | `forget` 无调度器 | 衰减只在 loop 压实触发时顺带执行，无定时循环 | 中 | 引入调度依赖（或复用 loop 节拍） |
+| A1 | A | ~~`forget` 无调度器~~ | ✅ 已关闭（change `0049`）：loop 收尾维护节拍触发 `forget` + `core-agent memory maintain` 显式入口 | 中 | — |
 | A2 | A | ~~生产 `session_id` 恒空串~~ | ✅ 已关闭（change `0048`）：标识透传至 `remember`，压实/固化/遗忘按会话归组 | 中 | — |
 | A3 | A | 进程内无持久化 | 技能库 / 反馈统计 / 观察窗口 / SOP 样本 / 灰度态均随进程消失 | 中 | 存储选型 + spec 补 Requirement |
 | A4 | A | `EvolutionEngine.confirm` 无生产调用方 | 候选待办队列无驱动面，HITL 门在生产不触达 | 中 | 操作面（CLI/UI）驱动 pending 队列 |
@@ -65,12 +65,12 @@
 
 ## 2. A 类：Phase 18 收口遗留（本 Phase 新报）
 
-### A1 `forget` 无调度器
+### A1 `forget` 无调度器 — ✅ 已关闭（change `0049`）
 
 - **现象**：遗忘（衰减归档）只在 loop 的压实收尾被顺带调用（`src/core/loop/default.py:285`，随 `compact()` @ :281 之后），**没有独立的定时/节拍驱动**；长闲置会话不会自动衰减。
 - **根因**：`MemoryStore.forget(*, threshold=...)` 是纯函数式接口，无调度依赖；Phase 18 #5 明确把「定时衰减循环」排除在范围外（需调度器）。`adr.md:513` 同样记为「需调度依赖，另立变更」。
-- **关闭动作**：二选一——① 复用 loop 节拍（每 N 轮触发，最省依赖）；② 引入调度器（须 ADR，因涉及横切能力）。
-- **前置**：无（可随时做）。
+- **关闭动作**：✅ **已由 change `0049-memory-maintenance-cadence` 闭合**（采「节拍闸门 + CLI 显式入口」）：loop 收尾加**维护节拍**（`_MAINTENANCE_INTERVAL_S = 900s` 默认，距上次达间隔才触发一次 `MemoryStore.forget`，失败降级不中断本轮、走 `maintenance_failed` trace）；`forget` 补进 `MemoryStore` Protocol；CLI 新增 `core-agent memory maintain`（装配 runtime → `compact()` + `forget()`，打印归档条数）。**未**引入调度器/常驻后台任务（无真实常驻宿主：`HarnessHost` 在 `entry.py` 每条命令各起一份）。spec delta：`loop`/`memory`/`cli-ops` 三份（29 specs 全绿），测试 679 passed。
+- **前置**：无（已完成）。
 
 ### A2 生产 `session_id` 恒空串（含 `UIAPILayer.compact` no-op）— ✅ 已关闭（change `0048`）
 
@@ -325,7 +325,7 @@
 
 1. **D + F + G 清尾**（无依赖、低成本）：G 类订正 deferred 措辞 + F 类逐项勾销/定性 + README 同步 —— 使账本自身可达且不误导。 ✅ **已完成**（G 类 7 组订正；D1/D3/D5 关闭、D4 部分；F 类 6 组核实：41 框勾销 / 11 项转出 E·A·B；README 已同步）。
 2. **A2 + E2 合并做**（同一根因）：会话标识透传 + 每会话独立 loop/memory + `UIAPILayer.compact` 接真。 ✅ **已完成**（change `0048-session-scoped-memory`：标识透传 + `compact` 接真 + `get_memory` 按会话过滤；**未采**每会话独立实例，理由见该 change design 决策 1/2）。
-3. **A1**（记忆驱动侧）：遗忘节拍。宜在 A2 之后（会话维度不生效时，衰减分组也是错的）。
+3. **A1**（记忆驱动侧）：遗忘节拍。宜在 A2 之后（会话维度不生效时，衰减分组也是错的）。 ✅ **已完成**（change `0049-memory-maintenance-cadence`：loop 收尾维护节拍 + `memory maintain` CLI）。
 4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义；建议与「serve 常驻进程」一并做（`debug-gaps.md` §4 已提）。
 5. **B1**（独立轨）：随时可先写重开 ADR（不需代码），是唯一可并行推进的阻塞级项。
 6. **E1 + E7 + E8**（契约与中间件）：E1 有真实行为影响（熔断/校验空转），建议提前；E7/E8 需先定夺契约再动。

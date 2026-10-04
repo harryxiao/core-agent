@@ -633,3 +633,93 @@ def test_memory_session_defaults_empty() -> None:
     loop = DefaultLoop(planner=lambda ctx: Action(args={"reply": "done"}), memory=memory)  # type: ignore[arg-type]
     loop.run("任务")
     assert [entry.session_id for entry in memory.written] == [""]
+
+
+# ---- 记忆维护节拍（spec：执行循环「维护节拍触发遗忘」） ----
+
+
+class _ForgetSpy:
+    """记录 forget 调用次数的记忆替身。"""
+
+    def __init__(self, *, boom: bool = False) -> None:
+        self.calls = 0
+        self._boom = boom
+
+    def read(self, query: str, budget: int = 0) -> list[MemoryEntry]:
+        return []
+
+    def write(self, layer: str, entry: MemoryEntry) -> str:
+        return entry.id
+
+    def forget(self, *, threshold: float = 0.0) -> list[str]:
+        self.calls += 1
+        if self._boom:
+            raise RuntimeError("存储后端异常")
+        return []
+
+
+def _run_once(loop: DefaultLoop) -> None:
+    loop.run("任务")
+
+
+def test_maintenance_cadence_skips_before_interval() -> None:
+    """未达维护间隔 → 收尾不触发遗忘（时钟与间隔注入）。"""
+    now = [0.0]
+    spy = _ForgetSpy()
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        memory=spy,  # type: ignore[arg-type]
+        clock=lambda: now[0],
+        maintenance_interval=60.0,
+    )
+    _run_once(loop)
+    now[0] = 59.0
+    _run_once(loop)
+    assert spy.calls == 0
+
+
+def test_maintenance_cadence_forgets_after_interval() -> None:
+    """达维护间隔 → 收尾触发一次遗忘；再未到下一间隔不重复。"""
+    now = [0.0]
+    spy = _ForgetSpy()
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        memory=spy,  # type: ignore[arg-type]
+        clock=lambda: now[0],
+        maintenance_interval=60.0,
+    )
+    now[0] = 60.0
+    _run_once(loop)
+    assert spy.calls == 1
+    now[0] = 100.0
+    _run_once(loop)
+    assert spy.calls == 1
+    now[0] = 120.0
+    _run_once(loop)
+    assert spy.calls == 2  # noqa: PLR2004 — 第二次达间隔再触发一次
+
+
+def test_maintenance_cadence_disabled_and_failure_degrades() -> None:
+    """间隔 <=0 关闭节拍；维护失败降级不中断本轮（不抛给调用方）。"""
+    now = [0.0]
+    off = _ForgetSpy()
+    DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        memory=off,  # type: ignore[arg-type]
+        clock=lambda: now[0],
+        maintenance_interval=0.0,
+    ).run("任务")
+    assert off.calls == 0
+
+    now[0] = 0.0
+    boom = _ForgetSpy(boom=True)
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        memory=boom,  # type: ignore[arg-type]
+        clock=lambda: now[0],
+        maintenance_interval=1.0,
+    )
+    now[0] = 10.0
+    result = loop.run("任务")  # 不抛
+    assert result.reply == "done"
+    assert boom.calls == 1

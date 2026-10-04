@@ -70,6 +70,10 @@ class MemoryStore(Protocol):
         """压实记忆：会话摘要提炼（按 ``session_id`` 聚合）+ 重要性打分写回（可撤销）。"""
         ...
 
+    def forget(self, *, threshold: float = 0.0) -> list[MemoryId]:
+        """遗忘：衰减评分低于阈值的 L2 episodic 条目迁 L4 归档（可撤销，不物理删除）。"""
+        ...
+
 
 class Crystallizer(Protocol):
     """结晶 / 溶解钩子（联动 L4 Evolution Engine）。"""

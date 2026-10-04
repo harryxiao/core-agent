@@ -39,6 +39,7 @@ Approver = Callable[[str, dict[str, Any], str], Awaitable[bool]]
 TurnObserver = Callable[[str, list[str], bool], object]
 
 
+_MAINTENANCE_INTERVAL_S = 900.0  # 记忆维护节拍（秒）：默认 15 分钟
 _MAX_ACTION_EXCERPT = 400  # 动作事件 args/output 节选上界（事件面有界）
 
 
@@ -107,6 +108,8 @@ class DefaultLoop(Plugin):
         turn_observer: TurnObserver | None = None,
         max_rounds: int = 10,
         token_budget: int = 65536,
+        maintenance_interval: float = _MAINTENANCE_INTERVAL_S,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._planner = planner
         self._memory = memory
@@ -120,6 +123,9 @@ class DefaultLoop(Plugin):
         self._turn_observer = turn_observer
         self._max_rounds = max_rounds
         self._token_budget = token_budget
+        self._maintenance_interval = maintenance_interval
+        self._clock = clock if clock is not None else time.monotonic
+        self._last_maintenance = self._clock()
 
     # ---- Plugin 生命周期 ----
 
@@ -229,6 +235,7 @@ class DefaultLoop(Plugin):
             ctx.reply = f"{limit_reason}: 本轮终止"
             yield LoopEvent("loop_failed", {"reason": limit_reason, "trace_id": trace_id})
         self.remember(trace_id, [*ctx.trajectory, {"reply": ctx.reply}], session_id=session_id)
+        self._maintain_memory(trace_id)
         self._trace(trace_id, "loop_finished", {"reply": ctx.reply, "failed": bool(limit_reason)})
         if not streamed:  # 未流式外发过 delta 才补一次全文（非流式 planner 兼容路径）
             yield LoopEvent("reply_delta", {"text": ctx.reply})
@@ -249,6 +256,23 @@ class DefaultLoop(Plugin):
             self._turn_observer(_task_text(ctx), _action_steps(ctx), ok)
         except Exception as err:  # noqa: BLE001 — 观察失败降级，不影响本轮结果
             self._trace(trace_id, "turn_observer_failed", {"error": str(err)})
+
+    def _maintain_memory(self, trace_id: str) -> None:
+        """收尾维护节拍：距上次维护达间隔才触发一次遗忘（失败降级，不中断本轮）。
+
+        间隔 ``<=0`` 关闭节拍；时钟经构造注入（可测）。维护作用于整个存储，
+        与会话无关，故节拍状态驻留实例（多会话共享一个节拍）。
+        """
+        if self._memory is None or self._maintenance_interval <= 0:
+            return
+        now = self._clock()
+        if now - self._last_maintenance < self._maintenance_interval:
+            return
+        self._last_maintenance = now
+        try:
+            self._memory.forget()
+        except Exception as err:  # noqa: BLE001 — 遗忘失败降级，本轮继续
+            self._trace(trace_id, "maintenance_failed", {"error": str(err)})
 
     def _should_compact(self, ctx: LoopContext) -> bool:
         """轮数或 token 预算达阈值即触发压实（未注入压实器则永不触发）。

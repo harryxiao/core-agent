@@ -27,6 +27,7 @@ _TOP_LEVEL_COMMANDS = {
     "plugin",
     "skill",
     "session",
+    "memory",
     "run",
     "task",
     "release",
@@ -387,3 +388,40 @@ def test_task_resume_rebuilds_plan_and_completed(
     assert isinstance(orch.calls["plan"], Plan)
     assert orch.calls["completed"] == {"1"}  # 已完成集回填，续跑跳过
     assert orch.calls["results"] == {"1": "上游答复"}  # 依赖交接上下文重建
+
+
+def test_memory_maintain_runs_maintenance(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`memory maintain`：装配 runtime → 触发一次记忆维护并打印归档条数。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    called: list[str] = []
+
+    class _FakeMemory:
+        def compact(self, query: str = "", budget: int = 4096) -> None:
+            called.append("compact")
+
+        def forget(self, *, threshold: float = 0.0) -> list[str]:
+            called.append("forget")
+            return ["stale-1", "stale-2"]
+
+    class _FakeRuntime:
+        memory = _FakeMemory()
+
+    monkeypatch.setattr("core.entry.build_runtime", lambda *a, **kw: _FakeRuntime())
+    assert main(["--config", _write_config(tmp_path), "memory", "maintain"]) == 0
+    assert called == ["compact", "forget"]
+    assert "2" in capsys.readouterr().out
+
+
+def test_memory_maintain_reports_build_failure(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """装配失败 → stderr 提示 + 退出码 1（与 run/serve 同构）。"""
+
+    def _boom(*a, **kw):
+        raise RuntimeError("配置缺失")
+
+    monkeypatch.setattr("core.entry.build_runtime", _boom)
+    assert main(["--config", _write_config(tmp_path), "memory", "maintain"]) == 1
+    assert "装配失败" in capsys.readouterr().err

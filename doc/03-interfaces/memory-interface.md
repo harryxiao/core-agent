@@ -153,7 +153,7 @@ def relevance(entry, query, embedder=None) -> float:
 | 可逆 | 逐条 ``trace_id = forgetting.<entry_id>``，``rollback(trace_id)`` 迁回 L2 |
 | 返回值 | 被归档条目 id 列表（撤销句柄） |
 | 时间未知 | ``ts<=0`` 时 ``recency_decay`` 返回 1.0，不惩罚 → 不会被遗忘 |
-| 触发 | 无调度器：并入 loop 压实触发（``persist → compact → forget``），异常降级不中断主流程 |
+| 触发 | 维护节拍驱动（change `0049`）：loop 收尾按 `maintenance_interval` 触发（`_maintain_memory`），或经 `core-agent memory maintain` 显式触发；压实路径（``persist → compact → forget``）仍顺带 sweep。异常降级不中断主流程 |
 
 ---
 

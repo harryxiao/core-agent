@@ -103,6 +103,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_plugin_parser(sub)
     _add_skill_parser(sub)
     _add_session_parser(sub)
+    _add_memory_parser(sub)
     _add_run_parser(sub)
     _add_task_parser(sub)
     _add_release_parser(sub)
@@ -171,6 +172,12 @@ def _add_session_parser(sub: Any) -> None:
     session = sub.add_parser("session", help="会话管理")
     sess_sub = session.add_subparsers(dest="session_cmd", metavar="<session-cmd>")
     sess_sub.add_parser("create", help="新建会话（返回 session_id）")
+
+
+def _add_memory_parser(sub: Any) -> None:
+    memory = sub.add_parser("memory", help="记忆维护")
+    mem_sub = memory.add_subparsers(dest="memory_cmd", metavar="<memory-cmd>")
+    mem_sub.add_parser("maintain", help="触发一次记忆维护（压实 + 遗忘归档）")
 
 
 def _add_run_parser(sub: Any) -> None:
@@ -644,6 +651,23 @@ def _session(args: argparse.Namespace) -> int:
     return 0
 
 
+def _memory(args: argparse.Namespace) -> int:
+    """`memory maintain`：装配 runtime → 触发一次记忆维护（压实 + 遗忘），打印归档条数。"""
+    if args.memory_cmd != "maintain":
+        print("用法: core-agent memory maintain", file=sys.stderr)
+        return 1
+    try:
+        runtime = build_runtime(ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)))
+    except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
+        print(f"装配失败: {exc}", file=sys.stderr)
+        return 1
+    memory = runtime.memory
+    memory.compact()
+    forgotten = memory.forget()
+    print(f"记忆维护完成：归档 {len(forgotten)} 条")
+    return 0
+
+
 def _run(args: argparse.Namespace) -> int:
     prompt = _read_prompt(args)
     if prompt is None:
@@ -852,6 +876,7 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "summon": _summon,
     "recall": _recall,
     "session": _session,
+    "memory": _memory,
     "run": _run,
     "task": _task,
     "config": _config,
