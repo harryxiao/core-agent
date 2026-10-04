@@ -91,7 +91,7 @@ CORE-Harness 的 L0 基底提供**可逆效应追踪**：一切写操作先记�
 |---|---|---|---|
 | CORE-UI（CLI/Web/Desktop 三模桥接） | CORE-UI-R1~6 | 单元：统一后端 API + SSE 6 事件契约、三模消息编解码；E2E：三模各跑通一条完整会话 | TC-UI-01~09 |
 | CORE-IM（wechat/feishu/telegram/discord 网关） | CORE-IM-R1~6 | 集成：长连接重连/幂等、多平台适配器隔离；E2E：一条消息进出→单轮 loop | TC-IM-01~11 |
-| CORE-LLM（任意三方模型归一化） | CORE-LLM-R1~5 | 单元：llm-provider 适配器契约、API KEY/URL 解析；性质：幂等、审计、无密钥明文 | TC-LLM-01~05 |
+| CORE-LLM（任意三方模型归一化） | CORE-LLM-R1~R6 | 单元：llm-provider 适配器契约、API KEY/URL 解析；可靠性（重试/超时/降级/断流）：stdlib provider 打桩用例 | TC-LLM-01~06 |
 | CORE-COMP（组合与分发） | CORE-COMP-R1~4 | 单元：profile 命名组合 / bundle 分发格式 / patch.yml 局部覆盖 / 层叠解析契约；性质：可逆组合、可回退 | TC-COMP-01~04 |
 | CORE-DIST（分布式协作） | CORE-DIST-R1~7 | 集成：A2A 双向互调 / AgentCard 发现与签名 / 三种协议绑定 / 四类设备拓扑角色；安全：最小权限 scope 鉴权；E2E：跨设备委派单轮 loop | TC-DIST-01~12 |
 

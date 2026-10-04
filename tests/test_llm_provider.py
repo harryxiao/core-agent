@@ -1,7 +1,8 @@
 """llm-provider 单元测试（对齐规格场景 + M1 验收锚点）。
 
 覆盖：错误归一化（伪造 HTTP 异常 → LLMError 层级）、错误码语义、
-同步薄壳与异步等价、registry 依赖注入、异步真并发、stdlib provider 传输（mock urlopen）。
+同步薄壳与异步等价、registry 依赖注入、异步真并发、stdlib provider 传输（mock urlopen）、
+模型调用可靠性（重试/指数退避、超时、降级切备用模型、流式断流；change 0060 / 账本 E11①）。
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import asyncio
 import json
 import time
 import urllib.error
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -291,3 +293,181 @@ def test_aembedding_maps() -> None:
 
     assert embeddings[0].vector == [0.1, 0.2]
     assert urlopen.call_args[0][0].full_url == "https://example.com/v1/embeddings"
+
+
+# ---- 模型调用可靠性（change 0060 / 账本 E11①）----
+# 规格「模型调用可靠性」四场景：失败自动重试（指数退避）/ 超时控制 / 服务降级（切备用模型）/
+# 流式断流。此前只有实现、无任何用例（账本 E11①）。
+
+_REQ = LLMRequest(messages=[Message("user", "hi")], model="primary")
+_RETRIES = 2  # 重试上限（总调用次数 = 初次 + _RETRIES）
+_BACKOFF_CAP = 8.0  # 退避封顶（秒）
+_TIMEOUT = 0.05  # 极短超时（用例用）
+
+
+def _reliable(**kw: Any) -> StdlibLLMProvider:
+    return StdlibLLMProvider(api_key="k", base_url="https://example.com/v1", model="m", **kw)
+
+
+def _no_sleep(provider: StdlibLLMProvider) -> mock.MagicMock:
+    """退避置零（用例只关心重试次数，不真等 0.5/1/2s）。"""
+    return mock.patch.object(provider, "_backoff", lambda attempt: 0.0)
+
+
+def test_backoff_is_exponential_and_capped() -> None:
+    provider = _reliable()
+    assert [provider._backoff(n) for n in (1, 2, 3, 4)] == [0.5, 1.0, 2.0, 4.0]  # noqa: SLF001
+    assert provider._backoff(10) == _BACKOFF_CAP  # noqa: SLF001 — 封顶
+
+
+def test_acompletion_retries_until_success() -> None:
+    """可重试错误按退避重试，成功即返回。"""
+    provider = _reliable(max_retries=_RETRIES)
+    calls = {"n": 0}
+
+    async def _flaky(request: LLMRequest, model: str) -> LLMResponse:
+        calls["n"] += 1
+        if calls["n"] <= _RETRIES:  # 前 _RETRIES 次抖动
+            raise LLMNetworkError("网络抖动")
+        return _resp("ok")
+
+    with mock.patch.object(provider, "_call_provider", _flaky), _no_sleep(provider):
+        result = asyncio.run(provider.acompletion(_REQ))
+    assert result.content == "ok"
+    assert calls["n"] == _RETRIES + 1  # 初次 + 重试
+
+
+def test_retry_exhausted_raises_normalized_error() -> None:
+    """达到最大重试次数仍失败：抛归一化异常（不泄漏底层）。"""
+    provider = _reliable(max_retries=_RETRIES)
+    calls = {"n": 0}
+
+    async def _always_429(request: LLMRequest, model: str) -> LLMResponse:
+        calls["n"] += 1
+        raise LLMRateLimitedError("限流")
+
+    with (
+        mock.patch.object(provider, "_call_provider", _always_429),
+        _no_sleep(provider),
+        pytest.raises(LLMRateLimitedError),
+    ):
+        asyncio.run(provider.acompletion(_REQ))
+    assert calls["n"] == _RETRIES + 1  # 初次 + max_retries
+
+
+def test_non_retryable_error_is_not_retried() -> None:
+    """鉴权等非瞬时错误：立即抛出，不做无谓重试。"""
+    provider = _reliable(max_retries=3)
+    calls = {"n": 0}
+
+    async def _auth(request: LLMRequest, model: str) -> LLMResponse:
+        calls["n"] += 1
+        raise LLMAuthError("401")
+
+    with (
+        mock.patch.object(provider, "_call_provider", _auth),
+        _no_sleep(provider),
+        pytest.raises(LLMAuthError),
+    ):
+        asyncio.run(provider.acompletion(_REQ))
+    assert calls["n"] == 1
+
+
+def test_call_timeout_is_enforced() -> None:
+    """超时：取消等待并抛 LLMTimeoutError，不随被调用一起挂起。"""
+    provider = _reliable(timeout=_TIMEOUT, max_retries=0)
+
+    async def _hang(request: LLMRequest, model: str) -> LLMResponse:
+        await asyncio.sleep(1.0)
+        return _resp("ok")
+
+    with mock.patch.object(provider, "_call_provider", _hang):
+        start = time.perf_counter()
+        with pytest.raises(LLMTimeoutError):
+            asyncio.run(provider.acompletion(_REQ))
+        elapsed = time.perf_counter() - start
+    assert elapsed < 1.0  # 未等待慢调用自然结束
+
+
+def test_degrades_to_fallback_model() -> None:
+    """服务降级：主模型不可用 → 切备用模型，成功则留痕。"""
+    seen: list[str] = []
+    audits: list[str] = []
+    provider = _reliable(
+        max_retries=0, fallback_models=["backup"], audit=lambda m, r: audits.append(m)
+    )
+
+    async def _primary_down(request: LLMRequest, model: str) -> LLMResponse:
+        seen.append(model)
+        if model == "primary":
+            raise LLMNetworkError("主模型不可用")
+        return _resp("backup ok")
+
+    with mock.patch.object(provider, "_call_provider", _primary_down):
+        result = asyncio.run(provider.acompletion(_REQ))
+    assert seen == ["primary", "backup"]
+    assert result.content == "backup ok"
+    assert audits == ["backup"]  # 审计记的是实际成功的模型
+
+
+def test_non_retryable_error_does_not_fall_back() -> None:
+    """非瞬时错误不触发降级（换模型也救不了，不浪费一次调用）。"""
+    seen: list[str] = []
+    provider = _reliable(max_retries=0, fallback_models=["backup"])
+
+    async def _auth(request: LLMRequest, model: str) -> LLMResponse:
+        seen.append(model)
+        raise LLMAuthError("401")
+
+    with mock.patch.object(provider, "_call_provider", _auth), pytest.raises(LLMAuthError):
+        asyncio.run(provider.acompletion(_REQ))
+    assert seen == ["primary"]
+
+
+def _stream_response(lines: Any) -> mock.MagicMock:
+    """lines 为可迭代对象（列表或惰性生成器——后者用于在中途抛断流）。"""
+    resp = mock.MagicMock()
+    resp.__enter__.return_value = resp
+    resp.__iter__.return_value = iter(lines)
+    return resp
+
+
+def test_stream_without_done_marker_returns_partial() -> None:
+    """断流（无 [DONE] 提前结束）：已接收内容部分返回，调用方不挂起。"""
+    provider = _make_provider()
+    lines = [
+        b'data: {"choices":[{"delta":{"content":"a"}}]}\n',
+        b'data: {"choices":[{"delta":{"content":"b"}}]}\n',
+    ]
+    with mock.patch(
+        "core.llm_provider.stdlib_provider.urllib.request.urlopen",
+        return_value=_stream_response(lines),
+    ):
+        chunks = asyncio.run(
+            _collect_stream(provider, LLMRequest(messages=[Message("user", "hi")], model="m"))
+        )
+    assert chunks == ["a", "b"]
+
+
+def test_stream_mid_transport_error_surfaces_partial_then_raises() -> None:
+    """断流（传输中途异常）：先返回已收内容，再抛归一化错误，绝不无限挂起。"""
+    provider = _make_provider()
+
+    def _lines() -> Any:
+        yield b'data: {"choices":[{"delta":{"content":"a"}}]}\n'
+        raise urllib.error.URLError("连接被切断")
+
+    with mock.patch(
+        "core.llm_provider.stdlib_provider.urllib.request.urlopen",
+        return_value=_stream_response(_lines()),
+    ):
+        got: list[str] = []
+
+        async def _run() -> None:
+            request = LLMRequest(messages=[Message("user", "hi")], model="m")
+            async for chunk in provider.astream(request):
+                got.append(chunk.content)  # noqa: PERF401 — 断流时须保留已收部分，推导式会丢
+
+        with pytest.raises(LLMNetworkError):
+            asyncio.run(_run())
+    assert got == ["a"]

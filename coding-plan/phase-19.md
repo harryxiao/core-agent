@@ -57,7 +57,7 @@
 | E8 | E | ~~CLI 契约基线 §11 未决项~~ | ✅ 已关闭（change `0056`）：7 条逐条定性；`im.secret`/`judgment.api_key` 校验对称化 + `permission.mode` 枚举校验（余 `extra` 未知键 → **E18**） | 低 | — |
 | E9 | E | 文档层其他未闭合项 | data-model 待补实体、替换性测试锚点等 | 低 | 无 |
 | E10 | E | 功能开关无运行时门控 | `build_runtime` 无条件构造全部模块，`is_enabled` 仅存语义 | 低 | 定夺哪些模块可关 |
-| E11 | E | LLM 可靠性：连接复用缺失 + 无测试 | 重试/超时/降级/断流有代码无测试；连接复用未实现 | 低 | 无 |
+| E11 | E | LLM 可靠性：连接复用缺失 + 无测试 | 🔶 **部分关闭（change `0060`）**：重试/超时/降级/断流**用例已补**（9 例，`src/` 零改动 —— 实现本就正确，缺的是验证）；**余**连接复用未实现（`urllib` 每请求新建连接）→ **E11②** | 低 | 无 |
 | E12 | E | 崩溃恢复无真实 `kill -9` 用例 | 仅内存 store 模拟的 resume 幂等单测，无子进程重启端到端 | 低 | 无 |
 | E18 | E | `extra` 未知配置键无校验 | 拼错的段名静默吞进 `extra`，不报「未知配置键」（E8 第 5 条转出，change `0056` 裁决未收紧） | 低 | 定夺「仅告警」vs「硬拒」 |
 | E13 | E | `Validator.parse_output` 零生产调用方 | `LLMPlanner._parse` 自解析（`json.loads` + `_PARSE_FAILED`），未走 constraints 解析中间件 | 低 | 无（随需） |
@@ -291,6 +291,20 @@
 - **关闭动作**：① 补可靠性用例（重试次数/退避、超时、降级、断流半包）；② 连接复用单独立项（涉及自建池，属实现变更，须 spec delta）。
 - **前置**：无（① 可随时做；② 需定夺是否值得为 stdlib provider 自建连接池）。
 
+#### ✅ ① 已关闭（change `0060-llm-reliability-tests`）
+
+- **关闭动作**：`tests/test_llm_provider.py` 增「模型调用可靠性」节 **9 例**，按规格「模型调用可靠性」逐 Scenario 对应：退避口径（指数 + 8s 封顶）／重试（瞬时错误重试至成功、耗尽抛归一化异常、非可重试错误不重试）／超时（慢调用不挂起调用方，实测耗时断言）／降级（切备用模型 + 审计记**实际成功**的模型；非瞬时错误不降级）／断流（无 `[DONE]` 提前结束部分返回、传输中途异常**先给已收内容再抛**）。
+- **关键事实**：**9 例一次全绿** —— 可靠性实现本就正确，Phase 1 未达成的直接原因是**缺验证**；故本变更 `src/` **零改动**（规格中性，`.openspec.yaml: schema: spec-driven + skip_specs: true`，本仓首个合法的无 delta 变更）。
+- **接缝**：重试/超时/降级打桩 `_call_provider`（保留 `acompletion` 的重试循环/`wait_for`/`models` 遍历）；断流打桩 `urlopen`（让真实 `_iter_sse_payloads` 参与，且必须传**惰性生成器**——`list()` 会让异常在进 provider 前就抛，等于没测）。
+- **衍生机制**：`skip_specs` 需与 `schema` 同现方被采信（仅 `skip_specs` 报 `expected string, received undefined`）——已由临时 `0060-probe` 探针核实，记入该 change design §4。
+
+#### 🔶 ② 未闭：连接复用（保持未闭，不为未实现的行为写用例）
+
+- **现状**：规格正文已声明「底层连接复用（connection reuse / keep-alive）」，实现未落地 —— `urllib.request.urlopen` 每请求新建连接。
+- **关闭需**：`http.client.HTTPConnection` 长连接或自建池 + 失效重建 + 并发所有权模型，配 ADR（**实现变更 + spec delta**）。
+- **先决定夺**：stdlib provider 是「零依赖基线」，量产通常换 `litellm`/`openai` 适配器（`runtime.py` 已按 provider 名分流）→ **自建池的收益需先论证**，故不排期。
+- **规格处理**：本变更**既未删该条以掩盖差距、也未加「待办」注记污染规格** —— 差距留在账本此处。
+
 ---
 
 ### E12 崩溃恢复无真实 `kill -9` 用例（Phase 2 验收部分未达成）
@@ -416,7 +430,7 @@
 | 文件 | 规模 | 核实结果（原文档已按此改） | 未做项去向 |
 |---|---|---|---|
 | `phase-0.md` | 14 框 | **13 已勾**：`:28-31`、`:33-36` 验收项与 `:127-131` 架构/压测/脱敏/降级均有 `tests/` 覆盖（`test_architecture.py:233`、`test_observability`/`test_configuration`/`test_permission` 等） | `:32` 功能开关门控 → **E10** |
-| `phase-1.md` | 14 框 | **12 已勾**（`test_llm_provider` / `test_memory` / `test_tool_use` / `test_plugin_registry.py:69,83` 等） | `:30` LLM 可靠性 → **E11**；`:35` 并发压实一致 → **A8** |
+| `phase-1.md` | 14 框 | **12 已勾**（`test_llm_provider` / `test_memory` / `test_tool_use` / `test_plugin_registry.py:69,83` 等） | `:30` LLM 可靠性 → **E11**（① 用例已补 change `0060`；② 连接复用未实现）；`:35` 并发压实一致 → **A8** |
 | `phase-2.md` | 10 框 | **7 已勾**：durability `test_durability.py:37,105`、permission `test_permission.py:50,195,232`、架构 `test_architecture.py:268`、熔断 `test_constraints.py:75`、MCP 隔离 `test_mcp.py:117,160`、时间旅行与沙箱同族用例 | `:28` constraints 中间件 → **E1 ✅ 已关闭（change `0052`）**；`:31` mcp → **B1**；`:122` 真机崩溃恢复 → **E12** |
 | `phase-2.5.md` | 6 框 | **6 全勾**（`test_installable.py:49`、`test_cli_ops.py:67`、`test_mcp.py:220`、`test_permission.py:252`；归档 `2026-09-27-0028/0029`） | — |
 | `phase-17.5.md` | 8 框 | **3 已勾**（memory 召回注入等，由 change `0038` 闭合） | 其余 5 框 → **E3/E4** |
@@ -456,7 +470,7 @@
 6. **E1 + E7 + E8**（契约与中间件）：✅ **全闭** —— E1 见 change `0052`（ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；**E7/E8 见 change `0056`（ADR-0059）**：E7 裁决「规格为准」→ 纯文档订正；E8 三处缺口修复，第 5 条转出为 E18。
 7. **E3 / E6**（规格裁决）：✅ **全闭** —— 裁决「A 全做・解除 deferred」；**E3** 见 change `0057`（ADR-0060：神通注册 + 专属路由作用域 + 按兽 loop/共享记忆注入 + CLI 走组合根）；**E6** 无需代码（context 压实启发式已由 change `0041` 规格订正为有意行为，余两项转 A7/A8）。
 8. **A7 + E6（miss 复用）**（低优先，同族）：✅ **全闭** —— **A7** 见 change `0058`（ADR-0061：排序分 = 基础分 × 历史成功率因子；预筛转出 A11）；**E6** 无需代码（见上，规格已由 change `0041` 订正）。
-9. **A6 / A8 / A9 / A11 / E5 / E9 / E13 / E15–E18 / C 类**：随需（**A11 语义兜底候选预筛**（需先有比词法更粗的排序信号）/ E13 `Validator.parse_output` 零调用方 / E15 熔断阈值不可配 / E16 `AsyncNotifier` 无 channel / E17 pet 无后台 daemon / **E18 `extra` 未知键校验**）。✅ **E14 已关闭**（change `0059`，ADR-0062）。
+9. **A6 / A8 / A9 / A11 / E5 / E9 / E13 / E15–E18 / C 类**：随需（**A11 语义兜底候选预筛**（需先有比词法更粗的排序信号）/ E13 `Validator.parse_output` 零调用方 / E15 熔断阈值不可配 / E16 `AsyncNotifier` 无 channel / E17 pet 无后台 daemon / **E18 `extra` 未知键校验**）。✅ **E14 已关闭**（change `0059`，ADR-0062）。✅ **E11① 已关闭**（change `0060`：可靠性用例 9 例，`src/` 零改动；**E11② 连接复用**仍开）。
 10. **真机动作**：活 LLM 全回路冒烟（§8 末）。
 
 ---
