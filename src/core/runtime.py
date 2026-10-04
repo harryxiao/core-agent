@@ -10,6 +10,7 @@ Compactor / Guardrail）→ LLMPlanner → PermissionGuard → DefaultLoop，供
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -114,8 +115,11 @@ def _memory_path() -> Path:
 # 子 Agent 委托运行完整子循环（多次 LLM 往返 + 工具轮），远超 ToolDef 默认 30s
 _DELEGATE_TIMEOUT_S = 600.0
 
+# 委托深度护栏：子 Agent 工具面已不含 delegate，此处为纵深防御
+_DELEGATE_DEPTH: ContextVar[int] = ContextVar("delegate_depth", default=0)
 
-def build_runtime(  # noqa: PLR0915
+
+def build_runtime(  # noqa: PLR0915, C901
     config: ConfigManager,
     *,
     assembler: DynamicAssembler | None = None,
@@ -172,7 +176,8 @@ def build_runtime(  # noqa: PLR0915
     tools = ToolProvider(
         coeffect_resolver=resolver, effect_tracker=effect_tracker, gate=guard, approver=approver
     )
-    for tool in (file_read(), file_write(), file_patch(), code_run(), web_fetch()):
+    builtin_tools = (file_read(), file_write(), file_patch(), code_run(), web_fetch())
+    for tool in builtin_tools:
         tools.register(tool)
 
     skill_library = SkillLibrary()
@@ -208,23 +213,54 @@ def build_runtime(  # noqa: PLR0915
     )
     evolution = EvolutionWorker(tracer=tracer, engine=evolution_engine, trigger=EvolutionTrigger())
 
+    # 子 Agent 独立 loop：各自 ToolProvider（不含 tools.delegate，结构上杜绝再委托），
+    # 共享 memory / tracer / gate / approver（知识沉淀与权限口径统一）
+    def _agent_tools() -> ToolProvider:
+        provider = ToolProvider(
+            coeffect_resolver=resolver, effect_tracker=effect_tracker, gate=guard, approver=approver
+        )
+        for tool in builtin_tools:
+            provider.register(tool)
+        return provider
+
+    def _agent_loop(provider: ToolProvider) -> LoopPlugin:
+        sub_planner = LLMPlanner(
+            llm,
+            model=app.llm.model,
+            reasoning_effort=app.llm.reasoning_effort,
+            assembler=assembler,
+            skill_router=lambda task: [m.skill.skill_id for m in skill_router.match(task)],
+            tools=provider,
+        )
+        return cast(
+            LoopPlugin,
+            DefaultLoop(
+                planner=sub_planner,
+                memory=memory,
+                tools=provider,
+                gate=guard,
+                tracer=tracer,
+                router=router if jev is not None else None,
+                approver=approver,
+            ),
+        )
+
     # 多 Agent 运行时：coding / research 两个正交子 Agent，主 Agent 可委托并等待结果
     subagents = [
         AgentProfile(
             agent_id="coding",
             capabilities=["coding", "代码", "写代码", "实现", "开发", "编程"],
-            loop=cast(LoopPlugin, loop),
+            loop=_agent_loop(_agent_tools()),
         ),
         AgentProfile(
             agent_id="research",
             capabilities=["research", "调研", "搜索", "检索", "查询", "资料"],
-            loop=cast(LoopPlugin, loop),
+            loop=_agent_loop(_agent_tools()),
         ),
     ]
     agent_router = MultiAgentRouter(subagents)
 
-    async def _delegate(task: str) -> dict[str, object]:
-        """委托工具：按能力标签匹配子 Agent，阻塞等待其 LoopResult 并回传 reply。"""
+    async def _dispatch(task: str) -> dict[str, object]:
         try:
             profile = agent_router.match(task)
         except OrchestrationError as exc:
@@ -233,6 +269,19 @@ def build_runtime(  # noqa: PLR0915
             return {"ok": False, "error": f"子 Agent {profile.agent_id} 无可用 loop"}
         result = await profile.loop.arun(task)
         return {"ok": not result.failed, "reply": result.reply}
+
+    async def _delegate(task: str) -> dict[str, object]:
+        """委托工具：按能力标签匹配子 Agent，阻塞等待其 LoopResult 并回传 reply。
+
+        入站即做委托深度护栏（纵深防御；子 Agent 工具面已不含 delegate）。
+        """
+        if _DELEGATE_DEPTH.get() >= 1:
+            return {"ok": False, "error": "已达委托深度上限（子 Agent 不可再委托）"}
+        token = _DELEGATE_DEPTH.set(_DELEGATE_DEPTH.get() + 1)
+        try:
+            return await _dispatch(task)
+        finally:
+            _DELEGATE_DEPTH.reset(token)
 
     tools.register(
         Tool(

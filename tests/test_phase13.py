@@ -130,6 +130,37 @@ def test_build_runtime_memory_persists_to_state_dir(monkeypatch, tmp_path) -> No
     assert [e.id for e in reloaded.read("持久化验证内容")] == ["m1"]
 
 
+def test_subagents_isolated_loops_without_delegate(monkeypatch, tmp_path) -> None:
+    """子 Agent 独立 loop（非主 loop）且工具面不含 delegate（结构上杜绝再委托）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+    router = runtime.orchestrator._router  # noqa: SLF001 — 校验装配产物
+    profiles = list(router._agents.values())  # noqa: SLF001
+    assert {p.agent_id for p in profiles} == {"coding", "research"}
+    for profile in profiles:
+        assert profile.loop is not runtime.loop  # 独立 loop 实例（非主 loop）
+        sub_tools = {t.tool_id for t in profile.loop._tools.active_tools()}  # noqa: SLF001
+        assert "tools.delegate" not in sub_tools
+
+
+def test_delegate_depth_guard_blocks_nested(monkeypatch, tmp_path) -> None:
+    """委托深度护栏：已在委托中（depth>=1）再委托被拒，防无限递归。"""
+    from core import runtime as runtime_module  # noqa: PLC0415 — 访问模块级护栏
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+    token = runtime_module._DELEGATE_DEPTH.set(1)  # noqa: SLF001 — 模拟身处子委托
+    try:
+        result = asyncio.run(
+            runtime.tools.ainvoke("tools.delegate", {"task": "写代码"}, trace_id="t1")
+        )
+    finally:
+        runtime_module._DELEGATE_DEPTH.reset(token)
+    assert result.ok is True  # 工具正常返回
+    assert result.data["ok"] is False  # 但委托被护栏拒绝
+    assert "深度上限" in result.data["error"]
+
+
 def test_build_runtime_rejects_missing_config(tmp_path) -> None:
     with pytest.raises(ConfigurationError):
         build_runtime(ConfigManager(yaml_path=str(tmp_path / "missing.yaml")))
