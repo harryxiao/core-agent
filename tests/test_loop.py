@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from core.context import Compactor
 from core.loop import Action, DefaultLoop
@@ -507,3 +508,24 @@ def test_loop_compaction_not_triggered_when_budget_disabled() -> None:
     loop.run("hi")
 
     assert [e for e in memory.audit() if e.kind == "semantic"] == []
+
+
+def test_loop_forgetting_archives_stale_entries_on_compaction() -> None:
+    """压实触发顺带遗忘：陈旧零复用条目迁 L4，高复用条目不受影响。"""
+    memory = MemoryStore()  # 无摘要器：隔离遗忘这一步
+    stale = _prior_entry()
+    stale.ts = time.time() - 30 * 86400.0
+    warm = _prior_entry()
+    warm.id = "loop.warm"
+    warm.ts = stale.ts
+    warm.reuse_count = 10
+    memory.write("L2", stale)
+    memory.write("L2", warm)
+    loop = _compacting_loop(memory, Compactor(memory=memory, round_threshold=1))
+
+    loop.run("hi")
+
+    layers = dict(memory.index().entries)
+    assert layers["loop.prior"] == "L4", "压实触发 → 顺带遗忘陈旧低分条目"
+    assert layers["loop.warm"] == "L2", "高复用条目不被遗忘"
+    assert "loop.prior" in {e.id for e in memory.audit()}, "归档不删除，仍可审计"

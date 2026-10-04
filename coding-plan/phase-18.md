@@ -149,6 +149,28 @@
 > 会话维度生效需把 `session_id` 从 UI 会话透传到 `remember`（另立变更）。`UIAPILayer.compact`
 > 仍是 no-op（ui spec 无该 Requirement，未擅自接线）。memory spec「并发压实一致性」仍无实现
 > （单线程事件循环、无并发调用方，加锁属投机代码，另行登记）。
+>
+> **#4 固化 + #5 遗忘 已完成并归档**（2026-10-04，change `0042-memory-consolidation-forgetting`，
+> 616 tests 绿、ADR-0047 Accepted）：**固化并入 `compact` 摘要通道**（不新增 `consolidate()`）——
+> 注入 `compactor` 时**逐条目**调 judgment `score` 原语打分并写回 `importance`（逐条记
+> `Effect(op="memory.importance")`，与压实同 trace `compaction.<sid>` → 回滚即恢复旧值）；
+> 因 `score` 原语返回的是**条目集单一分数**，以 `_MAX_SCORED_PER_COMPACT = 20` 设调用上界。
+> **价值门控**：会话内本轮取得分值的最高分 < `_CONSOLIDATE_THRESHOLD = 0.5` 即整体跳过（不提炼、
+> 不归档、原条目留 L2 episodic）；**本轮没取得任何分值**（未注入 scorer / 打分失败 / 超出上界）
+> 则**不设门槛**（宁可少提炼，不因决策服务抖动让记忆停止固化）。**打分失败 ≠ 打 0 分**（保持原值，
+> 否则一次抖动清空全库重要度并误遗忘）。`compact` 里既有的**压实决策打分**改为失败降级
+> `decision=None`（咨询性返回值、无副作用，不连带阻断固化）。
+> **遗忘**：新增 `MemoryStore.forget(*, threshold=0.05) -> list[MemoryId]`，评分
+> `recency_decay × (1 + log1p(reuse)) × (1 + importance)` 低于阈值（≈19 天零复用零重要度）的
+> **L2 episodic** 条目 `migrate` 到 L4 归档（**不物理删除**、`audit` 可见、检索降权），逐条
+> `trace_id=forgetting.<id>` 按 trace 可回滚；semantic / L0 / L3 不参与衰减。**触发并入 loop 既有
+> 压实触发**：`persist → compact → forget`，三步各自降级（异常记 `maintenance_failed`），不新增
+> 触发面、不改终止语义。
+> **两处偏离原计划（已在 ADR-0047 记录）**：① 遗忘评分用 `(1 + importance)` 而非 phase-18 原文的
+> `importance`——未打分条目（默认 0）会让评分恒为 0，首次遗忘即清空全库 L2 episodic；② 门控在
+> 「本轮无分值」时不生效（原计划只写「达阈值才提炼」）。
+> **遗留**：`forget` **无调度器**（只在 loop 压实触发时顺带执行，定时衰减循环需调度依赖，另立
+> 变更）；`session_id` 仍为空串（同 0041）；无并发锁。
 
 - **记忆**：跨 3 轮以上长对话后，`read` 命中率提升（同一事实不因截断丢失），semantic 条目可见且可追溯 source trace_id。
 - **压缩**：注入 Compactor 后 `compact` 产出「摘要条目」而非「保留/丢弃布尔」，且摘要可逆。

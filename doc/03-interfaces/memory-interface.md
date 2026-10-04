@@ -23,6 +23,10 @@ class MemoryStore(Plugin):
     def compact(self, query: str = "", budget: int = 4096) -> DecisionResult | None:
         """压实记忆：score 原语评分决策 + 注入摘要器时的会话摘要提炼（见 §3）。"""
 
+    def forget(self, *, threshold: float = 0.05) -> list[MemoryId]:
+        """遗忘（见 §3）：衰减评分低于 threshold 的 L2 episodic 条目迁 L4 归档，
+        返回被归档条目 id（撤销句柄 forgetting.<id>）；不物理删除。"""
+
     def index(self) -> IndexEntry:
         """返回 L1 最小索引。"""
 
@@ -37,7 +41,7 @@ MemoryStore(
     backend=None,          # 可插拔后端（缺省 FileBackend）
     effect_tracker=None,   # 可逆效应追踪（缺省自建）
     embedder=None,         # 批量向量化契约，见 §3（缺省词法降级）
-    compactor=None,        # judgment.Compactor：压实时的 score 评分决策
+    compactor=None,        # judgment.Compactor：压实决策评分 + 逐条目 importance 打分（见 §3）
     summarizer=None,       # Summarizer：压实时的 LLM 摘要提炼，见 §3（缺省只评分不写）
 )
 ```
@@ -113,6 +117,39 @@ def relevance(entry, query, embedder=None) -> float:
 
 未注入 ``summarizer`` 时**只评分不写**：不写摘要条目、不改动原条目层级（降级）。摘要提炼
 异常**不吞**：向上传播给触发点记录重试，原条目保持不变。
+
+### 固化打分 + 价值门控（compact，0042）
+
+注入 ``compactor`` 时，``compact`` 在提炼前先**逐条目打分**并写回 ``importance``：
+
+- ``judgment.Compactor.score`` 的 ``score`` 原语返回的是**条目集的单一分数**（无 per-item
+  分数），故**每条目一次调用**；按本地多因子序取前 ``_MAX_SCORED_PER_COMPACT = 20`` 条设上界，
+  控制单次压实的模型调用数。``state`` 带 ``entry_id / session_id / layer / reuse_count``。
+- 写回是**可变状态写入**，逐条记 ``Effect(op="memory.importance", undo=恢复旧值)``，trace 与
+  压实同批（``compaction.<session_id>``）——回滚该轮同时撤销分值写回。
+- **打分失败 ≠ 打 0 分**：``score`` 抛错或无分值即跳过该条目，``importance`` 保持原值（否则一次
+  抖动会清空全库重要度、连带误遗忘）。
+
+**价值门控**：会话内**本轮取得分值**的最高分低于 ``_CONSOLIDATE_THRESHOLD = 0.5`` 时，该会话
+整体跳过（不提炼、不归档、原条目保持 L2 episodic）。本轮一个分值都没取得（未注入 scorer /
+打分失败 / 超出打分上界）则**不设门槛**——与「没配 judgment 不停止固化」同一取向。
+
+> 压实决策打分（0039/0041 的 ``DecisionResult``）失败时降级为 ``None``：它是咨询性返回值、
+> 无写入副作用，不连带阻断固化与遗忘；摘要提炼失败仍按上节契约向上传播。
+
+### 遗忘（forget，0042）
+
+衰减评分 ``recency_decay × (1 + log1p(reuse_count)) × (1 + importance)`` 低于
+``_FORGET_THRESHOLD = 0.05``（≈19 天零复用零重要度）即归档：
+
+| 维度 | 口径 |
+|---|---|
+| 作用面 | 仅 **L2 episodic**；semantic（提炼产物）/ L0（人格）/ L3（技能）不衰减 |
+| 动作 | ``migrate(L2 → L4)``：**不物理删除**（``audit`` 可见、检索降权，L4 层优先级 0.2） |
+| 可逆 | 逐条 ``trace_id = forgetting.<entry_id>``，``rollback(trace_id)`` 迁回 L2 |
+| 返回值 | 被归档条目 id 列表（撤销句柄） |
+| 时间未知 | ``ts<=0`` 时 ``recency_decay`` 返回 1.0，不惩罚 → 不会被遗忘 |
+| 触发 | 无调度器：并入 loop 压实触发（``persist → compact → forget``），异常降级不中断主流程 |
 
 ---
 

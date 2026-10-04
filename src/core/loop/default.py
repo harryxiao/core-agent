@@ -2,7 +2,8 @@
 
 把「观察→推理→行动→记忆」串成单轮闭环：异步为主（arun/astream）、同步为
 薄壳（run）；不可逆动作过确认门，失败按 trace 回滚；横切中间件按序执行、
-被拒短路；循环次数 / token 预算超限即终止，达阈值时压实上下文与记忆。
+被拒短路；循环次数 / token 预算超限即终止，达阈值时压实上下文与记忆
+（含固化打分与遗忘归档）。
 
 对应接口：doc/03-interfaces/loop-interface.md §1
 """
@@ -225,10 +226,10 @@ class DefaultLoop(Plugin):
         return self._compactor.should_compact(ctx.rounds, ctx.token_used, self._token_budget)
 
     def _compact(self, ctx: LoopContext, trace_id: str) -> None:
-        """压实：多轮历史提炼沉淀（persist）→ 记忆会话摘要归档。
+        """压实：多轮历史提炼沉淀（persist）→ 记忆固化（打分 + 会话摘要）→ 遗忘归档。
 
-        压实失败**降级不中断本轮**（原记忆保持不变，失败经观测通道留痕）；
-        终止语义不变：压实后仍按既有预算/轮数条件终止（不无限烧 token）。
+        三步共用一次触发、任一步**降级不中断本轮**（原记忆保持不变，失败经观测通道
+        记 ``maintenance_failed`` 留痕）；终止语义不变：压实后仍按既有预算/轮数条件终止。
         """
         assert self._compactor is not None  # noqa: S101 — 调用点已判空
         try:
@@ -236,13 +237,17 @@ class DefaultLoop(Plugin):
         except ContextError:
             pass  # 无可沉淀关键信息：非错误，不替换原文
         except Exception as err:  # noqa: BLE001 — 压实失败降级，本轮继续
-            self._trace(trace_id, "compaction_failed", {"error": str(err)})
+            self._trace(trace_id, "maintenance_failed", {"error": str(err)})
         if self._memory is None:
             return
         try:
             self._memory.compact()
-        except Exception as err:  # noqa: BLE001 — 摘要提炼失败降级，原记忆不丢
-            self._trace(trace_id, "compaction_failed", {"error": str(err)})
+        except Exception as err:  # noqa: BLE001 — 打分/摘要失败降级，原记忆不丢
+            self._trace(trace_id, "maintenance_failed", {"error": str(err)})
+        try:
+            self._memory.forget()
+        except Exception as err:  # noqa: BLE001 — 遗忘失败降级，本轮继续
+            self._trace(trace_id, "maintenance_failed", {"error": str(err)})
 
     # ---- 阶段方法 ----
 

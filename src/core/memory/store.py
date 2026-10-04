@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import time
 from collections.abc import Callable
 from dataclasses import asdict
@@ -18,7 +19,7 @@ from core.plugin_registry import Effect, EffectTracker
 
 from .backend import FileBackend
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
-from .relevance import rank
+from .relevance import rank, recency_decay
 from .summarize import Summarizer
 
 # 粗略 token 估算：约 4 字符 ≈ 1 token（read 预算截断用）
@@ -26,6 +27,30 @@ _TOKEN_DIVISOR = 4
 
 # 向量缓存上界（超出按 FIFO 逐出）；进程内易失，不落盘
 _VEC_CACHE_MAX = 4096
+
+# 价值门控阈值：会话内最高分低于此值则不提炼（仅本轮取得分值时才设门槛）
+_CONSOLIDATE_THRESHOLD = 0.5
+
+# 遗忘阈值：衰减评分低于此值即归档（≈19 天零复用零重要度）
+_FORGET_THRESHOLD = 0.05
+
+# 单次压实的逐条目打分调用上界（score 原语一次只给一条目的分）
+_MAX_SCORED_PER_COMPACT = 20
+
+
+def _decay_score(entry: MemoryEntry) -> float:
+    """遗忘评分：新鲜度 × 复用频次 × 重要度（三者皆低才归档）。"""
+    return recency_decay(entry) * (1.0 + math.log1p(entry.reuse_count)) * (1.0 + entry.importance)
+
+
+def _below_gate(entries: list[MemoryEntry], scores: dict[str, float]) -> bool:
+    """价值门控：条目中**取得本轮分值**者最高分低于阈值即跳过该会话。
+
+    一个分值都没取得（未注入 scorer / 打分失败 / 超出打分上界）时**不设门槛**——与
+    「未注入 scorer 不设门槛」同一取向，避免决策服务抖动导致记忆停止固化。
+    """
+    got = [scores[entry.id] for entry in entries if entry.id in scores]
+    return bool(got) and max(got) < _CONSOLIDATE_THRESHOLD
 
 
 class MemoryStore:
@@ -145,17 +170,42 @@ class MemoryStore:
         ``session_id`` 聚合 L2 episodic 条目，提炼为一条 semantic 摘要条目并**归档**原条目
         （迁 L4，不删除），全部效应按 ``trace_id=f"compaction.<session_id>"`` 可撤销。
         摘要提炼异常不吞：向上传播，由触发点记录并重试（原条目保持不变）。
+
+        注入 ``compactor`` 时另**逐条目打分写回** ``importance``（0042），并据此对会话做
+        **价值门控**：仅有分且最高分低于 ``_CONSOLIDATE_THRESHOLD`` 的会话跳过提炼。
+        决策打分本身失败只降级为无决策（不做价值门控），**不**连带阻断固化与遗忘。
         """
         decision: DecisionResult | None = None
         if self._compactor is not None:
             items = self.read(query, budget=budget)
-            decision = self._compactor.score(
-                {"query": query, "count": len(items)},
-                [asdict(entry) for entry in items],
-            )
+            try:
+                decision = self._compactor.score(
+                    {"query": query, "count": len(items)},
+                    [asdict(entry) for entry in items],
+                )
+            except Exception:  # noqa: BLE001 — 决策分值是咨询性返回值（无写入副作用），
+                decision = None  # 其失败不外溢为「固化/遗忘整轮停摆」
         if self._summarizer is not None:
             self._summarize_sessions()
         return decision
+
+    def forget(self, *, threshold: float = _FORGET_THRESHOLD) -> list[MemoryId]:
+        """遗忘：衰减评分低于 ``threshold`` 的 **L2 episodic** 条目迁 L4 归档（可逆）。
+
+        评分 ``recency_decay × (1 + log1p(reuse_count)) × (1 + importance)``——新鲜度、
+        复用频次与重要度三者皆低才归档；时间未知（``ts<=0``）不惩罚。semantic（提炼产物）、
+        L0（人格）与 L3（技能）不参与衰减；**不物理删除**（``audit`` 可见、检索降权）。
+        返回被归档条目 id（撤销句柄：``forgetting.<id>``）。
+        """
+        forgotten: list[MemoryId] = []
+        for entry in self._all_entries():
+            if entry.kind != "episodic" or entry.layer != "L2":
+                continue
+            if _decay_score(entry) >= threshold:
+                continue
+            self.migrate(entry.id, "L2", "L4", trace_id=f"forgetting.{entry.id}")
+            forgotten.append(entry.id)
+        return forgotten
 
     # ---- 内部辅助 ----
 
@@ -212,14 +262,65 @@ class MemoryStore:
         return selected
 
     def _summarize_sessions(self) -> None:
-        """按会话聚合 episodic 条目 → 提炼摘要条目 → 归档原条目（整批可撤销）。"""
+        """按会话聚合 episodic 条目 → 打分写回 + 价值门控 → 提炼摘要 → 归档原条目。"""
         summarizer = self._summarizer
         assert summarizer is not None  # noqa: S101 — 调用点已判空
-        for session_id, entries in self._episodic_groups().items():
+        groups = self._episodic_groups()
+        scores: dict[str, float] = {}
+        if self._compactor is not None:
+            scores = self._score_importance([e for group in groups.values() for e in group])
+        for session_id, entries in groups.items():
+            if _below_gate(entries, scores):
+                continue
             summary = summarizer(entries)
             if not summary:
                 continue
             self._commit_summary(session_id, entries, summary)
+
+    def _score_importance(self, entries: list[MemoryEntry]) -> dict[str, float]:
+        """逐条目 importance 打分（judgment ``score`` 原语）并写回（可逆）。
+
+        ``score`` 原语返回的是**条目集的单一分数**，故每条目一次调用；按本地多因子序取前
+        ``_MAX_SCORED_PER_COMPACT`` 条，控制单次压实的模型调用数。打分失败（抛错 / 无分值）
+        跳过该条目——``importance`` 保持原值，绝不降级写 0（否则一次抖动即清空全库重要度）。
+        """
+        scorer = self._compactor
+        assert scorer is not None  # noqa: S101 — 调用点已判空
+        scored: dict[str, float] = {}
+        ordered = sorted(entries, key=lambda e: rank(e, ""), reverse=True)
+        for entry in ordered[:_MAX_SCORED_PER_COMPACT]:
+            state = {
+                "entry_id": entry.id,
+                "session_id": entry.session_id,
+                "layer": entry.layer,
+                "reuse_count": entry.reuse_count,
+            }
+            try:
+                result = scorer.score(state, [asdict(entry)])
+                value = float(result.answers["score"]["score"])
+            except Exception:  # noqa: BLE001 — 打分失败保持原值，不写 0
+                continue
+            self._write_importance(entry, min(1.0, max(0.0, value)))
+            scored[entry.id] = entry.importance
+        return scored
+
+    def _write_importance(self, entry: MemoryEntry, value: float) -> None:
+        """写回重要度（可逆）：与压实同 trace，回滚该轮即恢复旧值。"""
+        previous = entry.importance
+        entry.importance = value
+        self._backend.put(entry)
+        self._hot[entry.id] = entry
+        self._tracker.record(
+            Effect(
+                op="memory.importance",
+                target=entry.id,
+                undo=lambda: self._restore_importance(entry.id, previous),
+                reversible=True,
+                coeffect=[],
+                trace_id=f"compaction.{entry.session_id or 'default'}",
+                ts=time.time(),
+            )
+        )
 
     def _episodic_groups(self) -> dict[str, list[MemoryEntry]]:
         """L2 事件条目按 ``session_id`` 分组（空会话归 ``""`` 组），保持写入序。"""
@@ -263,6 +364,13 @@ class MemoryStore:
     def _undo_write(self, entry_id: str) -> None:
         self._hot.pop(entry_id, None)
         self._backend.delete(entry_id)
+
+    def _restore_importance(self, entry_id: str, value: float) -> None:
+        entry = self._hot.get(entry_id)
+        if entry is None:
+            return
+        entry.importance = value
+        self._backend.put(entry)
 
     def _undo_migrate(self, entry_id: str, from_layer: Layer, to_layer: Layer) -> None:
         entry = self._backend.get(from_layer, entry_id)

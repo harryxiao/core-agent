@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal
 
@@ -320,3 +321,155 @@ def test_compact_summary_outranks_archived_originals() -> None:
     ids = [e.id for e in store.read("事实", budget=100)]
     assert ids[0] == "compaction.summary.s1"
     assert "e0" in ids
+
+
+# ---- 固化与遗忘（0042） ----
+
+
+class _ValueScorer:
+    """按条目 id 查表返回分值的假 scorer（judgment score 原语：条目集单一分数）。"""
+
+    def __init__(self, scores: dict[str, float], *, error: bool = False) -> None:
+        self._scores = scores
+        self._error = error
+        self.calls: list[list[str]] = []
+
+    def score(self, state, items, threshold=None):
+        self.calls.append([item["id"] for item in items])
+        if self._error:
+            raise RuntimeError("judge unavailable")  # noqa: TRY003 — 假件模拟决策服务不可达
+        return DecisionResult(
+            primitive=DecisionPrimitive.SCORE,
+            answers={
+                "score": {
+                    "score": self._scores.get(items[0]["id"], 0.0),
+                    "legend": "",
+                    "probabilities": {},
+                    "confidence": 1.0,
+                }
+            },
+            fallback=False,
+        )
+
+
+def _aged(entry: MemoryEntry, days: float) -> MemoryEntry:
+    """把条目时间戳回拨 ``days`` 天（遗忘评分的时间维度）。"""
+    entry.ts = time.time() - days * 86400.0
+    return entry
+
+
+def test_compact_scores_importance_per_entry_and_rollback_restores() -> None:
+    tracker = EffectTracker()
+    scorer = _ValueScorer({"e0": 0.9, "e1": 0.8})
+    store = MemoryStore(effect_tracker=tracker, compactor=scorer, summarizer=lambda entries: "摘要")
+    store.write("L2", _session_entry("e0", "重要事实", "s1"))
+    store.write("L2", _session_entry("e1", "次要事实", "s1"))
+
+    store.compact()
+
+    by_id = {e.id: e for e in store.audit()}
+    assert by_id["e0"].importance == 0.9, "分值写回条目"  # noqa: PLR2004 — 假件给定分值
+    assert by_id["e1"].importance == 0.8  # noqa: PLR2004 — 假件给定分值
+    per_entry = [call[0] for call in scorer.calls if len(call) == 1]
+    assert sorted(per_entry) == ["e0", "e1"], "score 原语为整集分数 → 逐条目一次调用"
+
+    report = tracker.rollback("compaction.s1")
+
+    assert report.undo_failed == []
+    restored = {e.id: e for e in store.audit()}
+    assert restored["e0"].importance == 0.0, "回滚 → importance 恢复旧值"
+
+
+def test_compact_value_gate_skips_low_value_session() -> None:
+    seen: list[list[str]] = []
+
+    def summarizer(entries: list[MemoryEntry]) -> str:
+        seen.append([e.id for e in entries])
+        return "摘要"
+
+    store = MemoryStore(compactor=_ValueScorer({"hi0": 0.9, "lo0": 0.1}), summarizer=summarizer)
+    store.write("L2", _session_entry("hi0", "高价值决策", "s-hi"))
+    store.write("L2", _session_entry("lo0", "寒暄一轮", "s-lo"))
+
+    store.compact()
+
+    assert seen == [["hi0"]], "仅达标会话进入提炼"
+    layers = dict(store.index().entries)
+    assert layers["hi0"] == "L4" and layers["compaction.summary.s-hi"] == "L2"
+    assert layers["lo0"] == "L2", "低价值会话保留 episodic 原层"
+    assert "compaction.summary.s-lo" not in layers
+
+
+def test_compact_without_scorer_does_not_gate() -> None:
+    """未注入 scorer：价值门槛不生效（0041 行为保持，会话全部提炼）。"""
+    seen: list[list[str]] = []
+
+    def summarizer(entries: list[MemoryEntry]) -> str:
+        seen.append([e.id for e in entries])
+        return "摘要"
+
+    store = MemoryStore(summarizer=summarizer)
+    store.write("L2", _session_entry("e0", "事实", "s1"))
+    store.write("L2", _session_entry("e1", "别的会话", "s2"))
+
+    store.compact()
+
+    assert seen == [["e0"], ["e1"]]
+
+
+def test_scorer_failure_keeps_importance_and_does_not_gate() -> None:
+    """打分失败 ≠ 打 0 分：保持原值、不设门槛、不中断固化（决策服务抖动不致记忆停摆）。"""
+    store = MemoryStore(compactor=_ValueScorer({}, error=True), summarizer=lambda entries: "摘要")
+    store.write("L2", _session_entry("e0", "事实", "s1"))
+
+    store.compact()
+
+    entries = {e.id: e for e in store.audit()}
+    assert entries["e0"].importance == 0.0, "打分失败保持原值而非写 0"
+    assert "compaction.summary.s1" in entries, "打分不可得 → 不设门槛，固化流程继续"
+
+
+def test_forget_archives_only_stale_low_value_l2_episodic() -> None:
+    store = MemoryStore()
+    stale = _aged(_session_entry("stale", "陈旧且从未复用", "s1"), 30)
+    warm = _aged(_session_entry("warm", "陈旧但常复用", "s1"), 30)
+    warm.reuse_count = 10
+    priceless = _aged(_session_entry("priceless", "陈旧但重要", "s1"), 30)
+    priceless.importance = 1.0
+    fact = _aged(_session_entry("fact", "提炼事实", "s1", kind="semantic"), 30)
+    for entry in (stale, warm, priceless, fact):
+        store.write("L2", entry)
+    store.write("L0", _aged(_entry("persona", "L0", "人格"), 30))
+    store.write("L3", _aged(_entry("skill", "L3", "技能"), 30))
+
+    forgotten = store.forget()
+
+    assert forgotten == ["stale"], "返回被归档条目 id（撤销句柄）"
+    layers = dict(store.index().entries)
+    assert layers["stale"] == "L4", "低分条目迁 L4 归档而非删除"
+    assert layers["warm"] == "L2" and layers["priceless"] == "L2", "高复用 / 高重要度不遗忘"
+    assert layers["fact"] == "L2", "semantic 提炼产物不参与衰减"
+    assert layers["persona"] == "L0" and layers["skill"] == "L3", "L0 人格 / L3 技能不遗忘"
+    assert "stale" in {e.id for e in store.audit()}, "归档条目仍可 audit 追溯"
+
+
+def test_forget_leaves_fresh_entries_alone() -> None:
+    store = MemoryStore()
+    store.write("L2", _session_entry("fresh", "刚写的事实", "s1"))
+
+    assert store.forget() == []
+    assert dict(store.index().entries)["fresh"] == "L2"
+
+
+def test_forget_is_reversible_by_trace() -> None:
+    tracker = EffectTracker()
+    store = MemoryStore(effect_tracker=tracker)
+    store.write("L2", _aged(_session_entry("stale", "陈旧", "s1"), 30))
+
+    assert store.forget() == ["stale"]
+    assert dict(store.index().entries)["stale"] == "L4"
+
+    report = tracker.rollback("forgetting.stale")
+
+    assert report.undo_failed == []
+    assert dict(store.index().entries)["stale"] == "L2", "按 trace 回滚 → 迁回原层"

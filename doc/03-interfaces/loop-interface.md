@@ -113,7 +113,8 @@ def remember(self, trace_id: str, trajectory: list[Step]) -> None
 - 可观测：每轮生成 `trace_id`，单轮可复现（NFR-OBS2）。
 - 连续 N 轮失败 → 触发 L4 诊断钩子，暂停并请求人工介入。
 - 预算/轮数达阈值 → 触发压实（注入 `context.Compactor` 时）：多轮历史提炼沉淀（`persist`）
-  → 记忆会话摘要归档（`memory.compact`）；压实失败降级不中断本轮，**终止语义不变**
+  → 记忆固化（`memory.compact`：打分写回 + 价值门控 + 会话摘要归档）→ 遗忘（`memory.forget`：
+  低分条目迁 L4 归档）；任一步失败降级不中断本轮（记 `maintenance_failed`），**终止语义不变**
   （仍按既有预算/轮数条件终止，不因压实而续跑）。
 
 ---
