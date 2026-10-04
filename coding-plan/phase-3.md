@@ -32,7 +32,7 @@
 - [x] skills：注册校验、前置条件检查；灰度发布、A/B 中 B 退化自动回退；路由命中 Top-K、未命中沉淀
 - [x] skills 执行超时/资源熔断：spec §47「超时与资源上限」（SKILL_TIMEOUT）已摘除——该 Requirement 在 skills 层无执行落点，超时/资源约束由 tool-use 承载（change 0031）
 - [x] skillhub：源不可达回退、源不存在报错；签名校验失败拒绝、下载默认 draft；发布进审核、通过才发布、驳回处理
-- [x] 端到端：loop 驱动 tool-use + memory + context 协同、全程无断点（离线冒烟经注入 planner 替代 llm-provider，真实模型调用待联调）
+- [x] 端到端：loop 驱动 tool-use + memory + context 协同、全程无断点（离线冒烟经注入 planner 替代 llm-provider，真实模型调用待联调 → ✅ 已由 Phase 13 组合根接通 LLM 闭合）
 
 ---
 

@@ -71,7 +71,7 @@
 **首步补 2 个契约缺口 + 3 项对齐**（走 openspec_sop 补契约再编码）：
 
 1. **补 `pet.*` ConfigSpec**——走 openspec_sop：在 `configuration-interface.md` 的 ConfigSpec 清单补 `pet.enabled` / `pet.persons_dir`（CLI flag `--pet-enabled` / `--pet-dir`，env `CORE_PET_ENABLED` / `CORE_PET_DIR`，map_to `pet.*`）；在 `pet-mode-interface.md` 补 persona 字段契约（角色/性格/喜好 + 随机任务开关）。禁止 pet 配置绕过 ConfigSpec 另起解析。
-2. **补 serve/REPL 落地契约**——ui-interface §1 已有「FastAPI HTTP+SSE」「CLIBridge 交互会话面」契约，但实现 deferred；补 `WebBridge.serve()` 端点清单（`POST /session`、`POST /run` SSE、`POST /barge-in`、`GET /memory`、`POST /session/compact`、`GET /tools`、`POST /tools/invoke`、`GET/PUT /llm-config`——覆盖 `UIAPILayer` 全部 9 方法）+ `CLIBridge.connect()` 循环语义，validate 通过后编码。
+2. **补 serve/REPL 落地契约**——ui-interface §1 已有「FastAPI HTTP+SSE」「CLIBridge 交互会话面」契约，但实现当时 deferred（✅ **已落地**：`src/core/ui/fastapi_serve.py` + `src/core/ui/repl.py`，见 `phase-19.md` G 类）；补 `WebBridge.serve()` 端点清单（`POST /session`、`POST /run` SSE、`POST /barge-in`、`GET /memory`、`POST /session/compact`、`GET /tools`、`POST /tools/invoke`、`GET/PUT /llm-config`——覆盖 `UIAPILayer` 全部 9 方法）+ `CLIBridge.connect()` 循环语义，validate 通过后编码。
 3. **对齐 help 清单**：argparse 的 30 动词 + 14 flag 必须与 `cli-contract-baseline.md` §2.1-2.10 逐条一致（复用 `cli-ops` 的 `CommandGroup`/`ParamMapper`，不得另起命令解析——与 ci-cd「不得另起一套」同一原则）。
 4. **核对入口 ↔ cli-ops 边界**：argparse 只做「解析 + 路由」，具体动作进 `dispatcher.py` 六组方法；argparse 层不得内联实现命令逻辑。
 5. **对齐 pet 激活入口**：`core-agent pet ...` 命令族必须落到 `PetActivator.activate_from_cli()`（不是自己 new PetSession），与 `/pet` 斜杠、WebUI 自然语言三入口同源。

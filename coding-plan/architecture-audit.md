@@ -72,6 +72,8 @@ argparse | click
 | 横切 mcp | 连接管理 / 工具资源发现 / 调用转发错误隔离 / Server 模式 / 工具暴露白名单 / 安全约束透传 / 会话调用隔离 / 多流复用 | 有"连接管理+发现"，**无运行期安装/添加生命周期**（连接管理=已配置连接，非安装语义） |
 | L1 tool-use | 6 Requirement 全框架语义（注册/校验/coeffect/撤销/超时/异步） | **无 install/uninstall 工具**，Agent 无法经 AI 对话安装 |
 
+> **销账状态（2026-10-04 走查）**：上表三层缺口（InstallableAsset / install-uninstall 工具 / cli-ops 命令集 / CLI 覆盖层 / permission-mode）**除 mcp 传输外均已由后续 Phase 补齐** —— 见 `phase-19.md` G 类。
+
 **缺口判定：**
 - ❌ 无统一"可安装资产"抽象（InstallableAsset），skill/mcp/cli 三类的"**获取→校验→安装→注册→激活**"前半段生命周期缺失
 - ❌ skillhub 的"签名校验 / 多源路由"能力未上提到统一层复用，导致 mcp/cli 无法复用

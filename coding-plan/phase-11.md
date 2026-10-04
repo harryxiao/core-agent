@@ -81,7 +81,7 @@ llm_provider(主 LLM 回退) ─────────────────
 - [x] 置信度回退：confidence < 阈值 → 主 LLM + `DecisionResult.fallback=True` + 轨迹标注；noul 概率接近 0.5 判定；JEV 不可达/超时回退
 - [x] 决策轨迹 `DecisionTrace` 落 observability（含置信度 + 回退标记）
 - [x] judgment.* 5 键纳入 ConfigSpec 单一真源；api_key 走 `${VAR}` 引用分级；未配置时决策能力关闭、主 LLM 兜底
-- [ ] 决策点 DI seam：loop（choice）/ memory 压实（score）/ permission guardrail（noul）三决策点经注入接 judgment，不内联 JEV 调用（deferred：三组件已落地并提供三原语，loop/memory/permission 三决策点的实际 DI 接线为后续 Phase）
+- [x] 决策点 DI seam：loop（choice）/ memory 压实（score）/ permission guardrail（noul）三决策点经注入接 judgment，不内联 JEV 调用（✅ **已由 Phase 13 闭合**：`src/core/runtime.py:182-241` 构造并注入 `DecisionRouter`/`Compactor`/`Guardrail`/`SkillMatcher`，装配断言见 `tests/test_phase13.py:83`；原 deferred 注记作废 → `phase-19.md` G 类）
 - [x] 门禁四件套全绿：ruff check ✓ · ruff format --check ✓ · pyright 0 errors · pytest 全通过（含本 Phase 新增用例）
 
 ## 7. 测试要点
@@ -92,7 +92,7 @@ llm_provider(主 LLM 回退) ─────────────────
 - [x] 未识别原语 → `JUDGMENT_INVALID_PRIMITIVE`
 - [x] 决策轨迹：每次决策产出 `DecisionTrace`，落 observability，含置信度与回退标记（单测断言轨迹字段完整）
 - [x] ConfigSpec：judgment.* 5 键三面一致（CLI flag / env / yaml）；api_key 明文 yaml 拒绝；未配置 provider → 决策能力关闭、主 LLM 兜底
-- [ ] 决策点 DI：loop/memory/permission 注入 fake `DecisionRouter`/`Compactor`/`Guardrail` 断言调用（deferred：随 DI 接线后续 Phase 补测，不碰真实 JEV）
+- [x] 决策点 DI：loop/memory/permission 注入 fake `DecisionRouter`/`Compactor`/`Guardrail` 断言调用（✅ **已由 Phase 13 闭合**：`tests/test_phase13.py:500,508,515` 分别向 `DefaultLoop` / `MemoryStore` / `PermissionGuard` 注入 fake 三组件；原 deferred 注记作废 → `phase-19.md` G 类）
 
 ## 8. 提交规范
 

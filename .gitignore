@@ -42,3 +42,8 @@ src/*.egg-info/
 
 # Claude Code codebase memory (transient)
 .codebase-memory/
+
+# 本地实例 / 密钥载体：绝不入库（见 coding-plan/phase-19.md D3/D4）
+/config.yaml
+.claude/settings_deepseek.json
+.claude/settings_glm.json

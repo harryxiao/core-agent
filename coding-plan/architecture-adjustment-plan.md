@@ -1,6 +1,8 @@
 # CORE-Harness 架构微调计划
 ## 补齐 CLI 命令集 / 启动参数映射 / 三方插件统一安装
 
+> **销账状态（2026-10-04 走查）**：M1/M3/M4/M5/M6 微调点**均已由后续 Phase 补齐**（`plugin_registry/installable.py` / `tools/install_tools.py` / `entry.py` 子命令 / `runtime.py` config.permission_mode）；**仅 M2 的 mcp 安装-移除生命周期**仍随 Phase 12 DEFERRED —— 见 `phase-19.md` B1 与 G 类。
+>
 > 配套 `architecture-audit.md`。本计划只描述**微调点**，不直接改 spec/ADR/interface，
 > 落成 openspec change 时按 openspec_sop 走 delta 双写 + ADR 追加。
 

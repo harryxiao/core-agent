@@ -66,8 +66,8 @@ Phase 17 把**写入侧**做完了（落盘 / 分层 / 预算 / 降级 / 并发 
 > **预算约束**：注入块须走既有 2048 预算，不得把整个记忆塞进上下文（loop spec §约束）。
 
 **验收**
-- [ ] 新测试：给定 L2 记忆「用户偏好 uv 管理依赖」，装配后 system prompt 含该条（按任务召回）；换无关任务不注入或显著降权
-- [ ] 既有 `test_llm_planner_*` 不回归
+- [x] 新测试：给定 L2 记忆「用户偏好 uv 管理依赖」，装配后 system prompt 含该条（按任务召回）；换无关任务不注入或显著降权（✅ 已由 change 0038 闭合；（✅ 已闭合，见 `coding-plan/phase-19.md` G 类））
+- [x] 既有 `test_llm_planner_*` 不回归（✅ 已由 change 0038 闭合；（✅ 已闭合，见 `coding-plan/phase-19.md` G 类））
 
 ### 3.2 pet 运行时注入
 
@@ -77,20 +77,20 @@ Phase 17 把**写入侧**做完了（落盘 / 分层 / 预算 / 降级 / 并发 
 - **三入口**：UIAPILayer / WebUI 自然语言入口接 `activate_from_nl`。
 
 **验收**
-- [ ] `pet gather` 后 `pet list`（新进程）可见该会话；`pet stop` 可终止
-- [ ] `observe()` 偏好落 L2 成功（memory 已注入），`prefer()` 能读回
-- [ ] 一次 wake 走真实 loop（非 echo）
+- [ ] `pet gather` 后 `pet list`（新进程）可见该会话；`pet stop` 可终止 → **未做**，见 `phase-19.md` E4
+- [ ] `observe()` 偏好落 L2 成功（memory 已注入），`prefer()` 能读回 → **未做**，见 `phase-19.md` E4
+- [ ] 一次 wake 走真实 loop（非 echo）→ **未做**，见 `phase-19.md` E4
 
 ### 3.3 beast 运行时注入
 
 - **router**：runtime 组合根构造 `BeastManager(router=agent_router)`，并把 `BeastActivator` 传同一 manager（`entry.py:834` 改用 runtime 的 activator）；确保 `summon` 真正 handoff 并自动 recall。
 - **神通**：runtime 启动时 `register_innate_skills(skill_library, registry)` → 20 神通进 SkillLibrary（注意 loop 只消费 ToolProvider，故需决定神通如何「被走到」——经 `skill_router` 进 planner 的「可用技能」块，或提供 Skill→Tool 适配）。
-- **会话**：`BeastSession` 注入真实 loop + memory（`source=beast.<agent_id>` 命名空间隔离）。
+- **会话**：`BeastSession` 注入真实 loop + memory（`source=beast.<agent_id>` 命名空间隔离）→ **未做**，见 `phase-19.md` E3。
 
 **验收**
-- [ ] `summon 白泽 "<任务>"` 经 handoff 执行并返回 `last_result`，终态 recall；`failed` 可见
-- [ ] 20 神通注册进 SkillLibrary 且被 `skill_router` 命中（「可用技能」块出现）
-- [ ] 兽间并行、兽内串行、重复召唤拒绝不回归
+- [ ] `summon 白泽 "<任务>"` 经 handoff 执行并返回 `last_result`，终态 recall；`failed` 可见 → **未做**（`BeastActivator` 未注入 router），见 `phase-19.md` E3
+- [ ] 20 神通注册进 SkillLibrary 且被 `skill_router` 命中（「可用技能」块出现）→ **未做**（`register_innate_skills` 零生产调用者），见 `phase-19.md` E3
+- [x] 兽间并行、兽内串行、重复召唤拒绝不回归（✅ 行为已实现并单测于 `src/core/beast/manager.py` + `tests/test_beast.py`；仅运行时接线缺失 → `phase-19.md` E3）
 
 ### 3.4 subagent（仅口径记录，无改动）
 
@@ -120,10 +120,10 @@ Phase 17 已打通：注册**无个数上限**（`router.register`）、默认 3
 
 - 四门：`ruff check` / `ruff format --check` / `pyright` / `pytest -q` 全绿。
 - 本 Phase 专属：
-  - [ ] **memory**：按任务召回进 prompt（新测试）；无双检 / 预算不翻倍
-  - [ ] **pet**：跨进程 list/stop；偏好落 L2；一次真实 wake
-  - [ ] **beast**：summon 真 handoff + 自动 recall；20 神通进 SkillLibrary 且可被 `skill_router` 命中
-  - [ ] loop spec / interface 与实现一致；`openspec validate` 全绿（若涉 delta）
+  - [x] **memory**：按任务召回进 prompt（新测试）；无双检 / 预算不翻倍（✅ 已由 change 0038 闭合）
+  - [ ] **pet**：跨进程 list/stop；偏好落 L2；一次真实 wake → **未做**，见 `phase-19.md` E4
+  - [ ] **beast**：summon 真 handoff + 自动 recall；20 神通进 SkillLibrary 且可被 `skill_router` 命中 → **未做**，见 `phase-19.md` E3
+  - [x] loop spec / interface 与实现一致；`openspec validate` 全绿（若涉 delta）（✅ 已由 change 0038 闭合；`openspec validate --all` 29 specs 全绿）
 
 ---
 

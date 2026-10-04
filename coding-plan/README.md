@@ -1,7 +1,7 @@
 # Core-Agent Coding Plan（编码落地总索引）
 
 > **定位**：这是「架构设计 → 编码实现」开始前的最后一环规划产物，供 Claude Code / 开发 Agent 按序推进编码时使用。
-> 本目录 `coding-plan/` 承载 21 份 Phase 文档（本 README 总索引 + `phase-0.md` ~ `phase-18.md`；含 `phase-2.5.md` / `phase-17.5.md` 两个补丁 Phase，Phase 12 为 DEFERRED 重开预案）。
+> 本目录 `coding-plan/` 承载 22 份 Phase 文档（本 README 总索引 + `phase-0.md` ~ `phase-19.md`；含 `phase-2.5.md` / `phase-17.5.md` 两个补丁 Phase，Phase 12 为 DEFERRED 重开预案，Phase 19 为收口后的排期遗漏账本）。
 > **规则**：严格按依赖拓扑序推进；每 Phase 完成须 100% 通过门禁三件套；所有 spec/interface 契约以仓库原文为准，速查见契约速查表。
 
 ---
@@ -20,7 +20,7 @@
 
 ---
 
-## 1. 文档清单（Phase 文档 21 份）
+## 1. 文档清单（Phase 文档 22 份）
 
 | 文档 | 内容 | 对应里程碑 |
 |---|---|---|
@@ -46,6 +46,7 @@
 | `phase-17.md` | 编排打通 + 记忆语义化（subagent 池 + delegate + 记忆落盘/语义读写） | M3 真实收口 |
 | `phase-17.5.md` | 接线补丁：memory 召回注入 + pet/beast 运行时注入 | —（无独立里程碑） |
 | `phase-18.md` | 记忆固化自动化 + 技能进化双维度 | M4 自进化收口 |
+| `phase-19.md` | 排期遗漏账本（Phase 18 收口后的未排期项，全量走查）：A 收口遗留 / E 早期 Phase 未闭合（含 E10–E12） / B Phase 12 重开 / C 真后端未接 / D 文档杂项 / F ✅ 已清尾 / G ✅ 已销账 | —（非里程碑，记账） |
 
 **契约速查**：`contracts_summary.md`（29 capability 的 spec 目标 + interface 核心方法签名 + 模块路径，写代码前先查它）。
 
@@ -76,8 +77,9 @@
 | 15 验证门 + 结晶 | ✅ 完成 | evolution（评测基建 P2 + 验证门/结晶接线）→ permission（沙箱颗粒度 P1 + HITL P3）→ durability 接 loop | M10：一个真实缺陷走完「诊断→提案→验证→结晶」全链路 + P1/P2/P3 三缺口 + 崩溃恢复/时间旅行接 loop | 依赖 Phase 14（候选）+ Phase 5/2（Validator/Evaluator/SandboxManager/CrashRecovery）；**首步核对评测三件 vs evolution spec** |
 | 16 插件/工具链路缺口 | ✅ 完成 | plugins（cli_adapter → install 按 kind 分发）→ runtime coeffect 接线 | M9 修复补丁：CLI 可执行 + 插件安装按 PluginKind 分发 + 内置文件工具 coeffect 贯通 | 依赖 Phase 13 组合根；**首步 CLI 适配层 + 组合根注入 resolver/installer** |
 | 17 编排打通 + 记忆语义化 | ✅ 完成 | orchestration（subagent 池 + delegate 工具 + match 无命中报错）→ memory（落盘 + 语义读写 + session 维度）→ loop 委托接线 | M3 真实收口 + 记忆语义化：主 Agent 委托子 Agent 等结果 + 对话语义入记忆可检索 | 依赖 Phase 4（orchestration）/Phase 14（接线）/Phase 1（memory）；**首步 subagent 池注册 + match 无命中报错 + FileBackend 默认落盘** |
-| 17.5 接线补丁 | 📋 待开工 | memory（召回注入接合：task-keyed 检索进 prompt，D1=方案A）→ pet（运行时注入 loop/memory/explorer/safety + 跨进程存活 + wake）→ beast（router handoff + 神通注册 SkillLibrary） | —（无独立里程碑；Phase 18 开工前的接线补丁） | 依赖 Phase 17（memory/subagent）/Phase 13（组合根）/Phase 8·10（pet·beast）；**首步 loop spec 补「记忆召回注入」场景 + 修 retrieval query** |
-| 18 记忆固化自动化 + 技能进化双维度 | 📋 待开工 | memory（字段扩展 importance/kind → 多因子检索 → 摘要压缩 → 固化 → 遗忘）→ skills（SOP 提取器 → 语义路由 → Skill 迭代）→ evolution（confirm 收口 + auto-dissolve） | M4 自进化收口 + 记忆固化：维度1 技能库/SOP 全自动进化（任务→SOP→Skill→迭代，仅技能库层不动架构代码）、维度2 架构级进化人工审核（confirm 必审）、超阈值自动 dissolve、semantic 摘要可逆可追溯 | 依赖 Phase 15（Validator/Evaluator/SandboxManager/HITL）/Phase 11（judgment，JEV 优先 LLM 兜底）/Phase 17（session 维度）；**首步 MemoryEntry 增字段 + read 多因子检索 + 接口文档同步回填** |
+| 17.5 接线补丁 | 🔶 部分完成（遗留见 `phase-19.md` E3/E4） | memory（召回注入接合：task-keyed 检索进 prompt，D1=方案A）→ pet（运行时注入 loop/memory/explorer/safety + 跨进程存活 + wake）→ beast（router handoff + 神通注册 SkillLibrary） | —（无独立里程碑；Phase 18 开工前的接线补丁；memory 召回注入已由 change 0038 闭合，pet/beast 运行时注入未做） | 依赖 Phase 17（memory/subagent）/Phase 13（组合根）/Phase 8·10（pet·beast）；**首步 loop spec 补「记忆召回注入」场景 + 修 retrieval query** |
+| 18 记忆固化自动化 + 技能进化双维度 | ✅ 完成 | memory（字段扩展 importance/kind → 多因子检索 → 摘要压缩 → 固化 → 遗忘）→ skills（SOP 提取器 → 语义路由 → Skill 迭代）→ evolution（confirm 收口 + auto-dissolve） | M4 自进化收口 + 记忆固化：维度1 技能库/SOP 全自动进化（任务→SOP→Skill→迭代，仅技能库层不动架构代码）、维度2 架构级进化人工审核（confirm 必审）、超阈值自动 dissolve、semantic 摘要可逆可追溯 | 依赖 Phase 15（Validator/Evaluator/SandboxManager/HITL）/Phase 11（judgment，JEV 优先 LLM 兜底）/Phase 17（session 维度）；**首步 MemoryEntry 增字段 + read 多因子检索 + 接口文档同步回填** |
+| 19 排期遗漏账本 | 📋 记账中（D/F/G 已清尾） | —（非里程碑：A 收口遗留 A1–A9 / E 早期 Phase 未闭合 E1–E12 / B Phase 12 重开 / C 真后端未接 / D 文档杂项 / F ✅ 已清尾（41 框勾销）/ G ✅ 已销账） | —（不设里程碑；逐项关闭后销账） | 依赖 Phase 18（已完成）；**下一步 A2/E2 会话维度合并做** |
 
 > **里程碑口径（M0~M10）**：M0 底座就绪（P0）→ M1 能力可调（P1）→ M2 单 Agent 闭环（P3）→ M3 多 Agent 编排（P4）→ M4 自进化（P5）→ M5 可发布产品（P7）→ M6 可启动产品（P9，M5 的入口侧补缺）→ M7 神兽召唤（P10，前台重大任务）→ M8 决策模型接入（P11，judgment/JEV System One）→ M9 系统级闭环（P13，runtime 组合根 + 单 Agent 真闭环）→ M10 进化闭环（P14+P15，冷路径采集 + 长任务编排 + 验证门/评测/结晶）。
 > Phase 2（横切中间件）、Phase 6（组合分发部署）为**贯穿阶段**，不单设里程碑，其成果在 M2/M5 验收中一并体现。

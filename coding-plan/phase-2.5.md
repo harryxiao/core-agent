@@ -146,12 +146,12 @@
 
 本 Phase 专属校验：
 
-- [ ] M1：`InstallableAsset{kind}` 三 kind 均可 discover→install→uninstall 闭环；签名校验失败拒绝 install；依赖环拒绝
-- [ ] M5：CLI > env > yml > 默认 优先级链正确；ConfigSpec 三面生成一致；非法 `map_to` 阻断启动
-- [ ] M2：`mcp add` 后进入现有连接管理并可用；`remove` 后连接资源释放
-- [ ] M6：四档 mode 生效；`read-only` 下写操作被拒；危险 action 声明 risk 后走审批
-- [ ] 契约：0028/0029 delta 双写完成，ADR-0037/0038 就位，specs 计数 25→26
-- [ ] 受影响文档九项闭合：overview 6 处同步、data-model 横切表 +1 行、requirements 1.26、design-eval 五处 25→26、cli-ops-interface.md 新建、ADR-0037/0038（`git status` 反向核对「列了且改了」双向闭合，L32）
+- [x] M1：`InstallableAsset{kind}` 三 kind 均可 discover→install→uninstall 闭环；签名校验失败拒绝 install；依赖环拒绝
+- [x] M5：CLI > env > yml > 默认 优先级链正确；ConfigSpec 三面生成一致；非法 `map_to` 阻断启动
+- [x] M2：`mcp add` 后进入现有连接管理并可用；`remove` 后连接资源释放
+- [x] M6：四档 mode 生效；`read-only` 下写操作被拒；危险 action 声明 risk 后走审批
+- [x] 契约：0028/0029 delta 双写完成，ADR-0037/0038 就位，specs 计数 25→26
+- [x] 受影响文档九项闭合：overview 6 处同步、data-model 横切表 +1 行、requirements 1.26、design-eval 五处 25→26、cli-ops-interface.md 新建、ADR-0037/0038（`git status` 反向核对「列了且改了」双向闭合，L32）
 
 ---
 

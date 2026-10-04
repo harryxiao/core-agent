@@ -92,7 +92,7 @@
 
 - [x] git 接口契约补齐，安全操作（凭据不落盘 + 高危审批）可用
 - [x] ui 三模（CLI/Web/Desktop）复用同一内核跑通 loop（抽象层）
-- [x] 统一后端 API + LLM Key 单次配置 + 安全存储（抽象层落地；FastAPI HTTP/SSE 真实传输未接）
+- [x] 统一后端 API + LLM Key 单次配置 + 安全存储（抽象层落地；FastAPI HTTP/SSE 传输 ✅ 已由 Phase 9 落地：`src/core/ui/fastapi_serve.py`）
 - [x] im 白名单/高危确认/消息幂等/断线隔离（抽象层 + FakeProvider 测试跑通；真实平台 SDK 未接）
 - [x] ci-cd 四道门禁 + 制品发布闭环，任一门禁失败阻断交付
 - [x] 三入口 + CI/CD 全链路冒烟通过（M5；真实后端 deferred，抽象层门禁全绿）
