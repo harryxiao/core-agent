@@ -59,6 +59,19 @@
 
 **D.（P2 可选，本 Phase 不实现）** 自动课程（Voyager 式自主目标生成），为「自动迭代内部其余模块」铺路。
 
+**E. 遗留任务（来自 Phase 17.5 §3.1 走查，与 A/B 同层，按需并入本 Phase）**
+
+> 2026-10-04 走查结论：以下为 Phase 17.5（接线补丁）实施后仍存留的架构级欠账，
+> 均落在 L2 记忆 / L3 上下文工程本层职责内，不越层；在此登记并闭环。
+
+- **C7 embedder 接入**：`runtime.py:164` 构造 `MemoryStore` 未传 embedder → 运行时恒走词法 `_lexical_sim`，「语义检索」名存实亡。落点＝交付物 #2「read 多因子化」时经 `CoeffectResolver` 注入 embedder（模型/密钥**只引用不读取**，不进日志/记忆）。
+- **C8 写侧无 consolidation/forgetting**：`remember` 只增不整合、不衰减（已覆盖于交付物 #4/#5，此处仅登记落点，不重复实现）。
+- **B4 `ContextPack.skills` / `pending` 恒空**：`assembler.build`（assembler.py:34）从不填充 → 装配包只有 facts/constitution。落点＝交付物 #6/#7（SOP 提取、语义路由）上线后，装配器消费 `SkillRouter.route` 结果写入 `skills`。
+- **B5 `_trim` 保序截断**：`budget.py:56-64` 按顺序取前 N 到预算即止，非按相关度裁剪 → 高价值项可能被后到的低价值项挤出。落点＝预算裁剪改为「按多因子得分排序后截断」。
+- **B6 仅 reason 阶段装配**：`assembler.build` 唯一调用点＝planner `reason`（planner.py:124）→ perceive/act 阶段无信息供给。落点＝按需为 perceive（首轮召回）/ act（工具选择）扩展装配阶段。
+- **A1 `LoopContext.memory` 遗留字段**：Phase 17.5 §3.1（B2）撤掉 perceive 越权检索后，该字段无消费方（暂留作「已注入记忆快照」占位）。落点＝若确认无消费方则删除字段并同步 `loop-interface.md`。
+- **A3 `stage` 装饰性参数**：B2 后 `stage` 已不再是检索 query，仅作装配阶段标注、不参与任何选择。落点＝要么赋予 stage 语义（阶段化权重），要么在 `context-interface.md` / spec 中如实标注「暂不参与选择」。
+
 ---
 
 ## 2. 里程碑验收
@@ -102,6 +115,7 @@
 8. **维度1 Skill 迭代**：记录 skill 命中 + 执行反馈，发现不完善触发迭代（`version` 升级 + `ABResult` 对比），迭代后自动发布。
 9. **维度2 confirm 收口**：`engine` 确认架构级候选（`kind="plugin"`）一律 `confirm`，不引入低风险自动结晶；`risk_level` 仅用于「技能库 vs 架构」风险域判据。
 10. **auto-dissolve 自动回滚**：结晶后登记观察期，evaluator 持续采样回归指标，超阈值自动 `dissolve`，并写审计 trace。
+11. **遗留欠账收口**：按 §1.3-E 逐项并入（优先 C7 embedder 接入 → B4 装配消费 skills → B5 相关度裁剪 → B6 多阶段装配 → A1/A3 字段与参数收口）。
 
 ---
 
