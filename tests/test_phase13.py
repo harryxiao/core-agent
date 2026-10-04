@@ -161,6 +161,15 @@ def test_delegate_depth_guard_blocks_nested(monkeypatch, tmp_path) -> None:
     assert "深度上限" in result.data["error"]
 
 
+def test_general_fallback_handles_unmatched_subtask(monkeypatch, tmp_path) -> None:
+    """无 capability 命中的子任务回落 general 画像（不再 NO_AGENT_MATCH 整条失败）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+    router = runtime.orchestrator._router  # noqa: SLF001 — 校验装配产物
+    for goal in ("整理一份季度总结", "写一篇散文"):
+        assert router.match(goal).agent_id == "general"
+
+
 def test_build_runtime_rejects_missing_config(tmp_path) -> None:
     with pytest.raises(ConfigurationError):
         build_runtime(ConfigManager(yaml_path=str(tmp_path / "missing.yaml")))

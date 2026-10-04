@@ -258,7 +258,14 @@ def build_runtime(  # noqa: PLR0915, C901
             loop=_agent_loop(_agent_tools()),
         ),
     ]
-    agent_router = MultiAgentRouter(subagents)
+    # 通用兜底画像：capability 无命中的子任务回落此处，不再整条失败（NO_AGENT_MATCH 仅对
+    # 自定义「无 fallback」装配生效）；同样是独立 loop，工具面无 delegate
+    general_agent = AgentProfile(
+        agent_id="general",
+        capabilities=["default"],
+        loop=_agent_loop(_agent_tools()),
+    )
+    agent_router = MultiAgentRouter(subagents, fallback=general_agent)
 
     async def _dispatch(task: str) -> dict[str, object]:
         try:
