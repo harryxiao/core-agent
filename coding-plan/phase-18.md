@@ -65,7 +65,7 @@
 > 复核发现一个**被遗漏的前置（P0）**，且原「C7→B4→B5→B6」顺序**不成立**——已按真实
 > 依赖重排（见 §5-11）。**P0 完成前，B4/B5/B6 及 B2 的语义在生产均不可见。**
 
-- **P0（前置，最关键）装配器整条路径在生产是死路径**：`build_runtime` 两处调用
+- **P0（前置，最关键）装配器整条路径在生产是死路径** ✅ **已完成**（2026-10-04）：`build_runtime` 现构造 `CoreProfileEngine`（load_global + load_project + assemble）并把装配器接入主/子 planner；宪法 → `constitution:v1` coeffect、项目信息 → 装配包 `facts`。冒烟验证：真实 `<repo>/Core.md` 的 7 行项目信息已注入。B2/B5/B6 随之在生产生效。：`build_runtime` 两处调用
   （`entry.py:281`、`:688`）均**未传 `assembler=`** → 生产侧 `planner._assembler is None`
   （`runtime.py:191/231` 仅把 None 透传）→ **L2 事实注入从不发生**。且宪法/项目信息素材的
   加载器 `GlobalProfileLoader`/`ProjectProfileLoader`（`core_profile/loader.py`）
@@ -96,6 +96,12 @@
 - **B6 仅 reason 阶段装配**：`assembler.build` 唯一调用点＝planner `reason`（`planner.py:124`）
   → perceive/act 阶段无信息供给。落点＝按需为 perceive（首轮召回）/ act（工具选择）扩展装配
   阶段。**依赖 P0 生效。**
+- **P0b 人格 → L0 记忆层（新发现，未实现）**：core-profile spec「双语义分区」Scenario
+  「人格分区落 L0」要求人格分区内容落入 L0 记忆层；当前 `AssembledProfile.personality`
+  产出后**被丢弃**（无消费方）。落点＝启动时以**稳定 id**（如 `core-profile:personality`）
+  **幂等**写入 L0 记忆条目（避免每次 `build_runtime` 重复写），`source=core-profile`。
+  注意 L0 层优先级最高（`relevance._LAYER_PRIORITY["L0"]=1.0`），写后每次 read 都会带出，
+  需确认注入体积受预算约束。
 - **A1 `LoopContext.memory` 遗留字段** ✅ **已完成**（2026-10-04，commit db204dc）：全仓确认
   无消费方后删除字段，同步 `loop-interface.md`（连带清除文档里的幽灵类型 `MemoryPack`）。
 - **A3 `stage` 装饰性参数** ✅ **已完成**（随 B2 / change 0038）：`context-interface.md` 与
@@ -145,8 +151,8 @@
 9. **维度2 confirm 收口**：`engine` 确认架构级候选（`kind="plugin"`）一律 `confirm`，不引入低风险自动结晶；`risk_level` 仅用于「技能库 vs 架构」风险域判据。
 10. **auto-dissolve 自动回滚**：结晶后登记观察期，evaluator 持续采样回归指标，超阈值自动 `dissolve`，并写审计 trace。
 11. **遗留欠账收口（按真实依赖，2026-10-04 修正序）**：
-    ① **P0（前置）** 把 `DynamicAssembler` 接进 `build_runtime` + 接 profile loader
-    （让 B2/B5/B6 生效，补齐已声明未实现的「宪法注入/项目信息注入」）
+    ① **P0** 把 `DynamicAssembler` + `CoreProfileEngine` 接进 `build_runtime` ✅ **已完成**
+    （2026-10-04；B2/B5/B6 已随之在生产生效）；余 **P0b 人格→L0** 待做
     → ② 交付物 **#1/#2**（`importance`/`kind` + 多因子重排，**一并接 C7 embedder + 缓存策略**，先落 ADR）
     → ③ **B5/B6**（随装配器阶段化）
     → **B4** 并入 #6/#7 或判冗余删除（不独立排期）。

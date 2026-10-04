@@ -104,6 +104,30 @@ def test_build_runtime_assembles_all_deps(monkeypatch, tmp_path) -> None:
     assert delegate.timeout_s >= min_delegate_timeout
 
 
+def test_build_runtime_wires_core_profile_into_assembler(monkeypatch, tmp_path) -> None:
+    """P0：两级 Core.md 的宪法/项目信息经 build_runtime 接进装配器。
+
+    此前 build_runtime 从不传 assembler= → planner._assembler is None → 事实注入从未发生。
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("HOME", str(tmp_path))  # 隔离全局级，避免读到真实 ~/.core/Core.md
+    core_dir = tmp_path / ".core"
+    core_dir.mkdir()
+    (core_dir / "Core.md").write_text("## 宪法与全局规则\n- 必须保持简洁\n", encoding="utf-8")
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "Core.md").write_text("## 项目信息\n- 本项目用 uv 管理\n", encoding="utf-8")
+    monkeypatch.chdir(project)  # 项目级按 cwd 向上查找命中
+
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+
+    planner = runtime.loop._planner
+    assert planner._assembler is not None, "build_runtime 必须把装配器接进 planner（P0）"
+    pack = planner._assembler.build("任务", "reason", budget=2048)
+    assert any("必须保持简洁" in line for line in pack.constitution)
+    assert any("本项目用 uv 管理" in f["content"] for f in pack.facts)
+
+
 def test_build_runtime_memory_persists_to_state_dir(monkeypatch, tmp_path) -> None:
     """默认装配的记忆后端落盘到 $CORE_STATE_DIR（新后端可重载检索，不因进程退出丢失）。"""
     import os  # noqa: PLC0415 — 断言用环境变量

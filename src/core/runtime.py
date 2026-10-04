@@ -18,6 +18,7 @@ from typing import cast
 from core.configuration import ConfigManager
 from core.configuration.models import AppConfig
 from core.context import DynamicAssembler
+from core.core_profile import CoreProfileEngine
 from core.durability import (
     CheckpointManager,
     CheckpointStore,
@@ -184,6 +185,21 @@ def build_runtime(  # noqa: PLR0915, C901
     skill_router = SkillRouter(skill_library, memory=memory)
     dispatcher = InstallDispatcher(skill_library=skill_library, tool_provider=tools)
     installer = PluginInstaller(source_resolver=dispatcher.resolve, installer=dispatcher.install)
+
+    # 上下文装配接线（P0）：两级 Core.md 的宪法 → constitution:v1 coeffect、
+    # 项目信息 → ContextEngine 上下文。此前 build_runtime 从不传 assembler=，
+    # planner._assembler 恒为 None，事实/宪法注入在生产从未发生
+    # （Phase 17.5 §3.1 只改了装配器内部，未把它接上 runtime）。
+    profile_engine = CoreProfileEngine(resolver=resolver)
+    profile_engine.load_global()
+    profile_engine.load_project()
+    profile = profile_engine.assemble()
+    if assembler is None:
+        assembler = DynamicAssembler(
+            memory=memory,
+            constitution=list(profile.coeffect.get("constitution:v1", [])),
+            project_info=list(profile.context),
+        )
     planner = LLMPlanner(
         llm,
         model=app.llm.model,
