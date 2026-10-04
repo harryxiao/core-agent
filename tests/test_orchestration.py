@@ -135,11 +135,13 @@ def test_match_fallback_when_no_hit() -> None:
     assert router.match("write a poem") is fallback
 
 
-def test_match_none_when_no_hit_no_fallback() -> None:
+def test_match_raises_when_no_hit_no_fallback() -> None:
     router = MultiAgentRouter(
         agents=[AgentProfile(agent_id="coder", capabilities=["code"], loop=_loop("ok"))]
     )
-    assert router.match("write a poem") is None
+    with pytest.raises(OrchestrationError) as exc:
+        router.match("write a poem")
+    assert exc.value.code == OrchestrationErrorCode.NO_AGENT_MATCH
 
 
 def test_handoff_returns_loop_result() -> None:

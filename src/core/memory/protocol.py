@@ -29,6 +29,7 @@ class MemoryEntry:
     trace_id: str
     reuse_count: int = 0  # 复用次数（结晶阈值依据）
     ts: float = 0.0  # 时间戳（接口文档无默认值，骨架补 0.0 以便 dataclass 构造）
+    session_id: str = ""  # 会话 ID（跨轮记忆归组，缺省空串）
 
 
 @dataclass

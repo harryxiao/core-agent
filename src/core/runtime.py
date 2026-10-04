@@ -45,6 +45,7 @@ from core.orchestration import (
     LLMSubtaskPlanner,
     LLMVerifier,
     MultiAgentRouter,
+    OrchestrationError,
     Plan,
     StateMachine,
     SubtaskDecomposer,
@@ -57,6 +58,8 @@ from core.plugin_registry import CoeffectResolver, EffectTracker, PluginInstalle
 from core.plugins import InstallDispatcher
 from core.skills import SkillLibrary, SkillRouter
 from core.tools import (
+    Tool,
+    ToolDef,
     ToolProvider,
     code_run,
     file_patch,
@@ -99,7 +102,7 @@ def _checkpoint_path() -> Path:
     return base / "checkpoints.jsonl"
 
 
-def build_runtime(
+def build_runtime(  # noqa: PLR0915
     config: ConfigManager,
     *,
     assembler: DynamicAssembler | None = None,
@@ -192,11 +195,53 @@ def build_runtime(
     )
     evolution = EvolutionWorker(tracer=tracer, engine=evolution_engine, trigger=EvolutionTrigger())
 
-    main_agent = AgentProfile(
-        agent_id="main", capabilities=["default"], loop=cast(LoopPlugin, loop)
+    # 多 Agent 运行时：coding / research 两个正交子 Agent，主 Agent 可委托并等待结果
+    subagents = [
+        AgentProfile(
+            agent_id="coding",
+            capabilities=["coding", "代码", "写代码", "实现", "开发", "编程"],
+            loop=cast(LoopPlugin, loop),
+        ),
+        AgentProfile(
+            agent_id="research",
+            capabilities=["research", "调研", "搜索", "检索", "查询", "资料"],
+            loop=cast(LoopPlugin, loop),
+        ),
+    ]
+    agent_router = MultiAgentRouter(subagents)
+
+    async def _delegate(task: str) -> dict[str, object]:
+        """委托工具：按能力标签匹配子 Agent，阻塞等待其 LoopResult 并回传 reply。"""
+        try:
+            profile = agent_router.match(task)
+        except OrchestrationError as exc:
+            return {"ok": False, "error": f"无匹配子 Agent: {exc}"}
+        if profile.loop is None:
+            return {"ok": False, "error": f"子 Agent {profile.agent_id} 无可用 loop"}
+        result = await profile.loop.arun(task)
+        return {"ok": not result.failed, "reply": result.reply}
+
+    tools.register(
+        Tool(
+            definition=ToolDef(
+                tool_id="tools.delegate",
+                description=(
+                    "将子任务委托给匹配的子 Agent（coding/research）执行，"
+                    "阻塞等待结果并回传汇总"
+                ),
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "string", "description": "要委托给子 Agent 的任务目标"},
+                    },
+                    "required": ["task"],
+                },
+                coeffects=[],
+                reversible=False,
+            ),
+            handler=_delegate,
+        )
     )
-    # 单 Agent 运行时：能力标签无命中时降级主循环（spec：无匹配 → 备用 Agent）
-    agent_router = MultiAgentRouter([main_agent], fallback=main_agent)
     store = CheckpointStore(_checkpoint_path())  # 落盘：跨进程续跑/崩溃恢复可读
     checkpoints = CheckpointManager(store)
     time_travel = TimeTravel(store, effect_tracker=effect_tracker)

@@ -196,7 +196,7 @@ class DefaultLoop(Plugin):
     # ---- 阶段方法 ----
 
     def perceive(self, user_input: str) -> LoopContext:
-        memory = self._memory.read("", budget=2048) if self._memory is not None else []
+        memory = self._memory.read(user_input, budget=2048) if self._memory is not None else []
         tools = self._tools.active_tools() if self._tools is not None else []
         return LoopContext(
             messages=[{"role": "user", "content": user_input}],
@@ -265,12 +265,14 @@ class DefaultLoop(Plugin):
     def remember(self, trace_id: str, trajectory: list[Any]) -> None:
         if not trajectory or self._memory is None:
             return
+        parts = [str(item) for item in trajectory if str(item)]
+        summary = " | ".join(parts)[:2048]
         self._memory.write(
             "L2",
             MemoryEntry(
                 id=f"loop.{trace_id}",
                 layer="L2",
-                content=f"轨迹 {trace_id}: {len(trajectory)} 步",
+                content=summary,
                 tags=["loop", "trajectory"],
                 source="loop",
                 trace_id=trace_id,

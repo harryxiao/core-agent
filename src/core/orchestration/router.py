@@ -31,8 +31,8 @@ class MultiAgentRouter:
         """登记子 Agent 画像（按 id 覆盖）。"""
         self._agents[profile.agent_id] = profile
 
-    def match(self, task: str) -> AgentProfile | None:
-        """按能力标签打分匹配最佳 Agent；无命中返回 fallback（若有）。"""
+    def match(self, task: str) -> AgentProfile:
+        """按能力标签打分匹配最佳 Agent；无命中回落 fallback，均无则抛 NO_AGENT_MATCH。"""
         best: AgentProfile | None = None
         best_score = 0
         lowered = task.lower()
@@ -40,7 +40,13 @@ class MultiAgentRouter:
             score = sum(1 for cap in profile.capabilities if cap.lower() in lowered)
             if score > best_score:
                 best, best_score = profile, score
-        return best if best is not None else self._fallback
+        if best is not None:
+            return best
+        if self._fallback is not None:
+            return self._fallback
+        raise OrchestrationError(
+            OrchestrationErrorCode.NO_AGENT_MATCH, f"无匹配 Agent: {task}"
+        )
 
     async def handoff(self, target: str, handoff: TaskHandoff) -> LoopResult:
         """显式交接任务给指定 Agent，异步执行并返回完整 LoopResult；无匹配抛错。"""

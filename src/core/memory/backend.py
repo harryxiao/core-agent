@@ -42,9 +42,21 @@ class FileBackend:
         return entry.id
 
     def search(self, query: str, layer: Layer | None = None) -> list[MemoryEntry]:
-        # 候选集按层过滤；query 相关性由 store 层计算
+        # 候选集按层过滤；query 词元与 content/tags 重叠打分后降序返回
         with self._lock:
-            return [e for e in self._entries.values() if layer is None or e.layer == layer]
+            candidates = [
+                e for e in self._entries.values() if layer is None or e.layer == layer
+            ]
+            if not query:
+                return candidates
+            tokens = set(query.lower().split())
+            scored: list[tuple[int, MemoryEntry]] = []
+            for entry in candidates:
+                haystack = f"{entry.content} {' '.join(entry.tags)}".lower()
+                score = sum(1 for tok in tokens if tok in haystack)
+                scored.append((score, entry))
+            scored.sort(key=lambda pair: pair[0], reverse=True)
+            return [entry for _, entry in scored]
 
     def list_index(self) -> IndexEntry:
         with self._lock:

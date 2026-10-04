@@ -350,7 +350,10 @@ class TaskScheduler:
             )
         )
         async with semaphore:
-            profile = self._router.match(subtask.goal)
+            try:
+                profile = self._router.match(subtask.goal)
+            except OrchestrationError:
+                profile = None
             if profile is None or profile.loop is None:
                 emit(
                     LoopEvent(

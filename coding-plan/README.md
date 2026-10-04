@@ -72,6 +72,7 @@
 | 14 冷路径 + 长任务 | ✅ 完成 | evolution.worker（EvolutionWorker 消费 Tracer）→ orchestration 接线（TaskScheduler 真 DefaultLoop + checkpoint） | M10：进化采集冷路径 + 多 Agent 长任务「decompose→派发→handoff→checkpoint」跑通 | 依赖 Phase 13（Tracer/DefaultLoop）+ Phase 4/5（orchestration/evolution）；**首步 EvolutionWorker + TaskScheduler checkpoint 注入** |
 | 15 验证门 + 结晶 | ✅ 完成 | evolution（评测基建 P2 + 验证门/结晶接线）→ permission（沙箱颗粒度 P1 + HITL P3）→ durability 接 loop | M10：一个真实缺陷走完「诊断→提案→验证→结晶」全链路 + P1/P2/P3 三缺口 + 崩溃恢复/时间旅行接 loop | 依赖 Phase 14（候选）+ Phase 5/2（Validator/Evaluator/SandboxManager/CrashRecovery）；**首步核对评测三件 vs evolution spec** |
 | 16 插件/工具链路缺口 | ✅ 完成 | plugins（cli_adapter → install 按 kind 分发）→ runtime coeffect 接线 | M9 修复补丁：CLI 可执行 + 插件安装按 PluginKind 分发 + 内置文件工具 coeffect 贯通 | 依赖 Phase 13 组合根；**首步 CLI 适配层 + 组合根注入 resolver/installer** |
+| 17 编排打通 + 记忆语义化 | ✅ 完成 | orchestration（subagent 池 + delegate 工具 + match 无命中报错）→ memory（落盘 + 语义读写 + session 维度）→ loop 委托接线 | M3 真实收口 + 记忆语义化：主 Agent 委托子 Agent 等结果 + 对话语义入记忆可检索 | 依赖 Phase 4（orchestration）/Phase 14（接线）/Phase 1（memory）；**首步 subagent 池注册 + match 无命中报错 + FileBackend 默认落盘** |
 
 > **里程碑口径（M0~M10）**：M0 底座就绪（P0）→ M1 能力可调（P1）→ M2 单 Agent 闭环（P3）→ M3 多 Agent 编排（P4）→ M4 自进化（P5）→ M5 可发布产品（P7）→ M6 可启动产品（P9，M5 的入口侧补缺）→ M7 神兽召唤（P10，前台重大任务）→ M8 决策模型接入（P11，judgment/JEV System One）→ M9 系统级闭环（P13，runtime 组合根 + 单 Agent 真闭环）→ M10 进化闭环（P14+P15，冷路径采集 + 长任务编排 + 验证门/评测/结晶）。
 > Phase 2（横切中间件）、Phase 6（组合分发部署）为**贯穿阶段**，不单设里程碑，其成果在 M2/M5 验收中一并体现。

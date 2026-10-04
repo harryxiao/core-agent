@@ -724,7 +724,7 @@ def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911 — 入口校验天
     return 1 if failed else 0
 
 
-async def _stream_task(  # noqa: PLR0913 — 续跑注入面参数组
+async def _stream_task(  # noqa: PLR0913, PLR0917 — 续跑注入面参数组
     orchestrator: TaskScheduler,
     task_id: str,
     goal: str,

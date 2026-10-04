@@ -97,6 +97,7 @@ def test_build_runtime_assembles_all_deps(monkeypatch, tmp_path) -> None:
         "tools.file_patch",
         "tools.code_run",
         "tools.web_fetch",
+        "tools.delegate",
     }
 
 
