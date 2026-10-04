@@ -15,6 +15,17 @@
 | **留出评测** | 进化不退化、不拟合 | held-out 集 | evolution runner |
 | **端到端（E2E）** | 真实任务走通全链路 | 一个完整 agent 任务 | 手动 + 脚本 |
 
+### 手工冒烟（真实端点，不入 CI）
+
+仓库测试全离线（无网络/密钥依赖），凡「只有真实端点才能证伪」的行为由手工脚本承担，
+文件名不匹配 `test_*.py` 故 pytest 不收集：
+
+| 脚本 | 验证 | 判据 |
+|---|---|---|
+| `tests/manual_e2e_embedding.py` | 记忆语义检索（`llm.embedding_model` → 远端向量） | 有/无 embedder 的 read 顺序**不同**且语义最相关条目居首；模型名不可达时退化为词法顺序且 `_embed_failed=True`、启动不阻断 |
+
+用法：`.venv/bin/python tests/manual_e2e_embedding.py --config config.yaml --embedding-model <模型>`。
+
 ---
 
 ## 2. 测试覆盖矩阵（追踪）
