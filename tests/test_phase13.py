@@ -630,3 +630,14 @@ def test_build_runtime_embedding_unreachable_degrades_to_lexical(monkeypatch, tm
         MemoryEntry(id="m1", layer="L2", content="部署流程", tags=[], source="loop", trace_id="t1"),
     )
     assert [h.id for h in rt.memory.read("部署")] == ["m1"]
+
+
+def test_build_runtime_wires_summarizer_and_context_compactor(monkeypatch, tmp_path) -> None:
+    """0041：runtime 注入 LLM 摘要适配器（memory）与上下文压实器（loop 触发点）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+
+    assert runtime.memory._summarizer is not None, "memory 注入摘要接缝（LLM 提炼）"
+    compactor = runtime.loop._compactor
+    assert compactor is not None, "loop 注入压实器（预算/轮数触发）"
+    assert compactor._memory is runtime.memory, "压实器回写同一记忆存储"

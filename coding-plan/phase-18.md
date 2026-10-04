@@ -130,6 +130,25 @@
 > 未设置/不可达回退词法，不阻断启动）。ADR-0045 已转 **Accepted**。
 > `importance` **自动打分**留至 #4/#5（接 judgment `score`），本批仅加字段 + 参与排序。
 > **B6 判为「按架构如此」关闭**（装配是 Reason 前一次性步骤），B4 判冗余待并入 #6/#7。
+> 
+> **#3 摘要式压缩 已完成并归档**（2026-10-04，change `0041-memory-summary-compaction`，
+> 608 tests 绿、ADR-0046 Accepted）：memory 新增 `Summarizer` DI 接缝（`memory/summarize.py`：
+> `build_prompt` + `summarize_with`，**memory 不 import LLM 抽象**，照 `batch_embed` 先例）；
+> `compact` 注入摘要器时按 `session_id` 聚合 L2 episodic → 一条 `kind="semantic"` 摘要条目
+> （`id=compaction.summary.<sid>`、`source="compaction"`、`trace_id=compaction.<sid>`、
+> `tags` 带 `from:<原 id>` 出处）→ 原条目 `migrate` 到 L4 归档（不删除），**整批按同一 trace 可
+> 撤销**。一并修 `migrate` 不记 `EffectTracker` 的不可逆缺口。`context.Compactor.persist` 收口为
+> `kind="semantic"` + 出处标签，并明确定位为**启发式降级路径**（LLM 提炼统一归 memory 通道）。
+> **触发点已接活**：`DefaultLoop` 注入 `compactor`，每轮 `observe` 后按 `should_compact` 判定 →
+> `persist` → `memory.compact`；终止语义不变（压实后仍按既有预算/轮数终止）。`runtime` 构造
+> `context.Compactor(memory=memory)` + `summarize_with(主 LLM)` 并注入主/子 loop。
+> **两处偏离原计划（已在 ADR-0046 记录）**：① 出处放 `tags`（`from:<id>`）而非 `source`——
+> `source` 会作为出处标签进 prompt，塞 id 列表会污染 prompt 并白烧 token；② 压实效应按会话
+> 共用 `trace_id`，`compact` 签名/返回值不变（phase-18 §6 要求）。
+> **遗留**：生产侧 `session_id` 仍为空串（loop 不向记忆传会话标识）→ 实际按单一 `""` 组聚合；
+> 会话维度生效需把 `session_id` 从 UI 会话透传到 `remember`（另立变更）。`UIAPILayer.compact`
+> 仍是 no-op（ui spec 无该 Requirement，未擅自接线）。memory spec「并发压实一致性」仍无实现
+> （单线程事件循环、无并发调用方，加锁属投机代码，另行登记）。
 
 - **记忆**：跨 3 轮以上长对话后，`read` 命中率提升（同一事实不因截断丢失），semantic 条目可见且可追溯 source trace_id。
 - **压缩**：注入 Compactor 后 `compact` 产出「摘要条目」而非「保留/丢弃布尔」，且摘要可逆。

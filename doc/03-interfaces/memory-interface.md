@@ -16,14 +16,30 @@ class MemoryStore(Plugin):
     def write(self, layer: Layer, entry: MemoryEntry) -> MemoryId:
         """写入记忆（带 trace_id / 来源 / 时间戳）。"""
 
-    def migrate(self, entry_id: MemoryId, src: Layer, dst: Layer) -> None:
-        """层间迁移：结晶(→代码层) / 溶解(→技能层)。"""
+    def migrate(self, entry_id, src, dst, *, trace_id: str | None = None) -> None:
+        """层间迁移（可撤销）：记 Effect，按 trace_id 回滚即迁回原层；
+        trace_id 缺省取条目自身来源 trace，压实等批量操作传统一 trace 一起撤销。"""
+
+    def compact(self, query: str = "", budget: int = 4096) -> DecisionResult | None:
+        """压实记忆：score 原语评分决策 + 注入摘要器时的会话摘要提炼（见 §3）。"""
 
     def index(self) -> IndexEntry:
         """返回 L1 最小索引。"""
 
     def audit(self, trace_id: str | None = None) -> list[MemoryEntry]:
         """审计写入记录。"""
+```
+
+**构造注入点**（均为可选依赖注入，缺省不启用）：
+
+```python
+MemoryStore(
+    backend=None,          # 可插拔后端（缺省 FileBackend）
+    effect_tracker=None,   # 可逆效应追踪（缺省自建）
+    embedder=None,         # 批量向量化契约，见 §3（缺省词法降级）
+    compactor=None,        # judgment.Compactor：压实时的 score 评分决策
+    summarizer=None,       # Summarizer：压实时的 LLM 摘要提炼，见 §3（缺省只评分不写）
+)
 ```
 
 ---
@@ -77,6 +93,26 @@ def relevance(entry, query, embedder=None) -> float:
   ``Embedder.embed``）经 ``memory/embedding.py::batch_embed`` 适配；memory **不依赖 rag**。
 - **向量缓存**：``read`` 对 query **至多向量化一次**；条目按 ``content`` 哈希缓存向量，
   内容未变即复用；缓存**进程内易失**（不落盘）。
+- **摘要契约（Summarizer）**：``Summarizer = Callable[[list[MemoryEntry]], str]`` —— 同一会话的
+  episodic 条目 → 一段提炼事实。prompt 文本属 memory 域（``memory/summarize.py::build_prompt``），
+  模型调用经 ``summarize_with(llm)`` 适配；memory **不 import LLM/rag 抽象**（同 ``batch_embed``
+  的依赖方向），由 L5 组合根注入。
+
+### 摘要式压实（compact）
+
+注入 ``summarizer`` 时，``compact`` 按 ``session_id`` 聚合 **L2 episodic** 条目，逐会话提炼为
+**一条** semantic 摘要条目，并把被聚合的原条目**迁 L4 归档**（不删除）：
+
+| 字段 | 取值 |
+|---|---|
+| `id` | `compaction.summary.<session_id>`（空会话用 `default`；同会话重复压实为覆盖，不增长） |
+| `kind` | `semantic`（提炼事实，不再被下次聚合选中） |
+| `source` | `compaction`（短标签；**不塞 trace 列表**——`source` 会作为出处标签进 prompt） |
+| `trace_id` | `compaction.<session_id>`（摘要写入与全部迁移共用，`rollback(trace_id)` 整体逆转） |
+| `tags` | `["compaction", "summary", "from:<原条目 id>", ...]`（出处可追溯） |
+
+未注入 ``summarizer`` 时**只评分不写**：不写摘要条目、不改动原条目层级（降级）。摘要提炼
+异常**不吞**：向上传播给触发点记录重试，原条目保持不变。
 
 ---
 

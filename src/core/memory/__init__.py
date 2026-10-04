@@ -13,6 +13,7 @@ from .embedding import batch_embed
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
 from .relevance import rank, recency_decay, relevance
 from .store import MemoryStore
+from .summarize import Summarizer, build_prompt, summarize_with
 
 __all__ = [
     "Crystallizer",
@@ -24,8 +25,11 @@ __all__ = [
     "MemoryId",
     "MemoryStore",
     "PluginCandidate",
+    "Summarizer",
     "batch_embed",
+    "build_prompt",
     "rank",
     "recency_decay",
     "relevance",
+    "summarize_with",
 ]

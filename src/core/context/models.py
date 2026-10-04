@@ -43,9 +43,10 @@ class ContextPack:
 
 @dataclass
 class Compaction:
-    """多轮压实产物：关键信息摘要 + 被清理冗余。"""
+    """多轮压实产物：关键信息摘要 + 被清理冗余 + 出处。"""
 
     conclusions: list[str] = field(default_factory=list[str])
     decisions: list[str] = field(default_factory=list[str])
     open_items: list[str] = field(default_factory=list[str])
     dropped: list[str] = field(default_factory=list[str])
+    source_ids: list[str] = field(default_factory=list[str])  # 贡献历史的原始 id（出处追溯）

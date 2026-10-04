@@ -68,7 +68,7 @@ class Compactor:
         """多轮关键信息摘要沉淀，保证关键信息不丢失。"""
 
     def persist(self, c: Compaction) -> None:
-        """沉淀产物写回 MemoryStore（L2 事实 / L3 技能）。"""
+        """沉淀产物写回 MemoryStore（L2 提炼事实）：kind="semantic"，tags 带原始 id 出处。"""
 
 @dataclass
 class Compaction:
@@ -76,7 +76,13 @@ class Compaction:
     decisions: list[str]        # 关键决策
     open_items: list[str]       # 未决事项
     dropped: list[str]          # 被清理的冗余内容 id
+    source_ids: list[str]       # 贡献历史的原始 id（tags 写为 from:<id>，出处可追溯）
 ```
+
+**降级路径声明**：本压实器是**启发式**降级路径（关键词识别结论/决策/未决事项），其输入是
+多轮 ``history``（自由文本）；LLM 提炼统一由记忆压实通道（``MemoryStore.summarizer``，
+见 memory-interface §3）承担，此处**不新增模型调用点**。触发点由 loop 接线：轮数达阈值或
+token 预算超限时 ``persist`` → ``memory.compact``，终止语义不变。
 
 ---
 

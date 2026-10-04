@@ -138,6 +138,24 @@ def test_compactor_persist_writes_to_memory() -> None:
     assert memory.read("") != []
 
 
+def test_compactor_persist_writes_semantic_with_provenance() -> None:
+    """沉淀产物为 semantic 条目，且 tags 携带原始 id 出处（0041：不再写匿名条目）。"""
+    memory = MemoryStore()
+    c = Compactor(memory=memory)
+    c.persist(
+        c.compact(
+            [
+                {"id": "h1", "content": "结论：完成"},
+                {"id": "h2", "content": "决定采用方案A"},
+            ]
+        )
+    )
+    entries = memory.audit()
+    assert entries and all(e.kind == "semantic" for e in entries)
+    tags = {tag for e in entries for tag in e.tags}
+    assert {"from:h1", "from:h2"} <= tags
+
+
 # ---- 动态装配 ----
 
 

@@ -2,7 +2,7 @@
 
 把「观察→推理→行动→记忆」串成单轮闭环：异步为主（arun/astream）、同步为
 薄壳（run）；不可逆动作过确认门，失败按 trace 回滚；横切中间件按序执行、
-被拒短路；循环次数 / token 预算超限即终止。
+被拒短路；循环次数 / token 预算超限即终止，达阈值时压实上下文与记忆。
 
 对应接口：doc/03-interfaces/loop-interface.md §1
 """
@@ -17,6 +17,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, cast
 
+from core.context import Compactor, ContextError
 from core.judgment import DecisionResult, DecisionRouter
 from core.memory import MemoryEntry, MemoryStore
 from core.observability import TraceEvent, Tracer
@@ -81,6 +82,7 @@ class DefaultLoop(Plugin):
         tracer: Tracer | None = None,
         router: DecisionRouter | None = None,
         approver: Approver | None = None,
+        compactor: Compactor | None = None,
         max_rounds: int = 10,
         token_budget: int = 65536,
     ) -> None:
@@ -92,6 +94,7 @@ class DefaultLoop(Plugin):
         self._tracer = tracer
         self._router = router
         self._approver = approver
+        self._compactor = compactor
         self._max_rounds = max_rounds
         self._token_budget = token_budget
 
@@ -192,6 +195,8 @@ class DefaultLoop(Plugin):
             ctx = self.observe(ctx, result)
             yield LoopEvent("step_completed", {"round": ctx.rounds, "failed": result.failed})
             self._trace(trace_id, "step_completed", {"round": ctx.rounds, "failed": result.failed})
+            if self._should_compact(ctx):
+                self._compact(ctx, trace_id)
             if self._token_budget > 0 and ctx.token_used >= self._token_budget:
                 limit_reason = "TOKEN_BUDGET_EXCEEDED"
                 break
@@ -206,6 +211,38 @@ class DefaultLoop(Plugin):
             "loop_finished",
             LoopResult(reply=ctx.reply, trace_id=trace_id, failed=bool(limit_reason)),
         )
+
+    def _should_compact(self, ctx: LoopContext) -> bool:
+        """轮数或 token 预算达阈值即触发压实（未注入压实器则永不触发）。
+
+        预算关闭（``token_budget <= 0``）时只按轮数维度判定，避免 ``token_used >= 0``
+        恒真导致每轮压实。
+        """
+        if self._compactor is None:
+            return False
+        if self._token_budget <= 0:
+            return self._compactor.should_compact(ctx.rounds, 0, 1)
+        return self._compactor.should_compact(ctx.rounds, ctx.token_used, self._token_budget)
+
+    def _compact(self, ctx: LoopContext, trace_id: str) -> None:
+        """压实：多轮历史提炼沉淀（persist）→ 记忆会话摘要归档。
+
+        压实失败**降级不中断本轮**（原记忆保持不变，失败经观测通道留痕）；
+        终止语义不变：压实后仍按既有预算/轮数条件终止（不无限烧 token）。
+        """
+        assert self._compactor is not None  # noqa: S101 — 调用点已判空
+        try:
+            self._compactor.persist(self._compactor.compact(ctx.messages))
+        except ContextError:
+            pass  # 无可沉淀关键信息：非错误，不替换原文
+        except Exception as err:  # noqa: BLE001 — 压实失败降级，本轮继续
+            self._trace(trace_id, "compaction_failed", {"error": str(err)})
+        if self._memory is None:
+            return
+        try:
+            self._memory.compact()
+        except Exception as err:  # noqa: BLE001 — 摘要提炼失败降级，原记忆不丢
+            self._trace(trace_id, "compaction_failed", {"error": str(err)})
 
     # ---- 阶段方法 ----
 

@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import asyncio
 
+from core.context import Compactor
 from core.loop import Action, DefaultLoop
-from core.memory import MemoryStore
+from core.memory import MemoryEntry, MemoryStore
 from core.plugin_registry import CoeffectResolver
 from core.tools import Tool, ToolDef, ToolProvider
 
@@ -410,3 +411,99 @@ def test_astream_failed_action_completes_with_ok_false() -> None:
     completed = events[2].payload
     assert completed["ok"] is False
     assert completed["output"]
+
+
+# ---- 压实触发（0041） ----
+
+
+def _summary_memory() -> MemoryStore:
+    """注入纯本地假摘要器：不触网的 memory（压实链路离线可验）。"""
+
+    def summarizer(entries: list[MemoryEntry]) -> str:
+        return "摘要：" + "；".join(e.content for e in entries)
+
+    return MemoryStore(summarizer=summarizer)
+
+
+def _prior_entry() -> MemoryEntry:
+    return MemoryEntry(
+        id="loop.prior",
+        layer="L2",
+        content="上一轮：结论 完成",
+        tags=["loop"],
+        source="loop",
+        trace_id="prior",
+        session_id="s1",
+    )
+
+
+def _compacting_loop(memory: MemoryStore, compactor: Compactor, **kwargs: object) -> DefaultLoop:
+    provider = ToolProvider()
+    provider.register(_echo_tool())
+
+    def planner(ctx):
+        if ctx.rounds == 0:
+            return Action(tool_id="tools.echo", args={"text": "结论"})
+        return Action(args={"reply": "done"})
+
+    return DefaultLoop(
+        planner=planner,
+        tools=provider,
+        memory=memory,
+        compactor=compactor,
+        max_rounds=3,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def test_loop_compaction_persists_history_and_summarizes_prior_memory() -> None:
+    memory = _summary_memory()
+    memory.write("L2", _prior_entry())
+    loop = _compacting_loop(memory, Compactor(memory=memory, round_threshold=1))
+
+    loop.run("hi")
+
+    entries = {e.id: e for e in memory.audit()}
+    summary = entries.get("compaction.summary.s1")
+    assert summary is not None, "轮数达阈值 → 触发压实，历史 episodic 提炼为 semantic 摘要"
+    assert summary.kind == "semantic" and "from:loop.prior" in summary.tags
+    assert "compaction.fact.0" in entries, "上下文压实产物同批落 L2（persist）"
+    assert entries["compaction.fact.0"].kind == "semantic"
+    assert dict(memory.index().entries)["loop.prior"] == "L4", "被摘要的原条目归档 L4"
+
+
+def test_loop_compaction_triggers_on_token_budget_and_still_terminates() -> None:
+    memory = _summary_memory()
+    memory.write("L2", _prior_entry())
+    loop = _compacting_loop(memory, Compactor(memory=memory, round_threshold=100), token_budget=1)
+
+    result = loop.run("hi")
+
+    assert "TOKEN_BUDGET_EXCEEDED" in result.reply, "压实不改终止语义"
+    assert "compaction.summary.s1" in {e.id for e in memory.audit() if e.kind == "semantic"}
+
+
+def test_loop_without_compactor_does_not_compact() -> None:
+    memory = _summary_memory()
+    memory.write("L2", _prior_entry())
+    provider = ToolProvider()
+    provider.register(_echo_tool())
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}), tools=provider, memory=memory
+    )
+
+    loop.run("hi")
+
+    assert [e for e in memory.audit() if e.kind == "semantic"] == []
+    assert dict(memory.index().entries)["loop.prior"] == "L2"
+
+
+def test_loop_compaction_not_triggered_when_budget_disabled() -> None:
+    """token 预算关闭（<=0）时不因 token 维度触发，仅轮数维度有效。"""
+    memory = _summary_memory()
+    memory.write("L2", _prior_entry())
+    loop = _compacting_loop(memory, Compactor(memory=memory, round_threshold=100), token_budget=0)
+
+    loop.run("hi")
+
+    assert [e for e in memory.audit() if e.kind == "semantic"] == []

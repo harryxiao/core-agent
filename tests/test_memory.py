@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from typing import Literal
 
+from core.judgment import DecisionPrimitive, DecisionResult
 from core.memory import (
     Crystallizer,
     FileBackend,
@@ -17,6 +19,7 @@ from core.memory import (
     MemoryStore,
 )
 from core.memory.embedding import batch_embed
+from core.plugin_registry import EffectTracker
 
 
 def _entry(
@@ -218,3 +221,102 @@ def test_batch_embed_adapter() -> None:
     """单条可调用 → MemoryStore 的批量契约。"""
     batch = batch_embed(lambda t: [float(len(t))])
     assert batch(["ab", "cde"]) == [[2.0], [3.0]]
+
+
+# ---- 摘要式压实（0041） ----
+
+
+def _session_entry(
+    entry_id: str,
+    content: str,
+    session_id: str,
+    *,
+    kind: Literal["episodic", "semantic"] = "episodic",
+) -> MemoryEntry:
+    entry = _entry(entry_id, "L2", content)
+    entry.session_id = session_id
+    entry.kind = kind
+    return entry
+
+
+class _FakeScorer:
+    """仅评分（judgment score 原语）的假件：验证「无摘要器 → 只评分不写」。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def score(self, state, items, threshold=None):
+        self.calls += 1
+        return DecisionResult(primitive=DecisionPrimitive.SCORE, answers={}, fallback=False)
+
+
+def test_compact_summarizes_each_session_and_archives() -> None:
+    seen: list[list[str]] = []
+
+    def summarizer(entries: list[MemoryEntry]) -> str:
+        seen.append([e.id for e in entries])
+        return "摘要：" + "；".join(e.content for e in entries)
+
+    store = MemoryStore(summarizer=summarizer)
+    store.write("L2", _session_entry("e0", "事实零", "s1"))
+    store.write("L2", _session_entry("e1", "事实一", "s1"))
+    store.write("L2", _session_entry("e2", "别的会话", "s2"))
+
+    assert store.compact() is None, "未注入 judgment Compactor → 无评分决策返回"
+    assert seen == [["e0", "e1"], ["e2"]], "按 session_id 分组，组内保持写入序"
+
+    layers = dict(store.index().entries)
+    assert layers["e0"] == "L4" and layers["e1"] == "L4", "原条目迁 L4 归档而非删除"
+    assert layers["e2"] == "L4"
+    summaries = {e.id: e for e in store.audit() if e.kind == "semantic"}
+    assert set(summaries) == {"compaction.summary.s1", "compaction.summary.s2"}
+    s1 = summaries["compaction.summary.s1"]
+    assert s1.layer == "L2" and s1.source == "compaction"
+    assert s1.trace_id == "compaction.s1"
+    assert {"from:e0", "from:e1"} <= set(s1.tags), "tags 携带原始条目 id 出处"
+
+
+def test_compact_without_summarizer_only_scores() -> None:
+    scorer = _FakeScorer()
+    store = MemoryStore(compactor=scorer)
+    store.write("L2", _session_entry("e0", "事实零", "s1"))
+
+    decision = store.compact("事实", budget=100)
+
+    assert scorer.calls == 1
+    assert decision is not None and decision.primitive is DecisionPrimitive.SCORE
+    assert dict(store.index().entries)["e0"] == "L2", "无摘要器 → 原条目层级不变"
+    assert [e for e in store.audit() if e.kind == "semantic"] == [], "无摘要器 → 不写摘要条目"
+
+
+def test_compact_is_reversible_by_trace() -> None:
+    tracker = EffectTracker()
+    store = MemoryStore(effect_tracker=tracker, summarizer=lambda entries: "摘要：事实")
+    store.write("L2", _session_entry("e0", "事实零", "s1"))
+    store.write("L2", _session_entry("e1", "事实一", "s1"))
+
+    store.compact()
+    assert dict(store.index().entries)["e0"] == "L4"
+
+    report = tracker.rollback("compaction.s1")
+
+    assert report.undo_failed == []
+    layers = dict(store.index().entries)
+    assert layers["e0"] == "L2" and layers["e1"] == "L2", "回滚 → 原条目迁回原层"
+    assert "compaction.summary.s1" not in layers, "回滚 → 摘要条目被移除"
+
+
+def test_compact_summary_outranks_archived_originals() -> None:
+    """归档原文仍可检索，但 L2 摘要优先级更高（L2 0.6 > L4 0.2）。"""
+
+    def summarizer(entries: list[MemoryEntry]) -> str:
+        return "事实"
+
+    store = MemoryStore(summarizer=summarizer)
+    store.write("L2", _session_entry("e0", "事实", "s1"))
+
+    store.compact()
+
+    ids = [e.id for e in store.read("事实", budget=100)]
+    assert ids[0] == "compaction.summary.s1"
+    assert "e0" in ids

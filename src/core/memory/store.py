@@ -19,6 +19,7 @@ from core.plugin_registry import Effect, EffectTracker
 from .backend import FileBackend
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
 from .relevance import rank
+from .summarize import Summarizer
 
 # 粗略 token 估算：约 4 字符 ≈ 1 token（read 预算截断用）
 _TOKEN_DIVISOR = 4
@@ -41,11 +42,13 @@ class MemoryStore:
         effect_tracker: EffectTracker | None = None,
         embedder: Callable[[list[str]], list[list[float]]] | None = None,
         compactor: Compactor | None = None,
+        summarizer: Summarizer | None = None,
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
         self._tracker = effect_tracker if effect_tracker is not None else EffectTracker()
         self._embedder = embedder
         self._compactor = compactor
+        self._summarizer = summarizer
         self._hot: dict[str, MemoryEntry] = {}
         self._vectors: dict[str, list[float]] = {}
         self._embed_failed = False
@@ -98,7 +101,14 @@ class MemoryStore:
         )
         return entry.id
 
-    def migrate(self, entry_id: MemoryId, src: Layer, dst: Layer) -> None:
+    def migrate(
+        self, entry_id: MemoryId, src: Layer, dst: Layer, *, trace_id: str | None = None
+    ) -> None:
+        """层间迁移（可撤销）：记录 ``Effect``，按 ``trace_id`` 回滚即迁回原层。
+
+        ``trace_id`` 缺省取条目自身来源 trace；压实等批量操作传入统一 trace，
+        使摘要写入与整批迁移可一起撤销。
+        """
         entry = self._backend.get(src, entry_id)
         if entry is None:
             entry = self._hot.get(entry_id)
@@ -107,6 +117,17 @@ class MemoryStore:
         entry.layer = dst
         self._backend.put(entry)
         self._hot[entry.id] = entry
+        self._tracker.record(
+            Effect(
+                op="memory.migrate",
+                target=entry_id,
+                undo=lambda: self._undo_migrate(entry_id, dst, src),
+                reversible=True,
+                coeffect=[],
+                trace_id=trace_id or entry.trace_id,
+                ts=time.time(),
+            )
+        )
 
     def index(self) -> IndexEntry:
         return self._backend.list_index()
@@ -118,14 +139,23 @@ class MemoryStore:
         return [e for e in entries if e.trace_id == trace_id]
 
     def compact(self, query: str = "", budget: int = 4096) -> DecisionResult | None:
-        """以 score 原语压实：注入 Compactor 时评分保留/丢弃，未注入返回 None。"""
-        if self._compactor is None:
-            return None
-        items = self.read(query, budget=budget)
-        return self._compactor.score(
-            {"query": query, "count": len(items)},
-            [asdict(entry) for entry in items],
-        )
+        """压实记忆：score 原语评分决策 + 注入摘要器时的会话摘要提炼（0041）。
+
+        未注入 ``summarizer`` 时**只评分不写**（降级：不写摘要、不动原条目）；注入时按
+        ``session_id`` 聚合 L2 episodic 条目，提炼为一条 semantic 摘要条目并**归档**原条目
+        （迁 L4，不删除），全部效应按 ``trace_id=f"compaction.<session_id>"`` 可撤销。
+        摘要提炼异常不吞：向上传播，由触发点记录并重试（原条目保持不变）。
+        """
+        decision: DecisionResult | None = None
+        if self._compactor is not None:
+            items = self.read(query, budget=budget)
+            decision = self._compactor.score(
+                {"query": query, "count": len(items)},
+                [asdict(entry) for entry in items],
+            )
+        if self._summarizer is not None:
+            self._summarize_sessions()
+        return decision
 
     # ---- 内部辅助 ----
 
@@ -181,6 +211,65 @@ class MemoryStore:
             used += cost
         return selected
 
+    def _summarize_sessions(self) -> None:
+        """按会话聚合 episodic 条目 → 提炼摘要条目 → 归档原条目（整批可撤销）。"""
+        summarizer = self._summarizer
+        assert summarizer is not None  # noqa: S101 — 调用点已判空
+        for session_id, entries in self._episodic_groups().items():
+            summary = summarizer(entries)
+            if not summary:
+                continue
+            self._commit_summary(session_id, entries, summary)
+
+    def _episodic_groups(self) -> dict[str, list[MemoryEntry]]:
+        """L2 事件条目按 ``session_id`` 分组（空会话归 ``""`` 组），保持写入序。"""
+        groups: dict[str, list[MemoryEntry]] = {}
+        for entry in self._all_entries():
+            if entry.kind != "episodic" or entry.layer != "L2":
+                continue
+            groups.setdefault(entry.session_id, []).append(entry)
+        return groups
+
+    def _commit_summary(self, session_id: str, entries: list[MemoryEntry], summary: str) -> None:
+        """写摘要条目（tags 带原条目 id 出处）并把原条目迁 L4，同一 trace 可回滚。"""
+        key = session_id or "default"
+        trace_id = f"compaction.{key}"
+        tags = ["compaction", "summary", *[f"from:{entry.id}" for entry in entries]]
+        self.write(
+            "L2",
+            MemoryEntry(
+                id=f"compaction.summary.{key}",
+                layer="L2",
+                content=summary,
+                tags=tags,
+                source="compaction",
+                trace_id=trace_id,
+                session_id=session_id,
+                kind="semantic",
+            ),
+        )
+        for entry in entries:
+            self.migrate(entry.id, "L2", "L4", trace_id=trace_id)
+
+    def _all_entries(self) -> list[MemoryEntry]:
+        """全量条目（冷区 + 热区）：冷区读取失败降级为热区，不抛。"""
+        try:
+            entries = {entry.id: entry for entry in self._backend.search("")}
+        except Exception:  # noqa: BLE001 — 冷区读取失败降级
+            entries = {}
+        entries.update(self._hot)
+        return list(entries.values())
+
     def _undo_write(self, entry_id: str) -> None:
         self._hot.pop(entry_id, None)
         self._backend.delete(entry_id)
+
+    def _undo_migrate(self, entry_id: str, from_layer: Layer, to_layer: Layer) -> None:
+        entry = self._backend.get(from_layer, entry_id)
+        if entry is None:
+            entry = self._hot.get(entry_id)
+        if entry is None:
+            return
+        entry.layer = to_layer
+        self._backend.put(entry)
+        self._hot[entry.id] = entry

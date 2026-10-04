@@ -18,6 +18,7 @@ from typing import cast
 
 from core.configuration import ConfigManager
 from core.configuration.models import AppConfig
+from core.context import Compactor as ContextCompactor
 from core.context import DynamicAssembler
 from core.core_profile import CoreProfileEngine
 from core.durability import (
@@ -38,7 +39,7 @@ from core.evolution import (
     Validator,
 )
 from core.judgment import Compactor, DecisionRouter, Guardrail, JEVProvider
-from core.llm_provider import LLMProvider, StdlibLLMProvider
+from core.llm_provider import LLMProvider, LLMRequest, Message, StdlibLLMProvider
 from core.loop import Approver, DefaultLoop, LoopPlugin
 from core.loop.planner import LLMPlanner
 from core.memory import (
@@ -48,6 +49,7 @@ from core.memory import (
     MemoryEntry,
     MemoryStore,
     batch_embed,
+    summarize_with,
 )
 from core.observability import Tracer
 from core.orchestration import (
@@ -185,12 +187,25 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
             model=app.llm.embedding_model,
         )
         embedder = batch_embed(LLMEmbedder(embed_provider).embed)
+    # 记忆摘要接缝（0041）：LLM 提炼经 summarize_with 适配为 memory 的摘要契约
+    # （与 embedding 同一依赖方向：memory 不 import LLM 抽象，组合根注入模型调用）。
+    summarizer = summarize_with(
+        lambda prompt: (
+            llm.completion(
+                LLMRequest(messages=[Message(role="user", content=prompt)], model=app.llm.model)
+            ).content
+        )
+    )
     memory = MemoryStore(
         backend=backend,
         effect_tracker=effect_tracker,
         compactor=Compactor(router) if jev is not None else None,
         embedder=embedder,
+        summarizer=summarizer,
     )
+    # 上下文压实接线（0041）：多轮历史 → persist 落 L2；此前 context.Compactor 与
+    # memory.compact 都无生产调用方（死路径），现由 loop 的轮数/预算阈值触发。
+    context_compactor = ContextCompactor(memory=memory)
     resolver = CoeffectResolver()
     resolver.register("filesystem:read", True)
     resolver.register("filesystem:write", True)
@@ -252,6 +267,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         tracer=tracer,
         router=router if jev is not None else None,
         approver=approver,
+        compactor=context_compactor,
     )
 
     evolution_engine = EvolutionEngine(
@@ -294,6 +310,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
                 tracer=tracer,
                 router=router if jev is not None else None,
                 approver=approver,
+                compactor=context_compactor,
             ),
         )
 
