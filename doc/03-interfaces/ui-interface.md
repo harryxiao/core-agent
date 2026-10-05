@@ -41,6 +41,20 @@ class UIAPILayer:
 
     # 编排器注入（组合根装配；None 时 run_task 报 UI_ORCHESTRATOR_UNSET）
     orchestrator: TaskScheduler | None
+
+    # 宠物：激活（三入口之一）+ 控制面（change `0088`）；组合根装配，None 时报 UI_PET_UNSET
+    pet_activator: PetActivator | None
+    def activate_pet(self, user_input: str) -> str:
+        """WebUI 自然语言激活宠物（`/pet <描述>` 落到此；返回会话 id）。"""
+    def pet_command(
+        self, verb: str, *, session_id: str | None = None, goal: str | None = None
+    ) -> Any:
+        """前台 `/pet [cmd]` 控制面：verb → 会话操作。
+
+        `status` / `sleep` / `wake` / `assign` / `stop` 经注入的 `PetControl` 收口
+        （与 CLI `pet <verb>` **同一实现**，见 `pet-mode-interface.md` §5.3）；
+        未接 ⇒ `UI_PET_UNSET`，未知动词 ⇒ `UI_PET_UNKNOWN_VERB`。
+        """
 ```
 
 ### 1.1 流式事件（SSE）
@@ -130,6 +144,8 @@ LLM API（provider / endpoint / key / base URL）只在后端配置一次：
 | `UI_MODALITY_MISSING` | 模型不具备该模态理解能力 |
 | `UI_BARGEIN` | 语音播报被打断（barge-in） |
 | `UI_ORCHESTRATOR_UNSET` | 编排器未注入（run_task 前校验） |
+| `UI_PET_UNSET` | 宠物激活器 / 控制面未注入（`activate_pet` / `pet_command` 前校验） |
+| `UI_PET_UNKNOWN_VERB` | `pet_command` 收到未支持的控制动词（change `0088`） |
 
 ---
 
@@ -138,5 +154,5 @@ LLM API（provider / endpoint / key / base URL）只在后端配置一次：
 - 模块：`06-ui-frontend/ui-architecture.md`
 - 规格：`openspec/specs/ui/spec.md`
 - LLM 归一化：经 `llm-provider` 虚拟接口调用（可替换默认实现）
-- 决策：ADR-0013 ~ 0015、ADR-0031
+- 决策：ADR-0013 ~ 0015、ADR-0031、ADR-0083（宠物控制面）
 - 测试：`04-testing/test-cases.md`（TC-UI 系列）

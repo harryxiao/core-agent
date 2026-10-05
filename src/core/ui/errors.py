@@ -19,6 +19,7 @@ class UiErrorCode(StrEnum):
     UI_BARGEIN = "UI_BARGEIN"
     UI_ORCHESTRATOR_UNSET = "UI_ORCHESTRATOR_UNSET"
     UI_PET_UNSET = "UI_PET_UNSET"
+    UI_PET_UNKNOWN_VERB = "UI_PET_UNKNOWN_VERB"
 
 
 class UiError(Exception):

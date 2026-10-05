@@ -7,6 +7,7 @@ PetSession 承载生命周期，PetActivator 收口三入口，PetManager 多宠
 """
 
 from .activator import PetActivator
+from .control import PetControl
 from .driver import FAILED, SKIPPED, WOKEN, PetWakeDriver, WakeOutcome
 from .errors import PetError, PetErrorCode
 from .layers import ExplorerLayer, PersonaLayer, SafetyDecision, SafetyLayer
@@ -21,6 +22,7 @@ __all__ = [
     "ExplorerLayer",
     "PersonaLayer",
     "PetActivator",
+    "PetControl",
     "PetError",
     "PetErrorCode",
     "PetManager",

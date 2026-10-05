@@ -1623,6 +1623,32 @@
   MODIFIED「Pet Micro-tasks」（真实产出 + 空闲触发 + 2 新场景）。
 - **转出**：pet 控制面（`/pet [cmd]`：`sleep`/`wake`/`assign` 动词）→ change `0088`（本变更已落定其底层语义）。
 
+## ADR-0083：pet 控制面单门面、寻址不猜与同进程作用域
+
+- **背景**：用户诉求① —— 前台（WebUI / CLI / app）**随时** `/pet [cmd]` 查看状态、让它停止工作 / 换一件活 / 睡觉；
+  底层语义已由 `0086`（惊喜真实化）/ `0087`（任务一次性、空闲入睡、`dispatch` 自动唤醒）落定，本变更只补**控制面**。
+  控制动词有**两个宿主面**（CLI `pet <verb>`、`UIAPILayer.pet_command`），各自分发即两份真源。
+- **决策**：
+  ① **单一门面 `PetControl`**（verb → 会话操作 + 寻址）收口，CLI 与 `UIAPILayer` 都只调用它；门面**无状态**（持
+     `PetManager`）、构造廉价 ⇒ 组合根就地构造，**不给 `Runtime` 数据类加字段**（其字段集被多测试隐式断言）。
+     已否决「两侧各写一份 verb 分发」（同 `0079`／`0086` 反复回避的双真源坑）。
+  ② **只复用既有会话操作**：`sleep→suspend` / `wake→resume` / `assign→dispatch` / `stop→PetManager.stop` /
+     `status→snapshot()` 过滤。**不新增 `PetSession` 公开 API**（不读私有），控制面是**适配**而非新语义。
+  ③ **寻址不猜**：单宠物默认（免记 id）；多宠物未指定 ⇒ `PET_TARGET_AMBIGUOUS` **列出可选 id**（赌错宠物是
+     **静默的错操作**）；指定但未注册 ⇒ `PET_NOT_FOUND`。**对照 `PetManager.stop()` 的静默 no-op** —— 那是
+     「注入式批量驱动」的容错取向；控制面是**人显式操作**，静默成功会让人以为宠物睡了、其实没动。
+  ④ **动词名 `wake` = `resume()`**（**显式记录命名陷阱**）：与 `PetSession.wake()`（**执行一次任务**）语义不同。
+     仍取 `wake` 因用户前台语汇是 `sleep`/`wake` 成对，且作用面不同（控制动词 vs 会话内部方法），接口文档并列写明。
+     **已否决**改名 `resume`（更精确但丢失用户语汇）。
+  ⑤ **`status` 不外泄偏好与任务正文**：由 `snapshot()` **过滤**（id / state / sleeping / pending / wake_count / fault），
+     控制面是**观测面**，无须把主人偏好与任务文本投给任何前台客户端（对齐「密钥只引用不读取」的隐私取向）。
+  ⑥ **作用域 = 本进程已注册会话**：`PetManager.list()` 返回本进程内存，另一进程 `pet run` 常驻驱动**不重读**注册表
+     ⇒ 跨进程控制今天不通。用户裁决「**仅同进程**」：**有意不做**跨进程，避免造出「改了盘却没驱到 live 会话」的假象。
+     将来若做，`PetControl` 是**唯一扩展点**。
+- **规格**：ADDED「Pet Control Surface」（动词 / 寻址 / 状态字段 / 拒绝 / 同进程 + 6 场景）。
+- **前置**：`ADR-0081`（惊喜真实化，`0086`）、`ADR-0082`（任务一次性 + 空闲入睡 + `dispatch` 自动唤醒，`0087`）。
+- **转出**：跨进程控制（注册表 → live 会话的驱动通道）→ 未排期。
+
 ---
 ## 变更追踪
 
@@ -1701,3 +1727,4 @@
 | ADR-0080 | 03-interfaces/configuration-interface.md |
 | ADR-0081 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |
 | ADR-0082 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |
+| ADR-0083 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md, 03-interfaces/ui-interface.md |

@@ -239,6 +239,68 @@ def test_pet_run_without_pets_hints_and_exits_zero(tmp_path, monkeypatch, capsys
     assert "当前无激活宠物" in capsys.readouterr().err
 
 
+def _seed_pet(state, session_id: str = "p1") -> None:
+    """向跨进程注册表种入一只运行中的宠物（控制面 CLI 用例用）。"""
+    seeded = PetSession(session_id=session_id)
+    seeded.start(PetTask(kind=PetTaskKind.IDLE_EXPLORATION, goal="观察环境"))
+    PetManager(state / "pets.json").register(seeded)
+
+
+def test_pet_status_cli_shows_structured_state(tmp_path, monkeypatch, capsys) -> None:
+    """控制面 CLI：`pet status` 显示结构化状态（change 0088 / 用户诉求①）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("CORE_STATE_DIR", str(state))
+    _seed_pet(state)
+    cfg = _write_pet_config(tmp_path, enabled=True)
+
+    assert main(["--config", cfg, "pet", "status"]) == 0
+    out = capsys.readouterr().out
+    assert "p1" in out and "active" in out
+
+
+def test_pet_sleep_and_wake_cli_roundtrip(tmp_path, monkeypatch, capsys) -> None:
+    """控制面 CLI：`pet sleep` 让宠物入睡、`pet wake` 叫醒。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("CORE_STATE_DIR", str(state))
+    _seed_pet(state)
+    cfg = _write_pet_config(tmp_path, enabled=True)
+
+    assert main(["--config", cfg, "pet", "sleep", "p1"]) == 0
+    assert "入睡" in capsys.readouterr().out
+    assert main(["--config", cfg, "pet", "wake", "p1"]) == 0
+    assert "叫醒" in capsys.readouterr().out
+
+
+def test_pet_assign_cli_switches_job(tmp_path, monkeypatch, capsys) -> None:
+    """控制面 CLI：`pet assign` 给（单）宠物换一件活（默认寻址）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("CORE_STATE_DIR", str(state))
+    _seed_pet(state)
+    cfg = _write_pet_config(tmp_path, enabled=True)
+
+    assert main(["--config", cfg, "pet", "assign", "整理收藏夹"]) == 0
+    assert "派发" in capsys.readouterr().out
+
+
+def test_pet_control_unknown_session_exits_1(tmp_path, monkeypatch, capsys) -> None:
+    """未知会话 ⇒ 结构化拒绝 + 退出码 1（不静默成功）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("CORE_STATE_DIR", str(state))
+    _seed_pet(state)
+    cfg = _write_pet_config(tmp_path, enabled=True)
+
+    assert main(["--config", cfg, "pet", "sleep", "nope"]) == 1
+    assert "PET_NOT_FOUND" in capsys.readouterr().err
+
+
 def test_repl_wires_llm_config(monkeypatch, tmp_path) -> None:
     """无子命令进 REPL：真 runtime 装配 + 注入 LLM 配置（对齐 run 的同构入口）。"""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")

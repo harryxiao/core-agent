@@ -566,6 +566,7 @@ def test_entry_run_wires_runtime(monkeypatch) -> None:
             self.config = object()
             self.orchestrator = object()
             self.pet_activator = object()
+            self.pet_manager = None  # _build_ui 若接了则构造控制门面（此处不接）
             self.app = SimpleNamespace(llm=SimpleNamespace(api_key_ref="${KEY}"))
 
     def _fake_build(config, **kwargs):

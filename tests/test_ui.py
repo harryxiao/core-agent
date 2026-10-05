@@ -10,6 +10,7 @@ from core.configuration.models import LLMConfig
 from core.loop import LoopEvent
 from core.memory import MemoryEntry
 from core.permission import ApprovalChannel
+from core.pet.core import PetControl, PetManager, PetSession, PetTask, PetTaskKind
 from core.ui import CLIBridge, DesktopBridge, Event, UIAPILayer, UiError, UiErrorCode, WebBridge
 
 
@@ -528,3 +529,28 @@ def test_get_memory_filters_by_session() -> None:
     assert api.get_memory(session_id) == {"entries": []}
     spy._entries.append(_entry("d", session_id, "归属本会话"))
     assert api.get_memory(session_id) == {"entries": ["归属本会话"]}
+
+
+# ---- 宠物控制面（change 0088 / 用户诉求①） ----
+
+
+def _pet_control_with(session_id: str) -> PetControl:
+    manager = PetManager()
+    pet = PetSession(session_id=session_id)
+    pet.start(PetTask(kind=PetTaskKind.IDLE_EXPLORATION, goal="观察环境"))
+    manager.register(pet)
+    return PetControl(manager)
+
+
+def test_ui_pet_command_delegates_to_control() -> None:
+    """`UIAPILayer.pet_command`（前台 `/pet [cmd]` 落点）落到注入的同一 `PetControl`。"""
+    api = UIAPILayer(pet_control=_pet_control_with("p1"))
+    assert api.pet_command("status", session_id="p1")["session_id"] == "p1"
+    api.pet_command("sleep", session_id="p1")
+    assert api.pet_command("status", session_id="p1")["sleeping"] is True
+
+
+def test_ui_pet_command_without_control_raises() -> None:
+    with pytest.raises(UiError) as exc_info:
+        UIAPILayer().pet_command("status")
+    assert exc_info.value.code is UiErrorCode.UI_PET_UNSET

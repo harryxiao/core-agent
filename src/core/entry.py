@@ -61,7 +61,15 @@ from core.permission import (
     SandboxManager,
     SandboxPolicy,
 )
-from core.pet.core import FAILED, WOKEN, PetManager, PetWakeDriver, WakeOutcome
+from core.pet.core import (
+    FAILED,
+    WOKEN,
+    PetControl,
+    PetError,
+    PetManager,
+    PetWakeDriver,
+    WakeOutcome,
+)
 from core.pet.library import load_persona, load_personas
 from core.plugin_registry import DomainError, PluginInstaller, PluginKind, PluginSource
 from core.plugins import InstallDispatcher
@@ -245,7 +253,11 @@ def _add_release_parser(sub: Any) -> None:
 
 def _add_pet_parser(sub: Any) -> None:
     pet = sub.add_parser("pet", help="宠物模式（后台自治会话）")
-    pet.add_argument("verb", nargs="?", help="gather|info|explore|walk|list|stop|run")
+    pet.add_argument(
+        "verb",
+        nargs="?",
+        help="gather|info|explore|walk|list|run|status|sleep|wake|assign|stop",
+    )
     pet.add_argument("rest", nargs=argparse.REMAINDER, help="[--name NAME] 任务描述（自由文本）")
 
 
@@ -338,6 +350,11 @@ def _build_ui(args: argparse.Namespace, *, interactive: bool = False) -> UIAPILa
         approval=approval,
         orchestrator=runtime.orchestrator,  # /task 命令驱动同一编排器
         pet_activator=runtime.pet_activator,  # WebUI 自然语言宠物激活
+        pet_control=(
+            PetControl(runtime.pet_manager)  # 前台 `/pet [cmd]` 控制面
+            if runtime.pet_manager is not None
+            else None
+        ),
     )
     api.set_llm_config(runtime.app.llm)
     return api
@@ -1118,8 +1135,8 @@ def _pet(args: argparse.Namespace) -> int:  # noqa: PLR0911 — CLI 分支各自
 
     if verb is None:
         print(
-            "用法: core-agent pet <verb> [--name NAME] [...]"
-            "（gather|info|explore|walk|list|stop|run）"
+            "用法: core-agent pet <verb> [--name NAME] [--session ID] [...]"
+            "（gather|info|explore|walk|list|run|status|sleep|wake|assign|stop）"
         )
         return 0
     try:
@@ -1134,18 +1151,65 @@ def _pet(args: argparse.Namespace) -> int:  # noqa: PLR0911 — CLI 分支各自
     if verb == "list":
         _print_pets(manager, persons_dir)
         return 0
-    if verb == "stop":
-        if not rest:
-            print("用法: core-agent pet stop <session_id>", file=sys.stderr)
-            return 1
-        manager.stop(rest[0])
-        print(f"已停止宠物会话 {rest[0]}")
-        return 0
     if verb == "run":
         return _pet_run(manager, rest)
+    if verb in ("status", "sleep", "wake", "assign", "stop"):
+        return _pet_control(verb, rest, manager)
     session = activator.activate_from_cli(verb, rest, persona=_load_persona(persons_dir, name))
     print(f"已激活宠物会话 {session.session_id}（verb={verb}，状态 {session.state.value}）")
     return 0
+
+
+def _pet_control(verb: str, rest: list[str], manager: PetManager) -> int:
+    """控制面 CLI（change `0088` / 用户诉求①）：`status|sleep|wake|assign|stop` → `PetControl`。
+
+    与 `UIAPILayer.pet_command` 复用**同一** `PetControl`（单一口径）；未知会话 / 多宠物
+    未指定 ⇒ 结构化拒绝 + 退出 1。
+    """
+    session_id, task = _split_pet_session(rest)
+    control = PetControl(manager)
+    target = session_id or (task[0] if task else None)
+    try:
+        if verb == "status":
+            _print_pet_status(control.status(target))
+            return 0
+        if verb == "assign":
+            print(control.assign(" ".join(task), session_id=session_id))
+            return 0
+        # 其余三动词签名一致（`session_id=None -> str`），按 verb 取绑定方法
+        ops = {"sleep": control.sleep, "wake": control.wake, "stop": control.stop}
+        print(ops[verb](target))
+    except PetError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    return 0
+
+
+def _print_pet_status(status: dict[str, Any]) -> None:
+    """控制面状态呈现（结构化字段 → 一行；不含偏好与任务正文）。"""
+    sleeping = "是" if status["sleeping"] else "否"
+    print(
+        f"宠物 {status['session_id']}：状态 {status['state']}，休眠 {sleeping}，"
+        f"待办 {status['pending']}，唤醒计数 {status['wake_count']}，故障 {status['fault'] or '-'}"
+    )
+
+
+def _split_pet_session(rest: list[str]) -> tuple[str | None, list[str]]:
+    """从 free-text rest 提取 `--session ID`，其余原样返回。
+
+    与 `_split_pet_name` 同款：robust 处理任意顺序。
+    """
+    session_id: str | None = None
+    task: list[str] = []
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--session" and i + 1 < len(rest):
+            session_id = rest[i + 1]
+            i += 2
+        else:
+            task.append(rest[i])
+            i += 1
+    return session_id, task
 
 
 def _print_pets(manager: PetManager, persons_dir: str) -> None:

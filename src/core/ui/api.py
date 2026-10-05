@@ -18,7 +18,7 @@ from core.loop import DefaultLoop, LoopEvent, LoopPlugin
 from core.memory import MemoryStore
 from core.orchestration import TaskScheduler
 from core.permission import ApprovalChannel
-from core.pet.core import PetActivator
+from core.pet.core import PetActivator, PetControl
 from core.tools import ToolDef, ToolProvider, ToolResult
 
 from .errors import UiError, UiErrorCode
@@ -50,6 +50,7 @@ class UIAPILayer:
         approval: ApprovalChannel | None = None,
         orchestrator: TaskScheduler | None = None,
         pet_activator: PetActivator | None = None,
+        pet_control: PetControl | None = None,
     ) -> None:
         self._loop = loop if loop is not None else DefaultLoop()
         self._memory = memory
@@ -61,6 +62,7 @@ class UIAPILayer:
         self._approval = approval
         self._orchestrator = orchestrator
         self._pet_activator = pet_activator
+        self._pet_control = pet_control
         self._sessions: dict[str, str] = {}
         self._llm_config: LLMConfig | None = None
 
@@ -133,6 +135,28 @@ class UIAPILayer:
         if self._pet_activator is None:
             raise UiError(UiErrorCode.UI_PET_UNSET, "宠物激活器未接")
         return self._pet_activator.activate_from_nl(user_input).session_id
+
+    def pet_command(
+        self, verb: str, *, session_id: str | None = None, goal: str | None = None
+    ) -> Any:
+        """前台 `/pet [cmd]` 控制面（change 0088 / 用户诉求①）：verb → 会话操作。
+
+        `status` / `sleep` / `wake` / `assign` / `stop` 经注入的 `PetControl` 收口
+        （与 CLI 同一实现）。
+        """
+        if self._pet_control is None:
+            raise UiError(UiErrorCode.UI_PET_UNSET, "宠物控制面未接")
+        if verb == "status":
+            return self._pet_control.status(session_id)
+        if verb == "sleep":
+            return self._pet_control.sleep(session_id)
+        if verb == "wake":
+            return self._pet_control.wake(session_id)
+        if verb == "assign":
+            return self._pet_control.assign(goal or "", session_id=session_id)
+        if verb == "stop":
+            return self._pet_control.stop(session_id)
+        raise UiError(UiErrorCode.UI_PET_UNKNOWN_VERB, f"未知宠物控制动词：{verb}")
 
     # ---- 工具 ----
 

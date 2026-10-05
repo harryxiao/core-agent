@@ -197,6 +197,27 @@ change `0081` 之前二者只注入不消费，且宠物**跑在主 loop 上**�
 | 故障隔离 | `WakeOutcome.status ∈ {woken, skipped, failed}` | 让行/退避/未激活（`PetError`）= **预期态静默跳过**；意外异常 ⇒ `failed` 记因并**继续其余宠物**（规格 R8「A 宠物异常不影响 B 宠物」） |
 | 空注册表 | 提示三入口激活 + 退出 0 | **不自动造宠物**（激活归三入口，避免第二真源） |
 
+### 5.3 控制面（`PetControl`，change `0088`，用户诉求①）
+
+前台（`/pet [cmd]`、`pet <verb>` CLI argv、WebUI 自然语言）在宠物运行期间**随时**查看状态 / 让它
+停止工作 / 换一件活 / 睡觉 / 叫醒。控制面由**单一门面** `PetControl`（`src/core/pet/core/control.py`）
+收口 —— CLI 与 `UIAPILayer` 都只**调用它**，**不各自实现** verb 分发（避免两份真源）。
+
+| 动词 | 落到 | 说明 |
+|---|---|---|
+| `status` | `snapshot()` 过滤 | 结构化 `session_id` / `state` / `sleeping`(=yielding) / `pending` / `wake_count` / `fault`；**不含**主人偏好与任务正文 |
+| `sleep` | `PetSession.suspend()` | 置让行态（休眠）；后续 `PetSession.wake()` 以 `PET_YIELDING` 拒绝 |
+| `wake` | `PetSession.resume()` | **清让行态恢复**。**命名陷阱**：与 `PetSession.wake()`（执行一次任务）语义不同，见 ADR-0083 |
+| `assign` | `dispatch()` | 换活：入队新任务并清让行态（自动唤醒，change `0087`） |
+| `stop` | `PetManager.stop()` | 终止会话并释放 |
+
+**寻址**（`_resolve`）：显式 `--session ID` / `session_id=` ⇒ 按 id 取；**未指定且仅注册一只** ⇒ 默认作用于它；
+**未指定且多只** ⇒ `PET_TARGET_AMBIGUOUS` 并**列出可选 id**（不猜测）；**指定但未注册** ⇒ `PET_NOT_FOUND`
+（CLI 退出码 1，不静默成功 —— 对照 `PetManager.stop()` 注入式批量驱动的静默容错取向）。
+
+**作用域 = 本进程已注册会话**：`PetManager.list()` 返回本进程内存，另一进程 `pet run` 常驻驱动**不重读**注册表
+⇒ 跨进程控制今天不通，**有意不做**（避免「改了盘却没驱到 live 会话」的假象）。将来若做跨进程，`PetControl` 是唯一扩展点。
+
 ---
 
 ## 6. 错误码
@@ -207,6 +228,8 @@ change `0081` 之前二者只注入不消费，且宠物**跑在主 loop 上**�
 | `PET_NOT_ACTIVE` | 会话未激活，唤醒/派发/恢复无效 |
 | `PET_BACKOFF` | 会话处于异常退避态，暂不可唤醒 |
 | `PET_YIELDING` | 主循环 busy 让行 / 队列清空休眠（均复用 orchestration `SUSPENDED`） |
+| `PET_NOT_FOUND` | 控制面指定的会话 id 未注册（change `0088`；CLI 退出码 1） |
+| `PET_TARGET_AMBIGUOUS` | 控制面未指定会话但注册多只宠物（拒绝并列出可选 id，不猜测） |
 | `PET_PREFERENCE_WRITE_FAILED` | 偏好写入 L2 facts 层失败 |
 
 ---
@@ -216,4 +239,5 @@ change `0081` 之前二者只注入不消费，且宠物**跑在主 loop 上**�
 - 规格：`openspec/specs/pet-mode/spec.md`
 - 变更：`openspec/changes/0030-pet-mode/`
 - 模块：`01-architecture/architecture-overview.md`
+- 控制面：`ui-interface.md`（`UIAPILayer.pet_command`）、`ADR-0083`
 - 复用接口：`loop-interface.md`（`Loop.run` 同步薄壳）、`ui-interface.md`（`UIAPILayer.list_tools/run_loop`）、`im-interface.md`（`IMGateway.on_message`）、`cli-ops-interface.md`（`CommandGroup`）、`memory-interface.md`（`MemoryEntry.source`）、`orchestration-interface.md`（任务状态机 `SUSPENDED`）

@@ -21,7 +21,8 @@ PetMode（后台自治循环扩展）
 ├── Persona        宠物人设：dataclass + render_prompt()
 ├── PetTask        任务载体：PetTaskKind（INFORMATION_GATHERING / IDLE_EXPLORATION）
 ├── PetManager     多宠物注册表：独立启停 + 故障隔离（可选落盘，跨进程存活）
-└── PetActivator   三入口激活：/pet 斜杠 / pet <verb> CLI / WebUI 自然语言（注入 loop/记忆/探索/安全/通知）
+├── PetActivator   三入口激活：/pet 斜杠 / pet <verb> CLI / WebUI 自然语言（注入 loop/记忆/探索/安全/通知）
+└── PetControl     控制面门面：verb(status/sleep/wake/assign/stop) → 会话操作 + 寻址（CLI 与 UIAPILayer 共用）
 ```
 
 ---
@@ -81,6 +82,19 @@ PetMode（后台自治循环扩展）
   （**不自动造宠物** —— 激活归三入口）。
 - `--interval` 是**宿主命令的运行参数**（同 `ui serve --host/--port`），**不进 `ConfigSpec`**。
 
+### 3.7 控制面（`PetControl`，change `0088`／ADR-0083）
+
+- **单一门面**：控制动词有**两个宿主面**（CLI `pet <verb>`、`UIAPILayer.pet_command`）。若各自分发就是两份真源，
+  故 `PetControl` 收口「verb → 会话操作 + 寻址」，两个宿主都只调用它。门面**无状态**（只持 `PetManager`），
+  构造廉价 ⇒ 组合根就地构造，**不给 `Runtime` 加字段**。
+- **只复用既有操作**：`sleep→suspend`、`wake→resume`、`assign→dispatch`、`stop→PetManager.stop`、`status→snapshot` 过滤。
+  **不新增 `PetSession` 公开 API**（`snapshot()` 已有；不读私有）。
+- **寻址不猜**：单宠物默认、多宠物未指定 ⇒ `PET_TARGET_AMBIGUOUS` 列出 id、未知 ⇒ `PET_NOT_FOUND`（不静默成功）。
+- **观测面不外泄**：`status` 过滤掉 `preferences` 与任务正文（对齐「密钥只引用不读取」的隐私取向）。
+- **作用域 = 本进程**：跨进程注册表是快照，不驱动 live 会话 —— **有意不做**跨进程（用户裁决「仅同进程」）。
+
+---
+
 ---
 
 ## 4. 后台自治闭环
@@ -120,6 +134,8 @@ PetMode（后台自治循环扩展）
 | `PET_NOT_ACTIVE` | 会话未激活，唤醒/派发/恢复无效 |
 | `PET_BACKOFF` | 会话处于异常退避态，暂不可唤醒 |
 | `PET_YIELDING` | 主循环 busy，宠物让行（复用 orchestration `SUSPENDED`） |
+| `PET_NOT_FOUND` | 控制面指定的会话 id 未注册（change `0088`） |
+| `PET_TARGET_AMBIGUOUS` | 控制面未指定会话但注册多只宠物（拒绝并列出 id） |
 | `PET_PREFERENCE_WRITE_FAILED` | 偏好写入 L2 facts 层失败 |
 
 ---
