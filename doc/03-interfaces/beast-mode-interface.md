@@ -77,7 +77,14 @@
 属性：`beast`、`state`、`loop`（`LoopPlugin`）、`last_trace_id`、`last_result`。
 
 独立记忆：`MemoryEntry.source = beast.<agent_id>`（区别于主 Agent 的 `source=loop`），
-落 L2 facts 层隔离。
+落 L2 facts 层隔离。**生产接线（change `0110`／ADR-0103）**：
+① 神兽 loop 由组合根注入 `source=beast.<agent_id>`（`DefaultLoop(source=…)`），故会话轨迹由**真实 loop**
+写入"`source=beast.<agent_id>` + `session_id=beast.<agent_id>`"的条目（此前 `remember` 硬编码 `source="loop"`，
+神兽产物混入主记忆）；② `BeastManager.summon` 经 `TaskHandoff(session_id=beast.agent_id)` 把会话归属转交子 loop
+（否则条目 `session_id` 空串，压实按会话聚合时与主线未归组条目同组）；③ **封存**（spec「记忆分区封存」）
+由读取侧落地：主 loop 的 `DynamicAssembler` 传 `exclude_source_prefixes=("beast.",)` ⇒ 神兽分区不再被主 loop
+read 命中；`session.recall()`（自动回归）为封存的召回面。
+`BeastSession.remember` 为会话级 API（库层直接调用面），生产轨迹由 loop 写入，二者同口径不互相代笔。
 
 ---
 
@@ -159,9 +166,16 @@
 | `Runtime.beast_manager` | `BeastManager(registry=…, router=MultiAgentRouter([]), loop_factory=_beast_loop, memory=memory)` |
 | `Runtime.beast_activator` | `BeastActivator(beast_manager)` —— CLI `summon`/`recall` 经 `build_runtime` 取此实例（`entry._summon/_recall`） |
 | **门控**（change `0067`） | `features.beast: false` ⇒ 注册与上两行**都不发生**（`Runtime.beast_manager`/`beast_activator` 为空），`summon`/`recall` 报「beast 模块已关闭」 |
+| **命名空间**（change `0110`） | `_beast_loop` 注入 `source=beast.<agent_id>`（轨迹落独立分区）；主 loop 装配器 `DynamicAssembler(exclude_source_prefixes=("beast.",))`（封存：主 loop read 不命中神兽分区） |
 
-神兽 loop 与主 loop 同构（共享 `memory`/`tracer`/`guard`/`approver`/约束链），唯一差异是
-技能路由的域名作用域与工具面（子 loop 工具面不含 `tools.delegate`）。
+神兽 loop 与主 loop 同构（共享 `memory`/`tracer`/`guard`/`approver`/约束链），差异是
+技能路由的域名作用域、工具面（子 loop 工具面不含 `tools.delegate`）与**记忆命名空间**
+（`source=beast.<agent_id>`，见 §4）。
+
+> **已知局限（change `0110` 明示）**：① 主 loop 与神兽 loop **共享同一** `DynamicAssembler` 实例
+> ⇒ 神兽自身的上下文装配亦不命中 `beast.*`（规格只要求主 loop 不命中；神兽产物在自动回归时即封存）；
+> ② 压实摘要的 `source` 恒为 `"compaction"` ⇒ 神兽分区被压实后的**摘要**仍可被主 loop 读到 ——
+> 按 source 命名空间隔离的残留缺口，登记待议（不在本 change 扩大改动面）。
 
 ---
 

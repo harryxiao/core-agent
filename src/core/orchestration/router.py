@@ -47,10 +47,13 @@ class MultiAgentRouter:
         raise OrchestrationError(OrchestrationErrorCode.NO_AGENT_MATCH, f"无匹配 Agent: {task}")
 
     async def handoff(self, target: str, handoff: TaskHandoff) -> LoopResult:
-        """显式交接任务给指定 Agent，异步执行并返回完整 LoopResult；无匹配抛错。"""
+        """显式交接任务给指定 Agent，异步执行并返回完整 LoopResult；无匹配抛错。
+
+        ``handoff.session_id`` 转交子 loop ⇒ 子 Agent 的轨迹条目按自身会话归组。
+        """
         profile = self._agents.get(target)
         if profile is None or profile.loop is None:
             raise OrchestrationError(
                 OrchestrationErrorCode.NO_AGENT_MATCH, f"无匹配 Agent: {target}"
             )
-        return await profile.loop.arun(handoff.task)
+        return await profile.loop.arun(handoff.task, session_id=handoff.session_id)

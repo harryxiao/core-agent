@@ -68,7 +68,8 @@ class BeastManager:
             )
             self._router.register(profile)
             result = await self._router.handoff(
-                beast.agent_id, TaskHandoff(task=task or beast.domain)
+                beast.agent_id,
+                TaskHandoff(task=task or beast.domain, session_id=beast.agent_id),
             )
             session.last_result = result
             session.last_trace_id = result.trace_id

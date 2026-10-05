@@ -60,6 +60,7 @@ class PetControl:
         """换一件活：派发新任务（自动唤醒让行中的宠物 —— change `0087`）。"""
         pet = self._resolve(session_id)
         pet.dispatch(PetTask(kind=PetTaskKind.IDLE_EXPLORATION, goal=goal))
+        pet.observe_owner(goal)  # 派发成功后观察主人原话（空 ⇒ observe_owner 自行跳过）
         return f"已给宠物 {pet.session_id} 派发新任务：{goal}"
 
     def stop(self, session_id: str | None = None) -> str:

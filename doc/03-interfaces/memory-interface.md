@@ -10,8 +10,15 @@
 class MemoryStore(Plugin):
     plugin_id = "memory.store"
 
-    def read(self, query: str, budget: int = 4096) -> list[MemoryEntry]:
-        """检索相关记忆，返回按相关性排序的条目，总 token ≤ budget。"""
+    def read(
+        self, query: str, budget: int = 4096, *, exclude_source_prefixes: tuple[str, ...] = ()
+    ) -> list[MemoryEntry]:
+        """检索相关记忆，返回按相关性排序的条目，总 token ≤ budget。
+
+        ``exclude_source_prefixes`` 命中的 ``source`` 前缀在**排名与预算之前**剔除
+        （被排除项不吃预算、不被复用计数强化）；缺省空元组 ⇒ 检索语义与既往逐字一致。
+        记忆分区隔离（如主 loop 不命中 `beast.*`）的**读取侧**开关，见 beast-mode-interface §4。
+        """
 
     def write(self, layer: Layer, entry: MemoryEntry) -> MemoryId:
         """写入记忆（带 trace_id / 来源 / 时间戳）。"""

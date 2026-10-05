@@ -46,6 +46,8 @@ class DefaultLoop(Plugin):
     #   返回 None 即拒绝短路、返回 Action 则放行/改写）；action_observers:
     #   list[Callable[[LoopContext, Action, ActionResult], None]]（结果侧观察者，仅通知、异常降级留痕；
     #   loop 不 import constraints——生产侧由组合根注入适配层，见 constraints-interface §7 / ADR-0055）
+    # 注入面（可选）：source: str = "loop"（落记忆的**命名空间**：本轮轨迹写入 L2 条目的 ``source``；
+    #   神兽 loop 由组合根注入 "beast.<agent_id>" ⇒ 与主 Agent "loop" 隔离，见 beast-mode-interface §4/§10）
 
     def run(self, user_input: str, *, session_id: str = "") -> LoopResult:
         trace_id = new_trace_id()
@@ -60,7 +62,7 @@ class DefaultLoop(Plugin):
             ctx = self.observe(ctx, result)
         self.remember(
             trace_id, [*ctx.trajectory, {"reply": ctx.reply}], session_id=session_id
-        )  # 无行动不记忆；末条 reply 供语义检索；条目带会话归属
+        )  # 无行动不记忆；末条 reply 供语义检索；条目带 source 命名空间与会话归属
         # 收尾维护节拍：距上次维护达 maintenance_interval 才触发一次——①记忆遗忘 ②冷路径机会（各自失败降级）
         return LoopResult(reply=ctx.reply, trace_id=trace_id)
 ```

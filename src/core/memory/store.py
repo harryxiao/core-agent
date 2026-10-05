@@ -87,13 +87,28 @@ class MemoryStore:
     def check(self) -> bool:
         return True
 
-    def read(self, query: str, budget: int = 4096) -> list[MemoryEntry]:
+    def read(
+        self,
+        query: str,
+        budget: int = 4096,
+        *,
+        exclude_source_prefixes: tuple[str, ...] = (),
+    ) -> list[MemoryEntry]:
+        """检索相关记忆；``exclude_source_prefixes`` 命中的来源在**排名与预算之前**剔除
+        （被排除项不吃预算、不被复用计数强化）。缺省空元组 ⇒ 检索语义与既往逐字一致。
+        """
         try:
             cold = self._backend.search(query)
         except Exception:  # noqa: BLE001 — 冷区检索失败降级
             cold = []
         candidates = {entry.id: entry for entry in cold}
         candidates.update(self._hot)
+        if exclude_source_prefixes:
+            candidates = {
+                entry_id: entry
+                for entry_id, entry in candidates.items()
+                if not entry.source.startswith(exclude_source_prefixes)
+            }
         embedder = self._memo_embedder() if self._embedder is not None else None
         ranked = sorted(
             candidates.values(),

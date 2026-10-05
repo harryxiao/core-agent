@@ -24,6 +24,16 @@ class ContextPack:
 
 ```python
 class DynamicAssembler:
+    def __init__(
+        self, *, memory=None, info_map=None, constitution=None, project_info=None,
+        exclude_source_prefixes: tuple[str, ...] = (),
+    ) -> None:
+        """``exclude_source_prefixes`` 透传记忆检索的**来源排除**（缺省空 ⇒ 不含排除）。
+
+        组合根为主 loop 的装配器传 ``("beast.",)`` ⇒ 神兽记忆分区不进主 loop 上下文
+        （beast-mode spec「记忆分区封存」；见 beast-mode-interface §4/§10）。
+        """
+
     def build(self, task: str, stage: str, *, budget: int) -> ContextPack:
         """按任务装配上下文（事实以 task 为 query 召回）；超预算裁剪低相关度内容。"""
 

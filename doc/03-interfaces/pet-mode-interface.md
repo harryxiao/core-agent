@@ -39,7 +39,11 @@ class PetSession:
 
     # 偏好追踪
     def observe(self, behavior: str) -> MemoryEntry: ...
-        """观察主人行为/反馈，以 MemoryEntry.source="user" 落 L2 facts 层。"""
+        """观察主人行为/反馈，以 MemoryEntry.source="user" 落 L2 facts 层；
+        记忆后端未接 / 写入失败抛 PET_PREFERENCE_WRITE_FAILED（**库层直接调用面**，异常不吞）。"""
+    def observe_owner(self, text: str) -> MemoryEntry | None: ...
+        """**生产入口**观察主人原话：非空即转 observe，失败静默跳过（fail-soft，不阻断激活/派发）；
+        空文本（无主人原话）⇒ None 不写入（spec R7：不以通用文案谎报偏好）。"""
     def prefer(self, key: str) -> str | None: ...
         """复用已记录偏好，供任务执行/沟通时对齐主人偏好。"""
 
@@ -60,6 +64,12 @@ class PetSession:
 > 生产激活的宠物因此持有 runtime 的真实 loop、共享记忆后端与 `MicrotaskRunner`（偏好落 L2、唤醒走真 loop、空闲跑真微任务）。`snapshot()` / `restore(record, **deps)`
 > 支持会话快照与恢复（注册表落盘用）；缺省依赖全 `None` → echo loop / 无记忆兜底，行为不变。
 > **通知接线（change `0079`／ADR-0076，账本 E16）**：通知器此前只注入不投递（`_notifier` 零调用、`AsyncNotifier` 无 channel、`flush()` 零调用方）。现已三环连通 —— 生产者落 `wake()` 收尾（反馈周期命中时投递 `report()` 产出），缺省通道 = stderr 一行（主人可见的观测面），投递点由组合根收成单一可调用体（入队后即 flush）注入；真实 IM 通道仍由宿主注入替换。
+>
+> **偏好追踪接线（change `0110`／ADR-0103，账本 E39）**：`observe` 此前**零生产调用方**（`_preferences` 恒空、
+> `surprise()` 恒 `None`）。现经 `observe_owner` 接在**主人原话入口**三处：`PetActivator.activate_from_cli`（`rest`）、
+> `activate_from_nl`（`user_input`）、`PetControl.assign`（`goal`）。**不在 `wake()` 内 observe** ——
+> 唤醒时宠物只在跑自己的任务，无主人行为可观察；且 `/pet` 斜杠激活与空 `rest` 的 goal 是**合成文案**
+> （`斜杠命令 pet.gather` / `CLI 命令 gather`），观察它等于谎报偏好（spec R7 明禁）⇒ 二者**零写入**。
 
 ---
 

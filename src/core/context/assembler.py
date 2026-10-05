@@ -25,11 +25,13 @@ class DynamicAssembler:
         info_map: InfoMap | None = None,
         constitution: list[str] | None = None,
         project_info: list[str] | None = None,
+        exclude_source_prefixes: tuple[str, ...] = (),
     ) -> None:
         self._memory = memory
         self._info_map = info_map if info_map is not None else InfoMap()
         self._constitution = list(constitution or [])
         self._project_info = list(project_info or [])
+        self._exclude_source_prefixes = tuple(exclude_source_prefixes)
 
     def build(self, task: str, stage: str, *, budget: int) -> ContextPack:
         """按任务装配上下文：宪法 + 项目信息必保，事实按任务检索（query=task），超预算裁剪。"""
@@ -54,9 +56,16 @@ class DynamicAssembler:
     # ---- 内部辅助 ----
 
     def _gather_facts(self, query: str, budget: int) -> list[dict[str, str]]:
-        """以任务目标为检索 query 召回 L2 事实（stage 不参与检索，架构图 :117）。"""
+        """以任务目标为检索 query 召回 L2 事实（stage 不参与检索，架构图 :117）。
+
+        ``exclude_source_prefixes`` 为装配级配置（缺省空 ⇒ 不含排除，检索语义不变）。
+        """
         if self._memory is None:
             return []
-        return [
-            {"source": e.source, "content": e.content} for e in self._memory.read(query, budget)
-        ]
+        if self._exclude_source_prefixes:
+            entries = self._memory.read(
+                query, budget, exclude_source_prefixes=self._exclude_source_prefixes
+            )
+        else:
+            entries = self._memory.read(query, budget)  # 未启用排除 ⇒ 调用形态与既往逐字一致
+        return [{"source": e.source, "content": e.content} for e in entries]

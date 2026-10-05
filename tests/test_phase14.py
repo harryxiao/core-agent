@@ -63,7 +63,7 @@ class _FakeLoop:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    async def arun(self, user_input: str) -> LoopResult:
+    async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
         self.calls.append(user_input)
         return LoopResult(reply="ok", trace_id="fake-trace")
 

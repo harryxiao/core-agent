@@ -149,13 +149,17 @@ class TaskHandoff:
     acceptance: str
     deadline: float | None
     priority: int = 0           # 子任务优先级，就绪队列内降序调度
+    session_id: str = ""        # 会话 ID：转交子 loop（arun(..., session_id=…)）⇒ 子 Agent 轨迹按自身会话归组
 
 class MultiAgentRouter:
     def match(self, task: str) -> AgentProfile:
         """按能力标签打分匹配最佳子 Agent；无命中回落 fallback，均无则抛 NO_AGENT_MATCH。"""
 
     async def handoff(self, target: str, handoff: TaskHandoff) -> LoopResult:
-        """显式交接任务给指定 Agent，异步执行并返回完整 LoopResult（见 loop-interface.md）；无匹配抛 NO_AGENT_MATCH。"""
+        """显式交接任务给指定 Agent，异步执行并返回完整 LoopResult（见 loop-interface.md）；无匹配抛 NO_AGENT_MATCH。
+
+        ``handoff.session_id`` 随调用转交子 loop（``arun(handoff.task, session_id=…)``）。
+        """
 ```
 
 ---

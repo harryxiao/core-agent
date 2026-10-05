@@ -128,6 +128,7 @@ class DefaultLoop(Plugin):
         notes_consult: NotesConsult | None = None,
         cold_path: ColdPath | None = None,
         trace_observer: TraceObserver | None = None,
+        source: str = "loop",
         max_rounds: int = 10,
         token_budget: int = 65536,
         maintenance_interval: float = _MAINTENANCE_INTERVAL_S,
@@ -149,6 +150,8 @@ class DefaultLoop(Plugin):
         self._notes_consult = notes_consult
         self._cold_path = cold_path
         self._trace_observer = trace_observer
+        # 落记忆的命名空间：主 Agent 缺省 "loop"；神兽 loop 由组合根注入 "beast.<agent_id>"
+        self._source = source
         self._max_rounds = max_rounds
         self._token_budget = token_budget
         self._maintenance_interval = maintenance_interval
@@ -467,7 +470,8 @@ class DefaultLoop(Plugin):
         """把本轮轨迹沉淀为 L2 记忆（无行动不记忆）。
 
         轨迹项渲染为可读行（轮次/成败/错误），末条 ``reply`` 提供可检索的语义内容；
-        ``session_id`` 记入条目，供压实/固化/遗忘按会话归组（缺省空串 = 未归属）。
+        ``session_id`` 记入条目，供压实/固化/遗忘按会话归组（缺省空串 = 未归属）；
+        ``source`` 取构造注入的命名空间（缺省 ``"loop"``，神兽 loop 为 ``beast.<agent_id>``）。
         """
         if not trajectory or self._memory is None:
             return
@@ -482,7 +486,7 @@ class DefaultLoop(Plugin):
                 layer="L2",
                 content=summary,
                 tags=["loop", "trajectory"],
-                source="loop",
+                source=self._source,
                 trace_id=trace_id,
                 session_id=session_id,
             ),

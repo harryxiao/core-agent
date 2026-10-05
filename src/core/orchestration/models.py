@@ -67,6 +67,7 @@ class TaskHandoff:
     acceptance: str = ""
     deadline: float | None = None
     priority: int = 0
+    session_id: str = ""  # 会话 ID（转交子 loop，使子 Agent 轨迹按自身会话归组；缺省空串）
 
 
 @dataclass

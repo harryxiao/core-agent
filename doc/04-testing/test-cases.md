@@ -406,6 +406,26 @@
 
 ---
 
+## 28. 记忆命名空间接线（TC-NS）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-NS-01 | beast-mode/spec.md「独立记忆命名空间」 | `DefaultLoop(source="beast.baihu")` 落一轮轨迹 | 条目 `source == "beast.baihu"`（锚点：`tests/test_memory_namespace.py::test_loop_writes_injected_source`） |
+| TC-NS-02 | 同上（**红线**：缺省不变） | `DefaultLoop()`（不注入 `source`）落一轮轨迹 | `source == "loop"` —— 主 Agent 语义**逐字不变**（锚点：`::test_loop_source_defaults_to_loop`） |
+| TC-NS-03 | 同上「记忆分区封存」（读取侧） | 共享记忆含 `beast.*` 与 `loop` 两条同 query 条目；分别 `read(query)` / `read(query, exclude_source_prefixes=("beast.",))` | 缺省仍返回两条（**缺省检索语义不变**）；显式排除 ⇒ 只返回 `loop` 条（锚点：`::test_read_excludes_source_prefixes_but_default_is_unchanged`） |
+| TC-NS-04 | 同上（预算 / 强化口径） | 先缺省 `read` 一次（两条都被强化），再带排除 `read` 一次，比对 `reuse_count` | 命中项 +1；被排除项**不进候选** ⇒ 不占预算、`reuse_count` 不变（锚点：`::test_excluded_entries_do_not_consume_budget_or_reinforce`） |
+| TC-NS-05 | 同上 + context-interface §2 | `DynamicAssembler(memory=…)` 缺省 vs `exclude_source_prefixes=("beast.",)` 装配同一 query | 缺省事实含 `beast.*`；开启排除 ⇒ 事实**不含** `beast.*`（锚点：`::test_assembler_exclusion_is_opt_in`） |
+| TC-NS-06 | orchestration-interface §3（向后兼容） | `TaskHandoff(task="design")` 与 `TaskHandoff(task="design", session_id="beast.qinglong")` | 缺省 `session_id == ""`（既有调用零改动）；显式传值原样保留（锚点：`::test_task_handoff_session_id_is_backward_compatible`） |
+| TC-NS-07 | 同上（**转交**，非仅加字段） | 真实 `DefaultLoop(memory=store, source="beast.baihu")` 经 `MultiAgentRouter.handoff(..., TaskHandoff(session_id="beast.baihu"))` | 子 loop 落库条目 `session_id == "beast.baihu"`（证明已接线）（锚点：`::test_handoff_forwards_session_id_to_sub_loop`） |
+| TC-NS-08 | beast-mode/spec.md `:54`（E37 端到端） | `build_runtime` + 离线 LLM 替身，`beast_activator.activate_from_cli("qinglong", ["设计架构"])` | 共享记忆出现 `source == "beast.qinglong"` **且** `session_id == "beast.qinglong"` 的条目（**由真实 loop 写入**；改前为 `source="loop"` 混入主记忆）（锚点：`::test_production_summon_writes_beast_namespace_through_real_loop`） |
+| TC-NS-09 | 同上 `:89`「记忆分区封存」（E38 端到端） | 召唤后向共享记忆补一条 `loop` 事实，读主 loop 装配器（`runtime.loop` 的 planner）对同一 query 的事实集 | 事实**含** `loop`（不误伤）、**不含**任何 `beast.*`（封存生效）（锚点：`::test_main_loop_context_excludes_sealed_beast_partition`） |
+| TC-NS-10 | pet-mode/spec.md「偏好追踪」（fail-soft） | 无记忆后端 / 空文本 / `"editor: vim"` 三种输入调 `PetSession.observe_owner` | 无后端 ⇒ `None` 且 `prefer` 为 `None`（不抛）；空文本 ⇒ `None` 且**零写入**；正常文本 ⇒ 落 L2 `source="user"` 且 `prefer("editor") == "vim"`（锚点：`::test_observe_owner_is_fail_soft_without_memory` / `::test_observe_owner_records_preference` / `::test_observe_owner_ignores_blank_text`） |
+| TC-NS-11 | pet-mode/spec.md `:231-234`（E39 端到端） | 生产入口激活：`activate_from_cli("gather", ["editor: vim"])` | 共享 L2 有 `source="user"` 偏好条目、`prefer("editor") == "vim"`、`surprise()` **非 `None`** 且含 `editor=vim`（走真实 loop；改前恒 `None`）（锚点：`::test_production_pet_activation_observes_owner_and_enables_surprise`） |
+| TC-NS-12 | 同上 换活入口（控制面） | `PetControl.assign("theme: dark", session_id=…)` | 同一观察口径生效（`prefer("theme") == "dark"`）—— 主人行为入口不止激活一处（锚点：`::test_pet_control_assign_observes_owner`） |
+| TC-NS-13 | 同上 R7「**不谎报**」（反例 ×2） | `/pet` 斜杠激活（合成 goal）与 CLI 空 `rest`（合成 goal） | 两者 `_preferences` 均为空、共享记忆**零** `source="user"` 条目（合成文案不观察）（锚点：`::test_slash_activation_does_not_fabricate_preference` / `::test_cli_without_owner_text_does_not_observe`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

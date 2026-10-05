@@ -70,7 +70,11 @@ class PetActivator:
         """`pet <verb>` CLI argv 经 cli-ops CommandGroup 扩展解析；persona 从 pet.md 加载注入。"""
         kind = _CLI_VERBS.get(verb, PetTaskKind.IDLE_EXPLORATION)
         goal = " ".join(rest) if rest else f"CLI 命令 {verb}"
-        return self._activate(PetTask(kind=kind, goal=goal), persona=persona)
+        session = self._activate(PetTask(kind=kind, goal=goal), persona=persona)
+        if rest:
+            # 观察**主人原话**（缺省 goal 为合成文案，不观察 —— 不谎报偏好）
+            session.observe_owner(goal)
+        return session
 
     def activate_from_nl(self, user_input: str) -> PetSession:
         """WebUI 自然语言「启动宠物 + 任务」，Agent 理解意图后绑定任务。"""
@@ -79,7 +83,9 @@ class PetActivator:
             if "收集" in user_input or "gather" in user_input
             else PetTaskKind.IDLE_EXPLORATION
         )
-        return self._activate(PetTask(kind=kind, goal=user_input))
+        session = self._activate(PetTask(kind=kind, goal=user_input))
+        session.observe_owner(user_input)  # 自然语言入口即主人原话
+        return session
 
     def _activate(self, task: PetTask, *, persona: PersonaLayer | None = None) -> PetSession:
         session = PetSession(

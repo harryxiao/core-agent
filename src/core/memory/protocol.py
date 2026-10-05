@@ -46,8 +46,17 @@ class MemoryStore(Protocol):
 
     plugin_id: str = "memory.store"
 
-    def read(self, query: str, budget: int = 4096) -> list[MemoryEntry]:
-        """检索相关记忆，返回按相关性排序的条目，总 token ≤ budget。"""
+    def read(
+        self,
+        query: str,
+        budget: int = 4096,
+        *,
+        exclude_source_prefixes: tuple[str, ...] = (),
+    ) -> list[MemoryEntry]:
+        """检索相关记忆，返回按相关性排序的条目，总 token ≤ budget。
+
+        ``exclude_source_prefixes`` 命中的 ``source`` 前缀在排名前剔除（缺省空 ⇒ 语义不变）。
+        """
         ...
 
     def write(self, layer: Layer, entry: MemoryEntry) -> MemoryId:

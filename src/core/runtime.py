@@ -531,6 +531,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             memory=memory,
             constitution=list(profile.coeffect.get("constitution:v1", [])),
             project_info=list(profile.context),
+            # 神兽记忆分区封存（beast-mode spec `:89`）：主 loop 装配不命中 `beast.*`
+            # （神兽轨迹由 `_beast_loop` 以 `source=beast.<agent_id>` 落库，见下）
+            exclude_source_prefixes=("beast.",),
         )
     planner = LLMPlanner(
         llm,
@@ -642,8 +645,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     def _beast_loop(beast: Beast) -> LoopPlugin:
         """按兽装配独立 loop：域内技能路由（专属神通） + 共享记忆/闸门/追踪。
 
-        与 ``_agent_loop`` 同构，唯一差异是 ``_loop_hooks(beast.agent_id)`` —— 神兽只在
-        自身域内看到自己的神通（beast-mode spec R4/R5）。
+        与 ``_agent_loop`` 同构，两处差异：① ``_loop_hooks(beast.agent_id)`` —— 神兽只在
+        自身域内看到自己的神通（beast-mode spec R4/R5）；② ``source=beast.<agent_id>`` ——
+        轨迹落**独立记忆命名空间**（spec `:54`），与主 Agent ``source=loop`` 隔离。
         """
         beast_hints, beast_turn = _loop_hooks(beast.agent_id)
         provider = _agent_tools()
@@ -670,6 +674,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 notes_consult=_consult_notes,
                 middlewares=[constraints_chain.middleware],
                 action_observers=[constraints_chain.observe_result],
+                source=beast.agent_id,
                 max_rounds=max_rounds,
                 token_budget=token_budget,
             ),

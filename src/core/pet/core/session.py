@@ -203,6 +203,20 @@ class PetSession:
             self._preferences[key.strip()] = value.strip()
         return entry
 
+    def observe_owner(self, text: str) -> MemoryEntry | None:
+        """生产入口观察**主人原话**：非空即转 :meth:`observe`，失败静默跳过。
+
+        :meth:`observe` 的异常面（``PET_PREFERENCE_WRITE_FAILED``）保持不变，供库层直接调用；
+        本方法供运行时入口使用 —— 偏好落库**尽力而为**，绝不因它失败而中断激活/派发
+        （pet-mode spec R7：不以通用文案谎报偏好）。无主人原话（空文本）⇒ 不观察。
+        """
+        if not text.strip():
+            return None
+        try:
+            return self.observe(text)
+        except Exception:  # noqa: BLE001 — 偏好落库尽力而为，失败不阻断入口
+            return None
+
     def prefer(self, key: str) -> str | None:
         """复用已记录偏好，供任务执行/沟通时对齐主人偏好。"""
         if key in self._preferences:
