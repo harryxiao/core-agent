@@ -61,6 +61,23 @@ def test_classify_unknown_deny_by_default() -> None:
     assert _engine().classify("xyzzy", "x", []) == RiskLevel.HIGH_RISK
 
 
+def test_classify_namespace_substring_not_read() -> None:
+    """命名空间前缀 `tools.` 含子串 `"ls"`，不得据此判只读（change 0095）。"""
+    engine = _engine()
+    assert engine.classify("tools.whatever", "x", []) == RiskLevel.HIGH_RISK
+    assert engine.classify("tools.file_write", "x", ["filesystem:write"]) == RiskLevel.DATA_EDIT
+
+
+def test_classify_delegate_coeffect_is_read() -> None:
+    """字面量 `agent:delegate` 豁免为只读（保持 change 0076 后的委托放行行为）。"""
+    assert _engine().classify("tools.delegate", "x", ["agent:delegate"]) == RiskLevel.READ
+
+
+def test_classify_non_delegate_agent_coeffect_not_read() -> None:
+    """豁免不放宽为前缀：`agent:*`（非 delegate）不判只读。"""
+    assert _engine().classify("tools.other", "x", ["agent:other"]) == RiskLevel.HIGH_RISK
+
+
 # ---- 授权 ----
 
 
@@ -300,11 +317,18 @@ def test_permission_mode_interactive_high_risk_approval() -> None:
     assert decision.approval_required is True
 
 
-def test_permission_mode_auto_approve_low_risk() -> None:
+def test_permission_mode_auto_approve_full_release() -> None:
+    """auto-approve = 无人值守全放行（change 0095）：高危 / 出站网络 / 不可归类均放行。"""
     gate = PermissionModeGate(PermissionMode.AUTO_APPROVE)
     assert gate.authorize("write_file", "/tmp/x", ["filesystem:write"]).allowed is True
-    decision = gate.authorize("delete", "/prod", [])
-    assert decision.approval_required is True  # 高危仍按高危策略走审批
+    for op, target, coeffects in (
+        ("delete", "/prod", []),  # 高危
+        ("tools.web_fetch", "https://x", ["network:outbound"]),  # 出站网络
+        ("xyzzy", "x", []),  # 无法归类（deny-by-default）
+    ):
+        decision = gate.authorize(op, target, coeffects)
+        assert decision.allowed is True
+        assert decision.approval_required is False
 
 
 def test_permission_mode_high_risk_block() -> None:

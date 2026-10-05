@@ -38,7 +38,10 @@ _WRITE_TOKENS = (
     "grant",
     "revoke",
 )
-_READ_TOKENS = ("read", "get", "list", "search", "query", "ls", "cat", "view", "show", "stat")
+_READ_TOKENS = ("read", "get", "list", "search", "query", "cat", "view", "show", "stat")
+# 委托类 coeffect 的**字面量**只读豁免：SHALL NOT 放宽为 "agent:" 前缀，
+# 否则将来任何 `agent:*` coeffect 会静默变只读（同 change 0095 的「按词元非子串」口径）。
+_DELEGATE_COEFFECT = "agent:delegate"
 
 
 class PolicyEngine:
@@ -53,6 +56,8 @@ class PolicyEngine:
             c.startswith("secret:") or c.startswith("network:") or c == "external" for c in coeffect
         ):
             return RiskLevel.HIGH_RISK
+        if _DELEGATE_COEFFECT in coeffect:  # list 元素等值匹配，非子串
+            return RiskLevel.READ
         if any(tok in op_l for tok in _WRITE_TOKENS):
             return RiskLevel.DATA_EDIT
         if any(tok in op_l for tok in _READ_TOKENS):
@@ -72,7 +77,8 @@ class PermissionModeGate:
 
     - read-only：拒绝写 / 编辑 / 删除类操作（``PERMISSION_DENIED``）。
     - interactive：高危走人工审批（默认行为）。
-    - auto-approve：非高危自动放行；高危仍按高危策略走审批。
+    - auto-approve：无人值守全放行 —— 一切可由权限层决定的操作（含高危 / 不可逆写 /
+      出站网络 / 无法归类）直接放行，不进入审批流、不因风险等级阻断。
     - high-risk-block：高危无条件阻断，不进入审批流。
     """
 
@@ -84,6 +90,9 @@ class PermissionModeGate:
         return self._engine.classify(op, target, coeffect)
 
     def authorize(self, op: str, target: str, coeffect: list[str]) -> Decision:
+        if self.mode is PermissionMode.AUTO_APPROVE:
+            # 顶部短路：无人值守全放行，不调用 classify（模式不关心风险等级）。
+            return Decision(True, f"auto-approve 模式全放行: {op}")
         risk = self.classify(op, target, coeffect)
         if self.mode is PermissionMode.READ_ONLY and risk in (
             RiskLevel.DATA_EDIT,

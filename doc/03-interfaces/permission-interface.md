@@ -32,6 +32,13 @@ class Decision:
     approval_required: bool     # 是否需要人工审批
 ```
 
+**分级判定契约（change `0095`）**：`classify` 按**语义词元**判定，不对标识串做**任意子串**匹配 ——
+`_READ_TOKENS` / `_WRITE_TOKENS` / `_HIGH_RISK_TOKENS` 的命中均以完整词元语义为准；命名空间前缀
+（如 `tools.`）偶然含只读词子串（如 `"ls"`）**不构成**只读判定（否则所有 `tools.*` 会误判为 READ，
+deny-by-default 兜底失效）。判定顺序：高危词元 → 高危 coeffect 前缀（`secret:` / `network:` / `external`）
+→ **字面量委托豁免** `agent:delegate`（list 元素**等值**匹配，判 READ）→ 写词元 → 只读词元 → 兜底 HIGH_RISK。
+该豁免 SHALL NOT 放宽为 `agent:` 前缀（其余 `agent:*` 仍按高危及后续规则处理）。
+
 ---
 
 ## 3. ApprovalWorkflow 接口
@@ -154,7 +161,7 @@ class SandboxPolicy:
 class PermissionMode(str, Enum):
     READ_ONLY = "read-only"            # 只读：拒 DATA_EDIT / HIGH_RISK
     INTERACTIVE = "interactive"        # 交互：高危走审批（缺省）
-    AUTO_APPROVE = "auto-approve"      # 自动放行低危，高危仍走审批
+    AUTO_APPROVE = "auto-approve"      # 无人值守全放行（高危 / 不可逆写 / 出站网络 / 不可归类）
     HIGH_RISK_BLOCK = "high-risk-block"  # 高危无条件阻断
 
     @classmethod
@@ -164,10 +171,18 @@ class PermissionModeGate:
     def __init__(self, mode: PermissionMode = PermissionMode.INTERACTIVE) -> None: ...
     def classify(self, op, target, coeffect) -> RiskLevel: ...
     def authorize(self, op, target, coeffect) -> Decision:
-        """按 mode 前置拦截（read-only / high-risk-block 抛 PERMISSION_DENIED），否则委托 PolicyEngine。"""
+        """按 mode 前置判定；AUTO_APPROVE 顶部短路全放行；read-only / high-risk-block
+        抛 PERMISSION_DENIED；其余委托 PolicyEngine。"""
 ```
 
 映射 `config.permission.mode` + CLI `--permission-mode`。
+
+**AUTO_APPROVE 语义（change `0095`，全放行）**：`authorize` **最前**短路返回
+`Decision(True, ...)`，不调用 `classify` —— 对一切可由权限层决定的操作放行（含高危、不可逆写、出站网络、
+无法归类），不返回 `approval_required`、不抛 `PERMISSION_DENIED`。**必须顶部短路而非只改 `PermissionGuard`**：
+`PolicyEngine.authorize` 对 HIGH_RISK 返回 `approval_required=True`，`guard._to_gate` 会翻成 `confirm`
+⇒ 出站网络 / 不可归类动作仍走审批（名实不符）。全放行**仅覆盖权限层**，SHALL NOT 越过与之正交的 guardrail
+拦截（`PermissionGuard` 的 guardrail 分支保留在不可逆写分支**之前**）；read-only 与 high-risk-block 两档逐字不变。
 
 ---
 

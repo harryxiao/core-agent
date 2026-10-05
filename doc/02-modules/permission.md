@@ -40,6 +40,23 @@ PermissionGate（横切）
 
 - 分类依据：操作类型 × 作用对象 × 影响面（爆炸半径）。
 - 分级结果进入每个 effect 的 `risk_level` 字段，供 EffectTracker 与审计复用。
+- **判定按语义词元，非任意子串**（change `0095`）：命名空间前缀偶然含只读词子串（`tools.` 含 `"ls"`）
+  SHALL NOT 判为 `read`（否则所有 `tools.*` 误判只读、deny-by-default 失效）；显式声明的字面量 coeffect
+  `agent:delegate` 判 `read`，且**不放宽为 `agent:` 前缀**。
+
+**模式覆盖（`PermissionModeGate`）**：四档启动开关覆盖上述默认判定（映射 `config.permission.mode`
++ CLI `--permission-mode`）：
+
+| 档 | 覆盖效果 |
+|---|---|
+| `read-only` | 拒 DATA_EDIT / HIGH_RISK（`PERMISSION_DENIED`） |
+| `interactive` | 默认行为：高危走人工审批 |
+| `auto-approve` | **无人值守全放行**：高危 / 不可逆写 / 出站网络 / 不可归类一律放行，不询问不阻断 |
+| `high-risk-block` | 高危无条件阻断，不进入审批流 |
+
+`auto-approve` 的两处落点**缺一不可**（confirm 门有两条独立来源）：`PermissionModeGate.authorize`
+顶部短路（覆盖 HIGH_RISK 的 `approval_required`）+ `PermissionGuard.confirm` 的不可逆写分支感知模式
+（该分支原本与权限档无关）。全放行**仅限权限层**，不越过正交的 guardrail 红线。
 
 ### 3.2 人工审批流
 

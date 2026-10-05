@@ -31,6 +31,7 @@ class PermissionGuard(SafetyGate):
         self._gate = PermissionModeGate(
             mode if isinstance(mode, PermissionMode) else PermissionMode.from_config(mode)
         )
+        self._mode = self._gate.mode  # 模式构造后不变（无 setter），记下供 confirm 分支读取
         self._guardrail = guardrail
 
     def confirm(
@@ -54,7 +55,12 @@ class PermissionGuard(SafetyGate):
             )
             if not self._noul_true(verdict):
                 return GateDecision("deny", f"judgment 守卫拦截: {tool_id}")
-        if self._is_write(coeffects) and not reversible:
+        # auto-approve 档无人值守：不因「不可逆」进 confirm（guardrail 已在上面拦住）
+        if (
+            self._is_write(coeffects)
+            and not reversible
+            and self._mode is not PermissionMode.AUTO_APPROVE
+        ):
             return GateDecision("confirm", f"工具 {tool_id} 不可逆写，需人工审批")
         return GateDecision("auto", decision.reason)
 

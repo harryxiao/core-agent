@@ -872,6 +872,8 @@
     - **同名异物**：`conversations.json`（change `0094` 对话会话注册表）与 `sessions.jsonl`（`HarnessHost` 连接记录，`session-{N}` 另一套 id 空间）—— 已在 `session` / `sessions` help 文案消歧；若将来引入会话生命周期（`remove`/裁剪）须再对齐。
     - **文档漂移**：`doc/02-modules/permission.md:25-26` 列 `RiskClassifier` / `AuditTrail` —— 二者**在 `src/` 内不存在**，真实类为 `PolicyEngine`（`permission/policy.py`）。
     - **文档漂移**：`src/core/git/backend.py:5` docstring 仍写「真实后端未锁选型」，而 change `0090` 已落地 stdlib subprocess 真实后端。
+    - ✅ **auto-approve 名实不符已关闭**（change `0095`／ADR-0090）：`PermissionModeGate.authorize` 增 AUTO_APPROVE 顶部短路（全放行，含高危 / 出站网络 / 不可归类）+ `PermissionGuard.confirm` 不可逆写分支感知权限档（记 `self._mode`）—— 两处缺一不可（confirm 门有两条独立来源）；guardrail 红线保留在不可逆写分支之前（正交、不被全放行越过）；`read-only` / `high-risk-block` 两档逐字不变。**同轮修真 bug**：`PolicyEngine` 只读词表删 `"ls"`（`tools.` 前缀含该子串 ⇒ 所有 `tools.*` 误判 READ、deny-by-default 失效）+ 增字面量 `agent:delegate` 只读规则（**不放宽为 `agent:` 前缀**）⇒ `tools.delegate` 保持实测不变。有意行为变化：`high-risk-block` / `read-only` 下 `code_run` 由「走审批 / confirm」变「无条件阻断 / `PERMISSION_DENIED`」（更正确，无测试破）。
+    - **转留**：跨进程会话注册表一致性协议 / 注册表与 `memory.jsonl` 对账（change `0094` ADR-0089 转出，按需）。
 
 ---
 

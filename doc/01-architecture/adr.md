@@ -1838,6 +1838,46 @@
 
 ---
 
+## ADR-0090：auto-approve = 权限层全放行（gate 顶部短路 + guard 分支感知），非「与 interactive 同判」
+
+- **背景**：真机活 LLM 冒烟暴露 `auto-approve` 权限档**名实不符** —— 与 `interactive` 判定**逐行相同**，
+  非交互入口（`run` / `serve` / `--app`，无 approver）下一切不可逆工具**全被 fail-closed 拒绝**。两因叠加：
+  ① `PermissionModeGate.authorize` 只在 read-only / high-risk-block 改变判定，其余**回落 `PolicyEngine.authorize`**
+  （对 HIGH_RISK 返回 `approval_required=True`）⇒ `guard._to_gate` 翻成 `confirm`；
+  ② `PermissionGuard.confirm` 的 `if self._is_write(coeffects) and not reversible: return confirm`（`guard.py:57`）
+  **完全不看权限档**。顺带真 bug（同类根因「子串匹配」）：`PolicyEngine` 只读词表含 `"ls"`，而工具 id 命名空间前缀
+  `"tools."` 含子串 `"ls"` ⇒ **所有 `tools.*` 被判 READ**（含 `tools.file_write`），deny-by-default 兜底失效。
+- **决策**：
+  ① **`auto-approve` = 权限层全放行**（用户裁决）：`PermissionModeGate.authorize` **最前**短路返回
+     `Decision(True, ...)`，不调用 `classify`（模式不关心风险等级）。**必须顶部短路**而非只改 guard ——
+     否则 HIGH_RISK 的 `approval_required` 仍会经 `_to_gate` 变成 `confirm`（名实不符的另一半）。
+  ② **`PermissionGuard` 记 `self._mode`**（`PermissionModeGate.mode` 公开属性，构造后不变），不可逆写分支加
+     `and self._mode is not PermissionMode.AUTO_APPROVE`。两处**缺一不可**（confirm 门有两条独立来源）；
+     `loop/default.py::_allow` 调的就是注入的同一 `PermissionGuard`，无需改动。
+  ③ **全放行仅限权限层，不越过正交红线**：`PermissionGuard` 的 guardrail 分支保留在不可逆写分支**之前**
+     （缺省装配 `guardrail=None`）⇒ 无人值守缺省即成立，且不牺牲 JEV 红线。**否决**「顶部早期 `return auto`」
+     的激进写法（会连 guardrail 一起绕过）。
+  ④ **模式语义归 gate，不改 `PolicyEngine`**：它是**模式无关**的风险引擎，`PermissionModeGate` 注释即此分层；
+     把模式耦合进分级会污染 deny-by-default 的语义。
+  ⑤ **只读判定改按语义词元**：删 `_READ_TOKENS` 的 `"ls"`（唯一出现在命名空间前缀里的短词元；`cat`/`get` 等
+     不在任何工具 id 前缀中，保留）；新增模块常量 `_DELEGATE_COEFFECT = "agent:delegate"`，在**两段 HIGH_RISK
+     判定之后、WRITE 扫描之前**以 `in coeffect`（list 元素**等值**匹配）判 READ —— 保风险信号优先，
+     且**不放宽为 `agent:` 前缀**（将来任何 `agent:*` 仍 HIGH_RISK）。
+  ⑥ **`core/tools/safety_gate.py` 不改**：它是 `ToolProvider` 的缺省 `confirm_gate`，**运行时不用它**
+     （`runtime` 注入 `PermissionGuard`）；为它加 mode 会新增注入面、与 `PermissionGuard` 职责重复（两份模式语义
+     真源）、且破 `tests/test_tool_use.py` 既有断言。
+- **规格**：MODIFIED「权限模式」（正文重写为全放行 + 「与红线正交」新场景；read-only / interactive /
+  high-risk-block 三场景原样保留作锚）+ MODIFIED「分级权限体系」（词元判定 + 字面量豁免，3 新场景）。
+- **影响**：`PermissionModeGate.authorize` 唯一对外变化在 AUTO_APPROVE 档（其余三档逐字不变）；
+  `PermissionGuard` 增 `self._mode`（纯加法）；`PolicyEngine.classify` 仅 `tools.*` 与 `agent:*` 变化。
+- **有意行为变化（更正确，非回归）**：`high-risk-block` 下 `code_run` 由「走审批」变**无条件阻断**、
+  `read-only` 下由 confirm 变 `PERMISSION_DENIED`（改前 `code_run` 靠 `"ls"` 误判 READ，正解是 HIGH_RISK）；
+  `tools.<未知>` 由 READ 误判变 HIGH_RISK（deny-by-default 正解）。以上无既有测试断言。
+- **明确不做**：给 `SafetyGate` 加权限档；改 `PolicyEngine.authorize`；「auto-approve 顶部 return」；
+  改动 `_WRITE_TOKENS` / `_HIGH_RISK_TOKENS` 其余词元（无证据，避免顺带重构）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1922,3 +1962,4 @@
 | ADR-0087 | 03-interfaces/skillhub-interface.md, 02-modules/skillhub.md |
 | ADR-0088 | 03-interfaces/plugin-registry-interface.md |
 | ADR-0089 | 03-interfaces/ui-interface.md |
+| ADR-0090 | 03-interfaces/permission-interface.md |
