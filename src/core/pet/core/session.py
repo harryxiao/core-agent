@@ -137,6 +137,7 @@ class PetSession:
         result = self._loop.run(self._compose_prompt(goal))
         self._last_trace_id = result.trace_id
         self._wake_count += 1
+        self._notify_owner()
         return result
 
     def suspend(self) -> None:
@@ -205,8 +206,7 @@ class PetSession:
 
     def report(self) -> str:
         """达到反馈周期时向主人汇报后台进展，不阻塞主循环。"""
-        on_cycle = self._wake_count and self._wake_count % self._feedback_period == 0
-        prefix = "定期反馈：" if on_cycle else ""
+        prefix = "定期反馈：" if self._on_feedback_cycle() else ""
         name = self._persona.name if self._persona is not None else self.session_id[:8]
         return f"{prefix}宠物 {name}（状态 {self.state.value}，待办 {len(self._tasks)}）"
 
@@ -218,6 +218,20 @@ class PetSession:
         return "发现一件你可能喜欢的小事，已帮你安排"
 
     # ---- 内部辅助 ----
+
+    def _notify_owner(self) -> None:
+        """唤醒收尾向主人投递反馈（账本 E16）。
+
+        反馈周期命中时把既有 :meth:`report` 产出经 ``notifier`` 入队 —— notify 只入队、
+        不阻塞主循环（异步投递语义由宿主侧 flush 收口）；无 notifier 时静默。
+        """
+        if self._notifier is None or not self._on_feedback_cycle():
+            return
+        self._notifier(self.report())
+
+    def _on_feedback_cycle(self) -> bool:
+        """是否命中反馈周期（反馈节拍单一判据真源）。"""
+        return bool(self._wake_count and self._wake_count % self._feedback_period == 0)
 
     def _require_active(self, op: str) -> None:
         if self.state is not PetSessionState.ACTIVE:

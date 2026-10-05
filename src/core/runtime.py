@@ -10,6 +10,7 @@ Compactor / Guardrail）→ LLMPlanner → PermissionGuard → DefaultLoop，供
 from __future__ import annotations
 
 import os
+import sys
 import warnings
 from collections.abc import Callable
 from contextvars import ContextVar
@@ -179,6 +180,15 @@ def _pet_state_path() -> Path:
     """
     base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
     return base / "pets.json"
+
+
+def _pet_notification_sink(message: str) -> None:
+    """宠物通知缺省投递：写 stderr（主人可见的观测面，不污染 stdout 机读输出）。
+
+    真实通道（IM 网关等）由宿主注入替换；缺省 sink 保证规格「异步投递」在无宿主时亦可达
+    （账本 E16）。
+    """
+    print(f"[pet] {message}", file=sys.stderr)
 
 
 # 子 Agent 委托运行完整子循环（多次 LLM 往返 + 工具轮），远超 ToolDef 默认 30s
@@ -650,7 +660,17 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         pet_loop = cast(LoopPlugin, loop)
         pet_explorer = Explorer()
         pet_safety = SafetyBounds()
-        pet_notifier = AsyncNotifier()
+        pet_notifier = AsyncNotifier(channel=_pet_notification_sink)
+
+        def _pet_notify(message: str) -> None:
+            """生产即投递：唤醒收尾入队后即经宿主节拍 flush（账本 E16）。
+
+            ``AsyncNotifier`` 的「notify 只入队、不阻塞」语义不变；投递点在宠物唤醒收尾
+            （生产者唯一调用点），故两步相邻执行。
+            """
+            pet_notifier.notify(message)
+            pet_notifier.flush()
+
         pet_manager = PetManager(
             _pet_state_path(),
             factory=lambda record: PetSession.restore(
@@ -659,7 +679,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
                 memory=memory,
                 explorer=pet_explorer,
                 safety=pet_safety,
-                notifier=pet_notifier.notify,
+                notifier=_pet_notify,
             ),
         )
         pet_activator = PetActivator(
@@ -668,7 +688,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
             memory=memory,
             explorer=pet_explorer,
             safety=pet_safety,
-            notifier=pet_notifier.notify,
+            notifier=_pet_notify,
         )
 
     # 神兽运行时桥接（0057）：专用路由器（画像不与 coding/research 混）+ 惰性按兽 loop +

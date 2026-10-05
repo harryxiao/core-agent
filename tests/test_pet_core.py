@@ -60,6 +60,35 @@ def test_start_wake_roundtrip() -> None:
     assert "收集今日新闻" in loop.prompts[0]
 
 
+def test_wake_notifies_owner_on_feedback_cycle() -> None:
+    """账本 E16：唤醒收尾把既有 `report()` 产出真的投递给主人（反馈周期命中）。"""
+    sent: list[str] = []
+    session = PetSession(loop=FakeLoop(), notifier=sent.append, feedback_period=1)
+    session.start(_task())
+    session.wake()
+    assert len(sent) == 1
+    assert "宠物" in sent[0]
+
+
+def test_wake_stays_silent_off_feedback_cycle() -> None:
+    """未命中反馈周期不产出（不刷屏）：period=3 时前两次唤醒静默，第三次投递。"""
+    sent: list[str] = []
+    session = PetSession(loop=FakeLoop(), notifier=sent.append, feedback_period=3)
+    session.start(_task())
+    session.wake()
+    session.wake()
+    assert sent == []
+    session.wake()
+    assert len(sent) == 1
+
+
+def test_wake_without_notifier_is_silent() -> None:
+    """兜底不变：无 notifier 时唤醒照常完成且不报错。"""
+    session = PetSession(loop=FakeLoop(), feedback_period=1)
+    session.start(_task())
+    assert session.wake().reply == "ok"
+
+
 def test_duplicate_start_rejected() -> None:
     session = PetSession()
     session.start(_task())

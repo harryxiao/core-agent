@@ -54,6 +54,7 @@ class PetSession:
 > **依赖注入与快照**（change `0053`）：`loop`/记忆/探索/安全/通知依赖由组合根（`build_runtime`）经 `PetActivator` 注入，
 > 生产激活的宠物因此持有 runtime 的真实 loop 与共享记忆后端（偏好落 L2、唤醒走真 loop）。`snapshot()` / `restore(record, **deps)`
 > 支持会话快照与恢复（注册表落盘用）；缺省依赖全 `None` → echo loop / 无记忆兜底，行为不变。
+> **通知接线（change `0079`／ADR-0076，账本 E16）**：通知器此前只注入不投递（`_notifier` 零调用、`AsyncNotifier` 无 channel、`flush()` 零调用方）。现已三环连通 —— 生产者落 `wake()` 收尾（反馈周期命中时投递 `report()` 产出），缺省通道 = stderr 一行（主人可见的观测面），投递点由组合根收成单一可调用体（入队后即 flush）注入；真实 IM 通道仍由宿主注入替换。
 
 ---
 
@@ -139,8 +140,8 @@ class PetActivator:
 | 任务派发 | `dispatch(task)` | 低优先级派发，主循环 busy 时让行，不抢锁 |
 | 周期触发 | `wake()` | 每次唤醒复用 `Loop.run()` 同步薄壳，逐次执行不常驻 |
 | 偏好读写 | `observe()` / `prefer()` | 以 `MemoryEntry.source="user"` 落 L2 facts，不新造记忆层 |
-| 反馈 | `report()` | 达到周期向主人汇报，不阻塞主循环 |
-| 惊喜 | `surprise()` | 基于主人偏好代办/取悦，结果反馈主人 |
+| 反馈 | `report()` | 达到周期向主人汇报，不阻塞主循环；**唤醒收尾经通知器投递**（change `0079`） |
+| 惊喜 | `surprise()` | 基于主人偏好代办/取悦（**通知未接线**，见账本转出项） |
 | 让行退避 | `suspend()` / `backoff()` | 让行复用 orchestration `SUSPENDED`；异常退避为 `BACKOFF` 故障隔离 |
 
 > **驱动归属：「周期触发」由宿主驱动，内核不常驻、不自建调度线程（change `0065`，账本 E17 关闭）**。

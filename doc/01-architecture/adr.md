@@ -1396,6 +1396,43 @@
   产品 `00-product/user-guide.md`（单键读取）；测试 `tests/test_entry.py`；ADR-0067（通路来源）。
 
 ---
+## ADR-0076：pet 通知三环接线（生产者落 `wake()` 收尾 / 投递点由组合根收口 / 缺省 sink 走 stderr）
+
+- **背景**：账本 **E16**。一手核实「比记载严重 —— 通知链路三层全断」：① **生产者**——
+  `PetSession._notifier` 只赋值、全程零调用，`report()`/`surprise()` 亦零调用方（含测试）；
+  ② **通道**——组合根 `AsyncNotifier()` 不传 `channel` ⇒ `flush()` 恒返回 0、队列永不清；
+  ③ **投递点**——`flush()` 全仓零调用方。即 `pet-notify` 是**孤立模块**（单测自证类可用，生产三处皆空）
+  ⇒ 规格「Pet Notification」的「异步投递」未满足。账本自述前置「IM 通道为依赖」经核实**不存在**
+  （`IMGateway` 在 `src/` 零生产装配 + im 规格「分平台接入」要求真实平台 Provider ⇒ C 类真后端）。
+- **决策**：
+  ① **生产者落 `wake()` 收尾**，判据复用既有 `report()` 的反馈周期（抽 `_on_feedback_cycle()` 单一真源）
+  —— 不新造文案与频度策略，只把既有产出真的投出去；`report()` 保持纯格式化契约（不自身发通知）。
+  ② **投递点由组合根收口**：注入面签名**一字不动**（仍是 `notifier: Callable[[str], None]`），
+  组合根把「`notify` 入队 + `flush` 投递」收成单一可调用体 `_pet_notify` 注入
+  `PetManager.factory` 与 `PetActivator`；生产者唯一调用点在 `wake()` 末 ⇒ 两步相邻执行，
+  等价于「唤醒收尾 flush」。`AsyncNotifier` 的「notify 只入队、不阻塞」语义原样保留。
+  ③ **缺省通道 = stderr 一行**（`_pet_notification_sink`，主人可见的观测面、不污染 stdout 机读输出）；
+  真实通道（IM 网关等）由宿主注入替换。
+  ④ **无 spec delta**（规格既有三处明文已覆盖，`skip_specs`，同 change `0070`/`0078`）。
+- **已否决**：让 `report()` 自身发通知（破既有纯格式化契约）；每次唤醒都投递（绕开 `feedback_period`
+  的反馈节拍语义 + 刷屏）；`surprise()` 同拍投递（它是「主动执行」的动作而非报告，无偏好时仍返回
+  「已帮你安排」通用文案，投出即**谎报**）；给 `PetSession` 加第二个注入参数或改注入类型为对象/
+  Protocol（协作者拆参、契约变更、三处注入面变大）；`PetSession` 内直接 `channel(msg)`（绕过
+  `AsyncNotifier` 队列契约）；`Runtime` 加 `pet_notifier` 字段由宿主 flush（当前**无宿主驱动 `wake()`**，
+  该路径今日不可达）；缺省 sink 走 `Tracer`（`TraceEvent` 是 trace 作用域 span 遥测，宠物通知无 trace
+  上下文，硬造 `trace_id` 污染遥测域并使 `replay()` 出现无来源事件）；走 `logging`（全仓 `src/` 零用法）；
+  缺省 `channel=None`（即现状，规格仍未满足）；新增配置项 `pet.notify_channel`（YAGNI，宿主替换是代码级注入）。
+- **后果**：✅ 规格「异步投递」在无宿主时亦可达（一旦 `wake()` 被驱动）；✅ 既有用例零回归
+  （无任何测试向 `PetSession`/`PetActivator` 传 `notifier=`）；✅ 注入面与接口文档签名不变；
+  ⚠️ 缺省 sink 写 stderr，仅反馈周期命中时产出（`feedback_period` 缺省 5）⇒ 不刷屏。
+- **关联**：`pet-mode` spec「Pet Notification」/「Pet Safety Bounds」/「Pet Session Runtime Wiring」
+  （既有条款，**无 spec 改动** ⇒ `skip_specs`）；代码 `src/core/pet/core/session.py`（`wake`/`_notify_owner`）、
+  `src/core/runtime.py`（`_pet_notification_sink`/`_pet_notify`）；接口 `03-interfaces/pet-mode-interface.md`
+  §1/§5；模块 `02-modules/pet.md`；测试 `tests/test_pet_core.py`、`tests/test_pet_wiring.py`。
+- **转出（另立账本项）**：安全越界通知（`SafetyBounds`/`Explorer` 注入但零消费，需安全强制执行路径）；
+  `surprise()`/`MicrotaskRunner` 零调用方；`IMGateway` 零生产装配；无宿主驱动 `wake()`。
+
+---
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1466,3 +1503,4 @@
 | ADR-0073 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 07-mcp-server/mcp-server.md |
 | ADR-0074 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md |
 | ADR-0075 | 03-interfaces/configuration-interface.md, 00-product/user-guide.md |
+| ADR-0076 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |

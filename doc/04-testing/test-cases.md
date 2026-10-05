@@ -306,6 +306,13 @@
 | TC-CONF-07 | configuration/spec.md「功能开关（feature flag）」 | yaml 将某模块写作 `off` / `no` / `0` / 加引号的 `"false"`；以及 `true` / `on` / `yes` / `1` / 原生布尔 | 假值写法**归一为关闭**（不得因 `bool("<非空字符串>")` 为真被当作开启 —— 账本 E20②）；真值写法归一为开；原生布尔行为逐位不变；env 面（`CORE_FEATURES_<模块>`）同口径归一（锚点：`tests/test_feature_flag_faces.py::test_falsy_spellings_disable` / `::test_truthy_spellings_enable` / `::test_native_bool_unchanged` / `::test_env_value_is_normalized`） |
 | TC-CONF-08 | configuration/spec.md「功能开关（feature flag）」 | 某模块 feature flag 取值为 `maybe` / 空串 / 映射（yaml / env / CLI 任一面），以及运行时 `config set features.<模块>=maybe` | 校验失败并**阻断启动**，错误信息含键名与合法取值集合（不静默强转、不退化成缺省）；运行时变更走同一函数、同口径拒绝（锚点：`tests/test_feature_flag_faces.py::test_invalid_value_blocks_startup`（yaml / yaml-空值 / env / cli 四面参数化）/ `::test_apply_change_validates_feature_value`） |
 
+## 25. 宠物模式（TC-PET）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-PET-01 | pet-mode「Pet Notification」 | 反馈周期命中时驱动 `wake()`（`feedback_period` 控制命中），以及未命中周期 / 无 notifier 三种情形 | 命中即经通知器投递 `report()` 产出（含宠物名/状态）；未命中静默（不刷屏）；无 notifier 时唤醒照常完成不报错（缺省兜底行为不变）（锚点：`tests/test_pet_core.py::test_wake_notifies_owner_on_feedback_cycle` / `::test_wake_stays_silent_off_feedback_cycle` / `::test_wake_without_notifier_is_silent`） |
+| TC-PET-02 | pet-mode「Pet Session Runtime Wiring」 | 经组合根装配的 runtime 激活一只宠物，取其注入的通知可调用体并调用 | 通知**真的到达缺省 sink**（stderr 一行 `[pet] …`）—— 三环连通：生产者（`wake()` 收尾）/ 通道（缺省 stderr）/ 投递点（组合根收口 flush）；真实 IM 通道由宿主注入替换（锚点：`tests/test_pet_wiring.py::test_production_pet_notification_reaches_sink`） |
+
 ---
 
 ## 关联

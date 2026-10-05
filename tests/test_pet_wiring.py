@@ -57,6 +57,15 @@ def test_production_pet_preference_lands_in_shared_l2(runtime) -> None:
     assert hits, "偏好应以 source=user 落 runtime 共享 L2"
 
 
+def test_production_pet_notification_reaches_sink(runtime, capsys) -> None:
+    """账本 E16：组合根产出的会话持有的通知可调用体真的投递（缺省 sink = stderr）。"""
+    session = runtime.pet_activator.activate_from_cli("gather", ["今日新闻"])
+    notifier = session._notifier  # noqa: SLF001 — 组合根接线断言
+    assert notifier is not None
+    notifier("测试通知")
+    assert "[pet] 测试通知" in capsys.readouterr().err
+
+
 def test_ui_layer_activate_pet_registers_session(runtime) -> None:
     """`UIAPILayer.activate_pet`（WebUI 自然语言入口）落到同一 PetManager。"""
     api = UIAPILayer(pet_activator=runtime.pet_activator)
