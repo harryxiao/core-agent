@@ -1,6 +1,6 @@
 """内部核心模块的**归因白名单**（evolution）。
 
-`INTERNAL_PLUGIN_IDS` 是仓内 13 个内部核心模块的 `plugin_id` 集合，供 `Proposer` 判定
+`INTERNAL_PLUGIN_IDS` 是仓内 14 个内部核心模块的 `plugin_id` 集合，供 `Proposer` 判定
 「诊断归因到的对象是**架构模块**还是**工具/外部能力**」——命中的候选 SHALL 为架构级
 （`kind="plugin"`、`risk_level="high"`，强制人工审批），否则为技能库级。
 
@@ -30,5 +30,6 @@ INTERNAL_PLUGIN_IDS: frozenset[str] = frozenset(
         "im.gateway",
         "loop.default",
         "memory.store",
+        "notes.store",
     }
 )

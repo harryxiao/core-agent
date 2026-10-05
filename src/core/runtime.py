@@ -59,6 +59,7 @@ from core.memory import (
     batch_embed,
     summarize_with,
 )
+from core.notes import NoteStore
 from core.observability import BufferedExporter, JSONLExporter, Tracer
 from core.orchestration import (
     AgentProfile,
@@ -192,6 +193,39 @@ def _skill_state_path(name: str) -> Path:
     """
     base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
     return base / name
+
+
+def _notes_path() -> Path:
+    """文档化记忆 canonical 目录：$CORE_STATE_DIR（缺省 ~/.core/state）/notes。
+
+    同检查点 / 记忆的状态目录约定；canonical Markdown 文件是**落盘真源** ⇒ 一次写回在后续
+    进程（`notes list/show/search`）可见（见 notes spec「canonical 真相层」）。
+    """
+    base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
+    return base / "notes"
+
+
+def _notes_workflow_skill() -> Skill:
+    """内置循环技能：Consult→Build→Update 纪律载体（由组合根构造，不下沉 notes 包）。
+
+    `notes` 是 L2 文档化真相层，**不向上依赖 L3 skills** ⇒ 技能装配与注入归 L3 组合根。
+    `instructions` 同时承载「先 Consult、后 Update」两段纪律，经既有技能路由注入推理上下文。
+    """
+    return Skill(
+        skill_id="skills.notes.consult_build_update",
+        description="文档化记忆循环：先 Consult 相关笔记、再 Build、再 Update 写回 canonical 文档",
+        task_types=["notes", "documentation", "remember", "决策记录", "研究笔记", "解决过程"],
+        preconditions=[],
+        param_schema={},
+        instructions=(
+            "1) Consult：任务前先读相关 canonical 笔记（NoteStore.consult）与笔记清单；"
+            "2) Build：在既有结论之上执行任务；"
+            "3) Update：任务后把新结论/决策/解决过程覆盖式写回对应主题的 canonical Markdown 文件"
+            "（去重、精炼、保持权威）。"
+        ),
+        version="v1",
+        status="active",
+    )
 
 
 def _pet_state_path() -> Path:
@@ -373,6 +407,16 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         beast_registry = BeastRegistry()
         register_innate_skills(skill_library, beast_registry)
 
+    # 文档化记忆（0106）：canonical Markdown 真相层 + Consult→Build→Update 循环。NoteStore 经
+    # 可插拔 `MarkdownBackend` 落盘（实现既有 `MemoryBackend` Protocol，**不改契约**）；内置循环
+    # 技能由组合根构造并注册（notes 包不向上依赖 L3 skills）。与 RAG 语义召回层并列、互不交叉。
+    note_store = NoteStore(path=_notes_path())
+    skill_library.register(_notes_workflow_skill())
+
+    def _consult_notes(task: str) -> str:
+        """任务前 Consult：确定性读命中笔记 + 清单（loop 不 import notes，组合根注入闭包）。"""
+        return note_store.digest(task)
+
     def _loop_hooks(
         domain: str | None = None,
     ) -> tuple[Callable[[str], list[SkillHint]], TurnObserver]:
@@ -403,6 +447,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
                     skill_iterator.consider(skill)  # 失败轮触发迭代（阈值门在迭代器内）
             surfaced.clear()
             sop_extractor.observe(task, steps, ok=ok)
+            note_store.observe_turn(task, steps, ok=ok)  # 任务后 Update：成功轮覆盖式写回笔记
 
         return hints, on_turn
 
@@ -512,6 +557,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         approver=approver,
         compactor=context_compactor,
         turn_observer=loop_turn,
+        notes_consult=_consult_notes,
         cold_path=cold_path,
         trace_observer=trace_observer,
         middlewares=[constraints_chain.middleware],
@@ -552,6 +598,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
                 approver=approver,
                 compactor=context_compactor,
                 turn_observer=agent_turn,
+                notes_consult=_consult_notes,
                 middlewares=[constraints_chain.middleware],
                 action_observers=[constraints_chain.observe_result],
                 max_rounds=max_rounds,
@@ -587,6 +634,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
                 approver=approver,
                 compactor=context_compactor,
                 turn_observer=beast_turn,
+                notes_consult=_consult_notes,
                 middlewares=[constraints_chain.middleware],
                 action_observers=[constraints_chain.observe_result],
                 max_rounds=max_rounds,

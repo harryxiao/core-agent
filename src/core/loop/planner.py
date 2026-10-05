@@ -140,6 +140,8 @@ class LLMPlanner:
                     "相关事实：\n"
                     + "\n".join(f"- [{f['source']}] {f['content']}" for f in pack.facts)
                 )
+        if ctx.notes.strip():
+            blocks.append("相关笔记：\n" + ctx.notes.strip())
         skills = self._skill_hints(self._task(ctx))
         if skills:
             blocks.append("可用技能：\n" + "\n".join(_format_skill_hint(s) for s in skills))

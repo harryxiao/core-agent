@@ -770,7 +770,10 @@ def test_build_runtime_wires_skill_scorer_with_jev(monkeypatch, tmp_path) -> Non
     planner_router = runtime.loop._planner._skill_router
     assert planner_router("整理会议纪要") == [], "词法不相交 → 无命中"
 
-    runtime.skill_router._scorer = lambda task, skills: {skills[0]["skill_id"]: 0.9}
+    # 桩打分器按 skill_id 点名（不依赖候选次序；库中已有其它常驻技能，change 0106）
+    runtime.skill_router._scorer = lambda task, skills: {
+        s["skill_id"]: 0.9 for s in skills if s["skill_id"] == "skills.data.summarize"
+    }
     hints = planner_router("整理会议纪要")
     assert [h["skill_id"] for h in hints] == ["skills.data.summarize"], "语义兜底 → 技能进 prompt"
 

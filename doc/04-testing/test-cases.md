@@ -365,6 +365,30 @@
 | TC-PLUGIN-02 | plugin-registry「插件来源与安装」（change `0093`） | 以 **market-registry** 来源发现插件：注入 fetcher 正常 / 抛非领域异常（URL 带 `?token=`）/ 抛 `DomainError`；缺省 fetcher 走 `file://` 文档；缺省 fetcher 读非法 JSON | 注入 fetcher ⇒ 取回该 manifest 且 URL 透传；抛异常 ⇒ `SOURCE_NOT_FOUND` 且 **URL query 中的 token 不回显**；抛 `DomainError` ⇒ **原样透传**（不二次包装）；缺省边 ⇒ 真实 `urllib` 路径取回文档；非法文档 ⇒ `SOURCE_NOT_FOUND`（锚点：`tests/test_plugins_sources.py::test_market_registry_uses_injected_fetcher` / `::test_market_registry_failure_normalized_and_no_credential_echo` / `::test_market_registry_domain_error_passes_through` / `::test_market_registry_default_fetcher_fetches_document_offline` / `::test_market_registry_default_fetcher_rejects_invalid_document`） |
 | TC-PLUGIN-03 | plugin-registry「插件来源与安装」（change `0093`） | 以 **mcp-endpoint** 来源发现插件（解析期零网络）；`InstallDispatcher.resolve` 四源分派与 `LOCAL_PATH` 缺文件；CLI `plugin install --source {git-repo, 缺省, ftp}` | mcp-endpoint ⇒ 合成 `{name, url}`（名取端点主机名）、无网络请求；分派 ⇒ 四源各归其解析器、`LOCAL_PATH` 缺文件 ⇒ `SOURCE_NOT_FOUND`；CLI `--source git-repo <本地仓库>` ⇒ 退出码 0 且技能**跨进程落盘可见**；缺省仍为 local-path；非法来源 ⇒ argparse 退出码 2（锚点：`tests/test_plugins_sources.py::test_mcp_endpoint_synthesizes_manifest_without_network` / `::test_dispatcher_routes_all_four_sources` / `::test_dispatcher_local_path_missing_file_raises` / `::test_plugin_install_git_repo_source_persists_skill` / `::test_plugin_install_default_source_is_still_local_path` / `::test_plugin_install_rejects_unknown_source`） |
 
+## 27. 文档化记忆（TC-NOTE）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-NOTE-01 | notes/spec.md「canonical Markdown 真相层与可插拔后端」 | `render_note` → `parse_note` 往返一篇含标题/tags/检索关键词/正文的 note | 字段**全量还原**（标题 / tags / 正文 / Search Queries / updated_at / source），即 canonical 格式自描述、不丢字段（锚点：`tests/test_notes.py::test_render_parse_roundtrip`） |
+| TC-NOTE-02 | 同上「覆盖式更新」 | 同主题连续两次 `put`（不同内容）后读 canonical 文件 | 文件内容为**第二次**的内容；首次内容**不出现**（覆盖式，非两段拼接）（锚点：`::test_backend_put_is_overwrite`） |
+| TC-NOTE-03 | 同上「原子写」 | 桩掉 `os.replace` 抛错后 `put` 新内容 | 抛错且 canonical 文件**逐字**保持旧内容（不出现半截文档）（锚点：`::test_backend_atomic_write_keeps_previous_on_failure`） |
+| TC-NOTE-04 | 同上「文件清单」 | 写入两篇后 `list_index`；再 `get` 命中一篇 / 缺失一篇 | 清单含两篇 id；命中篇 `content` 经同一解析器还原 tags（不丢字段）；缺失篇返回 `None`（锚点：`::test_backend_list_index_and_get_roundtrip`） |
+| TC-NOTE-05 | 同上「关键词命中」 | 关键词只落在头部 `## Search Queries`（正文不含）时 `search` | 命中该 note、且**只**命中它（**不建向量库**，纯词法）（锚点：`::test_backend_search_hits_search_queries`） |
+| TC-NOTE-06 | 同上「中文任务句命中」 | 以无空格任务句「部署流程怎么走」`search` 两篇（其一标题「部署流程」） | 命中「部署流程」篇（CJK 2-gram 切词），无空格不导致空手；另一主题仍可独立按自身关键词命中（锚点：`::test_backend_search_matches_cjk_sentence_query`） |
+| TC-NOTE-07 | 同上 + `slug_topic` | 中英任务文本（含标点 / 全标点）转主题 slug | 保留 CJK 与字母数字、空白标点折为单个 `-`、去首尾；纯标点 ⇒ 空串（调用方据此跳过写盘）（锚点：`::test_slug_topic_keeps_cjk_and_folds_punct`） |
+| TC-NOTE-08 | 「Consult → Build → Update 循环纪律」任务后写回 | `NoteStore.observe_turn(task, steps, ok=True)` | 对应主题 canonical 文件含「解决过程」与新结论（覆盖式）；`ok=False` ⇒ 返回 `None` 且**不写盘**（锚点：`::test_store_observe_turn_writes_canonical`） |
+| TC-NOTE-09 | 同上 任务前注入 | 组合根注入 Consult 钩子（真 `NoteStore.digest`）后跑一轮 loop | 钩子收到**任务文本**；摘要**先于推理**写入 `ctx.notes`（planner 可见）；未注入钩子 ⇒ `ctx.notes` 为空串（不注入笔记块）（锚点：`tests/test_notes_loop.py::test_loop_consult_hook_sees_task_and_feeds_context` / `::test_loop_without_consult_hook_leaves_notes_empty`） |
+| TC-NOTE-10 | 同上「钩子故障不改本轮结局」 | Consult 钩子抛错；以及轮数超限的成功/失败轮 | 抛错 ⇒ 摘要置空 + `notes_consult_failed` 留痕、本轮结果与终止语义**不变**；成功轮 ⇒ 经 `TurnObserver` 写回笔记；失败轮 ⇒ **不写**（锚点：`tests/test_notes_loop.py::test_loop_consult_failure_degrades_and_does_not_change_outcome` / `::test_loop_turn_observer_writes_canonical_note` / `::test_loop_failed_round_does_not_write_note`） |
+| TC-NOTE-11 | 同上 Consult→Build→Update 闭环 | 同一存储：一轮 loop 走完后再次 `digest` 同一任务 | 读到的即上一轮写回的（闭环成立，无需向量库）（锚点：`tests/test_notes_loop.py::test_consult_update_loop_roundtrip_through_loop`） |
+| TC-NOTE-12 | 同上「任务前注入相关笔记」+ 纯词法 | `LLMPlanner` 分别在 `ctx.notes` 非空 / 空两种上下文装配 system prompt | 非空 ⇒ prompt 含「相关笔记：」块与该摘要；空 ⇒ **不含**该块（缺省零行为变化）（锚点：`tests/test_notes_loop.py::test_planner_injects_notes_block_only_when_present`） |
+| TC-NOTE-13 | 同上「循环技能可被路由」 | 经组合根装配后按文档化记忆任务路由技能 | 命中 `skills.notes.consult_build_update`，`instructions` 含 Consult 与 Update 两段纪律（锚点：`tests/test_skills.py` 路由用例 + 组合根装配） |
+| TC-NOTE-14 | 「结构化错误码与既有链路不变」读取不存在 / 显式创建已存在 | `get` 缺失主题；`create` 已存在主题；`ensure` 已存在主题 | 前者 `NOTE_NOT_FOUND`；中者 `TOPIC_EXISTS` 且**既有内容不被覆盖**；后者为幂等 get-or-create、**不报错**（锚点：`tests/test_notes.py::test_store_get_missing_raises` / `::test_store_create_topic_exists_but_ensure_is_idempotent`） |
+| TC-NOTE-15 | 同上 Consult → Update 版本语义 | 同主题先写「旧结论」再覆盖写「新结论」，两次 `consult` | 第二次读到**新结论**且**不含**旧结论（最新即权威）（锚点：`::test_store_consult_update_consult_reads_latest`） |
+| TC-NOTE-16 | 同上「既有记忆链路未改」 | `digest` 输出构成；以及 `git diff` 核对 `plugin_registry` / `memory` / `rag` | digest = 命中笔记节选 + **全量标题清单**（总量 ≤1200 字符，不自动注入正文）；三个既有子系统**零改动**（锚点：`::test_store_digest_carries_hits_and_catalog`；变更期 `git diff --stat src/core/{plugin_registry,memory,rag}` 为空） |
+| TC-NOTE-17 | 同上「循环纪律 + 分层」 | 架构成例扫描 `notes` 包与 `loop` 包的 import 面 | `loop` **不** import `notes`（反向依赖用例含 `notes`）；`notes` 包可导入、有 `__init__.py`（锚点：`tests/test_architecture.py::test_phase3_loop_no_reverse_dependency` / `::test_packages_importable`） |
+| TC-NOTE-18 | 同上 CLI 面 | 跨进程：一进程经 `NoteStore` 写 canonical（含 `observe_turn`），另一进程 `core-agent notes list` / `search <中文任务句>` / `show <id>`；`show` 不存在的 id | 三子命令都在**新进程**里从 canonical Markdown 读到内容（落盘为真源）；中文长句命中；缺失 id ⇒ `NOTE_NOT_FOUND` + 退出码 1（锚点：`tests/test_entry.py` notes 子命令用例 + change 0106 端到端冒烟） |
+| TC-NOTE-19 | notes/spec.md「Consult → Build → Update 循环纪律」+ evolution 归因 | 扫描仓内全部 `plugin_id = "..."` 声明与 `INTERNAL_PLUGIN_IDS` | 逐元素一致（`notes.store` 已登记）—— `notes` 的缺陷归因为**架构级**（`plugin`/`high`）而非技能级，不绕过人工审批（锚点：`tests/test_evolution_attribution.py::test_internal_plugin_ids_match_declared_plugin_ids`） |
+
 ---
 
 ## 关联

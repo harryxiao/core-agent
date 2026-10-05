@@ -52,6 +52,7 @@ from core.mcp import (
     default_endpoint_name,
     mcp_endpoints_path,
 )
+from core.notes import NoteError, NoteStore, render_note
 from core.orchestration import Plan, TaskScheduler, plan_from_dict
 from core.permission import (
     ApprovalChannel,
@@ -138,6 +139,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_session_parser(sub)
     _add_memory_parser(sub)
     _add_rag_parser(sub)
+    _add_notes_parser(sub)
     _add_evolve_parser(sub)
     _add_run_parser(sub)
     _add_task_parser(sub)
@@ -248,6 +250,17 @@ def _add_rag_parser(sub: Any) -> None:
     ask = rag_sub.add_parser("ask", help="检索增强生成（片段注入 → llm-provider）")
     ask.add_argument("query", help="查询语句")
     ask.add_argument("--top-k", type=int, default=5, metavar="N", help="注入片段数")
+
+
+def _add_notes_parser(sub: Any) -> None:
+    notes = sub.add_parser("notes", help="文档化记忆（canonical Markdown 真相层）")
+    notes_sub = notes.add_subparsers(dest="notes_cmd", metavar="<notes-cmd>")
+    notes_sub.add_parser("list", help="列出 canonical 笔记清单")
+    show = notes_sub.add_parser("show", help="打印一篇 canonical 笔记")
+    show.add_argument("note_id", help="笔记（主题）id")
+    search = notes_sub.add_parser("search", help="词法检索（标题 / tags / Search Queries）")
+    search.add_argument("query", help="查询语句")
+    search.add_argument("--top-k", type=int, default=5, metavar="N", help="返回条数")
 
 
 def _add_evolve_parser(sub: Any) -> None:
@@ -1233,6 +1246,57 @@ def _rag_ask(runtime: Any, args: argparse.Namespace) -> int:
     return 0
 
 
+_NOTES_USAGE = "用法: core-agent notes {list|show <note_id>|search <query>}"
+
+
+def _notes_store() -> NoteStore:
+    """canonical 真相层门面：与组合根同源的 canonical 目录（`notes` 走文件、零凭据）。"""
+    return NoteStore(path=_state_path("notes"))
+
+
+def _notes(args: argparse.Namespace) -> int:
+    """文档化记忆操作面：列清单 / 打印一篇 / 词法检索（均只读，不改运行态）。"""
+    handlers = {"list": _notes_list, "show": _notes_show, "search": _notes_search}
+    handler = handlers.get(args.notes_cmd or "")
+    if handler is None:
+        print(_NOTES_USAGE, file=sys.stderr)
+        return 1
+    try:
+        return handler(_notes_store(), args)
+    except NoteError as exc:
+        print(f"notes 错误 [{exc.code.value}]: {exc.message}", file=sys.stderr)
+        return 1
+
+
+def _notes_list(store: NoteStore, _args: argparse.Namespace) -> int:
+    """`notes list`：列出 canonical 笔记清单（id / 标题 / 更新时间）。"""
+    notes = store.list()
+    if not notes:
+        print("（无笔记）")
+        return 0
+    for note in notes:
+        print(f"{note.note_id}\t{note.title or note.note_id}\t{int(note.updated_at)}")
+    return 0
+
+
+def _notes_show(store: NoteStore, args: argparse.Namespace) -> int:
+    """`notes show <note_id>`：打印一篇 canonical 笔记（不存在 ⇒ 退出码非零）。"""
+    print(render_note(store.get(args.note_id)))
+    return 0
+
+
+def _notes_search(store: NoteStore, args: argparse.Namespace) -> int:
+    """`notes search <query>`：词法检索并按命中顺序打印摘要。"""
+    hits = store.search(args.query, top_k=args.top_k)
+    if not hits:
+        print("无命中")
+        return 0
+    for index, note in enumerate(hits, start=1):
+        text = " ".join(note.content.split())
+        print(f"{index}. {note.title or note.note_id}  [{note.note_id}]  {text[:60]}")
+    return 0
+
+
 def _run(args: argparse.Namespace) -> int:
     prompt = _read_prompt(args)
     if prompt is None:
@@ -1601,6 +1665,7 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "session": _session,
     "memory": _memory,
     "rag": _rag,
+    "notes": _notes,
     "evolve": _evolve,
     "run": _run,
     "task": _task,

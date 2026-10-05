@@ -1,6 +1,6 @@
 # core-agent 契约速查表（Contracts Summary）
 
-> 从 `openspec/specs/*/spec.md`（28 个规格）与 `03-interfaces/*.md`（26 个接口）提取。
+> 从 `openspec/specs/*/spec.md`（29 个规格）与 `03-interfaces/*.md`（27 个接口）提取。
 > 用途：跨模块快速检索「能力 / 关键契约 / 接口类与方法 / 错误码」。
 > 来源只读，本表为唯一产物，不修改任何 core-agent 源文件。
 
@@ -26,6 +26,7 @@
 | loop | ✅ | ✅ | 核心执行循环（观察→推理→行动→记忆） | — |
 | mcp | ✅ | ✅ | MCP 集成（client + server 双向） | MCP_CONNECT_FAILED, MCP_PROTOCOL_MISMATCH, MCP_TOOL_NOT_FOUND, PERMISSION_DENIED, REMOTE_IRREVERSIBLE, REMOTE_TIMEOUT |
 | memory | ✅ | ✅ | 记忆系统光谱 L0-L4 | — |
+| notes | ✅ | ✅ | L2 文档化真相层（canonical Markdown + Consult→Build→Update） | NOTE_NOT_FOUND, TOPIC_EXISTS |
 | observability | ✅ | ✅ | 全链路日志 + 指标 + 链路追踪 | EXPORT_FAILED, TELEMETRY_DEGRADED |
 | orchestration | ✅ | ✅ | 任务状态机 / 子任务拆解 / 多 Agent 协同 | DEADLOOP_DETECTED, INVALID_TRANSITION, NO_AGENT_MATCH, PROGRESS_NOT_MET, SUBTASK_VERIFY_FAILED, WAVE_FANOUT_LIMIT |
 | permission | ✅ | ✅ | 分级权限 + 人工审批 + 沙箱隔离 | APPROVAL_EXPIRED, APPROVAL_REQUIRED, APPROVAL_TIMEOUT, PERMISSION_DENIED, SANDBOX_UNAVAILABLE |
@@ -265,3 +266,14 @@
 - **依赖**：`observability-interface`（决策轨迹落盘）、`configuration-interface`（`ConfigSpec`）、`llm-provider-interface`（主 LLM 回退兜底）。
 - **需求**：决策原语路由 / JEV 提供方接入 / 置信度回退 / 决策审计。
 - **里程碑**：M8 决策模型接入。
+
+### 29. notes — 文档化记忆（canonical Markdown 真相层）
+
+- **能力**：canonical Markdown 真相层（一篇一文件、覆盖式更新、原子落盘、可人读可 diff）+ 可插拔后端 + Consult → Build → Update 循环纪律 + CLI `notes list|show|search`。
+- **契约**：canonical 文件**自描述**（H1 + 元数据行 + `## Search Queries` + 正文）且渲染/解析互为逆（不丢字段）；`MarkdownBackend` 实现既有 `MemoryBackend` Protocol（**签名不改**），`put` 覆盖式（同主题二次写 = 第二次内容）+ 先写临时文件再 `os.replace`（原子）；检索**纯词法**（标题 / tags / Search Queries / 正文，CJK 按 2-gram 切词），**不建向量库**；任务前 Consult 命中内容 + 全量标题清单**确定性**注入（≤1200 字符，**不自动全量注入正文**）；成功轮把新结论覆盖式写回对应主题，失败轮不写；两枚钩子由组合根注入、**loop 不 import notes**（架构红线）；**不改** `MemoryStore` / `FileBackend` / RAG 链路，**不向 `plugin_registry` 引入外部插件装载路径**。
+- **接口**：`NoteStore`（Plugin，`plugin_id="notes.store"`）、`MarkdownBackend`（`MemoryBackend` 实现）；数据类型 `NoteEntry`；函数 `render_note`/`parse_note`/`slug_topic`；循环接缝 `NoteStore.digest`（Consult）/ `NoteStore.observe_turn`（Update）；loop 侧 `NotesConsult = Callable[[str], str]` + `LoopContext.notes`。
+- **方法**：`get()`、`create()`、`ensure()`、`update()`、`list()`、`search()`、`consult()`、`digest()`、`observe_turn()`；后端 `get()`/`put()`/`search()`/`list_index()`/`delete()`。
+- **错误码**：`NOTE_NOT_FOUND`、`TOPIC_EXISTS`。
+- **依赖**：`memory-interface`（`MemoryBackend` Protocol / `MemoryEntry` / `IndexEntry`，只实现不修改）、`plugin-registry-interface`（`Plugin` 契约）、`loop-interface`（Consult 钩子 `NotesConsult` + `LoopContext.notes` + 复用 `TurnObserver`）、`llm-provider`（经 `LLMPlanner._system_prompt` 注入「相关笔记」块）。
+- **需求**：canonical Markdown 真相层与可插拔后端 / Consult → Build → Update 循环纪律 / 结构化错误码与既有链路不变。
+- **里程碑**：M9 文档化记忆（change `0106`，ADR-0099）。

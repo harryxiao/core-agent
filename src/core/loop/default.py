@@ -42,6 +42,10 @@ TurnObserver = Callable[[str, list[str], bool], object]
 # loop 不 import evolution（架构红线），生产侧注入组合根闭包（内部调 EvolutionWorker.maybe_run）。
 ColdPath = Callable[[], None]
 
+# 任务前 Consult 钩子：任务文本 → 文档化笔记摘要文本（确定性、纯读）；缺省未注入则不做。
+# loop 不 import notes（架构红线），生产侧注入组合根闭包（内部调 NoteStore.digest）。
+NotesConsult = Callable[[str], str]
+
 # trace 完成回调：本轮遥测记录完毕后按**轮**提交 trace_id（登记一条已完成 trace）；缺省不做。
 # 与冷路径回调**节律不同**（不随维护节拍节流）；loop 不 import evolution（架构红线），
 # 生产侧注入组合根闭包（内部调 EvolutionWorker.on_trace_complete）。
@@ -121,6 +125,7 @@ class DefaultLoop(Plugin):
         approver: Approver | None = None,
         compactor: Compactor | None = None,
         turn_observer: TurnObserver | None = None,
+        notes_consult: NotesConsult | None = None,
         cold_path: ColdPath | None = None,
         trace_observer: TraceObserver | None = None,
         max_rounds: int = 10,
@@ -139,6 +144,7 @@ class DefaultLoop(Plugin):
         self._approver = approver
         self._compactor = compactor
         self._turn_observer = turn_observer
+        self._notes_consult = notes_consult
         self._cold_path = cold_path
         self._trace_observer = trace_observer
         self._max_rounds = max_rounds
@@ -211,6 +217,7 @@ class DefaultLoop(Plugin):
         yield LoopEvent("loop_started", {"trace_id": trace_id})
         self._trace(trace_id, "loop_started", {"trace_id": trace_id})
         ctx = self.perceive(user_input)
+        self._consult_notes(ctx, trace_id)
         limit_reason = ""
         streamed = False  # 本轮循环是否已流式外发 reply_delta（避免终态重复全文）
         while not ctx.done():
@@ -284,6 +291,19 @@ class DefaultLoop(Plugin):
             "loop_finished",
             LoopResult(reply=ctx.reply, trace_id=trace_id, failed=bool(limit_reason)),
         )
+
+    def _consult_notes(self, ctx: LoopContext, trace_id: str) -> None:
+        """任务前 Consult：把注入钩子产出的文档化笔记摘要写入 ``ctx.notes``（缺省不启用）。
+
+        钩子抛错仅降级留痕、置空摘要，**不改变本轮结局**；摘要经 planner 注入推理上下文。
+        """
+        if self._notes_consult is None:
+            return
+        try:
+            ctx.notes = self._notes_consult(_task_text(ctx))
+        except Exception as err:  # noqa: BLE001 — Consult 失败降级，不影响本轮结果
+            ctx.notes = ""
+            self._trace(trace_id, "notes_consult_failed", {"error": str(err)})
 
     def _notify_turn(self, ctx: LoopContext, trace_id: str, *, ok: bool) -> None:
         """收尾钩子：把任务文本 + 行动/结果序列 + 本轮成败交给注入的观察者（缺省不启用）。

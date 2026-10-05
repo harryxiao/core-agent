@@ -42,6 +42,7 @@ class LoopContext:
     reply: str = ""
     rounds: int = 0
     token_used: int = 0
+    notes: str = ""  # 任务前 Consult 摘要（文档化记忆；缺省空 ⇒ 不注入。见 change 0106）
     _done: bool = field(default=False, repr=False)
 
     def done(self) -> bool:

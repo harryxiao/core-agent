@@ -2219,6 +2219,63 @@
 
 ---
 
+## ADR-0099：`notes` 作为 L2 **文档化真相层**（canonical Markdown，不建向量库）；Consult 走 loop 只读钩子、Update 复用既有收尾观察者
+
+- **背景**：三个缺口 —— ①**没有文档化真相层**：记忆中只有 RAG 的**扁平切片**（`MemoryStore` +
+  `FileBackend`，按分数取片段），没有「一篇一主题、可人读可 diff、最新即权威」的载体；
+  ②**没有循环纪律载体**：Consult → Build → Update 无处落地（读了什么、写回哪、谁保证不重不漏）；
+  ③**外部插件装不上**：`PluginRegistry` 是**进程内注册表**，外部「operator-memory」类插件无装载面。
+  ⇒ 决策：做成**第一方能力**（而非等外部插件）。
+- **决策**：
+  ① **新增 L2 能力包 `src/core/notes/`**（models / backend / store / errors），**不并入 `memory`**：
+     真相层与切片层是**两种读法**（前者「按主题读全篇」，后者「按分数取片段」），合并会让
+     `MemoryStore` 背上两套语义。`rag` 仍是检索底座，**本次零改动**。
+  ② **canonical = 单目录 Markdown，一篇一文件**（缺省 `$CORE_STATE_DIR/notes`）：H1 标题 +
+     `- id/- tags/- source/- updated_at` 元数据 + `## Search Queries`（词法关键词）+ `## Notes` 正文。
+     渲染 / 解析互为逆（同一解析器还原全部字段 ⇒ **不丢字段**）。
+     **MVP 不切三分区**（人写区 / 沉淀区 / 归档区在无真实用户前是空壳）。
+  ③ **后端实现既有 `MemoryBackend` Protocol，签名与语义不改**：`put` **覆盖式**（同主题二次写 =
+     第二次内容，不拼接 —— 「最新最权威」是**有意**语义），先写 `*.md.tmp` 再 `os.replace`
+     （**原子**：替换前中断不留半截 canonical 文件）。缺省后端可换（Protocol 注入）⇒ 不绑死文件系统。
+  ④ **检索保持纯词法，不建向量库**：标题 / tags / `## Search Queries` / 正文按
+     `命中词数 ÷ 词数` 打分降序。**中文按 2-gram 切词**（CJK 无词界，整词包含会让「部署流程怎么走」
+     这类**任务句**几乎永不命中 ⇒ 实现期实测后修正），英文与非 CJK 段保持整词包含。
+     切词只在 `MarkdownBackend` 内，**不动 `skills` 的路由口径**。
+  ⑤ **Consult 走 loop 的只读钩子**：`NotesConsult = Callable[[str], str]`（loop 不 import notes ——
+     架构红线，生产侧注入组合根闭包 `NoteStore.digest`）。摘要在**任务前**写入 `LoopContext.notes`
+     （**加法字段**，缺省空串 ⇒ 不注入），由 `LLMPlanner._system_prompt` 渲染为「相关笔记」块。
+     **不自动全量注入正文**：digest = 命中笔记节选（每篇 ≤200 字符）+ 全量**标题清单**，总量
+     ≤1200 字符（token 有界）。钩子抛错**只降级留痕**（`notes_consult_failed`），不改本轮结局。
+  ⑥ **Update 复用既有 `TurnObserver`，不新增第二个收尾钩子**：成功轮的（任务, 行动/结果序列）
+     已经过该钩子 ⇒ 再开一条「笔记写回」回调会得到**两个节律、两处真源**。`NoteStore.observe_turn`
+     把「解决过程」覆盖式写回 `slug_topic(task)` 主题；**失败轮不写**（失败信号仍归技能迭代），
+     空 slug 跳过（不写盘、不报错）。
+  ⑦ **内置循环技能由组合根构造**（`skills.<area>.<name>` 口径的 `skills.notes.consult_build_update`
+     注册进 `SkillLibrary`），**不下沉 `notes` 包** —— 否则 L2 真相层**向上依赖 L3 skills**
+     （已有架构用例固化该红线）。
+  ⑧ **明示不做**：**feature gate**（`notes` 恒装配，不入 `GATABLE_MODULES` —— 真相层不是可选玩法）；
+     `plugin_registry` 纳入内部模块（欠账见 phase-21 §1.4②，本 change 不夹带）；`MemoryStore` /
+     `FileBackend` / `rag` 改动；`operator-memory` 本体；CLI 之外的写入口。
+  ⑨ **连带登记**：`INTERNAL_PLUGIN_IDS` **13 → 14**（+ `notes.store`）—— 该白名单与仓内
+     `plugin_id = "..."` 声明**逐元素一致**（0102 的守护用例）；不对称登记会让 `notes.store` 的
+     缺陷被误归因为「技能级」而绕过人工审批。
+- **影响**：新增 `src/core/notes/`（models / backend / store / errors）；`loop/default.py`
+  （`NotesConsult` 别名 + `_consult_notes` + ctor kwarg）、`loop/protocol.py`（`LoopContext.notes`）、
+  `loop/planner.py`（「相关笔记」块）、`runtime.py`（`_notes_path` / `_notes_workflow_skill` /
+  `note_store` 装配 + 三处 `DefaultLoop` 注入）、`entry.py`（`notes list|show|search`）、
+  `evolution/plugin_ids.py`（+1 id）；测试（`tests/test_notes.py`、`tests/test_notes_loop.py`，
+  `tests/test_architecture.py` 反向依赖集 + `notes`，`tests/test_phase13.py` 桩打分器改为**按 id 点名**）；
+  文档（`03-interfaces/notes-interface.md`、`02-modules/notes.md`、`04-testing/test-cases.md` TC-NOTE-*、
+  `coding-plan/contracts_summary.md`）。
+- **已知局限**：①digest 只保证「命中 + 清单」，**无相关性保证**（词法可负相关）；②`_score`
+  对标题与正文**同权**，长正文易压过标题命中；③覆盖式更新**无历史版本**（回溯交给 git）；
+  ④`observe_turn` 以任务首行 slug 定主题 ⇒ 措辞不同的同一任务会**另起主题**（主题分裂优于
+  覆写他人结论的错合并）；⑤`notes` 未纳入注册表 ⇒ 无 `load/unload` 生命周期语义（同 E31 欠账）。
+- **规格**：ADDED「canonical Markdown 真相层与可插拔后端」「Consult → Build → Update 循环纪律」
+  「结构化错误码与既有链路不变」（notes）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2312,3 +2369,4 @@
 | ADR-0096 | 03-interfaces/observability-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/evolution-interface.md |
 | ADR-0097 | 03-interfaces/rag-interface.md, 02-modules/rag.md |
 | ADR-0098 | 03-interfaces/skillhub-interface.md, 02-modules/skillhub.md |
+| ADR-0099 | 03-interfaces/notes-interface.md, 02-modules/notes.md |

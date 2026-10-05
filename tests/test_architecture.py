@@ -29,6 +29,7 @@ EXPECTED_PACKAGES = {
     "context",  # L2.5 上下文工程
     "tools",  # L1 工具使用
     "memory",  # L2 记忆
+    "notes",  # L2 文档化真相层（canonical Markdown）
     "rag",  # L3 检索底座
     "loop",  # L3 智能体循环
     "skills",  # L3 技能封装
@@ -58,6 +59,7 @@ CAPABILITY_MODULES = {
     "context",
     "tools",
     "memory",
+    "notes",
     "rag",
     "loop",
     "skills",
@@ -283,9 +285,9 @@ def test_phase2_middleware_no_reverse_dependency() -> None:
 
 
 def test_phase3_loop_no_reverse_dependency() -> None:
-    """loop 不得反向依赖 skills/skillhub；context 不得反向依赖 loop。"""
+    """loop 不得反向依赖 skills/skillhub/notes；context 不得反向依赖 loop。"""
     forbidden: dict[str, set[str]] = {
-        "loop": {"skills", "skillhub"},
+        "loop": {"skills", "skillhub", "notes"},
         "context": {"loop"},
     }
     offenders: list[str] = []
