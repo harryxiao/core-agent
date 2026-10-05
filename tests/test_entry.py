@@ -6,8 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.configuration.models import LLMConfig
 from core.deployment import ServeStateStore
-from core.entry import _build_installer, _build_parser, main
+from core.entry import _build_installer, _build_parser, _state_path, main
 from core.loop import LoopEvent
 from core.orchestration import Plan, Subtask, plan_to_dict
 from core.pet.core import (
@@ -19,6 +20,7 @@ from core.pet.core import (
     PetTaskKind,
     WakeOutcome,
 )
+from core.ui import SessionRegistry
 
 # cli-contract-baseline.md §2 顶层命令面（19 子命令 + 无子命令进 REPL）。
 _TOP_LEVEL_COMMANDS = {
@@ -725,3 +727,92 @@ def test_evolve_run_reports_build_failure(
     monkeypatch.setattr("core.entry.build_runtime", _boom)
     assert main(["--config", _write_config(tmp_path), "evolve", "run"]) == 1
     assert "装配失败" in capsys.readouterr().err
+
+
+# ---- 会话注册表（change 0094：CLI 跨进程可见 / 枚举 / 端到端 run） ----
+
+
+class _FixedLoop:
+    """产出固定事件流的 loop 替身（不出网）。"""
+
+    async def astream(self, user_input: str, *, session_id: str = ""):
+        yield LoopEvent("loop_started", {"trace_id": "t1"})
+        yield LoopEvent("loop_finished", {"reply": "pong"})
+
+
+def _patch_fake_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """装配替身 runtime：四入口共用 `_build_ui` 只取 loop/memory/tools/app.llm。"""
+    runtime = SimpleNamespace(
+        loop=_FixedLoop(),
+        memory=None,
+        tools=None,
+        config=None,
+        orchestrator=None,
+        pet_activator=None,
+        pet_manager=None,
+        app=SimpleNamespace(
+            llm=LLMConfig(
+                provider="openai", model="gpt-4o", endpoint="https://x", api_key_ref="${K}"
+            )
+        ),
+    )
+    monkeypatch.setattr("core.entry.build_runtime", lambda *a, **kw: runtime)
+
+
+def test_session_create_writes_shared_registry(capsys: pytest.CaptureFixture[str]) -> None:
+    """`session create` 落共享注册表（非进程内存）⇒ 他进程可读。"""
+    assert main(["session", "create"]) == 0
+    session_id = capsys.readouterr().out.strip()
+
+    assert SessionRegistry(path=_state_path("conversations.json")).exists(session_id)
+
+
+def test_session_list_shows_created(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["session", "create"]) == 0
+    session_id = capsys.readouterr().out.strip()
+
+    assert main(["session", "list"]) == 0
+    assert session_id in capsys.readouterr().out
+
+
+def test_session_list_empty(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["session", "list"]) == 0
+    assert "无对话会话" in capsys.readouterr().out
+
+
+def test_run_sees_cli_created_session_in_other_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """端到端：`session create` 建 id → 另一次 `run --session <id>` 认它（不再 not found）。"""
+    _patch_fake_runtime(monkeypatch)
+    assert main(["session", "create"]) == 0
+    session_id = capsys.readouterr().out.strip()
+
+    rc = main(
+        [
+            "--config",
+            str(tmp_path / "missing.yaml"),
+            "run",
+            "--session",
+            session_id,
+            "--prompt",
+            "hi",
+        ]
+    )
+
+    assert rc == 0
+    assert "[session.created]" in capsys.readouterr().out
+
+
+def test_run_unknown_session_still_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """反例：未登记 id 仍 fail-closed（持久化不放宽校验）。"""
+    _patch_fake_runtime(monkeypatch)
+
+    rc = main(
+        ["--config", str(tmp_path / "missing.yaml"), "run", "--session", "nope", "--prompt", "hi"]
+    )
+
+    assert rc == 1
+    assert "运行失败" in capsys.readouterr().err

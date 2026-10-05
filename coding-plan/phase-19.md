@@ -867,7 +867,11 @@
    ✅ **E12 已关闭**（change `0062`：真子进程 `SIGKILL` 端到端 + **修持久化非原子写入**（tmp + `os.replace`）/ 规格 delta）；另新报 **E19**（durability 文档承诺的持久化故障降级未实现）→ **已由 change `0063` 关闭**（订正模块文档承认现状）。
    ✅ **E21 已关闭**（change `0070`：`entry._pet` 前置判定接入 `ConfigManager.config_value` —— CLI > env > **config.yaml** > 缺省，ConfigSpec 单一真源；缺文件容错；persona 目录同源读取。同型缺陷 `config get` 转出为 **E22**）。✅ **E22 已关闭**（change `0078`／ADR-0075：`entry._config` 的 `get` 分支改用 `ConfigManager.config_value(key)`（与 `pet` 门控同一通路）⇒ 遵循完整优先级链 CLI > env > config.yaml > 缺省；`config get` 输出语义随之修正；`skip_specs`）。
    ✅ **E20② + E23 已关闭**（change `0072`／ADR-0069：feature flag 三面取值同口径 —— 合法集合 `true/false`·`yes/no`·`on/off`·`1/0` + 原生布尔、其余**校验期拒绝不静默强转**；`--feature` 经覆盖层接入优先级链并**真的**支配装配（此前零消费）；**E20① 已由 change `0085` 关闭**（规格先行：顶层段名口径加 `features` 唯一例外 + 组合根注入已知模块名集合、仅告警／ADR-0080）；**新报 E24** —— env 前缀实现/规格复数·单数不一致，改名属对外破坏性变更，待裁决；**已由 change `0080` 关闭**（裁决改规格/文档向实现靠拢：规格/接口/模块文档单数 → 复数，零代码；spec MODIFIED + 补齐 `0072` 丢失正文段）。**E26 全关闭**（change `0086`（surprise 去谎报与上报）+ change `0087`（微任务真实化 + 空闲自治睡眠）+ change `0088`（控制面 `/pet [cmd]`，用户诉求① 收口））、**D4 保持不动不提交**（用户裁决）。
-10. **真机动作**：活 LLM 全回路冒烟（§8 末）。
+10. **真机动作**：活 LLM 全回路冒烟（§8 末）。✅ **已完成**（2026-10-05 真机实测走通 CLI 活 LLM 全回路）。同轮暴露两处能力边界：① **对话会话 id 仅存进程内存**（`session create` → 另进程 `run --session` ⇒ `UI_SESSION_NOT_FOUND`；CLI 建的会话 WebUI 不可见）→ change `0094`／**ADR-0089**；② **`auto-approve` 名实不符**（与 `interactive` 逐行相同、不可逆工具仍 fail-closed）→ change `0095`／**ADR-0090**。
+    **后续行（真机冒烟续报）**：
+    - **同名异物**：`conversations.json`（change `0094` 对话会话注册表）与 `sessions.jsonl`（`HarnessHost` 连接记录，`session-{N}` 另一套 id 空间）—— 已在 `session` / `sessions` help 文案消歧；若将来引入会话生命周期（`remove`/裁剪）须再对齐。
+    - **文档漂移**：`doc/02-modules/permission.md:25-26` 列 `RiskClassifier` / `AuditTrail` —— 二者**在 `src/` 内不存在**，真实类为 `PolicyEngine`（`permission/policy.py`）。
+    - **文档漂移**：`src/core/git/backend.py:5` docstring 仍写「真实后端未锁选型」，而 change `0090` 已落地 stdlib subprocess 真实后端。
 
 ---
 

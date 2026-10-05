@@ -1,4 +1,4 @@
-"""serve 单元测试（对齐契约红线：9 端点 / SSE 流式 / 错误码映射 / 三模复用同一内核）。"""
+"""serve 单元测试（对齐契约红线：10 端点 / SSE 流式 / 错误码映射 / 三模复用同一内核）。"""
 
 from __future__ import annotations
 
@@ -100,3 +100,23 @@ def test_run_unknown_session_sse_error() -> None:
     with client.stream("POST", "/run", json={"session_id": "nope", "user_input": "hi"}) as resp:
         body = "".join(resp.iter_text())
     assert "UI_SESSION_NOT_FOUND" in body
+
+
+def test_sessions_endpoint_lists_created() -> None:
+    """`GET /sessions`（change 0094）：枚举注册表内对话会话。"""
+    _, client = _client()
+    session_id = client.post("/session", json={"mode": "cli"}).json()["session_id"]
+
+    resp = client.get("/sessions")
+
+    assert resp.status_code == status.HTTP_200_OK
+    entries = resp.json()["sessions"]
+    assert [entry["session_id"] for entry in entries] == [session_id]
+    assert entries[0]["mode"] == "cli"
+
+
+def test_sessions_endpoint_empty() -> None:
+    _, client = _client()
+    resp = client.get("/sessions")
+    assert resp.status_code == status.HTTP_200_OK
+    assert resp.json() == {"sessions": []}

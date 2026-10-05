@@ -23,6 +23,7 @@ from core.tools import ToolDef, ToolProvider, ToolResult
 
 from .errors import UiError, UiErrorCode
 from .models import Event
+from .sessions import SessionRegistry
 
 # LoopEvent 类型 → SSE 事件类型（DefaultLoop 产出七类 LoopEvent，spec：异步流式执行）。
 _EVENT_MAP = {
@@ -51,6 +52,7 @@ class UIAPILayer:
         orchestrator: TaskScheduler | None = None,
         pet_activator: PetActivator | None = None,
         pet_control: PetControl | None = None,
+        registry: SessionRegistry | None = None,
     ) -> None:
         self._loop = loop if loop is not None else DefaultLoop()
         self._memory = memory
@@ -63,7 +65,7 @@ class UIAPILayer:
         self._orchestrator = orchestrator
         self._pet_activator = pet_activator
         self._pet_control = pet_control
-        self._sessions: dict[str, str] = {}
+        self._registry = registry if registry is not None else SessionRegistry()
         self._llm_config: LLMConfig | None = None
 
     @property
@@ -74,10 +76,12 @@ class UIAPILayer:
     # ---- 会话与循环 ----
 
     def create_session(self, mode: str) -> str:
-        """新建会话，返回 session_id。"""
-        session_id = uuid.uuid4().hex
-        self._sessions[session_id] = mode
-        return session_id
+        """新建会话，返回 session_id（经注册表登记，落盘注册表则跨进程可见）。"""
+        return self._registry.create(mode)
+
+    def list_sessions(self) -> list[dict[str, object]]:
+        """枚举已登记对话会话（`{session_id, mode, created_at}`）。"""
+        return self._registry.list()
 
     async def run_loop(
         self,
@@ -185,7 +189,7 @@ class UIAPILayer:
     # ---- 内部辅助 ----
 
     def _require_session(self, session_id: str) -> None:
-        if session_id not in self._sessions:
+        if not self._registry.exists(session_id):
             raise UiError(UiErrorCode.UI_SESSION_NOT_FOUND, f"会话 {session_id} 不存在")
 
     def _require_llm_key(self) -> LLMConfig:

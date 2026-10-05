@@ -1801,6 +1801,43 @@
 
 ---
 
+## ADR-0089：对话会话注册表落盘 = `core/ui/sessions.py`（读透 + 写时合并，非「载入一次」）
+
+- **背景**：真机活 LLM 冒烟暴露 —— `UIAPILayer._sessions: dict[str, str]`（`core/ui/api.py`）是**进程内 dict**，
+  `create_session` 生成的 `uuid4().hex` 只在本进程有效。后果：`session create` 建 id → **另起进程**
+  `run --session <id>` ⇒ `UI_SESSION_NOT_FOUND`（已实测）；CLI 建的会话在 WebUI（`serve`）不可见（9 端点无会话枚举）。
+  而**记忆本身已落盘**（`memory.jsonl`，召回 `MemoryStore.read(query)` 查询驱动、不按 session 过滤，
+  跨进程召回实测成立）⇒ 缺的只是「id → 有效」这层注册表的持久化。此项正是 change `0048` 的 Non-goals 明文延后项。
+- **决策**：
+  ① **落 `core/ui/sessions.py`，不入基座**：消费方只有 `UIAPILayer` 与 `entry._session`；`ui` 是接入层顶点包
+     （反向依赖黑名单仅 `{ci_cd, im, git}`），新模块只用 stdlib + `core.persistence`（顶层中性 IO 模块，
+     `skills/library.py` 已有同向先例）⇒ 零架构风险。
+  ② **读透 + 写时合并**（本变更核心）：照抄 `SkillLibrary` 的「ctor `read_state` 载入一次、之后纯内存」会**双失灵** ——
+     长驻 `serve` 进程启动早于 CLI `session create` ⇒ 永远看不到新会话；两进程各持内存副本整体重写 ⇒
+     last-writer-wins 互相抹除。故 `exists` / `list` **每次 `read_state`**、`create` 走 **read → merge → write**。
+     文件仅几十字节，`write_state` 本身是 tmp + `os.replace` 原子写，成本可忽略。
+  ③ **文件名 `conversations.json`**：与 `sessions.jsonl`（`HarnessHost` 连接记录，`session-{N}` 另一套 id 空间）
+     **名与义均不同**，避免同名异物。
+  ④ **`path=None` ⇒ 纯内存**：与 `SkillLibrary` / `persistence` 房型一致；`UIAPILayer()` 无参构造仍得内存注册表
+     ⇒ 既有 `UI_SESSION_NOT_FOUND` 断言与全部既有测试语义**逐条不变**（纯加法、后向兼容）；
+     **只有显式 `registry=SessionRegistry(path=...)` 才落盘**（`conftest.py` 已隔离 `CORE_STATE_DIR`）。
+  ⑤ **单点注入 `entry._build_ui`**：四入口（`_repl` / `_serve` / `_app` / `_run`）**全部**经此装配点，
+     故 CLI 建的会话、`serve` 进程、REPL、`--app` 看到的是**同一文件**。
+  ⑥ **注册表为派生状态**：文件缺失 / 损坏 ⇒ 空注册表启动（不阻断），与 `persistence` 同一降级口径。
+  ⑦ **fail-closed 不变**：持久化**不放宽**校验 —— 未登记 id 仍抛 `UI_SESSION_NOT_FOUND`。
+- **规格**：ADDED「会话注册表持久化与跨入口共享」（3 场景）。
+- **影响**：`UIAPILayer.__init__` 增 1 个 keyword-only 参数（纯加法）；`create_session` / `_require_session` 内部实现替换
+  （**外部契约不变**：仍返回 32 位 hex、仍抛同错误码）；`fastapi_serve.py` 新增 `GET /sessions`（端点 9 → 10）；
+  既有测试缺省装配行为不变 ⇒ **零破坏**；`tests/test_architecture.py` 对 `ui → core.persistence` 无禁名单交集。
+- **已知边界**：**不引入文件锁** —— 会话创建是人工操作、频率极低，两进程在同一毫秒内 read→write 的极端竞态
+  （丢一条）**接受**（WSL 上 flock 语义有坑，且属过度工程）。
+- **明确不做**：`session remove` / 上限裁剪（无消费者；删除牵出「`memory.jsonl` 中该 session 条目怎么办」，
+  属独立议题）；重命名 `sessions` 命令（列 `HarnessHost` 连接记录，是另一套 id 空间，改名会破 CLI 契约基线，
+  仅以 help 文案消歧）。
+- **转出**：跨进程一致性协议 / 注册表与 `memory.jsonl` 的对账 → 后续按需（见账本）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1884,3 +1921,4 @@
 | ADR-0086 | 03-interfaces/ci-cd-interface.md, 02-modules/ci-cd.md |
 | ADR-0087 | 03-interfaces/skillhub-interface.md, 02-modules/skillhub.md |
 | ADR-0088 | 03-interfaces/plugin-registry-interface.md |
+| ADR-0089 | 03-interfaces/ui-interface.md |

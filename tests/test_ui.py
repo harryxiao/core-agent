@@ -11,7 +11,16 @@ from core.loop import LoopEvent
 from core.memory import MemoryEntry
 from core.permission import ApprovalChannel
 from core.pet.core import PetControl, PetManager, PetSession, PetTask, PetTaskKind
-from core.ui import CLIBridge, DesktopBridge, Event, UIAPILayer, UiError, UiErrorCode, WebBridge
+from core.ui import (
+    CLIBridge,
+    DesktopBridge,
+    Event,
+    SessionRegistry,
+    UIAPILayer,
+    UiError,
+    UiErrorCode,
+    WebBridge,
+)
 
 
 class FakeLoop:
@@ -554,3 +563,34 @@ def test_ui_pet_command_without_control_raises() -> None:
     with pytest.raises(UiError) as exc_info:
         UIAPILayer().pet_command("status")
     assert exc_info.value.code is UiErrorCode.UI_PET_UNSET
+
+
+# ---- 会话注册表（change 0094：跨实例共享 / 默认内存 / 枚举） ----
+
+
+def test_shared_registry_session_cross_instance(tmp_path) -> None:
+    """注入同一落盘注册表 ⇒ 另一实例（模拟另一进程）认该会话。"""
+    registry = SessionRegistry(path=tmp_path / "conversations.json")
+    session_id = UIAPILayer(loop=FakeLoop([]), registry=registry).create_session("cli")
+
+    other = UIAPILayer(loop=FakeLoop([]), registry=registry)
+
+    assert other.get_memory(session_id) == {"entries": []}
+
+
+def test_default_registry_is_memory_only() -> None:
+    """缺省装配（无 `registry=`）仍是内存注册表：他实例拒未知会话。"""
+    session_id = UIAPILayer(loop=FakeLoop([])).create_session("cli")
+
+    with pytest.raises(UiError) as exc_info:
+        UIAPILayer(loop=FakeLoop([])).get_memory(session_id)
+    assert exc_info.value.code is UiErrorCode.UI_SESSION_NOT_FOUND
+
+
+def test_list_sessions_reports_created() -> None:
+    """`list_sessions` 暴露注册表条目的标识与模式。"""
+    api = UIAPILayer(loop=FakeLoop([]))
+    session_id = api.create_session("cli")
+
+    assert [entry["session_id"] for entry in api.list_sessions()] == [session_id]
+    assert api.list_sessions()[0]["mode"] == "cli"

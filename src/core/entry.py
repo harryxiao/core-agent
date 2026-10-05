@@ -77,7 +77,7 @@ from core.runtime import GATABLE_MODULES, Runtime, build_runtime
 from core.skillhub import SkillHubClient, SkillHubError
 from core.skills import SkillLibrary
 from core.tools import StubPlugin, ToolProvider
-from core.ui import CLIBridge, DesktopBridge, UIAPILayer, UiError, WebBridge
+from core.ui import CLIBridge, DesktopBridge, SessionRegistry, UIAPILayer, UiError, WebBridge
 from core.ui.repl import format_action_event, format_task_event
 
 _VERSION = "0.1.0"
@@ -121,7 +121,7 @@ def _build_parser() -> argparse.ArgumentParser:
     probe_p.add_argument("--format", choices=["json"], default="json", help="输出格式")
     sub.add_parser("status", help="运行状态概览")
     sub.add_parser("doctor", help="自检诊断")
-    sub.add_parser("sessions", help="枚举托管会话")
+    sub.add_parser("sessions", help="枚举 Harness Host 连接记录（≠ 对话会话，见 session list）")
 
     _add_config_parser(sub)
     _add_mcp_parser(sub)
@@ -212,6 +212,7 @@ def _add_session_parser(sub: Any) -> None:
     session = sub.add_parser("session", help="会话管理")
     sess_sub = session.add_subparsers(dest="session_cmd", metavar="<session-cmd>")
     sess_sub.add_parser("create", help="新建会话（返回 session_id）")
+    sess_sub.add_parser("list", help="枚举对话会话（跨入口共享）")
 
 
 def _add_memory_parser(sub: Any) -> None:
@@ -364,6 +365,8 @@ def _build_ui(args: argparse.Namespace, *, interactive: bool = False) -> UIAPILa
             if runtime.pet_manager is not None
             else None
         ),
+        # 四入口（repl/serve/app/run）共享同一落盘会话注册表 ⇒ CLI ↔ serve 互认会话
+        registry=SessionRegistry(path=_state_path("conversations.json")),
     )
     api.set_llm_config(runtime.app.llm)
     return api
@@ -875,12 +878,20 @@ def _state_path(name: str) -> Path:
 
 
 def _session(args: argparse.Namespace) -> int:
-    if args.session_cmd != "create":
-        print("用法: core-agent session create", file=sys.stderr)
-        return 1
-    session_id = UIAPILayer().create_session(args.profile or "cli")
-    print(session_id)
-    return 0
+    registry = SessionRegistry(path=_state_path("conversations.json"))
+    if args.session_cmd == "create":
+        print(registry.create(args.profile or "cli"))
+        return 0
+    if args.session_cmd == "list":
+        entries = registry.list()
+        if not entries:
+            print("无对话会话")
+            return 0
+        for entry in entries:
+            print(f"{entry['session_id']} ({entry['mode']})")
+        return 0
+    print("用法: core-agent session create | list", file=sys.stderr)
+    return 1
 
 
 def _memory(args: argparse.Namespace) -> int:

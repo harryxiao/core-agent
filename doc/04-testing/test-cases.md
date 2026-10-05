@@ -147,6 +147,7 @@
 | TC-UI-07 | CORE-UI-R4 | 启动 Web 模式，浏览器打开服务地址 | 加载 SPA，实时流式回复（SSE） |
 | TC-UI-08 | CORE-UI-R5 | 安装桌面安装包并启动应用 | 桌面壳自动拉起本地后端，加载同一 SPA 可会话 |
 | TC-UI-09 | CORE-UI-R6 | 同版本 Web/桌面打开同一功能页面 | 界面与交互完全一致 |
+| TC-UI-10 | CORE-UI-R7 | CLI `session create` 建 id → **另一进程** `run --session <id>` | 会话有效（不再 `UI_SESSION_NOT_FOUND`）；`GET /sessions` 三入口枚举一致 |
 
 ## 14. IM 网关（TC-IM）
 
