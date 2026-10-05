@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from core.configuration import ConfigManager
 from core.plugin_registry import PluginInstaller, PluginKind, PluginSource
+from core.plugins import InstallRecord, PluginInstallRegistry, plugin_installs_path
 from core.runtime import build_runtime
 from core.tools import StubPlugin, install_tool, list_tool, uninstall_tool
 
@@ -101,3 +104,41 @@ def test_runtime_installer_uninstalls_cli_tool(monkeypatch, tmp_path) -> None:
 
     runtime.installer.uninstall("cli.echo")
     assert "cli.echo" not in {t.tool_id for t in runtime.tools.active_tools()}
+
+
+# ---- 装配期重建（change 0109 / 账本 E36）----
+
+
+def _seed_install(*manifests: dict[str, object]) -> None:
+    """预置账本记录（等价「上一进程 `plugin install --kind cli` 装过」）。"""
+    registry = PluginInstallRegistry(plugin_installs_path())
+    for manifest in manifests:
+        registry.put(
+            InstallRecord(
+                plugin_id=str(manifest.get("name")),
+                kind=PluginKind.CLI,
+                source=PluginSource.LOCAL_PATH,
+                manifest=manifest,
+            )
+        )
+
+
+def _seeded_runtime(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path / "state"))
+    return build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+
+
+def test_runtime_rebuilds_cli_install_from_ledger(monkeypatch, tmp_path) -> None:
+    """账本记录在装配期经**同一安装管线**重建 ⇒ 重启后 `cli.*` 仍在生产工具面。"""
+    _seed_install({"name": "demo", "command": "echo"})
+    runtime = _seeded_runtime(monkeypatch, tmp_path)
+    assert "cli.demo" in {t.tool_id for t in runtime.tools.active_tools()}
+
+
+def test_runtime_skips_unrebuildable_record(monkeypatch, tmp_path) -> None:
+    """坏记录（cli 缺 command）只告警跳过：其余记录照常重建，装配不阻断。"""
+    _seed_install({"name": "demo", "command": "echo"}, {"name": "broken"})
+    with pytest.warns(UserWarning, match="插件安装记录"):
+        runtime = _seeded_runtime(monkeypatch, tmp_path)
+    assert "cli.demo" in {t.tool_id for t in runtime.tools.active_tools()}

@@ -73,7 +73,7 @@ from core.pet.core import (
 )
 from core.pet.library import load_persona, load_personas
 from core.plugin_registry import DomainError, PluginInstaller, PluginKind, PluginSource
-from core.plugins import InstallDispatcher
+from core.plugins import InstallDispatcher, default_install_store
 from core.rag import RAGError
 from core.runtime import GATABLE_MODULES, Runtime, build_runtime
 from core.skillhub import (
@@ -748,6 +748,9 @@ def _build_installer() -> PluginInstaller:
 
     技能库与组合根**同源**（`$CORE_STATE_DIR/skills.json`，见 `_build_skill_library`）——否则
     `plugin install --kind skill` 装进一次性空库，「已安装」是谎报、跨进程不可见。
+
+    安装账本同理（change 0109 / 账本 E36）：注入 `PluginInstallStore` 后 `register` 落盘、
+    构造期水合既有记录 ⇒ 新进程 `plugin list` / `plugin uninstall` 才认得上一次安装。
     """
     skills = _build_skill_library()
     provider = ToolProvider()
@@ -756,6 +759,7 @@ def _build_installer() -> PluginInstaller:
         source_resolver=dispatcher.resolve,
         installer=dispatcher.install,
         uninstaller=dispatcher.uninstall,
+        store=default_install_store(),
     )
 
 

@@ -1,7 +1,7 @@
 # Core-Agent Coding Plan（编码落地总索引）
 
 > **定位**：这是「架构设计 → 编码实现」开始前的最后一环规划产物，供 Claude Code / 开发 Agent 按序推进编码时使用。
-> 本目录 `coding-plan/` 承载 27 份 Phase 文档（本 README 总索引 + `phase-0.md` ~ `phase-24.md`；含 `phase-2.5.md` / `phase-17.5.md` 两个补丁 Phase，Phase 12 为 DEFERRED 重开预案，Phase 19 为收口后的排期遗漏账本，Phase 20 为 C 类真后端的「代码半」账本，Phase 21 为进化引擎「架构模块维度」归因接线账本，Phase 22 为 12 模块系统级审查缺陷修复账本，Phase 23 为文档化记忆（notes）新 capability 账本，Phase 24 为进化引擎「内部核心插件」接线收尾 + notes 检索质量优化账本（E30 + E31 + E32））。
+> 本目录 `coding-plan/` 承载 29 份 Phase 文档（本 README 总索引 + `phase-0.md` ~ `phase-26.md`；含 `phase-2.5.md` / `phase-17.5.md` 两个补丁 Phase，Phase 12 为 DEFERRED 重开预案，Phase 19 为收口后的排期遗漏账本，Phase 20 为 C 类真后端的「代码半」账本，Phase 21 为进化引擎「架构模块维度」归因接线账本，Phase 22 为 12 模块系统级审查缺陷修复账本，Phase 23 为文档化记忆（notes）新 capability 账本，Phase 24 为进化引擎「内部核心插件」接线收尾 + notes 检索质量优化账本（E30 + E31 + E32），Phase 25 为插件安装链路「工具面闭环」缺口账本（E33 + E34 + E35 + E36），Phase 26 为 beast/pet「专属记忆」接线收尾账本（E37 + E38 + E39））。
 > **规则**：严格按依赖拓扑序推进；每 Phase 完成须 100% 通过门禁三件套；所有 spec/interface 契约以仓库原文为准，速查见契约速查表。
 
 ---
@@ -20,7 +20,7 @@
 
 ---
 
-## 1. 文档清单（Phase 文档 28 份）
+## 1. 文档清单（Phase 文档 29 份）
 
 | 文档 | 内容 | 对应里程碑 |
 |---|---|---|
@@ -53,6 +53,7 @@
 | `phase-23.md` | 新增「文档化记忆（notes）」capability（canonical Markdown 真相层 + Consult→Build→Update 循环，复用 MemoryBackend Protocol / Skill.instructions） | M4 记忆层扩展（RAG 之外的真相近层） |
 | `phase-24.md` | 进化引擎「内部核心插件」接线收尾 + notes 检索质量优化账本（E30 工具级 trace + E31 内部模块注册表生命周期 + E32 notes 检索打分加权） | M4 自进化（plugin/skill 维度收尾） |
 | `phase-25.md` | 插件安装链路「工具面闭环」缺口账本（E33 install 三工具零生产注册 + E34 CLIAdapter 声明不实 + E35 entry 安装链不齐 + E36 工具类安装不落盘） | —（非里程碑，记账） |
+| `phase-26.md` | beast/pet「专属记忆」接线收尾账本（E37 神兽独立记忆命名空间断裂 + E38 神兽记忆封存无实现 + E39 宠物偏好追踪断裂） | —（非里程碑，记账） |
 
 **契约速查**：`contracts_summary.md`（29 capability 的 spec 目标 + interface 核心方法签名 + 模块路径，写代码前先查它）。
 
@@ -91,7 +92,8 @@
 | 22 12 模块系统级审查缺陷修复 | ✅ 完成（P0：change `0103` + ADR-0096；rag P1：change `0104` + ADR-0097；skillhub P1：change `0105` + ADR-0098） | **observability tracer 生命周期断裂+内存泄漏**（P0：`start_trace`/`end_trace` 零生产调用 → JSONL 落盘死路径；`end_trace` 不 pop → `_events` 永久增长）+ **rag 主链路死代码**（P1：仅 `LLMEmbedder` 存活，主链路 7 类零调用无 CLI）+ **skillhub 供给侧三件套死代码**（P1：`SkillPublisher`/`MarketIndex`/`TrustVerifier` 零调用） | M3 真实收口（系统级缺陷修补） | —（不碰 phase-20 已列 E27/B2/C7/C8 与 phase-21 evolution 归因接线；rag/skillhub 可选接线或诚实降级并同步契约） | 依赖 phase-20 / phase-21（去重边界）；3 缺陷证据与行号见 `phase-22.md` §1.1；修复方案见 §2/§3/§4；契约对齐见 §5 |
 | 23 新增「文档化记忆（notes）」capability | ✅ 完成（change `0106` + ADR-0099） | **无文档化真相层**（P1：记忆只有 RAG 扁平片段，无 canonical Markdown 覆盖式更新）+ **无 Consult→Build→Update 循环指令载体**（P1：loop 无任务前/后 Consult/Update 纪律注入）+ **外部插件不可装载**（P0：plugin_registry 内存注册表无外部加载路径，operator-memory 为 TS+npm 仅适配外部 harness） | M4 记忆层扩展（RAG 之外的真相近层） | —（不装 operator-memory 本体；不改现有 RAG memory / MemoryStore / FileBackend；不引入 RAG/embedding 到 notes 层） | 依赖 phase-18（memory 固化）/phase-22（审查）；3 缺口证据见 `phase-23.md` §1.1；复用 MemoryBackend Protocol + Skill.instructions；spec delta ADDED notes 见 §5；**缺口③ 裁决为不修**（第一方 capability，`plugin_registry` 零改动，ADR-0099 §8）；**顺带订正**：`contracts_summary.md` 落第 **29** 节（计划书写 30 有误）、技能 id 取 `skills.notes.consult_build_update`（合既有 `skills.<area>.<name>` 口径）、`INTERNAL_PLUGIN_IDS` 连带 13 → 14（`notes.store`）；偏差全录见归档 `tasks.md` 备注 |
 | 24 进化引擎「内部核心插件」接线收尾 + notes 检索质量优化 | ✅ 完成（change `0107` + ADR-0100；E30 关闭 / E32 关闭 / **E31 改判为「裁决：不纳入」**） | **E30 工具级 trace 接线**（`action_completed` 未 `_trace` → `TraceLogger.log_tool_call` 零生产调用 → `_to_traces` 的 `tool_call` 消费侧无输入，skill 维度产线无证据）+ **E31 内部模块注册表生命周期**（14 内部模块未纳入 `PluginRegistry` → `Diagnoser()` 无参装配 → `plugin_signals` 空 → 世代晋升退化为登记批准）+ **E32 notes 检索打分加权**（`_score` 五字段拼单一 haystack 零权重 → 分区加权 title ×3/tags ×2/search_queries ×2/content ×1） | M4 自进化（plugin/skill 维度收尾） | —（`kind=plugin` 默认 pending、confirm 必审，绝不自动改架构代码；不引入外部插件装载路径，守护 phase-23 缺口③裁决） | 依赖 phase-21（trace 模块归因通道）+ phase-23（`INTERNAL_PLUGIN_IDS` 13→14）；3 缺陷证据与行号见 `phase-24.md` §1；去重边界见 §0（不重复 E27/B2/C7/C8 / observability/rag/skillhub / 缺口③）；**E31 裁决三条依据与重开条件见 ADR-0100 / `phase-24.md` §6**；**顺带订正**「ADR-0054 拒绝空转形态」误引（实为 ADR-0094 决策①） |
-| 25 插件安装链路「工具面闭环」缺口 | ✅ 完成（change `0108` + ADR-0101；E33/E34/E35 关闭 / **E36 仍挂账**（规格先行）） | **E33 install 三工具零生产注册**（`tool-use/spec.md:91` 明文要求，`runtime.py:360-362` 未注册 → 对外能力生产不可达；**连带补 `Runtime.installer` 漏注入的 `uninstaller`**）+ **E34 CLIAdapter 声明不实**（`cli_adapter.py:75` `coeffects=[]` 实为 `subprocess` 真派生 → 确认门不触发 + 默认进 MCP 暴露面 ⇒ 改 `["process:spawn"]`）+ **E35 entry 安装链不齐**（`entry.py:766-776` 跳过 `verify`/`activate` ⇒ 补齐、与 `tools.install` 同链）+ **E36 工具类安装不落盘**（`plugin install --kind cli\|mcp` 进程内即失；规格无条款 ⇒ 未接线/取舍，**规格先行**，未动） | —（非里程碑，记账） | —（不改 `mcp` 判据：空 coeffect 进默认暴露面为规格明文，**已核实不入账**） | 依赖 phase-16（插件安装分发）；4 条证据与行号见 `phase-25.md` §1；**耦合约束见 §0**（接线 E33 会让 E34 变活 ⇒ 二者同批修，本 change 即如此）；**规格中性**（`skip_specs`，三 spec 零改动）；门禁 1248 passed；去重边界见 §0（不重复 E27/B2/C7/C8 / observability/rag/skillhub / 缺口③ / E30·E31·E32） |
+| 25 插件安装链路「工具面闭环」缺口 | ✅ 完成（change `0108` + ADR-0101 闭 E33/E34/E35；**change `0109` + ADR-0102 闭 E36**） | **E33 install 三工具零生产注册**（`tool-use/spec.md:91` 明文要求，`runtime.py:360-362` 未注册 → 对外能力生产不可达；**连带补 `Runtime.installer` 漏注入的 `uninstaller`**）+ **E34 CLIAdapter 声明不实**（`cli_adapter.py:75` `coeffects=[]` 实为 `subprocess` 真派生 → 确认门不触发 + 默认进 MCP 暴露面 ⇒ 改 `["process:spawn"]`）+ **E35 entry 安装链不齐**（`entry.py:766-776` 跳过 `verify`/`activate` ⇒ 补齐、与 `tools.install` 同链）+ **E36 工具类安装不落盘**（change `0109`：**规格先行**补「插件安装持久化」（7 场景）⇒ 账本 `plugin-installs.json` 落盘 + 按 `kind` 路由单一视图（mcp 委派 `mcp-endpoints.json`）+ 装配期重建；实测缺口**比记载更宽**：`list`/`uninstall` 对**所有** kind 跨进程失效） | —（非里程碑，记账） | —（不改 `mcp` 判据：空 coeffect 进默认暴露面为规格明文，**已核实不入账**） | 依赖 phase-16（插件安装分发）；4 条证据与行号见 `phase-25.md` §1；**耦合约束见 §0**（接线 E33 会让 E34 变活 ⇒ 二者同批修，change `0108` 即如此）；`0108` **规格中性**（`skip_specs`，三 spec 零改动）/ `0109` **非中性**（`plugin-registry` ADDED）；门禁 1248 → **1272** passed（`0109` +24）；去重边界见 §0（不重复 E27/B2/C7/C8 / observability/rag/skillhub / 缺口③ / E30·E31·E32） |
+| 26 beast/pet「专属记忆」接线收尾 | 📋 待开工 | **E37 神兽独立记忆命名空间断裂**（`BeastSession.remember` 死代码 + `LoopPlugin.remember` source="loop" 硬编码 + `memory.read` 无 source 过滤 + `handoff` 不传 session_id ⇒ 神兽轨迹混入主记忆污染）+ **E38 神兽记忆封存无实现**（`models.py:20` 仅注释）+ **E39 宠物偏好追踪断裂**（`PetSession.observe` 死代码 + `wake` 不 observe ⇒ source="user" 从未落库） | —（非里程碑，记账） | 依赖 phase-10（beast/pet 落地）+ phase-17（memory session 维度）；3 条证据与行号见 `phase-26.md` §1；**E37/E39 同批修、E38 依赖 E37 的 source 过滤**（耦合见 §0）；**规格中性**（beast-mode/pet-mode spec 已明文，无 delta） |
 
 > **里程碑口径（M0~M10）**：M0 底座就绪（P0）→ M1 能力可调（P1）→ M2 单 Agent 闭环（P3）→ M3 多 Agent 编排（P4）→ M4 自进化（P5）→ M5 可发布产品（P7）→ M6 可启动产品（P9，M5 的入口侧补缺）→ M7 神兽召唤（P10，前台重大任务）→ M8 决策模型接入（P11，judgment/JEV System One）→ M9 系统级闭环（P13，runtime 组合根 + 单 Agent 真闭环）→ M10 进化闭环（P14+P15，冷路径采集 + 长任务编排 + 验证门/评测/结晶）。
 > Phase 2（横切中间件）、Phase 6（组合分发部署）为**贯穿阶段**，不单设里程碑，其成果在 M2/M5 验收中一并体现。

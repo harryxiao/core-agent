@@ -15,7 +15,7 @@
 | E33 | `install_tools.py` 的 install/uninstall/list 三工具**零生产注册** | ✅ **已闭**（change `0108` / ADR-0101：组合根注册三工具 + 与 `Runtime.installer` 同实例 + 补对称 `uninstaller`） | tool-use 的**工具面闭环** | 中（对外能力缺口，规格承诺在生产不可达） | 组合根注册三工具 + 传 `Runtime.installer`（**要改代码，不需改规格**） |
 | E34 | `CLIAdapter.adapt` 声明 `coeffects=[]`，实为 `subprocess` 真派生进程 | ✅ **已闭**（change `0108` / ADR-0101：声明改 `["process:spawn"]`） | tool-use 的**工具面安全**（确认门 + 默认暴露面） | 中 | `cli_adapter.py:75` 一行改 `["process:spawn"]`（**要改代码，不需改规格**） |
 | E35 | `entry._plugin_install` 跳过 `verify`/`activate` 两步 | ✅ **已闭**（change `0108` / ADR-0101：补齐两步、与 `tools.install` 同链） | CLI 安装**链条完整性**（对照 `tools.install` 全链） | 低（今日净效果仅补齐链条） | 补两步（~2 行）；**用户裁决：补** |
-| E36 | `plugin install --kind cli\|mcp` 安装结果**进程内即失**（不落盘） | **未接线/取舍**（规格**无**持久化条款） | 插件安装**持久化** | 低 | 要改**必须先补规格**（形状可照 `mcp-endpoints.json`） |
+| E36 | `plugin install --kind cli\|mcp` 安装结果**进程内即失**（不落盘） | ✅ **已闭**（change `0109` / ADR-0102：规格先行补「插件安装持久化」⇒ 账本 `plugin-installs.json` 落盘 + 按 `kind` 路由单一视图（mcp 委派端点表）+ 装配期重建） | 插件安装**持久化** | 低 | 已按「先补规格」实施（形状照 `mcp-endpoints.json` / ADR-0071） |
 | — | 空 coeffect 工具进 MCP 默认暴露面（`tools.list` 等） | **已核实不入账**（`mcp/spec.md:104/:114` 规格明文） | — | — | **不改代码**；改判据须先改规格 |
 
 > **共同口径**：E33/E34/E35 **同一主题**（插件安装链路的工具面闭环）—— 已按此**同一 change**（`0108` / ADR-0101）交付；E36 **单独立项**且**规格先行**（仍挂账）。四条均不挡核心回路（基础工具面与 M4 自进化已由 phase-16/18/21/24 打通），属**覆盖完整性**收敛。
@@ -188,10 +188,22 @@
 - [x] ③ `cli.*` 工具 `coeffects == ["process:spawn"]`；不进 MCP 默认暴露面。
 - [x] ④ `pet/safety/safety.py:24-25` 的 `tools.install`/`tools.uninstall` 引用不再悬空（有对应已注册工具）。
 - [x] ⑤ E35 **按用户裁决补齐** `verify`/`activate`（与 `tools.install` 同链）。
-- [x] ⑥ E36 **未动代码**（仅登记重开条件：规格先行、单独立项）。
-- [x] ⑦ 未改 `tool-use` / `mcp` / `plugin-registry` 规格（`skip_specs`；本 change 规格中性）。
+- [x] ⑥ E36 **已闭**（change `0109` / ADR-0102：账本落盘 + 按 `kind` 路由单一视图 + 装配期重建；规格 ADDED
+      「插件安装持久化」7 场景）—— **原「E36 未动代码」判据由本 change 取代**，见 §7。
+- [x] ⑦ 未改 `tool-use` / `mcp` / `plugin-registry` 规格（`skip_specs`；**change `0108`** 规格中性）。
 - [x] ⑧ 门禁四件套全绿：`ruff check` / `ruff format --check` / `pyright`（0/0/0）/ `pytest`（1248 passed）。
 - [x] ⑨ `openspec validate --all` 全绿（30 passed / 0 failed）。
+
+**E36 / change `0109` 追加**（原 §2.4 判「规格先行、单独立项」已执行）：
+
+- [x] ⑩ 规格先行：`plugin-registry` **ADDED**「插件安装持久化」（7 场景：跨进程可见 / 装配期重建 / mcp 委派 /
+      卸载对称回退 / 未安装卸载 / 账本损坏降级 / 重建失败不阻断装配）。
+- [x] ⑪ 一口径裁决（用户，2026-10-05）：**mcp 真源 = 委派端点表**（不统一收敛）+ **装配期 = 重建物化**
+      （不「只让 `list` 说得出口」，否则谎报）。
+- [x] ⑫ 端到端（真实子进程）：`plugin install --kind cli` → **新进程** `plugin list` 命中 → `plugin uninstall`
+      成功且账本清空；`plugin install --kind mcp` 落 `mcp-endpoints.json` 而**本账本不含**。
+- [x] ⑬ 门禁四件套全绿：`ruff check` / `ruff format --check` / `pyright`（0/0/0）/ `pytest`（**1272 passed**，
+      较 1248 +24 新例）；`openspec validate --all` 30 passed / 0 failed。
 
 ---
 
@@ -236,4 +248,42 @@
 故同批补 `uninstaller=dispatcher.uninstall`（1 行）。原 §2.1 方案未列此项，此处订正。
 
 **未做（明示）**：E36（`plugin install --kind cli|mcp` 持久化）—— 规格无持久化条款，须**规格先行**、单独立项
-（形状可照 `mcp-endpoints.json` / change `0074`）。
+（形状可照 `mcp-endpoints.json` / change `0074`）。 ⇒ **已由 change `0109` 执行**，见 §7。
+
+---
+
+## 7. 收口（change `0109` / ADR-0102：E36）
+
+**交付**：`doc/openspec/changes/archive/2026-10-05-0109-plugin-install-persistence/` —— **非规格中性**：
+`plugin-registry` **ADDED**「插件安装持久化」（单项 Requirement / 7 场景）。
+
+**一手复核订正（§1.4 记载的缺口范围偏窄）**：改前实测（`/tmp/e36`，真实进程）缺口**不限于 cli/mcp 的物化**：
+
+| 操作（跨进程） | 改前实际 | 证据 |
+|---|---|---|
+| `plugin install --kind skill` | ✅ 写 `skills.json` | 仅**物化**落盘，账本仍空 |
+| `plugin install --kind cli` | ✅ rc 0 但**一个字节都不落盘** | 状态目录只有 `skills.json` |
+| `plugin list` | ❌ 恒「（无已安装资产）」 | `PluginInstaller._assets` 是**进程内字典** |
+| `plugin uninstall <id>` | ❌ 恒 `UNINSTALL_NOT_FOUND` | 同上 |
+
+即 **安装账本整体不落盘** ⇒ `list` / `uninstall` 对**所有** kind 都跨进程失效（skill 只是「物化」侥幸落盘）。
+
+| 面 | 落地 | 证据 |
+|---|---|---|
+| 账本 | `plugins/installs.py`：`plugin-installs.json`（`$CORE_STATE_DIR`，单文件 JSON + `version` + **原子写** + 损坏/残缺 `warn` 降级） | `tests/test_plugin_installs.py`（20 例，含 `::test_interrupted_write_keeps_previous_file`） |
+| 路由 | `PluginInstallStore`：`kind=mcp` → `MCPEndpointRegistry`（委派，`put()` upsert）；其余 → 本账本；`records()` **合并单一视图** | `::test_store_routes_mcp_to_endpoint_registry`（断言本账本**不含**）+ `::test_store_records_merges_both_views` |
+| 写点 | `PluginInstaller(store=…)`：`register` → `put`（**先落盘再入内存**）/ `uninstall` → `remove`（**物化回退成功才清账**）/ 构造期水合 | `::test_installer_register_persists` / `::test_installer_hydrates_from_store` / `::test_installer_uninstall_clears_ledger` |
+| 装配 | `build_runtime` 在端点循环后读账本逐条 `dispatcher.install`，单条失败**只告警跳过** | `tests/test_install_tools.py::test_runtime_rebuilds_cli_install_from_ledger` / `::test_runtime_skips_unrebuildable_record` |
+| 幂等 | `plugins/install.py` `_uninstall_skill` 容忍技能已不在（账本条目可能陈旧 ⇒ 裸 `KeyError` 本 change 后可达） | `::test_uninstall_skill_is_idempotent_when_absent` / `::test_uninstall_cli_tool_is_idempotent` |
+| 端到端 | CLI 三入口**零改动**（经 store 自动一致）——`plugin install --kind cli` 跨进程可见 | `tests/test_entry.py::test_plugin_install_persists_across_processes` / `tests/test_mcp_endpoints.py::test_cli_plugin_install_mcp_delegates_to_endpoints` |
+
+**门禁**：`ruff check` / `ruff format --check` / `pyright`（0 errors, 0 warnings）/ `pytest`（**1272 passed**，
+较此前 1248 +24 新例）四门全绿；`openspec validate --all` 30 passed / 0 failed。
+
+**已知局限（如实登记）**：①`installed()` 读**构造期水合的内存副本** ⇒ 同进程**运行中**别处新装的不可见
+（跨进程可见性的口径是「新进程读盘」，同端点表）；②mcp 类资产的账本身份**即端点名**（`plugin_id` 与 manifest
+`name` 不一时以端点名为准）；③`plugin install --kind mcp` 走的仍是 `_build_installer` 的**裸** `MCPClient`
+（无沙箱策略），而 `mcp add` 用 `host_allowlist` fail-closed 策略 —— 属 **E36 之外的既有面**，本 change 未动，**登记**待议。
+
+**未做（明示）**：**不**把 `mcp-endpoints.json` 并入本账本；**不**改 `mcp add|list|remove` 的 CLI 语义
+（重名仍拒绝、仍先握手再落盘）；**不**新增 capability、**不**改 `PluginInstaller` 既有公开签名（只加可选 `store=`）。

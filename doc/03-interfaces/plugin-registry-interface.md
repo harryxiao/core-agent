@@ -171,13 +171,15 @@ class PluginInstaller:
     def discover(self, source, location, kind) -> InstallableAsset: ...  # 来源不可达 → SOURCE_NOT_FOUND
     def verify(self, asset, signature) -> None: ...                      # 签名非法 → SIGNATURE_INVALID
     def install(self, asset) -> None: ...                                # 失败 → INSTALL_FAILED
-    def register(self, asset, plugin) -> None: ...                       # → REGISTERED
+    def register(self, asset, plugin) -> None: ...                       # → REGISTERED（有 store 则同批落盘）
     def activate(self, plugin_id) -> None: ...                           # load + activate → ACTIVE
     def deactivate(self, plugin_id) -> None: ...                         # → LOADED
-    def uninstall(self, plugin_id) -> None: ...                          # unload + 释放 → 移除
+    def installed(self) -> list[dict[str, str]]: ...                     # 已安装清单（plugin_id/kind/source）
+    def uninstall(self, plugin_id) -> None: ...                          # unload + 释放 + 清账 → 移除
 ```
 
-- `SourceResolver` / `SignatureVerifier` / `Installer` 均可注入，缺省提供「未接入 / 无签名要求 / 无副作用」实现。
+- `SourceResolver` / `SignatureVerifier` / `Installer` / `Uninstaller` 均可注入，缺省提供「未接入 / 无签名要求 /
+  无副作用」实现；`store`（§8.2）亦为可选注入。
 - 签名校验与多源路由语义上提到此统一层，执行实现按 kind 适配（不合并 skillhub/mcp/cli 的执行实现）。
 
 ### 8.1 四源发现契约（执行层 `core/plugins/sources.py`，change `0093`）
@@ -198,6 +200,36 @@ class PluginInstaller:
 - **可达性时机**：`mcp-endpoint` 的端点可达性在 **install 期**由 `MCPClient.add` 判定（与 `mcp add`「先连通验证再落盘」同口径），解析期不探测。
 - **CLI**：`plugin install <asset> --kind K --source S`（`S ∈` 四源，缺省 `local-path`）；`skill install --source` 亦可达市场源
   （见 skillhub 接口文档）。
+
+### 8.2 安装账本与 `InstallStore`（执行层 `core/plugins/installs.py`，change `0109`）
+
+`PluginInstaller` 的**安装账本不落盘**时，`plugin list` / `plugin uninstall` 跨进程恒为空 / `UNINSTALL_NOT_FOUND`
+（CLI 是一次性进程）。持久化钩子以 **Protocol** 声明在 `installable.py`（`plugin_registry` 是 L0 基底、
+**不得** import 上层的 `core.plugins` 实现），由组合根注入执行层实现：
+
+```python
+class InstallStore(Protocol):
+    def records(self) -> dict[str, InstallableAsset]: ...        # 键为 plugin_id；构造期水合的唯一来源
+    def put(self, plugin_id, asset) -> None: ...                 # register 后调用；同 id 覆盖（重装即升级）
+    def remove(self, plugin_id) -> bool: ...                     # uninstall 时调用；返回是否确有该条目
+```
+
+- **注入点**：`PluginInstaller(..., store=...)`。构造期 `records()` → `_hydrate`（进程内账本 `_assets` +
+  `PluginRegistry.register(_HydratedPlugin(...))`，**水合必须登记**，否则走生命周期时 `state` / `unload` 抛
+  「插件未注册」）；`register` **先落盘再入内存**（落盘失败则整体失败、不留半份登记）；`uninstall` **物化回退成功才清账**。
+- **默认实现 `PluginInstallStore`**（按 `kind` 路由的**单一视图**）：
+  `kind=mcp` → `MCPEndpointRegistry`（`mcp-endpoints.json`，委派，不两处记账）；`kind=skill|cli` → 本账本
+  `$CORE_STATE_DIR/plugin-installs.json`。`records()` 合并两处的**并集**，`remove()` 两处都覆盖。
+- **账本形状**：单文件 JSON `{"version": 1, "installs": {<plugin_id>: {plugin_id, kind, source, manifest}}}`，
+  **原子写**（tmp + `os.replace`）；文件缺失 = 正常态（空且不告警）；**损坏 / 条目残缺** → `warnings.warn`
+  **降级跳过**（不静默丢弃、不阻断启动）。与 `mcp-endpoints.json`（ADR-0071）逐条同口径。
+- **装配期重建**：`build_runtime` 在既有 MCP 端点循环**之后**读本账本逐条 `dispatcher.install`（skill → 技能库
+  upsert；cli → 工具面注册），**单条失败只告警跳过**；mcp 归端点循环。使 `plugin list` 的「已安装」与运行时
+  工具面 / 技能库**一致**（不谎报）。
+- **已知局限**：`installed()` 读**构造期水合的内存副本** ⇒ 同进程运行中别处新装的不可见（跨进程可见性的口径是
+  「新进程读盘」）；mcp 类资产的账本身份即**端点名**（`plugin_id` 与 manifest `name` 不一时以端点名为准）。
+- 决策与反例（为何按 kind 委派 / 为何写点收在 `PluginInstaller`）见 **ADR-0102**；行为规格见
+  `openspec/specs/plugin-registry/spec.md`「插件安装持久化」。
 
 ---
 

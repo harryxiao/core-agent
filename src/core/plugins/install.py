@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 from typing import Any, cast
@@ -133,7 +134,9 @@ class InstallDispatcher:
     def _uninstall_skill(self, asset: InstallableAsset) -> None:
         manifest = asset.manifest
         skill_id = str(manifest.get("skill_id") or manifest.get("plugin_id") or "")
-        self._skills.remove(skill_id)
+        # 账本条目可能陈旧（技能已在别处移除）⇒ 卸载须幂等，不抛裸 KeyError（change 0109）。
+        with contextlib.suppress(KeyError):
+            self._skills.remove(skill_id)
 
     def _uninstall_mcp(self, asset: InstallableAsset) -> None:
         name = str(asset.manifest.get("name") or "mcp")

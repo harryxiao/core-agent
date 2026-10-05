@@ -2383,6 +2383,73 @@
 
 ---
 
+## ADR-0102：插件安装账本**落盘** + 按 `kind` 路由的单一视图（E36 收口；`plugin-installs.json`；装配期重建）
+
+- **背景**：`coding-plan/phase-25.md` §1.4 记 **E36**（`plugin install --kind cli|mcp` 的安装结果**进程内即失**），
+  当时判「规格无持久化条款 ⇒ 规格先行、单独立项」；ADR-0101「未做（明示）」条明确挂账。一手复核（`/tmp/e36`，
+  2026-10-05，真实进程）发现缺口**比账本记载更宽**：
+
+  | 操作（跨进程） | 改前实际 | 证据 |
+  |---|---|---|
+  | `plugin install --kind skill` | ✅ 写 `skills.json` | 状态目录出现该文件 |
+  | `plugin install --kind cli` | ✅ rc 0 但**一个字节都不落盘** | 状态目录只有 `skills.json` |
+  | `plugin list` | ❌ 恒「（无已安装资产）」 | 账本 `PluginInstaller._assets` 是**进程内字典** |
+  | `plugin uninstall <id>` | ❌ 恒 `UNINSTALL_NOT_FOUND` | 同上 |
+
+  即缺口不限于 cli/mcp 的**物化**：**安装账本整体不落盘** ⇒ `list` / `uninstall` 对**所有** kind 都跨进程失效
+  （skill 只是「物化」侥幸落进 `skills.json`，账本仍空）。规格侧同步补齐——`plugin-registry` ADDED
+  「插件安装持久化」（7 场景，含 mcp 委派、装配期重建、损坏降级）。
+- **用户裁决（2026-10-05，二选一问答）**：
+  ① **mcp 真源 = 委派**（新账本只记 skill / cli；`kind=mcp` 路由到既有 `mcp-endpoints.json`，`list` 合并两视图），
+  **不**把端点表并入统一账本；② **装配期 = 重建物化**（`build_runtime` 读回账本并经同一安装管线重建），
+  而非「只让 `list` 说得出口」——否则 `list` 说已安装、运行时工具面却没有 = **谎报**（本仓反复钉的诚实口径）。
+- **决策**：
+  ① **账本形状**：新 `$CORE_STATE_DIR/plugin-installs.json`，单文件 JSON + `version` 字段 + **原子写**
+     （tmp + `os.replace`）+ 损坏与残缺条目 `warnings.warn` **降级跳过**（不静默丢弃、不阻断启动），
+     形状逐条对齐 `mcp-endpoints.json`（ADR-0071）。**状态非配置**：由安装动作写入，不进 `ConfigSpec`。
+     **不复用** `core/persistence.read_state/write_state`：它对损坏**静默**降级为 `None`，与本规格「降级**告警**」
+     相悖（同一个「不静默丢弃」的口径）。
+  ② **按 `kind` 路由、不统一收敛**（`PluginInstallStore`）：`kind=mcp` → `MCPEndpointRegistry`，其余 → 本账本；
+     `records()` 合并两处为**单一视图**，`SHALL NOT` 同一资产两处记账。理由：端点表不是「插件账本的分片」，
+     它承载**连接句柄语义**（先 `initialize` 握手再落盘、重名拒绝以护住另一个端点的配置）；统一收敛要把两套
+     语义压成一套，且要重做握手次序——ADR-0071 的取舍保留。
+  ③ **写点收在 `PluginInstaller`**（而非 `InstallDispatcher`）：`register` → `store.put`、`uninstall` →
+     `store.remove`、构造期经 `store.records()` 水合 `_assets`。收益是 **CLI 与运行时（`tools.install`）两条
+     入口自动一致**（两条路径注入同一个 store），不再有「CLI 装了 / Agent 装了 / 只有一个跨进程可见」的分叉。
+     **反例（为何不写在 dispatcher）**：装配期会**重放**账本，`_install_mcp` 若顺带落盘则会撞端点表的重名拒绝
+     ⇒ 每条 mcp 记录都在装配期「安装后落盘失败」被跳过，等于把端点装配成哑的。
+  ④ **装配期只重建本账本**：`build_runtime` 在既有端点循环**之后**读 `PluginInstallRegistry(...).list()` 逐条
+     `dispatcher.install`（skill → 技能库 upsert；cli → 工具面注册），**单条失败只告警跳过**（照端点先例）。
+     mcp 归上面的端点循环 ⇒ 同一资产不两处装配。`list` / `uninstall` 走 store 的**合并视图**：与装配期的双循环
+     **同源不同形**（视图合并、装配分治）。
+  ⑤ **upsert 而非重名拒绝**（账本侧）：安装动作本身就是 `plugin_id` 的权威来源，无「静默覆盖会丢另一个配置」
+     之虞 ⇒ 重装即升级。端点表也补 `put()`（同名覆盖）供委派使用，`add()` 的重名拒绝语义**不变**。
+  ⑥ **卸载幂等 + 顺序**：`_uninstall_skill` 容忍技能已不在（账本条目可能陈旧）——`SkillLibrary.remove` 的裸
+     `KeyError` 在本 change 后**可达**，故同批修；`register` **先落盘再入内存**（落盘失败则整体失败、不留半份登记），
+     `uninstall` **物化回退成功才清账**（失败则下次仍可重试）。
+- **耦合（决策核心理由）**：**依赖方向锁死了水合的形态**。`plugin_registry` 是 L0 组合基底，**不得** import
+  `core.tools`（L1）⇒ ①持久化钩子只能在 `installable.py` 声明为 `InstallStore` **Protocol**（结构型，由组合根注入
+  `plugins.installs` 的实现）；②水合要在 `PluginRegistry` 里**登记**一个插件（否则走生命周期时 `unload` / `state`
+  抛「插件未注册」`NOT_ACTIVE`），而 `StubPlugin` 住在 L1 ⇒ L0 侧自带最小载体 `_HydratedPlugin`（manifest 来自
+  **不可信状态文件**，故三个字段按类型兜底：坏字段降级为默认值，绝不让一条坏记录阻断构造）。
+- **影响**：新增 `src/core/plugins/installs.py`；`src/core/mcp/endpoints.py`（+`put` / +`EndpointRecord.from_manifest`）；
+  `src/core/plugin_registry/installable.py`（+`InstallStore` / +`_HydratedPlugin` / +`store=` 水合与落盘钩子）；
+  `src/core/plugins/install.py`（`_uninstall_skill` 幂等）；`src/core/entry.py`（`_build_installer` 注入 store——
+  `_plugin_list` / `_plugin_uninstall` / `plugin install --kind mcp` **无需改动**，经 store 自动一致）；
+  `src/core/runtime.py`（installer 注入 store + 账本重建循环）。测试：新 `tests/test_plugin_installs.py`（20 例）、
+  `tests/test_entry.py` / `tests/test_mcp_endpoints.py` / `tests/test_install_tools.py` 各追加端到端与装配期用例。
+- **已知局限**：①`installed()` 读**构造期水合的内存副本** ⇒ 同一进程**运行中**被另一进程装的东西不可见（跨进程
+  可见性的口径是「新进程读盘」，同端点表）；若需单进程实时，可在 `installed()` 每次读盘（代价：每次 list 都读盘）。
+  ②mcp 类资产的账本身份**即端点名**（`plugin_id` 与 manifest `name` 不一时以端点名为准）。③`plugin install --kind mcp`
+  走的仍是 `_build_installer` 的**裸** `MCPClient`（无沙箱策略），而 `mcp add` 用 `host_allowlist` 的 fail-closed 策略
+  —— 属 E36 之外的**既有**面，本 change 未动，**登记**待议。
+- **未做（明示）**：**不**把 `mcp-endpoints.json` 并入本账本；**不**改 `mcp add|list|remove` 的 CLI 语义（重名仍拒绝、
+  仍先握手再落盘）；**不**新增 capability、**不**改 `PluginInstaller` 既有公开签名（只加可选 `store=`）。
+- **规格**：**非中性** —— `plugin-registry` **ADDED**「插件安装持久化」（账本落盘 / 按 kind 路由单一视图 /
+  装配期重建 / list·uninstall 真源 / 7 场景）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2479,3 +2546,4 @@
 | ADR-0099 | 03-interfaces/notes-interface.md, 02-modules/notes.md |
 | ADR-0100 | 03-interfaces/observability-interface.md, 03-interfaces/evolution-interface.md, 02-modules/notes.md |
 | ADR-0101 | 03-interfaces/plugin-registry-interface.md, 03-interfaces/tool-use-interface.md, 03-interfaces/mcp-interface.md |
+| ADR-0102 | 03-interfaces/plugin-registry-interface.md, 03-interfaces/mcp-interface.md |

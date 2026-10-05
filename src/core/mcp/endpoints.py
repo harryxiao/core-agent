@@ -77,6 +77,28 @@ class EndpointRecord:
             kind=PluginKind.MCP, source=PluginSource.MCP_ENDPOINT, manifest=self.manifest()
         )
 
+    @classmethod
+    def from_manifest(cls, manifest: dict[str, Any]) -> EndpointRecord:
+        """manifest → 端点记录（``manifest()`` 的逆向，单一解析点）。
+
+        供安装账本按 ``kind`` 路由时复用（change 0109 / ADR-0102）：mcp 类资产的持久化
+        真源即本注册表，manifest 与记录之间的形状换算只此一处。
+        """
+        raw_args = manifest.get("args")
+        transport = manifest.get("transport")
+        command = manifest.get("command")
+        return cls(
+            name=str(manifest.get("name") or ""),
+            source=str(manifest.get("url") or manifest.get("endpoint") or command or ""),
+            transport=str(transport) if transport else None,
+            command=str(command) if command else None,
+            args=(
+                [str(item) for item in cast("list[Any]", raw_args)]
+                if isinstance(raw_args, list)
+                else []
+            ),
+        )
+
     def to_json(self) -> dict[str, Any]:
         return {
             "name": self.name,
@@ -136,6 +158,17 @@ class MCPEndpointRegistry:
                 MCPErrorCode.ENDPOINT_NAME_CONFLICT,
                 f"端点名已存在: {record.name}（先 mcp remove，或用 --name 换名）",
             )
+        records[record.name] = record
+        self._write(records)
+
+    def put(self, record: EndpointRecord) -> None:
+        """登记端点，**同名覆盖**（重装即升级）。
+
+        与 ``add`` 的重名拒绝（静默覆盖会丢另一个端点的配置）不同：本入口供安装账本按
+        ``kind`` 路由（change 0109 / ADR-0102）—— `plugin install --kind mcp` 重装同一
+        端点即升级，无「另一个端点被顶掉」之虞（键就是安装名本身）。
+        """
+        records = self._records()
         records[record.name] = record
         self._write(records)
 

@@ -366,3 +366,29 @@ def test_cli_list_empty_when_nothing_installed(state_dir) -> None:
     result = _cli("mcp", "list", state=state_dir)
     assert result.returncode == 0, result.stderr
     assert "已安装 MCP 端点" in result.stdout  # 表头恒在，无端点时为空表
+
+
+def test_cli_plugin_install_mcp_delegates_to_endpoints(tmp_path, state_dir) -> None:
+    """`plugin install --kind mcp` 的持久化真源是**端点注册表**（与 `mcp add` 同一处）。
+
+    change 0109 / 账本 E36：同一资产**不两处记账**（本账本不记 mcp），但 `plugin list`
+    的合并视图仍显示该端点 —— 且路由按 `kind`（此例来源是 local-path，仍归端点表）。
+    """
+    manifest = tmp_path / "mcp.json"
+    manifest.write_text(
+        json.dumps({"name": "files", "endpoint": _server_source(tmp_path), "transport": "stdio"}),
+        encoding="utf-8",
+    )
+    installed = _cli("plugin", "install", str(manifest), "--kind", "mcp", state=state_dir)
+    assert installed.returncode == 0, installed.stderr
+
+    assert [r.name for r in MCPEndpointRegistry(mcp_endpoints_path()).list()] == ["files"]
+    ledger = pathlib.Path(state_dir) / "plugin-installs.json"
+    assert not ledger.exists() or "files" not in ledger.read_text(encoding="utf-8")
+
+    # 来源经端点注册表口径归一为 mcp-endpoint（真源在端点表，不是本账本）
+    assert "files (mcp, mcp-endpoint)" in _cli("plugin", "list", state=state_dir).stdout
+
+    removed = _cli("plugin", "uninstall", "files", state=state_dir)
+    assert removed.returncode == 0, removed.stderr
+    assert MCPEndpointRegistry(mcp_endpoints_path()).list() == []

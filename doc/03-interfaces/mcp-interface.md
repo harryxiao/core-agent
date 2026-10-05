@@ -163,6 +163,8 @@ class EndpointRecord:
     command: str | None = None
     args: list[str] = field(default_factory=list)
     def manifest(self) -> dict[str, Any]: ...         # 转 _install_mcp 的消费口径（单一解析点）
+    @classmethod
+    def from_manifest(cls, manifest: dict[str, Any]) -> EndpointRecord: ...  # manifest() 的逆向
     def asset(self) -> InstallableAsset: ...          # kind=MCP, source=MCP_ENDPOINT
 
 class MCPEndpointRegistry:
@@ -170,6 +172,7 @@ class MCPEndpointRegistry:
     def list(self) -> list[EndpointRecord]: ...       # 按名排序（读盘即最新，跨进程可见）
     def get(self, name: str) -> EndpointRecord | None: ...
     def add(self, record: EndpointRecord) -> None: ...  # 重名 → MCPError(ENDPOINT_NAME_CONFLICT)
+    def put(self, record: EndpointRecord) -> None: ...  # 同名**覆盖**（重装即升级）
     def remove(self, name: str) -> bool: ...
 ```
 
@@ -183,6 +186,10 @@ class MCPEndpointRegistry:
   命名 `mcp.<端点名>.<工具>`（`handle_id` 取安装名 ⇒ **跨进程稳定**，非随机 id）。
 - **降级口径**：单个端点不可达 **只 `warnings.warn` 跳过**，不阻断装配；注册表损坏 / 条目残缺同样
   告警跳过（不静默丢弃，也不阻断启动）。
+- **`plugin install --kind mcp` 委派于此**（change `0109`）：mcp 类资产的持久化真源**就是本注册表**
+  （`PluginInstallStore` 按 `kind` 路由，用 `put()` 同名覆盖；`from_manifest()` 把安装 manifest 归一为
+  端点记录），`plugin-installs.json` **不记 mcp** ⇒ 同一资产不两处记账。`plugin list` 的合并视图仍显示该端点
+  （来源经本表口径归一为 `mcp-endpoint`）。`mcp add|remove` 的 CLI 语义**不变**（重名仍拒绝、仍先握手再落盘）。
 
 ---
 

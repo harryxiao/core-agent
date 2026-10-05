@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import os
+import pathlib
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -545,6 +550,40 @@ def test_plugin_install_runs_full_lifecycle(
 
     assert main(["plugin", "install", str(manifest), "--kind", "skill"]) == 0
     assert calls == ["verify", "activate"]
+
+
+# ---- CLI 跨进程（真实子进程）----
+
+_SRC = pathlib.Path(__file__).resolve().parents[1] / "src"
+
+
+def _cli(*argv: str) -> subprocess.CompletedProcess[str]:
+    """真实子进程跑 `python -m core.entry`（CORE_STATE_DIR 由 conftest 隔离，子进程继承）。"""
+    env = {**os.environ, "PYTHONPATH": str(_SRC)}
+    return subprocess.run(
+        [sys.executable, "-m", "core.entry", *argv], capture_output=True, text=True, env=env
+    )
+
+
+def test_plugin_install_persists_across_processes(tmp_path) -> None:
+    """CLI 是一次性进程：账本须落盘 —— 新进程 `plugin list` 仍见、`plugin uninstall` 可用。
+
+    change 0109 / 账本 E36：此前 `_assets` 是进程内字典 ⇒ `plugin list` 恒「（无已安装资产）」、
+    `plugin uninstall` 恒 `UNINSTALL_NOT_FOUND`（cli 类更是**一个字节都不落盘**）。
+    """
+    manifest = tmp_path / "cli.json"
+    manifest.write_text(json.dumps({"name": "demo", "command": "echo"}), encoding="utf-8")
+
+    installed = _cli("plugin", "install", str(manifest), "--kind", "cli")
+    assert installed.returncode == 0, installed.stderr
+    assert "已安装 cli 资产" in installed.stdout
+
+    listed = _cli("plugin", "list")
+    assert "demo (cli, local-path)" in listed.stdout
+
+    removed = _cli("plugin", "uninstall", "demo")
+    assert removed.returncode == 0, removed.stderr
+    assert "（无已安装资产）" in _cli("plugin", "list").stdout
 
 
 def test_skill_remove_missing(capsys: pytest.CaptureFixture[str]) -> None:

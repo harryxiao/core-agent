@@ -81,7 +81,12 @@ from core.pet.microtask import MicrotaskRunner
 from core.pet.notify import AsyncNotifier
 from core.pet.safety import SafetyBounds, build_safety_middleware
 from core.plugin_registry import CoeffectResolver, EffectTracker, PluginInstaller
-from core.plugins import InstallDispatcher
+from core.plugins import (
+    InstallDispatcher,
+    PluginInstallRegistry,
+    default_install_store,
+    plugin_installs_path,
+)
 from core.rag import HashEmbedder, LLMEmbedder, RagGenerator, RagService, SqliteVectorStore
 from core.skills import (
     Skill,
@@ -256,7 +261,7 @@ _DELEGATE_TIMEOUT_S = 600.0
 _DELEGATE_DEPTH: ContextVar[int] = ContextVar("delegate_depth", default=0)
 
 
-def build_runtime(  # noqa: PLR0915, PLR0913, C901
+def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     config: ConfigManager,
     *,
     assembler: DynamicAssembler | None = None,
@@ -470,6 +475,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         source_resolver=dispatcher.resolve,
         installer=dispatcher.install,
         uninstaller=dispatcher.uninstall,
+        # 安装账本（change 0109 / 账本 E36）：与 CLI 同一真源 —— `tools.install` 与
+        # `plugin install` 共享跨进程账本，构造期水合既有记录（否则两个入口各说各话）。
+        store=default_install_store(),
     )
     # 插件安装工具接进生产工具面（change 0108 / 账本 E33，规格 tool-use「插件安装工具」）：
     # 须与组合根 installer 同一实例（否则装一次性注册表 = 谎报），注册排在 installer 构造之后。
@@ -483,6 +491,18 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
             dispatcher.install(endpoint_record.asset())
         except Exception as exc:  # noqa: BLE001 — 单端点故障降级，不阻断装配
             warnings.warn(f"MCP 端点不可用，已跳过: {endpoint_record.name}（{exc}）", stacklevel=2)
+    # 插件安装账本（change 0109 / 账本 E36）：`plugin install --kind cli|skill` 的成果落
+    # $CORE_STATE_DIR/plugin-installs.json；装配期读回并经**同一安装管线**重建物化
+    # （cli → 工具面注册；skill → 技能库注册，本为 upsert ⇒ 幂等）。
+    # 只重建**本账本**：mcp 类资产的物化由上面端点循环负责（同一资产不两处装配）。
+    # 单条记录重建失败只告警跳过：坏记录不得让整个系统不可用。
+    for install_record in PluginInstallRegistry(plugin_installs_path()).list():
+        try:
+            dispatcher.install(install_record.asset())
+        except Exception as exc:  # noqa: BLE001 — 单条记录故障降级，不阻断装配
+            warnings.warn(
+                f"插件安装记录不可用，已跳过: {install_record.plugin_id}（{exc}）", stacklevel=2
+            )
 
     # 上下文装配接线（P0）：两级 Core.md 的宪法 → constitution:v1 coeffect、
     # 项目信息 → ContextEngine 上下文。此前 build_runtime 从不传 assembler=，
