@@ -135,6 +135,20 @@ def generate_yaml_defaults(specs=None) -> dict: ...
 `pets.json`）、`loop` 冷路径一并置 `None`、CLI 入口拒绝（stderr 说明 + 退出码 0）。
 feature flag 只管**装配**，不改模块自身的二级启用开关（`features.pet` 缺省开 ≠ `pet.enabled` 开）。
 
+**三面取值同口径 + CLI 面接线**（change `0072`，账本 E20②、E23）：三条通道**全部生效**，取值收敛在
+**单一归一/校验点** `_normalize_features()` —— 接受原生布尔与 `true/false`、`yes/no`、`on/off`、`1/0`
+（大小写不敏感、忽略首尾空白），其余取值（`maybe` / 空串 / 映射）**校验期拒绝并阻断启动**（错误信息含
+键名与合法取值），**SHALL NOT** 经 `bool()` **静默强转**（`bool("off")` 为真，会把「显式关闭」当作开启）。
+归一发生在**构建配置前**（`features` 是结构化段，化为布尔后原文不可追溯 —— 与 `load()` 顶部 `map_to`
+校验同属「构建前阻断」通道），故运行时变更（`config set features.<模块>=...`）走同一函数、同一口径。
+CLI 面 `--feature <模块>[=<布尔>]` 由 `entry._cli_overrides` 收进覆盖层 `features.<模块>`（模块名是
+**开放集合**、归组合根，故不入 `ConfigSpec`），与其他两面共用同一优先级链与同一套取值校验；裸名视为开；
+语法非法（`=false` / `pet=`）在**解析点**即拒（`非法 --feature 取值`）。
+
+> ⚠️ **env 前缀差异（账本 E24，待裁决）**：实现读 `CORE_FEATURES_<模块>`（**复数**，与段名 `features`
+> 一致），而规格、本文件上文与 `02-modules/configuration.md` 字面写 `CORE_FEATURE_<模块>`（单数），
+> `doc/00-product/user-guide.md` 亦写复数。改名属**对外可观测**的破坏性变更，本次不动，单独立项裁决。
+
 ### 2.3 未知配置段：仅告警（change `0064`，账本 E18）
 
 **不再静默**：顶层段名不在**已知段**之内时，`validate_schema` 返回**告警**（含段名、已知段清单与「已收纳进 `extra` 且未做校验」提示），`load()` 经 `warnings.warn` 发出，**不阻断启动**、**不丢弃**该段（仍留在 `extra`）。

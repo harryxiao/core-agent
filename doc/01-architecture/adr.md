@@ -1173,6 +1173,42 @@
   模块 `02-modules/permission.md` §3.3；测试 `tests/test_permission_sandbox_config.py`、
   `doc/04-testing/test-cases.md`（TC-PERM-05/06/07）。
 
+## ADR-0069：功能开关三面接线与取值统一（构建前归一 / 显式取值集合 / 不收进 ConfigSpec）
+
+- **背景**：规格「功能开关（feature flag）」明文列三条输入通道，ADR-0065 亦称其「早已齐备」，但实测
+  **两处不符**（账本 E20②、E23）：① CLI 面 `--feature NAME[=BOOL]` **零消费** —— 只解析进
+  `args.feature`，而 `entry._cli_overrides` 只收 `ConfigSpec` 声明键 ⇒ flag 静默无效；
+  ② 取值被 `bool()` **静默强转** —— yaml 子集解析器只认 `true/false/null/~`，故 `features.beast: off`
+  落地为字符串 ⇒ `bool("off") is True` ⇒ **显式关闭被当成开启**（`"false"`、env `=banana` 同理）。
+- **决策**：
+  ① **取值集合 = 原生布尔 + `true/false`·`yes/no`·`on/off`·`1/0`**（大小写不敏感、忽略首尾空白），
+  其余取值**校验期拒绝并阻断启动**。理由：`off`/`no` 是 YAML 1.1 惯用写法、用户意图**无歧义**，
+  归一而非拒绝（对照 B5 白名单拒绝带 scheme/端口条目 —— 那里是**语义错配**，此处不是）；
+  **已否决**「只收原生布尔」（与环境面/用户直觉不一致，且使 `--feature x=off` 与 yaml `x: off` 行为不同）。
+  ② **归一位于构建前**（`_build_config` / `_merge_patch`，单一函数 `_normalize_features()`）：
+  `features` 是**结构化段**，化为布尔后原文不可追溯 ⇒ 非法取值只有构建前可见 —— 与 `load()` 顶部
+  `validate_map_to` 同属「构建前阻断」通道；`validate_schema` 继续只管**留存于 `extra`** 的校验。
+  **已否决**把 `features` 挪进 `extra`（改结构化段契约）或把原文塞回 `AppConfig`（为校验污染数据模型）。
+  ③ **CLI 面经覆盖层收集，不收进 `ConfigSpec`**：模块名是**开放集合**（`GATABLE_MODULES` 归组合根，
+  配置层不认识模块名 —— ADR-0065 的分层决定）。`_cli_overrides` 产出 `features.<模块>` 覆盖键，
+  `_apply_cli` 按点分路径写入 ⇒ 与 yaml/env 走**同一条**归一/校验路径。裸名按 metavar `NAME[=BOOL]`
+  语义视为开；语法非法（缺名/缺值）在解析点拒（flag 形状错误 ≠ 取值不合法，后者归配置层判定）。
+  ④ **env 面写入原文**（原就地 `value.lower() in (...)` 强转 ⇒ `CORE_FEATURES_X=banana` 静默为假），
+  使「合法取值集合」只有**一处**定义；副作用是非法 env 取值由静默变**阻断启动**。
+- **否决**：拼接纠错提示（`--feature pett=false` 提示 `pet`）—— 无需求，YAGNI。
+- **后果**：✅ 规格的三条通道**真的**三面生效，CLI flag 可支配装配（端到端用例锁住）；✅ yaml
+  `off`/`no`/`"false"`/`0` 由「静默为**开**」变为**关**（即用户本意）；✅ 拼写/取值错误在启动期暴露；
+  ⚠️ 既有原生 `true`/`false` 与 env `=true` 行为**逐位不变**（回归用例锁住）；⚠️ `maybe` 之类由静默
+  变为**阻断启动**（口径收紧，属「不静默兜底」一脉）。
+- **关联**：`configuration` spec「功能开关（feature flag）」（**MODIFIED**）；代码
+  `src/core/configuration/manager.py`（`_FEATURE_TRUE`/`_FEATURE_FALSE` + `_normalize_features` +
+  `_apply_env`/`_build_config`/`_merge_patch`）/ `src/core/entry.py`（`_cli_overrides` + `_parse_feature_flag`）；
+  接口 `03-interfaces/configuration-interface.md` §2.2；模块 `02-modules/configuration.md` §3.3；
+  测试 `tests/test_feature_flag_faces.py`、`doc/04-testing/test-cases.md`（TC-CONF-06/07/08）。
+- **登记后续**：env 前缀 `CORE_FEATURES_`（复数，实现）v.s. `CORE_FEATURE_<模块>`（单数，规格/文档）
+  —— 对外可观测的破坏性重命名，记账 E24 待裁决；`features` 段内**未知模块名**无告警（E20①）——
+  与本条无关，且规格「配置校验与生效」明文限告警于**顶层段名**，补齐须先改规格。
+
 ---
 ## 变更追踪
 
@@ -1237,3 +1273,4 @@
 | ADR-0066 | 03-interfaces/constraints-interface.md, 03-interfaces/configuration-interface.md, 02-modules/constraints.md |
 | ADR-0067 | 03-interfaces/configuration-interface.md |
 | ADR-0068 | 03-interfaces/permission-interface.md, 03-interfaces/configuration-interface.md, 02-modules/permission.md |
+| ADR-0069 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md |

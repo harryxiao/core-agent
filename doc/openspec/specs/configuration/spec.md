@@ -107,6 +107,21 @@
 - **WHEN** 系统启动装配
 - **THEN** 循环 / 记忆 / 工具 / 技能路由等核心面照常装配，系统仍可正常跑一轮
 
+#### Scenario: CLI 面覆盖 yaml 与环境
+- **GIVEN** yaml 将某门控名单内模块设为 `false`（或 env 设为其等价写法）
+- **WHEN** 以 `--feature <模块>=true` 启动（或反之：yaml `true` + `--feature <模块>=false`）
+- **THEN** 以 CLI flag 为准 —— 该模块按其装配/裁剪，证明 CLI 面**真的**参与装配判定
+
+#### Scenario: 常见假值写法归一为关闭
+- **GIVEN** yaml 将某模块写作 `off` / `no` / `0` / 加引号的 `"false"`
+- **WHEN** 系统加载配置
+- **THEN** 该取值归一为**假**（模块不装配）—— 不得因 `bool("<非空字符串>")` 为真而被当作开启
+
+#### Scenario: 非法取值校验期拒绝
+- **GIVEN** 某模块的 feature flag 取值为 `maybe` / 空串 / 映射（yaml / env / CLI 任一面）
+- **WHEN** 配置校验运行
+- **THEN** 校验失败并阻断启动，错误信息指明键名与合法取值集合（不静默强转、不退化成缺省）
+
 ### Requirement: IM 接入配置
 系统 SHALL 支持 IM 接入配置（gateway/账户/ID/密钥），其中密钥经 env/keychain 分级存储，不落 yaml 明文。
 

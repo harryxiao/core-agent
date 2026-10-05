@@ -46,7 +46,7 @@ features:
 ```
 
 - `llm.provider` / `llm.model` / `llm.endpoint` 必选非空；`llm.api_key` 必须是 `${VAR}` 引用（明文直接拒绝启动）。
-- `features.*` 为 feature flag（缺省关闭），可用 `CORE_FEATURES_<NAME>=true` 开启。
+- `features.*` 为 feature flag：**门控名单内模块缺省装配**（未声明即开，change `0067` 口径），显式关闭写 `features.<模块>: false`；另有 env `CORE_FEATURES_<NAME>`、CLI `--feature <NAME>[=false]` 两条通道。取值 `true/false`·`yes/no`·`on/off`·`1/0`（大小写不敏感），其余取值**阻断启动**。
 - 覆盖层：`--llm.provider` / `--llm.model` / `--llm.endpoint` / `--llm.api-key`（CLI），`CORE_LLM_PROVIDER` 等（env）。
 
 单键读取：

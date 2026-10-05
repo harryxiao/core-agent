@@ -168,6 +168,11 @@ _CONFIG_SPECS: list[ConfigSpec] = [
 
 _FEATURE_ENV_PREFIX = "CORE_FEATURES_"
 
+# feature flag 取值集合（三面统一）；大小写不敏感。**不静默强转** —— 集合外取值校验期拒绝
+# （`bool("off") is True` 会把 yaml 的「显式关闭」静默当作开启，故必须显式解析）。
+_FEATURE_TRUE: frozenset[str] = frozenset({"true", "yes", "on", "1"})
+_FEATURE_FALSE: frozenset[str] = frozenset({"false", "no", "off", "0"})
+
 _BOOL_NULL: dict[str, Any] = {"true": True, "false": False, "null": None, "~": None}
 
 
@@ -433,7 +438,7 @@ class ConfigManager:
         for env_key, value in self._environ.items():
             if env_key.startswith(_FEATURE_ENV_PREFIX):
                 name = env_key[len(_FEATURE_ENV_PREFIX) :].lower()
-                raw.setdefault("features", {})[name] = value.lower() in ("true", "1", "yes")
+                raw.setdefault("features", {})[name] = value  # 原文，交由 _normalize_features 归一
         return raw
 
     def _apply_cli(self, merged: dict[str, Any]) -> dict[str, Any]:
@@ -452,7 +457,7 @@ class ConfigManager:
             embedding_model=str(llm_raw.get("embedding_model", "")),
         )
         features_raw = cast(dict[str, Any], merged.get("features") or {})
-        features = {str(k): bool(v) for k, v in features_raw.items()}
+        features = _normalize_features(features_raw)
         im = None
         im_raw = cast(dict[str, Any], merged.get("im") or {})
         if im_raw:
@@ -557,6 +562,41 @@ def _sandbox_errors(perm: dict[str, Any]) -> list[str]:
     ]
 
 
+def _normalize_features(raw: Any) -> dict[str, bool]:
+    """feature flag 段取值归一：三面（yaml / env / CLI）统一取值集合 → 布尔。
+
+    **为什么在构建前归一**（而非 `validate_schema`）：`features` 是**结构化段**，
+    取值在 `_build_config` 即被化为布尔，原文不可追溯 —— 与 `load()` 顶部
+    `validate_map_to` 同属「构建前阻断」通道（校验期拒绝，**不静默兜底**）。
+
+    接受原生布尔与常见别名（`true/false`、`yes/no`、`on/off`、`1/0`，大小写不敏感）；
+    其余取值（如 `maybe`、空串、映射）在**校验期拒绝并阻断启动**，错误信息含键名与合法取值。
+    """
+    if not isinstance(raw, dict):
+        raise ConfigurationError(  # noqa: TRY003
+            f"非法功能开关取值: features={raw!r}（features 段须为 `模块名: 布尔` 键值对）"
+        )
+    normalized: dict[str, bool] = {}
+    for key, value in cast(dict[str, Any], raw).items():
+        if isinstance(value, bool):
+            normalized[str(key)] = value
+            continue
+        if isinstance(value, int):  # yaml 标量 `1` / `0`（``_parse_scalar`` 归一为 int）
+            text = str(value)
+        elif isinstance(value, str):
+            text = value.strip().lower()
+        else:
+            text = ""
+        if text in _FEATURE_TRUE or text in _FEATURE_FALSE:
+            normalized[str(key)] = text in _FEATURE_TRUE
+            continue
+        raise ConfigurationError(  # noqa: TRY003
+            f"非法功能开关取值: features.{key}={value!r}"
+            "（可选 true/false·yes/no·on/off·1/0，大小写不敏感）"
+        )
+    return normalized
+
+
 def _as_number(value: Any) -> float | None:
     """数值解析：``int``/``float`` 直通，字符串按数值解析；``bool`` 与非数值 → None。"""
     if isinstance(value, bool):
@@ -615,7 +655,7 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
     llm_raw.update(cast(dict[str, Any], patch.get("llm") or {}))
     features = dict(config.features)
     features_patch = cast(dict[str, Any], patch.get("features") or {})
-    features.update({str(k): bool(v) for k, v in features_patch.items()})
+    features.update(_normalize_features(features_patch))
     im = config.im
     im_patch = cast(dict[str, Any], patch.get("im") or {})
     if im_patch:

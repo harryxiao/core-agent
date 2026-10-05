@@ -48,6 +48,11 @@ Configuration（横切）
   不产生装配期副作用（`beast` 不注册神通、`pet` 不读 `pets.json`）、CLI 入口拒绝。谓词
   `is_disabled`（缺省不关）与 `is_enabled`（显式开启查询，缺省 false）极性相反、用途不同。
   feature flag 只管**装配**，不改模块自身二级开关（`pet.enabled`）。
+
+- feature flag **取值三面同口径**（change `0072`，账本 E20②、E23）：原生布尔与 `true/false`、`yes/no`、
+  `on/off`、`1/0`（大小写不敏感、忽略首尾空白）归一为布尔；其余取值（`maybe` / 空串 / 映射）**校验期
+  拒绝并阻断启动**，不经 `bool()` 静默强转（`off` 之类假值写法不得被当作开启）。CLI 面
+  `--feature <模块>[=<布尔>]` 经覆盖层 `features.<模块>` 参与优先级链（裸名视为开）。
 - 未配置 judgment 段（或 provider 为空）时决策能力关闭，回退主 LLM 兜底。
 
 ### 3.4 密钥分级与安全

@@ -1111,7 +1111,24 @@ def _cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
         value = getattr(args, dest, None)
         if value is not None:
             cli[spec.key] = value
+    for item in cast("list[str]", getattr(args, "feature", None) or []):
+        name, value = _parse_feature_flag(item)
+        cli[f"features.{name}"] = value
     return cli
+
+
+def _parse_feature_flag(item: str) -> tuple[str, str]:
+    """`--feature NAME[=BOOL]` → ``(模块名, 取值原文)``；裸名视为开（metavar 语义）。
+
+    **模块名是开放集合**（门控名单归组合根 `runtime.GATABLE_MODULES`，配置层不认识模块名，
+    ADR-0065）⇒ 该 flag 不入 `ConfigSpec`，在此单独收集。语法非法（缺名 / 缺值）当场拒绝；
+    取值本身的合法性与三面归一由配置层统一负责（`_normalize_features`，单一真源）。
+    """
+    name, sep, value = item.partition("=")
+    name = name.strip()
+    if not name or (sep and not value.strip()):
+        raise ValueError(f"非法 --feature 取值: {item!r}（须为 NAME 或 NAME=BOOL）")  # noqa: TRY003
+    return name, (value.strip() if sep else "true")
 
 
 def _as_bool(value: Any) -> bool:

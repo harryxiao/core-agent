@@ -26,7 +26,8 @@
   硬编码类缺省 5 / 30s。**改代码**：两键写进 `_CONFIG_SPECS`（`map_to="constraints.*"`）⇒ CLI flag / env / yaml /
   §2.3 白名单**全部自动派生**（单一真源）；**不新增结构化段**（镜像 `permission.mode` 的 `extra` 驻留，不动规格「五个结构化段」字面）；
   访问器 `circuit_breaker()` + 校验期拒绝（阈值 ≥1 整数 / 冷却 ≥0 数值，**不静默兜底**）；组合根注入、主/子 loop 共享同链。
-  **明确不做**：`features` 未知名告警与值强转（E20，仍在账）。
+  **明确不做**：`features` 未知名告警与值强转（**E20①**，仍在账；E20② 已随 change `0072` 关闭）。
+- **E20② + E23（feature flag 取值被强转 / CLI 面零消费）已于 change `0072` 关闭**（ADR-0069）：规格明文的三条输入通道实测**只有两条半生效** —— `--feature NAME[=BOOL]` **零消费**（静默无效）、`features.<模块>: off` 之类被 `bool()` 静默当作**开启**。**改代码向规格靠拢**（与 E12 / E11② 同型）：取值收敛到**单一归一/校验点**（`true/false`·`yes/no`·`on/off`·`1/0` + 原生布尔，其余**校验期拒绝并阻断启动**），CLI 面经覆盖层 `features.<模块>` 接入优先级链并支配装配。**E20①（段内未知模块名无告警）保持开放** —— 规格「配置校验与生效」明文限告警口径于**顶层段名**，补齐须**先改规格**；**新增 E24**（env 前缀实现为复数 `CORE_FEATURES_`、规格/文档写单数 `CORE_FEATURE_<模块>`，改名属对外破坏性变更，**待裁决**）；顺带订正 `doc/00-product/user-guide.md` 中「feature flag 缺省关闭」的陈旧措辞（change `0067` 订正规格时漏改）与三面取值口径。
 - **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A5、E2/E4/E5 全归此（A4 已随 change `0055` 关闭、E3 已随 change `0057` 关闭）。
 - **一条值得单独记的形态问题**：`cli-contract-baseline.md` 的**内置工具契约与实现已对不上账**（见 E7）——契约列的 5 个工具在代码里从未存在。
 
@@ -76,9 +77,12 @@
 | E15 | E | ~~熔断阈值/冷却不可配~~ | ✅ 已关闭（change `0068`，ADR-0066）：阈值/冷却成为配置项 `constraints.failure_threshold`（缺省 5）/ `constraints.cooldown_s`（缺省 30s），经 `ConfigSpec` **单一真源**派生四通道（CLI flag / env / yaml / 优先级链）；**不改结构化段**（镜像 `permission.mode` 的 `extra` 驻留）；非法取值**校验期拒绝并阻断启动**（不静默兜底）；组合根注入、主/子 loop 共享同链 | 低 | — |
 | E16 | E | `AsyncNotifier` 无 channel | pet 通知仅入队，`flush()` 投递未接；IM 通道（`im`）为依赖 | 低 | IM 通知通道 |
 | E17 | E | ~~pet 无后台 daemon~~ | ✅ 已关闭（change `0065`，**规格未要求**）：`wake()` 由**宿主**驱动、内核不常驻；接口 §5 / 模块 §4 登记为已知语义 | 低 | — |
-| E20 | E | `features` 未知模块名无告警 + 值非布尔被强转 | 白名单在组合根（配置层不认识模块名）⇒ 拼错的模块名静默生效/失效；`bool("off")` 为真 ⇒ `features.pet: "off"` 实为开 | 低 | E10 收口（change `0067`） |
+| E20① | E | `features` 未知模块名无告警 | 白名单在组合根（配置层不认识模块名）⇒ 拼错的模块名静默生效/失效。**保持开放**：规格「配置校验与生效」明文限告警口径于**顶层段名**（不递归校验已知段内子键），补齐须**先改规格** | 低 | 用户裁决 |
+| E20② | E | ~~feature flag 取值被 `bool()` 强转~~ | ✅ 已关闭（change `0072`，ADR-0069）：取值收敛到单一归一/校验点（`true/false`·`yes/no`·`on/off`·`1/0` + 原生布尔），其余取值**校验期拒绝并阻断启动**；`features.pet: off` 不再被当作开启 | 低 | — |
 | E21 | E | ~~`entry._pet` 的 `pet.enabled` 判据忽略 config.yaml~~ | ✅ 已关闭（change `0070`）：CLI 前置判定改走 `ConfigManager.config_value(key)`（CLI > env > **config.yaml** > 缺省，ConfigSpec 单一真源），`pet.persons_dir` 同源读取；缺文件按「无 yaml 层」容错 | 低 | — |
 | E22 | E | `config get` 同型缺陷（`resolve(cli=, env=)` 漏 yaml 层） | `entry.py:372` 与 E21 同一缺陷类（CLI 只解析两层）；因开发机存在本地 `config.yaml` 且既有用例断言缺省值，改动会变更该命令输出语义 ⇒ 单独裁决 | 低 | E21 收口（change `0070`） |
+| E23 | E | ~~`--feature NAME[=BOOL]` CLI 面零消费~~ | ✅ 已关闭（change `0072`，ADR-0069）：`entry._cli_overrides` 收进覆盖层 `features.<模块>`，CLI 面**真的**参与优先级链并支配装配（组合根端到端用例锁住）；裸名视为开、语法非法在解析点拒绝 | 低 | — |
+| E24 | E | env 前缀实现与规格不符 | 实现读 `CORE_FEATURES_<模块>`（**复数**，与段名 `features` 一致），规格 + 接口/模块文档写 `CORE_FEATURE_<模块>`（**单数**），user-guide 写复数 ⇒ 三处不一致；改名**对外可观测**（破坏既有部署 env），**待裁决** | 低 | 用户裁决 |
 | B1 | B | Phase 12 MCP 安装/传输/安全（client 侧） | 🔶 **部分关闭（change `0054`）**：stdio 传输 + `add` 分流 + 沙箱/白名单/确认门接线 + 组合根装配已落地（ADR-0057）；**余** http 会话 → B2、服务端 stdio → B3、CLI 接线 → B4、白名单配置 → B5 | 低 | 无 |
 | B2 | B | 远端 http/streamable-http 会话 | `build_http_transport` 仅落地「白名单守卫 + SDK 缺失降级 + 会话待接入报错」；`Mcp-Session-Id`/SSE/headers 未实现 | 低 | mcp SDK（离线不可装） |
 | B3 | B | `MCPServer.serve` stdio 事件循环 | 服务端方向（本机作 MCP server 暴露工具）未实现；client 方向 `0054` 已通 | 低 | 无 |
@@ -329,7 +333,7 @@
 - **裁决**：用户选「**可选模块缺省开**」（兼容现状）——门控名单内模块未声明即装配，仅显式 `features.<模块>: false` 才关闭。**口径订正**：phase-0「功能开关缺省关闭」的字面与裁决不符，规格订正为「白名单内缺省开」。
 - **关闭动作**（change `0067`）：门控名单 `runtime.GATABLE_MODULES = ("pet", "beast", "evolution")` 归**组合根**单一真源（配置层不认识模块名）；新增 `ConfigManager.is_disabled`（极性相反、用途不同；`is_enabled` 语义不变）；三处装配点按名单裁剪——`beast` 关闭时**连 `register_innate_skills` 也不做**、`pet` 关闭时不读状态文件、`evolution` 关闭时 `cold_path=None`；7 个 CLI 入口（`evolve run/pending/confirm/reject`、`pet *`、`summon`/`recall`）统一拒绝并退出 0（说明含模块名与开关名）。18 例新测试（含「关闭时空面」与「缺省即装配」对照，证明否定断言非空转）。
 - **分层**：`features.pet`（装配，缺省开）与 `pet.enabled`（启用，缺省关）**两层并存**、不重复；核心模块（`runtime`/`loop`/`memory`/`tools` 等）不在名单，不可关。
-- **遗留**（本次走查新报，见 §1 表 E20/E21）：① `features` 未知模块名无告警 + 值非布尔被 `bool()` 强转；② `entry._pet` 的 `pet.enabled` 判据**忽略 config.yaml**（`resolve(cli=, env=)` 无 yaml 层），违反文档优先级链。
+- **遗留**（本次走查新报，见 §1 表 E20/E21）：① `features` 未知模块名无告警（**E20① 仍开放** —— 规格限告警口径于顶层段名，补齐须先改规格）；**取值强转（E20②）与 CLI 面零消费（E23）已于 change `0072` 关闭**（ADR-0069：三面取值同口径 + `--feature` 接入优先级链；`--feature` 此前**零消费者**、`off`/`"false"` 等被 `bool()` 当作开启）；② `entry._pet` 的 `pet.enabled` 判据**忽略 config.yaml**（`resolve(cli=, env=)` 无 yaml 层），违反文档优先级链 —— **E21 已于 change `0070` 关闭**。
 
 ### E11 LLM 可靠性：连接复用缺失 + 重试/超时/降级/断流无测试（Phase 1 验收未达成）
 
@@ -436,7 +440,7 @@
   避免改配置规格里「五个结构化段」的字面枚举，且 `map_to` 前缀已让白名单自动收纳 `constraints`。
 - **验证**：`tests/test_constraints_config.py` 17 例（缺省 / yaml / env / CLI 优先级 / 非法 5+3 参数化 /
   不静默兜底 / 无未知段告警 / 组合根注入 identity / 端到端阈值驱动生产熔断）；四门全绿（840 passed）。
-- **明确不做**：`features` 未知模块名告警与值强转（**E20**，仍在账）、
+- **明确不做**：`features` 未知模块名告警与值强转（**E20①**，仍在账；E20② 已随 change `0072` 关闭）、
   RetryPolicy/Fallback 可配、半开试探参数（无生产需求）。
 
 ### E17 pet 无后台 daemon（E4 收口时记后续） — ✅ 已关闭（change `0065`；判定「规格未要求」）
@@ -688,6 +692,7 @@
    ✅ **E9 已关闭**（change `0061`：`data-model.md` 四实体回填 + rag/mcp/git 锚点登记 TC-RAG-10/TC-MCP-06/TC-GIT-11 + 两处日期补记；纯文档、规格中性）。
    ✅ **E12 已关闭**（change `0062`：真子进程 `SIGKILL` 端到端 + **修持久化非原子写入**（tmp + `os.replace`）/ 规格 delta）；另新报 **E19**（durability 文档承诺的持久化故障降级未实现）→ **已由 change `0063` 关闭**（订正模块文档承认现状）。
    ✅ **E21 已关闭**（change `0070`：`entry._pet` 前置判定接入 `ConfigManager.config_value` —— CLI > env > **config.yaml** > 缺省，ConfigSpec 单一真源；缺文件容错；persona 目录同源读取。同型缺陷 `config get` 转出为 **E22**）。
+   ✅ **E20② + E23 已关闭**（change `0072`／ADR-0069：feature flag 三面取值同口径 —— 合法集合 `true/false`·`yes/no`·`on/off`·`1/0` + 原生布尔、其余**校验期拒绝不静默强转**；`--feature` 经覆盖层接入优先级链并**真的**支配装配（此前零消费）；**E20① 保持开放**（规格限告警于顶层段名，须先改规格）；**新报 E24** —— env 前缀实现/规格复数·单数不一致，改名属对外破坏性变更，待裁决）。
 10. **真机动作**：活 LLM 全回路冒烟（§8 末）。
 
 ---
