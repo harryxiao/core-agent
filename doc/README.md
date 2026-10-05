@@ -56,7 +56,7 @@ doc/
 │   ├── constraints.md             约束与容错（横切：校验/熔断/重试中间件）
 │   ├── observability.md           可观测性（横切：日志/指标/追踪/审计）
 │   ├── durability.md              持久性与恢复（横切：checkpoint/崩溃恢复/回滚）
-│   ├── llm-provider.md            三方 LLM 归一化接入（LLMProvider 抽象 + LiteLLM 默认实现）
+│   ├── llm-provider.md            三方 LLM 归一化接入（LLMProvider 抽象 + stdlib 默认实现）
 │   ├── core-profile.md            Core.md 灵魂文件（两级：~/.core/Core.md 人格/宪法 + <project>/Core.md 项目信息）
 │   ├── composition.md             组合与分发（L5：profile 命名组合 / bundle 分发 / patch 覆盖）
 │   └── deployment.md              部署与托管（运行与发布：进程/容器 + 自托管/BYOC + 升级回滚）

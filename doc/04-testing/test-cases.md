@@ -158,7 +158,7 @@
 |---|---|---|---|
 | TC-LLM-01 | CORE-LLM-R1 | 内核经 LLMProvider 接口发起请求 | 面向统一请求/响应模型，不感知供应商 |
 | TC-LLM-02 | CORE-LLM-R2 | 配置某三方模型 API Key + URL 后调用 | 自动解析路由到对应 provider，返回归一化结果 |
-| TC-LLM-03 | CORE-LLM-R3 | 注册自研 Provider 替换 LiteLLM | 内核 loop 及调用方零改动切换 |
+| TC-LLM-03 | CORE-LLM-R3 | 注册自研 Provider 替换默认实现 | 内核 loop 及调用方零改动切换 |
 | TC-LLM-04 | CORE-LLM-R4 | 底层返回超时/限流/鉴权/网络异常 | 统一映射为领域异常，不泄漏原始错误结构 |
 | TC-LLM-05 | CORE-LLM-R5 | 任意一次模型调用结束 | 审计标注 provider/model 与结果，可追溯 |
 | TC-LLM-06 | CORE-LLM-R6 | 瞬时错误 / 超时 / 主模型不可用 / 流中断 / 连接复用 | 退避重试至成功、耗尽抛归一化异常、非可重试错误不重试；超时不挂起调用方；降级切备用模型（审计记实际成功模型）；断流先给已收内容再抛（change `0060`）；同 origin 连续调用复用一条 keep-alive 连接、连接失效自动重建（change `0066`，`tests/test_llm_provider_reuse.py`） |

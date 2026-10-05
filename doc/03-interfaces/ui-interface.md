@@ -137,6 +137,6 @@ LLM API（provider / endpoint / key / base URL）只在后端配置一次：
 
 - 模块：`06-ui-frontend/ui-architecture.md`
 - 规格：`openspec/specs/ui/spec.md`
-- LLM 归一化：经 `llm-provider` 虚拟接口调用（可替换 LiteLLM）
+- LLM 归一化：经 `llm-provider` 虚拟接口调用（可替换默认实现）
 - 决策：ADR-0013 ~ 0015、ADR-0031
 - 测试：`04-testing/test-cases.md`（TC-UI 系列）

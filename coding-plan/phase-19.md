@@ -36,7 +36,7 @@
 | E 早期 Phase 未闭合项 | 20 | 中 | 否 |
 | B Phase 12 MCP（部分关闭） | 5 | 低（B1 client 侧已闭） | 否（可绕开） |
 | C 真实外部后端未接 | ~20 处 | 低 | 否 |
-| D 文档与仓库杂项 | 6（3 已关闭） | 无 | 否 |
+| D 文档与仓库杂项 | 6（4 已关闭） | 无 | 否 |
 | F 验收勾选状态 | ✅ 已清尾（6 组核实完毕） | 无 | 否 |
 | G 已闭合但未销账 | 7 组 | 无（仅订正文档） | 否 |
 
@@ -89,7 +89,7 @@
 | D3 | D | ~~根目录 `config.yaml` 未跟踪~~ | ✅ 已关闭：`git check-ignore` 原为**零命中**（仅「没 add 过」）→ 已补 `.gitignore` 守卫 | 无 | — |
 | D4 | D | `.claude/settings*.json`（部分关闭） | ✅ `settings_deepseek/glm.json` 已 ignore；⚠ `settings.json` **已跟踪且已修改**（非本项目改动）仍待确认归属 | 无 | 确认 settings.json 改动归属 |
 | D5 | D | ~~本文件未入 README 索引~~ | ✅ 已关闭：已登记 `README` §1（清单 22 份）+ §2（第 19 行） | 无 | — |
-| D6 | D | `doc/02-modules/llm-provider.md` 称「LiteLLM 默认实现」 | 默认实现实为 `StdlibLLMProvider`（`runtime.py:207`；`llm_provider/__init__.py:4` 自述）；§1/§3.2 措辞待订正 | 无 | 文档订正 |
+| D6 | D | ~~`doc/02-modules/llm-provider.md` 称「LiteLLM 默认实现」~~ | ✅ 已关闭（change `0069`，纯文档 / 规格中性）：默认实现实为 `StdlibLLMProvider`（ADR-0044 已删 litellm）⇒ 订正模块文档 + 全仓现行文档同类措辞（`requirements.md` CORE-LLM-R2/R3 / `doc/README.md` / `test-cases.md` TC-LLM-03 / `ui-interface.md`）；历史 ADR 与 archive 不改 | 无 | — |
 
 ---
 
@@ -571,7 +571,14 @@
 - **D3** ✅ 已关闭：核查发现 `git check-ignore` 对 `config.yaml` **零命中**（未被忽略，只是没 `git add`）→ 一次 `git add -A` 即会入库真实端点载体。已在 `.gitignore` 补 `/config.yaml` 守卫（密钥红线）。
 - **D4** 🔶 部分关闭：`settings_deepseek.json` / `settings_glm.json` 已加入 `.gitignore`；**`settings.json` 例外**——它**已被跟踪**且有未提交改动（非本项目代码改动），gitignore 对已跟踪文件无效 → 归属仍需人工确认（保留此项）。
 - **D5** ✅ 已关闭：本文件已登记进 README §1（文档清单 22 份）与 §2（Phase 总览第 19 行）。
-- **D6** `doc/02-modules/llm-provider.md` §1/§3.2/§3.3 称「**LiteLLM 作默认实现**」，实际默认是 `StdlibLLMProvider`（`runtime.py:207`；`llm_provider/__init__.py:4` 自述「StdlibLLMProvider（OpenAI 兼容 stdlib）作默认实现」）→ 措辞待订正（change `0066` 走查新报）。
+- **D6** ✅ 已关闭（change `0069`，**纯文档 / 规格中性 `skip_specs`**）：
+  现象 —— `doc/02-modules/llm-provider.md` §1/§2/§3.2/§3.3 称「**LiteLLM 作默认实现**」，而默认实现是 `StdlibLLMProvider`
+  （`llm_provider/stdlib_provider.py`；`__init__.py` 自述；ADR-0044 已**删除 litellm**，核心运行时零三方依赖）。
+  三类对齐：规格 `llm-provider/spec.md:5` + Requirement「默认实现与配置归一化」= stdlib；实现 = stdlib；**唯文档陈旧** ⇒
+  「文档过度承诺/陈旧」型（同 E17/E19），订正文档承认现状。
+  订正范围：主文件模块文档 + 全仓现行文档同类措辞（`requirements.md` CORE-LLM-R2/R3 陈旧镜像 / `doc/README.md` 清单行 /
+  `test-cases.md` TC-LLM-03 / `ui-interface.md` §关联）。**不改**：`archive/` 历史变更、`adr.md` ADR-0021/0032（历史决策，
+  由 ADR-0044 supersede）、ADR-0044 正文（故意叙述替换前现状）、`design-completeness-eval.md`（横向对比分析稿）。
 
 ---
 

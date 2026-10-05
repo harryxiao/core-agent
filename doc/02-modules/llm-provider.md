@@ -6,25 +6,25 @@
 
 ## 1. 模块定位
 
-LLM Provider 让 core-agent 通过统一 LLMProvider 抽象接口调用任意三方大模型：配置任意模型的 API Key 与 URL 即自动路由接入，内核 loop 只依赖抽象接口、不感知具体供应商。LiteLLM 作默认实现，经依赖注入隔离可无缝替换或自研，调用方零改动。
+LLM Provider 让 core-agent 通过统一 LLMProvider 抽象接口调用任意三方大模型：配置任意模型的 API Key 与 URL 即自动路由接入，内核 loop 只依赖抽象接口、不感知具体供应商。StdlibLLMProvider（OpenAI 兼容 stdlib，零三方依赖）作默认实现，经依赖注入隔离可无缝替换或自研，调用方零改动。
 
 - **归一化接入**：任意三方模型（OpenAI / Anthropic / DeepSeek / 通义等）API Key + URL 配置即用，模块自动解析各平台协议差异，无需逐家编写适配代码。
-- **接口为重心**：内核只面向 LLMProvider 抽象（completion / stream / embedding），不绑定 LiteLLM。
-- **依赖注入可替换**：替换 LiteLLM 或接入自研后端时，内核 loop 及所有调用方零改动。
+- **接口为重心**：内核只面向 LLMProvider 抽象（completion / stream / embedding），不绑定具体实现。
+- **依赖注入可替换**：替换默认实现或接入自研后端时，内核 loop 及所有调用方零改动。
 
 ---
 
 ## 2. 架构
 
 ```
-L3 Loop ──► LLMProvider（抽象接口）──► LiteLLMProvider（默认实现）──► 三方模型 API
+L3 Loop ──► LLMProvider（抽象接口）──► StdlibLLMProvider（默认实现）──► 三方模型 API
                  ▲                          ▲
                  │                          │
                  └──── 注册 / 工厂（依赖注入）──┘
 ```
 
 - **LLMProvider**：抽象接口，定义 completion / stream / embedding 三入口 + 统一请求 / 响应模型。
-- **LiteLLMProvider**：默认实现，负责协议映射（100+ provider 归一化）、配置归一化、错误归一化。
+- **StdlibLLMProvider**：默认实现（`urllib.request` 直连 OpenAI 兼容端点 + 手写 SSE 解析，零三方依赖），负责协议 / 配置 / 错误归一化（ADR-0044）。
 - **注册与工厂**：依赖注入容器，内核只依赖接口；替换实现仅改注册处。
 
 ---
@@ -36,14 +36,14 @@ L3 Loop ──► LLMProvider（抽象接口）──► LiteLLMProvider（默�
 - 三入口：`completion`（同步补全）/ `stream`（流式补全）/ `embedding`（向量化）。
 - 统一请求模型：消息列表 + 参数（temperature / max_tokens 等）；统一响应模型：内容 + 令牌统计 + finish_reason。
 
-### 3.2 LiteLLM 默认实现
+### 3.2 stdlib 默认实现（OpenAI 兼容）
 
-- 协议映射：LiteLLM 统一 100+ 模型协议，覆盖 OpenAI / Anthropic / DeepSeek / 通义等主流平台。
-- 配置归一化：任意三方 API Key + Base URL 配置即自动路由到对应 provider 协议。
+- 协议映射：统一按 OpenAI 兼容 chat/completions + embeddings 形状收发（覆盖 OpenAI / DeepSeek / 通义等兼容端点），不依赖任何三方 SDK。
+- 配置归一化：任意 OpenAI 兼容 API Key + Base URL 配置即自动路由到对应端点。
 
 ### 3.3 依赖注入可替换
 
-- 内核只依赖 LLMProvider 接口，替换 LiteLLM 或接入自研后端不改调用方。
+- 内核只依赖 LLMProvider 接口，替换默认实现或接入自研后端不改调用方。
 - 注册工厂：Provider 注册进工厂，按名称 / 模型前缀解析，注册即生效。
 
 ### 3.4 错误归一化
