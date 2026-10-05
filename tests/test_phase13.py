@@ -104,6 +104,18 @@ def test_build_runtime_assembles_all_deps(monkeypatch, tmp_path) -> None:
     delegate = next(t for t in runtime.tools.active_tools() if t.tool_id == "tools.delegate")
     min_delegate_timeout = 120.0  # 委托跑完整子循环，远超 ToolDef 默认 30s
     assert delegate.timeout_s >= min_delegate_timeout
+    # 委托驱动子 loop 属跨边界能力，须显式声明 coeffect（否则 MCP 默认暴露面看不见它，账本 B7）
+    assert delegate.coeffects == ["agent:delegate"]
+
+    # MCP 默认暴露面（未配置白名单）不得含 delegate / web_fetch（账本 B7 收窄）
+    from core.mcp import MCPServer, ServerConnection  # noqa: PLC0415 — 就地验证默认面
+
+    server = MCPServer(tool_provider=runtime.tools)
+    conn = ServerConnection(connection_id="c1", session_id="s1", client_id="ext")
+    exposed = {t.name for t in server.list_tools(conn)}
+    assert "core.tools.delegate" not in exposed
+    assert "core.tools.web_fetch" not in exposed
+    assert "core.tools.file_read" in exposed
 
 
 # ---- constraints 中间件链注入（change 0052 / E1）----

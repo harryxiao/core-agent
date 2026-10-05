@@ -91,12 +91,17 @@ MCP（Model Context Protocol）集成层为智能体提供双向模型上下文�
 - **THEN** 以错误应答回报该 `id`，**循环继续**处理后续请求（单连接内故障隔离，不拖垮会话）
 
 ### Requirement: 工具暴露与白名单
-系统 SHALL 通过白名单控制对外暴露的工具集合，默认最小暴露，命名空间隔离。**对外工具名 SHALL 带 `core.` 命名空间前缀**（`core.<tool_id>`），与本地工具名及 client 侧 `mcp.*` 远程工具名天然隔离；`call_tool` SHALL ONLY 接受**已暴露**的名字，未暴露者 SHALL 返回 `PERMISSION_DENIED` 且**不执行**；SHALL NOT 把 client 侧已发现的远程工具（`mcp.*`）再对外暴露（**禁止二级代理**，防止相互挂载递归）。白名单 SHALL 可经 `mcp serve --whitelist`（逗号分隔工具名）显式声明。
+系统 SHALL 通过白名单控制对外暴露的工具集合，默认最小暴露，命名空间隔离。**默认最小暴露** SHALL 判为：工具**声明的 coeffect 集合为纯本地只读**（如 `⊆ {"filesystem:read"}`；**未声明任何 coeffect 视为只读**）—— 凡含**写**（`filesystem:write`）、**进程派生**（`process:spawn`）、**网络出站**（`network:outbound`）、**委托驱动**（`agent:delegate`）等**跨边界** coeffect 者 SHALL NOT 默认暴露。**对外工具名 SHALL 带 `core.` 命名空间前缀**（`core.<tool_id>`），与本地工具名及 client 侧 `mcp.*` 远程工具名天然隔离；`call_tool` SHALL ONLY 接受**已暴露**的名字，未暴露者 SHALL 返回 `PERMISSION_DENIED` 且**不执行**；SHALL NOT 把 client 侧已发现的远程工具（`mcp.*`）再对外暴露（**禁止二级代理**，防止相互挂载递归）。白名单 SHALL 可经 `mcp serve --whitelist`（逗号分隔工具名）显式声明。
 
 #### Scenario: 默认最小暴露
 - **GIVEN** 未配置白名单
 - **WHEN** server 启动
-- **THEN** 仅暴露只读类工具，写/删除/敏感工具默认不暴露
+- **THEN** 仅暴露只读类工具（coeffect 集合为纯本地只读，含未声明 coeffect 者），写 / 删除 / 敏感工具默认不暴露
+
+#### Scenario: 默认面排除跨边界工具
+- **GIVEN** 未配置白名单，工具源含 `tools.delegate`（委托驱动，coeffect `agent:delegate`）与 `tools.web_fetch`（网络出站，coeffect `network:outbound`）
+- **WHEN** 外部客户端执行 `tools/list`
+- **THEN** 二者**均不出现**在暴露面内（跨边界能力默认不出），而 `tools.file_read`（`filesystem:read`）与 `tools.list`（未声明 coeffect）**仍出现**
 
 #### Scenario: 白名单显式开放
 - **GIVEN** 配置了白名单

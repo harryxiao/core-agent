@@ -60,6 +60,7 @@
 | TC-MCP-10 | mcp「MCP Server 安装与移除」 | **端到端**：`mcp add` 真子进程拉起 stdio echo server → 落盘 → 跨进程 `mcp list` 可见 → 装配期注册 `mcp.<名>.echo` → `mcp remove` 摘除；不可达端点告警跳过且不落盘（锚点：`::test_cli_add_list_remove_roundtrip`、`::test_assembly_registers_remote_tools`、`::test_unreachable_endpoint_degrades_without_blocking`、`::test_cli_add_unreachable_does_not_persist`） |
 
 | TC-MCP-11 | mcp「标准 MCP 互操作（双向）」 | client 携标准三元组握手；解析标准容器键 + **厂商扩展字段被忽略**；`isError` 归一（结构化错误码还原）；server `tools/list`/`tools/call` 的字面应答帧为标准信封；裸形状/旧式应答仍可解析（锚点：`tests/test_mcp_standard_envelope.py`）。**真机**：`core-agent mcp add "claude mcp serve"` 成功（20 工具）；`claude mcp list` 对本 server 报 `✔ Connected` | 双向皆通，旧形状不破裂 |
+| TC-MCP-12 | mcp「工具暴露与白名单」 | 未配置白名单时默认暴露面 | 仅纯本地只读（`file_read` + 未声明 coeffect 的 `list`）；`web_fetch`（`network:outbound`）/ `delegate`（`agent:delegate`）**不出**；白名单仍可开放；默认面外调用 `PERMISSION_DENIED`（锚点：`tests/test_mcp_default_exposure.py`、`test_phase13.py` 默认面断言） | 跨边界工具默认不暴露 |
 
 ## 6. 进化引擎（TC-EVO）
 

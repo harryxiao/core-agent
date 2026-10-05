@@ -1316,6 +1316,31 @@
   接口 `03-interfaces/mcp-interface.md` §5/§6；模块 `02-modules/mcp.md` §4；方案 `07-mcp-server/mcp-server.md` §9；
   测试 `tests/test_mcp_standard_envelope.py`、`doc/04-testing/test-cases.md`（TC-MCP-11）。
 
+## ADR-0073：MCP 默认暴露面收窄（安全 coeffect 白名单 / 补声明委托 coeffect / 白名单语义不动）
+
+- **背景**：`mcp` 规格场景「默认最小暴露」写「写/删除/**敏感**工具默认不暴露」，而实现
+  `server._is_readonly`（coeffects 不含 `write`）只实现了「写/删除」，**漏掉「敏感」**（账本 B7）：
+  生产工具源下默认暴露面含 `tools.web_fetch`（`network:outbound`，可外发数据 / 拉 arbitrary URL）
+  与 `tools.delegate`（`coeffects=[]` **漏声明**，实为驱动子 Agent loop）⇒ 第三方客户端默认挂上即可出网与驱动子 loop。
+- **决策**：
+  ① **判据改为安全 coeffect 白名单**：默认出 ⟺ `set(coeffects) ⊆ {"filesystem:read"}`（**空集通过** ——
+  coeffect 是工具的副作用**契约**，未声明即承诺无副作用）。函数更名 `_is_readonly` → `_is_default_exposed`。
+  **已否决**「`_is_readonly` + 硬编码 `{"tools.delegate"}` 拒绝集」（让 MCP 层认识具体工具名 = 跨层耦合，
+  且对下一个漏声明的跨边界工具再犯）。
+  ② **给 `tools.delegate` 补声明 `agent:delegate`**：它本就驱动子 loop，只是 `coeffects=[]` 没写；补上后
+  判据**结构化**识别委托类工具，无需 id 特判。组合根注册该 coeffect ⇒ 运行期行为不变，新增的是**可见性**。
+  **已否决**「给 `ToolDef` 补风险分级字段」（现有 coeffect 已能表达跨边界能力，再引一层分级是重复真源）。
+  ③ **白名单语义不动**：显式 `--whitelist` 仍可开放任意工具（含跨边界者）—— 收窄只改**默认面**。
+- **后果**：✅ 默认面 = {`tools.file_read`, `tools.list`}（纯本地只读），`web_fetch`/`delegate` 默认不可见，
+  与规格「只读类工具 + 敏感工具不暴露」一致；✅ 白名单路径 / `call_tool` 越权 / 命名空间 / 二级代理过滤**零改动**；
+  ⚠️ **空集=只读的信任面**：留 `coeffects=[]` 的工具默认可见 —— 这是契约（未声明副作用即无副作用），
+  delegate 的问题是**漏声明**而非契约缺陷；假将来插件工具谎报空 coeffect 属插件契约问题（另论）。
+- **关联**：`mcp` spec「工具暴露与白名单」（**MODIFIED** + 新场景「默认面排除跨边界工具」）；代码
+  `src/core/mcp/server.py`（`_DEFAULT_EXPOSED_COEFFECTS` / `_is_default_exposed`）/ `src/core/runtime.py`
+  （`tools.delegate` 的 `agent:delegate` 声明与 resolver 注册）；
+  接口 `03-interfaces/mcp-interface.md` §6；模块 `02-modules/mcp.md` §4；方案 `07-mcp-server/mcp-server.md` §9；
+  测试 `tests/test_mcp_default_exposure.py`、`tests/test_phase13.py`；`doc/04-testing/test-cases.md`（TC-MCP-12）。
+
 ---
 ## 变更追踪
 
@@ -1384,3 +1409,4 @@
 | ADR-0070 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 07-mcp-server/mcp-server.md |
 | ADR-0071 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 02-modules/cli-ops.md |
 | ADR-0072 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 07-mcp-server/mcp-server.md |
+| ADR-0073 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 07-mcp-server/mcp-server.md |

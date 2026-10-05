@@ -270,6 +270,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
     resolver.register("filesystem:write", True)
     resolver.register("process:spawn", True)
     resolver.register("network:outbound", True)
+    resolver.register("agent:delegate", True)  # 委托能力：显式声明供默认暴露面识别（B7）
     tools = ToolProvider(
         coeffect_resolver=resolver, effect_tracker=effect_tracker, gate=guard, approver=approver
     )
@@ -588,7 +589,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
                     },
                     "required": ["task"],
                 },
-                coeffects=[],
+                coeffects=["agent:delegate"],  # 驱动子 loop 属跨边界能力（默认不出暴露面，账本 B7）
                 reversible=False,
                 timeout_s=_DELEGATE_TIMEOUT_S,
             ),

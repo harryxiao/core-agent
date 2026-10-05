@@ -41,6 +41,10 @@ _PLUGIN_ID = "mcp.server"
 _GENERATION = 1
 _DEFAULT_SCHEMA: dict[str, Any] = {"type": "object"}
 
+# 默认暴露面的 coeffect 允许集：纯本地只读（未声明 coeffect ⇒ 空集 ⇒ 亦视为只读）。
+# 写 / 进程派生 / 网络出站 / 委托驱动等**跨边界** coeffect 一律默认不出（规格「敏感工具」）。
+_DEFAULT_EXPOSED_COEFFECTS = frozenset({"filesystem:read"})
+
 # 对外工具命名空间：本地 ``tools.*`` 与 client 侧 ``mcp.*`` 远程工具天然隔离
 _NAMESPACE = "core."
 _REMOTE_PREFIX = "mcp."
@@ -149,8 +153,8 @@ class MCPServer:
             if self._whitelist:
                 if tool_def.tool_id not in self._whitelist:
                     continue
-            elif not self._is_readonly(tool_def):
-                continue  # 默认最小暴露：只暴露只读类
+            elif not self._is_default_exposed(tool_def):
+                continue  # 默认最小暴露：只暴露纯本地只读类（跨边界能力默认不出）
             exposed.append(
                 MCPTool(
                     name=f"{_NAMESPACE}{tool_def.tool_id}",
@@ -249,5 +253,10 @@ class MCPServer:
         except (TypeError, ValueError):
             return json.dumps(_error(response.get("id"), _INTERNAL_ERROR, "应答不可序列化"))
 
-    def _is_readonly(self, tool_def: ToolDef) -> bool:
-        return not any("write" in c for c in tool_def.coeffects)
+    def _is_default_exposed(self, tool_def: ToolDef) -> bool:
+        """默认面判据：声明的 coeffect 集合为纯本地只读（空集=未声明副作用，视为只读）。
+
+        旧判据只看「无 ``write``」⇒ 出网的 ``tools.web_fetch`` 与驱动子 loop 的 ``tools.delegate``
+        默认即在暴露面内（账本 B7）。改为**白名单式的安全 coeffect 集合**，任何跨边界能力默认不出。
+        """
+        return set(tool_def.coeffects) <= _DEFAULT_EXPOSED_COEFFECTS

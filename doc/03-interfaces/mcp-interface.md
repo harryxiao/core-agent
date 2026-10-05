@@ -140,6 +140,7 @@ class MCPServer(Plugin):
 - **事件循环**：`serve_stdio` 以**换行分帧 JSON-RPC** 承载 stdin → stdout（日志走 stderr，否则污染对端分帧解析）。`initialize` 应答与 client 侧**同一** `protocolVersion`（共享常量 `core.mcp.models.PROTOCOL_VERSION`）；无 `id` 通知不应答；非 JSON 行跳过；**stdin EOF 即退出**。
 - **错误分层**：协议层错误走 JSON-RPC `error`（`-32601` 方法未实现 / `-32603` 内部异常）；工具层结论走成功应答里的 `CallResult`（如 `PERMISSION_DENIED`）。**单条请求的异常隔离为该 `id` 的错误应答，不终止事件循环**（应答不可序列化同样降级）。
 - **命名空间与白名单**：对外名一律 `core.<tool_id>`；白名单接受裸名与带前缀两种写法（照 `tools/list` 抄名字可用）；`call_tool` 只接受**已暴露**的名字；`mcp.*` 远程工具**不**对外暴露（禁止二级代理）。CLI 面经 `mcp serve --whitelist <逗号分隔工具名>` 声明。
+- **默认最小暴露（change `0076`，账本 B7）**：未配置白名单时，默认面 = **声明的 coeffect 集合为纯本地只读**（`⊆ {filesystem:read}`；**未声明 coeffect 视为只读**）—— 写 / 进程派生 / 网络出站 / **委托驱动**（`agent:delegate`）等**跨边界** coeffect 一律默认不出。故 `tools.web_fetch`（出网）与 `tools.delegate`（驱动子 loop）默认不可见，`tools.file_read` / `tools.list` 可见
 - **wire 形状（标准 envelope，change `0075`，账本 B6）**：`tools/list` 应答 `{"tools": [...]}`、`tools/call` 应答 `{"content": [{"type": "text", "text": <JSON 载荷>}], "isError": <bool>}`、`initialize` 应答 `protocolVersion` / `capabilities` / `serverInfo` —— **双向对齐标准 MCP**（协议版本 `2024-11-05`）。**真机证据**：`claude mcp add` 挂载本 server 后 `claude mcp list` 报 `✔ Connected`（此前该形状被拒）；反向 `core-agent mcp add "claude mcp serve"` 成功并发现对端 **20 个**工具（此前 `-32603` 缺失握手参数）。
 
 ---
