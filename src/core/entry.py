@@ -65,7 +65,7 @@ from core.pet.core import FAILED, WOKEN, PetManager, PetWakeDriver, WakeOutcome
 from core.pet.library import load_persona, load_personas
 from core.plugin_registry import DomainError, PluginInstaller, PluginKind, PluginSource
 from core.plugins import InstallDispatcher
-from core.runtime import Runtime, build_runtime
+from core.runtime import GATABLE_MODULES, Runtime, build_runtime
 from core.skills import SkillLibrary
 from core.tools import StubPlugin, ToolProvider
 from core.ui import CLIBridge, DesktopBridge, UIAPILayer, UiError, WebBridge
@@ -324,7 +324,7 @@ def _build_ui(args: argparse.Namespace, *, interactive: bool = False) -> UIAPILa
     approval = ApprovalChannel() if interactive else None
     try:
         runtime = build_runtime(
-            ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)),
+            _config_manager(args),
             approver=approval.ask if approval is not None else None,
         )
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
@@ -385,8 +385,23 @@ def _ops(args: argparse.Namespace) -> int:
     return 0
 
 
+def _config_manager(
+    args: argparse.Namespace, *, yaml_path: Path | str | None = None
+) -> ConfigManager:
+    """构造配置管理器：**单点注入**组合根维护的已知模块名（`features` 段子键校验，账本 E20①）。
+
+    10 处 `ConfigManager(...)` 构造点收口于此 —— 漏传一处即该入口静默丢失告警；集中在此消除该风险。
+    `yaml_path` 缺省取 `args.config`（覆盖 `config validate --file` 的自定义路径）。
+    """
+    return ConfigManager(
+        yaml_path=yaml_path if yaml_path is not None else args.config,
+        cli=_cli_overrides(args),
+        known_modules=GATABLE_MODULES,
+    )
+
+
 def _config(args: argparse.Namespace) -> int:
-    mgr = ConfigManager(yaml_path=args.config, cli=_cli_overrides(args))
+    mgr = _config_manager(args)
     if args.config_cmd == "get":
         # 与配置链同口径：CLI > env > config.yaml > 缺省（账本 E22）
         value = mgr.config_value(args.key)
@@ -421,7 +436,7 @@ def _config_validate(args: argparse.Namespace) -> int:
     """校验 config.yaml：无效时打印错误并 exit 1。"""
     path = getattr(args, "file", None) or args.config
     try:
-        ConfigManager(yaml_path=path).load()
+        _config_manager(args, yaml_path=path).load()
     except ConfigurationError as exc:
         print(f"无效: {exc}", file=sys.stderr)
         return 1
@@ -481,7 +496,7 @@ def _mcp_add(args: argparse.Namespace) -> int:
         print(f"端点名已存在: {name}（先 mcp remove，或用 --name 换名）", file=sys.stderr)
         return 1
     try:
-        manager = ConfigManager(yaml_path=args.config, cli=_cli_overrides(args))
+        manager = _config_manager(args)
         manager.load()
     except Exception as exc:  # noqa: BLE001 — 配置失败统一转 stderr 退出码
         print(f"配置错误: {exc}", file=sys.stderr)
@@ -553,7 +568,7 @@ def _mcp_serve(args: argparse.Namespace) -> int:
         print(f"mcp serve：{args.transport} 传输会话待接入（Mcp-Session-Id 复用）", file=sys.stderr)
         return 1
     try:
-        runtime = build_runtime(ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)))
+        runtime = build_runtime(_config_manager(args))
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
         print(f"装配失败: {exc}", file=sys.stderr)
         return 1
@@ -809,7 +824,7 @@ def _memory(args: argparse.Namespace) -> int:
         print("用法: core-agent memory maintain", file=sys.stderr)
         return 1
     try:
-        runtime = build_runtime(ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)))
+        runtime = build_runtime(_config_manager(args))
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
         print(f"装配失败: {exc}", file=sys.stderr)
         return 1
@@ -841,7 +856,7 @@ def _evolve(args: argparse.Namespace) -> int:
 def _evolve_runtime(args: argparse.Namespace) -> Any | None:
     """装配 runtime；失败转 stderr 并返回 ``None``（调用方给退出码 1）。"""
     try:
-        return build_runtime(ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)))
+        return build_runtime(_config_manager(args))
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
         print(f"装配失败: {exc}", file=sys.stderr)
         return None
@@ -1006,7 +1021,7 @@ def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911 — 入口校验天
         print("用法: core-agent task <目标> [--task-id ID | --resume ID]", file=sys.stderr)
         return 1
     try:
-        runtime = build_runtime(ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)))
+        runtime = build_runtime(_config_manager(args))
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
         print(f"装配失败: {exc}", file=sys.stderr)
         return 1
@@ -1088,8 +1103,7 @@ def _module_disabled(module: str) -> int:
 
 
 def _pet(args: argparse.Namespace) -> int:  # noqa: PLR0911 — CLI 分支各自退出码
-    cli = _cli_overrides(args)
-    mgr = ConfigManager(yaml_path=args.config, cli=cli)
+    mgr = _config_manager(args)
     # 前置判定同样走 ConfigSpec 单一真源三层链（CLI > env > config.yaml > 缺省）：
     # 只读单键、不校验整份配置，故无配置文件时按 env/CLI/缺省解析（配置层 E21）。
     if not _as_bool(mgr.config_value("pet.enabled")):
@@ -1245,7 +1259,7 @@ def _beast_runtime(args: argparse.Namespace) -> Runtime | None:
     路由），与规格 R4「独立 loop + 共享记忆」不符。
     """
     try:
-        return build_runtime(ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)))
+        return build_runtime(_config_manager(args))
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
         print(f"装配失败: {exc}", file=sys.stderr)
         return None

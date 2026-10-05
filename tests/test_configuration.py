@@ -609,7 +609,10 @@ def test_known_sections_produce_no_warning(tmp_path: Path) -> None:
 
 
 def test_unknown_key_inside_known_section_does_not_warn(tmp_path: Path) -> None:
-    """口径只到顶层段名：已知段内部的未知子键不告警（不递归校验子段）。"""
+    """口径只到顶层段名：已知段内部的未知子键不告警（不递归校验子段）。
+
+    例外仅 `features` 段（其子键是模块名，见 E20① / change `0085`）——此处 `llm` 子键仍不告警。
+    """
     yaml = (
         "llm:\n  provider: openai\n  model: gpt-4o\n"
         "  endpoint: https://api.openai.com/v1\n  api_key: ${OPENAI_API_KEY}\n"
@@ -625,3 +628,67 @@ def test_unknown_key_inside_known_section_does_not_warn(tmp_path: Path) -> None:
 def test_validation_result_warnings_default_empty() -> None:
     """既有构造面不破：`ValidationResult(ok=True)` 的 warnings 缺省为空。"""
     assert ValidationResult(ok=True).warnings == []
+
+
+# ---- E20①：features 段未知模块名仅告警（change 0085） ----
+
+_KNOWN_MODULES = ("pet", "beast", "evolution")
+
+_FEATURE_TYPO_YAML = """\
+llm:
+  provider: openai
+  model: gpt-4o
+  endpoint: https://api.openai.com/v1
+  api_key: ${OPENAI_API_KEY}
+features:
+  peet: false
+"""
+
+
+def _feature_warnings(caught: list[warnings.WarningMessage]) -> list[str]:
+    return [str(w.message) for w in caught if "未知功能开关" in str(w.message)]
+
+
+def test_unknown_feature_module_warns_but_does_not_block(tmp_path: Path) -> None:
+    """拼错的模块名（peet）→ 不阻断，告警含子键名（暴露静默 no-op）。"""
+    manager = _manager(tmp_path, _FEATURE_TYPO_YAML, known_modules=_KNOWN_MODULES)
+    with pytest.warns(UserWarning, match="未知功能开关: features.peet"):
+        config = manager.load()
+    result = manager.validate_schema(config)
+    assert result.ok is True  # 告警 ≠ 阻断
+    assert any("features.peet" in w for w in result.warnings)
+
+
+def test_known_feature_module_produces_no_warning(tmp_path: Path) -> None:
+    """已知模块名（pet）不告警。"""
+    yaml = _FEATURE_TYPO_YAML.replace("peet", "pet")
+    manager = _manager(tmp_path, yaml, known_modules=_KNOWN_MODULES)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        manager.load()
+    assert _feature_warnings(caught) == []
+
+
+def test_feature_module_not_checked_without_injection(tmp_path: Path) -> None:
+    """未注入已知集合 ⇒ 不校验 features 子键（向后兼容：自定义键 / 测试夹具不告警）。"""
+    manager = _manager(tmp_path, _FEATURE_TYPO_YAML)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        manager.load()
+    assert _feature_warnings(caught) == []
+
+
+def test_feature_warning_scope_only_features(tmp_path: Path) -> None:
+    """作用域限 features 段：其它已知段的未知子键（llm.typo_key）不触发任何告警。"""
+    yaml = (
+        "llm:\n  provider: openai\n  model: gpt-4o\n"
+        "  endpoint: https://api.openai.com/v1\n  api_key: ${OPENAI_API_KEY}\n"
+        "  typo_key: 1\n"
+        "features:\n  pet: false\n"
+    )
+    manager = _manager(tmp_path, yaml, known_modules=_KNOWN_MODULES)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        manager.load()
+    assert _feature_warnings(caught) == []
+    assert _section_warnings(caught) == []

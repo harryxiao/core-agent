@@ -353,6 +353,23 @@ def test_config_validate_warns_on_unknown_section(
     assert "配置有效" in capsys.readouterr().out
 
 
+def test_config_validate_warns_on_unknown_feature_module(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """E20①：features 段未知模块名仅告警 —— 退出码仍为 0（不阻断）。
+
+    走**组合根注入**的已知模块名（`entry._config_manager`）⇒ 证明入口注入已接线，不只是单元。
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    path = _write_config(tmp_path)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "features:\n  peet: false\n", encoding="utf-8")
+    with pytest.warns(UserWarning, match="未知功能开关: features.peet"):
+        code = main(["--config", path, "config", "validate"])
+    assert code == 0
+    assert "配置有效" in capsys.readouterr().out
+
+
 def test_config_show_json_masks_secret(
     monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:

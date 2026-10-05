@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import time
 import warnings
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -214,7 +214,7 @@ def _load_env_file(path: Path) -> dict[str, str]:
 class ConfigManager:
     """配置加载 / 校验 / 密钥解析 / 功能开关 / 变更即生效。"""
 
-    def __init__(  # noqa: PLR0913 — 注入面为 6 项，均为可选依赖注入
+    def __init__(  # noqa: PLR0913 — 注入面为 7 项，均为可选依赖注入
         self,
         yaml_path: Path | str | None = None,
         *,
@@ -223,6 +223,7 @@ class ConfigManager:
         effects: EffectTracker | None = None,
         cli: Mapping[str, Any] | None = None,
         specs: list[ConfigSpec] | None = None,
+        known_modules: Iterable[str] | None = None,
     ) -> None:
         self._yaml_path = Path(yaml_path) if yaml_path else _default_yaml_path()
         if environ is not None:
@@ -235,6 +236,10 @@ class ConfigManager:
         self._effects = effects if effects is not None else EffectTracker()
         self._cli = dict(cli) if cli is not None else {}
         self._specs = list(specs) if specs is not None else list(_CONFIG_SPECS)
+        # 已知模块名集合（`features` 段子键校验用，账本 E20①）：由**拥有集合的层**（组合根
+        # `runtime.GATABLE_MODULES`）经注入提供 —— 配置层仍不 import runtime、不硬编码模块名。
+        # 缺省 None ⇒ 不校验子键（向后兼容：自定义键 / 测试夹具不告警）。
+        self._known_modules = frozenset(known_modules) if known_modules is not None else None
         self._config: AppConfig | None = None
 
     # ---- 加载与校验 ----
@@ -293,9 +298,8 @@ class ConfigManager:
         errors.extend(_sandbox_errors(perm))
         cons = cast("dict[str, Any]", config.extra.get("constraints") or {})
         errors.extend(_circuit_breaker_errors(cons))
-        return ValidationResult(
-            ok=not errors, errors=errors, warnings=self._unknown_section_warnings(config)
-        )
+        warnings = self._unknown_section_warnings(config) + self._unknown_feature_warnings(config)
+        return ValidationResult(ok=not errors, errors=errors, warnings=warnings)
 
     def _known_sections(self) -> set[str]:
         """已知顶层段：结构化段 + ConfigSpec 声明段 + 有运行时语义的 extra 已知段。"""
@@ -309,6 +313,22 @@ class ConfigManager:
             f"未知配置段: {key}（不在已知段 {', '.join(sorted(known))} 之内；"
             f"已收纳进 extra 且未做校验 —— 若为拼写错误请订正）"
             for key in sorted(set(config.extra) - known)
+        ]
+
+    def _unknown_feature_warnings(self, config: AppConfig) -> list[str]:
+        """`features` 段未知模块名告警（账本 E20①，change `0085`）：仅当注入已知集合时校验。
+
+        `features` 段子键是**模块名**（`features.<模块>`），模块名拼错 ⇒ `is_disabled(<正确名>)`
+        查不到 ⇒ **静默 no-op**（如 `peet: false` 关不掉 `pet`）。已知集合由组合根经注入提供，
+        未注入（``None``）⇒ 不校验（向后兼容）。**仅告警不阻断**（同 §2.3 未知配置段口径）。
+        """
+        if self._known_modules is None:
+            return []
+        known = ", ".join(sorted(self._known_modules))
+        return [
+            f"未知功能开关: features.{name}（不在已知模块名 {known} 之内；"
+            f"若为拼写错误请订正 —— 模块名拼错将静默不生效）"
+            for name in sorted(set(config.features) - self._known_modules)
         ]
 
     def _resolvable(self, ref: str) -> bool:

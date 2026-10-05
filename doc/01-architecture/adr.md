@@ -1555,6 +1555,28 @@
 - **转出**：无新开账本行；E5 关闭后 E 类余 E20① / E26 / E27。
 
 ---
+
+## ADR-0080：`features` 段未知模块名告警（注入归属 / 仅告警 / 缺省不校验）
+
+- **背景**：`features` 段子键是**模块名**，模块名集合是组合根单一真源（`runtime.GATABLE_MODULES`，
+  ADR-0065）。校验口径只到顶层段名 ⇒ `features.peet: false`（拼错）被照样归一、`is_disabled("pet")`
+  查不到 `"pet"` ⇒ **静默 no-op**（关不掉 `pet`，账本 E20①）。
+- **决策**：
+  ① **注入归属** —— 集合仍归组合根；配置层经 `known_modules` **注入接收**（同既有 `specs=` 惯用法），
+     **不 import runtime、不硬编码模块名** ⇒ 不逆转 ADR-0065 归属，只是「拥有者把集合交给校验者」。
+     已否决「配置层自持集合」（与 `GATABLE_MODULES` 成两处真源）与「拼写近似告警」（引入编辑距离 +
+     阈值常量，与既有白名单派生风格不一致）。
+  ② **仅告警不阻断** —— 模块名是**开放集合**（`is_enabled` 供缺省关模块自查二级开关），硬拒会拒绝
+     合法新键（与 E18 拒绝硬拒的理由同）；拼错的风险是静默 no-op，一条可忽略的告警足以暴露。
+  ③ **缺省不校验** —— `known_modules=None`（缺省）⇒ 不产告警 ⇒ 既有构造面（10 处 CLI 构造点 +
+     测试夹具含自定义 `features` 键）不破；「谁注入谁负责」。
+  ④ **入口单点注入** —— `entry.py` 10 处 `ConfigManager(...)` 构造点收口为 `entry._config_manager`，
+     消除漏传一处即该入口静默丢失告警的风险。
+- **规格**：MODIFIED「配置校验与生效」—— 顶层段名口径**加 `features` 唯一例外**（按经注入的已知模块名
+  校验、未知仅告警、未注入不校验）+ 两新场景。
+- **转出**：无。
+
+---
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1629,3 +1651,4 @@
 | ADR-0077 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |
 | ADR-0078 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md, 00-product/user-guide.md |
 | ADR-0079 | 03-interfaces/evolution-interface.md, 02-modules/evolution.md, 00-product/user-guide.md |
+| ADR-0080 | 03-interfaces/configuration-interface.md |

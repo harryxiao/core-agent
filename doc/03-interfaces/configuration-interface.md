@@ -64,8 +64,9 @@ class ConfigSpec:
 ```python
 class ConfigManager:
     def __init__(self, yaml_path=None, *, environ=None, keychain=None, effects=None,
-                 cli=None, specs=None) -> None:
-        """cli=CLI 覆盖层（最高优先级）；specs=ConfigSpec 清单（缺省用内置全量清单）。"""
+                 cli=None, specs=None, known_modules=None) -> None:
+        """cli=CLI 覆盖层（最高优先级）；specs=ConfigSpec 清单（缺省用内置全量清单）；
+        known_modules=已知模块名集合（`features` 段子键校验用，组合根注入；缺省 None=不校验）。"""
 
     def load(self) -> AppConfig:
         """以 config.yaml 为单一收口加载：CLI 覆盖 env 覆盖 yaml 值，未定义项取默认值兜底。"""
@@ -158,6 +159,12 @@ CLI 面 `--feature <模块>[=<布尔>]` 由 `entry._cli_overrides` 收进覆盖�
   + `ConfigSpec` 声明段（由 `map_to` 前缀导出）+ 有运行时语义的 `extra` 已知段（`permission`）。
   新增 ConfigSpec 自动进白名单（单一真源，不另维护清单）。
 - **作用域**：只判**顶层段名**，不递归校验已知段内部的未知子键。
+- **例外：`features` 段子键（change `0085`，账本 E20①）** —— `features` 段子键是**模块名**，
+  拼错会**静默 no-op**（`features.peet: false` 关不掉 `pet`：`is_disabled("pet")` 查不到 `"pet"`）。
+  故当 `ConfigManager` **注入了已知模块名集合**（`known_modules`，组合根传 `runtime.GATABLE_MODULES`）时，
+  `features` 段的未知子键**仅告警**（含子键名 + 已知清单 + 「拼错将静默不生效」提示）、**不阻断**；
+  未注入（缺省 `None`）时**不校验**子键。作用域**仅** `features` —— 其它已知段的未知子键（如 `llm.typo_key`）
+  仍不告警（各能力 schema 义务，非本项）。模块名集合仍归组合根单一真源，配置层只**消费注入**（不 import runtime）。
 - **为何不硬拒**：`extra` 是承诺给扩展的宽松兜底，收紧为白名单会**拒绝既有自定义段**
   （改变既有接受行为）；而完全静默会让拼错的段名（`llmm:`）无处暴露（用户只看到「LLM 配置缺失」）。
 
