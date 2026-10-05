@@ -1247,6 +1247,43 @@
   接口 `03-interfaces/mcp-interface.md` §6；模块 `02-modules/mcp.md` §3.5；方案 `07-mcp-server/mcp-server.md` §9；
   测试 `tests/test_mcp_server_stdio.py`、`doc/04-testing/test-cases.md`（TC-MCP-07/08/09）。
 
+## ADR-0071：MCP 端点注册表与装配期注册（状态非配置 / 落盘即安装 / 稳定命名 / 降级不阻断）
+
+- **背景**：`mcp` 规格「MCP Server 安装与移除」五条场景全部以 CLI 为锚（`WHEN 执行 mcp add`），
+  而 `entry._mcp` 落到「已识别，尚未接线」兜底 ⇒ 场景在生产**不可达**（账本 B4）。安装管线（change `0054`）
+  早已齐备，缺的是三件：① CLI 接线；② **跨进程持久化**（CLI 是一次性进程，`PluginInstaller._assets`
+  随之蒸发，`mcp add` 的成果无处可寻）；③ **稳定工具命名**（`connect` 用 `uuid4().hex` 作 `handle_id`，
+  工具名 `mcp.<uuid>.<tool>` 每次装配都不同，与模块文档「包装为 `mcp.<server>.<tool>`」不符）。
+- **决策**：
+  ① **端点注册表是状态不是配置**：落 `$CORE_STATE_DIR/mcp-endpoints.json`（同 `checkpoints.jsonl` /
+  `pets.json` 约定，**原子写** tmp + `os.replace`，同 change 0062）。端点名是**开放集合**，无法进
+  `ConfigSpec`（同 `features.<模块>` 之于 `GATABLE_MODULES`）；且它带**连接句柄语义**（由 `mcp add` 写入），
+  不是用户声明的配置。**已否决**「加一个 `mcp.endpoints` 配置段」（把运行期安装伪装成静态配置）。
+  ② **先连通验证再落盘**：`mcp add` 走既有安装管线（连接 + 握手 + 适配注册），成功才持久化
+  —— 否则此后每次装配都徒劳重试一个打不通的端点（同 B5「配了却连不上」的静默失配之害）。
+  ③ **稳定命名**：命名安装以**安装名**作 `handle_id`（`mcp.<名>.<工具>` 跨进程稳定）；匿名安装（无 `--name`
+  且无法派生）沿用 uuid。派生顺序 `--name` > URL 主机名 > 命令基名；**重名拒绝**（`ENDPOINT_NAME_CONFLICT`）
+  而**非静默覆盖** —— 覆盖会让「我以为装的是 A」与「实际连的是 B」错位。
+  ④ **装配期连接注册 + 降级**：组合根读回注册表，逐端点经**同一安装管线**连接注册；单个端点不可达
+  **只告警跳过**（fail-soft），坏端点不得让整个系统不可用；注册表损坏 / 条目残缺同样告警降级。
+  ⑤ **`mcp remove` 对称**：先经安装管线卸载（释放连接 / 子进程），**再**删记录；删记录失败前不破坏已装态。
+- **后果**：
+  - 规格五条场景 + 新增四条（跨进程持久化 / 装配期注册 / 不可达降级 / 重名拒绝）在生产可达，
+    端到端由真实子进程（`core-agent mcp add` → echo server）验证。
+  - **`mcp list` 不连接**：列表只呈现配置面事实（端点名与形状），不隐式建连。
+  - **无跨进程锁**：注册表读写假定同一时刻只有一个 CLI 写入者（安装是低频人工操作），
+    未引入文件锁；并发 `mcp add` 理论上可丢更新（已知接受项）。
+  - **`--command` 的 argparse dest 陷阱**：`mcp add --command C` 的 dest 曾与顶层
+    `add_subparsers(dest="command")` 冲突，把 `args.command` 覆盖成 `None` ⇒ `mcp add` **静默落进 REPL**
+    并阻塞。已改 dest 为 `mcp_command`/`mcp_args`（同型冲突的排查线索记此）。
+- **关联**：`mcp` spec「MCP Server 安装与移除」（**MODIFIED** + 7 新场景）；代码
+  `src/core/mcp/endpoints.py`（`mcp_endpoints_path` / `EndpointRecord` / `MCPEndpointRegistry` /
+  `default_endpoint_name`）/ `src/core/mcp/client.py`（`connect(handle_id=)`）/ `src/core/mcp/errors.py`
+  （`ENDPOINT_NAME_CONFLICT`）/ `src/core/runtime.py`（装配期读注册表）/ `src/core/entry.py`
+  （`_mcp_add` / `_mcp_list` / `_mcp_remove`）；
+  接口 `03-interfaces/mcp-interface.md` §7；模块 `02-modules/mcp.md` §3.6；测试 `tests/test_mcp_endpoints.py`、
+  `doc/04-testing/test-cases.md`（TC-MCP-10）。
+
 ---
 ## 变更追踪
 
@@ -1313,3 +1350,4 @@
 | ADR-0068 | 03-interfaces/permission-interface.md, 03-interfaces/configuration-interface.md, 02-modules/permission.md |
 | ADR-0069 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md |
 | ADR-0070 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 07-mcp-server/mcp-server.md |
+| ADR-0071 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 02-modules/cli-ops.md |

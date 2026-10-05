@@ -10,6 +10,7 @@ Compactor / Guardrail）→ LLMPlanner → PermissionGuard → DefaultLoop，供
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -47,7 +48,7 @@ from core.llm_provider import LLMProvider, LLMRequest, Message, StdlibLLMProvide
 from core.loop import Approver, DefaultLoop, LoopPlugin, TurnObserver
 from core.loop.constraints_adapter import build_constraints_chain
 from core.loop.planner import LLMPlanner, SkillHint
-from core.mcp import MCPClient
+from core.mcp import MCPClient, MCPEndpointRegistry, mcp_endpoints_path
 from core.memory import (
     Crystallizer,
     FileBackend,
@@ -366,6 +367,14 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         skill_library=skill_library, tool_provider=tools, mcp_client=mcp_client
     )
     installer = PluginInstaller(source_resolver=dispatcher.resolve, installer=dispatcher.install)
+    # MCP 端点注册表（change 0074 / 账本 B4）：`mcp add` 的成果落 $CORE_STATE_DIR，
+    # 装配期读回并经**同一安装管线**连接、把远端工具注册进本地工具集（`mcp.<端点名>.<工具>`）。
+    # **单个端点不可达只告警跳过**：坏端点不得让整个系统不可用。
+    for endpoint_record in MCPEndpointRegistry(mcp_endpoints_path()).list():
+        try:
+            dispatcher.install(endpoint_record.asset())
+        except Exception as exc:  # noqa: BLE001 — 单端点故障降级，不阻断装配
+            warnings.warn(f"MCP 端点不可用，已跳过: {endpoint_record.name}（{exc}）", stacklevel=2)
 
     # 上下文装配接线（P0）：两级 Core.md 的宪法 → constitution:v1 coeffect、
     # 项目信息 → ContextEngine 上下文。此前 build_runtime 从不传 assembler=，

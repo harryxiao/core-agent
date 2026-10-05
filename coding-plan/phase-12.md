@@ -58,7 +58,7 @@
 
 1. **ADR 评估（重开前置，本 Phase 的第一件事）**：新增 ADR，评估 `mcp` SDK 的依赖定位——「懒 import 可选依赖（optional-dependencies extra，默认不装）vs 边界依赖（与 fastapi/uvicorn/textual 同级）」，结论须守住「litellm 唯一运行时三方依赖」红线；SDK 可安装是硬前置。
 2. **落 ADDED delta**：`openspec archive 0033-mcp-install-security` 使「MCP 客户端消费安全」落 base spec（或先 `openspec validate --all` 确认 delta 状态再归档）。
-3. **读接口原文**：`doc/03-interfaces/mcp-interface.md` §2（传输契约）/ §4（适配器）/ §7（错误码）为唯一真源；`doc/03-interfaces/permission-interface.md` 确认 `SandboxManager` 子进程隔离 + 出站白名单方法签名。
+3. **读接口原文**：`doc/03-interfaces/mcp-interface.md` §2（传输契约）/ §4（适配器）/ §8（错误码）为唯一真源；`doc/03-interfaces/permission-interface.md` 确认 `SandboxManager` 子进程隔离 + 出站白名单方法签名。
 4. **确认沙箱/白名单契约**：`src/core/permission/sandbox.py` 现有能力是否覆盖「子进程资源配额 + 受限文件系统 + 出站白名单」，缺则先补 permission 侧。
 
 ## 5. 依赖与顺序
@@ -82,7 +82,7 @@ observability(不可逆工具审计) ──────────────�
 - [x] `MCPClient.add` 按 transport 分流构建 `MCPEndpoint`（stdio `command+args` / http `url+headers`），不再硬编码 http —— **change `0054`**（按来源形状分流 + 显式 transport/command 覆盖）
 - [ ] 消费侧安全：本地 stdio 子进程过 `SandboxManager`（资源配额 + 受限文件系统 + 出站白名单）；远端 http 走出站网络白名单 → **配额 + 出站白名单已闭**（change `0054`：`SandboxManager.spawn` 常驻子进程受 rlimit；`build_http_transport` 连接前校验 host）；**受限文件系统（fs jail）未做**（0054 明示非目标）
 - [x] `MCPToolAdapter` 标注 coeffects + `reversible=False`（4.3 已有基础，补确认门 + observability 审计接线）—— 确认门**经验证成立**（change `0054`：`network:` coeffect → `HIGH_RISK` → `GateDecision("confirm")`，无需新代码）；observability 审计接线未做
-- [ ] `mcp remove` 释放连接/会话/socket 资源，含本地子进程销毁 → **`close` 终止并回收子进程已闭**（change `0054`）；**CLI `mcp remove` 接线未做**（`phase-19.md` B4）
+- [ ] `mcp remove` 释放连接/会话/socket 资源，含本地子进程销毁 → **`close` 终止并回收子进程已闭**（change `0054`）；**CLI `mcp remove` 接线已闭**（change `0074`：注册表落盘 + 对称卸载，`mcp remove` 释放连接与子进程）
 - [x] 门禁四件套全绿：ruff check ✓ · ruff format --check ✓ · pyright 0 errors · pytest 全通过（含本 Phase 新增用例）—— 以 change `0054` 收官核验（732 passed / 0 errors）
 
 ## 7. 测试要点（重开后）
@@ -93,7 +93,7 @@ observability(不可逆工具审计) ──────────────�
 - [x] http 出站白名单：非白名单 host → 拒绝 —— change `0054`（`build_http_transport` 连接前校验，`PERMISSION_DENIED`）
 - [x] 不可逆工具确认：`reversible=False` 外部工具触发 permission 确认门，来源标注外部 MCP，审计落盘 —— 确认门已验证（change `0054`：`test_adapted_mcp_tool_triggers_confirm_gate`）；审计落盘未做
 - [x] 安装分流：stdio 来源（command+args）与 http 来源（url+headers）分别构建正确 `MCPEndpoint` —— change `0054`（`MCPClient.add` 按来源形状分流）
-- [ ] 移除清理：`mcp remove` 后连接/会话/socket 释放，相关工具标记不可用 → **资源释放已闭**（change `0054`）；**CLI 接线 + 工具标记未做**（`phase-19.md` B4）
+- [ ] 移除清理：`mcp remove` 后连接/会话/socket 释放，相关工具标记不可用 → **资源释放已闭**（change `0054`）；**CLI 接线已闭**（change `0074`）；**工具标记未做**
 
 ## 8. 提交规范
 

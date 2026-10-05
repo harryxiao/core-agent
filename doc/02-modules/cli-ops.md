@@ -33,7 +33,7 @@ CLI Ops（横切）
 - **生命周期**：start / stop / restart / kill 进程守护。
 - **状态**：status / doctor / logs / version / help 状态查询，不改变运行态。
 - **资产**：install / uninstall / list / info，复用 plugin-registry 插件来源与安装生命周期。
-- **连接**：mcp add / mcp remove / mcp list，复用 mcp 安装/移除生命周期。
+- **连接**：mcp add / mcp remove / mcp list，复用 mcp 安装/移除生命周期（change `0074` 已接线）。
 - **安全**：auth / permission-mode。
 - **网关**：gateway 启停本地服务网关。
 

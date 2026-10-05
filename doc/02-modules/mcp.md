@@ -44,7 +44,8 @@ L3 Loop ──► ToolProvider ──► [本地工具 | MCP 适配工具]
 ### 3.1 能力发现（client）
 
 - 启动/配置时 `initialize` + `list_tools` + `list_resources` + `list_prompts`。
-- 发现的 tools 包装为 `mcp.<server>.<tool>` 命名空间的 `ToolDef`，进入注册表。
+- 发现的 tools 包装为 `mcp.<server>.<tool>` 命名空间的 `ToolDef`，进入注册表；
+  **`<server>` 即安装名**（`mcp add --name` 或派生名）⇒ 工具名跨进程稳定（change `0074`）。
 
 ### 3.2 传输方式
 
@@ -93,6 +94,19 @@ L3 Loop ──► ToolProvider ──► [本地工具 | MCP 适配工具]
 - **wire 形状（已知偏离）**：`tools/list` 裸列表 / `tools/call` 直出 `CallResult`，与 client 侧三方一致，
   标准 MCP envelope 未对齐（第三方客户端挂载受限，见 `doc/03-interfaces/mcp-interface.md` §6）。
 
+### 3.6 端点注册表与装配期注册（change `0074`）
+
+- **注册表**：`mcp add` 的成果落 `$CORE_STATE_DIR/mcp-endpoints.json`（单文件 JSON，**原子写**）。
+  端点注册表是**运行期状态**、非配置项 —— 端点名是开放集合（同 `features.<模块>` 之于 `GATABLE_MODULES`），
+  由 `mcp add` 写入、带连接句柄语义，故不进 `ConfigSpec`。
+- **命令面**：`mcp add <endpoint> [--name N] [--transport T] [--command C] [--args ...]` / `mcp remove <name>` /
+  `mcp list`。`add` **先连通验证再落盘**，`remove` 先卸载（释放连接）再删记录（对称）；`list` 不连接。
+- **装配期注册**：组合根读回注册表 → 经**同一安装管线**（`InstallDispatcher._install_mcp`）连接、适配、
+  注册工具为 `mcp.<端点名>.<工具>`；`handle_id` 取安装名 ⇒ 跨进程稳定（此前为随机 `uuid`，同一端点两次
+  装配得到两个工具名）。
+- **降级**：单个端点不可达只 `warnings.warn` 跳过，**不阻断装配**（坏端点不得让整个系统不可用）；注册表
+  损坏 / 条目残缺同样告警降级。
+
 ---
 
 ## 4. 错误处理
@@ -106,6 +120,8 @@ L3 Loop ──► ToolProvider ──► [本地工具 | MCP 适配工具]
 | 外部未授权调用 | 返回 `PERMISSION_DENIED`，不执行 |
 | 外部高危操作 | 强制确认门 + 审计（来源 external） |
 | 外部连接异常/崩溃 | 熔断该连接，不影响其他客户端 |
+| 已装端点装配期不可达 | 告警并跳过该端点，装配照常完成（change `0074`） |
+| 端点重名安装 | `ENDPOINT_NAME_CONFLICT` 拒绝，不静默覆盖（change `0074`） |
 
 ---
 

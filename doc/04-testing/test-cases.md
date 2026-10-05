@@ -57,6 +57,7 @@
 | TC-MCP-07 | mcp「MCP Server 模式」 | stdio 本地挂载：外部客户端逐条发 `initialize` / `tools/list` / `tools/call` | 按各自 `id` 应答、无 `id` 通知不应答、EOF 退出；未知方法与提供者异常隔离为错误应答且**循环继续**（锚点：`tests/test_mcp_server_stdio.py::test_initialize_handshake_returns_protocol_version`、`::test_notification_without_id_is_not_answered`、`::test_unknown_method_returns_jsonrpc_error_and_loop_continues`、`::test_handler_exception_is_isolated`） |
 | TC-MCP-08 | mcp「工具暴露与白名单」 | 暴露面命名空间 / 白名单两种写法 / 默认最小暴露 | 对外名 `core.<tool_id>`；白名单接受裸名与带前缀；写工具默认不暴露；未暴露调用 `PERMISSION_DENIED` 且不执行；`mcp.*` 远程工具**不**被二级代理暴露（锚点：`::test_exposed_names_are_core_namespaced`、`::test_whitelist_accepts_namespaced_form`、`::test_unexposed_tool_call_is_denied_and_not_executed`、`::test_remote_tools_are_not_exposed_second_hand`） |
 | TC-MCP-09 | mcp「MCP Server 模式」 | **端到端**：用本仓 `MCPClient`（`StdioTransport`）拉起 `core-agent mcp serve` 子进程 | 握手 → 发现（含 `core.tools.file_read`、不含写工具）→ 调用真读文件 → 越权拒绝；非 stdio 传输明确拒绝（锚点：`::test_own_client_discovers_and_calls_own_server`、`::test_non_stdio_transport_is_refused`） |
+| TC-MCP-10 | mcp「MCP Server 安装与移除」 | **端到端**：`mcp add` 真子进程拉起 stdio echo server → 落盘 → 跨进程 `mcp list` 可见 → 装配期注册 `mcp.<名>.echo` → `mcp remove` 摘除；不可达端点告警跳过且不落盘（锚点：`::test_cli_add_list_remove_roundtrip`、`::test_assembly_registers_remote_tools`、`::test_unreachable_endpoint_degrades_without_blocking`、`::test_cli_add_unreachable_does_not_persist`） |
 
 ## 6. 进化引擎（TC-EVO）
 

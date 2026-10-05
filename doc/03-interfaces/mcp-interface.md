@@ -137,7 +137,48 @@ class MCPServer(Plugin):
 
 ---
 
-## 7. 错误码
+## 7. 端点注册表与 CLI 命令（change `0074`）
+
+`mcp add` 的成果必须活过**一次性 CLI 进程**（每次调用都新建 installer / client），故端点落
+`$CORE_STATE_DIR/mcp-endpoints.json`（同 `checkpoints.jsonl` / `pets.json` 的状态目录约定，**原子写**：
+tmp + `os.replace`）。
+
+```python
+def mcp_endpoints_path() -> Path: ...                 # $CORE_STATE_DIR/mcp-endpoints.json
+def default_endpoint_name(source: str, command: str | None = None) -> str: ...
+                                                      # --name > URL 主机名 > 命令基名
+@dataclass(frozen=True)
+class EndpointRecord:
+    name: str
+    source: str
+    transport: str | None = None
+    command: str | None = None
+    args: list[str] = field(default_factory=list)
+    def manifest(self) -> dict[str, Any]: ...         # 转 _install_mcp 的消费口径（单一解析点）
+    def asset(self) -> InstallableAsset: ...          # kind=MCP, source=MCP_ENDPOINT
+
+class MCPEndpointRegistry:
+    def __init__(self, path: Path) -> None: ...
+    def list(self) -> list[EndpointRecord]: ...       # 按名排序（读盘即最新，跨进程可见）
+    def get(self, name: str) -> EndpointRecord | None: ...
+    def add(self, record: EndpointRecord) -> None: ...  # 重名 → MCPError(ENDPOINT_NAME_CONFLICT)
+    def remove(self, name: str) -> bool: ...
+```
+
+- **命令形状**：`mcp add <endpoint> [--name N] [--transport T] [--command C] [--args ...]`；
+  `mcp remove <name>`；`mcp list`。
+- **先连通验证再落盘**：`mcp add` 走既有安装管线（连接 + `initialize` 握手 + 适配注册），**连不上不持久化**
+  —— 否则此后每次装配都徒劳重试一个打不通的端点。
+- **`mcp remove` 对称**：先经安装管线卸载（释放连接 / 子进程），再删记录（失败不删记录）。
+- **`mcp list` 不连接**：列表是配置面事实；工具面在装配后由 agent 的工具集呈现。
+- **装配期注册**：组合根装配时读回注册表 → 经**同一安装管线**连接 → 远端工具注册进本地工具集，
+  命名 `mcp.<端点名>.<工具>`（`handle_id` 取安装名 ⇒ **跨进程稳定**，非随机 id）。
+- **降级口径**：单个端点不可达 **只 `warnings.warn` 跳过**，不阻断装配；注册表损坏 / 条目残缺同样
+  告警跳过（不静默丢弃，也不阻断启动）。
+
+---
+
+## 8. 错误码
 
 | code | 含义 |
 |---|---|
@@ -149,10 +190,11 @@ class MCPServer(Plugin):
 | `PERMISSION_DENIED` | 外部调用未授权工具（server 侧越权） |
 | `MCP_UNAVAILABLE` | MCP 服务端不可用（熔断） |
 | `TOOL_NAME_CONFLICT` | 远程工具与本地工具重名 |
+| `ENDPOINT_NAME_CONFLICT` | 端点名已存在（拒绝静默覆盖既有端点） |
 
 ---
 
-## 8. 关联
+## 9. 关联
 
 - 模块：`02-modules/mcp.md`
 - 工具契约：`tool-use-interface.md`

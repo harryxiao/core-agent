@@ -81,7 +81,12 @@ class MCPClient:
     def check(self) -> bool:
         return True
 
-    def connect(self, endpoint: MCPEndpoint) -> ServerHandle:
+    def connect(self, endpoint: MCPEndpoint, *, handle_id: str | None = None) -> ServerHandle:
+        """连接端点并握手。
+
+        ``handle_id`` 决定远端工具的本地命名（``mcp.<handle_id>.<工具>``）：**命名安装**
+        （``add``）传安装名 ⇒ 工具名跨进程稳定（端点持久化的前提）；匿名连接缺省取随机 id。
+        """
         transport = self._make_transport(endpoint)
         try:
             transport.connect(endpoint)
@@ -96,7 +101,7 @@ class MCPClient:
         if version != PROTOCOL_VERSION:
             transport.close()
             raise MCPError(MCPErrorCode.MCP_PROTOCOL_MISMATCH, f"协议版本不匹配: {version}")
-        handle = ServerHandle(handle_id=uuid.uuid4().hex, endpoint=endpoint)
+        handle = ServerHandle(handle_id=handle_id or uuid.uuid4().hex, endpoint=endpoint)
         self._transports[handle.handle_id] = transport
         self._endpoints[handle.handle_id] = endpoint
         return handle
@@ -164,7 +169,9 @@ class MCPClient:
         之后进入现有连接管理（心跳 / 复用逻辑不改）。
         """
         endpoint = self._endpoint_for(source, transport=transport, command=command, args=args)
-        handle = self.connect(endpoint)
+        # 同名重装先释放旧连接：handle_id 即安装名，就地覆盖会漏关子进程 / socket。
+        self.remove(name)
+        handle = self.connect(endpoint, handle_id=name)
         self._named[name] = handle
         self._sources[name] = PluginSource.MCP_ENDPOINT
         return handle

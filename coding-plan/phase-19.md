@@ -29,6 +29,7 @@
   **明确不做**：`features` 未知名告警与值强转（**E20①**，仍在账；E20② 已随 change `0072` 关闭）。
 - **E20② + E23（feature flag 取值被强转 / CLI 面零消费）已于 change `0072` 关闭**（ADR-0069）：规格明文的三条输入通道实测**只有两条半生效** —— `--feature NAME[=BOOL]` **零消费**（静默无效）、`features.<模块>: off` 之类被 `bool()` 静默当作**开启**。**改代码向规格靠拢**（与 E12 / E11② 同型）：取值收敛到**单一归一/校验点**（`true/false`·`yes/no`·`on/off`·`1/0` + 原生布尔，其余**校验期拒绝并阻断启动**），CLI 面经覆盖层 `features.<模块>` 接入优先级链并支配装配。**E20①（段内未知模块名无告警）保持开放** —— 规格「配置校验与生效」明文限告警口径于**顶层段名**，补齐须**先改规格**；**新增 E24**（env 前缀实现为复数 `CORE_FEATURES_`、规格/文档写单数 `CORE_FEATURE_<模块>`，改名属对外破坏性变更，**待裁决**）；顺带订正 `doc/00-product/user-guide.md` 中「feature flag 缺省关闭」的陈旧措辞（change `0067` 订正规格时漏改）与三面取值口径。
 - **B3（MCP Server 模式 stdio 事件循环）已于 change `0073` 关闭**（ADR-0070）：规格「MCP Server 模式」场景「stdio 本地挂载」要求外部 agent 拉起本 server 并握手调工具，`MCPServer` 的方法级行为早已齐备却**没有事件循环**把它们接到 JSON-RPC 上（`serve()` 只绑连接即返回，CLI `mcp serve` 落「已识别，尚未接线」）⇒ 场景在生产**不可达**。**改代码向规格靠拢**（与 E12 / E11② 同型）：`serve_stdio(endpoint)` 以换行分帧 JSON-RPC 承载 stdio 事件循环（按 `id` 应答 / 无 `id` 通知不应答 / 非法行跳过 / EOF 退出），`mcp serve` 接线并在 `_HANDLERS` 注册；**单条请求异常隔离为错误应答、绝不终止循环**；同批补齐**文档已写而代码缺席**的暴露面契约 —— 对外名 `core.<tool_id>`、白名单接受裸名与带前缀两种写法、`mcp.*` 远程工具**禁止二级代理**；协议版本提为共享常量 `core.mcp.models.PROTOCOL_VERSION`。**新增 B6/B7 两行**：wire 形状沿用仓内既有约定（**非**标准 MCP envelope）⇒ 第三方客户端直接挂载尚不可用；默认暴露面沿用 `_is_readonly` 粗粒度启发式 ⇒ `tools.delegate` / `tools.web_fetch` 亦在默认暴露面。
+- **B4（`mcp` CLI 接线 + 端点注册表持久化）已于 change `0074` 关闭**（ADR-0071）：规格「MCP Server 安装与移除」五条场景**全部以 CLI 为锚**（`WHEN 执行 mcp add`），而 `entry._mcp` 对非 `serve` 子命令落「已识别，尚未接线」兜底 ⇒ 场景在生产**不可达**；安装管线（change `0054`）本身齐备，缺三件：① CLI 接线；② **跨进程持久化**（CLI 是一次性进程，`PluginInstaller._assets` 随之蒸发）；③ **稳定工具命名**（`connect` 用 `uuid4().hex`，工具名 `mcp.<uuid>.<工具>` 每次装配都不同，与模块文档「`mcp.<server>.<tool>`」不符）。**改代码向规格靠拢**（与 E12 / E11② / B3 同型）：端点注册表落 `$CORE_STATE_DIR/mcp-endpoints.json`（**状态非配置**，原子写）；`mcp add` **先握手成功再落盘**；命名安装以**安装名**作 `handle_id`（`mcp.<名>.<工具>` 跨进程稳定）+ 重名拒绝（`ENDPOINT_NAME_CONFLICT`，不静默覆盖）；组合根**装配期**读回并经同一安装管线连接注册，**单端点不可达只告警跳过**（坏端点不得让整个系统不可用）；`mcp remove` 对称（先卸载释放连接/子进程、再删记录）。**排查记录**：`mcp add --command C` 的 argparse `dest` 曾与顶层 `add_subparsers(dest="command")` 冲突，把 `args.command` 覆盖成 `None` ⇒ `mcp add` **静默落进 Textual REPL 并阻塞**（已改 dest 为 `mcp_command`/`mcp_args`）。
 - **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A5、E2/E4/E5 全归此（A4 已随 change `0055` 关闭、E3 已随 change `0057` 关闭）。
 - **一条值得单独记的形态问题**：`cli-contract-baseline.md` 的**内置工具契约与实现已对不上账**（见 E7）——契约列的 5 个工具在代码里从未存在。
 
@@ -36,7 +37,7 @@
 |---|---|---|---|
 | A Phase 18 收口遗留 | 11 | 中 | 否 |
 | E 早期 Phase 未闭合项 | 21 | 中 | 否 |
-| B Phase 12 MCP（部分关闭） | 7 | 低（B1 client 侧 / B3 服务端 stdio / B5 白名单已闭） | 否（可绕开） |
+| B Phase 12 MCP（部分关闭） | 7 | 低（B1 client 侧 / B3 服务端 stdio / B4 CLI 接线 / B5 白名单已闭） | 否（可绕开） |
 | C 真实外部后端未接 | ~20 处 | 低 | 否 |
 | D 文档与仓库杂项 | 6（4 已关闭） | 无 | 否 |
 | F 验收勾选状态 | ✅ 已清尾（6 组核实完毕） | 无 | 否 |
@@ -84,10 +85,10 @@
 | E22 | E | `config get` 同型缺陷（`resolve(cli=, env=)` 漏 yaml 层） | `entry.py:372` 与 E21 同一缺陷类（CLI 只解析两层）；因开发机存在本地 `config.yaml` 且既有用例断言缺省值，改动会变更该命令输出语义 ⇒ 单独裁决 | 低 | E21 收口（change `0070`） |
 | E23 | E | ~~`--feature NAME[=BOOL]` CLI 面零消费~~ | ✅ 已关闭（change `0072`，ADR-0069）：`entry._cli_overrides` 收进覆盖层 `features.<模块>`，CLI 面**真的**参与优先级链并支配装配（组合根端到端用例锁住）；裸名视为开、语法非法在解析点拒绝 | 低 | — |
 | E24 | E | env 前缀实现与规格不符 | 实现读 `CORE_FEATURES_<模块>`（**复数**，与段名 `features` 一致），规格 + 接口/模块文档写 `CORE_FEATURE_<模块>`（**单数**），user-guide 写复数 ⇒ 三处不一致；改名**对外可观测**（破坏既有部署 env），**待裁决** | 低 | 用户裁决 |
-| B1 | B | Phase 12 MCP 安装/传输/安全（client 侧） | 🔶 **部分关闭（change `0054`）**：stdio 传输 + `add` 分流 + 沙箱/白名单/确认门接线 + 组合根装配已落地（ADR-0057）；**余** http 会话 → B2、服务端 stdio → B3、CLI 接线 → B4、白名单配置 → B5 | 低 | 无 |
+| B1 | B | Phase 12 MCP 安装/传输/安全（client 侧） | 🔶 **部分关闭（change `0054`）**：stdio 传输 + `add` 分流 + 沙箱/白名单/确认门接线 + 组合根装配已落地（ADR-0057）；**余** http 会话 → B2（服务端 stdio B3 / CLI 接线 B4 / 白名单 B5 均已关闭） | 低 | 无 |
 | B2 | B | 远端 http/streamable-http 会话 | `build_http_transport` 仅落地「白名单守卫 + SDK 缺失降级 + 会话待接入报错」；`Mcp-Session-Id`/SSE/headers 未实现 | 低 | mcp SDK（离线不可装） |
 | B3 | B | ~~`MCPServer.serve` stdio 事件循环~~ | ✅ 已关闭（change `0073`，ADR-0070）：`serve_stdio` 换行分帧事件循环 + `mcp serve` 接线 + `core.` 命名空间 + 禁二级代理 + 共享协议常量；端到端用例用本仓 client 拉起真实子进程锁住 | 低 | — |
-| B4 | B | `mcp` CLI 接线 + 端点注册表落盘 | CLI `mcp serve/list/add/remove` 仍 stub；`MCPClient.add`/`InstallDispatcher` 已通（`0054`），缺 CLI→installer 与端点持久化 | 低 | 无 |
+| B4 | B | ~~`mcp` CLI 接线 + 端点注册表落盘~~ | ✅ 已关闭（change `0074`，ADR-0071）：`mcp add/list/remove` 接线（先连通验证再落盘）+ 端点注册表 `$CORE_STATE_DIR/mcp-endpoints.json`（原子写）+ 装配期连接注册（稳定命名 `mcp.<端点名>.<工具>`）+ 不可达端点降级不阻断（注册表损坏同口径）+ 重名 `ENDPOINT_NAME_CONFLICT` | 低 | — |
 | B5 | B | 出站白名单不可配 | ✅ **已关闭（change `0071`）**：`permission.sandbox.host_allowlist`（CSV 标量，ConfigSpec 单一真源三面）+ 校验期拒绝非法条目 + 组合根注入（缺省空 = fail-closed 不变），ADR-0068 | 低 | ~~E10 配置门控~~（已闭） |
 | B6 | B | MCP wire envelope 未对齐标准 | `tools/list` 裸列表 / `tools/call` 直出 `CallResult` —— 与仓内 client/替身/echo server 三方一致（change `0054` 约定），但非标准（`{"tools":[...]}` / `{"content":[...],"isError":...}`）⇒ Claude Code / Cursor **直接挂载不可用**；对齐属独立变更 | 低 | 用户裁决 |
 | B7 | B | 默认暴露面启发式过粗 | `_is_readonly`（coeffects 不含 `write`）⇒ `tools.delegate` / `tools.web_fetch` 亦默认对外暴露（前者可驱动子 loop、后者有网络出站）；是否收窄为「显式白名单才出」待裁决 | 低 | 用户裁决 |
@@ -589,9 +590,33 @@
 - **转出**：**B6**（wire envelope 未对齐标准 ⇒ 第三方客户端挂载受限）、**B7**（默认暴露面启发式过粗）。
 - **参考**：`archive/2026-10-05-0073-mcp-server-stdio-loop/`。
 
-### B4 `mcp` CLI 接线 + 端点注册表持久化 — ⏭ 待开工
+### B4 `mcp` CLI 接线 + 端点注册表持久化 — ✅ 已关闭（change `0074`）
 
-- **残留**：CLI `mcp serve/list/add/remove` 仍为 stub。`0054` 已把 `MCPClient.add` 与 `InstallDispatcher` 打通，缺的是 **CLI → installer 接线** 与**已安装端点的注册表落盘**（`remove` 的资源释放已随 `close` 终止子进程具备）。
+- **现象**：规格「MCP Server 安装与移除」五条场景全部以 CLI 为锚（`WHEN 执行 mcp add`），而 `entry._mcp` 对非
+  `serve` 子命令落「已识别，尚未接线」兜底 ⇒ **场景在生产不可达**（与 B3 同型的「CLI 面缺席」）。
+- **根因**：安装管线本身齐备（`0054`：`MCPClient.add` → 适配 → `ToolProvider.register` / `remove` → 反注册 + `close`
+  终止子进程），缺的是三件**外围**事：① **CLI → installer 接线**；② **跨进程持久化** —— CLI 是**一次性进程**，
+  `PluginInstaller._assets` 随进程蒸发，`mcp add` 的成果无处可寻；③ **稳定工具命名** —— `connect` 以 `uuid4().hex`
+  作 `handle_id`，工具名 `mcp.<uuid>.<工具>` **每次装配都不同**，与 `02-modules/mcp.md` §3.1「包装为
+  `mcp.<server>.<tool>`」明文不符。
+- **裁决**：属「**规格要求 X、实现没有**」型（同 E12/E11②/B3）⇒ **改代码向规格靠拢**，`mcp` spec 相应
+  **MODIFIED**（补 CLI 形状 + 持久化 + 装配期注册 + 降级四组约束条款）。
+- **关闭动作**（change `0074-mcp-endpoint-registry`，2026-10-05，**ADR-0071**）：
+  ① `src/core/mcp/endpoints.py`（新）：`mcp_endpoints_path()` / `EndpointRecord`（+`manifest()` 单一解析点 /
+  `asset()`）/ `default_endpoint_name()`（`--name` > URL 主机名 > 命令基名）/ `MCPEndpointRegistry`
+  （`list`/`get`/`add` 重名拒 / `remove`，**原子写** tmp + `os.replace`；损坏与残缺条目**告警降级**）；
+  ② `MCPClient.connect(endpoint, *, handle_id=None)`：命名安装以**安装名**作句柄（工具名跨进程稳定）；
+  `add` 内先 `remove(name)` 释放旧连接（同名重装不得漏关子进程/socket）；
+  ③ `errors.py` 增 `ENDPOINT_NAME_CONFLICT`；
+  ④ `runtime.py`：装配期读注册表 → 逐端点经**同一安装管线**安装，**单端点异常只 `warnings.warn` 跳过**；
+  ⑤ `entry.py`：`_mcp_add` / `_mcp_list` / `_mcp_remove` + `mcp add --name/--transport/--command/--args`
+  （**先连通验证再落盘**；`remove` 先卸载再删记录；`list` **不连接**）。
+- **验证**：先红后绿 —— `tests/test_mcp_endpoints.py`（新，21 例）覆盖注册表落盘/读回/删除/原子写/损坏降级、
+  名称派生与重名拒绝、**稳定命名**（两个 client 实例同名安装工具名一致）、**装配期注册**（真 stdio echo server）
+  与**降级**（不可达端点告警但不阻断）、**CLI 端到端真实子进程**（`add` → `list` → `remove` 往返 / 连不上不落盘 /
+  重名拒绝 / 未知名失败）。四门全绿（921 tests / 29 specs）。
+- **转出**：无（B6/B7 系 B3 收口时新报，与本项无关）。
+- **参考**：`openspec/changes/archive/2026-10-05-0074-mcp-endpoint-registry/`。
 
 ### B5 出站白名单配置项 — ✅ 已关闭（change `0071`）
 
@@ -730,7 +755,7 @@
 2. **A2 + E2 合并做**（同一根因）：会话标识透传 + 每会话独立 loop/memory + `UIAPILayer.compact` 接真。 ✅ **已完成**（change `0048-session-scoped-memory`：标识透传 + `compact` 接真 + `get_memory` 按会话过滤；**未采**每会话独立实例，理由见该 change design 决策 1/2）。
 3. **A1**（记忆驱动侧）：遗忘节拍。宜在 A2 之后（会话维度不生效时，衰减分组也是错的）。 ✅ **已完成**（change `0049-memory-maintenance-cadence`：loop 收尾维护节拍 + `memory maintain` CLI）。
 4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义。 ✅ **A3 全闭 + A5 + A10 + E4 已完成**（change `0050` 技能态落盘 / ADR-0053；change `0051` 进化冷路径驱动面 + 观察窗口落盘 + 批次成功率采样 / **ADR-0054**；A10 为本次走查新增的「冷路径无驱动面」发现；**E4** 见 change `0053` —— pet 纳入组合根 + 注册表落盘 + WebUI NL 入口 / **ADR-0056**）。✅ **A4 已完成**（change `0055-evolution-confirm-surface`：候选稳定身份 + 队列落盘 + `evolve` 操作面签发审批单 / **ADR-0058**）→ 本步**全闭**。
-5. **B1**（独立轨）：🔶 **client 侧已关闭**（change `0054-mcp-stdio-transport`，ADR-0057 —— stdio 传输 / `add` 分流 / 消费侧安全接线 / 组合根装配；ADR-0043 的 ADR + spec delta 早已就绪）。**余 2 行后续**：B2 http 会话（需 SDK）/ B4 CLI 接线。✅ **B3 已关闭**（change `0073`／ADR-0070：`serve_stdio` 事件循环 + `mcp serve` 接线 + `core.` 命名空间 + 禁二级代理；**新报 B6/B7** —— wire envelope 未对齐标准 / 默认暴露面启发式过粗，均待裁决）。✅ **B5 已关闭**（change `0071`，ADR-0068）。
+5. **B1**（独立轨）：🔶 **client 侧已关闭**（change `0054-mcp-stdio-transport`，ADR-0057 —— stdio 传输 / `add` 分流 / 消费侧安全接线 / 组合根装配；ADR-0043 的 ADR + spec delta 早已就绪）。**余 1 行后续**：B2 http 会话（需 SDK）。✅ **B4 已关闭**（change `0074`／ADR-0071：`mcp add/list/remove` 接线 + 端点注册表落盘（原子写）+ 装配期连接注册（稳定命名 `mcp.<端点名>.<工具>`）+ 不可达端点降级不阻断；排查记录见 §0/§4 —— `--command` 的 argparse `dest` 曾与顶层 `dest="command"` 冲突，把 `mcp add` 静默送进 REPL）。✅ **B3 已关闭**（change `0073`／ADR-0070：`serve_stdio` 事件循环 + `mcp serve` 接线 + `core.` 命名空间 + 禁二级代理；**新报 B6/B7** —— wire envelope 未对齐标准 / 默认暴露面启发式过粗，均待裁决）。✅ **B5 已关闭**（change `0071`，ADR-0068）。
 6. **E1 + E7 + E8**（契约与中间件）：✅ **全闭** —— E1 见 change `0052`（ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；**E7/E8 见 change `0056`（ADR-0059）**：E7 裁决「规格为准」→ 纯文档订正；E8 三处缺口修复，第 5 条转出为 E18。
 7. **E3 / E6**（规格裁决）：✅ **全闭** —— 裁决「A 全做・解除 deferred」；**E3** 见 change `0057`（ADR-0060：神通注册 + 专属路由作用域 + 按兽 loop/共享记忆注入 + CLI 走组合根）；**E6** 无需代码（context 压实启发式已由 change `0041` 规格订正为有意行为，余两项转 A7/A8）。
 8. **A7 + E6（miss 复用）**（低优先，同族）：✅ **全闭** —— **A7** 见 change `0058`（ADR-0061：排序分 = 基础分 × 历史成功率因子；预筛转出 A11）；**E6** 无需代码（见上，规格已由 change `0041` 订正）。

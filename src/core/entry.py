@@ -43,13 +43,24 @@ from core.deployment import (
 )
 from core.evolution import EvolutionError, GenerationCandidate
 from core.loop import LoopPlugin
-from core.mcp import MCPEndpoint, MCPServer
+from core.mcp import (
+    EndpointRecord,
+    MCPClient,
+    MCPEndpoint,
+    MCPEndpointRegistry,
+    MCPError,
+    MCPServer,
+    default_endpoint_name,
+    mcp_endpoints_path,
+)
 from core.orchestration import Plan, TaskScheduler, plan_from_dict
 from core.permission import (
     ApprovalChannel,
     ApprovalRequest,
     ApprovalTicket,
     ApprovalWorkflow,
+    SandboxManager,
+    SandboxPolicy,
 )
 from core.pet.core import PetManager
 from core.pet.library import load_persona, load_personas
@@ -147,9 +158,12 @@ def _add_mcp_parser(sub: Any) -> None:
     mcp_sub.add_parser("list", help="列出已注册 MCP 端点")
     add = mcp_sub.add_parser("add", help="运行期添加 MCP 端点")
     add.add_argument("endpoint")
+    add.add_argument(
+        "--name", metavar="N", help="端点名（缺省派生：URL → 主机名 / 命令行 → 命令基名）"
+    )
     add.add_argument("--transport", metavar="T")
-    add.add_argument("--command", metavar="C")
-    add.add_argument("--args", nargs="*", metavar="A")
+    add.add_argument("--command", dest="mcp_command", metavar="C")
+    add.add_argument("--args", dest="mcp_args", nargs="*", metavar="A")
     remove = mcp_sub.add_parser("remove", help="移除 MCP 端点")
     remove.add_argument("name")
 
@@ -442,11 +456,94 @@ def _config_set(mgr: ConfigManager, args: argparse.Namespace) -> int:
 
 
 def _mcp(args: argparse.Namespace) -> int:
-    """MCP 端点管理：serve 以 stdio 事件循环把本机工具对外提供。"""
+    """MCP 端点管理：serve 对外提供工具；add / list / remove 管理已安装端点。"""
     if args.mcp_cmd == "serve":
         return _mcp_serve(args)
-    print(f"mcp {args.mcp_cmd} 已识别，尚未接线（对应里程碑未落地）", file=sys.stderr)
+    if args.mcp_cmd == "add":
+        return _mcp_add(args)
+    if args.mcp_cmd == "list":
+        return _mcp_list()
+    if args.mcp_cmd == "remove":
+        return _mcp_remove(args)
+    print("用法: core-agent mcp {serve|add|list|remove} ...", file=sys.stderr)
     return 0
+
+
+def _mcp_add(args: argparse.Namespace) -> int:
+    """`mcp add <endpoint>`：**先连通验证再落盘** —— 连不上的端点不持久化。"""
+    name = args.name or default_endpoint_name(args.endpoint, args.mcp_command)
+    if not name:
+        print("无法从来源推断端点名，请用 --name 指定", file=sys.stderr)
+        return 1
+    registry = MCPEndpointRegistry(mcp_endpoints_path())
+    if registry.get(name) is not None:
+        print(f"端点名已存在: {name}（先 mcp remove，或用 --name 换名）", file=sys.stderr)
+        return 1
+    try:
+        manager = ConfigManager(yaml_path=args.config, cli=_cli_overrides(args))
+        manager.load()
+    except Exception as exc:  # noqa: BLE001 — 配置失败统一转 stderr 退出码
+        print(f"配置错误: {exc}", file=sys.stderr)
+        return 1
+    record = EndpointRecord(
+        name=name,
+        source=args.endpoint,
+        transport=args.transport,
+        command=args.mcp_command,
+        args=cast("list[str]", args.mcp_args or []),
+    )
+    tools = ToolProvider()
+    try:
+        _mcp_dispatcher(manager, tools).install(record.asset())  # 连接 + 适配 + 注册
+        registry.add(record)  # 连接成功才落盘
+    except (DomainError, MCPError) as exc:
+        print(f"安装失败: {exc}", file=sys.stderr)
+        return 1
+    print(f"已安装 MCP 端点: {name}（{_describe_endpoint(record)}）")
+    for tool in tools.active_tools():
+        print(f"  - {tool.tool_id}")
+    return 0
+
+
+def _mcp_list() -> int:
+    """列出已安装端点（读注册表，**不建连接** —— 列表是配置面事实）。"""
+    print("已安装 MCP 端点:")
+    for record in MCPEndpointRegistry(mcp_endpoints_path()).list():
+        print(f"  {record.name}\t{_describe_endpoint(record)}")
+    return 0
+
+
+def _mcp_remove(args: argparse.Namespace) -> int:
+    """摘除已安装端点，并走完卸载生命周期（本进程若持有连接则就地释放）。"""
+    registry = MCPEndpointRegistry(mcp_endpoints_path())
+    record = registry.get(args.name)
+    if record is None:
+        print(f"端点未安装: {args.name}", file=sys.stderr)
+        return 1
+    try:
+        # 一次性 CLI 进程内本无连接可放（连接随持有它的进程退出释放），此处走完整生命周期
+        # 以保持与安装对称；长驻进程（如 `mcp serve`）内的连接需重启进程才真正断开。
+        InstallDispatcher(skill_library=SkillLibrary(), tool_provider=ToolProvider()).uninstall(
+            record.asset()
+        )
+    except (DomainError, MCPError) as exc:
+        print(f"卸载失败: {exc}", file=sys.stderr)
+        return 1
+    registry.remove(record.name)
+    print(f"已移除 MCP 端点: {record.name}")
+    return 0
+
+
+def _describe_endpoint(record: EndpointRecord) -> str:
+    """端点一行描述：传输 + 目标（命令行或 URL）。"""
+    return f"{record.transport or '自动'} {record.command or record.source}"
+
+
+def _mcp_dispatcher(manager: ConfigManager, tools: ToolProvider) -> InstallDispatcher:
+    """CLI 面的安装执行器：出站策略与**装配期同口径**（白名单缺省空 = fail-closed 全拒）。"""
+    policy = SandboxPolicy(host_allowlist=manager.sandbox_host_allowlist())
+    client = MCPClient(sandbox=SandboxManager(policy=policy), policy=policy)
+    return InstallDispatcher(skill_library=SkillLibrary(), tool_provider=tools, mcp_client=client)
 
 
 def _mcp_serve(args: argparse.Namespace) -> int:

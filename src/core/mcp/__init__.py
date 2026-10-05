@@ -2,6 +2,12 @@
 
 from .adapter import MCPToolAdapter
 from .client import MCPClient
+from .endpoints import (
+    EndpointRecord,
+    MCPEndpointRegistry,
+    default_endpoint_name,
+    mcp_endpoints_path,
+)
 from .errors import MCPError, MCPErrorCode
 from .models import (
     PROTOCOL_VERSION,
@@ -26,9 +32,11 @@ from .transport import (
 
 __all__ = [
     "CallResult",
+    "EndpointRecord",
     "FakeTransport",
     "MCPClient",
     "MCPEndpoint",
+    "MCPEndpointRegistry",
     "MCPError",
     "MCPErrorCode",
     "MCPServer",
@@ -45,4 +53,6 @@ __all__ = [
     "Transport",
     "build_http_transport",
     "build_transport",
+    "default_endpoint_name",
+    "mcp_endpoints_path",
 ]
