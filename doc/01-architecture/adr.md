@@ -1883,6 +1883,46 @@
 
 ---
 
+## ADR-0091：token 预算由模型上下文窗口**派生**（减固定输出头寸），非独立开关；非法取值校验期阻断
+
+- **背景**：`TOKEN_BUDGET_EXCEEDED` 的阈值与「单任务最大循环次数」此前是 `DefaultLoop` 的**写死 ctor 缺省**
+  （`token_budget=65536` / `max_rounds=10`，`loop/default.py`），而组合根四处 `DefaultLoop(...)`
+  （主 / 子 agent / 神兽 / 宠物 loop）**都不传参** ⇒ 用户既不能经 CLI/env/yaml 调，也没有 UI 入口。
+  「Context Window Size」（模型上下文窗口，如 128k）在配置里**根本不存在**，预算与之**完全脱钩** ——
+  换一个大窗口模型，预算仍卡在写死的 65536（浪费上下文）；换一个小窗口模型，预算仍是 65536（爆窗风险）。
+  用户诉求：三面可配（CLI 参数 / 配置文件 / WebUI 设置页），未配则回落代码内部预设缺省。
+- **决策**：
+  ① **预算由窗口派生，不新开 `loop.token_budget` 开关**（用户裁决）：`token_budget = context_window - output_reserve`
+     （仅当 `context_window > 0`），`output_reserve` 缺省 `8192`；未配窗口 ⇒ 回落内置缺省 `65536`
+     （**与变更前逐位一致**，行为等价性可验证）。理由是**少一层会与窗口矛盾的开关** —— 显式预算键一旦与
+     窗口不一致，就产生「窗口 8k 却配了 128k 预算」这类无解歧义；派生式无此病。
+  ② **口径取「减固定输出头寸」而非按比例**：模型调用一次要同时装下**输入（prompt/记忆/历史）与输出（推理+回答）**，
+     而预算是**输入侧**压实阈值。窗口是二者的共享上限，故可用预算 = 窗口 − **为输出保留的头寸**。
+     比例口径（如 `0.8 × 窗口`）隐含「输出随窗口线性增长」，但输出需求与窗口**不成比例**（128k 窗口的答案
+     不会比 8k 窗口长 16 倍）；固定头寸与「推理档位」实际占用量级一致，且**可解释**（差额就是留给输出的）。
+  ③ **三键走 ConfigSpec 单一真源**：`llm.context_window` / `loop.output_reserve` / `loop.max_rounds`
+     ⇒ CLI flag / env / yaml **三面自动生成**，优先级链 CLI > env > yaml > 缺省。`llm` 是结构化段 ⇒
+     `context_window` 进 `LLMConfig`；`loop` 照 §2.4/§2.6 先例**驻留 `extra`**（不新增结构化段）。
+  ④ **校验期拒绝，绝不静默兜底**：`context_window` 非 `0`/≥1 整数（**显式排除 `bool`** —— `isinstance(True, int)`
+     为真）、`output_reserve` 非 ≥0 整数、`max_rounds` 非 ≥1 整数，一律在 `validate_schema` 判错、**阻断启动**；
+     并**交叉校验** `context_window > output_reserve`。**为何必须阻断**：`token_budget <= 0` 在 loop 里的语义是
+     「**关闭** token 维度」（`loop/default.py` 的 `_should_compact` 与硬停分支），静默兜底会把一个配置错误
+     伪造成「预算维度失效」（更危险的**静默降级**）；宁可启动失败也不掩盖。
+  ⑤ **组合根注入，不做运行期热更新**（本 change 边界）：`build_runtime` 经 `config.loop_limits()` 读出后注入
+     四处 `DefaultLoop(...)`。热更新（改配置即改**运行中** loop 的上限）归 change `0099`，WebUI 设置页归 `0100`。
+- **已知局限（须长期记在案）**：`ctx.token_used` 是 `len(str(...))//4` 的**粗估**（非模型回报的权威用量）
+  ⇒ 无论哪种口径都只是**近似**控制，不是精确窗口管理。真正的精确口径需接入模型 usage 回报，属后续项。
+- **影响**：`LLMConfig` 增 `context_window`（纯加法，缺省 `0` 保持旧行为）；`ConfigManager` 增 `loop_limits()`
+  （照 `circuit_breaker()` 形状）与两条校验器；`_KNOWN_EXTRA_SECTIONS` 加 `"loop"`；组合根四处 `DefaultLoop(...)`
+  补传参；`entry._key_to_patch` 接受 `loop.` 前缀且 `write_patch` 对 `extra.loop` **浅合并**。
+  **未配置时全链路行为与变更前逐位一致**（`10` / `65536`）。
+- **明确不做**：把 `ContextCompactor._ROUND_THRESHOLD`（轮数维度触发，`context/compactor.py`）纳入本项 ——
+  它独立于此议题，避免混入；新增显式 `loop.token_budget` 键（见 ①）；本 change 内做热更新 / 前端（见 ⑤，
+  分别归 `0099` / `0100`，三者顺序不可换：先有可配项，才有可热更的项，才有可编辑的界面）。
+- **规格**：MODIFIED「错误与预算控制」（loop）+ MODIFIED「LLM 提供商配置（必选）」/ ADDED「循环预算配置」（configuration）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1968,3 +2008,4 @@
 | ADR-0088 | 03-interfaces/plugin-registry-interface.md |
 | ADR-0089 | 03-interfaces/ui-interface.md |
 | ADR-0090 | 03-interfaces/permission-interface.md |
+| ADR-0091 | 03-interfaces/configuration-interface.md, 03-interfaces/loop-interface.md |

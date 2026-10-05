@@ -23,6 +23,7 @@ class LLMConfig:
     endpoint: str                  # 端点
     api_key_ref: str               # api_key 的 ${VAR} 引用（非明文）
     embedding_model: str = ""      # 记忆检索向量化模型（可选；空=不注入 embedder，回退词法）
+    context_window: int = 0        # 模型上下文窗口（可选；0=未配置，不派生预算 —— change 0098）
 
 @dataclass
 class IMConfig:
@@ -88,6 +89,11 @@ class ConfigManager:
 
     def circuit_breaker(self) -> tuple[int, float]:
         """熔断阈值/冷却查询 → ``(failure_threshold, cooldown_s)``（缺省 ``(5, 30.0)``），映射 config.constraints.*。"""
+
+    def loop_limits(self) -> tuple[int, int]:
+        """循环预算查询 → ``(max_rounds, token_budget)``（change 0098）：轮数取 ``loop.max_rounds``
+        （缺省 ``10``）；token 预算由 ``llm.context_window`` **派生**（窗口 - ``loop.output_reserve``，
+        缺省预留 ``8192``），未配窗口时回落内置缺省 ``65536``。"""
 
     def config_value(self, key: str) -> Any:
         """装配前单键解析（change 0070）：CLI > env > config.yaml > 缺省；不校验、不缓存，缺文件按无 yaml 层。"""
@@ -156,7 +162,7 @@ CLI 面 `--feature <模块>[=<布尔>]` 由 `entry._cli_overrides` 收进覆盖�
 **不再静默**：顶层段名不在**已知段**之内时，`validate_schema` 返回**告警**（含段名、已知段清单与「已收纳进 `extra` 且未做校验」提示），`load()` 经 `warnings.warn` 发出，**不阻断启动**、**不丢弃**该段（仍留在 `extra`）。
 
 - **已知段** = 五个结构化段（`llm` / `features` / `im` / `pet` / `judgment`）
-  + `ConfigSpec` 声明段（由 `map_to` 前缀导出）+ 有运行时语义的 `extra` 已知段（`permission`）。
+  + `ConfigSpec` 声明段（由 `map_to` 前缀导出）+ 有运行时语义的 `extra` 已知段（`permission` / `loop`）。
   新增 ConfigSpec 自动进白名单（单一真源，不另维护清单）。
 - **作用域**：只判**顶层段名**，不递归校验已知段内部的未知子键。
 - **例外：`features` 段子键（change `0085`，账本 E20①）** —— `features` 段子键是**模块名**，
@@ -223,3 +229,39 @@ CLI 面 `--feature <模块>[=<布尔>]` 由 `entry._cli_overrides` 收进覆盖�
   供「配置文件可能不存在」的前置判定使用；整份配置的校验仍归 `load()`。
 - **返回原文**：env/CLI 层为字符串，归一化（如 `entry._as_bool`）由调用方负责，与 `resolve` 口径一致。
 - 性能无关紧要：前置判定只读单键，不解析整份配置为 `AppConfig`。
+
+### 2.7 上下文窗口与循环预算可配（change `0098`）
+
+`TOKEN_BUDGET_EXCEEDED` 与「单任务最大循环次数」此前是 `DefaultLoop` 的**写死 ctor 缺省**
+（`65536` / `10`），组合根四处 `DefaultLoop(...)` **都不传参** ⇒ 用户无法调。本项把它们接入配置链，
+并新增**模型上下文窗口**作为预算的派生源（`llm` 是结构化段；`loop` 照 §2.4/§2.6 先例驻留 `extra`）：
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `llm.context_window` | `0`（= 未配置） | `0` 或 **≥1 的整数** | 模型上下文窗口；`> 0` 时参与派生 token 预算 |
+| `loop.output_reserve` | `8192` | **≥0 的整数** | 固定保留的输出头寸（推理/回答用），从窗口中扣除 |
+| `loop.max_rounds` | `10` | **≥1 的整数** | 单任务最大循环次数上限 |
+
+- **单一真源**：三键由 `ConfigSpec` 声明（`map_to="llm.context_window"` / `"loop.output_reserve"` /
+  `"loop.max_rounds"`，`exposure=ADVANCED`），自动获得 CLI flag（`--llm.context-window` /
+  `--loop.output-reserve` / `--loop.max-rounds`）、env（`CORE_LLM_CONTEXT_WINDOW` /
+  `CORE_LOOP_OUTPUT_RESERVE` / `CORE_LOOP_MAX_ROUNDS`）与优先级链（CLI > env > config.yaml > 缺省）。
+- **派生口径（固定保留头寸）**：`loop_limits()` 返回
+  `token_budget = context_window - output_reserve`（当 `context_window > 0`），否则回落内置缺省 `65536`
+  （**与变更前逐位一致**）；`max_rounds` 独立取 `loop.max_rounds`。**不**新开显式 `loop.token_budget` 键 ——
+  用户选的是「由窗口派生」，派生式即机制（少一层会与窗口矛盾的开关）。取舍详见 ADR-0091。
+- **校验期拒绝（不静默兜底）**：`llm.context_window` 非 `0`/≥1 整数（含 `bool`）、`loop.output_reserve`
+  非 ≥0 整数、`loop.max_rounds` 非 ≥1 整数，均在 `validate_schema` 判为错误、**阻断启动**；
+  **交叉校验** `context_window > output_reserve`，否则报「窗口不敷输出预留」。
+  为何**必须**阻断而非兜底：`token_budget <= 0` 在 loop 里的语义是「**关闭** token 维度」，
+  静默兜底会把一个配置错误伪造成「预算维度失效」（更危险），详见 ADR-0091。
+- **构建前阻断**：`llm.context_window` 在 `_build_config` 即化为整数（结构化段原文不可追溯），
+  与 `_normalize_features` 同属「构建前阻断」通道；`loop.*` 取值原文在 `extra`，校验与消费同读原文。
+- **CLI 入口**：`entry._key_to_patch` 现接受 `llm.` / `features.` / `im.` / **`loop.`** 前缀
+  ⇒ `config set loop.max_rounds 3` 三面齐备；`write_patch` 对寄居 `extra` 的 `loop` 段**浅合并**
+  （整份拷贝会把 patch 静默丢弃 ⇒ 报成功却不生效）。
+- **消费方**：组合根 `build_runtime` 经 `config.loop_limits()` 读出后，**四处** `DefaultLoop(...)`
+  （主 / 子 agent / 神兽 / 宠物 loop）注入同一对参数。
+- 口径来源：`doc/openspec/specs/loop/spec.md`「错误与预算控制」（**MODIFIED**）、
+  `doc/openspec/specs/configuration/spec.md`「LLM 提供商配置（必选）」（**MODIFIED**）与
+  「循环预算配置」（**ADDED**）。

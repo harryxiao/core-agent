@@ -36,6 +36,11 @@ from .models import (
 _DEFAULT_FAILURE_THRESHOLD = 5
 _DEFAULT_COOLDOWN_S = 30.0
 
+# 循环预算缺省口径来源：doc/openspec/specs/loop/spec.md「错误与预算控制」（同上，配置层复述）
+_DEFAULT_MAX_ROUNDS = 10
+_DEFAULT_OUTPUT_RESERVE = 8192
+_DEFAULT_TOKEN_BUDGET = 65536
+
 # 配置项单一真源（全量声明）：CLI flag / env / yaml 三面由 ConfigSpec 生成，禁止硬编码第二真源。
 _CONFIG_SPECS: list[ConfigSpec] = [
     ConfigSpec(
@@ -163,6 +168,30 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_CONSTRAINTS_COOLDOWN_S",
         default=_DEFAULT_COOLDOWN_S,
         map_to="constraints.cooldown_s",
+    ),
+    ConfigSpec(
+        "llm.context_window",
+        "--llm.context-window",
+        "CORE_LLM_CONTEXT_WINDOW",
+        default=0,
+        map_to="llm.context_window",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "loop.output_reserve",
+        "--loop.output-reserve",
+        "CORE_LOOP_OUTPUT_RESERVE",
+        default=_DEFAULT_OUTPUT_RESERVE,
+        map_to="loop.output_reserve",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "loop.max_rounds",
+        "--loop.max-rounds",
+        "CORE_LOOP_MAX_ROUNDS",
+        default=_DEFAULT_MAX_ROUNDS,
+        map_to="loop.max_rounds",
+        exposure=ConfigExposure.ADVANCED,
     ),
 ]
 
@@ -298,6 +327,9 @@ class ConfigManager:
         errors.extend(_sandbox_errors(perm))
         cons = cast("dict[str, Any]", config.extra.get("constraints") or {})
         errors.extend(_circuit_breaker_errors(cons))
+        loop_raw = cast("dict[str, Any]", config.extra.get("loop") or {})
+        errors.extend(_loop_errors(loop_raw))
+        errors.extend(_window_reserve_errors(config.llm.context_window, loop_raw))
         warnings = self._unknown_section_warnings(config) + self._unknown_feature_warnings(config)
         return ValidationResult(ok=not errors, errors=errors, warnings=warnings)
 
@@ -391,6 +423,26 @@ class ConfigManager:
             float(raw.get("cooldown_s", _DEFAULT_COOLDOWN_S)),
         )
 
+    def loop_limits(self) -> tuple[int, int]:
+        """循环预算上限查询 → ``(max_rounds, token_budget)``。
+
+        对齐 loop「错误与预算控制」：`max_rounds` 缺省 ``10``；`token_budget` 由模型上下文窗口
+        **派生** —— ``llm.context_window > 0`` 时取 ``context_window - output_reserve``
+        （``output_reserve`` 缺省 ``8192``），未配置窗口时回落内置缺省 ``65536``
+        （与变更前逐位一致）。
+        取值已过校验（整数、窗口大于预留），故此处只做 env/CLI 字符串归一，不设二次兜底。
+        """
+        if self._config is None:
+            return _DEFAULT_MAX_ROUNDS, _DEFAULT_TOKEN_BUDGET
+        raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
+        rounds = _parse_int(raw.get("max_rounds", _DEFAULT_MAX_ROUNDS))
+        reserve = _parse_int(raw.get("output_reserve", _DEFAULT_OUTPUT_RESERVE))
+        max_rounds = _DEFAULT_MAX_ROUNDS if rounds is None else rounds
+        window = self._config.llm.context_window
+        if window > 0:
+            return max_rounds, window - (_DEFAULT_OUTPUT_RESERVE if reserve is None else reserve)
+        return max_rounds, _DEFAULT_TOKEN_BUDGET
+
     def sandbox_host_allowlist(self) -> list[str]:
         """出站网络白名单（缺省空 = fail-closed 全拒，安全默认）。
 
@@ -475,6 +527,7 @@ class ConfigManager:
             api_key_ref=str(llm_raw.get("api_key") or ""),
             reasoning_effort=_opt_str(llm_raw.get("reasoning_effort")),
             embedding_model=str(llm_raw.get("embedding_model", "")),
+            context_window=_llm_context_window(llm_raw),
         )
         features_raw = cast(dict[str, Any], merged.get("features") or {})
         features = _normalize_features(features_raw)
@@ -522,7 +575,7 @@ class ConfigManager:
 #   _KNOWN_EXTRA_SECTIONS —— 寄居 `extra` 但有运行时语义的已知段（本模块消费 permission.mode）；
 #   ConfigSpec 声明段（`map_to` 前缀）在 `_known_sections` 中并入 ⇒ 新增 Spec 自动进白名单。
 _STRUCTURED_SECTIONS = frozenset({"llm", "features", "im", "pet", "judgment"})
-_KNOWN_EXTRA_SECTIONS = frozenset({"permission"})
+_KNOWN_EXTRA_SECTIONS = frozenset({"permission", "loop"})
 
 # 权限模式四档口径来源：doc/openspec/specs/permission/spec.md「权限模式」
 # （配置层不 import 能力层，故词表在此复述；变更规格四档时两处同改）
@@ -549,6 +602,69 @@ def _circuit_breaker_errors(raw: dict[str, Any]) -> list[str]:
             f"非法熔断冷却: constraints.cooldown_s={raw.get('cooldown_s')}（须为 ≥0 的数值）"
         )
     return errors
+
+
+def _parse_int(value: Any) -> int | None:
+    """整数解析：``bool`` / 非数值 / 小数 → None（对齐 ``_as_number`` 口径）。"""
+    number = _as_number(value)
+    if number is None or number != int(number):
+        return None
+    return int(number)
+
+
+def _llm_context_window(raw: dict[str, Any]) -> int:
+    """llm 段 `context_window` 解析（结构化段 ⇒ **构建前阻断**，对齐 features 口径）。
+
+    取值范围为 ``0``（未配置）或 ≥1 的整数；``bool`` / 小数 / 非数值 / 负数一律当场拒绝 ——
+    原文一旦化为 int 便不可追溯，留到 ``validate_schema`` 已看不见原值。缺口径与下游耦合：
+    ``token_budget <= 0`` 在 loop 侧语义是「**关闭** token 维度」，放行非正预算等于把配置错误
+    静默变成「预算维度失效」。
+    """
+    value = raw.get("context_window", 0)
+    window = _parse_int(value)
+    if window is None or window < 0:
+        raise ConfigurationError(  # noqa: TRY003
+            f"非法上下文窗口: llm.context_window={value!r}（须为 0 或 ≥1 的整数）"
+        )
+    return window
+
+
+def _loop_errors(raw: dict[str, Any]) -> list[str]:
+    """循环预算取值校验（对齐 loop「错误与预算控制」）。
+
+    轮数上限须为 **≥1 的整数**、输出预留须为 **≥0 的整数**；``bool`` 视作非法
+    （``true`` 不是次数）。非法取值**阻断启动**：静默兜底会把配置错误变成运行时的诡异行为。
+    """
+    errors: list[str] = []
+    rounds = _parse_int(raw.get("max_rounds", _DEFAULT_MAX_ROUNDS))
+    if rounds is None or rounds < 1:
+        errors.append(
+            f"非法循环次数上限: loop.max_rounds={raw.get('max_rounds')}（须为 ≥1 的整数）"
+        )
+    reserve = _parse_int(raw.get("output_reserve", _DEFAULT_OUTPUT_RESERVE))
+    if reserve is None or reserve < 0:
+        errors.append(
+            f"非法输出预留: loop.output_reserve={raw.get('output_reserve')}（须为 ≥0 的整数）"
+        )
+    return errors
+
+
+def _window_reserve_errors(context_window: int, raw: dict[str, Any]) -> list[str]:
+    """交叉校验：窗口已配置却**不大于**输出预留 ⇒ 派生预算非正。
+
+    ``token_budget <= 0`` 在 ``DefaultLoop`` 侧的语义是「关闭 token 维度」⇒ 静默放行会把
+    「窗口配小了」变成「预算维度失效」。故与熔断阈值同口径：**校验期拒绝，不静默兜底**。
+    预留本身非法时由 ``_loop_errors`` 报出，此处不重复。
+    """
+    if context_window <= 0:
+        return []
+    reserve = _parse_int(raw.get("output_reserve", _DEFAULT_OUTPUT_RESERVE))
+    if reserve is None or context_window > reserve:
+        return []
+    return [
+        f"上下文窗口不敷输出预留: llm.context_window={context_window} ≤ "
+        f"loop.output_reserve={reserve}（派生 token 预算须为正）"
+    ]
 
 
 def _split_hosts(raw: str) -> list[str]:
@@ -671,6 +787,9 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
         "model": config.llm.model,
         "endpoint": config.llm.endpoint,
         "api_key": config.llm.api_key_ref,
+        "reasoning_effort": config.llm.reasoning_effort,
+        "embedding_model": config.llm.embedding_model,
+        "context_window": config.llm.context_window,
     }
     llm_raw.update(cast(dict[str, Any], patch.get("llm") or {}))
     features = dict(config.features)
@@ -690,6 +809,11 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
             corp_id=str(base["corp_id"]),
             secret_ref=str(base["secret"]),
         )
+    extra = dict(config.extra)
+    # 寄居 extra 的已知段（`loop`）须**浅合并**：整份拷贝会把 patch 静默丢弃 ⇒ 报成功却不生效。
+    loop_patch = cast(dict[str, Any], patch.get("loop") or {})
+    if loop_patch:
+        extra["loop"] = {**cast(dict[str, Any], extra.get("loop") or {}), **loop_patch}
     return AppConfig(
         llm=LLMConfig(
             provider=str(llm_raw["provider"]),
@@ -698,12 +822,13 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
             api_key_ref=str(llm_raw["api_key"]),
             reasoning_effort=_opt_str(llm_raw.get("reasoning_effort")),
             embedding_model=str(llm_raw.get("embedding_model", "")),
+            context_window=_llm_context_window(llm_raw),
         ),
         features=features,
         im=im,
         pet=config.pet,
         judgment=config.judgment,
-        extra=dict(config.extra),
+        extra=extra,
     )
 
 

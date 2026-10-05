@@ -471,6 +471,11 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         failure_threshold=failure_threshold, cooldown_s=cooldown_s
     )
 
+    # 循环预算上限（change 0098）：可经配置链设定，token 预算由 llm.context_window 派生
+    # （窗口 - 输出预留；未配窗口回落缺省 65536）。四个 loop（主 / 子 agent / 神兽 / 宠物）
+    # 同源同参。
+    max_rounds, token_budget = config.loop_limits()
+
     loop = DefaultLoop(
         planner=planner,
         memory=memory,
@@ -484,6 +489,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         cold_path=cold_path,
         middlewares=[constraints_chain.middleware],
         action_observers=[constraints_chain.observe_result],
+        max_rounds=max_rounds,
+        token_budget=token_budget,
     )
 
     # 子 Agent 独立 loop：各自 ToolProvider（不含 tools.delegate，结构上杜绝再委托），
@@ -520,6 +527,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
                 turn_observer=agent_turn,
                 middlewares=[constraints_chain.middleware],
                 action_observers=[constraints_chain.observe_result],
+                max_rounds=max_rounds,
+                token_budget=token_budget,
             ),
         )
 
@@ -553,6 +562,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
                 turn_observer=beast_turn,
                 middlewares=[constraints_chain.middleware],
                 action_observers=[constraints_chain.observe_result],
+                max_rounds=max_rounds,
+                token_budget=token_budget,
             ),
         )
 
@@ -733,6 +744,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
                     approver=approver,
                     compactor=context_compactor,
                     middlewares=[build_safety_middleware(pet_safety, notify=_pet_notify)],
+                    max_rounds=max_rounds,
+                    token_budget=token_budget,
                 ),
             )
 
