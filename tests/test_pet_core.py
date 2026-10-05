@@ -240,3 +240,76 @@ def test_manager_multi_pet_isolation() -> None:
     assert b.wake().reply == "ok"
     assert a.state is PetSessionState.BACKOFF
     assert b.state is PetSessionState.ACTIVE
+
+
+# ---- 惊喜：真实化与上报（change 0086 / 账本 E26 的 surprise 半边） ----
+
+
+class _FailOnSecondCallLoop:
+    """第 2 次调用抛错：用于证明惊喜失败时 fail-soft（唤醒不被拖垮）。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(self, user_input: str) -> LoopResult:
+        self.calls += 1
+        if self.calls > 1:
+            raise RuntimeError("惊喜执行失败")
+        return LoopResult(reply="ok", trace_id="t1")
+
+
+def test_surprise_without_preference_returns_none() -> None:
+    """无真实可代办前提 ⇒ 不产出（账本 E26：不以「已帮你安排」通用文案谎报）。"""
+    session = PetSession(loop=FakeLoop())
+    session.start(_task())
+    assert session.surprise() is None
+
+
+def test_surprise_with_preference_runs_loop_and_reports_real_result() -> None:
+    """有偏好 ⇒ 经真实 loop 执行一次代办，回报**真实产出**（非通用文案）。"""
+    loop = FakeLoop(reply="整理好了收藏夹")
+    session = PetSession(loop=loop, memory=FakeMemory())
+    session.start(_task())
+    session.observe("theme:dark")
+    before = len(loop.prompts)
+    message = session.surprise()
+    assert message is not None
+    assert "theme" in message and "dark" in message
+    assert "整理好了收藏夹" in message, "回报的是 loop 真实产出"
+    assert len(loop.prompts) == before + 1, "惊喜经真实 loop 执行一次"
+
+
+def test_wake_notifies_report_but_not_surprise_without_preference() -> None:
+    """反馈周期命中但无偏好 ⇒ 只投周期反馈，无惊喜（不谎报）。"""
+    sent: list[str] = []
+    session = PetSession(loop=FakeLoop(), notifier=sent.append, feedback_period=1)
+    session.start(_task())
+    session.wake()
+    assert len(sent) == 1
+    assert "宠物" in sent[0]
+
+
+def test_wake_reports_surprise_on_feedback_cycle_with_preference() -> None:
+    """反馈周期命中且有偏好 ⇒ 反馈 + 惊喜两条（惊喜紧随反馈）。"""
+    sent: list[str] = []
+    session = PetSession(
+        loop=FakeLoop(reply="已整理"), memory=FakeMemory(), notifier=sent.append, feedback_period=1
+    )
+    session.start(_task())
+    session.observe("theme:dark")
+    session.wake()
+    assert len(sent) == 2  # noqa: PLR2004 — 反馈 + 惊喜两条
+    assert "宠物" in sent[0]
+    assert "可代办" in sent[1] and "已整理" in sent[1]
+
+
+def test_wake_survives_surprise_failure() -> None:
+    """惊喜是非关键路径：其 loop 失败不阻断唤醒（fail-soft）。"""
+    sent: list[str] = []
+    session = PetSession(
+        loop=_FailOnSecondCallLoop(), memory=FakeMemory(), notifier=sent.append, feedback_period=1
+    )
+    session.start(_task())
+    session.observe("theme:dark")
+    assert session.wake().reply == "ok"
+    assert len(sent) == 1, "惊喜失败 ⇒ 只投了周期反馈，未抛出"

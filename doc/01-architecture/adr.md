@@ -1577,6 +1577,27 @@
 - **转出**：无。
 
 ---
+
+## ADR-0081：pet 惊喜真实化与上报（有前提才产出 / 节拍同源 / fail-soft）
+
+- **背景**：`PetSession.surprise()` 零调用方，且**无论有无可代办之事都返回「已帮你安排」**、且**从不真的执行动作**
+  —— 投出即谎报（账本 E26）。
+- **决策**：
+  ① **有真实前提才产出** —— `surprise() -> str | None`：无已记录偏好（当前唯一可得的真实可代办信号）⇒
+     `None`，不产出不投递；有偏好 ⇒ 经**真实 loop** 跑一次偏好驱动代办、回报其**真实产出**（而非拼文案）。
+     已否决「只改文案」（返回值仍与事实解耦，谎报照旧）。
+     已否决「用 `has_surprise()` 谓词 + 原返回类型」（两处可能失步的真源；`str | None` 单值更省）。
+  ② **节拍同源** —— 挂进 `_notify_owner()`，用既有 `_on_feedback_cycle()` 判据：惊喜要跑 loop（有成本），
+     每次唤醒都跑会让唤醒翻倍；惊喜本属低频事件，与周期反馈同节拍天然契合。「随时可上报」= 节拍内**自动**
+     上报，非「每次唤醒都报」。已否决「每次唤醒尝试」（成本翻倍 + 刷屏）。
+  ③ **fail-soft** —— 惊喜在 `_notify_owner()` 内 `try/except` 吞掉异常：它把非关键路径的失败升级成唤醒失败
+     会违反「宠物异常不阻塞主循环」（同 loop `action_observers` 的 fail-soft 先例）；而 `report()` 不跑 loop、
+     保持直接投递。
+- **规格**：MODIFIED「Periodic Feedback and Surprise」—— 惊喜以**真实可代办**为前提 + 无可代办不产出 +
+  节拍同源 + 失败不阻断 + 三新场景。
+- **转出**：`MicrotaskRunner` 接线（E26 的另一半）→ change `0087`；pet 控制面（`/pet [cmd]`）→ change `0088`。
+
+---
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1652,3 +1673,4 @@
 | ADR-0078 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md, 00-product/user-guide.md |
 | ADR-0079 | 03-interfaces/evolution-interface.md, 02-modules/evolution.md, 00-product/user-guide.md |
 | ADR-0080 | 03-interfaces/configuration-interface.md |
+| ADR-0081 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |

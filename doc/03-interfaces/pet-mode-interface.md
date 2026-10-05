@@ -45,8 +45,8 @@ class PetSession:
     # 反馈与惊喜
     def report(self) -> str: ...
         """达到反馈周期时向主人汇报后台进展，不阻塞主循环。"""
-    def surprise(self) -> str: ...
-        """基于主人偏好发现可代办/取悦之事，主动执行并制造惊喜。"""
+    def surprise(self) -> str | None: ...
+        """基于主人偏好经**真实 loop** 代办/取悦；无偏好（无真实可代办前提）⇒ None（不谎报）。"""
 ```
 
 > 让行/休眠不新增枚举：复用 orchestration 任务状态机 `SUSPENDED`（宿主 loop 状态），宠物自身会话态仅 `IDLE / ACTIVE / BACKOFF / TERMINATED` 四态。
@@ -141,7 +141,7 @@ class PetActivator:
 | 周期触发 | `wake()` | 每次唤醒复用 `Loop.run()` 同步薄壳，逐次执行不常驻 |
 | 偏好读写 | `observe()` / `prefer()` | 以 `MemoryEntry.source="user"` 落 L2 facts，不新造记忆层 |
 | 反馈 | `report()` | 达到周期向主人汇报，不阻塞主循环；**唤醒收尾经通知器投递**（change `0079`） |
-| 惊喜 | `surprise()` | 基于主人偏好代办/取悦（**通知未接线**，见账本转出项） |
+| 惊喜 | `surprise()` | 有偏好 ⇒ 经真实 loop 代办并回报真实产出；无偏好 ⇒ `None`（不谎报）。**唤醒收尾同反馈节拍投递**，失败 fail-soft（change `0086`／ADR-0081，账本 E26） |
 | 让行退避 | `suspend()` / `backoff()` | 让行复用 orchestration `SUSPENDED`；异常退避为 `BACKOFF` 故障隔离 |
 
 > **驱动归属：「周期触发」由宿主驱动，内核不常驻、不自建调度线程（change `0065`，账本 E17 关闭）**。

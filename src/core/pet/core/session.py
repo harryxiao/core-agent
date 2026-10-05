@@ -210,24 +210,39 @@ class PetSession:
         name = self._persona.name if self._persona is not None else self.session_id[:8]
         return f"{prefix}宠物 {name}（状态 {self.state.value}，待办 {len(self._tasks)}）"
 
-    def surprise(self) -> str:
-        """基于主人偏好发现可代办/取悦之事，主动执行并制造惊喜。"""
-        if self._preferences:
-            key, value = next(iter(self._preferences.items()))
-            return f"发现可代办：{key}={value}，已帮你安排"
-        return "发现一件你可能喜欢的小事，已帮你安排"
+    def surprise(self) -> str | None:
+        """基于主人偏好发现可代办/取悦之事，经**真实 loop** 主动执行并制造惊喜。
+
+        无已记录偏好（无真实可代办前提）⇒ 返回 ``None`` —— 不产出、不通知
+        （账本 E26：不以「已帮你安排」通用文案谎报）；有偏好 ⇒ 真的跑一次 loop 代办，
+        回报其**真实产出**。
+        """
+        if not self._preferences:
+            return None
+        key, value = next(iter(self._preferences.items()))
+        goal = self._compose_prompt(f"基于主人偏好「{key}={value}」为主人代办一件小事")
+        result = self._loop.run(goal)
+        return f"发现可代办：{key}={value} —— {result.reply}"
 
     # ---- 内部辅助 ----
 
     def _notify_owner(self) -> None:
-        """唤醒收尾向主人投递反馈（账本 E16）。
+        """唤醒收尾向主人投递反馈与惊喜（账本 E16 / E26）。
 
         反馈周期命中时把既有 :meth:`report` 产出经 ``notifier`` 入队 —— notify 只入队、
-        不阻塞主循环（异步投递语义由宿主侧 flush 收口）；无 notifier 时静默。
+        不阻塞主循环（异步投递语义由宿主侧 flush 收口）；**同节拍**再尝试惊喜，仅在有
+        真实产出（非 ``None``）时追加投递。惊喜要跑一次 loop，属**非关键路径**：其失败被
+        吞掉，绝不阻断唤醒收尾。无 notifier 时静默（不跑有成本的惊喜）。
         """
         if self._notifier is None or not self._on_feedback_cycle():
             return
         self._notifier(self.report())
+        try:
+            surprise = self.surprise()
+        except Exception:  # noqa: BLE001 — 惊喜非关键路径：失败静默，不阻断唤醒
+            surprise = None
+        if surprise is not None:
+            self._notifier(surprise)
 
     def _on_feedback_cycle(self) -> bool:
         """是否命中反馈周期（反馈节拍单一判据真源）。"""
