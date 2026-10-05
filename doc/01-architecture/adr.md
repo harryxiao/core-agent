@@ -2174,6 +2174,51 @@
 
 ---
 
+## ADR-0098：skillhub 供给侧接线以**落盘目录为单一真源**（删 `_published`）+ 发布即制品入库；不加 `published` 消费闸门
+
+- **背景**：①供给侧三件套（`SkillPublisher.publish` / `review`、`MarketIndex.put`）**零生产调用方** ——
+  组合根不装配、CLI 无入口（死代码）；②而 CLI 是**一次性进程**，供给侧的**两处状态都在进程内**：
+  `MarketIndex._sources`（内存 dict）与 `SkillPublisher._published`（`skill_id → source` 内存 dict）
+  ⇒ 上个进程 `publish` 的条目下个进程 `search` 看不到、下个进程 `review` 判「未发布」。
+  ⇒ **只补 CLI 入口不解决问题**，会得到一条「看似闭环、实则每步空转」的链路（同 change 0074
+  mcp 端点、change 0104 rag `_hashes` 的同一教训）；③`review` 的 `_published` 是**第二真源** ——
+  「发布到哪个源」这个事实**已经写在目录里**（`MarketSkill.source` 随条目落盘）；④目录按规格只存元数据
+  （「不拉取完整技能体」），而消费侧 `download` 需要 fetcher 提供技能体 ⇒ 本地市场需要**制品库**。
+- **决策**：
+  ① **目录落盘**：`MarketIndex(path=…)`，形状 `{"sources": {<name>: {"skills": {<id>: <dict>}}}}`，
+     经 `core.persistence.write_state` 原子写；`put()` 即落盘且为**唯一写路径**（发布与审核共用，
+     不新增 `save()` 第二入口）。装载缺失 → 静默空态；损坏 / 结构不符 → `warnings.warn` **降级为空目录**
+     （同 0064/0074 口径：状态损坏不阻断启动）；装载后恒 `setdefault("official", …)`。
+     缺省 `path=None` ⇒ 纯内存，**既有单测与组合根行为逐字不变**。
+  ② **删 `SkillPublisher._published`**，`review` 改为 `index.locate(skill_id)` 跨源定位（未找到 ⇒
+     `SKILL_NOT_ACTIVE`，**错误码与语义不变**，既有用例仍绿），改动后经 `index.put` 回写。
+     `locate` 是**查找**不是路由 ⇒ 不做健康探测。
+  ③ **发布 = 元数据上架 + 制品入库**：`SkillPublisher(artifacts: SkillLibrary | None)`，制品入库放在
+     `publish` **内部**（否则「发布」语义散成两处，别的发布入口必漏）。顺序：先 `index.put`
+     （源不存在即 `SOURCE_NOT_FOUND`，**此时不留半份制品**）再 `artifacts.register(replace(skill))`
+     —— 存**副本**，避免审核改写波及其他持有者（本地技能库）。
+  ④ **审核通过同步制品并重新签名**：注入 `artifacts` 时把制品本体 `version` 提升到市场版本后再
+     `verifier.sign(body)` 覆盖 `market.signature` ⇒ 市场签名与制品内容**始终一致**，末端验签
+     （`download` 的 `verify(skill, market.signature)`）仍成立；制品库缺席时仅目录版本提升。
+     `VersionManager` 的 `path` 落盘于 `$CORE_STATE_DIR/skill-versions.json`（与组合根同源）⇒ 审核跨进程可续。
+  ⑤ **明示不做**：
+     - **`published` 消费闸门**（install 仅限已审核技能）：phase-22 §4.2 验收序列为
+       publish → search → install（**中间无审核步骤**），且既有 CLI 用例市场项状态非 `published`
+       ⇒ 加闸门是**新增契约**而非「接线」。
+     - **`skill market list` 子命令**：`MarketIndex.list` 已在生产路径上（`SkillHubClient.search` 内部调用）。
+     - **新错误码**：既有 `SIGNATURE_INVALID` / `SKILL_NOT_ACTIVE` / `SOURCE_NOT_FOUND` / `PUBLISH_REJECTED` 已足。
+     - **远端市场 fetcher**（网络 + 凭据）：仍为**凭证半**；本次接的是**本地**市场制品库（离线、零凭据）。
+- **影响**：`skillhub/index.py`（`path` + `_load/_persist` + `locate`、`put` 落盘）、
+  `skillhub/publisher.py`（删 `_published`、`artifacts` 注入、`_sync_artifact` 重签名）；
+  `entry.py`（`_build_market_index` / `_build_market_artifacts` / `_build_publisher` / `_market_fetcher`
+  + `_build_skillhub_client` 注入 + `skill publish` / `skill review` 子命令）；
+  测试（`tests/test_skillhub.py`、`tests/test_skillhub_cli.py` 追加，含跨进程续接与制品篡改反例）；
+  文档（`03-interfaces/skillhub-interface.md` §2/§3/§4、`02-modules/skillhub.md` §3.1/§3.3/§4、
+  `04-testing/test-cases.md` TC-SKH-*、`coding-plan/contracts_summary.md`）。
+- **规格**：MODIFIED「技能市场与技能发现」「签名校验与可信下载」「技能发布与审核流」（skillhub）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2266,3 +2311,4 @@
 | ADR-0095 | 03-interfaces/evolution-interface.md |
 | ADR-0096 | 03-interfaces/observability-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/evolution-interface.md |
 | ADR-0097 | 03-interfaces/rag-interface.md, 02-modules/rag.md |
+| ADR-0098 | 03-interfaces/skillhub-interface.md, 02-modules/skillhub.md |

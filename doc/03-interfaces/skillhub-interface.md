@@ -42,8 +42,11 @@ class SkillHubClient:
 （与 `runtime._skill_state_path` 同一约定）—— 否则下载只落在进程内一次性库，下个进程即消失（「已安装」成谎报），
 `skill remove` 也永远删不掉运行时注册的技能。
 
-**凭证半**：真实市场 fetcher（网络 + 市场凭据）未接。缺省 `fetcher=None` ⇒ `skill install` **如实**报
-「无法下载技能（市场缺失或未接入拉取）」；缺省 `MarketIndex` 只有空的 `official` 源 ⇒ `skill search` 如实返回空。
+**技能体拉取**：CLI 缺省 `fetcher` 为 `entry._market_fetcher` —— 从**本地市场制品库**
+（`SkillLibrary(path=$CORE_STATE_DIR/skillhub-artifacts.json)`，即本地 `skill publish` 入库的技能体）拉取；
+离线、零凭据。制品缺失或目录无该条目 ⇒ `download` 如实抛 `SIGNATURE_INVALID`，**不静默成功**。
+
+**凭证半**：远端市场 fetcher（网络 + 市场凭据）仍未接；接入时替换 `fetcher` 即可，接口面不变。
 
 ---
 
@@ -51,6 +54,9 @@ class SkillHubClient:
 
 ```python
 class MarketIndex:
+    def __init__(self, sources: dict[str, MarketSource] | None = None, *,
+                 health_probe: HealthProbe | None = None, path: Path | None = None) -> None: ...
+
     def list(self, *, source: str = "official") -> list[MarketSkill]:
         """列出指定源的技能目录元数据。"""
 
@@ -60,6 +66,15 @@ class MarketIndex:
     def health(self, source: str) -> SourceHealth:
         """源健康探测；不可达标记不健康并回退官方源（SOURCE_UNHEALTHY）。"""
 
+    def put(self, source: str, skill: MarketSkill) -> None:
+        """写入目录条目（**唯一写路径**：发布与审核共用）；源不存在抛 SOURCE_NOT_FOUND。"""
+
+    def get(self, source: str, skill_id: str) -> MarketSkill | None:
+        """按源取目录条目；源或技能不存在返回 None。"""
+
+    def locate(self, skill_id: str) -> tuple[str, MarketSkill] | None:
+        """**跨源**按 skill_id 定位条目（携带源名）；不存在返回 None。查找而非路由，不做健康探测。"""
+
 @dataclass
 class SourceHealth:
     source: str
@@ -67,19 +82,37 @@ class SourceHealth:
     last_check: str             # ISO 时间戳
 ```
 
+**目录落盘**（注入 `path`）：形状 `{"sources": {<name>: {"skills": {<skill_id>: <MarketSkill dict>}}}}`，
+经 `core.persistence.write_state`（原子 tmp + `os.replace`）在 `put()` 时整体重写；装载时缺失 → 空态、
+损坏 / 结构不符 → `warnings.warn` 降级为空目录（状态损坏不阻断启动）；装载后恒 `setdefault("official", …)`。
+缺省 `path=None` ⇒ 纯内存目录（既有单测与组合根行为不变）。CLI 侧落盘于
+`$CORE_STATE_DIR/skillhub-index.json` —— 目录是市场真源，发布 / 审核 / 搜索 / 安装跨进程可见。
 ---
 
 ## 4. SkillPublisher 接口
 
 ```python
 class SkillPublisher:
+    def __init__(self, *, index: MarketIndex | None = None, verifier: TrustVerifier | None = None,
+                 version_manager: VersionManager | None = None,
+                 artifacts: SkillLibrary | None = None) -> None: ...
+
     def publish(self, skill: Skill, *, source: str = "official") -> str:
-        """上传技能 → status=uploaded，进入审核流 pending。"""
+        """上传技能 → status=pending；技能体（副本）入本地市场制品库；返回 skill_id。"""
 
     def review(self, skill_id: str, decision: str) -> None:
-        """审核：approved → published（VersionManager v1→v2）；
+        """审核：approved → published（市场版本 v1→v2，制品本体同步提升并**重新签名**）；
         rejected → 状态回退，允许修改后重传。"""
 ```
+
+- **审核定位真源是目录**：`review` 经 `self._index.locate(skill_id)` 找到发布源（不存在 ⇒ `SKILL_NOT_ACTIVE`），
+  改动后经 `index.put` 回写 —— 不再维护进程内 `skill_id → source` 映射（那是第二真源，跨进程必失效）。
+- **发布 = 元数据上架 + 制品入库**：先 `index.put`（源不存在即 `SOURCE_NOT_FOUND`，**此时不入制品**）再
+  `artifacts.register(replace(skill))`（存副本，避免审核改写波及其他持有者）。
+- **生产触达点**（`src/core/entry.py`）：`skill publish <skill_id> [--source S]` → `SkillPublisher.publish`
+  （本地技能未注册 ⇒ stderr + 退出码 1）；`skill review <skill_id> <approved|rejected>` → `SkillPublisher.review`
+  （驳回亦为退出码 1，状态已落盘为 rejected）。缺省装配经 `entry._build_publisher()`：落盘目录 + 本地市场制品库 +
+  `VersionManager(path=$CORE_STATE_DIR/skill-versions.json)`（与组合根 `runtime._skill_state_path` 同源）。
 
 ---
 

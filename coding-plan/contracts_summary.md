@@ -204,7 +204,10 @@
 - **能力**：技能发现、多源路由健康回退、签名校验可信下载、发布审核流。
 - **契约**：搜索市场技能、按源列目录；源不可达回退、源不存在报错；签名校验失败拒绝、下载默认 draft；发布进审核、通过才发布、驳回处理。
 - **接口**：`SkillHubClient`、`SkillPublisher`、`TrustVerifier`；数据类型 `MarketSkill`/`MarketIndex`/`SourceHealth`。
-- **方法**：`search()`、`download()`、`list()`、`route()`、`health()`、`publish()`、`review()`、`verify()`。
+- **方法**：`search()`、`download()`、`list()`、`route()`、`health()`、`put()`、`get()`、`locate()`、`publish()`、`review()`、`verify()`。
+- **供给侧契约已兑现**（change 0105／ADR-0098）：CLI `skill publish` / `skill review` 已接线，目录 / 制品库 /
+  版本提升均落盘（`$CORE_STATE_DIR/skillhub-{index,artifacts,versions}.json`）⇒ 发布 → 索引 → search/install
+  闭环**跨进程**成立。**仍未接**：远端市场 fetcher（网络 + 凭据，凭证半）；消费侧缺省 fetcher 用**本地**市场制品库。
 - **错误码**：`PUBLISH_REJECTED`、`SIGNATURE_INVALID`、`SKILL_NOT_ACTIVE`、`SOURCE_NOT_FOUND`、`SOURCE_UNHEALTHY`。
 
 ### 23. skills — 技能封装

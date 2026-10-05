@@ -75,8 +75,14 @@ from core.plugin_registry import DomainError, PluginInstaller, PluginKind, Plugi
 from core.plugins import InstallDispatcher
 from core.rag import RAGError
 from core.runtime import GATABLE_MODULES, Runtime, build_runtime
-from core.skillhub import SkillHubClient, SkillHubError
-from core.skills import SkillLibrary
+from core.skillhub import (
+    MarketIndex,
+    SkillHubClient,
+    SkillHubError,
+    SkillPublisher,
+    TrustVerifier,
+)
+from core.skills import Skill, SkillLibrary, VersionManager
 from core.tools import StubPlugin, ToolProvider
 from core.ui import CLIBridge, DesktopBridge, SessionRegistry, UIAPILayer, UiError, WebBridge
 from core.ui.repl import format_action_event, format_task_event
@@ -209,6 +215,12 @@ def _add_skill_parser(sub: Any) -> None:
     install.add_argument("--source", metavar="S")
     remove = sk_sub.add_parser("remove", help="卸载技能（= plugin uninstall）")
     remove.add_argument("name")
+    publish = sk_sub.add_parser("publish", help="发布本地技能到市场（进入 pending 审核）")
+    publish.add_argument("name")
+    publish.add_argument("--source", metavar="S")
+    review = sk_sub.add_parser("review", help="审核市场技能（approved | rejected）")
+    review.add_argument("name")
+    review.add_argument("decision", choices=["approved", "rejected"])
 
 
 def _add_session_parser(sub: Any) -> None:
@@ -647,15 +659,23 @@ def _plugin(args: argparse.Namespace) -> int:
 
 
 def _skill(args: argparse.Namespace) -> int:
-    """技能市场：search/install 走 SkillHubClient（真实市场源与拉取为凭证半，未接时如实报错）。"""
+    """技能市场：search/install 走 SkillHubClient、publish/review 走 SkillPublisher。
+
+    市场目录与制品库均落盘于 `$CORE_STATE_DIR`（发布 / 审核 / 搜索 / 安装跨进程可见）；
+    远端市场拉取仍为凭证半，未接入时如实报错。
+    """
     library = _build_skill_library()
-    source = getattr(args, "source", None) or "official"  # remove 分支无 --source
+    source = getattr(args, "source", None) or "official"  # remove/review 分支无 --source
     if args.skill_cmd == "search":
         return _skill_search(_build_skillhub_client(library), args.query, source=source)
     if args.skill_cmd == "install":
         return _skill_install(_build_skillhub_client(library), args.name, source=source)
     if args.skill_cmd == "remove":
         return _skill_remove(library, args.name)
+    if args.skill_cmd == "publish":
+        return _skill_publish(_build_publisher(), library, args.name, source=source)
+    if args.skill_cmd == "review":
+        return _skill_review(_build_publisher(), args.name, args.decision)
     print(f"skill {args.skill_cmd} 已识别，尚未接线", file=sys.stderr)
     return 0
 
@@ -779,9 +799,45 @@ def _build_skill_library() -> SkillLibrary:
     return SkillLibrary(path=_state_path("skills.json"))
 
 
+def _build_market_index() -> MarketIndex:
+    """市场目录：落盘于 `$CORE_STATE_DIR/skillhub-index.json`。
+
+    目录是市场真源（发布 / 审核写入、搜索 / 安装读取），落盘后跨进程可见；不带路径的
+    `MarketIndex()` 是进程内一次性目录 —— 上个进程发布的技能下个进程就查不到。
+    """
+    return MarketIndex(path=_state_path("skillhub-index.json"))
+
+
+def _build_market_artifacts() -> SkillLibrary:
+    """本地市场制品库：发布时入库的技能体（消费侧拉取来源，离线、零凭据）。"""
+    return SkillLibrary(path=_state_path("skillhub-artifacts.json"))
+
+
+def _build_publisher() -> SkillPublisher:
+    """发布 / 审核缺省装配：落盘目录 + 本地市场制品库 + 落盘版本管理。"""
+    return SkillPublisher(
+        index=_build_market_index(),
+        artifacts=_build_market_artifacts(),
+        version_manager=VersionManager(path=_state_path("skill-versions.json")),
+    )
+
+
+def _market_fetcher(skill_id: str, _source: str) -> Skill | None:
+    """消费侧拉取：本地市场制品库（无该技能返回 None ⇒ 客户端如实报错）。"""
+    try:
+        return _build_market_artifacts().lookup(skill_id)
+    except KeyError:
+        return None
+
+
 def _build_skillhub_client(library: SkillLibrary) -> SkillHubClient:
-    """技能市场客户端缺省装配：空 official 源 + 签名校验器，无市场拉取（凭证半）。"""
-    return SkillHubClient(library)
+    """技能市场客户端缺省装配：落盘目录 + 签名校验器 + 本地市场制品拉取。"""
+    return SkillHubClient(
+        library,
+        index=_build_market_index(),
+        verifier=TrustVerifier(),
+        fetcher=_market_fetcher,
+    )
 
 
 def _skill_search(client: SkillHubClient, query: str, *, source: str = "official") -> int:
@@ -815,6 +871,33 @@ def _skill_remove(library: SkillLibrary, name: str) -> int:
         print(f"技能未注册: {name}", file=sys.stderr)
         return 1
     print(f"已卸载技能 {name}")
+    return 0
+
+
+def _skill_publish(
+    publisher: SkillPublisher, library: SkillLibrary, skill_id: str, *, source: str = "official"
+) -> int:
+    try:
+        skill = library.lookup(skill_id)
+    except KeyError:
+        print(f"技能未注册: {skill_id}", file=sys.stderr)
+        return 1
+    try:
+        publisher.publish(skill, source=source)
+    except SkillHubError as exc:
+        print(f"发布失败: {exc}", file=sys.stderr)
+        return 1
+    print(f"已发布技能 {skill_id}（pending，待审核）")
+    return 0
+
+
+def _skill_review(publisher: SkillPublisher, skill_id: str, decision: str) -> int:
+    try:
+        publisher.review(skill_id, decision)
+    except SkillHubError as exc:
+        print(f"审核失败: {exc}", file=sys.stderr)
+        return 1
+    print(f"已审核技能 {skill_id}: {decision}")
     return 0
 
 

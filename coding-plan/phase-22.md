@@ -110,14 +110,25 @@
 - **(b) 诚实降级（⚠ 前置：须先改规格）**：供给侧（`SkillPublisher` 发布 / `MarketIndex` 索引 / `TrustVerifier` 信任）是 `doc/openspec/specs/skillhub/spec.md` 的明文覆盖（Purpose 含「**发布审核流**」，场景点名 `MarketIndex.list` / `MarketIndex 健康探测` / `TrustVerifier`）⇒ (b) 属**撤回已承诺能力**，**必须先出 spec delta（MODIFIED）**，再移除死代码（publisher/index/trust），最后同步 `contracts_summary.md`。**删除面含** `src/core/skillhub/__init__.py` 的 `__all__`（`MarketIndex`/`SkillPublisher`/`TrustVerifier`）**与** `tests/test_skillhub.py` / `tests/test_skillhub_cli.py` 的对应用例。
 - **验收（以 a 为准）**：一条端到端测试：publish 一个本地技能 → 断言 `MarketIndex` 可检索到 → 消费侧 `search` 能命中 → `install` 成功；CLI 可运行；三件套门禁全绿。
 
+**落地状态**：**已闭**（change `0105` / ADR-0098，2026-10-05；用户裁决 **(a) 接线**）。实施中相对原方案的两处**必须偏离**（均因一手核实推翻原假设）：
+
+1. **只补 CLI 入口不成立 ⇒ 两处进程内状态须落盘**：CLI 每次调用都是**新进程**，而供给侧状态两处都在进程内 —— `MarketIndex._sources`（内存 dict）与 `SkillPublisher._published`（`skill_id → source` 内存 dict）⇒ 上个进程 `publish` 的条目下个进程 `search` 看不到、下个进程 `review` 判「未发布」，链路「看似闭环、实则每步空转」。改法：`MarketIndex(path=…)` 目录落盘（`put()` 为唯一写路径）+ **删 `_published`**（「发布到哪个源」已写在目录里，第二真源跨进程必失效）⇒ `review` 经 `locate(skill_id)` 定位并回写。
+2. **发布 ≠ 只上架元数据**：目录按规格只存元数据（「不拉取完整技能体」），而消费侧 `download` 需要 fetcher 给技能体 ⇒ `publish` 同时把**技能体副本**（`replace(skill)`）入本地市场制品库，缺省 `fetcher` 指向该库（离线、零凭据）。顺序：先 `index.put`（源不存在即 `SOURCE_NOT_FOUND`，不留半份制品）再 `artifacts.register`；`review approved` 时制品本体同步提升到市场版本并**重新签名**（否则市场签名与制品内容不一致，末端验签失败）。
+
+**已否决**（明示不做）：① **install 仅限 `published` 的消费闸门** —— 本 Phase §4.2 验收序列 publish → search → install **中间无审核**，加闸门是新增契约而非「接线」；② `skill market list` 子命令（`MarketIndex.list` 已在 `SkillHubClient.search` 生产路径上）；③ 新错误码（既有四个已足）；④ **远端市场 fetcher**（网络 + 凭据，仍为凭证半）。
+
+**入口**：CLI `skill publish <skill_id> [--source S]`（本地技能未注册 ⇒ stderr + 退出码 1）与 `skill review <skill_id> <approved|rejected>`（驳回亦退出码 1 且状态落盘 rejected）；三件套经 `entry._build_market_index()` / `_build_market_artifacts()` / `_build_publisher()` 同源装配，落盘于 `$CORE_STATE_DIR/skillhub-{index,artifacts}.json`，版本提升落 `skill-versions.json`（与组合根同源）。
+
+**验收证据**：`tests/test_skillhub_cli.py::test_supply_chain_publish_search_review_install`（全程走 CLI、每步重开落盘对象断言跨进程可见）+ 反例三组（未注册技能 / 源不存在 / 未发布技能 / rejected）；`tests/test_skillhub.py` 8 例（目录落盘 / 损坏降级 / `locate` / 制品入库 / 跨实例审核 / 重签名 / 驳回落盘）。真机四进程冒烟：`skill publish` → `skill search` → `skill review approved` → `skill install` 全 rc=0，市场 `published v2`、本地 `draft`。四门：`ruff check` / `ruff format --check` / `pyright 0-0-0` / `pytest` **1215 passed**。
+
 ---
 
 ## 5. 契约对齐
 
 引用 `contracts_summary.md`（速查表原文）：
 - **observability**：trace 采集 + 落盘（JSONL 持久化）。本 Phase 的 P0 修复确保「**采集到的事件真能落盘**」（当前 `end_trace` 零调用 ⇒ 落盘死路径，契约未兑现）。
-- **rag**：检索增强生成（摄取→向量化→检索→生成）。当前仅 `LLMEmbedder` 存活，主链路契约**未兑现**——修复后补齐或诚实降级声明。
-- **skillhub**：技能发布 / 市场检索 / 安装。当前仅消费侧（检索/安装）兑现，供给侧（发布/索引/信任）契约**未兑现**——修复后补齐或诚实降级声明。
+- **rag**：检索增强生成（摄取→向量化→检索→生成）。原仅 `LLMEmbedder` 存活、主链路契约**未兑现** ⇒ 已按 (a) 接线补齐（change `0104`）。
+- **skillhub**：技能发布 / 市场检索 / 安装。原仅消费侧（检索/安装）兑现、供给侧（发布/索引/信任）**未兑现** ⇒ 已按 (a) 接线补齐（change `0105`）。
 
 > **口径**：凡选择 (b) 诚实降级者，**先改规格**（`doc/openspec/specs/rag/spec.md` / `doc/openspec/specs/skillhub/spec.md` 出 MODIFIED delta 撤回对应能力）**→ 再删代码**（含各模块 `__init__.__all__` 与既有测试）**→ 最后同步 `contracts_summary.md`**（速查表非真源）。顺序为「规格 → 代码 → 速查表」，**不得只删代码或只改速查表**。
 
@@ -125,10 +136,10 @@
 
 ## 6. 门禁验收
 
-- [ ] `ruff check` 全绿。
-- [ ] `pyright` 0 errors。
-- [ ] `pytest` 全绿（新增用例覆盖 §2.2 / §3.2 / §4.2 各验收点）。
-- [ ] **本 Phase 专属校验**：
+- [x] `ruff check` 全绿。
+- [x] `pyright` 0 errors。
+- [x] `pytest` 全绿（新增用例覆盖 §2.2 / §3.2 / §4.2 各验收点）；**1215 passed**（change 0105 收口时点）。
+- [x] **本 Phase 专属校验**：
   - P0：集成测试证明「exporter 收到本轮事件 + 多轮 `_events` **有界**（无泄漏）」（§2.2）；释放时机按 §2.2 选定方案断言 —— (A) 收尾后该 trace 已出 `_events`；(B) 冷路径 `_collect` 后该 trace 已 `discard`。
-  - P1（若选 a）：rag 端到端 ingest→search→generate 可用；skillhub publish→search→install 闭环可用（§3.2 / §4.2）。
-  - 若任一项选 (b)：对应 `doc/openspec/specs/{rag,skillhub}/spec.md` 已出 **MODIFIED delta（撤回能力）** → 死代码（含 `__init__.__all__` 与既有测试）已移除 → `contracts_summary.md` 已同步标注「未启用」。
+  - P1（若选 a）：rag 端到端 ingest→search→generate 可用（change `0104`）；skillhub publish→search→install 闭环可用（change `0105`，跨进程验证据 §4.2）。（§3.2 / §4.2）
+  - 若任一项选 (b)：（**未触发** —— rag 与 skillhub 均裁决 (a) 接线，故本行不适用；留下作以后同类裁决的清单。）

@@ -32,6 +32,10 @@ SkillHub（L3）
 - 技能市场按 `source`（来源）组织，默认仅有官方源；接口与数据模型均预留 `source` 参数，未来可接入第三方源/社区源。
 - 索引存轻量化元数据（`skill_id`、名称、描述、版本、签名摘要、来源），列表/搜索不拉取完整技能体。
 - 查询统一走 `MarketIndex`，由 `source` 路由到对应市场源，上层无感。
+- **目录可落盘**（注入 `path`，change 0105／ADR-0098）：`put()` 为唯一写路径（发布与审核共用），
+  经 `core.persistence` 原子写整体重写；装载缺失 → 空态、损坏 → 告警降级（不阻断启动）。
+  缺省 `path=None` 为进程内目录。CLI 落盘于 `$CORE_STATE_DIR/skillhub-index.json`。
+- **`locate(skill_id)` 跨源定位**：审核只需技能 id、不必知道发布源 —— 这个事实已在目录里，不必进程内再记一份。
 
 ### 3.2 技能下载与签名校验
 
@@ -44,6 +48,14 @@ SkillHub（L3）
 - 发布流程：本地技能经 `SkillPublisher.publish` 上传，进入 `uploaded → pending → published / rejected` 四状态审核流。
 - 审核通过（published）后市场版本号递增：`VersionManager` 上 `v1 → v2`，与 skills 的版本管理语义一致。
 - 驳回（rejected）的技能可修改后重传，不丢弃。
+- **发布 = 元数据上架 + 制品入库**（change 0105）：目录按规格只存元数据，消费侧拉取需要技能体 ⇒ 注入
+  `artifacts`（本地市场制品库 `SkillLibrary(path=$CORE_STATE_DIR/skillhub-artifacts.json)`）；顺序为
+  先 `index.put` 再 `artifacts.register`（源不存在时不留半份制品），制品存 `replace(skill)` **副本**。
+- **审核定位真源是目录**：`review` 经 `MarketIndex.locate` 找到发布源并回写，不再维护进程内
+  `skill_id → source` 映射（第二真源跨进程必失效）；制品库在场时把制品本体提升到发布版本并**重新签名**，
+  使市场签名与制品内容始终一致（末端验签仍成立）。
+- **审核跨进程可续**：`VersionManager` 的 `path` 落盘于 `$CORE_STATE_DIR/skill-versions.json`
+  （与组合根 `runtime._skill_state_path` 同源），审核通过的版本提升对后续会话可见。
 
 ### 3.4 多源预留与源健康
 
@@ -62,11 +74,14 @@ draft ──显式激活──► 可用技能集（进入 skills 的路由/版�
 
 - 下载即沉淀、发布即流通，两者都回到 skills 的封装/版本化/路由闭环，不另起炉灶。
 - draft 机制保证市场技能"先隔离、后启用"，与灰度发布/验证门同构。
-- **生产触达点已落地**（change 0092／ADR-0087）：CLI `skill search` / `skill install` 经 `SkillHubClient`
+- **消费侧已落地**（change 0092／ADR-0087）：CLI `skill search` / `skill install` 经 `SkillHubClient`
   （市场搜索 / 签名校验下载）；CLI 技能库经 `entry._build_skill_library()` 与组合根**同源**
   （`$CORE_STATE_DIR/skills.json`）⇒ 下载的 draft **落盘并可被后续会话读到**，`skill remove` 也作用于真技能。
-- **凭证半（未接）**：真实市场 fetcher（网络 + 凭据）。缺省装配下 `skill search` 如实返回空、
-  `skill install` 如实报「未接入拉取」，**不静默成功**。
+- **供给侧已落地**（change 0105／ADR-0098）：CLI `skill publish` / `skill review` 经 `SkillPublisher`
+  （落盘目录 + 本地市场制品库 + 落盘版本管理）⇒ 「本地技能 → 发布 → 索引 → search/install 消费」闭环成立，
+  且**每一步跨进程可见**（CLI 是一次性进程，进程内状态等于空转）。
+- **凭证半（未接）**：**远端**市场 fetcher（网络 + 凭据）。消费侧缺省 fetcher 已接**本地**市场制品库
+  （离线、零凭据）；远端接入时替换 `fetcher` 即可，接口面不变。未接入 / 制品缺失时如实报错，**不静默成功**。
 
 ---
 

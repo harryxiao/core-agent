@@ -315,6 +315,17 @@
 | TC-SKILLHUB-06 | CORE-SKH-R5 | 指定 source 路由到市场源 | 路由到对应源；源不健康回退官方源；源不存在拒绝路由 |
 | TC-SKILLHUB-07 | CORE-SKH-R1 | CLI `skill search <query>`（注入内存市场索引） | 输出该技能版本化元数据；空市场如实报「未找到」、源不健康退出码 1（锚点：`tests/test_skillhub_cli.py`） |
 | TC-SKILLHUB-08 | CORE-SKH-R2 | CLI `skill install <skill_id>`（签名有效 / 签名被篡改 / 未接市场 fetcher） | 有效 ⇒ 落 draft 且**重开技能库可见**；篡改 ⇒ 拒绝、退出码 1、不落盘；未接 ⇒ 如实报错不静默成功 |
+| TC-SKH-01 | CORE-SKH-R1 | `MarketIndex(path=…)` 一次 `put` 后由**另一实例**装载目录 | 命中该条目（`get`/`list` 一致）—— 落盘目录为市场真源，不依赖进程内内存（锚点：`tests/test_skillhub.py::test_index_persists_across_instances`） |
+| TC-SKH-02 | CORE-SKH-R1 | 目录文件损坏（非法 JSON）后装载 | `warnings.warn` **降级为空目录**，官方源仍在、`locate` 返回 None，不抛异常（锚点：`test_index_corrupt_file_degrades_to_empty_official`） |
+| TC-SKH-03 | CORE-SKH-R5 | `MarketIndex.locate(skill_id)` 在非官方源命中 | 返回 `(源名, MarketSkill)`；未知 skill_id 返回 None（锚点：`test_index_locate_across_sources`） |
+| TC-SKH-04 | CORE-SKH-R3 | `SkillPublisher(artifacts=…)` 发布后由消费侧拉取 | 制品入库（`SkillLibrary` 可 `lookup`）且与调用方技能对象**非同一对象**；`SkillHubClient.download` 得 draft（锚点：`test_publish_registers_artifacts_for_fetch`） |
+| TC-SKH-05 | CORE-SKH-R5 | 发布到不存在的 source | 抛 `SOURCE_NOT_FOUND`，且**制品库不含**该技能（先上架后入库的顺序保证）（锚点：`test_publish_missing_source_leaves_no_artifact`） |
+| TC-SKH-06 | CORE-SKH-R3 | 另一实例 publish → 本实例 `review approved`（未注入 artifacts） | 目录条目 published、市场版本 v2 落盘；制品版本不动（锚点：`test_review_across_instances_bumps_market_version`） |
+| TC-SKH-07 | CORE-SKH-R3 | `review approved`（注入 artifacts） | 制品本体版本 == 市场版本，且 `TrustVerifier().verify(body, market.signature)` 为真（**重新签名**）（锚点：`test_review_promotes_artifact_and_resigns`） |
+| TC-SKH-08 | CORE-SKH-R3 | `review rejected` 后由另一实例装载目录 | 状态 rejected 落盘；抛 `PUBLISH_REJECTED`（锚点：`test_review_rejected_persists_status`） |
+| TC-SKH-09 | CORE-SKH-R3 | CLI 供给侧闭环：本地注册 → `skill publish` → 重开目录 pending → `skill search` 命中 → `skill review approved` → 重开 published/v2 → `skill install` → 重开技能库 draft | 全链路跨 `main()` 调用可见 —— 「本地技能 → 发布 → 索引 → 消费侧 search/install」闭环成立（锚点：`tests/test_skillhub_cli.py::test_supply_chain_publish_search_review_install`） |
+| TC-SKH-10 | CORE-SKH-R3 | `skill publish` 未注册技能 / 源不存在；`skill review` 未发布技能 / rejected | 四种情形均退出码 1 + stderr 结构化原因，且**目录不落盘**（rejected 例外：状态落盘为 rejected）（锚点：`test_skill_publish_unregistered_skill_reports_error` 等 4 例） |
+| TC-SKH-11 | CORE-SKH-R4 | `skill publish` 后篡改本地市场制品、再 `skill install` | 末端验签失败 ⇒ `SIGNATURE_INVALID`、退出码 1，本地技能库**不被改写**（锚点：`test_skill_install_rejects_tampered_artifact`） |
 
 ## 24. 配置管理（TC-CONF）
 
