@@ -120,7 +120,7 @@ def generate_yaml_defaults(specs=None) -> dict: ...
 口径来源：`doc/openspec/specs/configuration/spec.md`「密钥分级与安全」「配置校验与生效」；`permission.mode` 四档定义方为 `doc/openspec/specs/permission/spec.md`「权限模式」。
 ### 2.2 两个开关谓词（change `0067`，账本 E10）
 
-`features` 段有三条输入通道（yaml `features:` / env `CORE_FEATURE_<模块>` / CLI `--feature <模块>[=<布尔>]`），
+`features` 段有三条输入通道（yaml `features:` / env `CORE_FEATURES_<模块>` / CLI `--feature <模块>[=<布尔>]`），
 消费它的是**两个极性相反**的谓词：
 
 | 谓词 | 真值条件 | 缺省 | 用途 |
@@ -145,9 +145,10 @@ CLI 面 `--feature <模块>[=<布尔>]` 由 `entry._cli_overrides` 收进覆盖�
 **开放集合**、归组合根，故不入 `ConfigSpec`），与其他两面共用同一优先级链与同一套取值校验；裸名视为开；
 语法非法（`=false` / `pet=`）在**解析点**即拒（`非法 --feature 取值`）。
 
-> ⚠️ **env 前缀差异（账本 E24，待裁决）**：实现读 `CORE_FEATURES_<模块>`（**复数**，与段名 `features`
-> 一致），而规格、本文件上文与 `02-modules/configuration.md` 字面写 `CORE_FEATURE_<模块>`（单数），
-> `doc/00-product/user-guide.md` 亦写复数。改名属**对外可观测**的破坏性变更，本次不动，单独立项裁决。
+> **env 前缀为复数（账本 E24，change `0080`）**：`CORE_FEATURES_<模块>` —— 与 yaml 段名 `features` 同源
+> （`manager.py` 的 `_FEATURE_ENV_PREFIX`）。本文件与规格、`02-modules/configuration.md` 曾字面写**单数**
+> `CORE_FEATURE_<模块>`（历史笔误），已由 change `0080` 向实现订正；单数前缀**不生效**，且**不做**兼容别名
+> （静默接受两个前缀 = 同一开关两个真源）。
 
 ### 2.3 未知配置段：仅告警（change `0064`，账本 E18）
 

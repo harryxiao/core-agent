@@ -75,7 +75,8 @@
 - **THEN** 记忆检索不注入 embedder，回退词法相似，启动不受影响
 
 ### Requirement: 功能开关（feature flag）
-系统 SHALL 支持模块级 feature flag：关闭的模块不加载、不初始化，实现功能裁剪。feature flag SHALL ONLY 作用于**模块装配** —— 即组合根是否构造该模块的实例、是否注册其随装配产生的副作用（技能注册、状态文件读取）、是否接通其 CLI 与 Web UI 入口；SHALL NOT 改变模块**自身**的二级启用开关（如 `pet.enabled` 决定宠物模式是否启用，其缺省与语义不由 feature flag 改变）。**缺省口径**：白名单内的可选模块**未声明即视为开启**（缺省装配，保持既有行为）；只有显式 `false`（yaml `features.<模块>: false`、env `CORE_FEATURE_<模块>`、CLI `--feature <模块>=false`）SHALL 使该模块**完全不装配**。门控名单 SHALL 由组合根以**单一真源**维护（当前为 `pet` / `beast` / `evolution`）；名单外的模块名 SHALL NOT 触发任何装配裁剪，SHALL NOT 影响核心面。
+系统 SHALL 支持模块级 feature flag：关闭的模块不加载、不初始化，实现功能裁剪。feature flag SHALL ONLY 作用于**模块装配** —— 即组合根是否构造该模块的实例、是否注册其随装配产生的副作用（技能注册、状态文件读取）、是否接通其 CLI 与 Web UI 入口；SHALL NOT 改变模块**自身**的二级启用开关（如 `pet.enabled` 决定宠物模式是否启用，其缺省与语义不由 feature flag 改变）。**缺省口径**：白名单内的可选模块**未声明即视为开启**（缺省装配，保持既有行为）；只有显式 `false`（yaml `features.<模块>: false`、env `CORE_FEATURES_<模块>`、CLI `--feature <模块>=false`）SHALL 使该模块**完全不装配**。门控名单 SHALL 由组合根以**单一真源**维护（当前为 `pet` / `beast` / `evolution`）；名单外的模块名 SHALL NOT 触发任何装配裁剪，SHALL NOT 影响核心面。
+三条输入通道 SHALL **全部生效**（yaml 段 / env / CLI flag），且取值 SHALL **三面同口径**：接受原生布尔与 `true/false`、`yes/no`、`on/off`、`1/0`（大小写不敏感、忽略首尾空白），其余取值（如 `maybe`、空串、映射）SHALL **在校验期拒绝并阻断启动**，错误信息指明键名与合法取值；SHALL NOT 经 `bool()` 之类**静默强转**（`bool("off")` 为真会把「显式关闭」当作开启）。CLI 面 `--feature <模块>[=<布尔>]` SHALL 参与优先级链（CLI flag > env > config.yaml > 缺省），裸名（`--feature <模块>`）SHALL 视为开启。
 
 #### Scenario: 关闭模块不初始化
 - **GIVEN** features 段将某模块（如 voice_output）设为 false
@@ -121,6 +122,11 @@
 - **GIVEN** 某模块的 feature flag 取值为 `maybe` / 空串 / 映射（yaml / env / CLI 任一面）
 - **WHEN** 配置校验运行
 - **THEN** 校验失败并阻断启动，错误信息指明键名与合法取值集合（不静默强转、不退化成缺省）
+
+#### Scenario: env 面以复数前缀生效
+- **GIVEN** 环境变量 `CORE_FEATURES_<模块>=false`（或 `true`）
+- **WHEN** 系统加载配置并装配
+- **THEN** 该取值参与优先级链并支配装配 —— env 面前缀为**复数** `CORE_FEATURES_`，与 yaml 段名 `features` 同源
 
 ### Requirement: IM 接入配置
 系统 SHALL 支持 IM 接入配置（gateway/账户/ID/密钥），其中密钥经 env/keychain 分级存储，不落 yaml 明文。

@@ -1,7 +1,7 @@
 """功能开关三面取值与 CLI 面接线（change 0072 / 账本 E20②、E23）。
 
 规格「功能开关（feature flag）」明文列出三条输入通道：yaml `features.<模块>: false`、
-env `CORE_FEATURE_<模块>`、CLI `--feature <模块>=false`。实测两处不符：
+env `CORE_FEATURES_<模块>`、CLI `--feature <模块>=false`。实测两处不符：
 
 ① **CLI 面零消费**（账本 E23）：`--feature NAME[=BOOL]` 只是解析进 `args.feature`，
    `_cli_overrides` 只收 `ConfigSpec` 声明键 ⇒ 该 flag **静默无效**（`args.feature` 无任何读者）；

@@ -1050,7 +1050,7 @@
 ## ADR-0065：功能开关运行时门控（门控名单归组合根 / 缺省装配 / 只管装配不改二级开关）
 
 - **背景**：规格「功能开关（feature flag）」逐字要求「关闭的模块不加载、不初始化」，三条输入通道
-  （yaml `features:` / env `CORE_FEATURE_*` / CLI `--feature`）早已齐备，但**零消费者** ——
+  （yaml `features:` / env `CORE_FEATURES_*` / CLI `--feature`）早已齐备，但**零消费者** ——
   `ConfigManager.is_enabled` 无生产调用方，`build_runtime` 无条件构造全部模块（账本 E10）。
 - **决策**：
   ① **门控名单归组合根**（`core.runtime.GATABLE_MODULES = ("pet", "beast", "evolution")`）：配置层
@@ -1207,7 +1207,8 @@
   接口 `03-interfaces/configuration-interface.md` §2.2；模块 `02-modules/configuration.md` §3.3；
   测试 `tests/test_feature_flag_faces.py`、`doc/04-testing/test-cases.md`（TC-CONF-06/07/08）。
 - **登记后续**：env 前缀 `CORE_FEATURES_`（复数，实现）v.s. `CORE_FEATURE_<模块>`（单数，规格/文档）
-  —— 对外可观测的破坏性重命名，记账 E24 待裁决；`features` 段内**未知模块名**无告警（E20①）——
+  —— 对外可观测的破坏性重命名，记账 E24；**已由 change `0080` 关闭**（用户裁决：改规格/文档向实现靠拢，
+  零代码变更，`configuration` spec MODIFIED「功能开关（feature flag）」+ 顺带补齐本 delta 归档时丢失的正文段）；`features` 段内**未知模块名**无告警（E20①）——
   与本条无关，且规格「配置校验与生效」明文限告警于**顶层段名**，补齐须先改规格。
 
 ## ADR-0070：MCP Server 模式 stdio 事件循环（循环归 server / 错误分层 / `core.` 命名空间 / 共享协议常量）
