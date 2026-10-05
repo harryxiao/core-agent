@@ -152,7 +152,12 @@ def remember(self, trace_id: str, trajectory: list[Step]) -> None
 - trace 完成回调：本轮**全部遥测记录完毕之后**按轮调 `trace_observer(trace_id)`（**不随维护节拍节流**，
   与 `cold_path` 是两个独立节律：前者按轮、后者按 `maintenance_interval`）；回调抛错降级留痕
   （记 `trace_observer_failed`），不改变本轮结果与终止语义；未注入时行为完全不变。
-  生产接线为 `EvolutionWorker.on_trace_complete`（热路径只登记、不触发）。
+  生产接线为 `EvolutionWorker.on_trace_complete`（在**封口前**取事件快照自持，见下条）。
+- trace 生命周期：循环**驱动** trace 生命周期——**开轮**调注入 tracer 的 `start_trace` 取回贯穿全链路的
+  `trace_id`（未注入 tracer 时回退本地 uuid，行为一致）；**收尾**在 trace 完成回调**之后**调
+  `end_trace(trace_id)` **封口**（交付导出器 + 释放内存）。收尾顺序 SHALL 为
+  「记录本轮全部遥测 → trace 完成回调 → `end_trace` 封口」，**反序**会让回调回放空链路（静默失效）。
+  见 ADR-0096。
 - 模块归因：循环**自身失败**（轮数/token 预算耗尽）时其 `loop_finished` 遥测事件带
   `module_id="loop.default"`；正常收尾缺省为空（不产虚假缺陷证据）。见 ADR-0094。
 

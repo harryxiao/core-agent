@@ -64,14 +64,25 @@ class MetricsCollector:
 
 ```python
 class Tracer:
+    """只保**在途**（未封口）链路的事件 ⇒ 内存占用不随已封口 trace 数增长。"""
+
     def start_trace(self, task_id: str) -> str:
         """开启一条 trace，返回 trace_id。"""
 
-    def end_trace(self, trace_id: str) -> None: ...
+    def end_trace(self, trace_id: str) -> None:
+        """**封口**：事件交付导出器（落盘为真源）并从内存移除。"""
 
     def replay(self, trace_id: str) -> list[TraceEvent]:
-        """按时间序重放全链路事件，支持单任务回溯。"""
+        """按时间序重放**在途**链路事件，支持执行中定位失败环节。
+
+        已完成（已封口）链路的回溯以**落盘遥测**（导出器产出）为真源。
+        """
 ```
+
+**责任分区（change 0103）**：生命周期由**驱动方**（`loop` 开轮 `start_trace` / 收尾 `end_trace`）
+持有；**已完成**链路的留存归**消费者**——需要在本轮事件上做事的一方（如 evolution 冷路径回调）
+须在**封口之前**取快照（`EvolutionWorker.on_trace_complete` 即 `replay` 快照）。故 `loop` 的收尾顺序
+SHALL 为「记录遥测 → trace 完成回调 → `end_trace` 封口」，反序会让回调读到空链路（静默失效）。
 
 ---
 
@@ -84,6 +95,10 @@ class Exporter(Protocol):
 # 内置导出器：JSONLExporter / ConsoleExporter / NoopExporter / BufferedExporter（可插拔）
 # OTel / Prometheus 导出器经同一协议接入（需第三方 SDK，未接）。
 ```
+
+协议面**只有 `emit`**（无独立 `flush`）：`BufferedExporter.emit` 内部即 flush（失败降级为缓冲），
+`JSONLExporter.emit` 追加落盘并自建父目录。⇒ `Tracer.end_trace` 只调 `exporter.emit(events)`，
+不需要（也无从）单独 flush。
 
 **生产装配**（change 0089）：组合根 `build_runtime` 在未注入 tracer 时装配
 `Tracer(exporter=BufferedExporter(JSONLExporter($CORE_STATE_DIR/traces.jsonl)))` —— 结构化 JSONL 落盘 +

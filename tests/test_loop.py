@@ -12,7 +12,7 @@ import time
 from core.context import Compactor
 from core.loop import Action, DefaultLoop
 from core.memory import MemoryEntry, MemoryStore
-from core.observability import Tracer
+from core.observability import TraceEvent, Tracer
 from core.plugin_registry import CoeffectResolver
 from core.tools import Tool, ToolDef, ToolProvider
 
@@ -615,13 +615,33 @@ def test_loop_forgetting_archives_stale_entries_on_compaction() -> None:
 
 
 class _RecordingTracer:
-    """记录事件 kind，验证降级留痕。"""
+    """记录事件 kind，验证降级留痕；并满足收尾封口的生命周期面（change 0103）。"""
 
     def __init__(self) -> None:
         self.kinds: list[str] = []
 
+    def start_trace(self, _task_id: str) -> str:
+        return "trace-stub"
+
+    def end_trace(self, _trace_id: str) -> None:
+        return None
+
     def record(self, event) -> None:  # noqa: ANN001
         self.kinds.append(event.kind)
+
+
+class _CapturingExporter:
+    """收集封口交付的事件（落盘真路径的桩，change 0103）。"""
+
+    def __init__(self) -> None:
+        self.batches: list[list[TraceEvent]] = []
+
+    def emit(self, events: list[TraceEvent]) -> None:
+        self.batches.append(list(events))
+
+    @property
+    def events(self) -> list[TraceEvent]:
+        return [event for batch in self.batches for event in batch]
 
 
 def test_loop_fires_turn_observer_on_success() -> None:
@@ -920,27 +940,84 @@ def test_trace_observer_absent_is_noop() -> None:
 
 
 def test_loop_failure_marks_module_attribution() -> None:
-    """循环自身失败 ⇒ loop_finished 事件带 module_id="loop.default"。"""
-    tracer = Tracer()
+    """循环自身失败 ⇒ loop_finished 事件带 module_id="loop.default"（经落盘真路径断言）。"""
+    exporter = _CapturingExporter()
     loop = DefaultLoop(
         planner=lambda ctx: Action(tool_id="tools.echo", args={"text": "x"}),
-        tracer=tracer,
+        tracer=Tracer(exporter=exporter),
         max_rounds=1,
     )
 
     result = loop.run("任务")
 
     assert result.failed, "轮数超限 → 本轮失败"
-    finished = [e for e in tracer.replay(result.trace_id) if e.kind == "loop_finished"]
+    finished = [e for e in exporter.events if e.kind == "loop_finished"]
     assert finished and finished[-1].module_id == "loop.default"
 
 
 def test_loop_success_has_no_module_attribution() -> None:
     """正常收尾不产虚假缺陷证据（module_id 缺省为空）。"""
+    exporter = _CapturingExporter()
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        tracer=Tracer(exporter=exporter),
+    )
+
+    loop.run("任务")
+
+    finished = [e for e in exporter.events if e.kind == "loop_finished"]
+    assert finished and finished[-1].module_id is None
+
+
+# ---- trace 生命周期闭环（change 0103） ----
+
+
+def test_loop_releases_trace_after_run() -> None:
+    """收尾封口 ⇒ 本轮 trace 不再驻留内存（在途回放为空）。"""
     tracer = Tracer()
     loop = DefaultLoop(planner=lambda ctx: Action(args={"reply": "done"}), tracer=tracer)
 
     result = loop.run("任务")
 
-    finished = [e for e in tracer.replay(result.trace_id) if e.kind == "loop_finished"]
-    assert finished and finished[-1].module_id is None
+    assert tracer.replay(result.trace_id) == [], "封口即释放"
+
+
+def test_loop_emits_to_exporter_on_seal() -> None:
+    """收尾封口把本轮事件交付导出器（落盘真路径打通）。"""
+    exporter = _CapturingExporter()
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        tracer=Tracer(exporter=exporter),
+    )
+
+    loop.run("任务")
+
+    kinds = [e.kind for e in exporter.events]
+    assert "loop_finished" in kinds, "本轮事件经导出器产出"
+
+
+def test_loop_seals_after_trace_observer_snapshot() -> None:
+    """顺序约束：回调取快照时事件尚可回放，封口在回调之后。"""
+    tracer = Tracer()
+    snapshots: list[list[str]] = []
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        tracer=tracer,
+        trace_observer=lambda trace_id: snapshots.append([e.kind for e in tracer.replay(trace_id)]),
+    )
+
+    result = loop.run("任务")
+
+    assert snapshots and "loop_finished" in snapshots[0], "回调时本轮事件完整可回放"
+    assert tracer.replay(result.trace_id) == [], "回调之后才封口释放"
+
+
+def test_loop_does_not_accumulate_events_across_runs() -> None:
+    """多轮执行后 Tracer 内存不随轮次增长（泄漏修复）。"""
+    tracer = Tracer()
+    loop = DefaultLoop(planner=lambda ctx: Action(args={"reply": "done"}), tracer=tracer)
+
+    for _ in range(12):
+        loop.run("任务")
+
+    assert tracer._events == {}, "已封口 trace 不驻留"  # noqa: SLF001 — 内存有界断言

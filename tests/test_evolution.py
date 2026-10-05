@@ -728,3 +728,38 @@ def test_worker_tool_channel_unchanged() -> None:
     assert len(traces) == 1
     assert traces[0].plugin_id == "tools.echo"
     assert traces[0].task_type == "tool_use"
+
+
+# ---- trace 快照采集与批窗口有界（change 0103） ----
+
+
+def test_worker_snapshots_events_at_callback_time() -> None:
+    """回调时刻取快照：封口释放内存后仍可采集（0101/0102 回归守护）。"""
+    worker, tracer = _worker_engine(ObservationRegistry())
+    trace_id = tracer.start_trace("t1")
+    _log_tool(tracer, trace_id, "tools.echo", ok=False)
+    worker.on_trace_complete(trace_id)
+
+    tracer.end_trace(trace_id)  # 封口：Tracer 释放内存
+
+    assert tracer.replay(trace_id) == [], "封口后 Tracer 不再驻留"
+    assert [t.plugin_id for t in worker._collect()] == ["tools.echo"], "快照仍可采集"  # noqa: SLF001
+
+
+def test_completed_batch_window_is_bounded() -> None:
+    """`_completed` 受批窗口约束：未达阈值累积、真跑一轮后清空（批语义不变）。"""
+    worker, tracer = _worker_engine(ObservationRegistry())
+    for i in range(9):
+        trace_id = tracer.start_trace(f"t{i}")
+        _log_tool(tracer, trace_id, "tools.echo", ok=False)
+        worker.on_trace_complete(trace_id)
+        worker.maybe_run()  # 未达阈值（第 10 次才真跑）
+
+    assert len(worker._completed) == 9, "批窗口内累积、不无界增长"  # noqa: PLR2004, SLF001
+
+    trace_id = tracer.start_trace("t9")
+    _log_tool(tracer, trace_id, "tools.echo", ok=False)
+    worker.on_trace_complete(trace_id)
+    worker.maybe_run()  # 第 10 次 ⇒ 真跑一轮
+
+    assert worker._completed == [], "真跑一轮后清空"  # noqa: SLF001

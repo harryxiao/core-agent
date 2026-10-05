@@ -33,6 +33,20 @@ class _FailingExporter:
         raise OSError
 
 
+class _CapturingExporter:
+    """收集已交付事件的桩：证明封口真把事件交付导出器（落盘真路径）。"""
+
+    def __init__(self) -> None:
+        self.batches: list[list[TraceEvent]] = []
+
+    def emit(self, events: list[TraceEvent]) -> None:
+        self.batches.append(list(events))
+
+    @property
+    def events(self) -> list[TraceEvent]:
+        return [event for batch in self.batches for event in batch]
+
+
 def _event(span_id: str, ts: float = 0.0) -> TraceEvent:
     return TraceEvent(trace_id="t1", span_id=span_id, ts=ts, kind="metric", payload={})
 
@@ -78,10 +92,12 @@ def test_three_event_kinds_logged(tmp_path) -> None:
     logger.log_tool_call(trace_id, "code_run", {"cmd": "ls"}, {"ok": True}, 5.0)
     logger.log_effect(trace_id, {"op": "file_write", "target": "/tmp/x"})
     tracer.end_trace(trace_id)
-    events = tracer.replay(trace_id)
-    assert [e.kind for e in events] == ["model_io", "tool_call", "effect"]
-    assert all(e.trace_id == trace_id for e in events)
-    assert all(e.span_id for e in events)
+    # change 0103：封口即释放内存 ⇒ 回溯以**落盘**为真源
+    lines = (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    events = [json.loads(line) for line in lines]
+    assert [e["kind"] for e in events] == ["model_io", "tool_call", "effect"]
+    assert all(e["trace_id"] == trace_id for e in events)
+    assert all(e["span_id"] for e in events)
 
 
 def test_secret_redaction_by_registration(tmp_path) -> None:
@@ -128,6 +144,49 @@ def test_end_trace_exports_jsonl(tmp_path) -> None:
     lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert len(lines) == 1
     assert set(lines[0]) >= {"trace_id", "span_id", "ts", "kind", "payload"}
+
+
+# ---- change 0103：封口交付导出器 + 释放内存 ----
+
+
+def test_end_trace_releases_in_flight_events() -> None:
+    """封口后该 trace 不再驻留内存（在途可回放、封口即释放）。"""
+    tracer = Tracer()
+    logger = TraceLogger(tracer)
+    trace_id = tracer.start_trace("t")
+    logger.log_tool_call(trace_id, "code_run", {"cmd": "ls"}, {"ok": True}, 1.0)
+
+    assert [e.kind for e in tracer.replay(trace_id)] == ["tool_call"], "封口前在途可回放"
+
+    tracer.end_trace(trace_id)
+
+    assert tracer.replay(trace_id) == [], "封口即释放内存"
+
+
+def test_end_trace_delivers_events_to_exporter() -> None:
+    """封口把事件交付导出器（落盘真路径），并释放内存。"""
+    exporter = _CapturingExporter()
+    tracer = Tracer(exporter=exporter)
+    logger = TraceLogger(tracer)
+    trace_id = tracer.start_trace("t")
+    logger.log_model_io(trace_id, "p", "c", 1.0)
+
+    tracer.end_trace(trace_id)
+
+    assert [e.kind for e in exporter.events] == ["model_io"], "事件真被交付导出器"
+    assert tracer.replay(trace_id) == [], "交付后释放"
+
+
+def test_in_flight_memory_does_not_grow_across_traces() -> None:
+    """连续开/封口多条 trace，内存不随已封口数增长（泄漏修复）。"""
+    tracer = Tracer()
+    logger = TraceLogger(tracer)
+    for i in range(10):
+        trace_id = tracer.start_trace(f"t{i}")
+        logger.log_effect(trace_id, {"op": "file_write"})
+        tracer.end_trace(trace_id)
+
+    assert tracer._events == {}, "已封口 trace 不驻留"  # noqa: SLF001 — 内存有界断言
 
 
 def test_metrics_inc_gauge_snapshot() -> None:

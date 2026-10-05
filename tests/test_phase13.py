@@ -21,7 +21,7 @@ from core.judgment import DecisionPrimitive, DecisionResult, SkillMatcher
 from core.llm_provider import Embedding, LLMChunk, LLMError, LLMResponse, TokenUsage, ToolCall
 from core.loop import Action, DefaultLoop, LLMPlanner, LoopContext
 from core.memory import MemoryEntry, MemoryStore
-from core.observability import Tracer
+from core.observability import TraceEvent, Tracer
 from core.permission import PermissionGuard
 from core.runtime import build_runtime
 from core.skills import Skill, SopExtractor
@@ -39,6 +39,20 @@ def _echo_tool() -> Tool:
         ),
         handler=lambda text: f"echo:{text}",
     )
+
+
+class _CapturingExporter:
+    """收集封口交付的事件（落盘真路径的桩，change 0103）。"""
+
+    def __init__(self) -> None:
+        self.batches: list[list[TraceEvent]] = []
+
+    def emit(self, events: list[TraceEvent]) -> None:
+        self.batches.append(list(events))
+
+    @property
+    def events(self) -> list[TraceEvent]:
+        return [event for batch in self.batches for event in batch]
 
 
 class _FakeLLM:
@@ -441,10 +455,12 @@ def test_planner_astream_accumulates_native_tool_fragments() -> None:
 
 
 def test_loop_emits_trace_events() -> None:
-    tracer = Tracer()
-    loop = DefaultLoop(planner=lambda ctx: Action(args={"reply": "ok"}), tracer=tracer)
-    result = loop.run("hi")
-    kinds = {e.kind for e in tracer.replay(result.trace_id)}
+    exporter = _CapturingExporter()
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "ok"}), tracer=Tracer(exporter=exporter)
+    )
+    loop.run("hi")
+    kinds = {e.kind for e in exporter.events}
     assert {"loop_started", "loop_finished"} <= kinds
 
 

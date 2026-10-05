@@ -1,8 +1,11 @@
 """链路追踪（Tracer）与全链路日志采集（TraceLogger）。
 
-Tracer 为每个任务分配 ``trace_id``，贯穿执行全链路，支持 ``replay`` 按
-时间序回溯单任务全部事件；TraceLogger 在其上记录模型 IO / 工具调用 /
-副作用三类事件，写入前经 :class:`Redactor` 脱敏。
+Tracer 为每个任务分配 ``trace_id``，贯穿执行全链路：``start_trace`` 建链、
+``record`` 追加事件、``end_trace`` **封口**（事件交付导出器并从内存释放）。
+Tracer 只保留**在途**（未封口）链路的事件，故其内存占用不随已封口 trace 数
+增长；``replay`` 服务在途链路，**已完成**任务的事后回溯以**落盘遥测**为真源。
+TraceLogger 在其上记录模型 IO / 工具调用 / 副作用三类事件，写入前经
+:class:`Redactor` 脱敏。
 
 对应接口：doc/03-interfaces/observability-interface.md §2 / §4
 """
@@ -19,7 +22,7 @@ from .redaction import Redactor
 
 
 class Tracer:
-    """事件存储与链路生命周期：start_trace / end_trace / replay。"""
+    """事件存储与链路生命周期：start_trace / end_trace / replay（只保在途链路）。"""
 
     def __init__(self, exporter: Exporter | None = None, redactor: Redactor | None = None) -> None:
         self._events: dict[str, list[TraceEvent]] = {}
@@ -37,13 +40,21 @@ class Tracer:
         return trace_id
 
     def end_trace(self, trace_id: str) -> None:
-        """结束 trace，导出该链路全部事件（导出失败不阻塞，见 Exporter）。"""
-        events = self._events.get(trace_id, [])
+        """**封口** trace：交付该链路事件给导出器（落盘为真源）并**释放内存**。
+
+        导出失败不阻塞（见 Exporter）。封口后该链路不再驻留内存，事后回溯一律以
+        导出器产出（如 JSONL）为真源。调用方 SHALL 在需要读取本轮事件者（如
+        evolution 冷路径回调）**之后**再封口。
+        """
+        events = self._events.pop(trace_id, [])
         if events:
             self._exporter.emit(events)
 
     def replay(self, trace_id: str) -> list[TraceEvent]:
-        """按时间序重放该链路全部事件，支持单任务全流程回溯。"""
+        """按时间序重放**在途**（未封口）链路的全部事件，支持执行中定位失败环节。
+
+        已完成（已封口）链路的回溯请读取导出器产出（落盘遥测）——本方法返回空。
+        """
         return sorted(self._events.get(trace_id, []), key=lambda e: e.ts)
 
     def record(self, event: TraceEvent) -> None:

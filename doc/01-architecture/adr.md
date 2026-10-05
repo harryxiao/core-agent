@@ -2083,6 +2083,47 @@
 
 ---
 
+## ADR-0096：trace 生命周期**责任分区**（Tracer 只保在途、留存归消费者），非环形缓存 / 推送 sink
+
+- **背景**：`Tracer` 的 `_events` **只增不减** —— `end_trace` 只 `emit` 不清理（`tracer.py:39-43`，原实现）
+  且 `loop` 收尾从不调 `end_trace`（`loop/default.py` 收尾块无该调用）⇒ ①每轮 trace 的事件**永久驻留**
+  （**无界内存增长**）；②导出器这条**落盘真路径在生产上从未被打通**（只有测试显式调 `end_trace`）。
+  但「`end_trace` 直接 `pop`」会**静默回退** change 0101/0102：`EvolutionWorker.on_trace_complete` 只
+  **登记 id**，真正的 `replay` 发生在**下一次冷路径** `maybe_run → _collect`（`worker.py:85`），而收尾
+  顺序是「消费上一批 → 记 `loop_finished` → 回调登记本轮」⇒ 收尾 `pop` 时**本轮事件尚未被读取**。
+- **决策**：
+  ① **责任分区**：`Tracer` 只保留**在途**（未封口）链路；`end_trace` = `emit` + `pop`（交付导出器 +
+     释放内存）；**已完成**链路的留存归**消费者**——`EvolutionWorker.on_trace_complete` 在**回调时刻**
+     取 `replay` **快照**自持，`_collect` 遍历快照（不再回读 Tracer）。
+  ② **`replay` 口径收窄为「在途」**：已完成任务的**事后回溯以落盘遥测（JSONL）为真源**。理由：回溯的
+     价值在**事后复盘**，而这正是导出器存在的目的（本 ADR 干的就是打通它）；且本仓一贯**不留双真源**
+     （参见 phase-19 E19 裁决）；用户面无任何 `replay` 读者（无 CLI / UI）。
+  ③ **收尾顺序成为规格约束**：「记录本轮全部遥测 → trace 完成回调 → `end_trace` 封口」，**反序**会让
+     回调回放空链路 ⇒ 进化证据链**静默**回退 `no_evidence`（单测全绿）。故 loop 规格写明顺序，并加
+     回归守护用例（`test_loop_seals_after_trace_observer_snapshot`）。
+  ④ **不采纳「有界环形缓存保留最近 N 条已完成」**：新增 `N` 旋钮 + 淘汰语义，而 `N` **只为测试存在**
+     （消费者已走快照）⇒ 无生产消费者的可配性，且制造**内存 + 落盘双真源**。
+  ⑤ **不采纳「`end_trace` 直接推送 sink / observer」**：「谁封口谁通知」形式更整齐，但要**推翻刚发布的
+     0101 接线与 ADR-0094**（拆掉 loop 的 `trace_observer`），内存特性与采纳方案**完全相同** ⇒ 纯审美收益。
+  ⑥ **`Exporter` 协议不增 `flush`**：协议面只有 `emit`（`exporter.py:22-25`），`BufferedExporter.emit`
+     内部即 flush（`:83-89`）⇒ `end_trace` 只需 `emit(events)`（订正 phase-22 §2.2 步骤 4 的「→ flush」措辞）。
+  ⑦ **不改 evolution 的批触发语义**：`EvolutionTrigger(threshold=10)` 要第 10 次 `maybe_run` 才真跑、
+     `_completed.clear()` 只在真跑后执行，这是**有意**的批语义（攒够再驱动一次 cycle）。但快照让
+     `_completed` 由「id 列表」变「事件列表」，内存曲线**变重** ⇒ 验收须含**有界断言**（不随轮次无界增长）。
+- **限制（已知且明示）**：
+  - **`end_trace` 后 `record` 到已封口 id 会重建条目**（`record` 用 `setdefault`）：本 change 不额外设防，
+    依赖驱动方（loop）按序调用；错序行为由规格 + 回归用例守护。
+  - **事后回溯须读落盘**：`Tracer.replay` 不再服务已完成链路，需跨进程 / 事后复盘时读
+    `$CORE_STATE_DIR/traces.jsonl`（本 change 未新增读回 API）。
+- **影响**：`observability/tracer.py`（`end_trace` 改 `pop`、docstring / 模块 docstring 口径）；
+  `loop/default.py`（新增 `_start_trace` / `_end_trace`，`astream` 开轮改用、收尾在回调后封口）；
+  `evolution/worker.py`（`_completed: list[list[TraceEvent]]`、回调取快照、`_collect` 遍历快照）；
+  测试迁移（`test_observability.py` / `test_loop.py` / `test_phase13.py` / `test_evolution*.py`，
+  由「封口后 `replay` 断言」改为「捕获导出器断言」；`_RecordingTracer` 桩补生命周期面）。
+- **规格**：MODIFIED「链路追踪」（observability）/「执行循环」（loop）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2173,3 +2214,4 @@
 | ADR-0093 | 06-ui-frontend/ui-architecture.md |
 | ADR-0094 | 03-interfaces/observability-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/evolution-interface.md |
 | ADR-0095 | 03-interfaces/evolution-interface.md |
+| ADR-0096 | 03-interfaces/observability-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/evolution-interface.md |

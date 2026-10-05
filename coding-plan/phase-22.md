@@ -1,0 +1,123 @@
+# Phase 22 — 12 模块系统级审查缺陷修复（observability 生命周期 / rag 死代码 / skillhub 供给侧死代码）
+
+> **定位**：对已落地交付的 12 个核心模块（mcp / rag / llm loop / orchestration / plugins / plugin registry / memory / skills / skillhub / observability / evolution / ui）做系统级功能完善性审查（**非**依赖单测门禁——单测全绿也可能存在「装配断裂 / 静态绑定 / 死代码」这类测不到的系统级漏洞）。本 Phase 收录**新发现、且 phase-20 / phase-21 均未覆盖**的 3 项缺陷，交 claude code 继续修复。
+>
+> **审查结论总览**：memory / skills 生产触达广泛且健康；orchestration 闭环成立（scheduler 波次内 asyncio 并发 + `router.handoff` 真 `await` 等 subagent 结果）；mcp / plugins / plugin registry / llm loop 基本可用（mcp-http 的 `build_http_transport` 抛「待接入」属 **phase-20 B2 已列**，不重复）。**真问题落在 3 处**：observability tracer 生命周期断裂 + 内存泄漏（P0）、rag 主链路死代码（P1）、skillhub 供给侧三件套死代码（P1）。
+>
+> **去重口径（本节必须遵守）**：下列项**已在他 Phase 覆盖，本 Phase 不写**——
+> - `phase-20` 已列待办：**E27**（im 网关装配 + 宿主入口）、**B2**（mcp-http `build_http_transport` 适配器）、**C7**（ui TTS 抽象）、**C8**（ui Tauri sidecar 打包验证）。
+> - `phase-20` C4 observability 已做「组合根装配 exporter」，**但未接 tracer 生命周期**（start/end/清理）——本 Phase 的 P0 恰是补这个**装配之外的**生命周期断裂，不与 C4 重复。
+> - `phase-20` C5 skillhub 只关**消费侧** `SkillHubClient`（search/install，`entry.py` 已接）；本 Phase 的 P1 是**供给侧** `SkillPublisher`/`MarketIndex`/`TrustVerifier` 死代码，不与 C5 重复。
+> - `phase-21` 已关 evolution plugin 维度**归因接线**（trace 通路 + `TraceEvent.module_id` + `Proposer` 动态 kind）——本 Phase 不碰 evolution 归因语义。
+
+---
+
+## 1. 范围与定位
+
+- **分层图位置**：L3（运行时装配 / runtime capability）与各 capability 模块的**生产接线面**，重点盯「契约声明了、代码写好了、但组合根/CLI 没接」的断层。
+- **覆盖 capability**：`contracts_summary.md` §observability（trace 采集/落盘）、§rag（检索增强生成）、§skillhub（技能发布/市场）。
+
+### 1.1 范围（3 个缺陷）
+
+| # | 缺陷 | 严重度 | 现象（一手核实，含行号） |
+|---|---|---|---|
+| **1** | **observability tracer 生命周期断裂 + 内存泄漏** | **P0** | `start_trace`/`end_trace` 全仓**零生产调用**（grep 仅命中 docstring）；loop 用 `trace_id=uuid.uuid4().hex` 自造绕过 `start_trace`（`loop/default.py:210`）；`record` 用 `setdefault(trace_id, []).append()` 累积（`tracer.py:49-52`）；`end_trace(emit)` 只 emit **不 `pop`/`del`**（`tracer.py:39-42`）→ `_events` 永久增长。因 `end_trace` 零调用 ⇒ `JSONLExporter`/`BufferedExporter` **永不 emit**（traces.jsonl 落盘死路径）。 |
+| **2** | **rag 主链路死代码** | **P1** | 仅 `LLMEmbedder` 存活（`runtime.py:84/272` 供 memory embedding 用）。`RagGenerator` / `Retriever` / `IngestionPipeline` / `InMemoryVectorStore` / `Chunk` / `SearchHit` / `Document` **零生产调用、无 CLI 入口**——RAG 的「摄取→向量化→检索→生成」主链路整条未接。 |
+| **3** | **skillhub 供给侧三件套死代码** | **P1** | `SkillPublisher`（publisher.py）/ `MarketIndex`（index.py）/ `TrustVerifier`（trust.py）**零生产调用**；仅消费侧 `SkillHubClient` 存活（`entry.py:77/766/771/785` 的 search/install）。「发布→索引→信任验证」供给侧整条未接。 |
+
+### 1.2 明确不做
+
+- **不碰 phase-20 已列项**：E27 / B2 / C7 / C8（见上文去重口径）。
+- **不碰 phase-21 已关项**：evolution plugin 归因接线（trace 通路、module_id、动态 kind、结晶语义）。
+- **不改 memory / skills / orchestration / mcp(stdio) / plugins / plugin registry**：审查确认生产触达健康，无系统级缺陷。
+- **不引入新的架构能力**：本 Phase 只做「接线 / 清死代码 / 诚实声明」，不新增特性。
+
+---
+
+## 2. 缺陷 1 — observability tracer 生命周期断裂 + 内存泄漏（P0）
+
+### 2.1 现象与根因
+
+- **根因链**：`Loop` 的 trace 生命周期**绕过了 tracer 的 `start_trace`/`end_trace` 语义**——
+  1. `loop/default.py:210` 用 `trace_id = uuid.uuid4().hex` **自造 id**，从不调 `tracer.start_trace()`；
+  2. 事件经 `_trace`（`loop/default.py:482`）→ `tracer.record`（`loop/default.py:492`）写入 `_events[trace_id]`；
+  3. 但**没有任何代码调用 `end_trace(trace_id)`**（全仓零调用）⇒ `JSONLExporter.emit` 只在 `end_trace` 内部触发（`tracer.py:39-42`），永不执行 ⇒ **traces.jsonl 是死路径**；
+  4. 且 `end_trace` 即便被调用，也**不清理 `_events[trace_id]`**（不 `pop`/`del`）⇒ 事件累积内存泄漏。
+- **为什么单测全绿测不到**：单测直接构造 `tracer.record(...)` + 手动 `end_trace(...)` 断言 exporter 收到事件，**从未走 `Loop` 的真实生命周期**；「零生产调用」与「泄漏」都不在断言范围内。
+
+### 2.2 修复方向
+
+- **模块**：`src/core/observability/tracer.py` + `src/core/loop/default.py` + `src/core/evolution/worker.py`（+ 组合根 `runtime.py` 若 tracer 经其注入）。
+- **⚠ 前置约束（不可违反，否则静默回退 change 0101/0102）**：`EvolutionWorker.on_trace_complete(trace_id)` **只登记 id**（`worker.py`），真正的 `Tracer.replay(trace_id)` 在**下一次冷路径** `maybe_run → _collect()`（`worker.py:85`）才发生 —— **延迟读取**。loop 收尾顺序为 `_maintain`（消费上一批）→ `loop_finished` 事件 → `_notify_trace_complete`（登记本轮，供**后续轮** replay），故本轮事件**必须存活到后续某一轮**。因此 **不得**在收尾处对 `_events[trace_id]` 直接 `pop` 而不同步快照，否则 `replay` 返回 `[]`、诊断退回 `no_evidence`、0101/0102 静默失效。
+- **改动（最小闭环）**：
+  1. `loop` 启动处调用 `tracer.start_trace(name)` 取回 `trace_id`（替换 `loop/default.py:210` 的自造 uuid）。
+  2. **登记改快照**：`on_trace_complete` 由「追加 `trace_id`」改为「追加 `self._tracer.replay(trace_id)` 的**事件快照**」（`_completed: list[list[TraceEvent]]`），`_collect` 遍历快照。
+  3. 收尾处**按序**：先 `_notify_trace_complete(trace_id)`（取快照）→ 再 `tracer.end_trace(trace_id)`（封口）。
+  4. `end_trace(trace_id)` 内：`events = self._events.pop(trace_id, [])`（**取出即删**，杜绝泄漏）→ 非空则 `exporter.emit(events)`（**无需单独 flush**：协议面只有 `emit`，`BufferedExporter.emit` 内部即 flush）。快照已在步骤 2 取得，故此处 `pop` 安全。
+  5. `record` 的 `setdefault().append()` 可保留，与 `end_trace` 的 `pop` 对称。
+- **留存取舍（实现前二选一，须在 `tasks.md` 写明并对应验收）**：
+  - **(A) 回调取快照（推荐）**：`on_trace_complete` 登记事件副本。热路径仍**不阻塞**（`replay` 仅内存排序），代价是 `_completed` 驻留**事件列表**而非 id —— 冷路径间隔（缺省 900s）内每轮多驻留一批列表；间隔越大、单轮事件越多，峰值占用越高。
+  - **(B) 显式回收口（更省内存）**：仍登记 id，`end_trace` 只 emit 不 `pop`，由 `EvolutionWorker._collect()` 读完某 trace 后调新增的 `Tracer.discard(trace_id)`（`Tracer` 多一个显式回收口 → 冷路径消费即释放，且「谁读谁负责回收」语义更紧）—— 代价是**有界性依赖调用方纪律**（若消费者忘记 `discard`，泄漏复原）。
+  - **共同禁令**：无论 (A)/(B)，都**不得**只在收尾处 `pop` 而不同步留存 —— 那正是会回退 0101/0102 的错误方案。若消费者不是 `EvolutionWorker`（未来接其他 trace 消费者），(B) 的回收责任须随之移交。
+- **验收**：
+  - 一条集成测试：驱动 `Loop` 跑一个含 tool/effect 事件的回合 → 断言 **该 `trace_id` 在该轮收尾后已不在 `_events`**（逐 id 断言，**不用全局 `len(_events) == 0`**——多会话下有在途 trace）且 exporter 收到了本轮事件（trace 落盘真路径打通）。
+  - **回归守护**：断言 `on_trace_complete` 取到的**事件快照非空**，且进化冷路径仍能产出归因证据（**不得因 `pop` 破坏 0101/0102**）。
+  - 跑 N 轮（N≥10）→ 断言 `_events` 不随轮次增长（**无内存泄漏**）。
+  - `start_trace`/`end_trace` 在生产代码中的调用方**不再为 0**（grep 可证）。
+
+**落地状态**：**已闭**（change `0103` / ADR-0096，2026-10-05）。按 **(A) 回调取快照** 实施：`Tracer` 只保**在途**链路（`end_trace` = `emit` + `pop`），已完成留存归**消费者**（`EvolutionWorker._completed: list[list[TraceEvent]]`，回调时刻取 `replay` 快照、`_collect` 遍历快照）；`replay` 口径随之收窄为「在途」，**已完成任务回溯以落盘遥测（JSONL）为真源**（不留双真源，同 E19 裁决）；loop 收尾顺序（记录本轮遥测 → trace 完成回调 → `end_trace` 封口）写进 **loop 规格**并加**回归守护**用例（`test_loop_seals_after_trace_observer_snapshot`）；`EvolutionTrigger` 批语义**不动**，仅加**有界断言**（`test_completed_batch_window_is_bounded`）。步骤 4 原「→ flush」措辞已订正（`Exporter` 协议无 `flush`）。
+
+---
+
+## 3. 缺陷 2 — rag 主链路死代码（P1）
+
+### 3.1 现象与根因
+
+- `rag` 模块除 `LLMEmbedder`（供 memory 语义 embedding，`runtime.py:84/272`）外，**主链路 7 个类全部零生产调用、零 CLI 入口**：`RagGenerator` / `Retriever` / `IngestionPipeline` / `InMemoryVectorStore` / `Chunk` / `SearchHit` / `Document`。
+- **根因**：契约声明了 RAG 能力（检索增强生成），代码骨架也写好了，但**组合根 `runtime.py` 未装配、`entry.py` 无 rag 命令**——摄取（ingest）与检索（retrieve/generate）两端都没有生产入口，是「写了没接」的断层。
+
+### 3.2 修复方向（二选一，推荐 a）
+
+- **(a) 接线（推荐）**：补 CLI 入口（如 `rag ingest <path>` / `rag search <query>`）+ `runtime.py` 装配，把 `IngestionPipeline → InMemoryVectorStore → Retriever → RagGenerator` 串成可用的检索增强链路；文档/契约同步声明入口。
+  - **理由**：memory 已在用 `LLMEmbedder`（基础设施在场），RAG 是契约声明的能力，且对「长期记忆之外的知识检索」有真实价值。
+- **(b) 诚实降级（⚠ 前置：须先改规格）**：rag 主链路（「本地向量库存储 / 文档摄取与分块 / 本地 Embedding / 检索」）**本就是 `doc/openspec/specs/rag/spec.md` 的明文 Requirement**，故 (b) 属**撤回已承诺能力**，按 SDD「先改规格再改代码」**必须先出 spec delta（MODIFIED 相关 Requirement）**，再移除死代码（仅保留 `LLMEmbedder`），最后同步 `contracts_summary.md`（速查表，非真源）。**删除面含** `src/core/rag/__init__.py` 的 `__all__`（`Chunk`/`Document`/`SearchHit`/`InMemoryVectorStore`/`IngestionPipeline`/`RagGenerator`/`Retriever`）**与** `tests/test_rag.py` 的对应用例——不得只删源码。
+  - **口径澄清**：原「若契约确不要求」的假设**不成立**（一手核实：契约要求）⇒ 实际是「a，或者先改规格撤回」。
+- **验收（以 a 为准）**：一条端到端测试：ingest 若干文档 → search 命中相关 chunk → generate 返回带来源的答案；CLI 命令可运行；`ruff`/`pyright`/`pytest` 全绿。
+
+---
+
+## 4. 缺陷 3 — skillhub 供给侧三件套死代码（P1）
+
+### 4.1 现象与根因
+
+- `skillhub` 供给侧三件套 **`SkillPublisher`（publisher.py）/ `MarketIndex`（index.py）/ `TrustVerifier`（trust.py）零生产调用**；仅消费侧 `SkillHubClient`（search/install，`entry.py:77/766/771/785`）存活。
+- **根因**：phase-20 C5 只把「从市场**拉取/安装**技能」的消费侧接上了，**「发布/索引/信任验证」供给侧从未接**——技能只能进不能出，市场只有消费没有供给。
+
+### 4.2 修复方向（二选一，推荐 a）
+
+- **(a) 接线（推荐）**：补 CLI 入口（如 `skillhub publish <skill>`）接通 `SkillPublisher`（打包/发布）+ `MarketIndex`（索引上架）+ `TrustVerifier`（签名/信任验证），使「本地技能 → 发布 → 索引 → 可被消费侧 search/install」闭环；契约同步声明入口。
+- **(b) 诚实降级（⚠ 前置：须先改规格）**：供给侧（`SkillPublisher` 发布 / `MarketIndex` 索引 / `TrustVerifier` 信任）是 `doc/openspec/specs/skillhub/spec.md` 的明文覆盖（Purpose 含「**发布审核流**」，场景点名 `MarketIndex.list` / `MarketIndex 健康探测` / `TrustVerifier`）⇒ (b) 属**撤回已承诺能力**，**必须先出 spec delta（MODIFIED）**，再移除死代码（publisher/index/trust），最后同步 `contracts_summary.md`。**删除面含** `src/core/skillhub/__init__.py` 的 `__all__`（`MarketIndex`/`SkillPublisher`/`TrustVerifier`）**与** `tests/test_skillhub.py` / `tests/test_skillhub_cli.py` 的对应用例。
+- **验收（以 a 为准）**：一条端到端测试：publish 一个本地技能 → 断言 `MarketIndex` 可检索到 → 消费侧 `search` 能命中 → `install` 成功；CLI 可运行；三件套门禁全绿。
+
+---
+
+## 5. 契约对齐
+
+引用 `contracts_summary.md`（速查表原文）：
+- **observability**：trace 采集 + 落盘（JSONL 持久化）。本 Phase 的 P0 修复确保「**采集到的事件真能落盘**」（当前 `end_trace` 零调用 ⇒ 落盘死路径，契约未兑现）。
+- **rag**：检索增强生成（摄取→向量化→检索→生成）。当前仅 `LLMEmbedder` 存活，主链路契约**未兑现**——修复后补齐或诚实降级声明。
+- **skillhub**：技能发布 / 市场检索 / 安装。当前仅消费侧（检索/安装）兑现，供给侧（发布/索引/信任）契约**未兑现**——修复后补齐或诚实降级声明。
+
+> **口径**：凡选择 (b) 诚实降级者，**先改规格**（`doc/openspec/specs/rag/spec.md` / `doc/openspec/specs/skillhub/spec.md` 出 MODIFIED delta 撤回对应能力）**→ 再删代码**（含各模块 `__init__.__all__` 与既有测试）**→ 最后同步 `contracts_summary.md`**（速查表非真源）。顺序为「规格 → 代码 → 速查表」，**不得只删代码或只改速查表**。
+
+---
+
+## 6. 门禁验收
+
+- [ ] `ruff check` 全绿。
+- [ ] `pyright` 0 errors。
+- [ ] `pytest` 全绿（新增用例覆盖 §2.2 / §3.2 / §4.2 各验收点）。
+- [ ] **本 Phase 专属校验**：
+  - P0：集成测试证明「exporter 收到本轮事件 + 多轮 `_events` **有界**（无泄漏）」（§2.2）；释放时机按 §2.2 选定方案断言 —— (A) 收尾后该 trace 已出 `_events`；(B) 冷路径 `_collect` 后该 trace 已 `discard`。
+  - P1（若选 a）：rag 端到端 ingest→search→generate 可用；skillhub publish→search→install 闭环可用（§3.2 / §4.2）。
+  - 若任一项选 (b)：对应 `doc/openspec/specs/{rag,skillhub}/spec.md` 已出 **MODIFIED delta（撤回能力）** → 死代码（含 `__init__.__all__` 与既有测试）已移除 → `contracts_summary.md` 已同步标注「未启用」。

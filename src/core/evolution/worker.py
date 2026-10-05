@@ -1,6 +1,7 @@
 """进化冷路径采集调度器（evolution）。
 
-`EvolutionWorker` 消费 `Tracer` 已完成的 trace（热路径只登记 trace_id、不阻塞），
+`EvolutionWorker` 消费 `Tracer` 已完成的 trace 事件（热路径回调只取**快照**、不阻塞；
+Tracer 随后封口并释放内存，故留存归本 worker），
 在 `EvolutionTrigger` 阈值命中或强制触发时，把 `TraceEvent` 适配为 evolution
 `Trace` 并驱动 `EvolutionEngine.run_cycle`（诊断 → 提案 dry-run；验证门与结晶
 见 Phase 15）。
@@ -41,7 +42,7 @@ class EvolutionWorker:
             if planner is not None
             else CurriculumPlanner(observations=engine.observations, pending=engine.pending)
         )
-        self._completed: list[str] = []
+        self._completed: list[list[TraceEvent]] = []
 
     @property
     def engine(self) -> EvolutionEngine:
@@ -49,8 +50,12 @@ class EvolutionWorker:
         return self._engine
 
     def on_trace_complete(self, trace_id: str) -> None:
-        """热路径回调：登记一条已完成 trace（仅登记，不触发、不阻塞）。"""
-        self._completed.append(trace_id)
+        """热路径回调：登记一条已完成 trace 的**事件快照**（仅登记，不触发、不阻塞）。
+
+        在回调时刻取快照：调用方随后会**封口**该 trace（交付导出器 + 释放内存），
+        届时 `Tracer.replay` 不再返回本轮事件 ⇒ 留存责任归消费者（本 worker）。
+        """
+        self._completed.append(list(self._tracer.replay(trace_id)))
 
     def maybe_run(self, *, force: bool = False, goal: str | None = None) -> EvolutionOutcome | None:
         """冷路径：阈值命中或强制时，replay 累积 trace → 课程定目标 → run_cycle（dry-run）。
@@ -81,8 +86,8 @@ class EvolutionWorker:
 
     def _collect(self) -> list[Trace]:
         traces: list[Trace] = []
-        for trace_id in self._completed:
-            traces.extend(self._to_traces(self._tracer.replay(trace_id)))
+        for events in self._completed:
+            traces.extend(self._to_traces(events))
         return traces
 
     @staticmethod

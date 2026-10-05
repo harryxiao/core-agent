@@ -207,7 +207,7 @@ class DefaultLoop(Plugin):
     async def astream(  # noqa: C901 — 主管线多分支长管道（事件面七类）
         self, user_input: str, *, session_id: str = ""
     ) -> AsyncIterator[LoopEvent]:
-        trace_id = uuid.uuid4().hex
+        trace_id = self._start_trace(user_input)
         yield LoopEvent("loop_started", {"trace_id": trace_id})
         self._trace(trace_id, "loop_started", {"trace_id": trace_id})
         ctx = self.perceive(user_input)
@@ -276,6 +276,8 @@ class DefaultLoop(Plugin):
         )
         # 本轮遥测已齐：交给 trace 完成回调（登记一条已完成 trace；缺省不启用）
         self._notify_trace_complete(trace_id)
+        # 顺序约束：回调之后才封口（回调须能完整回放本轮事件；封口交付导出器 + 释放内存）
+        self._end_trace(trace_id)
         if not streamed:  # 未流式外发过 delta 才补一次全文（非流式 planner 兼容路径）
             yield LoopEvent("reply_delta", {"text": ctx.reply})
         yield LoopEvent(
@@ -478,6 +480,24 @@ class DefaultLoop(Plugin):
         else:
             content = str(first)
         return f"已完成：{content}"
+
+    def _start_trace(self, task_id: str) -> str:
+        """开轮取 trace_id：经注入的 tracer 建链（其 id 贯穿全链路）。
+
+        缺省未注入 tracer 时回退本地生成 id，行为与既有一致。
+        """
+        if self._tracer is None:
+            return uuid.uuid4().hex
+        return self._tracer.start_trace(task_id)
+
+    def _end_trace(self, trace_id: str) -> None:
+        """收尾**封口**本轮 trace（交付导出器 + 释放内存）；缺省未注入 tracer 则不做。
+
+        调用点 SHALL 在 trace 完成回调**之后**：回调须能完整回放本轮事件。
+        """
+        if self._tracer is None:
+            return
+        self._tracer.end_trace(trace_id)
 
     def _trace(
         self,

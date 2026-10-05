@@ -97,7 +97,9 @@ def test_loop_failure_flows_to_module_attribution() -> None:
     result = loop.run("任务")
 
     assert result.failed, "轮数上限 ⇒ 本轮失败"
-    assert worker._completed == [result.trace_id], "轮末回调已登记本轮 trace"  # noqa: SLF001
+    # change 0103：回调在封口**之前**取快照，故封口后 worker 仍持本轮事件
+    assert len(worker._completed) == 1, "轮末回调已登记本轮快照"  # noqa: SLF001
+    assert "loop_finished" in {e.kind for e in worker._completed[0]}  # noqa: SLF001
     outcome = worker.maybe_run(force=True)
     assert outcome is not None and outcome.candidate is not None
     assert outcome.candidate.target_plugin == "loop.default", "缺陷归因到执行循环模块"
