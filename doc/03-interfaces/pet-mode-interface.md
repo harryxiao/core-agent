@@ -22,7 +22,7 @@ class PetSession:
     # 生命周期
     def start(self, task: PetTask) -> None: ...
     def wake(self) -> LoopResult: ...
-        """每次唤醒经 Loop.run() 同步薄壳执行一次自治任务。"""
+        """每次唤醒**消费队首任务**经 Loop.run() 同步薄壳执行一次；队列清空 ⇒ 入睡（让行态）。"""
 
     def suspend(self) -> None: ...
         """让行/休眠：复用 orchestration 任务状态机 SUSPENDED，主循环 busy 时不抢锁。"""
@@ -35,6 +35,7 @@ class PetSession:
 
     # 任务派发
     def dispatch(self, task: PetTask) -> None: ...
+        """低优先级派发；**新任务自动唤醒**让行/休眠中的宠物（清让行态）。"""
 
     # 偏好追踪
     def observe(self, behavior: str) -> MemoryEntry: ...
@@ -50,9 +51,13 @@ class PetSession:
 ```
 
 > 让行/休眠不新增枚举：复用 orchestration 任务状态机 `SUSPENDED`（宿主 loop 状态），宠物自身会话态仅 `IDLE / ACTIVE / BACKOFF / TERMINATED` 四态。
+>
+> **任务一次性与空闲入睡（change `0087`／ADR-0082，账本 E26）**：`wake()` **消费**队首任务（`popleft`，任务一次性）；
+> 队列清空 ⇒ 会话进入休眠（置让行态，**不新增枚举、不编造任务**），后续唤醒以 `PET_YIELDING` 拒绝（宿主驱动 `pet run` 天然按预期态跳过）；
+> **新任务派发 ⇒ 自动唤醒**（`dispatch()` 清让行态）。入睡前（**有通知面**时）触发一次微任务并上报其**真实产出**。
 
 > **依赖注入与快照**（change `0053`）：`loop`/记忆/探索/安全/通知依赖由组合根（`build_runtime`）经 `PetActivator` 注入，
-> 生产激活的宠物因此持有 runtime 的真实 loop 与共享记忆后端（偏好落 L2、唤醒走真 loop）。`snapshot()` / `restore(record, **deps)`
+> 生产激活的宠物因此持有 runtime 的真实 loop、共享记忆后端与 `MicrotaskRunner`（偏好落 L2、唤醒走真 loop、空闲跑真微任务）。`snapshot()` / `restore(record, **deps)`
 > 支持会话快照与恢复（注册表落盘用）；缺省依赖全 `None` → echo loop / 无记忆兜底，行为不变。
 > **通知接线（change `0079`／ADR-0076，账本 E16）**：通知器此前只注入不投递（`_notifier` 零调用、`AsyncNotifier` 无 channel、`flush()` 零调用方）。现已三环连通 —— 生产者落 `wake()` 收尾（反馈周期命中时投递 `report()` 产出），缺省通道 = stderr 一行（主人可见的观测面），投递点由组合根收成单一可调用体（入队后即 flush）注入；真实 IM 通道仍由宿主注入替换。
 
@@ -137,11 +142,12 @@ class PetActivator:
 
 | 环节 | 契约 | 说明 |
 |---|---|---|
-| 任务派发 | `dispatch(task)` | 低优先级派发，主循环 busy 时让行，不抢锁 |
-| 周期触发 | `wake()` | 每次唤醒复用 `Loop.run()` 同步薄壳，逐次执行不常驻 |
+| 任务派发 | `dispatch(task)` | 低优先级派发，主循环 busy 时让行，不抢锁；**新任务自动唤醒**让行/休眠中的宠物（change `0087`） |
+| 周期触发 | `wake()` | 每次唤醒复用 `Loop.run()` 同步薄壳，逐次执行不常驻；**消费队首任务**（change `0087`） |
 | 偏好读写 | `observe()` / `prefer()` | 以 `MemoryEntry.source="user"` 落 L2 facts，不新造记忆层 |
 | 反馈 | `report()` | 达到周期向主人汇报，不阻塞主循环；**唤醒收尾经通知器投递**（change `0079`） |
 | 惊喜 | `surprise()` | 有偏好 ⇒ 经真实 loop 代办并回报真实产出；无偏好 ⇒ `None`（不谎报）。**唤醒收尾同反馈节拍投递**，失败 fail-soft（change `0086`／ADR-0081，账本 E26） |
+| 空闲/微任务 | `_go_idle()` + `microtasks()` | 队列清空 ⇒ 入睡（让行态）；有通知面时触发一次微任务并上报**真实产出**，无产出不谎报（change `0087`／ADR-0082） |
 | 让行退避 | `suspend()` / `backoff()` | 让行复用 orchestration `SUSPENDED`；异常退避为 `BACKOFF` 故障隔离 |
 
 > **驱动归属：「周期触发」由宿主驱动，内核不常驻、不自建调度线程（change `0065`，账本 E17 关闭）**。
@@ -200,7 +206,7 @@ change `0081` 之前二者只注入不消费，且宠物**跑在主 loop 上**�
 | `PET_ALREADY_ACTIVE` | 会话已激活，重复激活被拒 |
 | `PET_NOT_ACTIVE` | 会话未激活，唤醒/派发/恢复无效 |
 | `PET_BACKOFF` | 会话处于异常退避态，暂不可唤醒 |
-| `PET_YIELDING` | 主循环 busy，宠物让行（复用 orchestration `SUSPENDED`） |
+| `PET_YIELDING` | 主循环 busy 让行 / 队列清空休眠（均复用 orchestration `SUSPENDED`） |
 | `PET_PREFERENCE_WRITE_FAILED` | 偏好写入 L2 facts 层失败 |
 
 ---

@@ -48,6 +48,7 @@ class PetActivator:
         safety: SafetyLayer | None = None,
         notifier: Callable[[str], None] | None = None,
         busy: Callable[[], bool] | None = None,
+        microtasks: Callable[[], str | None] | None = None,
     ) -> None:
         self._manager = manager if manager is not None else PetManager()
         self._loop = loop
@@ -56,6 +57,7 @@ class PetActivator:
         self._safety = safety
         self._notifier = notifier
         self._busy = busy
+        self._microtasks = microtasks
 
     def activate_from_slash(self, tool_id: str) -> PetSession:
         """`/pet` 候选来自 UIAPILayer.list_tools()，不进内核接口。"""
@@ -88,6 +90,7 @@ class PetActivator:
             safety=self._safety,
             notifier=self._notifier,
             busy=self._busy,
+            microtasks=self._microtasks,
         )
         session.start(task)
         self._manager.register(session)

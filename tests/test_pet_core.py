@@ -75,6 +75,8 @@ def test_wake_stays_silent_off_feedback_cycle() -> None:
     sent: list[str] = []
     session = PetSession(loop=FakeLoop(), notifier=sent.append, feedback_period=3)
     session.start(_task())
+    session.dispatch(_task())
+    session.dispatch(_task())
     session.wake()
     session.wake()
     assert sent == []
@@ -179,8 +181,9 @@ def test_session_snapshot_restore_roundtrip() -> None:
     """snapshot→restore 保真：id / 状态 / 任务队列 / 偏好 / 唤醒计数。"""
     session = PetSession(session_id="s1", loop=FakeLoop(), memory=FakeMemory())
     session.start(_task())
+    session.dispatch(_task())
     session.observe("theme:dark")
-    session.wake()
+    session.wake()  # 消费队首 ⇒ 队列剩 1
     restored = PetSession.restore(session.snapshot(), loop=FakeLoop())
     assert restored.session_id == "s1"
     assert restored.state is PetSessionState.ACTIVE
@@ -313,3 +316,79 @@ def test_wake_survives_surprise_failure() -> None:
     session.observe("theme:dark")
     assert session.wake().reply == "ok"
     assert len(sent) == 1, "惊喜失败 ⇒ 只投了周期反馈，未抛出"
+
+
+# ---- 任务一次性与空闲自治睡眠（change 0087 / 账本 E26 的 microtask 半边） ----
+
+
+def test_wake_consumes_dispatched_task() -> None:
+    """唤醒**消费**队首任务（一次性）：队列由 2 → 1，被消费的是队首。"""
+    loop = FakeLoop()
+    session = PetSession(loop=loop)
+    session.start(_task())
+    session.dispatch(PetTask(kind=PetTaskKind.IDLE_EXPLORATION, goal="散步"))
+    session.wake()
+    assert len(session._tasks) == 1  # noqa: SLF001 — 出队断言
+    assert session._tasks[0].goal == "散步"  # noqa: SLF001
+    assert "收集今日新闻" in loop.prompts[0]
+
+
+def test_wake_with_empty_queue_sleeps_and_rejects() -> None:
+    """队列清空 ⇒ 入睡（让行态），不编造任务；后续唤醒被拒 PET_YIELDING。"""
+    session = PetSession(loop=FakeLoop())
+    session.start(_task())
+    session.wake()
+    assert session.snapshot()["yielding"] is True, "队列清空即进入休眠（让行态）"
+    with pytest.raises(PetError) as exc_info:
+        session.wake()
+    assert exc_info.value.code is PetErrorCode.PET_YIELDING
+
+
+def test_dispatch_auto_wakes_sleeping_pet() -> None:
+    """新任务派发 ⇒ 自动唤醒（清让行态），下次唤醒消费该任务。"""
+    session = PetSession(loop=FakeLoop())
+    session.start(_task())
+    session.wake()
+    assert session.snapshot()["yielding"] is True
+    session.dispatch(PetTask(kind=PetTaskKind.IDLE_EXPLORATION, goal="新活"))
+    assert session.snapshot()["yielding"] is False
+    assert session.wake().reply == "ok"
+
+
+def test_idle_triggers_microtask_and_reports_real_output() -> None:
+    """空闲入睡前经通知器上报微任务的**真实产出**（一次）。"""
+    sent: list[str] = []
+    session = PetSession(
+        loop=FakeLoop(),
+        notifier=sent.append,
+        feedback_period=99,
+        microtasks=lambda: "真实微任务产出",
+    )
+    session.start(_task())
+    session.wake()
+    assert sent == ["真实微任务产出"]
+
+
+def test_idle_without_microtask_output_stays_silent() -> None:
+    """微任务无真实产出（None）⇒ 不上报（不谎报）。"""
+    sent: list[str] = []
+    session = PetSession(
+        loop=FakeLoop(), notifier=sent.append, feedback_period=99, microtasks=lambda: None
+    )
+    session.start(_task())
+    session.wake()
+    assert sent == []
+
+
+def test_idle_microtask_failure_is_soft() -> None:
+    """微任务异常被吞掉：照常入睡、不阻断唤醒（fail-soft）。"""
+
+    def _boom() -> str | None:
+        raise RuntimeError("微任务炸了")
+
+    session = PetSession(
+        loop=FakeLoop(), notifier=lambda _m: None, feedback_period=99, microtasks=_boom
+    )
+    session.start(_task())
+    assert session.wake().reply == "ok"
+    assert session.snapshot()["yielding"] is True

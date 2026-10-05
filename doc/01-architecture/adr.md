@@ -1598,6 +1598,32 @@
 - **转出**：`MicrotaskRunner` 接线（E26 的另一半）→ change `0087`；pet 控制面（`/pet [cmd]`）→ change `0088`。
 
 ---
+## ADR-0082：pet 任务一次性、空闲自治睡眠与微任务真实化
+
+- **背景**：账本 E26 的另一半 —— `MicrotaskRunner` 零生产调用方且其「产出」是**预制文案**（谎称「看了看命令历史」
+  「发现一条系统小提示」，投出即谎报）；且 `wake()` **不消费任务**（`_tasks` 不减少）、空队列时**编造**一个
+  「闲逛探索」任务 ⇒ 宠物**永不休眠、永在做假事**。用户诉求③「干完无任务也可以自己睡觉」正落在此。
+- **决策**：
+  ① **任务一次性** —— `wake()` 消费队首（`popleft`），队列清空即空闲。规格「重复简单任务」读作「宠物**支持**
+     这类可重复的琐事（不断被派发）」，**非**「同一任务实例永远重复」；既有「不出队 + 空队列编造任务」是**实现选择**，
+     非规格明文，且与「干完睡觉」直接冲突。已否决「保留不出队 + 另设 `clear` 才入睡」。
+  ② **空闲 = 让行态（`_yielding`）** —— 不新增枚举（规格明文「仅四态」「让行复用 orchestration `SUSPENDED`」）。
+     宿主驱动（`0083`）**零改动**：入睡后唤醒抛 `PET_YIELDING`，驱动按既有预期态 `skipped` 跳过；
+     快照已含 `yielding` ⇒ 恢复后仍睡着；**新任务 `dispatch()` ⇒ 清让行态自动唤醒**（与 doze/resume 同构）。
+     已否决「新增 `SLEEPING` 枚举态」（与规格冲突 + 改驱动/快照/断言全额税）。
+  ③ **微任务真实化** —— 与 `0086` 同口径「返回值必须有事实依托」：`terminal_walk` 读命令历史**只报条数**
+     （历史可能含密钥/隐私 ⇒ **绝不外泄内容**）、不可读/空 ⇒ `None`；`system_hint` `os.getloadavg()` 真探，
+     负载 **< CPU 数**（不显著）⇒ `None`（不打扰）；`nonsense_comment` 无 `comment_writer` ⇒ `None`。
+     探测函数可注入（缺省真探，同 `sleep`/`clock` 注入先例）。已否决「保留预制文案」（正是 E26 记名的谎报）。
+  ④ **触发点 = 空闲入睡前的过渡点，且有通知面才跑** —— `_go_idle()` 内触发一次；无 `notifier` 不跑（同 `0086`
+     「无 notifier 不跑惊喜」），失败 fail-soft 不阻断入睡。已否决「每次唤醒都跑」（不空闲也摸鱼、唤醒成本翻倍）。
+  ⑤ **注入面走可调用体** —— `PetSession` 收 `microtasks: Callable[[], str | None]`（组合根传 `runner.run`），
+     会话层不 import 具体微任务实现（同 `notifier`/`busy` 惯用法）。
+- **规格**：MODIFIED「Background Pet Session Lifecycle」（任务出队 / 空闲入睡 / 新任务唤醒 + 3 新场景）+
+  MODIFIED「Pet Micro-tasks」（真实产出 + 空闲触发 + 2 新场景）。
+- **转出**：pet 控制面（`/pet [cmd]`：`sleep`/`wake`/`assign` 动词）→ change `0088`（本变更已落定其底层语义）。
+
+---
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1674,3 +1700,4 @@
 | ADR-0079 | 03-interfaces/evolution-interface.md, 02-modules/evolution.md, 00-product/user-guide.md |
 | ADR-0080 | 03-interfaces/configuration-interface.md |
 | ADR-0081 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |
+| ADR-0082 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |

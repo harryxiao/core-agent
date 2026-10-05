@@ -60,7 +60,13 @@ PetMode（后台自治循环扩展）
   通知主人，会话保持 `ACTIVE`（见 §4 生产装配）。
 - **惊喜上报（change `0086`／ADR-0081，账本 E26 的 surprise 半边）**：`surprise()` 已接线 —— 唤醒收尾与周期反馈
   **同节拍**尝试，有偏好 ⇒ 跑一次 loop 真实代办、回报真实产出，无偏好 ⇒ 不产出不投递（消灭「已帮你安排」谎报）；
-  惊喜失败 fail-soft，不阻断唤醒。仍未接线：`MicrotaskRunner`（零调用方）——转 change `0087`。
+  惊喜失败 fail-soft，不阻断唤醒。
+- **微任务真实化与空闲自治睡眠（change `0087`／ADR-0082，账本 E26 的 microtask 半边）**：`MicrotaskRunner`
+  已接线 —— 三条任务各取**真实来源**（`terminal_walk` 读命令历史**只报条数**、绝不外泄内容；`system_hint` 真探负载、
+  不显著则不出声；`nonsense_comment` 仅在注入写回口时真写），**无真实产出 ⇒ `None`**（投出即谎报，与 `0086` 同口径）。
+  `wake()` 改为**消费队首任务**（一次性）；队列清空 ⇒ 会话进入**休眠**（让行态，不新增枚举、不编造任务），
+  入睡前（有通知面时）触发一次微任务并上报真实产出；**新任务派发 ⇒ 自动唤醒**。宿主驱动（§3.6）**零改动**
+  —— 入睡后唤醒抛 `PET_YIELDING`，驱动按既有预期态 `skipped` 跳过。
 
 ### 3.6 宿主驱动（`pet run`，change `0083`／ADR-0078，账本 E28）
 
@@ -81,9 +87,11 @@ PetMode（后台自治循环扩展）
 
 ```
 三入口激活 ──PetActivator──► PetSession（IDLE → ACTIVE）
-每次唤醒 ──Loop.run() 同步薄壳──► 执行一次自治任务（信息收集 / 闲逛探索）
+每次唤醒 ──Loop.run() 同步薄壳──► 消费队首任务、执行一次（信息收集 / 闲逛探索）
 观察行为 ──observe()──► MemoryEntry.source="user" 落 L2 facts
 周期 ──report()/surprise()──► 向主人汇报 / 制造惊喜
+队列清空 ──_go_idle()──► 入睡（让行态）+ 触发一次微任务并上报真实产出
+新任务 ──dispatch()──► 自动唤醒（清让行态）
 主循环 busy ──suspend()/backoff()──► 让行（复用 SUSPENDED）/ 异常退避（BACKOFF）
 ```
 

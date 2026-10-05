@@ -37,6 +37,7 @@ class PetSession:
         safety: SafetyLayer | None = None,
         notifier: Callable[[str], None] | None = None,
         busy: Callable[[], bool] | None = None,
+        microtasks: Callable[[], str | None] | None = None,
         feedback_period: int = 5,
     ) -> None:
         self.session_id = session_id if session_id is not None else uuid.uuid4().hex
@@ -48,6 +49,7 @@ class PetSession:
         self._safety = safety
         self._notifier = notifier
         self._busy = busy if busy is not None else (lambda: False)
+        self._microtasks = microtasks
         self._feedback_period = feedback_period
         self._tasks: deque[PetTask] = deque()
         self._yielding = False
@@ -85,6 +87,7 @@ class PetSession:
         safety: SafetyLayer | None = None,
         notifier: Callable[[str], None] | None = None,
         busy: Callable[[], bool] | None = None,
+        microtasks: Callable[[], str | None] | None = None,
         feedback_period: int = 5,
     ) -> PetSession:
         """从快照恢复会话（保留 id/状态/任务/偏好/唤醒计数）；依赖可再注入（缺省回退兜底）。"""
@@ -97,6 +100,7 @@ class PetSession:
             safety=safety,
             notifier=notifier,
             busy=busy,
+            microtasks=microtasks,
             feedback_period=feedback_period,
         )
         session.state = PetSessionState(record.get("state", PetSessionState.IDLE.value))
@@ -131,13 +135,20 @@ class PetSession:
             raise PetError(PetErrorCode.PET_BACKOFF, "会话处于异常退避态，暂不可唤醒")
         if self.state is not PetSessionState.ACTIVE:
             raise PetError(PetErrorCode.PET_NOT_ACTIVE, "会话未激活，唤醒无效")
-        if self._yielding or self._busy():
+        if self._yielding:
+            raise PetError(PetErrorCode.PET_YIELDING, "宠物休眠/让行中，唤醒跳过")
+        if self._busy():
             raise PetError(PetErrorCode.PET_YIELDING, "主循环 busy，宠物让行")
-        goal = self._tasks[0].goal if self._tasks else "闲逛探索：观察当前环境"
-        result = self._loop.run(self._compose_prompt(goal))
+        if not self._tasks:
+            self._go_idle()
+            raise PetError(PetErrorCode.PET_YIELDING, "无待办任务，宠物入睡")
+        task = self._tasks.popleft()
+        result = self._loop.run(self._compose_prompt(task.goal))
         self._last_trace_id = result.trace_id
         self._wake_count += 1
         self._notify_owner()
+        if not self._tasks:
+            self._go_idle()
         return result
 
     def suspend(self) -> None:
@@ -166,9 +177,10 @@ class PetSession:
     # ---- 任务派发 ----
 
     def dispatch(self, task: PetTask) -> None:
-        """低优先级派发；主循环 busy 时让行，不抢锁。"""
+        """低优先级派发；主循环 busy 时让行，不抢锁；**新任务唤醒让行/休眠中的宠物**。"""
         self._require_active("dispatch")
         self._tasks.append(task)
+        self._yielding = False
 
     # ---- 偏好追踪 ----
 
@@ -243,6 +255,22 @@ class PetSession:
             surprise = None
         if surprise is not None:
             self._notifier(surprise)
+
+    def _go_idle(self) -> None:
+        """空闲入睡：置让行态（复用 orchestration `SUSPENDED` 语义），不新增枚举、不编造任务。
+
+        队列清空即休眠；入睡前（**有真实通知面**时）触发一次微任务并上报其**真实产出** ——
+        无产出不谎报，微任务异常被吞掉（非关键路径，不阻断入睡）。
+        """
+        self._yielding = True
+        if self._microtasks is None or self._notifier is None:
+            return
+        try:
+            micro = self._microtasks()
+        except Exception:  # noqa: BLE001 — 微任务非关键路径：失败静默，不阻断入睡
+            micro = None
+        if micro is not None:
+            self._notifier(micro)
 
     def _on_feedback_cycle(self) -> bool:
         """是否命中反馈周期（反馈节拍单一判据真源）。"""

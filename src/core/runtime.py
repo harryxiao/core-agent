@@ -76,6 +76,7 @@ from core.orchestration import (
 from core.permission import PermissionGuard, SandboxManager, SandboxPolicy
 from core.pet.core import PetActivator, PetManager, PetSession
 from core.pet.explore import Explorer
+from core.pet.microtask import MicrotaskRunner
 from core.pet.notify import AsyncNotifier
 from core.pet.safety import SafetyBounds, build_safety_middleware
 from core.plugin_registry import CoeffectResolver, EffectTracker, PluginInstaller
@@ -721,6 +722,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
             )
 
         pet_loop = _pet_loop()
+        pet_microtasks = MicrotaskRunner()
         pet_manager = PetManager(
             _pet_state_path(),
             factory=lambda record: PetSession.restore(
@@ -730,6 +732,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
                 explorer=pet_explorer,
                 safety=pet_safety,
                 notifier=_pet_notify,
+                microtasks=pet_microtasks.run,
             ),
         )
         pet_activator = PetActivator(
@@ -739,6 +742,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
             explorer=pet_explorer,
             safety=pet_safety,
             notifier=_pet_notify,
+            microtasks=pet_microtasks.run,
         )
 
     # 神兽运行时桥接（0057）：专用路由器（画像不与 coding/research 混）+ 惰性按兽 loop +
