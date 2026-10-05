@@ -5,6 +5,7 @@
 """
 
 from .collector import Collector
+from .curriculum import CurriculumPlanner, EvolutionGoal
 from .diagnoser import Diagnoser
 from .engine import EvolutionEngine, EvolutionTrigger
 from .errors import EvolutionError, EvolutionErrorCode
@@ -30,6 +31,7 @@ __all__ = [
     "Benchmark",
     "BenchmarkRegistry",
     "Collector",
+    "CurriculumPlanner",
     "Diagnoser",
     "DiagnosisReport",
     "EvalReport",
@@ -37,6 +39,7 @@ __all__ = [
     "EvolutionEngine",
     "EvolutionError",
     "EvolutionErrorCode",
+    "EvolutionGoal",
     "EvolutionOutcome",
     "EvolutionTrigger",
     "EvolutionWorker",

@@ -206,7 +206,8 @@ def _add_memory_parser(sub: Any) -> None:
 def _add_evolve_parser(sub: Any) -> None:
     evolve = sub.add_parser("evolve", help="进化冷路径")
     ev_sub = evolve.add_subparsers(dest="evolve_cmd", metavar="<evolve-cmd>")
-    ev_sub.add_parser("run", help="强制跑一轮进化冷路径（诊断/提案 dry-run）")
+    run = ev_sub.add_parser("run", help="强制跑一轮进化冷路径（诊断/提案 dry-run）")
+    run.add_argument("--goal", metavar="PLUGIN_ID", help="显式指定本轮迭代目标（插件 id）")
     ev_sub.add_parser("pending", help="列出待人工确认的候选")
     confirm = ev_sub.add_parser("confirm", help="确认候选并发布结晶")
     confirm.add_argument("candidate_id", help="候选身份（见 evolve pending）")
@@ -819,7 +820,7 @@ def _memory(args: argparse.Namespace) -> int:
     return 0
 
 
-_EVOLVE_USAGE = "用法: core-agent evolve {run|pending|confirm <id>|reject <id>}"
+_EVOLVE_USAGE = "用法: core-agent evolve {run [--goal ID]|pending|confirm <id>|reject <id>}"
 
 
 def _evolve(args: argparse.Namespace) -> int:
@@ -847,14 +848,21 @@ def _evolve_runtime(args: argparse.Namespace) -> Any | None:
 
 
 def _evolve_run(args: argparse.Namespace) -> int:
-    """`evolve run`：**强制**跑一轮进化冷路径，打印结局。"""
+    """`evolve run [--goal PLUGIN_ID]`：**强制**跑一轮冷路径，打印结局。
+
+    `--goal` 是**显式目标入口**：人直接指定本轮迭代谁（不参与归因竞争），仍走完整
+    四阶段与验证门；缺省则用课程议程（自动开课）作诊断先验。
+    """
     runtime = _evolve_runtime(args)
     if runtime is None:
         return 1
     evolution = runtime.evolution
     if evolution is None:
         return _module_disabled("evolution")
-    outcome = evolution.maybe_run(force=True)
+    goal = args.goal
+    if goal:
+        print(f"本轮目标：{goal}（显式指定）")
+    outcome = evolution.maybe_run(force=True, goal=goal)
     if outcome is None:
         print("进化冷路径完成：无候选（no_op）")
     else:

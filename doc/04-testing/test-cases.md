@@ -71,6 +71,7 @@
 | TC-EVO-03 | CORE-EVO-R3 | 候选过门 | 产出世代化不可变产物 |
 | TC-EVO-04 | CORE-EVO-R4 | 候选在留出集退化 | 自动回滚，不发布 |
 | TC-EVO-05 | CORE-EVO-R3 | 候选不过验证门 | 丢弃 + 教训写记忆 |
+| TC-EVO-06 | evolution/spec.md「自动课程」+「冷路径驱动」 | 冷路径开课：本批失败按插件归因（含并列、含已发布观察期目标） | 课程产出**有界、有序、确定**的议程（失败数降序 → 已处理降权 → `plugin_id` 升序），权重恒 < 1.0 作诊断**先验** ⇒ **只破并列、不压证据**；`evolve run --goal X` 时 X **直接采用**（不被证据改写，仍走四阶段 + 人工 `confirm`）（锚点：`tests/test_evolution_curriculum.py`、`tests/test_evolution.py::test_diagnoser_prior_breaks_tie`、`::test_prior_never_overrides_evidence`、`::test_worker_auto_agenda_breaks_tie`、`::test_worker_explicit_goal_overrides_evidence`、`tests/test_entry.py::test_evolve_run_forwards_explicit_goal`） |
 
 ## 7. 权限与审批管控（TC-PERM）
 

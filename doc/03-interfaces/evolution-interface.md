@@ -52,6 +52,13 @@ class GenerationCandidate:
     # skill → low（技能库级，仍须显式 confirm，只是不要求权限工单）
 
 @dataclass
+class EvolutionGoal:
+    plugin_id: str              # 本轮迭代目标（插件 id）
+    score: float                # 喂给诊断的**先验权重**（按议程位次几何递减，恒 < 1.0）
+    reason: str                 # 依据（失败数 / 已处理标记）—— 排序可解释
+    directive: bool = False     # 显式目标（人指定）：直接采用、不参与归因竞争
+
+@dataclass
 class GateReport:
     passed: bool
     review: str
@@ -73,7 +80,9 @@ class EvalReport:
 class EvolutionEngine(Plugin):
     plugin_id = "evolution.engine"
 
-    def run_cycle(self, traces: list[Trace]) -> EvolutionOutcome:
+    def run_cycle(self, traces: list[Trace], *,
+                  goals: Sequence[EvolutionGoal] | None = None) -> EvolutionOutcome:
+        # goals = 课程议程：directive 直接采用；其余作诊断**先验**（只破并列，不压证据）
         d = self.diagnoser.diagnose(traces)
         if not d.target_plugin: return EvolutionOutcome(status="manual")
         c = self.proposer.propose(d)
@@ -200,18 +209,47 @@ class EvolutionTrigger:
 
 ```python
 class EvolutionWorker:
-    def maybe_run(self, *, force: bool = False) -> EvolutionOutcome | None:
-        """阈值命中或强制时 replay 累积 trace → run_cycle，并按批次指标采样观察窗口；未达阈值返回 None。"""
+    def maybe_run(self, *, force: bool = False,
+                  goal: str | None = None) -> EvolutionOutcome | None:
+        """阈值命中或强制时 replay 累积 trace → **课程定目标** → run_cycle，
+        并按批次指标采样观察窗口；未达阈值返回 None。`goal` 为显式目标（直接采用）。"""
 ```
 
 | 入口 | 形状 | 停止语义 |
 |---|---|---|
 | loop 收尾维护节拍 | 组合根把冷路径回调注入 `DefaultLoop(cold_path=...)`；与记忆维护**共用节拍闸门**（`maintenance_interval`），各自失败降级、不中断本轮 | 节拍只给**机会**，阈值门决定是否做事（未达阈值 `maybe_run()` 返回 `None`） |
 | 门控（change `0067`） | `features.evolution: false` ⇒ 组合根**不建**引擎/worker，`DefaultLoop(cold_path=None)` —— 冷路径连同其唯一消费者一起消失（不是「装配了但不做事」）；`evolve` 四子命令同时拒绝 | 门控关闭时 `Runtime.evolution` 为空，`Runtime.loop._cold_path` 为 `None` |
-| CLI `core-agent evolve run` | 装配 runtime → `maybe_run(force=True)` → 打印结局 | **一次性动作**，不启常驻进程、不改运行态；装配失败 → stderr + 退出码 1 |
+| CLI `core-agent evolve run [--goal ID]` | 装配 runtime → `maybe_run(force=True, goal=…)` → 打印结局（指定 `--goal` 时先回显「本轮目标」） | **一次性动作**，不启常驻进程、不改运行态；装配失败 → stderr + 退出码 1 |
 
 - **阈值门不搬进驱动面**：节奏语义（累计 trace 数）仍归 `EvolutionTrigger`，两处阈值必然漂移。
 - **分层**：loop 属 L3、evolution 属 L4 → loop 只持 `Callable[[], None]`，装配由 `runtime.py` 做。
+
+### 4.2 自动课程（目标选择层，change `0084` / 账本 E5）
+
+闭环四阶段与两个驱动面都已接线，缺的是**「这一轮该迭代谁」**。`CurriculumPlanner` 补上这一层：
+它只吃**引擎内部的结构化信号**，产出**有界、有序、确定**的议程，供 `run_cycle` 作诊断先验。
+
+```python
+class CurriculumPlanner:
+    def __init__(self, *, observations: ObservationRegistry | None = None,
+                 pending: Callable[[], Sequence[GenerationCandidate]] | None = None) -> None: ...
+
+    def plan(self, traces: Iterable[Trace], *, explicit: str | None = None,
+             limit: int = 3) -> list[EvolutionGoal]:
+        """显式目标直采；否则按失败强度定序 → 已处理目标降权 → 位次给权重。"""
+```
+
+| 维度 | 口径 |
+|---|---|
+| **信号面（封闭）** | 只读结构化数据：① 本批失败计数（按 `plugin_id`）；② 观察期目标（已发布、观察中）；③ 待确认候选。**不读记忆自由文本、不调模型**（无结构化教训标记；模型排序非确定且不可验证） |
+| **定序** | 失败强度降序 → 已处理目标（观察期中 / 已有待确认候选）排后 → `plugin_id` 升序兜底（**确定性**） |
+| **权重** | 位次几何递减（首位 0.5，其后 0.25/0.125 …）——恒 < 1.0 ⇒ **证据恒优先、先验只破并列**；降权同理只改并列顺序 |
+| **预算** | 议程长度 ≤ `limit`（默认 3）——P5「token 有界」在目标选择层的落地 |
+| **显式目标** | `evolve run --goal X` ⇒ `directive=True` 的**唯一**目标：直接采用、不被证据改写，仍走完整四阶段 + 验证门 + 人工 `confirm` |
+| **开课** | `EvolutionWorker` 缺省自建 planner（只读 `engine.observations` / `engine.pending` ⇒ 零额外接线）；可注入替换 |
+
+- **不是第三个驱动面**：课程在引擎内，不常驻、不给模型新工具；驱动面仍只有 §4.1 的两个。
+- **不放宽人工门**：课程只影响**提案给谁**，不影响**发布是否要人批**（低风险候选仍须显式 `confirm`）。
 
 ---
 
@@ -242,4 +280,5 @@ class EvolutionWorker:
 - 模块：`02-modules/evolution.md`
 - 记忆结晶：`memory-interface.md`
 - 队列实现：`src/core/evolution/pending.py`
+- 目标选择层：`src/core/evolution/curriculum.py`
 - 规格：`openspec/specs/evolution/spec.md`

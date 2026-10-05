@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Sequence
 from typing import Any
 
 from core.memory import Crystallizer, MemoryBackend, MemoryEntry
@@ -18,13 +19,16 @@ from core.permission import ApprovalTicket, is_approved
 from core.skills import Skill, SkillLibrary
 
 from .collector import Collector
+from .curriculum import EvolutionGoal
 from .diagnoser import Diagnoser
 from .errors import EvolutionError, EvolutionErrorCode
 from .evaluator import Evaluator
 from .models import (
+    DiagnosisReport,
     EvolutionOutcome,
     GenerationCandidate,
     Trace,
+    TraceRef,
 )
 from .observation import ObservationRegistry
 from .pending import PendingQueue
@@ -76,12 +80,18 @@ class EvolutionEngine:
         """自检：四阶段组件齐备。"""
         return all((self._diagnoser, self._proposer, self._validator, self._evaluator))
 
-    def run_cycle(self, traces: list[Trace]) -> EvolutionOutcome:
-        """编排一次四阶段闭环。过门候选进人工确认队列（不自动发布）。"""
+    def run_cycle(
+        self, traces: list[Trace], *, goals: Sequence[EvolutionGoal] | None = None
+    ) -> EvolutionOutcome:
+        """编排一次四阶段闭环。过门候选进人工确认队列（不自动发布）。
+
+        `goals`：课程议程（可选）。显式目标（`directive`）**直接采用**、不参与归因竞争；
+        其余作为诊断**先验**（权重 < 1.0 ⇒ 证据恒优先、先验只破并列）。
+        """
         evidence = self._collector.collect(traces)
         if not evidence:
             return EvolutionOutcome(status="no_evidence")
-        diagnosis = self._diagnoser.diagnose(evidence)
+        diagnosis = self._diagnose(evidence, list(goals or []))
         if diagnosis.target_plugin is None:
             return EvolutionOutcome(status="manual", diagnosis=diagnosis)
         candidate = self._proposer.propose(diagnosis)
@@ -102,6 +112,19 @@ class EvolutionEngine:
             gate=gate,
             eval=eval_report,
         )
+
+    def _diagnose(self, evidence: list[Trace], goals: list[EvolutionGoal]) -> DiagnosisReport:
+        """诊断：显式目标直采；否则把议程整体作为**先验**并入归因分数。"""
+        directive = next((goal for goal in goals if goal.directive), None)
+        if directive is not None:
+            return DiagnosisReport(
+                target_plugin=directive.plugin_id,
+                issue=f"显式目标 {directive.plugin_id}（{directive.reason}）",
+                evidence=[TraceRef(trace_id=t.trace_id) for t in evidence if not t.success],
+                confidence=1.0,
+            )
+        prior = {goal.plugin_id: goal.score for goal in goals}
+        return self._diagnoser.diagnose(evidence, prior=prior or None)
 
     def confirm(
         self, candidate: GenerationCandidate, *, approval: ApprovalTicket | None = None

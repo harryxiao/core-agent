@@ -14,6 +14,7 @@ from typing import Any, cast
 
 from core.observability import TraceEvent, Tracer
 
+from .curriculum import CurriculumPlanner
 from .engine import EvolutionEngine, EvolutionTrigger
 from .models import EvolutionOutcome, Trace
 
@@ -29,10 +30,17 @@ class EvolutionWorker:
         engine: EvolutionEngine,
         *,
         trigger: EvolutionTrigger | None = None,
+        planner: CurriculumPlanner | None = None,
     ) -> None:
         self._tracer = tracer
         self._engine = engine
         self._trigger = trigger if trigger is not None else EvolutionTrigger()
+        # 课程缺省**自动开课**（只读引擎公开面：观察期目标 + 待确认候选 ⇒ 零额外接线）
+        self._planner = (
+            planner
+            if planner is not None
+            else CurriculumPlanner(observations=engine.observations, pending=engine.pending)
+        )
         self._completed: list[str] = []
 
     @property
@@ -44,14 +52,17 @@ class EvolutionWorker:
         """热路径回调：登记一条已完成 trace（仅登记，不触发、不阻塞）。"""
         self._completed.append(trace_id)
 
-    def maybe_run(self, *, force: bool = False) -> EvolutionOutcome | None:
-        """冷路径：阈值命中或强制时，replay 累积 trace → run_cycle（dry-run）。"""
+    def maybe_run(self, *, force: bool = False, goal: str | None = None) -> EvolutionOutcome | None:
+        """冷路径：阈值命中或强制时，replay 累积 trace → 课程定目标 → run_cycle（dry-run）。
+
+        `goal`：显式目标（`evolve run --goal`）——**直接采用**、不参与归因竞争。
+        """
         traces = self._collect()
         if not traces and not force:
             return None
         if not self._trigger.maybe_run(traces, force=force):
             return None
-        outcome = self._engine.run_cycle(traces)
+        outcome = self._engine.run_cycle(traces, goals=self._planner.plan(traces, explicit=goal))
         self._sample_observations(traces)
         self._completed.clear()
         return outcome

@@ -136,6 +136,14 @@ core-agent pet list
 core-agent pet run --interval 60    # 前台常驻驱动：按间隔唤醒每只宠物（Ctrl-C 停止）
 ```
 
+进化冷路径（强制跑一轮；`--goal` 指定本轮迭代目标）：
+
+```bash
+core-agent evolve run                        # 由课程选目标（失败强度定序，已处理目标降权）
+core-agent evolve run --goal memory.retrieve # 显式指定目标（直接采用，仍须人工 confirm 才发布）
+core-agent evolve pending                    # 待人工确认的候选
+```
+
 ---
 
 ## 6. LLM 配置

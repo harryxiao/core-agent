@@ -3,6 +3,9 @@
 归因缺陷到单一插件；无法归因 → `target_plugin=None`（系统级，engine 走 manual）。
 归因线索来自 trace 的 `plugin_id` 与注入的插件质量信号（plugin-registry 元数据）。
 
+**目标先验**（`diagnose(prior=…)`，change `0084`）来自课程议程：权重恒 < 1.0 ⇒ **证据恒优先**，
+先验的**唯一**效果是解并列（无先验时并列仍转人工）。
+
 对应接口：doc/03-interfaces/evolution-interface.md ｜ 规格 evolution/spec.md「对比诊断」
 """
 
@@ -20,12 +23,17 @@ class Diagnoser:
         """`plugin_signals`: plugin_id → 失败强度信号（来自插件元数据，可空）。"""
         self._signals: dict[str, float] = dict(plugin_signals or {})
 
-    def diagnose(self, traces: list[Trace]) -> DiagnosisReport:
+    def diagnose(
+        self, traces: list[Trace], *, prior: dict[str, float] | None = None
+    ) -> DiagnosisReport:
+        """归因到单一插件。`prior`：课程议程的先验权重（< 1.0 ⇒ 只破并列，不压证据）。"""
         failed = [t for t in traces if not t.success]
         if not failed:
             return DiagnosisReport(target_plugin=None, issue="无失败证据", confidence=0.0)
         evidence = [TraceRef(trace_id=t.trace_id) for t in failed]
         scores: dict[str, float] = dict(self._signals)
+        for plugin_id, weight in (prior or {}).items():
+            scores[plugin_id] = scores.get(plugin_id, 0.0) + weight
         for t in failed:
             if t.plugin_id is not None:
                 scores[t.plugin_id] = scores.get(t.plugin_id, 0.0) + 1.0

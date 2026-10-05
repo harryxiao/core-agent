@@ -1514,6 +1514,47 @@
 - **转出**：无新开账本行；E28 关闭后 E 类余 E5 / E20① / E26 / E27。
 
 ---
+## ADR-0079：自动课程（目标生成与调度 / 先验只破并列 / 显式目标直采）
+
+- **背景**：账本 **E5**「主 Agent 自动迭代内部模块」。一手核实：进化闭环**四阶段与两个驱动面都已接线**
+  （`EvolutionWorker.maybe_run` → `run_cycle` → 诊断/提案/验证门/留出评测），缺的不是闭环本身，而是
+  **「这一轮该迭代谁」**——`Diagnoser` 只有单一信号（本批失败计数）且**并列即弃权**（转人工、无归因），
+  跨轮**无记忆**（刚发布、仍在观察期的插件照样被再次选中）。又一例「闭环已备、目标选择缺席」。
+- **决策**（落点与信号策略均经用户裁决）：
+  ① **落点 = 引擎侧目标生成**（`evolution/curriculum.py`）。目标选择是进化引擎的**职责**；loop 侧会让
+  `loop → evolution` 依赖方向倒挂且 CLI 入口无法复用，CLI 侧则只有显式入口有课程、宿主节拍（生产默认）
+  拿不到 ⇒ 「自动」落空。两个驱动面保持「只给机会」的薄壳语义不变。
+  ② **信号策略 = 结构化信号排序建议 + 显式目标入口**。**不用记忆自由文本**：`MemoryEntry.importance`
+  缺省恒为 0、无结构化教训标记 ⇒ 只能做关键词启发式（排序不可解释、随文案漂移）。**不用 LLM**：非确定、
+  无凭据不可验证、token 无界、失败模式是**静默编造**。故信号面封闭为引擎内部结构化数据三层：
+  失败计数（定序）/ 观察期目标（降权）/ 待确认候选（降权）。
+  ③ **先验，不是裁决**。议程作 `Diagnoser` 的 `plugin_signals` 并入分数表，权重**按位次几何递减**
+  （首位 0.5、其后 0.25/0.125…）——**恒 < 1.0**，而每条失败证据计 1.0 ⇒ **任一插件多一条证据即压过先验**；
+  先验的**唯一**效果是**解并列**（今天并列 = 弃权 = 转人工）。**降权同理**：只改并列顺序，不压证据。
+  ④ **显式目标是指令**（`evolve run --goal X`）：人直接说「迭代 X」时目标即 X，**不参与归因竞争**
+  （否则命令说 A、行为选 B，「显式入口」不可靠）。仍走**完整四阶段 + 验证门 + 人工 `confirm`**，
+  只是跳过归因；无证据时也可聚焦（这是「迭代某个模块」的**可靠**入口）。
+  ⑤ **红线不变**：驱动面仍只有 `evolution/spec.md`「冷路径驱动」的两个；课程**不常驻**、**不给模型新工具**
+  （模型可见工具仍是 9 个）、**不放宽人工门**（低风险候选仍须显式 `confirm`）。
+- **实现细节**：`CurriculumPlanner.plan(traces, *, explicit=None, limit=3)` 产出**有界、有序、确定**
+  （失败数降序 → 已处理降权 → `plugin_id` 升序兜底）的议程；`limit` 是 P5「token 有界」在目标选择层的
+  落地。`EvolutionWorker` **缺省自建** planner（只读 `engine.observations` / `engine.pending` 两个既有公开面
+  ⇒ `runtime.py` **零改动**、生产两驱动面自动开课），可注入替换（对齐既有 `trigger` 惯用法）。
+  `pending` 传**可调用体**（每轮重取，同 `PetWakeDriver(sessions=…)` 先例）。
+- **已否决**：记忆驱动课程（无结构化教训标记）；LLM 驱动课程；新增第三个驱动面（违「两个入口」条款，
+  `0065`/E17 已裁决内核不自建 daemon）；放宽低风险候选的人工确认；把课程做成 `Plugin`/工具（无生命周期、
+  无副作用、模型不可见）；「曾未过门」也降权（门禁失败是**提案质量**问题而非目标问题，且证据仍可能
+  正当指向它）。
+- **后果**：✅ 「迭代谁」有了**可解释、可断言、零新增 IO** 的选择层；✅ 并列不再一律转人工（无课程注入时
+  行为不变）；✅ 人有了**可靠**的目标入口（建议/指令分离）。⚠️ **行为变更**：并列在开课后由先验解，
+  已登记进 spec delta（MODIFIED「对比诊断」）与接口/模块文档。⚠️ 议程质量上限 = 信号质量。
+- **关联**：账本 E5；代码 `src/core/evolution/curriculum.py`、`diagnoser.py`、`engine.py`、`worker.py`、
+  `src/core/entry.py`（`_evolve_run`）；接口 `03-interfaces/evolution-interface.md` §2 / §3 / §4.2；
+  模块 `02-modules/evolution.md` §3.1 / §4；测试 `tests/test_evolution_curriculum.py`（TC-EVO-06）；
+  change `0084`。
+- **转出**：无新开账本行；E5 关闭后 E 类余 E20① / E26 / E27。
+
+---
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1587,3 +1628,4 @@
 | ADR-0076 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |
 | ADR-0077 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |
 | ADR-0078 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md, 00-product/user-guide.md |
+| ADR-0079 | 03-interfaces/evolution-interface.md, 02-modules/evolution.md, 00-product/user-guide.md |

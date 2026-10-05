@@ -21,6 +21,7 @@ from core.evolution import (
     EvolutionEngine,
     EvolutionError,
     EvolutionErrorCode,
+    EvolutionGoal,
     EvolutionTrigger,
     EvolutionWorker,
     GenerationCandidate,
@@ -568,3 +569,96 @@ def test_worker_sampling_drives_auto_dissolve() -> None:
 
     assert library.lookup(f"skills.evolution.{target}").status == "deprecated", "回归即自动溶解"
     assert "基线 1.000" in backend.put_entries[-1].content
+
+
+# ---- 自动课程：先验解并列 / 显式目标直采（change 0084）----
+
+
+def test_diagnoser_tie_without_prior_stays_manual() -> None:
+    """无先验时行为不变：并列仍转人工（回归基线）。"""
+    report = Diagnoser().diagnose(
+        [_trace("a", success=False, plugin_id="A"), _trace("b", success=False, plugin_id="B")]
+    )
+    assert report.target_plugin is None
+    assert "并列" in report.issue
+
+
+def test_diagnoser_prior_breaks_tie() -> None:
+    """课程先验的唯一作用：解并列。"""
+    report = Diagnoser().diagnose(
+        [_trace("a", success=False, plugin_id="A"), _trace("b", success=False, plugin_id="B")],
+        prior={"A": 0.5},
+    )
+    assert report.target_plugin == "A"
+
+
+def test_prior_never_overrides_evidence() -> None:
+    """先验权重 < 1.0（证据每条 1.0）⇒ 多一条失败证据即压过先验。"""
+    report = Diagnoser().diagnose(
+        [_trace("b1", success=False, plugin_id="B"), _trace("b2", success=False, plugin_id="B")],
+        prior={"A": 0.5},
+    )
+    assert report.target_plugin == "B"
+
+
+def test_run_cycle_directive_goal_targets_given_plugin() -> None:
+    """显式目标是**指令**：证据指向 B，本轮目标仍是 A（仍走完整四阶段）。"""
+    outcome = _engine().run_cycle(
+        [_trace("b", success=False, plugin_id="B")],
+        goals=[EvolutionGoal("A", 1.0, "显式指定目标", directive=True)],
+    )
+    assert outcome.status == "pending"
+    assert outcome.candidate is not None
+    assert outcome.candidate.target_plugin == "A"
+
+
+def test_worker_auto_agenda_breaks_tie() -> None:
+    """生产默认开课：并列失败由课程议程解并列（不再一律转人工）。"""
+    worker, tracer = _worker_engine(ObservationRegistry())
+    trace_id = tracer.start_trace("t1")
+    _log_tool(tracer, trace_id, "memory.retrieve", ok=False)
+    _log_tool(tracer, trace_id, "tools.web_fetch", ok=False)
+    worker.on_trace_complete(trace_id)
+
+    outcome = worker.maybe_run(force=True)
+
+    assert outcome is not None
+    assert outcome.status != "manual"
+    assert outcome.candidate is not None
+    assert outcome.candidate.target_plugin == "memory.retrieve", "并列以 plugin_id 升序在先"
+
+
+def test_worker_explicit_goal_overrides_evidence() -> None:
+    worker, tracer = _worker_engine(ObservationRegistry())
+    trace_id = tracer.start_trace("t1")
+    _log_tool(tracer, trace_id, "memory.retrieve", ok=False)
+    worker.on_trace_complete(trace_id)
+
+    outcome = worker.maybe_run(force=True, goal="tools.web_fetch")
+
+    assert outcome is not None
+    assert outcome.candidate is not None
+    assert outcome.candidate.target_plugin == "tools.web_fetch"
+
+
+class _NoAgenda:
+    """空议程规划器：证明先验确实来自**注入的课程**（无先验 ⇒ 行为同既有）。"""
+
+    def plan(self, *_args: object, **_kwargs: object) -> list[EvolutionGoal]:
+        return []
+
+
+def test_worker_curriculum_is_injectable() -> None:
+    """课程可替换（缺省自建）：空议程 ⇒ 无先验 ⇒ 并列仍转人工。"""
+    tracer = Tracer()
+    worker = EvolutionWorker(
+        tracer=tracer,
+        engine=_engine(),
+        planner=_NoAgenda(),  # type: ignore[arg-type] — 注入面只要求 plan()
+    )
+    trace_id = tracer.start_trace("t1")
+    _log_tool(tracer, trace_id, "memory.retrieve", ok=False)
+    _log_tool(tracer, trace_id, "tools.web_fetch", ok=False)
+    worker.on_trace_complete(trace_id)
+
+    assert worker.maybe_run(force=True).status == "manual"

@@ -598,7 +598,7 @@ def test_evolve_run_triggers_cold_path(
     calls: list[bool] = []
 
     class _FakeEvolution:
-        def maybe_run(self, *, force: bool = False) -> object:
+        def maybe_run(self, *, force: bool = False, goal: str | None = None) -> object:
             calls.append(force)
             return type("_O", (), {"status": "no_evidence", "skill_id": None})()
 
@@ -610,6 +610,29 @@ def test_evolve_run_triggers_cold_path(
     assert calls == [True], "显式入口跳过阈值门"
     out = capsys.readouterr().out
     assert "no_evidence" in out
+
+
+def test_evolve_run_forwards_explicit_goal(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`evolve run --goal X`：显式目标透传到冷路径并回显（人不猜「谁会被选中」）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    seen: list[str | None] = []
+
+    class _FakeEvolution:
+        def maybe_run(self, *, force: bool = False, goal: str | None = None) -> object:
+            seen.append(goal)
+            return type("_O", (), {"status": "no_evidence", "skill_id": None})()
+
+    class _FakeRuntime:
+        evolution = _FakeEvolution()
+
+    monkeypatch.setattr("core.entry.build_runtime", lambda *a, **kw: _FakeRuntime())
+    argv = ["--config", _write_config(tmp_path), "evolve", "run", "--goal", "tools.web_fetch"]
+
+    assert main(argv) == 0
+    assert seen == ["tools.web_fetch"]
+    assert "本轮目标：tools.web_fetch" in capsys.readouterr().out
 
 
 def test_evolve_run_reports_build_failure(
