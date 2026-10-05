@@ -49,6 +49,7 @@
 | TC-TOOL-04 | CORE-TOOL-R4 | 工具超时 | 中止返回 `TIMEOUT`，loop 不崩 |
 | TC-TOOL-05 | CORE-TOOL-R3 | 不可逆工具未确认 | 阻断，`IRREVERSIBLE_BLOCKED` |
 | TC-TOOL-06 | tool-use「coeffect 副作用契约」（change `0108` / 账本 E34） | `CLIAdapter.adapt` 产出工具的 coeffect 声明；并把它 + 一个只读工具注册进 provider，看 MCP 默认暴露面 | 声明 `["process:spawn"]`（真派生进程，对齐 `code_run`）；默认面**只含**只读工具、`cli.*` **不出现**（空声明会被判为只读而默认放出，与 B7 收窄相反）（锚点：`tests/test_phase16.py::test_cli_adapter_declares_process_spawn` + `::test_cli_adapter_executes_command` / `::test_cli_adapter_nonzero_exit_carries_code` / `::test_gate_deny_precedes_cli_execution` 的 resolver 注入） |
+| TC-TOOL-07 | tool-use「质量门禁工具」（change `0111` / phase-27 切片 S1） | 装配 `tools.gate_run`（注入假执行器 / 真 `build_gate_executor`）并按名调用；未批准执行；传白名单外门禁名；`build_runtime` 后读门禁名枚举 | ①定义诚实：`coeffects==["process:spawn","filesystem:write"]`、`reversible is False`、`timeout_s` > 执行器内部 600 上界；②按名返回结构化 `{gate, passed, reason}`；③不可逆 ⇒ 未批准 `IRREVERSIBLE_BLOCKED` 且执行器**零调用**；④未知门禁 `EXECUTION_FAILED` 且**不触达**执行器；⑤门禁名枚举与单一真源 `GATE_COMMANDS` 键**逐字一致**（锚点：`tests/test_gate_run_tool.py`、`tests/test_gate_run_wiring.py`） |
 
 ## 5. MCP 集成（TC-MCP）
 

@@ -80,9 +80,12 @@ class ToolError:
 | `tools.install` | `source`, `kind`, `name` | 安装插件（discover→verify→install→register→activate；写 + 不可逆 ⇒ 走确认门） |
 | `tools.uninstall` | `plugin_id` | 卸载插件（deactivate→uninstall 对称回退；写 + 不可逆 ⇒ 走确认门） |
 | `tools.list` | — | 列出已装插件（只读，`coeffects=[]`） |
+| `tools.gate_run` | `gate` | 按名运行质量门禁（`lint`/`typecheck`/`test`/`build`）；门禁名与门禁命令取自 `ci-cd` **单一真源** `GATE_COMMANDS`，**执行器经组合根注入**（工具层不依赖 L5）；`coeffects=["process:spawn","filesystem:write"]` + 不可逆 ⇒ 走确认门；`timeout_s=660` > 执行器内部 600 上界 |
 
 > 上表为示例清单。插件安装三工具（`tools.install` / `tools.uninstall` / `tools.list`）经组合根
 > `build_runtime` 注册进**生产工具面**、与 `Runtime.installer` **同一实例**（change 0108 / 账本 E33）。
+> `tools.gate_run`（change 0111 / phase-27 切片 S1）同样经组合根注册进**生产工具面**，但**只挂主工具面**：
+> 子 Agent / 宠物 loop 的注入点不含它（不扩散越界暴露面）；未知门禁名 fail-closed（不触达执行器）。
 
 ---
 

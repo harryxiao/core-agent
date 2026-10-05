@@ -2515,6 +2515,49 @@
 
 ---
 
+## ADR-0104：质量门禁的**工具面**（change 0111 / phase-27 切片 S1；单一真源复用 + 执行器注入 + 诚实 coeffect）
+
+- **背景**：`coding-plan/phase-27.md` 记 E42「门禁工具缺位」。一手复核**订正判据**（§3.1）：
+  **门禁执行器早已存在** —— 单一真源 `ci_cd/pipeline.py:25` `GATE_COMMANDS`（lint/typecheck/test/build）、
+  生产执行器 `SubprocessGateExecutor` / `build_gate_executor`（ADR-0086 / change `0091`）、结构化结果
+  `GateResult`。真缺口只有一处：**没有工具面**（`runtime.py` 改前连 `ci_cd` 都未引用）⇒ Agent 无法经
+  工具调用通道触发门禁。
+- **决策**：
+
+  | # | 决策 | 理由 |
+  |---|---|---|
+  | ① | **只补工具面，不新写执行器** | 另起一套 `gate_run` 执行器＝第二份门禁真源，即 change `0105` 删 `_published`、`0103` 收窄 `replay` 时反复钉的「双真源」反模式 |
+  | ② | 门禁名与门禁命令取自 `GATE_COMMANDS`**单一真源**（组合根 `tuple(GATE_COMMANDS)` 注入，schema `enum` 由其生成） | 门禁名单只有一处；新增门禁自动同面可见 |
+  | ③ | **执行器经构造参数注入**（`gate_run(*, gates, run_gate)`） | `tools` 是 L1、`ci_cd` 是 L5 ⇒ 工具层**不 import** 交付流水线层；结果面只需 `passed`/`reason` 两个属性（结构协议 `GateOutcome`），`GateResult` 天然结构兼容 ⇒ L1 也不必反向依赖 L5 模型 |
+  | ④ | coeffects **诚实声明** `["process:spawn","filesystem:write"]` + `reversible=False` ⇒ 照旧走确认门 | change `0108`（E34）刚修掉「声明不实」：跑门禁＝spawn 子进程 + 写 `__pycache__`/`.pytest_cache`。**否决**「白名单命令 ⇒ 只读免审批」——白名单的是**命令名**，不是**被执行的代码**（`pytest` 即执行仓库任意代码） |
+  | ⑤ | 未知门禁名在**处理器内** fail-closed（不触达执行器） | `constraints.Validator` 只校验 required/type，**不校验 `enum`** ⇒ 不能把白名单托付给 schema |
+  | ⑥ | **只挂主工具面** | 子 Agent / 宠物 loop 的 `builtin_tools` 注入点不动（不扩散越界暴露面；`_pet_tools` 白名单本就排除它） |
+  | ⑦ | `timeout_s=660.0`（> 执行器内部 600 上界） | 避免工具层先于门禁自身超时；全量 `pytest` 不会撞上 60s 缺省 |
+
+- **S2 改判（同批复核，登记不改代码）**：`phase-27.md` §5.4 把 S2（`proposer` delta 补
+  `suggested_patch`/`acceptance`）记为「✅ 中性」，复核后**改判不纳入**：① `delta` 现仅被
+  `engine._crystallize_skill` 读 `issue`/`schema` 两键，新增键**无任何读取方** ⇒ 与 E31 裁决
+  「不给空转生命周期」同型；② `suggested_patch` 无规格依据、无生产者（`Proposer` 是 `DiagnosisReport`
+  的纯函数）；③ 真消费方是 **S0 的 `EvolutionExecutor`**（patch 建议与验收判据是它的输入）⇒ 并入 S0
+  一并定字段与其消费者，避免此刻造「写而不读」的字段。
+- **判据订正（两条，登记入 `phase-27.md` §3.2 / §5.4）**：① `module_id` **无需新增** ——
+  `GenerationCandidate.target_plugin` 即模块身份（独立字段，非 `delta`）；② `delta["schema"]` 是
+  **读而不写**的既有键（`proposer.py:38` 只写 `issue`）⇒ 归入 S0 的候选字段口径一并定。
+- **影响**：`src/core/tools/builtin.py`（+`GateOutcome` / `gate_run`）；`src/core/tools/__init__.py`（导出）；
+  `src/core/runtime.py`（`build_gate_executor()` + 门禁名→`Gate` 适配 + 注册主工具面）。
+  测试：新 `tests/test_gate_run_tool.py`（7 例：定义契约 / 结构化返回 / 失败原因 / 确认门零调用 /
+  未知门禁零调用 / 真执行器通过 / 真执行器非零退出）、`tests/test_gate_run_wiring.py`（2 例：生产面可达 +
+  门禁名与单一真源逐字一致）；`tests/test_phase13.py`（生产工具面期望集 +1）。
+  接口文档：`03-interfaces/tool-use-interface.md` §3；用例：`04-testing/test-cases.md` TC-TOOL-07。
+- **未做（明示）**：**不**做 S0（`EvolutionExecutor` 与 `features.evolution_executor` 装配裁剪须先
+  phase-27 §5.2 规格 + ADR）；**不**改 `evolution/spec.md:203/215` 的边界；**不**做 S2；
+  **不**在 `builtin_tools` 注入点扩面。
+- **规格**：`tool-use/spec.md` **ADDED**「质量门禁工具」（4 场景）—— 新工具即新 Requirement
+  （先例 change `0028` 为插件安装三工具写入 `tool-use` 需求；change `0108` 的「规格中性」成立于
+  该需求**已在位**，此处不成立）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2613,3 +2656,4 @@
 | ADR-0101 | 03-interfaces/plugin-registry-interface.md, 03-interfaces/tool-use-interface.md, 03-interfaces/mcp-interface.md |
 | ADR-0102 | 03-interfaces/plugin-registry-interface.md, 03-interfaces/mcp-interface.md |
 | ADR-0103 | 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 03-interfaces/orchestration-interface.md, 03-interfaces/beast-mode-interface.md, 03-interfaces/pet-mode-interface.md |
+| ADR-0104 | 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/phase-27.md |

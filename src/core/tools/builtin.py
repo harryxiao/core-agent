@@ -5,6 +5,9 @@ file_read / file_write / file_patch / code_run / web_fetch 内置工具：纯读
 ``EffectTracker`` 记录可逆效应，实现时间旅行回滚；code_run 子进程执行、
 web_fetch 出站抓取，均经确认门（高风险需人工审批）。
 
+另含 **gate_run**（change 0111）：把交付流水线既有的四道质量门禁暴露为工具面，
+门禁名与命令取自单一真源，**执行器由组合根注入**（本层不依赖 L5）。
+
 对应接口：doc/03-interfaces/tool-use-interface.md §3
 """
 
@@ -14,8 +17,9 @@ import asyncio
 import subprocess
 import sys
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from .models import ToolDef
 from .tool import Tool
@@ -225,6 +229,51 @@ def web_fetch() -> Tool:
             coeffects=["network:outbound"],
             reversible=True,
             timeout_s=30.0,
+        ),
+        handler=handler,
+    )
+
+
+class GateOutcome(Protocol):
+    """门禁结果的最小结构面（L1 视角）。
+
+    只要求 ``passed`` / ``reason`` 两个属性，交付流水线的 ``GateResult`` 与之**结构兼容**
+    —— 本层因此无需依赖 L5 的模型，执行器由组合根注入。
+    """
+
+    passed: bool
+    reason: str
+
+
+def gate_run(*, gates: tuple[str, ...], run_gate: Callable[[str], GateOutcome]) -> Tool:
+    """按名触发质量门禁（执行器**注入**；不可逆高风险，经确认门）。
+
+    门禁名与门禁命令取自交付流水线的**单一真源**（``GATE_COMMANDS``）：本层只做
+    「白名单路由 + 结构化返回」，**不另立门禁命令、不依赖交付流水线层**。
+    ``constraints.Validator`` 不校验 schema 的 ``enum`` ⇒ 白名单在处理器内**自行 fail-closed**。
+    """
+    allowed = tuple(gates)
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {"gate": {"type": "string", "enum": list(allowed)}},
+        "required": ["gate"],
+    }
+
+    async def handler(gate: str) -> dict[str, Any]:
+        if gate not in allowed:
+            # 白名单外 fail-closed：不触达执行器（结构化归一为 EXECUTION_FAILED）
+            raise ValueError(f"未知门禁: {gate}（可选: {', '.join(allowed)}）")  # noqa: TRY003
+        outcome = await asyncio.to_thread(run_gate, gate)
+        return {"gate": gate, "passed": bool(outcome.passed), "reason": outcome.reason}
+
+    return Tool(
+        definition=ToolDef(
+            tool_id="tools.gate_run",
+            description="按名运行质量门禁，返回是否通过与否决原因；不可逆高风险，需审批",
+            schema=schema,
+            coeffects=["process:spawn", "filesystem:write"],
+            reversible=False,
+            timeout_s=660.0,  # 须大于执行器内部 600s 上界（否则工具层先于门禁自身超时）
         ),
         handler=handler,
     )

@@ -20,6 +20,7 @@ from typing import cast
 
 from core.beast import BeastActivator, BeastManager, BeastRegistry, register_innate_skills
 from core.beast.models import Beast
+from core.ci_cd import GATE_COMMANDS, Gate, GateResult, build_gate_executor
 from core.configuration import ConfigManager
 from core.configuration.models import AppConfig
 from core.context import Compactor as ContextCompactor
@@ -107,6 +108,7 @@ from core.tools import (
     file_patch,
     file_read,
     file_write,
+    gate_run,
     install_tool,
     list_tool,
     uninstall_tool,
@@ -368,6 +370,16 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     builtin_tools = (file_read(), file_write(), file_patch(), code_run(), web_fetch())
     for tool in builtin_tools:
         tools.register(tool)
+
+    # 门禁工具面（0111 / phase-27 切片 S1）：把 ci-cd 既有门禁执行器暴露为原子工具，
+    # 门禁名与命令取自**单一真源** `GATE_COMMANDS`；执行器**注入**（L1 不依赖 L5）。
+    # 只挂主工具面：子 Agent / 宠物 loop 的注入点不动（不扩散越界暴露面）。
+    gate_executor = build_gate_executor()
+
+    def _run_gate(kind: str) -> GateResult:
+        return gate_executor(Gate(gate_id=f"gate.{kind}", kind=kind))
+
+    tools.register(gate_run(gates=tuple(GATE_COMMANDS), run_gate=_run_gate))
 
     # 技能态落盘（0050）：四类运行态注入 $CORE_STATE_DIR 下状态文件 → 重启恢复；
     # 此前技能库/反馈/样本/灰度全活进程内，结晶链路每进程从零开始（账本 A3）。

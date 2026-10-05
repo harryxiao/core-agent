@@ -11,7 +11,7 @@
 |---|---|---|---|
 | E40 | 无原生执行器 ⇒ 闭环断头 | **非缺陷**：规格明文把架构级分支定为「已批准、待人工实施」 | 高 → **已裁决：允许，缺省关闭**（DS1，见 §5.1） |
 | E41 | 执行器与 loop 无接线 | **依附 E40**：无执行器自然无接线；非独立缺陷 | 高 → **依附**（随 E40 一道开工） |
-| E42 | 门禁工具缺位 | **判据不实**：执行器已存在，缺的是**工具面**；且提案的「白名单免审批」= E34 同类声明不实 | 高 → 中（真缺口在工具面） |
+| E42 | 门禁工具缺位 | **判据不实**：执行器已存在，缺的是**工具面**；且提案的「白名单免审批」= E34 同类声明不实 | 高 → 中 → ✅ **已闭**（change `0111` / ADR-0104：`tools.gate_run`） |
 | E43 | proposer delta 信息量不足 | **部分不实**：`module_id` 已由 `target_plugin` 承载；余 `suggested_patch`/`acceptance` | 中 → 低 |
 
 > **共同口径**：四条共同指向一件**真问题**——`core_harness_architecture.md:150-151/158` 承诺「验证通过 ⇒ 产出不可变世代」「记忆结晶成插件」，
@@ -76,6 +76,13 @@ E40 要做的正是搬掉该前提 ⇒ 须同步复核 E31 裁决。
 
 `module_id` 已由 `target_plugin` 承载，**不重复加**。真缺：候选 patch 建议、验收判据（`risk_level` 亦已有，`models.py:57`）。
 
+> **二次复核（2026-10-06，开工 S2 前）—— S2 改判「不纳入」**（一手三条）：
+> ① **无消费者＝空转**：`delta` 现仅被 `engine._crystallize_skill`（`engine.py:250-252`）读 `issue` 与 `schema` 两键；
+> 新增键**没有任何读取方** ⇒ 与 phase-19 §5 E31「不给出空转生命周期」同型。
+> ② `suggested_patch` **无规格依据、无生产者**：`Proposer` 是 `DiagnosisReport`（`target_plugin`/`issue`/`evidence`/`confidence`）的纯函数，无 patch 建议来源。
+> ③ **真消费方是 S0**：patch 建议与验收判据是 `EvolutionExecutor` 的输入 ⇒ 并入 S0 一并定字段**与其消费者**。
+> 连带订正：`delta["schema"]` 是**读而不写**的既有键（`proposer.py:38` 只写 `issue`），`evolution/spec.md:38-47`
+> 「生成带验收标准的单元」的落地口径随 S0 定。
 ---
 
 ## 4. RSI 特有风险（初稿未覆盖，开工前须有答）
@@ -119,17 +126,24 @@ E40 要做的正是搬掉该前提 ⇒ 须同步复核 E31 裁决。
 | 切片 | 内容 | 规格中性？ | 判据 |
 |---|---|---|---|
 | **S0（E40+E41 主体）** | 新增 `evolution/executor.py` `EvolutionExecutor` + `runtime` 装配受 `not is_disabled("evolution_executor")` 裁剪 + `crystallize` accepted 分支 `enqueue` | ❌ **须先 §5.2 规格 + §5.3 ADR** | 缺省不装配（DS1）；开启才实施；结局 `implemented` 经独立门 + 人工复核（DS2/DS3） |
-| S1 | 把既有 `SubprocessGateExecutor` + `GateReport` **暴露为工具面**（不新写 `gate_run`） | ✅ 中性 | 复用单一真源 `GATE_COMMANDS`；coeffects **诚实声明** `["process:spawn","filesystem:write"]`；**照旧过确认门**（或在既有 auto-approve 无人值守档使用）；结构化返回 `GateReport`（§3.1） |
-| S2 | `proposer` delta 补 `suggested_patch` / `acceptance`（`module_id` 不加，已有 `target_plugin`） | ✅ 中性 | 只扩 proposer 输出结构，`models.py` 同步（§3.2） |
+| S1 ✅ **已闭**（change `0111` / ADR-0104） | 把既有门禁执行器暴露为**工具面**（不新写 `gate_run` 执行器）：`tools.gate_run`，执行器经组合根**注入** | ❌ **非中性**（**订正**，见下） | 复用单一真源 `GATE_COMMANDS`（schema 枚举由其生成，用例断言逐字一致）；coeffects **诚实声明** `["process:spawn","filesystem:write"]` + 不可逆 ⇒ **照旧过确认门**；结构化返回 `{gate, passed, reason}`；1274→**1297 passed**；`tool-use` spec **+1 Requirement**（4 场景） |
+| S2 ❌ **改判不纳入**（并入 S0） | ~~`proposer` delta 补 `suggested_patch` / `acceptance`~~ | — | 见 §3.2 二次复核三条（无消费者＝空转 / 无规格依据无生产者 / 真消费方是 S0） |
 
-> **顺序**：S0 走完整 SDD（规格先行 → ADR → 测试先行 → 实现）；S1/S2 属「工具面补齐 + 提案上下文补足」，**不触碰** §2 的规格边界，**可独立先做**（S1 也是 S0 的前置：执行器需要能结构化跑门禁）。S0 落地后 S1 加壳进执行器。
+> **S1 判据订正（2026-10-06，开工时一手核实）**：原记「✅ 中性」**不成立** —— 「中性」成立于**需求已在位**
+> （change `0108` 的插件安装三工具由更早的 change `0028` 写入 `tool-use` 需求），而 `tools.gate_run` 是
+> **全新工具、无任何在位的需求** ⇒ 新工具即新 Requirement，先例 change `0028`。故 S1 走 `tool-use/spec.md`
+> **ADDED** 而非 `skip_specs`（`openspec validate` 通过；spec 文件项数不变，仍 30）。
+
+> **顺序**：S0 走完整 SDD（规格先行 → ADR → 测试先行 → 实现）；S1 属「工具面补齐」，**不触碰** §2 的规格边界
+> （只新增 `tool-use` 需求），**已独立先做**（S1 也是 S0 的前置：执行器需要能结构化跑门禁）。S0 落地后 S1 加壳进执行器。
+> S2 已改判并入 S0（§3.2 二次复核）。
 
 ---
 
 ## 6. 收口
 
-- **当前状态**：🚧 **已裁决、待开工** —— DS1 通过（允许自动实施、**缺省 false 可开启**、**装配裁剪**形态），DS4 通过（规格必改）。前置：§5.2 规格先行 → §5.3 ADR-0104 → 才能开 S0。
-- **S1/S2** 规格中性，**可即刻开工**，不必等 S0。
+- **当前状态**：🚧 **S1 已闭，S0 待开工** —— DS1 通过（允许自动实施、**缺省 false 可开启**、**装配裁剪**形态），DS4 通过（规格必改）。前置：§5.2 规格先行 → §5.3 ADR-0104 → 才能开 S0。
+- **S1 ✅ 已闭**（change `0111` / ADR-0104，2026-10-06）：`tools.gate_run` 工具面落地，1297 passed，`tool-use` spec +1 Requirement。**S2 ❌ 改判不纳入**（并入 S0，理由见 §3.2 二次复核）。
 - **裁决留痕**：DS1/DS1-a/DS2/DS3/DS4 见 §5.1；形态否决依据 = change `0067` 规格原文（feature flag 只作用于模块装配）。
 - **验收见**：§5.4（S0/S1/S2 判据）/ §4（红线前置）。
 - **复核留痕**：改判依据见 §1；订正 4 条（E42 判据、E43 判据、delta 无 `schema`、`module_id` 已有）。

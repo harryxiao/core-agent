@@ -6,7 +6,7 @@
 对应规格：doc/openspec/specs/tool-use/spec.md
 """
 
-from .builtin import code_run, file_patch, file_read, file_write, web_fetch
+from .builtin import code_run, file_patch, file_read, file_write, gate_run, web_fetch
 from .errors import ToolErrorCode, ToolUseError
 from .install_tools import StubPlugin, install_tool, list_tool, uninstall_tool
 from .models import GateDecision, ToolDef, ToolError, ToolResult
@@ -29,6 +29,7 @@ __all__ = [
     "file_patch",
     "file_read",
     "file_write",
+    "gate_run",
     "web_fetch",
     "install_tool",
     "list_tool",

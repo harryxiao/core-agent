@@ -118,6 +118,8 @@ def test_build_runtime_assembles_all_deps(monkeypatch, tmp_path) -> None:
         "tools.install",
         "tools.uninstall",
         "tools.list",
+        # 质量门禁工具（change 0111 / phase-27 切片 S1）：生产工具面可达
+        "tools.gate_run",
     }
     delegate = next(t for t in runtime.tools.active_tools() if t.tool_id == "tools.delegate")
     min_delegate_timeout = 120.0  # 委托跑完整子循环，远超 ToolDef 默认 30s
