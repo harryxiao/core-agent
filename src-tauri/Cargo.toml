@@ -1,0 +1,12 @@
+[package]
+name = "core-agent-desktop"
+version = "0.1.0"
+edition = "2021"
+
+# 桌面壳最小职责（ADR-0015 / change 0100）：开窗口 + 挂 SPA 产物 + 启 sidecar。
+# 业务逻辑一律不在 Rust 侧，壳只做这三件事。
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }

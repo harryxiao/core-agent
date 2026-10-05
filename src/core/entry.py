@@ -111,7 +111,8 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_p = sub.add_parser("serve", help="Web 模式：HTTP + SSE 打开单 SPA")
     serve_p.add_argument("--host", default="127.0.0.1", help="监听地址")
     serve_p.add_argument("--port", type=int, default=8000, help="监听端口")
-    sub.add_parser("app", help="Desktop 模式：Tauri 壳 + sidecar")
+    app_p = sub.add_parser("app", help="Desktop 模式：Tauri 壳 + sidecar")
+    app_p.add_argument("--port", type=int, default=8000, help="sidecar 后端监听端口")
 
     # 生命周期/运维
     sub.add_parser("start", help="启动实例（profile 经全局 --profile）")
@@ -401,7 +402,7 @@ def _app(args: argparse.Namespace) -> int:
     api = _build_ui(args)
     if api is None:
         return 1
-    DesktopBridge(api=api).start_sidecar()
+    DesktopBridge(api=api, port=args.port).start_sidecar()
     return 0
 
 
@@ -1478,3 +1479,7 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).lower() in ("true", "1", "yes", "on")
+
+
+if __name__ == "__main__":  # sidecar 的调用面：`python -m core.entry serve …`（change 0100）
+    raise SystemExit(main())

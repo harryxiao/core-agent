@@ -1957,6 +1957,45 @@
 
 ---
 
+## ADR-0093：SPA 产物**可选**挂载（缺则纯 API）+ sidecar spawn 口径
+
+- **背景**：`ui/spec.md` 早已定死 Web = Svelte 单 SPA、Desktop = Tauri 壳 + sidecar（ADR-0014/0015），
+  但本仓**从无前端产物**：`build_app` 不挂任何静态文件 ⇒ `serve` 打开根路径 404；
+  `DesktopBridge._default_start` 直接 raise ⇒ `core-agent app` 必失败（账本 C8 代码半未落地）。
+  同时 `python -m core.entry` 因缺 `__main__` 守卫**静默空转**（退出 0、无输出）—— 若拿它当 sidecar 的调用面，
+  壳会「以为拉起来了」而实际什么都没有。
+- **决策**：
+  ① **产物可选，非硬依赖**：`build_app` 末尾按 `frontend/dist/index.html` 是否存在分流 —— 有则
+     `StaticFiles(directory=..., html=True)` 挂 `/`，无则不挂（纯 API 模式）。**为何**：后端本就可独立运行
+     （`build_app` 的既有测试不带任何前端产物），`serve` 不该因**没跑过 npm** 而启动失败；这也让 CI 的
+     Python 四门与前端构建**彻底解耦**（前端构建归验证节、不归门）。
+  ② **挂载注册在最后**：Starlette 的路由按**注册顺序**匹配，显式路由（`/session`、`/llm-config`…）先注册、
+     `Mount("/")` 最后注册 ⇒ 既有端点优先命中，不被静态兜底吞掉。该顺序是**契约**，由测试锁死
+     （防止将来有人把 mount 提到最前）。
+  ③ **产物用相对路径（`base: "./"`）**：同一份 `dist/` 既要被 FastAPI 挂在 `/`，也要能被桌面壳以 `file://`
+     加载 —— 绝对路径 `/assets/...` 在 `file://` 下必 404。这是规格「Web 与桌面 100% 一致」的**物理前提**。
+  ④ **sidecar spawn 口径与既有子进程执行器一致**（同 `0090` `SubprocessGitBackend` / `0091`
+     `SubprocessGateExecutor`）：`subprocess.Popen([...])` **列表形式**（不经 shell 解释 ⇒ 无注入面）、
+     `sys.executable` 而非字面量 `python`（sidecar 必须与被拉起方**同解释器**，venv 下 `python` 未必是同一个）、
+     失败（`OSError`）归一为 `UiError(UI_SIDECAR_FAILED)` **不静默成功**（否则用户以为桌面起好了）。
+     argv 固定为 `-m core.entry serve --host 127.0.0.1 --port <port>`。
+  ⑤ **`-m core.entry` 必须真的可运行**：补 `if __name__ == "__main__"` 守卫。调用面存在性由子进程
+     `--help` 实测（非 mock），因为「模块能 import」与「模块能当入口跑」是两回事。
+- **限制（已知且明示）**：
+  - **Rust 壳未纳入四门构建验证**（本环境无 `cargo-tauri`），`src-tauri/` 只做开窗口 / 挂 SPA / 启 sidecar
+    三件事，**打包安装包未验证**。
+  - 桌面窗口直接指向 sidecar 源（`http://127.0.0.1:<port>`）⇒ 与 Web **同源**、SPA 零改写；代价是
+    **端口须一致**（壳侧 `CORE_PORT` / CLI `app --port` 缺省均为 8000），且壳在起窗前需探测端口就绪（已实现）。
+  - 设置页的 `${VAR}` 前端校验只是**少一次无谓往返**，**不是安全边界**（后端照样拒明文，见 ADR-0092 ⑤）。
+- **影响**：`fastapi_serve` 增 `_DIST_DIR` 常量与末尾静态挂载；新增错误码 `UI_SIDECAR_FAILED`（→ 500）；
+  `DesktopBridge` 增 `port` 可选参数（`start_impl` 保持 1 参，既有注入方零改动）；`entry` 增 `app --port`
+  与 `__main__` 守卫；新增 `frontend/`（Svelte + Vite）与 `src-tauri/`（Tauri v2）。
+- **明确不做**：TTS（账本 C7）与多模态上传（与「LLM 配置能生效」无因果）；引 UI 组件库（原生 Svelte 够用）；
+  前端路由库（两页签一个状态足够）。
+- **规格**：MODIFIED「Web 界面访问」/「桌面打包」（ui）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2044,3 +2083,4 @@
 | ADR-0090 | 03-interfaces/permission-interface.md |
 | ADR-0091 | 03-interfaces/configuration-interface.md, 03-interfaces/loop-interface.md |
 | ADR-0092 | 03-interfaces/ui-interface.md |
+| ADR-0093 | 06-ui-frontend/ui-architecture.md |

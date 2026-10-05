@@ -47,3 +47,8 @@ src/*.egg-info/
 /config.yaml
 .claude/settings_deepseek.json
 .claude/settings_glm.json
+
+# 前端 / 桌面壳（change 0100）：依赖与构建产物不入库（源码入库，产物本地构建）
+node_modules/
+frontend/dist/
+src-tauri/target/

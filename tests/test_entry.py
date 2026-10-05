@@ -345,8 +345,9 @@ def test_app_wires_llm_config(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 
     class _FakeBridge:
-        def __init__(self, *, api=None, start_impl=None) -> None:
+        def __init__(self, *, api=None, start_impl=None, port=None) -> None:
             captured["api"] = api
+            captured["port"] = port
 
         def start_sidecar(self) -> None:
             return None

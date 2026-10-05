@@ -1,7 +1,12 @@
 # CORE-Harness UI 界面与启动模式设计（CLI / Web / Desktop）
 
-> 状态：提案（Proposal）· 关联 OpenSpec change `0003-ui-frontend` · ADR-0013 ~ 0015
+> 状态：**Web SPA 与 Tauri 壳已落地**（change `0100`）；CLI（Textual）与语音（§5）仍为提案。
+> 关联 OpenSpec change `0003-ui-frontend` / `0100-ui-settings-spa` · ADR-0013 ~ 0015、ADR-0093
 > 定位：core-agent 的三模启动层——同一内核、同一配置源、三种入口。
+>
+> 落地位置：前端 `frontend/`（Svelte + Vite，产物 `frontend/dist/` 由 `fastapi_serve.build_app`
+> 挂站点根）；桌面壳 `src-tauri/`（Tauri v2，只做开窗口 / 挂 SPA / 启 sidecar）；sidecar 拉起实现于
+> `ui/desktop_bridge.py`。**Rust 壳未纳入四门构建验证**（见 ADR-0093 §限制）。
 
 ---
 
@@ -154,10 +159,10 @@ core-agent 内核（loop / memory / tool-use / mcp / evolution / permission / �
 
 | 阶段 | 交付 | 说明 |
 |---|---|---|
-| P1 | 后端 API 层 | FastAPI 暴露 loop/session/memory/tools + SSE 流式；CLI 直连内核先跑通 |
-| P2 | Web SPA | chat / 会话管理 / 用量 / 设置（LLM API 配置）页 |
-| P3 | Tauri 桌面壳 | 复用 SPA + sidecar 后端，打包 Win/macOS/Linux 安装包 |
-| P4 | Textual CLI | 复刻 Ink 式交互（折叠块 / diff 高亮 / 多面板 / 焦点管理） |
+| P1 | 后端 API 层 | ✅ 已落地：FastAPI 暴露 loop/session/memory/tools + SSE 流式；CLI 直连内核先跑通 |
+| P2 | Web SPA | 🟡 已落地（`0100`）：会话（chat + SSE）/ **设置（LLM API 配置）** 两页；会话管理 / 用量页未做 |
+| P3 | Tauri 桌面壳 | 🟡 壳与 sidecar 已落地（`0100`）；**打包安装包未验证**（未入四门） |
+| P4 | Textual CLI | ⬜ 未做：复刻 Ink 式交互（折叠块 / diff 高亮 / 多面板 / 焦点管理） |
 
 ---
 

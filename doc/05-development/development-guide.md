@@ -25,6 +25,8 @@ core-agent/
 ├── core_harness_architecture.md   # 架构原始构想
 ├── doc/                           # 本文档集（SDD 唯一事实来源）
 ├── openspec/                      # OpenSpec CLI 生成（可选，与 doc/ 同步）
+├── frontend/                      # Svelte + Vite SPA（产物 frontend/dist/，不入库）
+├── src-tauri/                     # Tauri v2 桌面壳（只做开窗口 / 挂 SPA / 启 sidecar）
 ├── src/core/
 │   ├── plugin_registry/           # L0
 │   ├── tools/                     # L1
@@ -34,6 +36,23 @@ core-agent/
 │   └── mcp/                       # 横切
 └── tests/                         # 对齐 doc/04-testing
 ```
+
+### 1.1 前端与桌面壳（change 0100）
+
+前端**不在 Python 四门内**（本仓无 JS 测试基建）：`npm run build` 归验证节，不归门。
+
+```bash
+# 构建 SPA 产物（Node ≥ 20）——产物才挂到站点根，源码入库、产物本地构建
+cd frontend && npm ci && npm run build      # ⇒ frontend/dist/index.html
+
+# Web 模式：产物存在 ⇒ http://127.0.0.1:8000/ 直接是 SPA；不存在 ⇒ 纯 API 模式（不报错）
+core-agent serve
+
+# 桌面模式：起壳并由 DesktopBridge 拉起本地后端（sidecar）
+core-agent app --port 8000
+```
+
+`frontend/dist/` 是**可选产物**：后端不硬依赖它，没跑过 `npm` 也能起服务与跑测试。
 
 ---
 

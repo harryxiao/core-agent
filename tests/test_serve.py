@@ -10,7 +10,7 @@ from starlette import status
 from core.configuration import ConfigManager
 from core.configuration.models import LLMConfig
 from core.loop import DefaultLoop, LoopEvent
-from core.ui import UIAPILayer
+from core.ui import UIAPILayer, fastapi_serve
 from core.ui.fastapi_serve import build_app
 
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
@@ -185,3 +185,32 @@ def test_sessions_endpoint_empty() -> None:
     resp = client.get("/sessions")
     assert resp.status_code == status.HTTP_200_OK
     assert resp.json() == {"sessions": []}
+
+
+# ---- SPA 静态挂载（change 0100）----
+
+
+def test_without_dist_is_api_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """缺 SPA 产物 ⇒ 纯 API 模式照常可用（后端不硬依赖前端产物，可独立验收）。"""
+    monkeypatch.setattr(fastapi_serve, "_DIST_DIR", tmp_path / "nope")
+    _, client = _client()
+    assert client.get("/llm-config").status_code == status.HTTP_200_OK
+    assert client.get("/").status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_with_dist_serves_spa_without_shadowing_endpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """有产物 ⇒ `/` 是 SPA，且**既有端点不被静态兜底吞掉**（挂载顺序契约）。"""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>spa-shell</html>", encoding="utf-8")
+    monkeypatch.setattr(fastapi_serve, "_DIST_DIR", dist)
+
+    _, client = _client()
+
+    root = client.get("/")
+    assert root.status_code == status.HTTP_200_OK
+    assert "spa-shell" in root.text
+    assert client.get("/llm-config").status_code == status.HTTP_200_OK
+    assert client.get("/tools").status_code == status.HTTP_200_OK

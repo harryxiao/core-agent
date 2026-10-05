@@ -30,7 +30,7 @@
 | C5 | `skillhub` | ✅ **已关闭（change `0092`／ADR-0087）**：`skill search` / `skill install` 接 `SkillHubClient`（市场搜索 / 签名校验下载）+ **技能库与组合根同源**（`$CORE_STATE_DIR/skills.json`）+ `search --source` | 真实市场 fetcher（网络 + 凭据） | ~~中~~ 已闭 |
 | C6 | `plugin_registry` / `plugins` | ✅ **已关闭（change `0093`／ADR-0088）**：`InstallDispatcher.resolve` 四源分派（git-repo 克隆读根目录 `core-plugin.json` / market-registry 经注入 fetcher / mcp-endpoint 解析期零网络合成）+ CLI `plugin install --source` + `_build_installer` 技能库同源 | 真实 git 远端凭据 / 市场鉴权 / 端点真实连通 | ~~中~~ 已闭 |
 | C7 | `ui` TTS | TTS 接口 + 假实现 + 注入（现**无任何抽象**） | 真实 TTS 后端 | 低 |
-| C8 | `ui` Tauri 桌面壳 | sidecar 拉起器（subprocess spawn）+ `_app` 注入 | Tauri 壳二进制 | 低 |
+| C8 | `ui` Tauri 桌面壳 | ✅ **已关闭（change `0100`／ADR-0093）**：`DesktopBridge._default_start` 真实 spawn（列表 argv / 不经 shell / `sys.executable`）+ `_app --port` 注入 + `python -m core.entry` `__main__` 守卫 + `fastapi_serve` SPA 可选挂载（`frontend/dist`）+ `frontend/` Svelte SPA + `src-tauri/` 壳配置与 sidecar 拉起 | 壳二进制**打包安装包未验证**（本环境无 `cargo-tauri`，不入四门） | ~~低~~ 已闭 |
 | B2 | `mcp transport`（http） | http/streamable-http Transport 适配器（`Mcp-Session-Id` 复用 + SSE 分帧） | `mcp` SDK 可安装（见 §3） | 低（stdio 已闭环） |
 
 **已过时**：`pet` / `beast`（见 §5，不计入）。
@@ -123,11 +123,27 @@
 - **仍归 Phase 19 §5（凭证半）**：真实 git 远端凭据、市场鉴权凭据、MCP 端点真实连通。
 - **后续行（不在 C6 修）**：`install_tool` / `list_tool` / `uninstall_tool`（模型面安装工具）在 `src/` 内**零生产注册** —— 接线属**安全决策**（模型可发起安装 ⇒ 需审批/沙箱口径），非 C6 症状。
 
-### 4.6 `ui`（C7 TTS + C8 Tauri 桌面壳）
+### 4.6 `ui`（C8 已闭 · C7 TTS 仍开）
 
-- **现状**：TTS **无任何抽象**（`api.py:111-113 barge_in` 抛 `UI_BARGEIN`、`repl.py:55-61` 降级兜底）；Desktop 有 `start_impl` 可注入（`desktop_bridge.py:23`）但 `_default_start` 抛错（`:33-34`），`entry.py:388-393` 的 `app` 分支未注入 ⇒ 未接。
-- **要写**：TTS 接口 + 假实现 + 注入（可离线 fake）；sidecar 拉起器（`subprocess` spawn）+ `_app` 注入。
-- **离线验证**：TTS 用假实现断言调用序；sidecar 用假可执行体（脚本）断言 spawn 参数。
+**C8 已关闭（change `0100`／ADR-0093）**：
+
+- **已写**：`ui/desktop_bridge.py` `_default_start` 由「直接 raise」改真实 spawn
+  （`[sys.executable, -m, core.entry, serve, --host, 127.0.0.1, --port, <port>]`，列表形式、不经 shell）+
+  `OSError` 归一 `UI_SIDECAR_FAILED`（新增错误码 → 500）；`DesktopBridge(port=…)` 可选参数（`start_impl` 保持
+  1 参 ⇒ 既有注入方零改动）；`entry._app` 接 `port=args.port`；`ui/fastapi_serve.py` 末尾按
+  `frontend/dist/index.html` 存在与否挂 `StaticFiles(html=True)`；`frontend/`（Svelte + Vite SPA：会话页 +
+  **LLM 设置页**，收 `${VAR}` 引用、回显派生 `token_budget`）；`src-tauri/`（Tauri v2 壳：开窗口 / 挂 SPA /
+  启 sidecar + 端口就绪探测）。
+- **顺带修的既有缺陷**：`python -m core.entry` **无 `__main__` 守卫** ⇒ 退出 0、无输出（静默空转）。
+  sidecar 的调用面正是它 ⇒ 缺此守卫则壳「以为拉起来了」。已补守卫，并由子进程 `--help` 实测锁死。
+- **离线验证**：`tests/test_desktop_sidecar.py`（3 例：`Popen` 替身断言 argv 逐项/不经 shell/同解释器；
+  `OSError` ⇒ `UI_SIDECAR_FAILED`；`-m core.entry serve --help` 真子进程）；`tests/test_serve.py`
+  （2 例：缺产物 ⇒ 纯 API 且 `/` 404；有产物 ⇒ `/` 是 SPA 且**既有端点不被遮蔽**）。
+- **仍归「非门」**：`src-tauri/` 的 Rust 壳**未纳入四门**（本环境无 `cargo-tauri`）⇒ **打包安装包未验证**；
+  前端构建（`npm ci && npm run build`）归**验证节**而非门（本仓无 JS 测试基建）。
+
+**C7 TTS 仍开（未动）**：TTS **无任何抽象**（`api.py` `barge_in` 抛 `UI_BARGEIN`、`repl.py` 降级兜底）。
+与「LLM 配置能生效」无因果，且 `0100` 已明示不做（ADR-0093「明确不做」）—— 另案。
 
 ### 4.7 `mcp transport` http（C9 = B2）
 

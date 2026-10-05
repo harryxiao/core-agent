@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any, cast
 
 from core.configuration.models import LLMConfig
@@ -28,7 +29,12 @@ _STATUS: dict[UiErrorCode, int] = {
     UiErrorCode.UI_LLM_CONFIG_INVALID: 400,
     UiErrorCode.UI_LLM_KEY_UNSET: 500,
     UiErrorCode.UI_BARGEIN: 501,
+    UiErrorCode.UI_SIDECAR_FAILED: 500,
 }
+
+# SPA 构建产物目录（change 0100）。**存在与否**决定是否挂载：不硬依赖前端产物，
+# 后端可独立验收（没跑过 npm 也能 `serve`）。
+_DIST_DIR = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
 
 def _opt_int(value: Any) -> int | None:
@@ -168,6 +174,13 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 10 端点注册，复�
     app.add_api_route("/tools/invoke", invoke_tool, methods=["POST"])
     app.add_api_route("/llm-config", get_llm_config, methods=["GET"])
     app.add_api_route("/llm-config", set_llm_config, methods=["PUT"])
+
+    # SPA 挂在**最后**（change 0100）：Starlette 按注册顺序匹配 ⇒ 显式路由先注册，
+    # `Mount("/")` 不遮蔽既有 REST/SSE 端点；缺产物则不挂载（纯 API 模式）。
+    if (_DIST_DIR / "index.html").is_file():
+        from fastapi.staticfiles import StaticFiles  # noqa: PLC0415 — MAL 懒 import
+
+        app.mount("/", StaticFiles(directory=str(_DIST_DIR), html=True))
 
     return app
 

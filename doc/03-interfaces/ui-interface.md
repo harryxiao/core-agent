@@ -136,8 +136,12 @@ class WebBridge:      # ② Web：FastAPI 暴露 HTTP + SSE
     def serve(self, host: str, port: int) -> None: ...
 
 class DesktopBridge:  # ③ Desktop：Tauri 壳 + sidecar
-    def start_sidecar(self) -> None: ...
+    def start_sidecar(self) -> None: ...   # spawn `sys.executable -m core.entry serve …`（change 0100）
 ```
+
+**sidecar 拉起口径（change 0100 / ADR-0093 ④）**：列表形式 argv、**不经 shell**、用 `sys.executable`
+（同解释器）；固定 `--host 127.0.0.1 --port <port>`（端口取自 `DesktopBridge(port=…)`，CLI 面为 `app --port`）。
+失败（`OSError`）⇒ `UI_SIDECAR_FAILED`，**不静默成功**。离线验证经 `start_impl` 注入缝（不真起 uvicorn）。
 
 **CLIBridge 交互会话循环（REPL）**：`connect()` 进入 Textual 交互循环（而非仅返回 `UIAPILayer`）——无子命令时进 REPL，多轮上下文保持，`barge_in()` 支持打断语音播报；运维命令面（status/doctor/logs/install/mcp/auth/gateway）复用 cli-ops，不并入 REPL。
 
@@ -170,10 +174,12 @@ LLM API（provider / endpoint / key / base URL）只在后端配置一次：
 
 | 错误码 | 含义 |
 |---|---|
-| `UI_LLM_KEY_UNSET` | LLM API Key 未配置（运行 loop 前校验） |
+| `UI_LLM_KEY_UNSET` | LLM API Key 未配置 / 传入明文（change `0099`） |
+| `UI_LLM_CONFIG_INVALID` | LLM 配置非法或落盘失败（HTTP 400，change `0099`） |
 | `UI_SESSION_NOT_FOUND` | 会话不存在 |
 | `UI_MODALITY_MISSING` | 模型不具备该模态理解能力 |
 | `UI_BARGEIN` | 语音播报被打断（barge-in） |
+| `UI_SIDECAR_FAILED` | 桌面 sidecar 后端拉起失败（change `0100`） |
 | `UI_ORCHESTRATOR_UNSET` | 编排器未注入（run_task 前校验） |
 | `UI_PET_UNSET` | 宠物激活器 / 控制面未注入（`activate_pet` / `pet_command` 前校验） |
 | `UI_PET_UNKNOWN_VERB` | `pet_command` 收到未支持的控制动词（change `0088`） |

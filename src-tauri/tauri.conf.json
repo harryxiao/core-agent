@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "core-agent",
+  "version": "0.1.0",
+  "identifier": "dev.coreagent.desktop",
+  "build": {
+    "frontendDist": "../frontend/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "core-agent",
+        "width": 1100,
+        "height": 760,
+        "url": "http://127.0.0.1:8000"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}
