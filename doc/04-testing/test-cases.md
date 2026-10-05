@@ -61,6 +61,7 @@
 
 | TC-MCP-11 | mcp「标准 MCP 互操作（双向）」 | client 携标准三元组握手；解析标准容器键 + **厂商扩展字段被忽略**；`isError` 归一（结构化错误码还原）；server `tools/list`/`tools/call` 的字面应答帧为标准信封；裸形状/旧式应答仍可解析（锚点：`tests/test_mcp_standard_envelope.py`）。**真机**：`core-agent mcp add "claude mcp serve"` 成功（20 工具）；`claude mcp list` 对本 server 报 `✔ Connected` | 双向皆通，旧形状不破裂 |
 | TC-MCP-12 | mcp「工具暴露与白名单」 | 未配置白名单时默认暴露面 | 仅纯本地只读（`file_read` + 未声明 coeffect 的 `list`）；`web_fetch`（`network:outbound`）/ `delegate`（`agent:delegate`）**不出**；白名单仍可开放；默认面外调用 `PERMISSION_DENIED`（锚点：`tests/test_mcp_default_exposure.py`、`test_phase13.py` 默认面断言） | 跨边界工具默认不暴露 |
+| TC-MCP-13 | mcp「调用转发与错误隔离」 | 远端 JSON-RPC 错误码映射 | `tools/call` 的协议层错误（任意码，如 `-32603 "Tool X not found"`）→ `MCP_TOOL_NOT_FOUND`；其余方法 `-32700/-32600/-32601/-32602` → `MCP_PROTOCOL_MISMATCH`、`-32603`/未知码 → `MCP_UNAVAILABLE`；原始码保留于文本（锚点：`tests/test_mcp_stdio.py` 真子进程端到端 + `map_remote_error` 表驱动） | 错误语义不丢失 |
 
 ## 6. 进化引擎（TC-EVO）
 

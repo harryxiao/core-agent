@@ -200,6 +200,18 @@ class MCPEndpointRegistry:
 | `TOOL_NAME_CONFLICT` | 远程工具与本地工具重名 |
 | `ENDPOINT_NAME_CONFLICT` | 端点名已存在（拒绝静默覆盖既有端点） |
 
+**远端 JSON-RPC 错误码映射（change `0077`，账本 B8）**：远端以 JSON-RPC `error` 应答时按「方法 +
+标准码」归一，不再一律 `MCP_UNAVAILABLE`（`src/core/mcp/transport.py:map_remote_error`）：
+
+| 远端上下文 | 远端码 | 本地码 |
+|---|---|---|
+| `tools/call`（**任意**码） | 如 `-32603` `"Tool X not found"` | `MCP_TOOL_NOT_FOUND` |
+| 其余方法 | `-32700` / `-32600` / `-32601` / `-32602` | `MCP_PROTOCOL_MISMATCH` |
+| 其余方法 | `-32603` / 未知码 | `MCP_UNAVAILABLE` |
+
+`tools/call` 归一只看方法：MCP 约定工具**执行**失败走成功应答里的 `isError` 结果信封，故该路径上的
+JSON-RPC 错误即**调用本身被拒**（未知工具 / 非法参数）。原始远端码与消息保留在错误文本中。
+
 ---
 
 ## 9. 关联

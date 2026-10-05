@@ -13,7 +13,7 @@
 - **无任何一项阻塞核心回路**：669 tests 覆盖的回路（记忆读写/压实/固化/遗忘、技能提炼/路由/迭代、进化四阶段 + HITL + 自动溶解）在生产路径上均已接通。
 - **A3 全闭（skills 半边 change `0050`，evolution 半边 change `0051`）**；**A5 + 本次新增发现 A10 已于 change `0051` 关闭**（冷路径驱动面 = loop 节拍 + `evolve run`；观察窗口落盘 + 批次成功率采样；ADR-0054）。
 - **A2+E2（会话维度）已于 change `0048` 关闭**（标识透传 + `compact` 接真 + 按会话读取）；**A1 已于 change `0049` 关闭**（收尾维护节拍 + `memory maintain`）。A 类剩 A11（**A6 已随 change `0063` 关闭**、**A9 已销账**——规格明文认可现状、**A8 已销账**——后端单锁已满足规格操作性保证，均零变更）。
-- **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）** —— **B1 的 client 侧（stdio 传输 + 安装分流 + 消费侧安全接线）已于 change `0054` 关闭**（ADR-0057），余 http 会话 1 行后续（B2；**服务端 stdio B3 已于 change `0073` 关闭**、**白名单配置 B5 已于 change `0071` 关闭**、**CLI 接线 B4 已于 change `0074` 关闭**、**标准 envelope B6 已于 change `0075` 关闭**、**默认暴露面收窄 B7 已于 change `0076` 关闭**）；E 类中曾判定有真实行为影响的 **E1（constraints 熔断）** 与 **E2（per-session）** **均已关闭**（E2 → change `0048`；E1 → change `0052`），其余为「接线缺失」。
+- **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）** —— **B1 的 client 侧（stdio 传输 + 安装分流 + 消费侧安全接线）已于 change `0054` 关闭**（ADR-0057），余 http 会话 1 行后续（B2；**服务端 stdio B3 已于 change `0073` 关闭**、**白名单配置 B5 已于 change `0071` 关闭**、**CLI 接线 B4 已于 change `0074` 关闭**、**标准 envelope B6 已于 change `0075` 关闭**、**默认暴露面收窄 B7 已于 change `0076` 关闭**、**远端错误码映射 B8 已于 change `0077` 关闭**）；E 类中曾判定有真实行为影响的 **E1（constraints 熔断）** 与 **E2（per-session）** **均已关闭**（E2 → change `0048`；E1 → change `0052`），其余为「接线缺失」。
 - **A4 已于 change `0055` 关闭**（候选 `candidate_id` 稳定身份 + 门禁/评测随候选落盘为一条记录 + `core-agent evolve pending|confirm|reject` 操作面；high 风险候选由操作面签发审批单；ADR-0058）。
 - **E1 已于 change `0052` 关闭**（constraints 熔断按 `tool_id` 接入 loop：结果侧观察者 + 按工具熔断 + 只计执行失败；ADR-0055）；核销时一并**订正**了账本原「校验空转」的说法（校验实由工具层承担）。
 - **E7（契约基线漂移）+ E8（配置校验三处缺口）已于 change `0056` 关闭**（密钥引用同口径 + `permission.mode` 枚举校验 + 基线文档订正；ADR-0059），E8 第 5 条转出为 **E18**。
@@ -39,6 +39,14 @@
   给 `tools.delegate` **补声明** `agent:delegate`（组合根注册，运行期行为不变、新增的是可见性）使判据
   结构化识别委托类工具（不硬编码工具名）；白名单语义不动（显式 `--whitelist` 仍可开放跨边界工具）。
   默认面收窄为 {`tools.file_read`, `tools.list`}。
+- **B8（远端 JSON-RPC 错误码未映射）已于 change `0077` 关闭**（ADR-0074）：`StdioTransport._await` 把
+  **一切**远端 JSON-RPC `error` 包成 `MCP_UNAVAILABLE` ⇒ 「方法未实现 / 参数非法 / 工具不存在 / 内部异常」
+  塌缩为同一本地码，模型无法区分「工具名写错」（可自纠）与「远端挂了」（该熔断重试）。**改代码向语义靠拢**：
+  `transport.map_remote_error(method, error)` 按「方法 + 标准码」归一 —— **`tools/call` 的 JSON-RPC 错误 →
+  `MCP_TOOL_NOT_FOUND`**（MCP 约定工具**执行**失败走成功应答的 `isError` 结果信封，故该路径上的错误 =
+  调用本身被拒）、其余方法 `-32700`/`-32600`/`-32601`/`-32602` → `MCP_PROTOCOL_MISMATCH`、`-32603`/未知码 →
+  `MCP_UNAVAILABLE`；映射为**可测纯函数**，原始码与消息保留于文本。**已否决**按码判（对端对未知工具回 `-32603`）
+  与消息文本启发式。client/server/命名空间/白名单/http 传输零改动。
 - **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A5、E2/E4/E5 全归此（A4 已随 change `0055` 关闭、E3 已随 change `0057` 关闭）。
 - **一条值得单独记的形态问题**：`cli-contract-baseline.md` 的**内置工具契约与实现已对不上账**（见 E7）——契约列的 5 个工具在代码里从未存在。
 
@@ -46,7 +54,7 @@
 |---|---|---|---|
 | A Phase 18 收口遗留 | 11 | 中 | 否 |
 | E 早期 Phase 未闭合项 | 21 | 中 | 否 |
-| B Phase 12 MCP（部分关闭） | 7 | 低（B1 client 侧 / B3 服务端 stdio / B4 CLI 接线 / B5 白名单 / B6 标准 envelope / B7 默认暴露面 已闭） | 否（可绕开） |
+| B Phase 12 MCP（部分关闭） | 8 | 低（B1 client 侧 / B3 服务端 stdio / B4 CLI 接线 / B5 白名单 / B6 标准 envelope / B7 默认暴露面 / B8 远端错误码 已闭） | 否（可绕开） |
 | C 真实外部后端未接 | ~20 处 | 低 | 否 |
 | D 文档与仓库杂项 | 6（4 已关闭） | 无 | 否 |
 | F 验收勾选状态 | ✅ 已清尾（6 组核实完毕） | 无 | 否 |
@@ -101,7 +109,7 @@
 | B5 | B | 出站白名单不可配 | ✅ **已关闭（change `0071`）**：`permission.sandbox.host_allowlist`（CSV 标量，ConfigSpec 单一真源三面）+ 校验期拒绝非法条目 + 组合根注入（缺省空 = fail-closed 不变），ADR-0068 | 低 | ~~E10 配置门控~~（已闭） |
 | B6 | B | ~~MCP wire envelope 未对齐标准~~ | ✅ 已关闭（change `0075`，ADR-0072）：两侧最小对齐标准 envelope —— server `tools/list` 回 `{"tools":[...]}` / `tools/call` 回 `{"content":[{"type":"text","text":<JSON 载荷>}],"isError":<bool>}`（载荷恒 JSON 编码保往返保真）；client `initialize` 携标准三元组、解析容器键并**容忍厂商扩展字段**、归一 `isError` 信封，同时**兼容旧式裸形状**；**真机双向验收**：`claude mcp add` 挂本 server 后 `claude mcp list` 报 `✔ Connected`，反向 `core-agent mcp add "claude mcp serve"` 成功并发现 20 工具 | 低 | — |
 | B7 | B | ~~默认暴露面启发式过粗~~ | ✅ 已关闭（change `0076`，ADR-0073）：默认面判据由「无 `write`」改为**安全 coeffect 白名单**（`⊆ {filesystem:read}`，空集视为只读）—— 出网 / 进程派生 / 委托驱动（`agent:delegate`）一律默认不出；`tools.delegate` 补声明 `agent:delegate`（原 `coeffects=[]` 漏声明）使判据结构化识别；白名单语义不动 | 低 | — |
-| B8 | B | 远端 JSON-RPC 错误码未映射 | `StdioTransport._await` 把一切远端 `error` 包成 `MCP_UNAVAILABLE` ⇒ 对端「工具不存在」（`-32603`/`-32602`）在本端表现为 `MCP_UNAVAILABLE` 而非 `MCP_TOOL_NOT_FOUND`（粒度不足但不误导）；change `0075` 转出 | 低 | 无 |
+| B8 | B | ~~远端 JSON-RPC 错误码未映射~~ | ✅ 已关闭（change `0077`／ADR-0074）：`transport.map_remote_error` 按「方法 + 标准码」归一 —— `tools/call` 的 JSON-RPC 错误 → `MCP_TOOL_NOT_FOUND`（= 调用被拒）、其余 `-32700/-32600/-32601/-32602` → `MCP_PROTOCOL_MISMATCH`、`-32603`/未知码 → `MCP_UNAVAILABLE`；原始码保留于文本 | 低 | — |
 | C1 | C | 真实外部后端 ~20 处「未接」 | 抽象 + fake 已落地，真后端待接 | 低 | 见 `debug-gaps.md` §2.3 |
 | D1 | D | ~~README §2 状态行待核实~~ | ✅ 已关闭：Phase 18 行刷新为 ✅；`17.5` 行改为「🔶 部分完成（遗留见 E3/E4）」 | 无 | — |
 | D2 | D | `coding-plan/phase-3-prompt.md` 未跟踪 | 一次性 prompt 残留 | 无 | 删除或 `git add` |
@@ -542,7 +550,7 @@
 
 ---
 
-## 4. B 类：Phase 12 MCP（B1 client 侧 + B3 服务端 stdio + B4 CLI 接线 + B5 白名单配置 + B6 标准 envelope + B7 默认暴露面收窄 已关闭，余 B2 http 会话 1 行）
+## 4. B 类：Phase 12 MCP（B1 client 侧 + B3 服务端 stdio + B4 CLI 接线 + B5 白名单配置 + B6 标准 envelope + B7 默认暴露面收窄 + B8 远端错误码映射 已关闭，余 B2 http 会话 1 行）
 
 - **范围**：transport 生产实现（stdio/http）、client 安装分流、消费侧安全接线（本地 stdio 过 `SandboxManager`、远端 http 走出站白名单、不可逆工具走确认门）。
 
@@ -696,13 +704,19 @@
 - **转出**：无。
 - **参考**：`archive/2026-10-05-0076-mcp-default-exposure-narrowing/`。
 
-### B8 远端 JSON-RPC 错误码未映射 — ⏭ 待开工
+### B8 远端 JSON-RPC 错误码未映射 — ✅ 已关闭（change `0077`，ADR-0074）
 
-- **残留**：`StdioTransport._await` 把一切远端 JSON-RPC `error` 包成 `MCP_UNAVAILABLE` ⇒ 对端「工具不存在」
-  （`-32603` / `-32602`）在本端表现为 `MCP_UNAVAILABLE` 而非 `MCP_TOOL_NOT_FOUND`（change `0075` 对齐
-  envelope 时实测 `claude mcp serve` 对未知工具回 JSON-RPC 错误，转出）。
-- **关闭动作**：按远端错误码映射到本地结构化码（至少 `-32601`/`-32602`/`-32603` → 方法未实现 / 参数错 / 内部错）。
-- **参考**：`archive/2026-10-05-0075-mcp-standard-envelope/`（design「转出」段）。
+- **残留**：`StdioTransport._await` 把一切远端 JSON-RPC `error` 包成 `MCP_UNAVAILABLE` ⇒ 「方法未实现 /
+  参数非法 / 工具不存在 / 内部异常」塌缩为同一本地码，模型无法区分「工具名写错」（当场可自纠）与
+  「远端挂了」（该熔断重试）。change `0075` 实测 `claude mcp serve` 对未知工具回
+  `{"error":{"code":-32603,"message":"Tool no_such_tool not found"}}` 时转出。
+- **关闭动作**：`transport.map_remote_error(method, error)`（`_await` 唯一调用点）按「方法 + 标准码」归一 ——
+  **`tools/call` 的 JSON-RPC 错误 → `MCP_TOOL_NOT_FOUND`**（MCP 约定工具**执行**失败走 `isError` 结果信封，
+  故该路径上的错误 = **调用本身被拒**）；其余方法 `-32700`/`-32600`/`-32601`/`-32602` → `MCP_PROTOCOL_MISMATCH`、
+  `-32603`/未知码 → `MCP_UNAVAILABLE`；原始远端码与消息保留于文本。**已否决**按码判（对端对未知工具回
+  `-32603`，按码判会继续漏）与消息文本启发式（脆弱）。client/server/命名空间/白名单/http 传输零改动。
+- **转出**：无。
+- **参考**：`archive/2026-10-05-0077-mcp-remote-error-mapping/`。
 
 ---
 
@@ -791,7 +805,7 @@
 2. **A2 + E2 合并做**（同一根因）：会话标识透传 + 每会话独立 loop/memory + `UIAPILayer.compact` 接真。 ✅ **已完成**（change `0048-session-scoped-memory`：标识透传 + `compact` 接真 + `get_memory` 按会话过滤；**未采**每会话独立实例，理由见该 change design 决策 1/2）。
 3. **A1**（记忆驱动侧）：遗忘节拍。宜在 A2 之后（会话维度不生效时，衰减分组也是错的）。 ✅ **已完成**（change `0049-memory-maintenance-cadence`：loop 收尾维护节拍 + `memory maintain` CLI）。
 4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义。 ✅ **A3 全闭 + A5 + A10 + E4 已完成**（change `0050` 技能态落盘 / ADR-0053；change `0051` 进化冷路径驱动面 + 观察窗口落盘 + 批次成功率采样 / **ADR-0054**；A10 为本次走查新增的「冷路径无驱动面」发现；**E4** 见 change `0053` —— pet 纳入组合根 + 注册表落盘 + WebUI NL 入口 / **ADR-0056**）。✅ **A4 已完成**（change `0055-evolution-confirm-surface`：候选稳定身份 + 队列落盘 + `evolve` 操作面签发审批单 / **ADR-0058**）→ 本步**全闭**。
-5. **B1**（独立轨）：🔶 **client 侧已关闭**（change `0054-mcp-stdio-transport`，ADR-0057 —— stdio 传输 / `add` 分流 / 消费侧安全接线 / 组合根装配；ADR-0043 的 ADR + spec delta 早已就绪）。**余 1 行后续**：B2 http 会话（需 SDK）。✅ **B4 已关闭**（change `0074`／ADR-0071：`mcp add/list/remove` 接线 + 端点注册表落盘（原子写）+ 装配期连接注册（稳定命名 `mcp.<端点名>.<工具>`）+ 不可达端点降级不阻断；排查记录见 §0/§4 —— `--command` 的 argparse `dest` 曾与顶层 `dest="command"` 冲突，把 `mcp add` 静默送进 REPL）。✅ **B3 已关闭**（change `0073`／ADR-0070：`serve_stdio` 事件循环 + `mcp serve` 接线 + `core.` 命名空间 + 禁二级代理；**新报 B6/B7** —— wire envelope 未对齐标准 / 默认暴露面启发式过粗，均待裁决）。✅ **B5 已关闭**（change `0071`，ADR-0068）。✅ **B6 已关闭**（change `0075`／ADR-0072：两侧最小对齐标准 MCP envelope + **真机双向验收** —— `claude mcp add` 挂本 server 报 `✔ Connected`、本 client 挂 `claude mcp serve` 发现 20 工具；另转出「远端 JSON-RPC 错误码未映射」新行 B8）。✅ **B7 已关闭**（change `0076`／ADR-0073：默认暴露面判据改为**安全 coeffect 白名单**（只读且无跨边界 coeffect）+ `tools.delegate` 补声明 `agent:delegate` ⇒ `web_fetch`/`delegate` 默认不出；白名单语义不动；**B8 待收**）。
+5. **B1**（独立轨）：🔶 **client 侧已关闭**（change `0054-mcp-stdio-transport`，ADR-0057 —— stdio 传输 / `add` 分流 / 消费侧安全接线 / 组合根装配；ADR-0043 的 ADR + spec delta 早已就绪）。**余 1 行后续**：B2 http 会话（需 SDK）。✅ **B4 已关闭**（change `0074`／ADR-0071：`mcp add/list/remove` 接线 + 端点注册表落盘（原子写）+ 装配期连接注册（稳定命名 `mcp.<端点名>.<工具>`）+ 不可达端点降级不阻断；排查记录见 §0/§4 —— `--command` 的 argparse `dest` 曾与顶层 `dest="command"` 冲突，把 `mcp add` 静默送进 REPL）。✅ **B3 已关闭**（change `0073`／ADR-0070：`serve_stdio` 事件循环 + `mcp serve` 接线 + `core.` 命名空间 + 禁二级代理；**新报 B6/B7** —— wire envelope 未对齐标准 / 默认暴露面启发式过粗，均待裁决）。✅ **B5 已关闭**（change `0071`，ADR-0068）。✅ **B6 已关闭**（change `0075`／ADR-0072：两侧最小对齐标准 MCP envelope + **真机双向验收** —— `claude mcp add` 挂本 server 报 `✔ Connected`、本 client 挂 `claude mcp serve` 发现 20 工具；另转出「远端 JSON-RPC 错误码未映射」新行 B8）。✅ **B7 已关闭**（change `0076`／ADR-0073：默认暴露面判据改为**安全 coeffect 白名单**（只读且无跨边界 coeffect）+ `tools.delegate` 补声明 `agent:delegate` ⇒ `web_fetch`/`delegate` 默认不出；白名单语义不动）。✅ **B8 已关闭**（change `0077`／ADR-0074：`transport.map_remote_error` 按「方法 + 标准码」归一 —— `tools/call` 的 JSON-RPC 错误 → `MCP_TOOL_NOT_FOUND`，其余方法按标准码映射；原始码保留于文本）。
 6. **E1 + E7 + E8**（契约与中间件）：✅ **全闭** —— E1 见 change `0052`（ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；**E7/E8 见 change `0056`（ADR-0059）**：E7 裁决「规格为准」→ 纯文档订正；E8 三处缺口修复，第 5 条转出为 E18。
 7. **E3 / E6**（规格裁决）：✅ **全闭** —— 裁决「A 全做・解除 deferred」；**E3** 见 change `0057`（ADR-0060：神通注册 + 专属路由作用域 + 按兽 loop/共享记忆注入 + CLI 走组合根）；**E6** 无需代码（context 压实启发式已由 change `0041` 规格订正为有意行为，余两项转 A7/A8）。
 8. **A7 + E6（miss 复用）**（低优先，同族）：✅ **全闭** —— **A7** 见 change `0058`（ADR-0061：排序分 = 基础分 × 历史成功率因子；预筛转出 A11）；**E6** 无需代码（见上，规格已由 change `0041` 订正）。

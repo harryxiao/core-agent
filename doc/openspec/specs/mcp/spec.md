@@ -55,7 +55,7 @@ MCP（Model Context Protocol）集成层为智能体提供双向模型上下文�
 - **THEN** 返回 `TOOL_NAME_CONFLICT`，本地工具优先或显式命名空间隔离
 
 ### Requirement: 调用转发与错误隔离
-系统 SHALL 把本地调用透明转发到 MCP，并对 MCP 异常做隔离，不拖垮主循环。
+系统 SHALL 把本地调用透明转发到 MCP，并对 MCP 异常做隔离，不拖垮主循环。远端以 JSON-RPC `error` 应答时，系统 SHALL 按以下口径映射为**本地结构化错误码**（SHALL NOT 一律归为 `MCP_UNAVAILABLE`）：**`tools/call`** 的协议层错误 SHALL 归一为 `MCP_TOOL_NOT_FOUND`（MCP 约定工具**执行**失败走成功应答里的 `isError` 结果信封，故 `tools/call` 上出现 JSON-RPC 错误即**调用本身被拒** —— 未知工具 / 非法参数）；**其余方法**的 `-32700` / `-32600` / `-32601` / `-32602` SHALL 归一为 `MCP_PROTOCOL_MISMATCH`，`-32603` 及未知码 SHALL 归一为 `MCP_UNAVAILABLE`。原始远端码与消息 SHALL 保留在错误文本中。
 
 #### Scenario: 透明转发
 - **GIVEN** 模型调用一个 MCP 工具
@@ -66,6 +66,16 @@ MCP（Model Context Protocol）集成层为智能体提供双向模型上下文�
 - **GIVEN** MCP 服务端超时/崩溃
 - **WHEN** 调用失败
 - **THEN** 返回 `MCP_UNAVAILABLE`，熔断该 MCP，不影响其他工具
+
+#### Scenario: 远端工具不存在映射为工具不存在
+- **GIVEN** 远端对未知工具回 JSON-RPC 错误（如 `{"code":-32603,"message":"Tool X not found"}`）
+- **WHEN** 本地 `call_tool` 该工具
+- **THEN** 返回 `CallResult(ok=False, code="MCP_TOOL_NOT_FOUND")`，而非笼统的 `MCP_UNAVAILABLE`
+
+#### Scenario: 远端方法未实现映射为协议不匹配
+- **GIVEN** 远端对不支持的方法回 JSON-RPC `-32601`
+- **WHEN** 本地调用该方法
+- **THEN** 错误码归一为 `MCP_PROTOCOL_MISMATCH`（非 `MCP_UNAVAILABLE`）
 
 ### Requirement: MCP Server 模式
 系统 SHALL 支持以 MCP server 身份被外部 MCP 客户端（如 Claude Code、Cursor）挂载，对外提供工具能力。stdio 方向 SHALL 以**换行分帧 JSON-RPC**（每行一条消息，stdin 读 / stdout 写）承载事件循环：`initialize` SHALL 返回与 client 侧**同一** `protocolVersion`（`2024-11-05`）并声明 tools 能力；无 `id` 的通知（如 `notifications/initialized`）SHALL NOT 应答；`tools/list` SHALL 返回白名单过滤后的暴露面；`tools/call` SHALL 按 `name` / `arguments` 转发并复用 `ToolProvider.invoke` 链路（permission / observability / 副作用追踪不绕过）；`ping` SHALL 返回空结果；未知方法 SHALL 以 JSON-RPC 错误码 `-32601` 应答。**单条请求的异常 SHALL 被隔离为错误应答，SHALL NOT 终止事件循环**；stdin EOF 即退出并释放连接。

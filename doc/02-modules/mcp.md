@@ -91,6 +91,10 @@ L3 Loop ──► ToolProvider ──► [本地工具 | MCP 适配工具]
   （`Mcp-Session-Id` 复用）。
 - **故障隔离**：单条请求的异常（方法未实现 / 工具提供者抛错 / 应答不可序列化）降级为该 `id` 的错误应答，
   **不终止事件循环**；协议层错误码（`-32601` / `-32603`）与工具层结论（`CallResult.code`）分层。
+- **远端错误码映射（change `0077`，账本 B8）**：client 侧收到远端 JSON-RPC `error` 时按「方法 + 标准码」
+  归一 —— `tools/call` 上的错误 = **调用被拒**（未知工具 / 非法参数）⇒ `MCP_TOOL_NOT_FOUND`；其余方法
+  `-32700`/`-32600`/`-32601`/`-32602` ⇒ `MCP_PROTOCOL_MISMATCH`，`-32603`/未知码 ⇒ `MCP_UNAVAILABLE`。
+  原始远端码与消息保留在错误文本中（`transport.map_remote_error`）。
 - **wire 形状（标准 envelope，change `0075`）**：`tools/list` 回容器键 `{"tools": [...]}`、
   `tools/call` 回 `{"content": [{"type": "text", "text": <JSON 载荷>}], "isError": <bool>}`，
   `initialize` 回 `protocolVersion`/`capabilities`/`serverInfo` —— **双向对齐标准 MCP**（server 可被

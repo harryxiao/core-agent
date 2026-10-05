@@ -27,6 +27,40 @@ from core.permission import AccessControlError, ResourceBudget, SandboxManager, 
 from .errors import MCPError, MCPErrorCode
 from .models import MCPEndpoint
 
+# JSON-RPC 2.0 标准错误码 → 本地结构化码（`tools/call` 之外的方法）。
+_JSONRPC_TO_LOCAL: dict[int, MCPErrorCode] = {
+    -32700: MCPErrorCode.MCP_PROTOCOL_MISMATCH,  # Parse error
+    -32600: MCPErrorCode.MCP_PROTOCOL_MISMATCH,  # Invalid Request
+    -32601: MCPErrorCode.MCP_PROTOCOL_MISMATCH,  # Method not found
+    -32602: MCPErrorCode.MCP_PROTOCOL_MISMATCH,  # Invalid params
+    -32603: MCPErrorCode.MCP_UNAVAILABLE,  # Internal error
+}
+
+
+def map_remote_error(method: str, error: Any) -> MCPError:
+    """把远端 JSON-RPC ``error`` 映射为本地结构化 :class:`MCPError`（账本 B8）。
+
+    MCP 约定：工具**执行**失败走成功应答里的 ``isError`` 结果信封，故 ``tools/call`` 上出现
+    JSON-RPC 错误即**调用本身被拒**（未知工具 / 非法参数）⇒ ``MCP_TOOL_NOT_FOUND``；其余方法
+    按标准码映射（请求 / 方法层问题 → ``MCP_PROTOCOL_MISMATCH``，内部错与未知码 →
+    ``MCP_UNAVAILABLE``）。
+    原始远端码与消息保留在错误文本中。
+    """
+    if isinstance(error, dict):
+        payload = cast("dict[str, Any]", error)
+        code: Any = payload.get("code")
+        message: Any = payload.get("message")
+    else:
+        code = None
+        message = error
+    if method == "tools/call":
+        local = MCPErrorCode.MCP_TOOL_NOT_FOUND
+    elif isinstance(code, int):
+        local = _JSONRPC_TO_LOCAL.get(code, MCPErrorCode.MCP_UNAVAILABLE)
+    else:
+        local = MCPErrorCode.MCP_UNAVAILABLE
+    return MCPError(local, f"远端错误: {code} {message}")
+
 
 class Transport(Protocol):
     """传输契约：连接 / 调用 / 心跳 / 关闭。"""
@@ -207,10 +241,7 @@ class StdioTransport:
                 continue  # 串行化：非本请求的消息丢弃
             error = message.get("error")
             if error:
-                raise MCPError(
-                    MCPErrorCode.MCP_UNAVAILABLE,
-                    f"远端错误: {error.get('code')} {error.get('message')}",
-                )
+                raise map_remote_error(method, error)
             return message.get("result")
 
     def _notify(self, method: str) -> None:

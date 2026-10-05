@@ -1341,6 +1341,36 @@
   接口 `03-interfaces/mcp-interface.md` §6；模块 `02-modules/mcp.md` §4；方案 `07-mcp-server/mcp-server.md` §9；
   测试 `tests/test_mcp_default_exposure.py`、`tests/test_phase13.py`；`doc/04-testing/test-cases.md`（TC-MCP-12）。
 
+## ADR-0074：远端 JSON-RPC 错误码映射（tools/call 归调用被拒 / 其余按标准码 / 原始码保留）
+
+- **背景**：账本 **B8**。`StdioTransport._await` 把**一切**远端 JSON-RPC `error` 包成
+  `MCPError(MCP_UNAVAILABLE)` ⇒ 「方法未实现」「参数非法」「工具不存在」「内部异常」塌缩为同一本地码。
+  一手实测（change `0075`）：`claude mcp serve` 对未知工具回 `{"error":{"code":-32603,"message":"Tool
+  no_such_tool not found"}}`，本端 `call_tool` 归 `MCP_UNAVAILABLE` —— 模型无法区分「工具名写错」（当场可
+  自纠）与「远端挂了」（该熔断重试）。属错误**语义丢失**。
+- **决策**：
+  ① `src/core/mcp/transport.py` 增模块级纯函数 `map_remote_error(method, error) -> MCPError`，`_await` 改调它；
+  ② **`tools/call` 的 JSON-RPC 错误 → `MCP_TOOL_NOT_FOUND`**：MCP 约定工具**执行**失败走成功应答里的
+  `isError` 结果信封（本端 server 侧即如此），故该路径上的 JSON-RPC 错误 = **调用本身被拒**（未知工具 /
+  非法参数）；
+  ③ **其余方法**按标准码：`-32700`/`-32600`/`-32601`/`-32602` → `MCP_PROTOCOL_MISMATCH`，`-32603` 与未知码 →
+  `MCP_UNAVAILABLE`（`-32601` 与本端 server 侧对未知方法回 `-32601` 对称）；
+  ④ 原始远端码与消息**保留**在错误文本（`远端错误: <code> <message>`）；
+  ⑤ 映射落点唯一（`_await`）—— `client._call` 让传输层 `MCPError` 直通，无需动 client。
+- **已否决**：**按码判（`-32602`→工具不存在、`-32603`→保持 UNAVAILABLE）** —— 实测对端对未知工具回 `-32603`
+  （标准里的 Internal error），按码判会把本变更要修的用例继续漏掉；且 `-32602` 在 `tools/call` 上同样可表示
+  未知工具，按码判是伪精确。**消息文本启发式**（按 `message` 含 "not found" 判）—— 依赖本地化 / 厂商措辞，
+  且方法上下文已给出确定性判据。**新增本地错误码** —— 现有码集已能表达，新增码波及 `MCPErrorCode` 对外契约。
+- **后果**：✅ `tools/call` 的未知工具/非法参数归 `MCP_TOOL_NOT_FOUND`（可自纠语义），协议层问题归
+  `MCP_PROTOCOL_MISMATCH`，仅对端内部问题归 `MCP_UNAVAILABLE`；✅ 映射为**可测纯函数**（表驱动单测 + 真子进程
+  端到端）；✅ client/server/命名空间/白名单/http 传输**零改动**。
+  ⚠️ `tools/call` 归一只看方法不看码 —— 若某服务端把「工具内部异常」错报为 JSON-RPC 错误（而非 `isError`
+  结果），会被记成「工具不存在」；属对端**违反 MCP 约定**，本地码仍 `ok=False`，原始码保留于文本。
+- **关联**：`mcp` spec「调用转发与错误隔离」（**MODIFIED** + 新场景「远端工具不存在映射为工具不存在」
+  「远端方法未实现映射为协议不匹配」）；代码 `src/core/mcp/transport.py`（`_JSONRPC_TO_LOCAL` /
+  `map_remote_error`）；接口 `03-interfaces/mcp-interface.md` §8；模块 `02-modules/mcp.md`（故障隔离段）；
+  测试 `tests/test_mcp_stdio.py`；`doc/04-testing/test-cases.md`（TC-MCP-13）。
+
 ---
 ## 变更追踪
 
@@ -1410,3 +1440,4 @@
 | ADR-0071 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 02-modules/cli-ops.md |
 | ADR-0072 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 07-mcp-server/mcp-server.md |
 | ADR-0073 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 07-mcp-server/mcp-server.md |
+| ADR-0074 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md |
