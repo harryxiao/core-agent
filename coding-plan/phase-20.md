@@ -27,7 +27,7 @@
 | E27 | `im` | `IMGateway` 装配 + 宿主入口 + 白名单配置键 + Provider 插拔点 | 平台 SDK / 机器人凭证 / 回调 | **高**（第三入口整体缺席） |
 | C3 | `ci_cd` | ✅ **已关闭（change `0091`／ADR-0086）**：`SubprocessGateExecutor`（stdlib `subprocess` 直跑 `GATE_COMMANDS`，不经 shell）+ 失败/工具缺失/超时归一 + `reason` 有界输出尾部；**装配与 `ci gate` CLI 待消费者**（见 §4.2 偏离说明） | 制品仓库凭证（`CHANNEL_UNREACHABLE`） | ~~中~~ 已闭 |
 | C4 | `observability` | ✅ **已关闭（change `0089`／ADR-0084）**：组合根缺省装配 `BufferedExporter(JSONLExporter($CORE_STATE_DIR/traces.jsonl))` + 注入优先；`JSONLExporter` 自建父目录 | OTel 导出 SDK（「指标导出协议」，另案） | ~~中~~ 已闭 |
-| C5 | `skillhub` | 把已实现的 `SkillHubClient` 接进 `skill search/install`（注入内存 `MarketIndex` 即离线可验） | 真实市场 fetcher（网络） | 中（客户端全实现却零调用方） |
+| C5 | `skillhub` | ✅ **已关闭（change `0092`／ADR-0087）**：`skill search` / `skill install` 接 `SkillHubClient`（市场搜索 / 签名校验下载）+ **技能库与组合根同源**（`$CORE_STATE_DIR/skills.json`）+ `search --source` | 真实市场 fetcher（网络 + 凭据） | ~~中~~ 已闭 |
 | C6 | `plugin_registry` / `plugins` | `InstallDispatcher.resolve` 增补 GIT_REPO / MARKET_REGISTRY / MCP_ENDPOINT 三种来源 | git remote / 市场 / 端点可达性 | 中（`LOCAL_PATH` 已真） |
 | C7 | `ui` TTS | TTS 接口 + 假实现 + 注入（现**无任何抽象**） | 真实 TTS 后端 | 低 |
 | C8 | `ui` Tauri 桌面壳 | sidecar 拉起器（subprocess spawn）+ `_app` 注入 | Tauri 壳二进制 | 低 |
@@ -102,11 +102,12 @@
 - **要写**：`build_runtime` 一行装配（`Tracer(exporter=JSONLExporter/ConsoleExporter)`）；OTel 导出器是 `Exporter.emit` 的薄包装 + otel SDK（**凭证半**）。
 - **离线验证**：断言 tracer 持有的 exporter 类型 + JSONL 落盘内容。
 
-### 4.4 `skillhub`（C5）
+### 4.4 `skillhub`（C5）✅ 已关闭（change `0092`／ADR-0087）
 
-- **现状**：`SkillHubClient` / `MarketIndex` / `TrustVerifier` / `SkillPublisher` **全部实现、DI 完整**（`client.py:20-58`、`index.py:27-35`）；但**零生产调用方** —— `entry._skill_search(SkillLibrary(), …)`（`entry.py:730-739`）走本地库，恒空。
-- **要写**：把 `SkillHubClient` 接进 `skill search` / `skill install`；注入内存 `MarketIndex` 即可离线验证。真实市场拉取 fetcher = **凭证半**（网络）。
-- **离线验证**：fake fetcher + 内存 index 的端到端。
+- **现状（关闭前）**：`SkillHubClient` / `MarketIndex` / `TrustVerifier` / `SkillPublisher` **全部实现、DI 完整**（`client.py:20-58`、`index.py:27-35`）；但**零生产调用方** —— `entry._skill_search(SkillLibrary(), …)`（`entry.py:730-739`）走本地库，且该库是**新建的空库**（无路径 ⇒ 进程内一次性）⇒ 恒空；`skill install` 只是 `plugin install --kind skill` 别名（`--source` 声明了却零消费）；`skill remove` 同样作用于空的一次性库 ⇒ **永远删不掉运行时注册的技能**。
+- **已写**：`skill search` → `SkillHubClient.search`（输出版本化元数据）；`skill install` → `SkillHubClient.download`（先签名校验后注册 draft）；错误归一为 stderr + 退出码 1（不抛裸异常）；`skill search` 补 `--source`（与 install 侧既有参数对称）。**技能库与组合根同源**（`entry._build_skill_library()` = `SkillLibrary(path=$CORE_STATE_DIR/skills.json)`，与 `runtime._skill_state_path` 同一约定）—— 这条是 C5 **成立**的前提：否则「已安装」是谎报（写进一次性库、下个进程消失），`skill remove` 也永远删不掉真技能。**`core/skillhub/` 源码零改动**。
+- **离线验证**：`tests/test_skillhub_cli.py`（7 例）注入**内存 index + fetcher** 走端到端；含「重开技能库可见」（跨进程落盘）与「签名篡改拒绝且不落盘」。
+- **仍归 Phase 19 §5（凭证半）**：真实市场 fetcher（网络 + 市场凭据）⇒ 缺省装配下 `skill search` 如实返回空、`skill install` 如实报「未接入拉取」，**不静默成功**。
 
 ### 4.5 `plugin_registry` / `plugins`（C6）
 

@@ -1734,6 +1734,37 @@
 
 ---
 
+## ADR-0087：skillhub 接入 CLI（`skill search` / `skill install`）+ 技能库与组合根同源
+
+- **背景**：账本 C5（Phase 20 §1/§4.4）—— `SkillHubClient` / `MarketIndex` / `TrustVerifier` / `SkillPublisher`
+  **全部实现、DI 完整**，但**零生产调用方**：`_skill_search(SkillLibrary(), q)` 搜的是**新建的空库**
+  （`SkillLibrary()` 无路径 ⇒ 进程内一次性）⇒ `skill search` **恒空**；`skill install` 只是
+  `plugin install --kind skill` 的别名（其 `--source` 参数**声明了却零消费**）；`skill remove` 同样作用于空的一次性库
+  ⇒ **永远删不掉运行时真正注册的技能**。
+- **决策**：
+  ① **触达点 = 既有 `skill` 子命令**（不新增命令面）：`search` → `SkillHubClient.search`，
+     `install` → `SkillHubClient.download`（先签名校验后注册 draft），错误归一为 stderr + 退出码 1。
+  ② **技能库与组合根同源**（`SkillLibrary(path=$CORE_STATE_DIR/skills.json)`，经 `entry._build_skill_library()`）：
+     这是 C5 **成立**的前提而非附带改动 —— 否则「已安装」是**谎报**（写进一次性库、下个进程消失），
+     `skill remove` 也永远删不掉真技能（同 E21/E22「单一真源」取向）。**不抽公共 helper 到 runtime**：
+     该约定已是两处 `_*_path` 实现，抽公共函数会引入新依赖方向，与既有「各层各自持有 `_*_path`」风格不符
+     （同 `ADR-0084` 对 `_trace_path` 的处置）。
+  ③ **构造留缝**：`_build_skillhub_client(library)` 缺省 = 空 `official` 源 + `TrustVerifier` + `fetcher=None`；
+     测试注入**内存 index + fetcher** 即端到端验证两条路径（ledger 的「注入内存 MarketIndex 即可离线验证」）。
+  ④ **`skill search` 补 `--source`**：`install` 侧**早就有**此参数（此前零消费），搜索侧补齐才使多源在 CLI 上
+     **对称可达**（否则第三方源只能装不能搜）。
+  ⑤ **`_skill_search` 改「搜市场」不视为回归**：今日的本地库搜索**恒空**（无路径库），改后至少如实报「未找到」，
+     市场接入后立即可见。
+  ⑥ **不动 `core/skillhub/` 源码**（实现早已齐备）、不动 `plugin install` 的本地路径安装。
+- **规格**：MODIFIED「技能市场与技能发现」+「签名校验与可信下载」（CLI 触达点 + 技能库同源 + 3 场景）。
+- **影响**：CLI 行为变更三处（search 搜市场 / install 走市场下载 / remove 作用持久库）；
+  `tests/test_entry.py::test_skill_remove_missing` 继续通过（`conftest` 已按测试隔离 `CORE_STATE_DIR`）。
+- **前置**：`ADR-0044`（核心零三方依赖）、`ADR-0085`/`ADR-0086`（同批 C 类代码半）。
+- **转出**：真实市场 fetcher（网络 + 市场凭据）→ Phase 19 §5 凭证半；`skill publish` 子命令（规格有发布审核流，
+  CLI 侧从未声明）→ 未排期。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1815,3 +1846,4 @@
 | ADR-0084 | 03-interfaces/observability-interface.md, 02-modules/observability.md |
 | ADR-0085 | 03-interfaces/git-interface.md, 12-git/git-architecture.md |
 | ADR-0086 | 03-interfaces/ci-cd-interface.md, 02-modules/ci-cd.md |
+| ADR-0087 | 03-interfaces/skillhub-interface.md, 02-modules/skillhub.md |

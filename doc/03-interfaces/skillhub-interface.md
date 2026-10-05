@@ -34,6 +34,17 @@ class SkillHubClient:
 
 下载的初始状态恒为 `draft`，**不自动启用**；需本地显式激活后才进入可用技能集。
 
+**生产触达点**（`src/core/entry.py`）：`skill search <query> [--source S]` → `SkillHubClient.search`（输出版本化
+元数据，不拉技能体）；`skill install <name> [--source S]` → `SkillHubClient.download`（先签名校验后注册 draft）。
+`SkillHubError`（源不可达 / 源不存在 / 签名失败 / 市场未接）归一为 stderr + 退出码 1。
+
+**技能库与组合根同源**：CLI 侧经 `entry._build_skill_library()` 使用 `SkillLibrary(path=$CORE_STATE_DIR/skills.json)`
+（与 `runtime._skill_state_path` 同一约定）—— 否则下载只落在进程内一次性库，下个进程即消失（「已安装」成谎报），
+`skill remove` 也永远删不掉运行时注册的技能。
+
+**凭证半**：真实市场 fetcher（网络 + 市场凭据）未接。缺省 `fetcher=None` ⇒ `skill install` **如实**报
+「无法下载技能（市场缺失或未接入拉取）」；缺省 `MarketIndex` 只有空的 `official` 源 ⇒ `skill search` 如实返回空。
+
 ---
 
 ## 3. MarketIndex 接口

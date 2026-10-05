@@ -296,6 +296,8 @@
 | TC-SKILLHUB-04 | CORE-SKH-R3 | 发布技能并经审核 approved | 状态 published，VersionManager 版本 v1→v2 |
 | TC-SKILLHUB-05 | CORE-SKH-R3 | 发布技能被审核 rejected | 状态回退，允许修改后重传 |
 | TC-SKILLHUB-06 | CORE-SKH-R5 | 指定 source 路由到市场源 | 路由到对应源；源不健康回退官方源；源不存在拒绝路由 |
+| TC-SKILLHUB-07 | CORE-SKH-R1 | CLI `skill search <query>`（注入内存市场索引） | 输出该技能版本化元数据；空市场如实报「未找到」、源不健康退出码 1（锚点：`tests/test_skillhub_cli.py`） |
+| TC-SKILLHUB-08 | CORE-SKH-R2 | CLI `skill install <skill_id>`（签名有效 / 签名被篡改 / 未接市场 fetcher） | 有效 ⇒ 落 draft 且**重开技能库可见**；篡改 ⇒ 拒绝、退出码 1、不落盘；未接 ⇒ 如实报错不静默成功 |
 
 ## 24. 配置管理（TC-CONF）
 

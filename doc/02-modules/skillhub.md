@@ -62,6 +62,11 @@ draft ──显式激活──► 可用技能集（进入 skills 的路由/版�
 
 - 下载即沉淀、发布即流通，两者都回到 skills 的封装/版本化/路由闭环，不另起炉灶。
 - draft 机制保证市场技能"先隔离、后启用"，与灰度发布/验证门同构。
+- **生产触达点已落地**（change 0092／ADR-0087）：CLI `skill search` / `skill install` 经 `SkillHubClient`
+  （市场搜索 / 签名校验下载）；CLI 技能库经 `entry._build_skill_library()` 与组合根**同源**
+  （`$CORE_STATE_DIR/skills.json`）⇒ 下载的 draft **落盘并可被后续会话读到**，`skill remove` 也作用于真技能。
+- **凭证半（未接）**：真实市场 fetcher（网络 + 凭据）。缺省装配下 `skill search` 如实返回空、
+  `skill install` 如实报「未接入拉取」，**不静默成功**。
 
 ---
 

@@ -74,6 +74,7 @@ from core.pet.library import load_persona, load_personas
 from core.plugin_registry import DomainError, PluginInstaller, PluginKind, PluginSource
 from core.plugins import InstallDispatcher
 from core.runtime import GATABLE_MODULES, Runtime, build_runtime
+from core.skillhub import SkillHubClient, SkillHubError
 from core.skills import SkillLibrary
 from core.tools import StubPlugin, ToolProvider
 from core.ui import CLIBridge, DesktopBridge, UIAPILayer, UiError, WebBridge
@@ -192,7 +193,8 @@ def _add_skill_parser(sub: Any) -> None:
     sk_sub = skill.add_subparsers(dest="skill_cmd", metavar="<skill-cmd>")
     search = sk_sub.add_parser("search", help="搜索技能市场")
     search.add_argument("query")
-    install = sk_sub.add_parser("install", help="安装技能（= plugin install --kind skill）")
+    search.add_argument("--source", metavar="S")
+    install = sk_sub.add_parser("install", help="从技能市场安装（签名校验后注册为 draft）")
     install.add_argument("name")
     install.add_argument("--source", metavar="S")
     remove = sk_sub.add_parser("remove", help="卸载技能（= plugin uninstall）")
@@ -613,13 +615,15 @@ def _plugin(args: argparse.Namespace) -> int:
 
 
 def _skill(args: argparse.Namespace) -> int:
-    """技能市场：search 走本地库（市场拉取未接）；install/remove 别名到 plugin。"""
+    """技能市场：search/install 走 SkillHubClient（真实市场源与拉取为凭证半，未接时如实报错）。"""
+    library = _build_skill_library()
+    source = getattr(args, "source", None) or "official"  # remove 分支无 --source
     if args.skill_cmd == "search":
-        return _skill_search(SkillLibrary(), args.query)
+        return _skill_search(_build_skillhub_client(library), args.query, source=source)
     if args.skill_cmd == "install":
-        return _plugin_install(_build_installer(), args.name, PluginKind.SKILL)
+        return _skill_install(_build_skillhub_client(library), args.name, source=source)
     if args.skill_cmd == "remove":
-        return _skill_remove(SkillLibrary(), args.name)
+        return _skill_remove(library, args.name)
     print(f"skill {args.skill_cmd} 已识别，尚未接线", file=sys.stderr)
     return 0
 
@@ -727,16 +731,41 @@ def _plugin_uninstall(installer: PluginInstaller, name: str) -> int:
     return 0
 
 
-def _skill_search(library: SkillLibrary, query: str) -> int:
-    q = query.lower()
-    matches = [
-        s for s in library.all_skills() if q in s.skill_id.lower() or q in s.description.lower()
-    ]
+def _build_skill_library() -> SkillLibrary:
+    """技能库：与组合根**同源**（`$CORE_STATE_DIR/skills.json`，见 `runtime._skill_state_path`）。
+
+    不带路径的 `SkillLibrary()` 是进程内一次性库 —— 下载的技能会随进程消失（「已安装」成谎报）、
+    `skill remove` 也永远删不掉运行时真正注册的技能。
+    """
+    return SkillLibrary(path=_state_path("skills.json"))
+
+
+def _build_skillhub_client(library: SkillLibrary) -> SkillHubClient:
+    """技能市场客户端缺省装配：空 official 源 + 签名校验器，无市场拉取（凭证半）。"""
+    return SkillHubClient(library)
+
+
+def _skill_search(client: SkillHubClient, query: str, *, source: str = "official") -> int:
+    try:
+        matches = client.search(query, source=source)
+    except SkillHubError as exc:
+        print(f"搜索失败: {exc}", file=sys.stderr)
+        return 1
     if not matches:
         print(f"（未找到匹配技能: {query}）")
         return 0
-    for skill in matches:
-        print(f"{skill.skill_id}: {skill.description}")
+    for market in matches:
+        print(f"{market.skill_id} ({market.version}): {market.description}")
+    return 0
+
+
+def _skill_install(client: SkillHubClient, skill_id: str, *, source: str = "official") -> int:
+    try:
+        skill = client.download(skill_id, source=source)
+    except SkillHubError as exc:
+        print(f"安装失败: {exc}", file=sys.stderr)
+        return 1
+    print(f"已安装技能 {skill.skill_id}（draft，需本地显式激活后可用）")
     return 0
 
 
