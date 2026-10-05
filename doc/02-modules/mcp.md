@@ -91,8 +91,11 @@ L3 Loop ──► ToolProvider ──► [本地工具 | MCP 适配工具]
   （`Mcp-Session-Id` 复用）。
 - **故障隔离**：单条请求的异常（方法未实现 / 工具提供者抛错 / 应答不可序列化）降级为该 `id` 的错误应答，
   **不终止事件循环**；协议层错误码（`-32601` / `-32603`）与工具层结论（`CallResult.code`）分层。
-- **wire 形状（已知偏离）**：`tools/list` 裸列表 / `tools/call` 直出 `CallResult`，与 client 侧三方一致，
-  标准 MCP envelope 未对齐（第三方客户端挂载受限，见 `doc/03-interfaces/mcp-interface.md` §6）。
+- **wire 形状（标准 envelope，change `0075`）**：`tools/list` 回容器键 `{"tools": [...]}`、
+  `tools/call` 回 `{"content": [{"type": "text", "text": <JSON 载荷>}], "isError": <bool>}`，
+  `initialize` 回 `protocolVersion`/`capabilities`/`serverInfo` —— **双向对齐标准 MCP**（server 可被
+  Claude Code / Cursor 直接挂载，client 可挂 `claude mcp serve` 等标准 server）；client 侧同时**兼容旧式
+  裸形状**应答（不打破既有服务端），见 `doc/03-interfaces/mcp-interface.md` §6。
 
 ### 3.6 端点注册表与装配期注册（change `0074`）
 
@@ -122,6 +125,8 @@ L3 Loop ──► ToolProvider ──► [本地工具 | MCP 适配工具]
 | 外部连接异常/崩溃 | 熔断该连接，不影响其他客户端 |
 | 已装端点装配期不可达 | 告警并跳过该端点，装配照常完成（change `0074`） |
 | 端点重名安装 | `ENDPOINT_NAME_CONFLICT` 拒绝，不静默覆盖（change `0074`） |
+| 第三方 server 应答带厂商扩展字段 | 只取已知键（`name`/`description`/`inputSchema`），扩展字段忽略（change `0075`） |
+| 远端应答为旧式裸形状 | 仍可解析，不抛（向后兼容，change `0075`） |
 
 ---
 

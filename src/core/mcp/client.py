@@ -8,16 +8,22 @@
 - ``add`` 按来源形状分流构建端点（``http(s)://`` URL → http；本地命令 → stdio）。
 - 消费侧安全：stdio 传输经沙箱拉起子进程、http 传输经出站白名单
   （``build_transport`` 注入 ``sandbox``/``policy``，见 ADR-0057）。
+- **标准 MCP 互操作**（change 0075 / 账本 B6）：``initialize`` 携标准三元组
+  （``protocolVersion``/``capabilities``/``clientInfo``）；发现接口解析标准容器键
+  （``{"tools": [...]}``）并**容忍厂商扩展字段**（只取已知键），同时兼容旧式**裸列表**；
+  ``tools/call`` 的标准结果信封（``content`` + ``isError``）归一为本地
+  :class:`~core.mcp.models.CallResult`。
 
 对应接口：doc/03-interfaces/mcp-interface.md §3
 """
 
 from __future__ import annotations
 
+import json
 import shlex
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from core.permission import ResourceBudget, SandboxManager, SandboxPolicy
 from core.plugin_registry import PluginSource
@@ -40,6 +46,74 @@ _GENERATION = 1
 _DEFAULT_SCHEMA: dict[str, Any] = {"type": "object"}
 _URL_PREFIXES = ("http://", "https://")
 _HTTP_KINDS: tuple[TransportKind, ...] = ("http", "streamable-http")
+_CLIENT_NAME = "core-agent"
+_CLIENT_VERSION = "0.1"
+
+
+def _handshake() -> dict[str, Any]:
+    """标准 ``initialize`` 参数：对端逐字段校验，缺项即拒（实测 Claude Code 回 -32603）。"""
+    return {
+        "protocolVersion": PROTOCOL_VERSION,
+        "capabilities": {},
+        "clientInfo": {"name": _CLIENT_NAME, "version": _CLIENT_VERSION},
+    }
+
+
+def _unwrap(raw: Any, key: str) -> list[dict[str, Any]]:
+    """标准容器键（``{"tools": [...]}``）与旧式**裸列表**双认，非映射条目丢弃。"""
+    items: Any = cast("dict[str, Any]", raw).get(key) if isinstance(raw, dict) else raw
+    if not isinstance(items, list):
+        return []
+    return [
+        cast("dict[str, Any]", item) for item in cast("list[Any]", items) if isinstance(item, dict)
+    ]
+
+
+def _schema(value: Any) -> dict[str, Any]:
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else {"type": "object"}
+
+
+def _text_of(content: Any) -> str:
+    """标准 ``content`` 文本块列表 → 文本（取首个 text 块，无则空串）。"""
+    if not isinstance(content, list):
+        return ""
+    for block in cast("list[Any]", content):
+        if not isinstance(block, dict):
+            continue
+        entry = cast("dict[str, Any]", block)
+        if entry.get("type") == "text":
+            return str(entry.get("text", ""))
+    return ""
+
+
+def _decode(text: str) -> Any:
+    """文本 → 数据：合法 JSON 即解码，否则原样承载（对端可回纯文本）。"""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def _parse_call_result(raw: Any) -> CallResult:
+    """标准 ``tools/call`` 结果信封 → 本地 ``CallResult``（旧式裸形状原样承载）。"""
+    if not isinstance(raw, dict) or ("content" not in raw and "isError" not in raw):
+        return CallResult(ok=True, data=raw)
+    payload = cast("dict[str, Any]", raw)
+    text = _text_of(payload.get("content"))
+    if payload.get("isError"):
+        detail = _decode(text)
+        if isinstance(detail, dict):
+            fields = cast("dict[str, Any]", detail)
+            code = fields.get("code")
+            error = fields.get("error")
+            if code is not None or error is not None:
+                return CallResult(
+                    ok=False,
+                    code=None if code is None else str(code),
+                    error=None if error is None else str(error),
+                )
+        return CallResult(ok=False, error=text)
+    return CallResult(ok=True, data=_decode(text))
 
 
 class MCPClient:
@@ -90,7 +164,7 @@ class MCPClient:
         transport = self._make_transport(endpoint)
         try:
             transport.connect(endpoint)
-            info = transport.call("initialize", {})
+            info = transport.call("initialize", _handshake())
         except MCPError:
             transport.close()  # 失败不留半开连接（子进程 / socket 回收）
             raise
@@ -107,23 +181,39 @@ class MCPClient:
         return handle
 
     def list_tools(self, handle: ServerHandle) -> list[RemoteTool]:
+        """工具发现：标准容器键与裸列表双认；**只取已知键**（厂商扩展字段忽略）。"""
         raw = self._call(handle, "tools/list", {})
-        return [RemoteTool(**item) for item in raw]
+        return [
+            RemoteTool(
+                name=str(item.get("name", "")),
+                description=str(item.get("description") or ""),
+                inputSchema=_schema(item.get("inputSchema")),
+            )
+            for item in _unwrap(raw, "tools")
+        ]
 
     def list_resources(self, handle: ServerHandle) -> list[RemoteResource]:
         raw = self._call(handle, "resources/list", {})
-        return [RemoteResource(**item) for item in raw]
+        return [
+            RemoteResource(uri=str(item.get("uri", "")), name=str(item.get("name") or ""))
+            for item in _unwrap(raw, "resources")
+        ]
 
     def list_prompts(self, handle: ServerHandle) -> list[RemotePrompt]:
         raw = self._call(handle, "prompts/list", {})
-        return [RemotePrompt(**item) for item in raw]
+        return [
+            RemotePrompt(
+                name=str(item.get("name", "")), description=str(item.get("description") or "")
+            )
+            for item in _unwrap(raw, "prompts")
+        ]
 
     def call_tool(self, handle: ServerHandle, name: str, args: dict[str, Any]) -> CallResult:
         try:
             data = self._call(handle, "tools/call", {"name": name, "arguments": args})
         except MCPError as exc:
             return CallResult(ok=False, code=exc.code.value, error=exc.message)
-        return CallResult(ok=True, data=data)
+        return _parse_call_result(data)
 
     def read_resource(self, handle: ServerHandle, uri: str) -> str:
         data = self._call(handle, "resources/read", {"uri": uri})

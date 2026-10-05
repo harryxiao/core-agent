@@ -41,7 +41,11 @@ class Transport(Protocol):
 
 
 class FakeTransport:
-    """测试用内存传输：可注入工具 / 资源 / 提示与连接 / 调用故障。"""
+    """测试用内存传输：可注入工具 / 资源 / 提示与连接 / 调用故障。
+
+    「远端」的模型 ⇒ 应答为**标准 MCP wire 形状**（容器键 + `content`/`isError` 信封），
+    与真实第三方服务端一致；旧式裸形状由 client 侧的后向解析兜底（见 change 0075）。
+    """
 
     def __init__(
         self,
@@ -90,21 +94,22 @@ class FakeTransport:
         if method == "initialize":
             return {"protocolVersion": self.protocol_version}
         if method == "tools/list":
-            return list(self._tools.values())
+            return {"tools": list(self._tools.values())}
         if method == "tools/call":
             name = params.get("name")
             if name not in self._tools:
                 raise KeyError(name)
-            return {"result": f"ok:{name}", "args": params.get("arguments", {})}
+            payload = json.dumps({"result": f"ok:{name}", "args": params.get("arguments", {})})
+            return {"content": [{"type": "text", "text": payload}], "isError": False}
         if method == "resources/list":
-            return list(self._resources.values())
+            return {"resources": list(self._resources.values())}
         if method == "resources/read":
             uri = params.get("uri")
             if uri not in self._resources:
                 raise KeyError(uri)
             return {"content": f"res:{uri}"}
         if method == "prompts/list":
-            return list(self._prompts.values())
+            return {"prompts": list(self._prompts.values())}
         if method == "prompts/get":
             name = params.get("name")
             if name not in self._prompts:

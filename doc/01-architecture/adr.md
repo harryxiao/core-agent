@@ -1237,7 +1237,7 @@
 - **后果**：✅ 规格场景「stdio 本地挂载」在生产可达，端到端用例用**本仓自己的 client** 拉起真实子进程锁住
   （握手 → 发现 → 真读文件 → 越权拒绝）；✅ 对外名与本地名 / 远程名三方隔离，二级代理递归被关；
   ⚠️ **已知偏离标准 MCP envelope**（`{"tools": [...]}` / `{"content": [...], "isError": ...}`）⇒ Claude Code /
-  Cursor 等第三方客户端**直接挂载尚不可用**（账本新行，对齐标准属独立变更）；⚠️ 默认暴露面沿用既有
+  Cursor 等第三方客户端**直接挂载尚不可用**（账本新行，对齐标准属独立变更 —— **已由 ADR-0072 对齐**）；⚠️ 默认暴露面沿用既有
   `_is_readonly`（coeffects 不含 `write`）粗粒度启发式 ⇒ `tools.delegate` / `tools.web_fetch` 亦在默认暴露面
   （账本新行，是否收窄待裁决）。
 - **关联**：`mcp` spec「MCP Server 模式」「工具暴露与白名单」（**MODIFIED** + 4 新场景）；代码
@@ -1283,6 +1283,38 @@
   （`_mcp_add` / `_mcp_list` / `_mcp_remove`）；
   接口 `03-interfaces/mcp-interface.md` §7；模块 `02-modules/mcp.md` §3.6；测试 `tests/test_mcp_endpoints.py`、
   `doc/04-testing/test-cases.md`（TC-MCP-10）。
+
+## ADR-0072：MCP 标准 envelope 双向对齐（两侧最小对齐 / 载荷 JSON 恒编码 / 裸形状兜底 / 真机双向验收）
+
+- **背景**：`mcp` 规格「MCP Server 模式」逐字点名 Claude Code / Cursor 可直接挂载本 server，
+  而一手核实**双向都不通**（账本 B6）：本 server 的 `tools/list` 应答是**裸列表**、`tools/call`
+  是**序列化 `CallResult` 直出**（ADR-0070 ⑤ 沿用 change `0054` 的仓内三方约定）；本 client 的
+  `initialize` params **为空**（对端 zod 校验直接回 `-32603`），且 `RemoteTool(**item)` 遇标准应答的
+  **容器键**会逐字符迭代、遇**厂商扩展字段**（`claude mcp serve` 的 tool 对象带 12 个扩展键）会 `TypeError`。
+- **决策**（以 `claude mcp serve` 的**实测形状**为基准）：
+  ① **两侧最小对齐**：只改 wire 形状（server 应答 + client 解析），不动 Python 侧领域接口
+  （`MCPServer.call_tool` 仍返回 `CallResult`）⇒ `test_mcp.py` 领域断言零改动。
+  ② **载荷 JSON 恒编码**：`tools/call` 的 `content[].text` **总是** JSON 编码（即使载荷已是 str），
+  保证 client 侧「解码即还原」的往返保真（否则 `"123"` 之类会被解码成 int 而漂移）；「是不是错」
+  由 `isError` 承载，**不**引入 `structuredContent`（属 `2025-06-18`，本端协议版本 `2024-11-05`，引入即版本越界）。
+  ③ **裸形状兜底**：client 侧标准优先、**旧式裸列表 / 裸对象原样承载** ⇒ 仓内两个 echo server 子进程
+  夹具不作废，成为「旧服务端不被打破」的真实回归样本（否决「只认标准」）。
+  ④ **协议版本不放宽**：`claude mcp serve` 应答 `2024-11-05` 与本端 `PROTOCOL_VERSION` 逐字相同
+  ⇒ 既有严格比对保留（放宽反丢语义）。
+  ⑤ **命名不放宽**：对外名仍 `core.<tool_id>`（规格「工具命名空间隔离」明文要求）；能否被第三方
+  接受由**真机验收**判定，不先验改名。
+- **后果**：✅ 规格场景「stdio 本地挂载」对第三方客户端成立（**真机双向验收**：`claude mcp add` 挂本
+  server 后 `claude mcp list` 报 `✔ Connected`；反向 `core-agent mcp add "claude mcp serve"` 成功并发现
+  对端 20 工具，此前为 `-32603`）；✅ server 应答字面为标准信封，`isError` 携 `{"code","error"}` 且
+  **往返后结构化错误码可还原**；⚠️ **远端 JSON-RPC 错误码未映射**：`StdioTransport._await` 把一切远端
+  `error` 包成 `MCP_UNAVAILABLE` ⇒ 对端「工具不存在」（`-32603`）在本端表现为 `MCP_UNAVAILABLE`
+  而非 `MCP_TOOL_NOT_FOUND`（粒度不足但**不误导**，转出为账本新行）。
+- **关联**：`mcp` spec「标准 MCP 互操作（双向）」（**ADDED** + 7 场景）；代码
+  `src/core/mcp/server.py`（`_envelope` / `_dispatch` / `_serialize_call`）/
+  `src/core/mcp/client.py`（`_handshake` / `_unwrap` / `_parse_call_result`）/ `src/core/mcp/transport.py`
+  （`FakeTransport` 标准形状）；
+  接口 `03-interfaces/mcp-interface.md` §5/§6；模块 `02-modules/mcp.md` §4；方案 `07-mcp-server/mcp-server.md` §9；
+  测试 `tests/test_mcp_standard_envelope.py`、`doc/04-testing/test-cases.md`（TC-MCP-11）。
 
 ---
 ## 变更追踪
@@ -1351,3 +1383,4 @@
 | ADR-0069 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md |
 | ADR-0070 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 07-mcp-server/mcp-server.md |
 | ADR-0071 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 02-modules/cli-ops.md |
+| ADR-0072 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 07-mcp-server/mcp-server.md |

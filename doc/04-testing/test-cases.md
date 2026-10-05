@@ -59,10 +59,11 @@
 | TC-MCP-09 | mcp「MCP Server 模式」 | **端到端**：用本仓 `MCPClient`（`StdioTransport`）拉起 `core-agent mcp serve` 子进程 | 握手 → 发现（含 `core.tools.file_read`、不含写工具）→ 调用真读文件 → 越权拒绝；非 stdio 传输明确拒绝（锚点：`::test_own_client_discovers_and_calls_own_server`、`::test_non_stdio_transport_is_refused`） |
 | TC-MCP-10 | mcp「MCP Server 安装与移除」 | **端到端**：`mcp add` 真子进程拉起 stdio echo server → 落盘 → 跨进程 `mcp list` 可见 → 装配期注册 `mcp.<名>.echo` → `mcp remove` 摘除；不可达端点告警跳过且不落盘（锚点：`::test_cli_add_list_remove_roundtrip`、`::test_assembly_registers_remote_tools`、`::test_unreachable_endpoint_degrades_without_blocking`、`::test_cli_add_unreachable_does_not_persist`） |
 
+| TC-MCP-11 | mcp「标准 MCP 互操作（双向）」 | client 携标准三元组握手；解析标准容器键 + **厂商扩展字段被忽略**；`isError` 归一（结构化错误码还原）；server `tools/list`/`tools/call` 的字面应答帧为标准信封；裸形状/旧式应答仍可解析（锚点：`tests/test_mcp_standard_envelope.py`）。**真机**：`core-agent mcp add "claude mcp serve"` 成功（20 工具）；`claude mcp list` 对本 server 报 `✔ Connected` | 双向皆通，旧形状不破裂 |
+
 ## 6. 进化引擎（TC-EVO）
 
 | 用例 | 对应需求 | 步骤 | 期望 |
-|---|---|---|---|
 | TC-EVO-01 | CORE-EVO-R1 | 喂轨迹跑一轮进化 | 四阶段闭环执行 |
 | TC-EVO-02 | CORE-EVO-R2 | 注入单插件缺陷 | 诊断归因到该插件 |
 | TC-EVO-03 | CORE-EVO-R3 | 候选过门 | 产出世代化不可变产物 |

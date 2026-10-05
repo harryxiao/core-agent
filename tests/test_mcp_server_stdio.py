@@ -185,28 +185,28 @@ def test_handler_exception_is_isolated() -> None:
 
 def test_exposed_names_are_core_namespaced() -> None:
     responses, _ = _feed(MCPServer(tool_provider=_provider()), _req(1, "tools/list"))
-    names = [t["name"] for t in responses[0]["result"]]
+    names = [t["name"] for t in responses[0]["result"]["tools"]]  # 标准容器键（change 0075）
     assert names == ["core.tools.file_read"]  # 只读类默认暴露，且带 core. 前缀
 
 
 def test_remote_tools_are_not_exposed_second_hand() -> None:
     """client 侧已发现的 `mcp.*` 远程工具不得再对外暴露（禁止二级代理递归挂载）。"""
     responses, _ = _feed(MCPServer(tool_provider=_provider()), _req(1, "tools/list"))
-    names = [t["name"] for t in responses[0]["result"]]
+    names = [t["name"] for t in responses[0]["result"]["tools"]]
     assert not any(name.startswith("core.mcp.") for name in names)
 
 
 def test_whitelist_exposes_write_tool() -> None:
     server = MCPServer(tool_provider=_provider(), whitelist=["tools.file_write"])
     responses, _ = _feed(server, _req(1, "tools/list"))
-    assert [t["name"] for t in responses[0]["result"]] == ["core.tools.file_write"]
+    assert [t["name"] for t in responses[0]["result"]["tools"]] == ["core.tools.file_write"]
 
 
 def test_whitelist_accepts_namespaced_form() -> None:
     """白名单写 `core.` 前缀形式同等生效（否则用户照 `tools/list` 抄名字会静默不匹配）。"""
     server = MCPServer(tool_provider=_provider(), whitelist=["core.tools.file_write"])
     responses, _ = _feed(server, _req(1, "tools/list"))
-    assert [t["name"] for t in responses[0]["result"]] == ["core.tools.file_write"]
+    assert [t["name"] for t in responses[0]["result"]["tools"]] == ["core.tools.file_write"]
 
 
 def test_unexposed_tool_call_is_denied_and_not_executed() -> None:
@@ -218,8 +218,10 @@ def test_unexposed_tool_call_is_denied_and_not_executed() -> None:
         _req(2, "tools/call", {"name": "tools.file_read", "arguments": {"path": "x"}}),
     )
     for response in responses:
-        assert response["result"]["ok"] is False
-        assert response["result"]["code"] == "PERMISSION_DENIED"
+        result = response["result"]  # 标准信封：isError + content 文本里的结构化错误
+        assert result["isError"] is True
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["code"] == "PERMISSION_DENIED"
 
 
 # ---- ④ 端到端：本仓自己的 client 拉起 `mcp serve` 子进程 ----
@@ -276,12 +278,13 @@ def test_own_client_discovers_and_calls_own_server(serve_env, tmp_path) -> None:
             assert "core.tools.file_read" in names
             assert "core.tools.file_write" not in names  # 默认最小暴露
             ok = client.call_tool(handle, "core.tools.file_read", {"path": str(target)})
-            assert ok.data["ok"] is True
-            assert ok.data["data"]["content"] == "hello-mcp"
+            assert ok.ok is True
+            assert ok.data["content"] == "hello-mcp"  # 载荷经标准信封往返保真
             denied = client.call_tool(
                 handle, "core.tools.file_write", {"path": "x", "content": "y"}
             )
-            assert denied.data["code"] == "PERMISSION_DENIED"
+            assert denied.ok is False
+            assert denied.code == "PERMISSION_DENIED"  # 结构化错误码可还原
         finally:
             client.close(handle)
     finally:

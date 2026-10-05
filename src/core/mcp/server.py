@@ -7,6 +7,12 @@
 stdio 方向的事件循环见 :meth:`MCPServer.serve_stdio`：换行分帧 JSON-RPC，逐条请求
 隔离处理（单条异常不终止循环），stdin EOF 即退出。
 
+对外应答为**标准 MCP wire 形状**（change 0075 / 账本 B6）：`initialize` 回
+`protocolVersion`/`capabilities`/`serverInfo`；`tools/list` 回容器键 `{"tools": [...]}`；
+`tools/call` 回结果信封 `{"content": [{"type": "text", "text": <JSON 载荷>}], "isError": bool}`
+（成功载荷为工具数据，失败载荷为 `{"code": ..., "error": ...}`）—— 使第三方 MCP 客户端
+（Claude Code / Cursor）可直接挂载。
+
 对应接口：doc/03-interfaces/mcp-interface.md §5
 """
 
@@ -63,6 +69,17 @@ def _as_params(value: Any) -> dict[str, Any]:
 
 def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+
+
+def _envelope(payload: Any, *, is_error: bool) -> dict[str, Any]:
+    """标准 MCP `tools/call` 结果信封：`content` 文本块 + `isError`。
+
+    载荷**总是** JSON 编码（即使已是字符串）—— 保证对端「解码即还原」的往返保真。
+    """
+    return {
+        "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
+        "isError": is_error,
+    }
 
 
 class MCPServer:
@@ -206,7 +223,7 @@ class MCPServer:
                 "serverInfo": {"name": _SERVER_NAME, "version": _SERVER_VERSION},
             }
         if method == "tools/list":
-            return [asdict(tool) for tool in self.list_tools(connection)]
+            return {"tools": [asdict(tool) for tool in self.list_tools(connection)]}
         if method == "tools/call":
             return self._serialize_call(connection, _as_params(params))
         if method == "ping":
@@ -216,10 +233,13 @@ class MCPServer:
     def _serialize_call(
         self, connection: ServerConnection, params: dict[str, Any]
     ) -> dict[str, Any]:
+        """领域 `CallResult` → 标准结果信封（成功载荷为数据，失败载荷为结构错误）。"""
         result = self.call_tool(
             connection, str(params.get("name", "")), _as_params(params.get("arguments"))
         )
-        return asdict(result)
+        if result.ok:
+            return _envelope(result.data, is_error=False)
+        return _envelope({"code": result.code, "error": result.error}, is_error=True)
 
     @staticmethod
     def _encode(response: dict[str, Any]) -> str:
