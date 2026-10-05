@@ -54,6 +54,9 @@
 | TC-MCP-04 | CORE-MCP-R4 | stdio 与 http 传输 | 两种均可连通 |
 | TC-MCP-05 | —— | server 掉线 | `DEGRADED`，不阻塞其他工具 |
 | TC-MCP-06 | mcp「传输层抽象与依赖注入隔离」 | 经 `transport_factory` 注入替身传输（`FakeTransport`） | `MCPClient` 及调用方零改动切换传输实现（锚点：`tests/test_mcp.py`；生产 stdio 分派见 `test_mcp_stdio.py`，http/streamable-http 未接 → C 类） |
+| TC-MCP-07 | mcp「MCP Server 模式」 | stdio 本地挂载：外部客户端逐条发 `initialize` / `tools/list` / `tools/call` | 按各自 `id` 应答、无 `id` 通知不应答、EOF 退出；未知方法与提供者异常隔离为错误应答且**循环继续**（锚点：`tests/test_mcp_server_stdio.py::test_initialize_handshake_returns_protocol_version`、`::test_notification_without_id_is_not_answered`、`::test_unknown_method_returns_jsonrpc_error_and_loop_continues`、`::test_handler_exception_is_isolated`） |
+| TC-MCP-08 | mcp「工具暴露与白名单」 | 暴露面命名空间 / 白名单两种写法 / 默认最小暴露 | 对外名 `core.<tool_id>`；白名单接受裸名与带前缀；写工具默认不暴露；未暴露调用 `PERMISSION_DENIED` 且不执行；`mcp.*` 远程工具**不**被二级代理暴露（锚点：`::test_exposed_names_are_core_namespaced`、`::test_whitelist_accepts_namespaced_form`、`::test_unexposed_tool_call_is_denied_and_not_executed`、`::test_remote_tools_are_not_exposed_second_hand`） |
+| TC-MCP-09 | mcp「MCP Server 模式」 | **端到端**：用本仓 `MCPClient`（`StdioTransport`）拉起 `core-agent mcp serve` 子进程 | 握手 → 发现（含 `core.tools.file_read`、不含写工具）→ 调用真读文件 → 越权拒绝；非 stdio 传输明确拒绝（锚点：`::test_own_client_discovers_and_calls_own_server`、`::test_non_stdio_transport_is_refused`） |
 
 ## 6. 进化引擎（TC-EVO）
 

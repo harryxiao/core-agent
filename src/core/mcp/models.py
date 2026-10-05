@@ -12,6 +12,9 @@ from typing import Any, Literal
 
 TransportKind = Literal["stdio", "http", "streamable-http"]
 
+# 协议版本（client 与 server 共用：server 侧 initialize 应答须与 client 侧判定同源）
+PROTOCOL_VERSION = "2024-11-05"
+
 
 @dataclass
 class MCPEndpoint:

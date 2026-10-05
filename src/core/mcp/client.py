@@ -24,6 +24,7 @@ from core.plugin_registry import PluginSource
 
 from .errors import MCPError, MCPErrorCode
 from .models import (
+    PROTOCOL_VERSION,
     CallResult,
     MCPEndpoint,
     RemotePrompt,
@@ -36,7 +37,6 @@ from .transport import Transport, build_transport
 
 _PLUGIN_ID = "mcp.client"
 _GENERATION = 1
-_PROTOCOL_VERSION = "2024-11-05"
 _DEFAULT_SCHEMA: dict[str, Any] = {"type": "object"}
 _URL_PREFIXES = ("http://", "https://")
 _HTTP_KINDS: tuple[TransportKind, ...] = ("http", "streamable-http")
@@ -93,7 +93,7 @@ class MCPClient:
             transport.close()
             raise MCPError(MCPErrorCode.MCP_CONNECT_FAILED, f"连接失败: {exc}") from exc
         version = info.get("protocolVersion")
-        if version != _PROTOCOL_VERSION:
+        if version != PROTOCOL_VERSION:
             transport.close()
             raise MCPError(MCPErrorCode.MCP_PROTOCOL_MISMATCH, f"协议版本不匹配: {version}")
         handle = ServerHandle(handle_id=uuid.uuid4().hex, endpoint=endpoint)

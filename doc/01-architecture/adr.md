@@ -1209,6 +1209,44 @@
   —— 对外可观测的破坏性重命名，记账 E24 待裁决；`features` 段内**未知模块名**无告警（E20①）——
   与本条无关，且规格「配置校验与生效」明文限告警于**顶层段名**，补齐须先改规格。
 
+## ADR-0070：MCP Server 模式 stdio 事件循环（循环归 server / 错误分层 / `core.` 命名空间 / 共享协议常量）
+
+- **背景**：规格「MCP Server 模式」场景「stdio 本地挂载」要求外部 agent 拉起本 server 并握手调工具，
+  `MCPServer` 的方法级行为也早已齐备，但**没有事件循环**把 JSON-RPC 接到方法上（账本 B3）：
+  `serve()` 只绑定连接即返回，CLI `mcp serve` 落「已识别，尚未接线」⇒ 场景在生产**不可达**。
+  同批一手核实还发现**文档已写、代码缺席**的两处暴露面契约（`07-mcp-server` §4 / 接口 §6 均写
+  `core.<tool>`）：`list_tools` 吐**裸** `tool_id`；`mcp.*` 远程工具可被**原样再暴露**（二级代理）。
+- **决策**：
+  ① **事件循环归 `MCPServer.serve_stdio(endpoint, *, stdin, stdout)`**：server 侧 stdio **就是本进程的
+  流**，不存在「到远端的传输对象」（`StdioTransport` 是 client 侧拉起子进程用的，方向相反）；
+  `stdin`/`stdout` 可注入 ⇒ 循环行为可**纯内存**验证。既有 `serve(transport, endpoint)` 签名不动
+  （接口 §6 已文档化），改为委托 `_bind` —— http 方向的事件循环将来在它之上接入。
+  **已否决**在 CLI 里构造 `StdioTransport()` 传给 `serve`（语义错误：client 传输搁到 server 侧）。
+  ② **错误分层**：协议层走 JSON-RPC `error`（`-32601` 未实现 / `-32603` 内部异常），工具层走成功应答里的
+  `CallResult`（`PERMISSION_DENIED` 等）。越权是**业务结论**而非协议故障，客户端应能读到码并据此决策；
+  与 client 侧 `call_tool` 把 payload 包进 `CallResult(ok=True, data=payload)` 的既有形状一致。
+  `_respond` **永不抛**：单条请求的任何异常（含提供者抛错、应答不可序列化）降级为该 `id` 的错误应答，
+  循环继续 —— 对应规格 SHALL「单条请求异常不得终止事件循环」。
+  ③ **暴露面三件套**：对外名 `core.<tool_id>`；白名单**接受裸名与带前缀两种写法**（用户最自然的写法是照
+  `tools/list` 应答抄名字，只认裸名会「配了却不匹配」且静默 —— 同 B5 的「配了却连不上」）；`mcp.*`
+  **过滤**（禁二级代理，防两个 core-agent 相互挂载递归放大暴露面）。
+  ④ **协议版本常量同源**：`PROTOCOL_VERSION` 落 `core.mcp.models`（client 与 server 共同依赖的最小模块），
+  弃用 client 侧私有 `_PROTOCOL_VERSION`。握手**判定在 client、应答在 server**，两处各写一份字面量是典型漂移面。
+  ⑤ **沿用仓内 wire 形状**：`tools/list` **裸列表**、`tools/call` **`CallResult` 直出** —— 与 `MCPClient` /
+  `FakeTransport` / 既存 echo server 三方一致（change `0054` 约定），本变更主题是**接线**，不擅自改契约。
+- **后果**：✅ 规格场景「stdio 本地挂载」在生产可达，端到端用例用**本仓自己的 client** 拉起真实子进程锁住
+  （握手 → 发现 → 真读文件 → 越权拒绝）；✅ 对外名与本地名 / 远程名三方隔离，二级代理递归被关；
+  ⚠️ **已知偏离标准 MCP envelope**（`{"tools": [...]}` / `{"content": [...], "isError": ...}`）⇒ Claude Code /
+  Cursor 等第三方客户端**直接挂载尚不可用**（账本新行，对齐标准属独立变更）；⚠️ 默认暴露面沿用既有
+  `_is_readonly`（coeffects 不含 `write`）粗粒度启发式 ⇒ `tools.delegate` / `tools.web_fetch` 亦在默认暴露面
+  （账本新行，是否收窄待裁决）。
+- **关联**：`mcp` spec「MCP Server 模式」「工具暴露与白名单」（**MODIFIED** + 4 新场景）；代码
+  `src/core/mcp/server.py`（`serve_stdio` / `_respond` / `_dispatch` / `_encode` / `_bind` / `_bare_name`）/
+  `src/core/mcp/models.py`（`PROTOCOL_VERSION`）/ `src/core/mcp/client.py` / `src/core/entry.py`
+  （`_mcp` / `_mcp_serve` / `_mcp_whitelist` + `mcp serve --whitelist`）；
+  接口 `03-interfaces/mcp-interface.md` §6；模块 `02-modules/mcp.md` §3.5；方案 `07-mcp-server/mcp-server.md` §9；
+  测试 `tests/test_mcp_server_stdio.py`、`doc/04-testing/test-cases.md`（TC-MCP-07/08/09）。
+
 ---
 ## 变更追踪
 
@@ -1274,3 +1312,4 @@
 | ADR-0067 | 03-interfaces/configuration-interface.md |
 | ADR-0068 | 03-interfaces/permission-interface.md, 03-interfaces/configuration-interface.md, 02-modules/permission.md |
 | ADR-0069 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md |
+| ADR-0070 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 07-mcp-server/mcp-server.md |

@@ -4,6 +4,7 @@ from .adapter import MCPToolAdapter
 from .client import MCPClient
 from .errors import MCPError, MCPErrorCode
 from .models import (
+    PROTOCOL_VERSION,
     CallResult,
     MCPEndpoint,
     MCPTool,
@@ -33,6 +34,7 @@ __all__ = [
     "MCPServer",
     "MCPTool",
     "MCPToolAdapter",
+    "PROTOCOL_VERSION",
     "RemotePrompt",
     "RemoteResource",
     "RemoteTool",

@@ -84,6 +84,14 @@ L3 Loop ──► ToolProvider ──► [本地工具 | MCP 适配工具]
 - **会话隔离**：每个 MCP 连接独立 session，单连接熔断隔离不拖垮主循环。
 - **会话多流复用**：单一 HTTP(TCP) 连接经 Mcp-Session-Id 会话标识承载多个会话，会话与连接解耦，请求按 Session-Id 分流互不串扰。
 - **禁止二级代理**：初版不把 MCP client 已发现的远程工具再转暴露，防 A 挂 B、B 挂 A 的无限代理。
+- **事件循环（change `0073`）**：stdio 方向由 `MCPServer.serve_stdio` 承载（换行分帧 JSON-RPC，
+  stdin 读 / stdout 写，日志走 stderr）；`mcp serve` 装配 runtime 后即以 `runtime.tools` 为工具源进入循环，
+  阻塞至 stdin EOF。**stdin/stdout 可注入** ⇒ 循环行为可纯内存验证。HTTP/streamable-http 方向事件循环待接入
+  （`Mcp-Session-Id` 复用）。
+- **故障隔离**：单条请求的异常（方法未实现 / 工具提供者抛错 / 应答不可序列化）降级为该 `id` 的错误应答，
+  **不终止事件循环**；协议层错误码（`-32601` / `-32603`）与工具层结论（`CallResult.code`）分层。
+- **wire 形状（已知偏离）**：`tools/list` 裸列表 / `tools/call` 直出 `CallResult`，与 client 侧三方一致，
+  标准 MCP envelope 未对齐（第三方客户端挂载受限，见 `doc/03-interfaces/mcp-interface.md` §6）。
 
 ---
 

@@ -137,10 +137,10 @@ class MCPServer(Plugin):
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| P1 | MCP server 骨架 + stdio transport + `core-agent mcp-serve` 入口 | 待开发 |
-| P2 | 暴露面白名单 + 权限透传 + 审计来源标注 | 待开发 |
-| P3 | HTTP/SSE transport + 鉴权 + 多客户端会话隔离 | 待开发 |
-| P4 | 打包可执行入口 + Claude Code/Cursor 接入模板 + 端到端用例 | 待开发 |
+| P1 | MCP server 骨架 + stdio transport + `core-agent mcp-serve` 入口 | **已落地**（change `0073`：`mcp serve` 以 stdio 事件循环对外提供工具） |
+| P2 | 暴露面白名单 + 权限透传 + 审计来源标注 | **已落地**（change `0073` 接线后生产可达：白名单 / `core.` 命名空间 / 禁二级代理 / `external:<client_id>`） |
+| P3 | HTTP/SSE transport + 鉴权 + 多客户端会话隔离 | 待开发（`mcp serve --transport http` 明确拒绝） |
+| P4 | 打包可执行入口 + Claude Code/Cursor 接入模板 + 端到端用例 | 部分（端到端已有：`tests/test_mcp_server_stdio.py` 用本仓 client 拉起真实子进程）；**标准 MCP envelope 未对齐**，第三方客户端直接挂载待办 |
 
 ---
 

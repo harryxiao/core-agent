@@ -13,7 +13,7 @@
 - **无任何一项阻塞核心回路**：669 tests 覆盖的回路（记忆读写/压实/固化/遗忘、技能提炼/路由/迭代、进化四阶段 + HITL + 自动溶解）在生产路径上均已接通。
 - **A3 全闭（skills 半边 change `0050`，evolution 半边 change `0051`）**；**A5 + 本次新增发现 A10 已于 change `0051` 关闭**（冷路径驱动面 = loop 节拍 + `evolve run`；观察窗口落盘 + 批次成功率采样；ADR-0054）。
 - **A2+E2（会话维度）已于 change `0048` 关闭**（标识透传 + `compact` 接真 + 按会话读取）；**A1 已于 change `0049` 关闭**（收尾维护节拍 + `memory maintain`）。A 类剩 A11（**A6 已随 change `0063` 关闭**、**A9 已销账**——规格明文认可现状、**A8 已销账**——后端单锁已满足规格操作性保证，均零变更）。
-- **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）** —— **B1 的 client 侧（stdio 传输 + 安装分流 + 消费侧安全接线）已于 change `0054` 关闭**（ADR-0057），余 http 会话 / 服务端 stdio / CLI 接线 3 行后续（**白名单配置 B5 已于 change `0071` 关闭**）；E 类中曾判定有真实行为影响的 **E1（constraints 熔断）** 与 **E2（per-session）** **均已关闭**（E2 → change `0048`；E1 → change `0052`），其余为「接线缺失」。
+- **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）** —— **B1 的 client 侧（stdio 传输 + 安装分流 + 消费侧安全接线）已于 change `0054` 关闭**（ADR-0057），余 http 会话 / CLI 接线 2 行后续（**服务端 stdio B3 已于 change `0073` 关闭**、**白名单配置 B5 已于 change `0071` 关闭**）；E 类中曾判定有真实行为影响的 **E1（constraints 熔断）** 与 **E2（per-session）** **均已关闭**（E2 → change `0048`；E1 → change `0052`），其余为「接线缺失」。
 - **A4 已于 change `0055` 关闭**（候选 `candidate_id` 稳定身份 + 门禁/评测随候选落盘为一条记录 + `core-agent evolve pending|confirm|reject` 操作面；high 风险候选由操作面签发审批单；ADR-0058）。
 - **E1 已于 change `0052` 关闭**（constraints 熔断按 `tool_id` 接入 loop：结果侧观察者 + 按工具熔断 + 只计执行失败；ADR-0055）；核销时一并**订正**了账本原「校验空转」的说法（校验实由工具层承担）。
 - **E7（契约基线漂移）+ E8（配置校验三处缺口）已于 change `0056` 关闭**（密钥引用同口径 + `permission.mode` 枚举校验 + 基线文档订正；ADR-0059），E8 第 5 条转出为 **E18**。
@@ -28,6 +28,7 @@
   访问器 `circuit_breaker()` + 校验期拒绝（阈值 ≥1 整数 / 冷却 ≥0 数值，**不静默兜底**）；组合根注入、主/子 loop 共享同链。
   **明确不做**：`features` 未知名告警与值强转（**E20①**，仍在账；E20② 已随 change `0072` 关闭）。
 - **E20② + E23（feature flag 取值被强转 / CLI 面零消费）已于 change `0072` 关闭**（ADR-0069）：规格明文的三条输入通道实测**只有两条半生效** —— `--feature NAME[=BOOL]` **零消费**（静默无效）、`features.<模块>: off` 之类被 `bool()` 静默当作**开启**。**改代码向规格靠拢**（与 E12 / E11② 同型）：取值收敛到**单一归一/校验点**（`true/false`·`yes/no`·`on/off`·`1/0` + 原生布尔，其余**校验期拒绝并阻断启动**），CLI 面经覆盖层 `features.<模块>` 接入优先级链并支配装配。**E20①（段内未知模块名无告警）保持开放** —— 规格「配置校验与生效」明文限告警口径于**顶层段名**，补齐须**先改规格**；**新增 E24**（env 前缀实现为复数 `CORE_FEATURES_`、规格/文档写单数 `CORE_FEATURE_<模块>`，改名属对外破坏性变更，**待裁决**）；顺带订正 `doc/00-product/user-guide.md` 中「feature flag 缺省关闭」的陈旧措辞（change `0067` 订正规格时漏改）与三面取值口径。
+- **B3（MCP Server 模式 stdio 事件循环）已于 change `0073` 关闭**（ADR-0070）：规格「MCP Server 模式」场景「stdio 本地挂载」要求外部 agent 拉起本 server 并握手调工具，`MCPServer` 的方法级行为早已齐备却**没有事件循环**把它们接到 JSON-RPC 上（`serve()` 只绑连接即返回，CLI `mcp serve` 落「已识别，尚未接线」）⇒ 场景在生产**不可达**。**改代码向规格靠拢**（与 E12 / E11② 同型）：`serve_stdio(endpoint)` 以换行分帧 JSON-RPC 承载 stdio 事件循环（按 `id` 应答 / 无 `id` 通知不应答 / 非法行跳过 / EOF 退出），`mcp serve` 接线并在 `_HANDLERS` 注册；**单条请求异常隔离为错误应答、绝不终止循环**；同批补齐**文档已写而代码缺席**的暴露面契约 —— 对外名 `core.<tool_id>`、白名单接受裸名与带前缀两种写法、`mcp.*` 远程工具**禁止二级代理**；协议版本提为共享常量 `core.mcp.models.PROTOCOL_VERSION`。**新增 B6/B7 两行**：wire 形状沿用仓内既有约定（**非**标准 MCP envelope）⇒ 第三方客户端直接挂载尚不可用；默认暴露面沿用 `_is_readonly` 粗粒度启发式 ⇒ `tools.delegate` / `tools.web_fetch` 亦在默认暴露面。
 - **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A5、E2/E4/E5 全归此（A4 已随 change `0055` 关闭、E3 已随 change `0057` 关闭）。
 - **一条值得单独记的形态问题**：`cli-contract-baseline.md` 的**内置工具契约与实现已对不上账**（见 E7）——契约列的 5 个工具在代码里从未存在。
 
@@ -35,7 +36,7 @@
 |---|---|---|---|
 | A Phase 18 收口遗留 | 11 | 中 | 否 |
 | E 早期 Phase 未闭合项 | 21 | 中 | 否 |
-| B Phase 12 MCP（部分关闭） | 5 | 低（B1 client 侧已闭） | 否（可绕开） |
+| B Phase 12 MCP（部分关闭） | 7 | 低（B1 client 侧 / B3 服务端 stdio / B5 白名单已闭） | 否（可绕开） |
 | C 真实外部后端未接 | ~20 处 | 低 | 否 |
 | D 文档与仓库杂项 | 6（4 已关闭） | 无 | 否 |
 | F 验收勾选状态 | ✅ 已清尾（6 组核实完毕） | 无 | 否 |
@@ -85,9 +86,11 @@
 | E24 | E | env 前缀实现与规格不符 | 实现读 `CORE_FEATURES_<模块>`（**复数**，与段名 `features` 一致），规格 + 接口/模块文档写 `CORE_FEATURE_<模块>`（**单数**），user-guide 写复数 ⇒ 三处不一致；改名**对外可观测**（破坏既有部署 env），**待裁决** | 低 | 用户裁决 |
 | B1 | B | Phase 12 MCP 安装/传输/安全（client 侧） | 🔶 **部分关闭（change `0054`）**：stdio 传输 + `add` 分流 + 沙箱/白名单/确认门接线 + 组合根装配已落地（ADR-0057）；**余** http 会话 → B2、服务端 stdio → B3、CLI 接线 → B4、白名单配置 → B5 | 低 | 无 |
 | B2 | B | 远端 http/streamable-http 会话 | `build_http_transport` 仅落地「白名单守卫 + SDK 缺失降级 + 会话待接入报错」；`Mcp-Session-Id`/SSE/headers 未实现 | 低 | mcp SDK（离线不可装） |
-| B3 | B | `MCPServer.serve` stdio 事件循环 | 服务端方向（本机作 MCP server 暴露工具）未实现；client 方向 `0054` 已通 | 低 | 无 |
+| B3 | B | ~~`MCPServer.serve` stdio 事件循环~~ | ✅ 已关闭（change `0073`，ADR-0070）：`serve_stdio` 换行分帧事件循环 + `mcp serve` 接线 + `core.` 命名空间 + 禁二级代理 + 共享协议常量；端到端用例用本仓 client 拉起真实子进程锁住 | 低 | — |
 | B4 | B | `mcp` CLI 接线 + 端点注册表落盘 | CLI `mcp serve/list/add/remove` 仍 stub；`MCPClient.add`/`InstallDispatcher` 已通（`0054`），缺 CLI→installer 与端点持久化 | 低 | 无 |
 | B5 | B | 出站白名单不可配 | ✅ **已关闭（change `0071`）**：`permission.sandbox.host_allowlist`（CSV 标量，ConfigSpec 单一真源三面）+ 校验期拒绝非法条目 + 组合根注入（缺省空 = fail-closed 不变），ADR-0068 | 低 | ~~E10 配置门控~~（已闭） |
+| B6 | B | MCP wire envelope 未对齐标准 | `tools/list` 裸列表 / `tools/call` 直出 `CallResult` —— 与仓内 client/替身/echo server 三方一致（change `0054` 约定），但非标准（`{"tools":[...]}` / `{"content":[...],"isError":...}`）⇒ Claude Code / Cursor **直接挂载不可用**；对齐属独立变更 | 低 | 用户裁决 |
+| B7 | B | 默认暴露面启发式过粗 | `_is_readonly`（coeffects 不含 `write`）⇒ `tools.delegate` / `tools.web_fetch` 亦默认对外暴露（前者可驱动子 loop、后者有网络出站）；是否收窄为「显式白名单才出」待裁决 | 低 | 用户裁决 |
 | C1 | C | 真实外部后端 ~20 处「未接」 | 抽象 + fake 已落地，真后端待接 | 低 | 见 `debug-gaps.md` §2.3 |
 | D1 | D | ~~README §2 状态行待核实~~ | ✅ 已关闭：Phase 18 行刷新为 ✅；`17.5` 行改为「🔶 部分完成（遗留见 E3/E4）」 | 无 | — |
 | D2 | D | `coding-plan/phase-3-prompt.md` 未跟踪 | 一次性 prompt 残留 | 无 | 删除或 `git add` |
@@ -528,7 +531,7 @@
 
 ---
 
-## 4. B 类：Phase 12 MCP（B1 client 侧 + B5 白名单配置已关闭，余 3 行后续）
+## 4. B 类：Phase 12 MCP（B1 client 侧 + B3 服务端 stdio + B5 白名单配置已关闭，余 2 行 + 新报 2 行）
 
 - **范围**：transport 生产实现（stdio/http）、client 安装分流、消费侧安全接线（本地 stdio 过 `SandboxManager`、远端 http 走出站白名单、不可逆工具走确认门）。
 
@@ -554,10 +557,37 @@
 - **阻塞**：`mcp` SDK 为可选依赖，当前环境离线不可装 → 无法端到端验证，按 CLAUDE.md §2 不留投机实现。
 - **附**：`pyproject.toml` 的 `[project.optional-dependencies].mcp = ["mcp>=1"]` 已随 change `0054` 声明，但 **`uv.lock` 未含该项**（本环境离线；`uv lock --offline` 会把既有 1600 行解析结果误删，已回滚）→ **联网后需执行 `uv lock`** 使锁文件与 `pyproject.toml` 一致。
 
-### B3 `MCPServer.serve` stdio 事件循环 — ⏭ 待开工
+### B3 `MCPServer.serve` stdio 事件循环 — ✅ 已关闭（change `0073`）
 
-- **残留**：服务端方向（本机作为 MCP server 暴露工具 + 白名单）的 stdio 事件循环未实现；client 方向已在 `0054` 打通。
-- **规模**：独立切片，与 B1 无强耦合（可复用同一换行分帧约定）。
+- **现象**：规格「MCP Server 模式」场景「stdio 本地挂载」要求外部 agent 以 stdio 拉起本 server → 握手 →
+  取工具列表 → 调用；`MCPServer` 的方法级行为（`initialize`/`list_tools`/`call_tool`/白名单/会话分流）
+  早已实现并有单测，但**没有事件循环**把 JSON-RPC 接到它们上 —— `serve()` 只构造连接即返回
+  （docstring 自述「stdio/http 事件循环在 M2 接入」），CLI `mcp serve` 落 `_dispatch` 兜底分支
+  ⇒ **规格场景在生产不可达**（能力只存在于单测的直接方法调用里）。
+- **同类发现（文档已写、代码缺席）**：`07-mcp-server/mcp-server.md` §4 与接口 §6 均写「包装为 MCP tool
+  （`core.<tool>`）」，而 `list_tools` 吐**裸** `tool_id`（无前缀隔离）；且**无二级代理防护** ——
+  client 侧已发现的 `mcp.*` 远程工具会被原样再暴露（两个 core-agent 相互挂载即递归放大暴露面）。
+- **裁决**：属「**规格要求 X、实现没有**」型（同 E12 / E11② / E15 / E21）⇒ **改代码向规格靠拢**；
+  `mcp` spec「MCP Server 模式」「工具暴露与白名单」**MODIFIED** + 4 个新场景。
+- **关闭动作**（change `0073-mcp-server-stdio-loop`，2026-10-05，**ADR-0070**）：
+  ① `MCPServer.serve_stdio(endpoint, *, stdin, stdout)` —— 换行分帧 JSON-RPC 事件循环（stdin 逐行读 /
+  stdout 逐行写、日志走 stderr），按 `id` 应答 / 无 `id` 通知不应答 / 非 JSON 行跳过 / **EOF 退出**；
+  `stdin`/`stdout` 可注入 ⇒ 循环行为**纯内存**可验（无需子进程）；
+  ② **错误分层**：协议层走 JSON-RPC `error`（`-32601` 未知方法 / `-32603` 内部异常），工具层走成功应答里的
+  `CallResult`（`PERMISSION_DENIED` 等）；`_respond` **永不抛** —— 单条请求的任何异常（含提供者抛错、
+  应答不可序列化）降级为该 `id` 的错误应答，**循环继续**；
+  ③ **暴露面三件套**：对外名 `core.<tool_id>`；白名单接受裸名与带前缀两种写法（照 `tools/list` 抄名字可用）；
+  `mcp.*` 过滤（禁二级代理）；`call_tool` 只接受已暴露名；
+  ④ **协议常量同源**：`PROTOCOL_VERSION` 落 `core.mcp.models`（弃 client 侧私有 `_PROTOCOL_VERSION`），
+  client 判定与 server 应答不再各写一份字面量；
+  ⑤ `entry._mcp` / `_mcp_serve` / `_mcp_whitelist` + `mcp serve --whitelist`（逗号分隔）+ `_HANDLERS` 注册；
+  非 stdio 传输**明确拒绝**（不静默起空 server）。
+- **验证**：先红后绿 —— `tests/test_mcp_server_stdio.py`（新，14 例）实现前因 `PROTOCOL_VERSION` 缺席即
+  `ImportError`（红），实现后全绿；含**端到端**（本仓 `MCPClient` / `StdioTransport` 拉起 `core-agent mcp serve`
+  真实子进程：握手 → 发现 → 真读文件 → 越权拒绝）与 CLI 面（CSV 解析 / 传输拒绝）；既有
+  `tests/test_mcp.py` 的 4 例 server 单测对齐 `core.` 命名空间契约。四门全绿（900 tests / 29 specs）。
+- **转出**：**B6**（wire envelope 未对齐标准 ⇒ 第三方客户端挂载受限）、**B7**（默认暴露面启发式过粗）。
+- **参考**：`archive/2026-10-05-0073-mcp-server-stdio-loop/`。
 
 ### B4 `mcp` CLI 接线 + 端点注册表持久化 — ⏭ 待开工
 
@@ -594,6 +624,22 @@
 - **转出**：`fs_allowlist` 配置化（无生产调用点需要，YAGNI）；通配符 / 后缀匹配
   （规格只要求白名单，裸主机名精确匹配是 `check_outbound` 现状契约）。
 - **参考**：`archive/2026-10-05-0071-sandbox-host-allowlist-config/`。
+
+### B6 MCP wire envelope 未对齐标准 — ⏭ 待开工
+
+- **残留**：`tools/list` 应答为**裸列表**、`tools/call` 应答为序列化 `CallResult` 直出。二者与
+  `MCPClient` / `FakeTransport` / 既存 echo server **三方一致**（change `0054` 确立的仓内约定），
+  本变更（`0073`）主题是**接线**，故不擅自改契约。
+- **后果**：标准 MCP 服务端/客户端用 `{"tools": [...]}` / `{"content": [...], "isError": ...}` 封装 ⇒
+  **Claude Code / Cursor 等第三方客户端直接挂载本 server 尚不可用**（规格「MCP Server 模式」字面列出的
+  外部客户端即此二例）。对齐需同步改 client 解析 + 仓内替身/夹具，属独立变更。
+
+### B7 默认暴露面启发式过粗 — ⏭ 待开工
+
+- **残留**：默认最小暴露沿用 `_is_readonly`（`coeffects` 不含 `write` 即视为只读）。实测生产工具源下
+  默认暴露面含 `core.tools.delegate`（可驱动子 loop）与 `core.tools.web_fetch`（有网络出站）——
+  「只读」启发式把「不写盘」等义于「低风险」。
+- **待裁决**：是否收窄为「**显式白名单才出**」（默认零暴露）或给 `ToolDef` 补风险分级字段。
 
 - **参考**：`coding-plan/phase-12.md` §5–§7；`archive/2026-10-01-0033-mcp-install-security/`（原始 tasks 真源）、`archive/2026-10-04-0054-mcp-stdio-transport/`（B1 client 侧关闭凭据）。
 
@@ -684,7 +730,7 @@
 2. **A2 + E2 合并做**（同一根因）：会话标识透传 + 每会话独立 loop/memory + `UIAPILayer.compact` 接真。 ✅ **已完成**（change `0048-session-scoped-memory`：标识透传 + `compact` 接真 + `get_memory` 按会话过滤；**未采**每会话独立实例，理由见该 change design 决策 1/2）。
 3. **A1**（记忆驱动侧）：遗忘节拍。宜在 A2 之后（会话维度不生效时，衰减分组也是错的）。 ✅ **已完成**（change `0049-memory-maintenance-cadence`：loop 收尾维护节拍 + `memory maintain` CLI）。
 4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义。 ✅ **A3 全闭 + A5 + A10 + E4 已完成**（change `0050` 技能态落盘 / ADR-0053；change `0051` 进化冷路径驱动面 + 观察窗口落盘 + 批次成功率采样 / **ADR-0054**；A10 为本次走查新增的「冷路径无驱动面」发现；**E4** 见 change `0053` —— pet 纳入组合根 + 注册表落盘 + WebUI NL 入口 / **ADR-0056**）。✅ **A4 已完成**（change `0055-evolution-confirm-surface`：候选稳定身份 + 队列落盘 + `evolve` 操作面签发审批单 / **ADR-0058**）→ 本步**全闭**。
-5. **B1**（独立轨）：🔶 **client 侧已关闭**（change `0054-mcp-stdio-transport`，ADR-0057 —— stdio 传输 / `add` 分流 / 消费侧安全接线 / 组合根装配；ADR-0043 的 ADR + spec delta 早已就绪）。**余 3 行后续**：B2 http 会话（需 SDK）/ B3 服务端 stdio / B4 CLI 接线。**B5 已关闭**（change `0071`，ADR-0068）。
+5. **B1**（独立轨）：🔶 **client 侧已关闭**（change `0054-mcp-stdio-transport`，ADR-0057 —— stdio 传输 / `add` 分流 / 消费侧安全接线 / 组合根装配；ADR-0043 的 ADR + spec delta 早已就绪）。**余 2 行后续**：B2 http 会话（需 SDK）/ B4 CLI 接线。✅ **B3 已关闭**（change `0073`／ADR-0070：`serve_stdio` 事件循环 + `mcp serve` 接线 + `core.` 命名空间 + 禁二级代理；**新报 B6/B7** —— wire envelope 未对齐标准 / 默认暴露面启发式过粗，均待裁决）。✅ **B5 已关闭**（change `0071`，ADR-0068）。
 6. **E1 + E7 + E8**（契约与中间件）：✅ **全闭** —— E1 见 change `0052`（ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；**E7/E8 见 change `0056`（ADR-0059）**：E7 裁决「规格为准」→ 纯文档订正；E8 三处缺口修复，第 5 条转出为 E18。
 7. **E3 / E6**（规格裁决）：✅ **全闭** —— 裁决「A 全做・解除 deferred」；**E3** 见 change `0057`（ADR-0060：神通注册 + 专属路由作用域 + 按兽 loop/共享记忆注入 + CLI 走组合根）；**E6** 无需代码（context 压实启发式已由 change `0041` 规格订正为有意行为，余两项转 A7/A8）。
 8. **A7 + E6（miss 复用）**（低优先，同族）：✅ **全闭** —— **A7** 见 change `0058`（ADR-0061：排序分 = 基础分 × 历史成功率因子；预筛转出 A11）；**E6** 无需代码（见上，规格已由 change `0041` 订正）。

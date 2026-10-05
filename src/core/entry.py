@@ -43,6 +43,7 @@ from core.deployment import (
 )
 from core.evolution import EvolutionError, GenerationCandidate
 from core.loop import LoopPlugin
+from core.mcp import MCPEndpoint, MCPServer
 from core.orchestration import Plan, TaskScheduler, plan_from_dict
 from core.permission import (
     ApprovalChannel,
@@ -140,6 +141,9 @@ def _add_mcp_parser(sub: Any) -> None:
     serve = mcp_sub.add_parser("serve", help="启动 MCP server")
     serve.add_argument("--transport", choices=["stdio", "http", "streamable-http"], default="stdio")
     serve.add_argument("--endpoint", metavar="E")
+    serve.add_argument(
+        "--whitelist", metavar="TOOLS", default="", help="显式开放的工具（逗号分隔）"
+    )
     mcp_sub.add_parser("list", help="列出已注册 MCP 端点")
     add = mcp_sub.add_parser("add", help="运行期添加 MCP 端点")
     add.add_argument("endpoint")
@@ -435,6 +439,35 @@ def _config_set(mgr: ConfigManager, args: argparse.Namespace) -> int:
         return 1
     print(f"已设置 {args.key}={args.value}（已写回 config.yaml）")
     return 0
+
+
+def _mcp(args: argparse.Namespace) -> int:
+    """MCP 端点管理：serve 以 stdio 事件循环把本机工具对外提供。"""
+    if args.mcp_cmd == "serve":
+        return _mcp_serve(args)
+    print(f"mcp {args.mcp_cmd} 已识别，尚未接线（对应里程碑未落地）", file=sys.stderr)
+    return 0
+
+
+def _mcp_serve(args: argparse.Namespace) -> int:
+    """`mcp serve`：装配 runtime → 以 stdio 承载 MCP server 事件循环（阻塞至 EOF）。"""
+    if args.transport != "stdio":
+        print(f"mcp serve：{args.transport} 传输会话待接入（Mcp-Session-Id 复用）", file=sys.stderr)
+        return 1
+    try:
+        runtime = build_runtime(ConfigManager(yaml_path=args.config, cli=_cli_overrides(args)))
+    except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
+        print(f"装配失败: {exc}", file=sys.stderr)
+        return 1
+    server = MCPServer(tool_provider=runtime.tools, whitelist=_mcp_whitelist(args.whitelist))
+    print("MCP server 已就绪（stdio）", file=sys.stderr)
+    server.serve_stdio(MCPEndpoint(transport="stdio", session_id=args.endpoint))
+    return 0
+
+
+def _mcp_whitelist(raw: str) -> list[str]:
+    """逗号分隔工具名 → 列表（空白项丢弃；`core.` 前缀由 server 侧归一）。"""
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 def _plugin(args: argparse.Namespace) -> int:
@@ -1087,6 +1120,7 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "run": _run,
     "task": _task,
     "config": _config,
+    "mcp": _mcp,
     "plugin": _plugin,
     "skill": _skill,
     "release": _release,

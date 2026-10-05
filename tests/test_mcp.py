@@ -177,25 +177,26 @@ def test_heartbeat_ping_exception_fails_closed() -> None:
 
 
 def test_server_minimal_exposure() -> None:
+    """对外名带 `core.` 命名空间前缀（与本地名 / `mcp.*` 远程名隔离，change 0073）。"""
     server = MCPServer(tool_provider=_provider())
-    assert {t.name for t in server.list_tools(_conn())} == {"tools.file_read"}
+    assert {t.name for t in server.list_tools(_conn())} == {"core.tools.file_read"}
 
 
 def test_server_whitelist() -> None:
     server = MCPServer(tool_provider=_provider(), whitelist=["tools.file_write"])
-    assert {t.name for t in server.list_tools(_conn())} == {"tools.file_write"}
+    assert {t.name for t in server.list_tools(_conn())} == {"core.tools.file_write"}
 
 
 def test_server_unauthorized_tool() -> None:
     server = MCPServer(tool_provider=_provider())
-    result = server.call_tool(_conn(), "tools.file_write", {})
+    result = server.call_tool(_conn(), "core.tools.file_write", {})
     assert result.ok is False
     assert result.code == MCPErrorCode.PERMISSION_DENIED.value
 
 
 def test_server_call_tool_authorized() -> None:
     server = MCPServer(tool_provider=_provider())
-    result = server.call_tool(_conn(), "tools.file_read", {"path": "/tmp/x"})
+    result = server.call_tool(_conn(), "core.tools.file_read", {"path": "/tmp/x"})
     assert result.ok is True
     assert result.data == {"content": "x"}
 

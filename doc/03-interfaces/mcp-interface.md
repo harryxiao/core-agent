@@ -118,6 +118,7 @@ class MCPServer(Plugin):
     plugin_id = "mcp.server"
 
     def serve(self, transport: Transport, endpoint: MCPEndpoint) -> ServerConnection: ...
+    def serve_stdio(self, endpoint: MCPEndpoint, *, stdin=None, stdout=None) -> None: ...  # 事件循环（阻塞至 EOF）
     def initialize(self, conn: ServerConnection) -> ServerCapabilities: ...
     def list_tools(self, conn) -> list[MCPTool]: ...        # 白名单过滤后的暴露面
     def call_tool(self, conn, name: str, args: dict) -> CallResult: ...  # 复用 ToolProvider.invoke
@@ -126,6 +127,13 @@ class MCPServer(Plugin):
 - **暴露面**：由白名单从 ToolProvider/PluginRegistry 挑选，包装为 MCP tool（`core.<tool>`）。
 - **安全**：`call_tool` 复用 `ToolProvider.invoke` 同一链路，不绕过 permission/observability，来源标注 `external:<client_id>`。
 - **多流复用**：streamable-http 下单一 HTTP(TCP) 连接经 `Mcp-Session-Id` 会话标识承载多个会话，请求按 Session-Id 分流互不串扰。
+
+**stdio 事件循环与暴露面契约**（change `0073`，账本 B3）：
+
+- **事件循环**：`serve_stdio` 以**换行分帧 JSON-RPC** 承载 stdin → stdout（日志走 stderr，否则污染对端分帧解析）。`initialize` 应答与 client 侧**同一** `protocolVersion`（共享常量 `core.mcp.models.PROTOCOL_VERSION`）；无 `id` 通知不应答；非 JSON 行跳过；**stdin EOF 即退出**。
+- **错误分层**：协议层错误走 JSON-RPC `error`（`-32601` 方法未实现 / `-32603` 内部异常）；工具层结论走成功应答里的 `CallResult`（如 `PERMISSION_DENIED`）。**单条请求的异常隔离为该 `id` 的错误应答，不终止事件循环**（应答不可序列化同样降级）。
+- **命名空间与白名单**：对外名一律 `core.<tool_id>`；白名单接受裸名与带前缀两种写法（照 `tools/list` 抄名字可用）；`call_tool` 只接受**已暴露**的名字；`mcp.*` 远程工具**不**对外暴露（禁止二级代理）。CLI 面经 `mcp serve --whitelist <逗号分隔工具名>` 声明。
+- **已知偏离**：`tools/list` 应答为**裸列表**、`tools/call` 应答为 `CallResult` 直出 —— 与 `MCPClient` / `FakeTransport` / 既存 echo server 三方一致（change `0054` 约定），但**非**标准 MCP envelope（`{"tools": [...]}` / `{"content": [...], "isError": ...}`），故第三方客户端（Claude Code / Cursor）直接挂载尚不可用（账本新行）。
 
 ---
 
