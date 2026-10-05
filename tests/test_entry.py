@@ -10,6 +10,15 @@ from core.deployment import ServeStateStore
 from core.entry import _build_installer, _build_parser, main
 from core.loop import LoopEvent
 from core.orchestration import Plan, Subtask, plan_to_dict
+from core.pet.core import (
+    FAILED,
+    WOKEN,
+    PetManager,
+    PetSession,
+    PetTask,
+    PetTaskKind,
+    WakeOutcome,
+)
 
 # cli-contract-baseline.md §2 顶层命令面（19 子命令 + 无子命令进 REPL）。
 _TOP_LEVEL_COMMANDS = {
@@ -172,6 +181,62 @@ def test_pet_missing_config_file_is_tolerated(tmp_path, monkeypatch, capsys) -> 
     captured = capsys.readouterr()
     assert "宠物模式未启用" in captured.err
     assert "装配失败" not in captured.err  # 前置判定不因缺文件抛错
+
+
+def test_pet_run_drives_restored_sessions(tmp_path, monkeypatch, capsys) -> None:
+    """E28：`pet run` 从跨进程注册表恢复会话并交给驱动（间隔透传 + 一轮呈现 + 退出 0）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("CORE_STATE_DIR", str(state))
+    seeded = PetSession(session_id="p1")
+    seeded.start(PetTask(kind=PetTaskKind.IDLE_EXPLORATION, goal="观察环境"))
+    PetManager(state / "pets.json").register(seeded)
+
+    seen: dict[str, object] = {}
+
+    class _FakeDriver:
+        """替身：记下构造实参与 run 的间隔，跑一轮即返回（不真沉睡）。"""
+
+        def __init__(self, sessions) -> None:
+            seen["sessions"] = list(sessions())
+
+        def run(self, interval, *, on_tick=None) -> None:
+            seen["interval"] = interval
+            if on_tick is not None:
+                on_tick([WakeOutcome("p1", WOKEN)])
+                on_tick([WakeOutcome("p1", FAILED, "RuntimeError: loop 炸了")])
+
+    monkeypatch.setattr("core.entry.PetWakeDriver", _FakeDriver)
+    cfg = _write_pet_config(tmp_path, enabled=True)
+
+    assert main(["--config", cfg, "pet", "run", "--interval", "0.25"]) == 0
+    assert seen["interval"] == pytest.approx(0.25)
+    assert [s.session_id for s in seen["sessions"]] == ["p1"]  # 注册表跨进程恢复
+    captured = capsys.readouterr()
+    assert "已开始驱动 1 只宠物会话" in captured.out
+    assert "已驱动 1 只宠物" in captured.out
+    assert "p1 唤醒失败" in captured.err
+
+
+def test_pet_run_rejects_bad_interval(tmp_path, monkeypatch, capsys) -> None:
+    """非法 / 非正间隔 ⇒ 用法错误 + 退出 1（不进常驻循环）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    cfg = _write_pet_config(tmp_path, enabled=True)
+
+    assert main(["--config", cfg, "pet", "run", "--interval", "0"]) == 1
+    assert main(["--config", cfg, "pet", "run", "--interval", "abc"]) == 1
+    assert "用法: core-agent pet run" in capsys.readouterr().err
+
+
+def test_pet_run_without_pets_hints_and_exits_zero(tmp_path, monkeypatch, capsys) -> None:
+    """无已注册会话：提示三入口激活并退出 0 —— 驱动不自动造宠物（激活归三入口）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path / "empty-state"))
+    cfg = _write_pet_config(tmp_path, enabled=True)
+
+    assert main(["--config", cfg, "pet", "run"]) == 0
+    assert "当前无激活宠物" in capsys.readouterr().err
 
 
 def test_repl_wires_llm_config(monkeypatch, tmp_path) -> None:

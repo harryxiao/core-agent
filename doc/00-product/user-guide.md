@@ -133,6 +133,7 @@ Pet 激活（三入口之一）：
 ```bash
 core-agent pet gather --name 小橘
 core-agent pet list
+core-agent pet run --interval 60    # 前台常驻驱动：按间隔唤醒每只宠物（Ctrl-C 停止）
 ```
 
 ---

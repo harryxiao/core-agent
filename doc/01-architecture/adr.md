@@ -1473,6 +1473,47 @@
   且受安全边界约束（本变更）。
 
 ---
+
+## ADR-0078：宿主驱动的唤醒节拍（新 CLI `pet run` / 驱动薄壳 / 故障隔离）
+
+- **背景**：账本 **E28**。`0065`（E17）裁决「周期触发由宿主驱动、内核不自建 daemon」，但一手核实
+  三入口**无一调用 `wake()`** —— `pet gather` 只激活并打印、`ui serve` 不调、`/pet` 同。故 pet 自治循环
+  与通知三环（`0079`/`0081`）**在生产仅在有人手动驱动时才可达**，而没有任何宿主在驱动：
+  又一例「接线已备、驱动缺席」。
+- **决策**（均经用户裁决）：
+  ① **驱动落点 = 新 CLI `core-agent pet run [--interval S]`**，**不做** `ui serve` 内置后台线程 ——
+  驱动者 = 用户**显式启动**的前台进程（与 `0065`「内核不自建 daemon」相容：不是内核偷偷起线程，
+  而是宿主**显式常驻**）；WebUI 一开就让宠物在后台真调 LLM / 真跑工具，是「用户没要求的动作却发生了」，
+  与「一切副作用可逆、可解释」相悖；且无 UI 的部署（纯 CLI / 服务器）也须能驱动。
+  接口 §5 那句「能承载常驻驱动的只有 `ui serve`」是**当时快照**，本 change 一并订正为「`ui serve` 或
+  `pet run`」。
+  ② **驱动薄壳**：`PetWakeDriver(sessions, *, sleep=time.sleep)` → `tick()` 逐会话唤醒、返回结构化
+  `WakeOutcome`（库层**不打印** ⇒ 呈现与退出码归 CLI）；`sessions` 是**可调用体**（`PetManager.list`）
+  每轮**重取** ⇒ 驱动期间新注册的宠物自动纳入；`sleep` 可注入 ⇒ 节拍测试**确定性**
+  （先例：`0052` 给 `CircuitBreaker` 注入 `clock`），故**不**为测试加 `--oneshot`/`--iterations` 生产表面。
+  ③ **故障隔离**（规格 R8「A 宠物异常不影响 B 宠物」）：让行/退避/未激活（`PetError`）= **预期态静默跳过**
+  （让行是设计中的常态，逐轮刷 stderr 即噪音）；其他异常 ⇒ `FAILED` 记因并**继续其余宠物**
+  （对齐 B4「单端点不可达只告警跳过」口径）。
+  ④ **`--interval` 不进 `ConfigSpec`**：它是**宿主命令的运行参数**（同 `ui serve --host/--port`），
+  配置面记「事实」（`pet.enabled`/`persons_dir`），这是「这次怎么跑」。
+  ⑤ **无注册会话 ⇒ 提示三入口激活 + 退出 0**，**不自动造宠物**（激活归三入口，避免第二真源）。
+- **实现细节**：`--interval` 从 `rest` 提取（`pet` 子命令用 `argparse.REMAINDER` 收自由文本，旗标与任务词
+  同处 `rest` —— 同既有 `--name`/`_split_pet_name` 先例，不改 parser 结构）；非法 / 非正 / 缺值 ⇒
+  用法错误 + 退出 1；`KeyboardInterrupt` 由 CLI 捕获并打印「已停止驱动」。**驱动不进 `runtime.py`**：
+  组合根只装配、不驱动（驱动是宿主行为）。
+- **已否决**：`ui serve` 后台线程（线程生命周期 + 新配置键 + 隐式副作用 + 无 UI 部署仍不可驱动）；
+  `pet.wake_interval_s` 配置键；自动激活 / 缺省 persona 造宠物；`--oneshot`/`--iterations`/`--max-ticks`；
+  让 `wake()` 内部吞异常返回结果对象（改领域语义以迁就驱动，方向反了）。
+- **后果**：✅ pet 自治循环 + 通知三环 + 安全边界在生产**首次可达**；✅ 纯 CLI 部署可驱动；
+  ✅ 规格中性（pet-mode 规格无「宿主须为哪个入口」条款，本变更是既有条款的宿主侧落地）；
+  ⚠️ 驱动是**前台**进程，脱离终端存活需用户自行放进 supervisor / tmux。
+- **关联**：账本 E28；`0065`（E17）；代码 `src/core/pet/core/driver.py`、`src/core/entry.py`（`_pet_run`）、
+  `src/core/pet/core/__init__.py`；接口 `03-interfaces/pet-mode-interface.md` §5 / §5.2；
+  模块 `02-modules/pet.md` §3.6 / §4；测试 `tests/test_pet_driver.py`、`tests/test_entry.py`（TC-PET-05）；
+  ADR-0077（安全边界）。
+- **转出**：无新开账本行；E28 关闭后 E 类余 E5 / E20① / E26 / E27。
+
+---
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1545,3 +1586,4 @@
 | ADR-0075 | 03-interfaces/configuration-interface.md, 00-product/user-guide.md |
 | ADR-0076 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |
 | ADR-0077 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |
+| ADR-0078 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md, 00-product/user-guide.md |

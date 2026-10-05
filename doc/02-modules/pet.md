@@ -60,6 +60,19 @@ PetMode（后台自治循环扩展）
   通知主人，会话保持 `ACTIVE`（见 §4 生产装配）。仍未接线：`surprise()`/`MicrotaskRunner`（零调用方，
   账本 E26）——见账本转出项。
 
+### 3.6 宿主驱动（`pet run`，change `0083`／ADR-0078，账本 E28）
+
+- **驱动者 = 用户显式启动的前台常驻进程**：`core-agent pet run [--interval S]`（缺省 60s）按间隔逐会话
+  `wake()` —— `0065` 裁决「内核不自建 daemon」的**宿主侧落地**（非内核偷起线程，而是宿主显式常驻）；
+  也不做「开 WebUI 就后台唤醒」的隐式副作用（无 UI 的部署同样要能驱动）。
+- `PetWakeDriver(sessions, *, sleep=time.sleep)`：`sessions` 是**可调用体**（`PetManager.list`），
+  每轮重取 ⇒ 驱动期间新注册的宠物自动纳入；`tick()` 返回结构化 `WakeOutcome`（库层不打印，呈现归 CLI）；
+  `sleep` 可注入 ⇒ 节拍测试确定性（先例：`0052` 给 `CircuitBreaker` 注入 `clock`）。
+- **故障隔离**（规格 R8）：让行/退避/未激活（`PetError`）= 预期态**静默跳过**（让行是设计中的常态，
+  逐轮刷屏即噪音）；意外异常 ⇒ `failed` 记因并**继续其余宠物**；无注册会话 ⇒ 提示激活入口、退出 0
+  （**不自动造宠物** —— 激活归三入口）。
+- `--interval` 是**宿主命令的运行参数**（同 `ui serve --host/--port`），**不进 `ConfigSpec`**。
+
 ---
 
 ## 4. 后台自治闭环
@@ -75,6 +88,8 @@ PetMode（后台自治循环扩展）
 - 任务执行、偏好沉淀、反馈惊喜都回到既有 loop/memory 闭环，pet 只做"低优先级编排扩展"，不另起炉灶。
 - 闭环的**驱动者是宿主**：「每次唤醒」这一环由宿主入口（或长驻宿主）按自身周期调用 `wake()`，内核只保证
   单次唤醒是同步薄壳、不常驻、可让行（change `0065` 登记为已知语义，非缺失）。
+  该职责的**宿主侧落地**（change `0083`／ADR-0078，账本 E28）：`core-agent pet run [--interval S]`
+  前台常驻，经 `PetWakeDriver` 逐会话唤醒（详见 §3.6）。
 - **生产装配**（change `0053`）：pet 依赖由组合根 `build_runtime` 组装 —— 一份 `Explorer`/`SafetyBounds`/`AsyncNotifier`
   + `PetManager`（落盘 `$CORE_STATE_DIR/pets.json`）+ `PetActivator`（注入**宠物专属 loop**（受限工具集 +
   安全中间件，change `0081`）与 runtime 共享 memory）；

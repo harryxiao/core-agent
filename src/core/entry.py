@@ -61,7 +61,7 @@ from core.permission import (
     SandboxManager,
     SandboxPolicy,
 )
-from core.pet.core import PetManager
+from core.pet.core import FAILED, WOKEN, PetManager, PetWakeDriver, WakeOutcome
 from core.pet.library import load_persona, load_personas
 from core.plugin_registry import DomainError, PluginInstaller, PluginKind, PluginSource
 from core.plugins import InstallDispatcher
@@ -244,7 +244,7 @@ def _add_release_parser(sub: Any) -> None:
 
 def _add_pet_parser(sub: Any) -> None:
     pet = sub.add_parser("pet", help="宠物模式（后台自治会话）")
-    pet.add_argument("verb", nargs="?", help="gather|info|explore|walk|list|stop")
+    pet.add_argument("verb", nargs="?", help="gather|info|explore|walk|list|stop|run")
     pet.add_argument("rest", nargs=argparse.REMAINDER, help="[--name NAME] 任务描述（自由文本）")
 
 
@@ -1096,7 +1096,8 @@ def _pet(args: argparse.Namespace) -> int:  # noqa: PLR0911 — CLI 分支各自
 
     if verb is None:
         print(
-            "用法: core-agent pet <verb> [--name NAME] [...]（gather|info|explore|walk|list|stop）"
+            "用法: core-agent pet <verb> [--name NAME] [...]"
+            "（gather|info|explore|walk|list|stop|run）"
         )
         return 0
     try:
@@ -1118,6 +1119,8 @@ def _pet(args: argparse.Namespace) -> int:  # noqa: PLR0911 — CLI 分支各自
         manager.stop(rest[0])
         print(f"已停止宠物会话 {rest[0]}")
         return 0
+    if verb == "run":
+        return _pet_run(manager, rest)
     session = activator.activate_from_cli(verb, rest, persona=_load_persona(persons_dir, name))
     print(f"已激活宠物会话 {session.session_id}（verb={verb}，状态 {session.state.value}）")
     return 0
@@ -1153,6 +1156,68 @@ def _split_pet_name(rest: list[str]) -> tuple[str | None, list[str]]:
             task.append(rest[i])
             i += 1
     return name, task
+
+
+def _pet_run(manager: PetManager, rest: list[str]) -> int:
+    """`pet run [--interval 秒]`：常驻驱动已注册宠物（尾随文本忽略，Ctrl-C 停止）。
+
+    驱动者 = **用户显式启动的宿主进程**（`0065` 裁决「内核不自建 daemon」的宿主侧落地）；
+    无已注册会话时只提示激活入口，**不自动造宠物**（激活归三入口，避免第二真源）。
+    """
+    interval, _ = _split_pet_interval(rest)
+    if interval is None:
+        print("用法: core-agent pet run [--interval 秒]（间隔须为正数）", file=sys.stderr)
+        return 1
+    pets = manager.list()
+    if not pets:
+        print(
+            "当前无激活宠物（先用 gather|info|explore|walk 激活，或在 ui 入口激活）",
+            file=sys.stderr,
+        )
+        return 0
+    print(f"已开始驱动 {len(pets)} 只宠物会话（间隔 {interval:g}s，Ctrl-C 停止）")
+    try:
+        PetWakeDriver(manager.list).run(interval, on_tick=_report_wake_tick)
+    except KeyboardInterrupt:
+        print("已停止驱动")
+    return 0
+
+
+def _split_pet_interval(rest: list[str]) -> tuple[float | None, list[str]]:
+    """从 free-text rest 提取 `--interval 秒`，其余原样返回（缺省 60s）。
+
+    `pet` 子命令用 `REMAINDER` 收自由文本，故旗标与任务词同处 `rest`（同 `_split_pet_name`）。
+    非法 / 缺失 / 非正值 → `(None, [])`，调用方报用法并退出 1。
+    """
+    interval = 60.0
+    task: list[str] = []
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--interval":
+            if i + 1 >= len(rest):
+                return None, []
+            try:
+                value = float(rest[i + 1])
+            except ValueError:
+                return None, []
+            if value <= 0:
+                return None, []
+            interval = value
+            i += 2
+        else:
+            task.append(rest[i])
+            i += 1
+    return interval, task
+
+
+def _report_wake_tick(outcomes: list[WakeOutcome]) -> None:
+    """一轮唤醒的呈现：唤醒数到 stdout，意外失败到 stderr（预期态静默 —— 让行是常态）。"""
+    woken = sum(1 for outcome in outcomes if outcome.status == WOKEN)
+    if woken:
+        print(f"已驱动 {woken} 只宠物")
+    for outcome in outcomes:
+        if outcome.status == FAILED:
+            print(f"宠物 {outcome.session_id} 唤醒失败：{outcome.reason}", file=sys.stderr)
 
 
 def _load_persona(persons_dir: str, name: str | None):
