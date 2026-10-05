@@ -42,6 +42,11 @@ TurnObserver = Callable[[str, list[str], bool], object]
 # loop 不 import evolution（架构红线），生产侧注入组合根闭包（内部调 EvolutionWorker.maybe_run）。
 ColdPath = Callable[[], None]
 
+# trace 完成回调：本轮遥测记录完毕后按**轮**提交 trace_id（登记一条已完成 trace）；缺省不做。
+# 与冷路径回调**节律不同**（不随维护节拍节流）；loop 不 import evolution（架构红线），
+# 生产侧注入组合根闭包（内部调 EvolutionWorker.on_trace_complete）。
+TraceObserver = Callable[[str], None]
+
 # 结果侧观察者：每个非终止动作完成后回调（上下文, 动作, 执行结果）→ 无返回值；仅通知，
 # 单个观察者异常降级留痕、不改本轮结局。loop 不 import constraints（架构红线），
 # 生产侧注入组合根适配层闭包。
@@ -117,6 +122,7 @@ class DefaultLoop(Plugin):
         compactor: Compactor | None = None,
         turn_observer: TurnObserver | None = None,
         cold_path: ColdPath | None = None,
+        trace_observer: TraceObserver | None = None,
         max_rounds: int = 10,
         token_budget: int = 65536,
         maintenance_interval: float = _MAINTENANCE_INTERVAL_S,
@@ -134,6 +140,7 @@ class DefaultLoop(Plugin):
         self._compactor = compactor
         self._turn_observer = turn_observer
         self._cold_path = cold_path
+        self._trace_observer = trace_observer
         self._max_rounds = max_rounds
         self._token_budget = token_budget
         self._maintenance_interval = maintenance_interval
@@ -261,7 +268,14 @@ class DefaultLoop(Plugin):
             yield LoopEvent("loop_failed", {"reason": limit_reason, "trace_id": trace_id})
         self.remember(trace_id, [*ctx.trajectory, {"reply": ctx.reply}], session_id=session_id)
         self._maintain(trace_id)
-        self._trace(trace_id, "loop_finished", {"reply": ctx.reply, "failed": bool(limit_reason)})
+        self._trace(
+            trace_id,
+            "loop_finished",
+            {"reply": ctx.reply, "failed": bool(limit_reason)},
+            module_id="loop.default" if limit_reason else None,
+        )
+        # 本轮遥测已齐：交给 trace 完成回调（登记一条已完成 trace；缺省不启用）
+        self._notify_trace_complete(trace_id)
         if not streamed:  # 未流式外发过 delta 才补一次全文（非流式 planner 兼容路径）
             yield LoopEvent("reply_delta", {"text": ctx.reply})
         yield LoopEvent(
@@ -281,6 +295,18 @@ class DefaultLoop(Plugin):
             self._turn_observer(_task_text(ctx), _action_steps(ctx), ok)
         except Exception as err:  # noqa: BLE001 — 观察失败降级，不影响本轮结果
             self._trace(trace_id, "turn_observer_failed", {"error": str(err)})
+
+    def _notify_trace_complete(self, trace_id: str) -> None:
+        """收尾回调：本轮遥测已齐后提交 trace_id（登记一条已完成 trace；缺省不启用）。
+
+        与维护节拍**无关**（按轮、不节流）；回调抛错仅降级留痕，不改变本轮结果与终止语义。
+        """
+        if self._trace_observer is None:
+            return
+        try:
+            self._trace_observer(trace_id)
+        except Exception as err:  # noqa: BLE001 — 登记失败降级，不影响本轮结果
+            self._trace(trace_id, "trace_observer_failed", {"error": str(err)})
 
     def _maintain(self, trace_id: str) -> None:
         """收尾维护节拍：距上次维护达间隔才触发一次（含①记忆遗忘 ②冷路径机会），各自失败降级。
@@ -453,7 +479,14 @@ class DefaultLoop(Plugin):
             content = str(first)
         return f"已完成：{content}"
 
-    def _trace(self, trace_id: str, kind: str, payload: dict[str, Any] | None = None) -> None:
+    def _trace(
+        self,
+        trace_id: str,
+        kind: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        module_id: str | None = None,
+    ) -> None:
         if self._tracer is None:
             return
         self._tracer.record(
@@ -463,6 +496,7 @@ class DefaultLoop(Plugin):
                 ts=time.time(),
                 kind=kind,
                 payload=payload or {},
+                module_id=module_id,
             )
         )
 

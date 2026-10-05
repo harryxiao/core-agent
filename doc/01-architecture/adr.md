@@ -1996,6 +1996,49 @@
 
 ---
 
+## ADR-0094：进化信号走既有 trace 通道（收尾回调 + 模块归因字段），不纳入 `PluginRegistry`
+
+- **背景**：审计发现进化引擎的 **plugin 维度整条接线未打通**：①`EvolutionWorker.on_trace_complete`
+  是全仓唯一的 trace 完成登记入口，却**零生产调用方**，而 loop 收尾只调 `cold_path()`（无参、不带
+  `trace_id`）⇒ `_completed` 恒空 ⇒ 冷路径在生产永不运行；②`TraceEvent` 无模块字段、`kind` 词表无
+  「架构模块失败」通道，`_to_traces` 的 `plugin_id` 绑的是**工具名** ⇒ 即便 trace 通了，loop 自身的
+  失败（轮数/token 预算耗尽）也无法归因。原稿曾计划「在 `PluginRegistry` 上加质量信号接口 + `promote`」。
+- **决策**：
+  ① **不纳入 `PluginRegistry`**（口径裁决）：`PluginRegistry` 全仓只在 `PluginInstaller` 内部默认构造
+     （`installable.py:93`），组合根**没有 `registry` 变量**（原稿写法会直接 `NameError`）；`FAULTED`
+     只在注册表驱动的 `load/unload` 失败时产生，而内部模块不经它加载 ⇒ 「纳入」买不到任何一条验收，
+     反而要给 `evolution.{collector,diagnoser,evaluator,validator,worker}` 5 个零 `generation/schema/
+     coeffects` 的算法类补 `load/unload` = `pass` 的**空转生命周期**（**ADR-0054 明确拒绝过的形态**）。
+  ② **信号走既有 trace 通道**：`Diagnoser.diagnose` 本就从 `t.plugin_id` 逐条计分 ⇒ **不需要新载体**，
+     缺的是**生产端的归因事件**。补三件：收尾回调（让 trace 流进 worker）、模块归因字段（让失败可归因）、
+     适配通道（把归因事件采为证据）。
+  ③ **回调与冷路径是两个独立节律**：`cold_path` 按 `maintenance_interval`（缺省 900s）节流，语义是
+     「跑一轮 cycle」；`trace_observer` 按**轮**、语义是「登记一条已完成 trace」（只登记、不触发、不阻塞）。
+     合并会把 `EvolutionTrigger` 的「累计 N 条 trace」退化成「累计 N 个 interval」。
+  ④ **回调必须在「本轮全部遥测之后」调用**：`_maintain`（冷路径）在本行**之前**执行 ⇒ 若回调在前，
+     同轮 `maybe_run → _collect → clear()`（`worker.py:67`）会消费掉尚未记录 `loop_finished` 的 trace，
+     使该事件**永不再被采集**。放在最后 ⇒ 本 trace 由**下一次**冷路径机会消费，事件完整。
+  ⑤ **`module_id` 是可选字段**（dataclass 默认 `None`）：既有四类 `kind` 的记录 / 序列化 / 消费语义
+     **逐字不变**；`kind` 词表**不扩**（`module_id` 是「谁」、`kind` 是「什么事」，二者正交）。
+  ⑥ **只接一处、只注入主 loop**：本 change 只让 loop 在**自身失败**时写 `module_id="loop.default"`；
+     只注入主 loop 的回调（子 agent / 神兽 / 宠物 loop 不注入）——`_completed` 是**无锁列表**，
+     避免多 loop 并发追加。
+- **限制（已知且明示）**：
+  - **工具级 trace 仍缺**：`action_completed` 作为 `LoopEvent` 外发却**不 `_trace`**，
+    `TraceLogger.log_tool_call` 零生产调用方 ⇒ evolution 的 **skill 分支在产线仍无输入**
+    （技能维度主线由 `turn_observer` → SOP/技能反馈承载，未断）。**转出账本**，本 change 不做。
+  - **13 个内部模块未纳入注册表**：等「真的会产出新一代插件实现（模型生成代码 / 人工提交补丁 → 新
+    `Plugin` 对象）」那个 Phase 再做——那时 `promote(plugin: Plugin)` 才有语义。
+  - **未达 `EvolutionTrigger` 阈值时 `_completed` 会缓慢累积**（每轮一条）：这是**既定语义**
+    （热路径只登记），由下一次触发统一消费。
+- **影响**：`TraceEvent` 增 `module_id: str | None = None`；`DefaultLoop` 增 `trace_observer` 注入面与
+  `_notify_trace_complete`，`_trace` 增可选 `module_id`，`loop_finished` 失败轮带归因；
+  `EvolutionWorker._to_traces` 增模块归因通道（`task_type="module_health"`）；
+  `build_runtime` 在主 loop 注入 `worker.on_trace_complete`（evolution 关闭时不注入）。
+- **规格**：MODIFIED「执行循环」（loop）/「全链路日志」（observability）/「经验采集」（evolution）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2084,3 +2127,4 @@
 | ADR-0091 | 03-interfaces/configuration-interface.md, 03-interfaces/loop-interface.md |
 | ADR-0092 | 03-interfaces/ui-interface.md |
 | ADR-0093 | 06-ui-frontend/ui-architecture.md |
+| ADR-0094 | 03-interfaces/observability-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/evolution-interface.md |

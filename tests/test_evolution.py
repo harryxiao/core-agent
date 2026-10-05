@@ -32,7 +32,7 @@ from core.evolution import (
     Trace,
     Validator,
 )
-from core.observability import TraceLogger, Tracer
+from core.observability import TraceEvent, TraceLogger, Tracer
 from core.permission import ApprovalRequest, ApprovalTicket, ApprovalWorkflow
 from core.skills import Skill, SkillLibrary
 
@@ -662,3 +662,68 @@ def test_worker_curriculum_is_injectable() -> None:
     worker.on_trace_complete(trace_id)
 
     assert worker.maybe_run(force=True).status == "manual"
+
+
+# ---- 模块归因采集通道（change 0101） ----
+
+
+def _module_event(trace_id: str, module_id: str, *, failed: bool) -> TraceEvent:
+    return TraceEvent(
+        trace_id=trace_id,
+        span_id="s1",
+        ts=0.0,
+        kind="loop_finished",
+        payload={"reply": "LOOP_LIMIT_EXCEEDED", "failed": failed},
+        module_id=module_id,
+    )
+
+
+def test_worker_adapts_module_attributed_event() -> None:
+    """带模块归因的事件 ⇒ 适配为可归因到该模块的 Trace（架构模块自身失败成为证据）。"""
+    worker, tracer = _worker_engine(ObservationRegistry())
+    trace_id = tracer.start_trace("t1")
+    tracer.record(_module_event(trace_id, "loop.default", failed=True))
+
+    traces = worker._to_traces(tracer.replay(trace_id))  # noqa: SLF001 — 适配器单测
+
+    assert len(traces) == 1
+    assert traces[0].plugin_id == "loop.default", "按 module_id 归因到架构模块"
+    assert traces[0].success is False, "失败事件 ⇒ success 为假"
+    assert traces[0].task_type == "module_health"
+
+
+def test_worker_module_attribution_drives_diagnosis() -> None:
+    """端到端：模块归因事件经采集 ⇒ 诊断归因到该模块（loop.default）。"""
+    worker, tracer = _worker_engine(ObservationRegistry())
+    trace_id = tracer.start_trace("t1")
+    tracer.record(_module_event(trace_id, "loop.default", failed=True))
+    worker.on_trace_complete(trace_id)
+
+    outcome = worker.maybe_run(force=True)
+
+    assert outcome is not None and outcome.candidate is not None
+    assert outcome.candidate.target_plugin == "loop.default"
+
+
+def test_worker_success_module_event_is_not_a_defect() -> None:
+    """带归因的**成功**事件不产缺陷证据（success=True）。"""
+    worker, tracer = _worker_engine(ObservationRegistry())
+    trace_id = tracer.start_trace("t1")
+    tracer.record(_module_event(trace_id, "loop.default", failed=False))
+
+    traces = worker._to_traces(tracer.replay(trace_id))  # noqa: SLF001 — 适配器单测
+
+    assert traces and traces[0].success is True
+
+
+def test_worker_tool_channel_unchanged() -> None:
+    """既有工具通道逐字不变：仍按工具 id 归因、仍产 `tool_use` 类证据。"""
+    worker, tracer = _worker_engine(ObservationRegistry())
+    trace_id = tracer.start_trace("t1")
+    _log_tool(tracer, trace_id, "tools.echo", ok=False)
+
+    traces = worker._to_traces(tracer.replay(trace_id))  # noqa: SLF001 — 适配器单测
+
+    assert len(traces) == 1
+    assert traces[0].plugin_id == "tools.echo"
+    assert traces[0].task_type == "tool_use"

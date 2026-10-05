@@ -439,10 +439,11 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         skill_router=loop_hints,
         tools=tools,
     )
-    # 门控（0067）：evolution 关闭 ⇒ 引擎/worker 不建，loop 冷路径一并置 None
-    # （不为「未装配」造空转闭包 —— DefaultLoop 本就接受 cold_path=None）。
+    # 门控（0067）：evolution 关闭 ⇒ 引擎/worker 不建，loop 冷路径与 trace 完成回调一并置 None
+    # （不为「未装配」造空转闭包 —— DefaultLoop 本就接受 cold_path / trace_observer =None）。
     evolution: EvolutionWorker | None = None
     cold_path: Callable[[], None] | None = None
+    trace_observer: Callable[[str], None] | None = None
     if not config.is_disabled("evolution"):
         evolution_engine = EvolutionEngine(
             diagnoser=Diagnoser(),
@@ -465,6 +466,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
             evolution_worker.maybe_run()
 
         cold_path = _cold_path
+        # 主 loop 每轮收尾登记本轮 trace（热路径只登记、不触发；不随维护节拍节流）
+        trace_observer = evolution_worker.on_trace_complete
 
     failure_threshold, cooldown_s = config.circuit_breaker()
     constraints_chain = build_constraints_chain(
@@ -487,6 +490,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         compactor=context_compactor,
         turn_observer=loop_turn,
         cold_path=cold_path,
+        trace_observer=trace_observer,
         middlewares=[constraints_chain.middleware],
         action_observers=[constraints_chain.observe_result],
         max_rounds=max_rounds,

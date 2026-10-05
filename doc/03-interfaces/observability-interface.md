@@ -12,8 +12,9 @@ class TraceEvent:
     trace_id: str               # 单任务全链路 id
     span_id: str                # 单步 span id
     ts: float
-    kind: str                   # "model_io" | "tool_call" | "effect" | "metric"
+    kind: str                   # "model_io" | "tool_call" | "effect" | "metric" | 模块失败留痕
     payload: dict               # 脱敏后的结构化内容
+    module_id: str | None = None  # 模块归因：产生该事件的架构模块 id（如 "loop.default"），缺省未归因
 ```
 
 ---

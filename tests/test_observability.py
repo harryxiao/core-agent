@@ -48,6 +48,27 @@ def test_trace_event_fields() -> None:
     assert event.payload == {"prompt": "hi"}
 
 
+def test_trace_event_module_id_defaults_to_none() -> None:
+    """模块归因字段可选：既有构造（不传 module_id）逐字不变，缺省为空。"""
+    event = _event("s1")
+
+    assert event.module_id is None, "未携带模块归因 ⇒ 缺省为空（向后兼容）"
+
+
+def test_trace_event_carries_module_attribution() -> None:
+    """事件可携带模块归因（供按模块聚合与缺陷归因）。"""
+    event = TraceEvent(
+        trace_id="t1",
+        span_id="s1",
+        ts=0.0,
+        kind="loop_finished",
+        payload={"failed": True},
+        module_id="loop.default",
+    )
+
+    assert event.module_id == "loop.default"
+
+
 def test_three_event_kinds_logged(tmp_path) -> None:
     exporter = JSONLExporter(tmp_path / "events.jsonl")
     tracer = Tracer(exporter=exporter)

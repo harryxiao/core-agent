@@ -39,6 +39,9 @@ class DefaultLoop(Plugin):
     # 构造面（节拍相关）：maintenance_interval=900.0s（<=0 关闭）、clock=time.monotonic（可注入，便于测试）
     # 注入面（可选）：cold_path: Callable[[], None]（收尾节拍的进化冷路径机会；缺省未注入则不做，
     #   loop 不 import evolution——只拿回调，组合根注入闭包，见 evolution-interface §4.1）
+    # 注入面（可选）：trace_observer: Callable[[str], None]（收尾回调：本轮遥测已齐后按**轮**提交
+    #   trace_id 登记一条已完成 trace；**不随维护节拍节流**，异常降级留痕 trace_observer_failed；
+    #   缺省未注入则不做；loop 不 import evolution——组合根注入 EvolutionWorker.on_trace_complete）
     # 注入面（可选）：middlewares: list[Callable[[LoopContext, Action], Action | None]]（动作前链，
     #   返回 None 即拒绝短路、返回 Action 则放行/改写）；action_observers:
     #   list[Callable[[LoopContext, Action, ActionResult], None]]（结果侧观察者，仅通知、异常降级留痕；
@@ -146,6 +149,12 @@ def remember(self, trace_id: str, trajectory: list[Step]) -> None
   即超限终止轮，失败信号供技能迭代判据），由组合根分发到技能反馈与 SOP 提炼
   （`SopExtractor.observe` 仍只吸收成功，见 `skills-interface.md §6`）；钩子抛错降级留痕
   （记 `turn_observer_failed`），不改变本轮结果与终止语义；未注入钩子时行为完全不变。
+- trace 完成回调：本轮**全部遥测记录完毕之后**按轮调 `trace_observer(trace_id)`（**不随维护节拍节流**，
+  与 `cold_path` 是两个独立节律：前者按轮、后者按 `maintenance_interval`）；回调抛错降级留痕
+  （记 `trace_observer_failed`），不改变本轮结果与终止语义；未注入时行为完全不变。
+  生产接线为 `EvolutionWorker.on_trace_complete`（热路径只登记、不触发）。
+- 模块归因：循环**自身失败**（轮数/token 预算耗尽）时其 `loop_finished` 遥测事件带
+  `module_id="loop.default"`；正常收尾缺省为空（不产虚假缺陷证据）。见 ADR-0094。
 
 ---
 

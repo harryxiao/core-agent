@@ -89,11 +89,26 @@ class EvolutionWorker:
     def _to_traces(events: list[TraceEvent]) -> list[Trace]:
         """把同 trace_id 的 TraceEvent 适配为 evolution Trace。
 
-        仅 ``tool_call`` 事件产出 Trace（action/result 成对）；``plugin_id`` 从
-        tool id 归因，供 Diagnoser 定位缺陷插件。
+        两条通道：①**带模块归因**的事件（``module_id`` 非空）⇒ 归因到该**架构模块**，
+        使模块自身失败（如执行循环预算耗尽）成为可诊断证据；②``tool_call`` 事件
+        （action/result 成对）⇒ 按工具 id 归因。``plugin_id`` 是**归因对象 id**
+        （工具 id 或内部核心模块 id，两套命名空间不交叉），供 Diagnoser 定位缺陷插件。
         """
         traces: list[Trace] = []
         for event in events:
+            if event.module_id is not None:
+                payload = event.payload
+                traces.append(
+                    Trace(
+                        trace_id=event.trace_id,
+                        task_type="module_health",
+                        action={"event": event.kind},
+                        result=payload,
+                        success=not bool(payload.get("failed", False)),
+                        plugin_id=event.module_id,
+                    )
+                )
+                continue
             if event.kind != "tool_call":
                 continue
             payload = event.payload

@@ -12,6 +12,7 @@ import time
 from core.context import Compactor
 from core.loop import Action, DefaultLoop
 from core.memory import MemoryEntry, MemoryStore
+from core.observability import Tracer
 from core.plugin_registry import CoeffectResolver
 from core.tools import Tool, ToolDef, ToolProvider
 
@@ -839,3 +840,107 @@ def test_cold_path_failure_degrades() -> None:
     )
     now[0] = 10.0
     assert loop.run("任务").reply == "done"
+
+
+# ---- trace 完成回调 + 模块归因（change 0101） ----
+
+
+def test_trace_observer_called_once_per_run_with_trace_id() -> None:
+    """收尾按轮调用 trace 完成回调一次，并交回本轮 trace_id。"""
+    seen: list[str] = []
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        trace_observer=seen.append,
+    )
+
+    result = loop.run("任务")
+
+    assert seen == [result.trace_id], "回调收到本轮 trace_id"
+
+
+def test_trace_observer_sees_all_events_of_the_run() -> None:
+    """回调触发时本轮遥测已齐（可完整回放，含 loop_finished）。"""
+    tracer = Tracer()
+    snapshots: list[list[str]] = []
+
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        tracer=tracer,
+        trace_observer=lambda trace_id: snapshots.append([e.kind for e in tracer.replay(trace_id)]),
+    )
+
+    loop.run("任务")
+
+    assert snapshots, "回调被调用"
+    assert "loop_finished" in snapshots[0], "回调时 loop_finished 已记录"
+
+
+def test_trace_observer_not_throttled_by_maintenance_cadence() -> None:
+    """trace 完成回调按轮，不受 maintenance_interval 节流。"""
+    now = [0.0]
+    calls: list[str] = []
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        trace_observer=calls.append,
+        clock=lambda: now[0],
+        maintenance_interval=3600.0,
+    )
+
+    _run_once(loop)
+    _run_once(loop)  # 未达维护间隔
+
+    assert len(calls) == 2, "未达维护间隔仍每轮回调"  # noqa: PLR2004
+
+
+def test_trace_observer_failure_degrades() -> None:
+    """回调抛错 → 降级留痕，本轮正常收尾（不抛给调用方）。"""
+    tracer = _RecordingTracer()
+
+    def _boom(trace_id: str) -> None:
+        raise RuntimeError("登记失败")  # noqa: TRY003
+
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        tracer=tracer,
+        trace_observer=_boom,
+    )
+
+    result = loop.run("任务")
+
+    assert result.reply == "done", "回调抛错不影响本轮结果"
+    assert "trace_observer_failed" in tracer.kinds, "回调抛错降级留痕"
+
+
+def test_trace_observer_absent_is_noop() -> None:
+    tracer = _RecordingTracer()
+    loop = DefaultLoop(planner=lambda ctx: Action(args={"reply": "done"}), tracer=tracer)
+
+    assert loop.run("任务").reply == "done"
+    assert "trace_observer_failed" not in tracer.kinds
+
+
+def test_loop_failure_marks_module_attribution() -> None:
+    """循环自身失败 ⇒ loop_finished 事件带 module_id="loop.default"。"""
+    tracer = Tracer()
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(tool_id="tools.echo", args={"text": "x"}),
+        tracer=tracer,
+        max_rounds=1,
+    )
+
+    result = loop.run("任务")
+
+    assert result.failed, "轮数超限 → 本轮失败"
+    finished = [e for e in tracer.replay(result.trace_id) if e.kind == "loop_finished"]
+    assert finished and finished[-1].module_id == "loop.default"
+
+
+def test_loop_success_has_no_module_attribution() -> None:
+    """正常收尾不产虚假缺陷证据（module_id 缺省为空）。"""
+    tracer = Tracer()
+    loop = DefaultLoop(planner=lambda ctx: Action(args={"reply": "done"}), tracer=tracer)
+
+    result = loop.run("任务")
+
+    finished = [e for e in tracer.replay(result.trace_id) if e.kind == "loop_finished"]
+    assert finished and finished[-1].module_id is None

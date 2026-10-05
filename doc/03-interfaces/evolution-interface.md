@@ -218,11 +218,17 @@ class EvolutionWorker:
 | 入口 | 形状 | 停止语义 |
 |---|---|---|
 | loop 收尾维护节拍 | 组合根把冷路径回调注入 `DefaultLoop(cold_path=...)`；与记忆维护**共用节拍闸门**（`maintenance_interval`），各自失败降级、不中断本轮 | 节拍只给**机会**，阈值门决定是否做事（未达阈值 `maybe_run()` 返回 `None`） |
+| loop 收尾 trace 完成回调（change `0101`） | 组合根把 `EvolutionWorker.on_trace_complete` 注入 `DefaultLoop(trace_observer=...)`；**按轮、不节流**（与 `cold_path` 是两个独立节律），在本轮**全部遥测记录完毕后**提交 `trace_id`（只登记、不触发、不阻塞），失败降级留痕 | 只**登记**已完成 trace（追加 `_completed`），是否跑 cycle 仍由阈值门在下次冷路径机会决定 |
 | 门控（change `0067`） | `features.evolution: false` ⇒ 组合根**不建**引擎/worker，`DefaultLoop(cold_path=None)` —— 冷路径连同其唯一消费者一起消失（不是「装配了但不做事」）；`evolve` 四子命令同时拒绝 | 门控关闭时 `Runtime.evolution` 为空，`Runtime.loop._cold_path` 为 `None` |
 | CLI `core-agent evolve run [--goal ID]` | 装配 runtime → `maybe_run(force=True, goal=…)` → 打印结局（指定 `--goal` 时先回显「本轮目标」） | **一次性动作**，不启常驻进程、不改运行态；装配失败 → stderr + 退出码 1 |
 
 - **阈值门不搬进驱动面**：节奏语义（累计 trace 数）仍归 `EvolutionTrigger`，两处阈值必然漂移。
-- **分层**：loop 属 L3、evolution 属 L4 → loop 只持 `Callable[[], None]`，装配由 `runtime.py` 做。
+- **分层**：loop 属 L3、evolution 属 L4 → loop 只持 `Callable[[], None]`（冷路径）与
+  `Callable[[str], None]`（trace 完成登记），装配由 `runtime.py` 做。
+- **模块归因采集（change `0101`）**：`_to_traces` 除既有 `tool_call` 通道外，增**模块归因通道**
+  —— 带 `module_id` 的事件（如 `loop.default` 自身失败）适配为
+  `Trace(plugin_id=module_id, task_type="module_health", success=not payload["failed"])`，
+  使架构模块自身失败成为可诊断证据；`plugin_id` 语义为**归因对象 id**（工具 id 或内部核心模块 id）。
 
 ### 4.2 自动课程（目标选择层，change `0084` / 账本 E5）
 

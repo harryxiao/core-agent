@@ -24,6 +24,7 @@
 | TC-LOOP-04 | CORE-LOOP-R4 | 触发不可逆操作 | ask_user 确认门触发 |
 | TC-LOOP-05 | CORE-LOOP-R4 | 确认门拒绝 | 改写安全动作或终止 |
 | TC-LOOP-06 | loop/spec.md「错误与预算控制」（change `0098`） | 未配置 `loop` 段与 `llm.context_window` 启动；配 `llm.context_window=131072`（预留取缺省 `8192`）；配 `loop.max_rounds=3` 端到端跑 loop | 未配置 ⇒ 回落代码缺省 `(10, 65536)`（**与变更前逐位一致**）；配窗口 ⇒ `token_budget = 窗口 − 预留`（`131072-8192=122880`）；`max_rounds=3` ⇒ 真实 loop **第 3 轮**即 `LOOP_LIMIT_EXCEEDED`（组合根注入的派生值真的生效，非类缺省）（锚点：`tests/test_loop_budget_config.py::test_build_runtime_defaults_unchanged` / `::test_build_runtime_injects_derived_limits` / `::test_configured_max_rounds_drives_production_loop`） |
+| TC-LOOP-07 | loop/spec.md「执行循环」（change `0101`） | 注入 `trace_observer` 跑一轮（含未达维护间隔、回调抛错、未注入三种）；轮数超限失败收尾并回放 `loop_finished` | 回调每轮调用一次并收到本轮 `trace_id`、**事件已齐**（可回放到 `loop_finished`）、**不受维护节拍节流**；抛错降级留痕（`trace_observer_failed`）不改本轮结局；未注入零副作用；失败轮 `loop_finished.module_id == "loop.default"`、正常轮为空（锚点：`tests/test_loop.py::test_trace_observer_called_once_per_run_with_trace_id` / `::test_trace_observer_sees_all_events_of_the_run` / `::test_trace_observer_not_throttled_by_maintenance_cadence` / `::test_trace_observer_failure_degrades` / `::test_trace_observer_absent_is_noop` / `::test_loop_failure_marks_module_attribution` / `::test_loop_success_has_no_module_attribution`；`tests/test_evolution_wiring.py::test_main_loop_wired_to_worker_trace_observer` / `::test_disabled_evolution_does_not_wire_trace_observer` / `::test_loop_failure_flows_to_module_attribution`） |
 
 ## 3. 分层记忆（TC-MEM）
 
@@ -73,6 +74,7 @@
 | TC-EVO-04 | CORE-EVO-R4 | 候选在留出集退化 | 自动回滚，不发布 |
 | TC-EVO-05 | CORE-EVO-R3 | 候选不过验证门 | 丢弃 + 教训写记忆 |
 | TC-EVO-06 | evolution/spec.md「自动课程」+「冷路径驱动」 | 冷路径开课：本批失败按插件归因（含并列、含已发布观察期目标） | 课程产出**有界、有序、确定**的议程（失败数降序 → 已处理降权 → `plugin_id` 升序），权重恒 < 1.0 作诊断**先验** ⇒ **只破并列、不压证据**；`evolve run --goal X` 时 X **直接采用**（不被证据改写，仍走四阶段 + 人工 `confirm`）（锚点：`tests/test_evolution_curriculum.py`、`tests/test_evolution.py::test_diagnoser_prior_breaks_tie`、`::test_prior_never_overrides_evidence`、`::test_worker_auto_agenda_breaks_tie`、`::test_worker_explicit_goal_overrides_evidence`、`tests/test_entry.py::test_evolve_run_forwards_explicit_goal`） |
+| TC-EVO-07 | evolution/spec.md「经验采集」（change `0101`） | 采集带 `module_id` 的失败/成功事件、既有 `tool_call` 事件（直接测适配器 + 端到端经 `maybe_run` 归因） | 带模块归因的事件 ⇒ 可归因到该架构模块的数量证据（`plugin_id == module_id`、失败 ⇒ `success=False`、`task_type="module_health"`）；**既有工具通道逐字不变**（仍 `tool_use`、按工具 id 归因）（锚点：`tests/test_evolution.py::test_worker_adapts_module_attributed_event` / `::test_worker_module_attribution_drives_diagnosis` / `::test_worker_success_module_event_is_not_a_defect` / `::test_worker_tool_channel_unchanged`；`tests/test_evolution_wiring.py::test_successful_loop_produces_no_defect_evidence`） |
 
 ## 7. 权限与审批管控（TC-PERM）
 
@@ -106,6 +108,7 @@
 | TC-OBS-03 | CORE-OBS-R3 | 按 trace_id 重放 | 单轮可复现 |
 | TC-OBS-04 | CORE-OBS-R4 | 进化经验采集 | 数据源来自统一遥测流 |
 | TC-OBS-05 | CORE-OBS-R1 | 未注入 tracer 的组合根装配并结束一条 trace | 事件 JSONL 落 `$CORE_STATE_DIR`，经缓冲包装，导出失败不阻塞 |
+| TC-OBS-06 | observability/spec.md「全链路日志」（change `0101`） | 构造 `TraceEvent` 不传 / 传 `module_id`；既有四类 `kind` 路径的记录与序列化 | `module_id` 缺省为 `None`（**向后兼容**，既有 trace_id/span_id/ts/kind/payload 语义逐字不变）；传入时按模块归因携带（锚点：`tests/test_observability.py::test_trace_event_module_id_defaults_to_none` / `::test_trace_event_carries_module_attribution`） |
 
 ## 10. 约束与容错（TC-CONS）
 
