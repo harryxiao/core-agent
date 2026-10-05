@@ -44,6 +44,18 @@ class CICDPipeline:
         """取回指定门禁；门禁实现引用 development-toolchain（ruff/pyright/pytest/构建）。"""
 ```
 
+**生产缺省门禁执行器**（`src/core/ci_cd/pipeline.py::SubprocessGateExecutor`，经 `build_gate_executor()` 工厂产出）：
+以 stdlib `subprocess` 直跑 `GATE_COMMANDS`（`shlex.split`，**不经 shell**），类型满足 `Callable[[Gate], GateResult]`
+⇒ 缺省装配与注入替换**同一接缝**。构造参数 `commands` / `cwd` / `timeout`（缺省 600s）可注入。
+
+| 情形 | 结果 |
+|---|---|
+| 退出码 0 | `GateResult(passed=True)` |
+| 退出码非零 | `GateResult(passed=False, reason="退出码 N：<有界输出尾部>")` |
+| 找不到可执行文件 | `GateResult(passed=False, reason="找不到可执行文件：<程序名>")` |
+| 超过超时阈值 | `GateResult(passed=False, reason="门禁 <kind> 超过超时阈值 …")` |
+| 未知门禁类型 | 抛 `CiCdError(GATE_FAILED)`（调用/配置错误，非门禁结果） |
+
 ---
 
 ## 3. ArtifactPublisher 接口（制品发布）
@@ -63,7 +75,7 @@ class ArtifactPublisher:
 
 | 错误码 | 含义 |
 |---|---|
-| `GATE_FAILED` | 门禁失败（阻断交付，返回失败门禁与原因） |
+| `GATE_FAILED` | 门禁失败（阻断交付，返回失败门禁与原因）；执行器侧另用于**未知门禁类型**（配置/调用错误） |
 | `ARTIFACT_NOT_FOUND` | 制品版本不存在 |
 | `CHANNEL_UNREACHABLE` | 发布通道不可达 |
 

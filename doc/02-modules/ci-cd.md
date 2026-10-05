@@ -32,6 +32,11 @@ CI-CD（工程闸门）
 
 - 门禁分 lint / typecheck / test / build 四类，lint/typecheck/test 为阻断级（blocking）。
 - 门禁实现引用 development-toolchain（0025-configuration 工具链：ruff / pyright / pytest / 构建），不重复造轮子。
+- **生产缺省执行器已落地**（change 0091／ADR-0086）：`SubprocessGateExecutor` 以 stdlib `subprocess` 直跑
+  `GATE_COMMANDS`（不经 shell，零第三方依赖）；非零退出 / 工具缺失 / 超时一律归一为「该门禁未通过」+ 有界原因，
+  不抛裸异常。命令基准 `GATE_COMMANDS` 不动（单一真源）；`commands` / `cwd` / `timeout` 可注入。
+- **装配待消费者**：`ci_cd` 在 `src/` 内零调用方，其消费者（交付编排）未出现，故不加组合根字段 / `ci gate` CLI
+  入口（另：本仓四门可执行体不在 PATH ⇒ 命令基准 / PATH 假设本身待一次决策）。
 
 ### 3.2 顺序执行与阻断
 

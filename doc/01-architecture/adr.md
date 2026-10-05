@@ -1703,6 +1703,37 @@
 
 ---
 
+## ADR-0086：ci_cd 门禁执行器 = stdlib subprocess 直跑 GATE_COMMANDS
+
+- **背景**：账本 C3（Phase 20 §1/§4.2）—— 注入面（`pipeline.py:40-41`）与四道门禁命令基准 `GATE_COMMANDS`
+  均已就位，但生产**缺省**执行器 `build_gate_executor` 对**任何**门禁都直接抛「离线未接」⇒「交付流水线」
+  在生产**恒不可用**（与 Phase 19 反复记的「实现已落地、缺生产触达点」同型）。
+- **决策**：
+  ① **执行器 = `SubprocessGateExecutor`（可调用对象）**，类型满足既有注入面 `Callable[[Gate], GateResult]`
+     ⇒ 缺省装配与注入替换**同一接缝**；工厂 `build_gate_executor(**kw)` 与 git 的 `build_backend()` 同形。
+     **不改注入面为 Protocol**：单一实现，无收益的抽象升级（YAGNI）。
+  ② **stdlib `subprocess` + `shlex.split`、不经 shell**：命令是自家常量却仍免注入面与 shell 语义差异；
+     零第三方依赖（ADR-0044）。
+  ③ **失败归一为 `GateResult(passed=False)` 而非抛**：「跑不起来」（工具缺失 / 超时）与「跑失败」（非零退出）
+     对上都是**该门禁未通过**，交 `CICDPipeline` 既有阻断路径；**未知门禁类型仍抛 `GATE_FAILED`**
+     （那是调用/配置错误，非门禁结果 —— 与 `CICDPipeline.gate` 同口径）。
+  ④ **`reason` 含**有界**输出尾部（≤2 000 字符）**：规格明文「返回失败门禁与**原因**」，只给退出码无信息量。
+     **与 `ADR-0085` 有意不同** —— 门禁输出是本地工具自身诊断文本（无凭据面），git stderr 可能含带凭据的远程地址。
+  ⑤ **超时缺省 600s**（可注入）：全量 pytest 留足余量，同时杜绝无限挂起（对齐 R5 对远程的取向）。
+  ⑥ **不动 `GATE_COMMANDS`**（Phase -1 固化基线，被既有测试逐条断言形状）：本变更只补「怎么跑」。
+     **已知接受项**：本仓四门可执行体不在 PATH ⇒ 缺省执行器在本仓会如实判「工具缺失 / 未通过」（**正确**行为），
+     命令基准 / PATH 假设的调整是**另一次决策**。
+  ⑦ **不做组合根装配 / 不做 `ci gate` CLI**（**偏离 phase-20 §4.2 原记**）：`ci_cd` 在 `src/` 内**零调用方**，
+     消费者（交付编排）未出现；且 CLI 会给出一个**在本仓必然失败**的门面 ⇒ 装配与 CLI 并入消费者出现的 change
+     （同 `ADR-0085` 对 git 的判定）。
+- **影响**：`CICDPipeline()` 缺省路径**真的可用**；`tests/test_ci_cd.py` **零改动**（全部显式注入 executor）。
+- **规格**：MODIFIED「交付流水线」（补生产缺省执行器口径 + 2 场景）。
+- **前置**：`ADR-0044`（核心零三方依赖）、`ADR-0085`（同批 C 类代码半，同「不造空接缝」判定）。
+- **转出**：真实制品仓库通道（`CHANNEL_UNREACHABLE`，凭证半）→ Phase 19 §5；`ci gate` CLI + `GATE_COMMANDS`
+  的 PATH/命令基准决策 → 待消费者变更。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1783,3 +1814,4 @@
 | ADR-0083 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md, 03-interfaces/ui-interface.md |
 | ADR-0084 | 03-interfaces/observability-interface.md, 02-modules/observability.md |
 | ADR-0085 | 03-interfaces/git-interface.md, 12-git/git-architecture.md |
+| ADR-0086 | 03-interfaces/ci-cd-interface.md, 02-modules/ci-cd.md |

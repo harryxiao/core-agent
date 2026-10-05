@@ -25,7 +25,7 @@
 |---|---|---|---|---|
 | C2 | `git` | ✅ **已关闭（change `0090`／ADR-0085）**：`SubprocessGitBackend`（stdlib `subprocess` 直调 git CLI，13 原语）+ `build_backend()` 返回之 + 新增 `GIT_COMMAND_FAILED` + 错误不回显 stderr；**装配待消费者**（见 §4.1 偏离说明） | 无（git 是本地工具，**零凭证**） | ~~高~~ 已闭 |
 | E27 | `im` | `IMGateway` 装配 + 宿主入口 + 白名单配置键 + Provider 插拔点 | 平台 SDK / 机器人凭证 / 回调 | **高**（第三入口整体缺席） |
-| C3 | `ci_cd` | 门禁执行器（subprocess 跑已定义的 `GATE_COMMANDS`）+ 制品发布通道 + CLI | 制品仓库凭证 | 中（本仓自己的四门就是它的需求） |
+| C3 | `ci_cd` | ✅ **已关闭（change `0091`／ADR-0086）**：`SubprocessGateExecutor`（stdlib `subprocess` 直跑 `GATE_COMMANDS`，不经 shell）+ 失败/工具缺失/超时归一 + `reason` 有界输出尾部；**装配与 `ci gate` CLI 待消费者**（见 §4.2 偏离说明） | 制品仓库凭证（`CHANNEL_UNREACHABLE`） | ~~中~~ 已闭 |
 | C4 | `observability` | ✅ **已关闭（change `0089`／ADR-0084）**：组合根缺省装配 `BufferedExporter(JSONLExporter($CORE_STATE_DIR/traces.jsonl))` + 注入优先；`JSONLExporter` 自建父目录 | OTel 导出 SDK（「指标导出协议」，另案） | ~~中~~ 已闭 |
 | C5 | `skillhub` | 把已实现的 `SkillHubClient` 接进 `skill search/install`（注入内存 `MarketIndex` 即离线可验） | 真实市场 fetcher（网络） | 中（客户端全实现却零调用方） |
 | C6 | `plugin_registry` / `plugins` | `InstallDispatcher.resolve` 增补 GIT_REPO / MARKET_REGISTRY / MCP_ENDPOINT 三种来源 | git remote / 市场 / 端点可达性 | 中（`LOCAL_PATH` 已真） |
@@ -88,11 +88,13 @@
 - **偏离原记（须记）**：本文件原计划的「**组合根装配 + `git` CLI 入口**」**有意不做** —— git 是 capability 非 tool（`git-architecture.md` §1），其消费者（coding 工作流）**尚未存在**；此刻塞进 `Runtime` 或加 `core-agent git <verb>` = **无消费者的空接缝**（与 §2 对 E27 的判定同理）。装配并入**消费者出现时**的该消费者 change。详见 change `0090` `proposal.md`「明确不做」。
 - **仍归 Phase 19 §5（凭证半 / 可靠性半）**：远程凭据 keychain 集成（R3）、远程退避重试与连接释放（R5）。
 
-### 4.2 `ci_cd`（C3）
+### 4.2 `ci_cd`（C3）✅ 已关闭（change `0091`／ADR-0086）
 
-- **现状**：`executor` / `channel` 均可注入（`pipeline.py:40-41`、`publisher.py:29-30`）；`GATE_COMMANDS`（ruff / pyright / pytest / uv build）**已定义**（`pipeline.py:21-26`）；`build_gate_executor` 抛「离线未接」；组合根零出现。注意 `release` CLI 子命令是 **Bundle 管理器**，**不是** ci_cd。
-- **要写**：门禁执行器（`subprocess` 跑已定义的 `GATE_COMMANDS`）+ 制品发布通道 + `ci/gate` 入口。
-- **离线验证**：在本仓真跑四门即端到端；发布通道用 fake channel。
+- **现状（关闭前）**：`executor` / `channel` 均可注入（`pipeline.py:40-41`、`publisher.py:29-30`）；`GATE_COMMANDS`（ruff / pyright / pytest / uv build）**已定义**（`pipeline.py:21-26`）；`build_gate_executor` 抛「离线未接」；组合根零出现。注意 `release` CLI 子命令是 **Bundle 管理器**，**不是** ci_cd。
+- **已写**：`SubprocessGateExecutor`（`src/core/ci_cd/pipeline.py`）—— stdlib `subprocess` 直跑 `GATE_COMMANDS`（`shlex.split`，不经 shell，零三方依赖）；`build_gate_executor(**kw)` 改工厂（`commands`/`cwd`/`timeout` 可注入）；**失败归一**为 `GateResult(passed=False)`（非零退出 / 工具缺失 / 超时），`reason` 含**有界**输出尾部（≤2000 字符，门禁输出是本地工具诊断文本、无凭据面 ⇒ **与 `0090` git「不回显 stderr」有意不同**）；未知门禁类型仍抛 `GATE_FAILED`（调用/配置错误）。`GATE_COMMANDS` 与既有测试零改动。
+- **离线验证**：`tests/test_ci_cd_subprocess.py`（8 例）以 `sys.executable -c …` 注入命令走**真实 subprocess**（不依赖 PATH 上装了 ruff/pyright）。
+- **偏离原记（须记）**：本文件原计划的「**组合根装配 + `ci/gate` 入口**」**有意不做** —— `ci_cd` 在 `src/` 内**零调用方**（消费者 = 尚未存在的交付编排）；且本仓四门可执行体**不在 PATH**（ruff 在 `~/.cache/uv/binaries-*`、pyright 在别的 venv、pytest 在 `.venv/bin`）⇒ 此刻上 CLI 等于给出一个**在本仓必然失败**的门面，`GATE_COMMANDS` 的 PATH/命令基准假设**本身需要一次决策**。装配与 CLI 并入消费者出现时的 change。
+- **仍归 Phase 19 §5（凭证半）**：真实制品仓库通道（`publisher._default_channel` 保持抛 `CHANNEL_UNREACHABLE`）。
 
 ### 4.3 `observability`（C4）✅ 已关闭（change `0089`／ADR-0084）
 

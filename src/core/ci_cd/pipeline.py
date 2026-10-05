@@ -1,15 +1,19 @@
 """交付流水线（ci-cd）：质量门禁四道。
 
 顺序执行 lint/typecheck/test/build 四道门禁；任一阻断级门禁失败阻断交付
-并抛 GATE_FAILED。门禁执行器可注入（默认引用 development-toolchain，离线未接）。
+并抛 GATE_FAILED。门禁执行器可注入；生产**缺省**执行器以 stdlib ``subprocess`` 直跑
+`GATE_COMMANDS` 基准命令（零第三方依赖）。
 
 对应接口：doc/03-interfaces/ci-cd-interface.md §2
 """
 
 from __future__ import annotations
 
+import shlex
+import subprocess
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from pathlib import Path
 
 from .errors import CiCdError, CiCdErrorCode
 from .models import Gate, GateResult, PipelineRun
@@ -25,20 +29,79 @@ GATE_COMMANDS: dict[str, str] = {
     "build": "uv build",
 }
 
+# 单道门禁缺省超时：全量 pytest 亦留足余量，同时杜绝无限挂起。
+_DEFAULT_TIMEOUT = 600.0
 
-def build_gate_executor(gate: Gate) -> GateResult:
-    """生产门禁执行器：引用 development-toolchain（ruff/pyright/pytest/uv build），离线未接。"""
-    raise CiCdError(
-        CiCdErrorCode.GATE_FAILED,
-        f"门禁 {gate.kind} 需接 development-toolchain 执行器（离线未接）",
-    )
+# 失败 reason 中保留的输出尾部上限：够定位问题，又不把整份测试输出塞进日志。
+_MAX_REASON_CHARS = 2000
+
+
+def _failure_reason(proc: subprocess.CompletedProcess[str]) -> str:
+    """非零退出的原因：退出码 + **有界**输出尾部（本地工具诊断文本，无凭据面）。"""
+    output = (proc.stdout + proc.stderr).strip()
+    if not output:
+        return f"退出码 {proc.returncode}"
+    return f"退出码 {proc.returncode}：{output[-_MAX_REASON_CHARS:]}"
+
+
+class SubprocessGateExecutor:
+    """生产门禁执行器：stdlib ``subprocess`` 直跑 `GATE_COMMANDS`（零第三方依赖，不经 shell）。
+
+    「跑不起来」（工具缺失 / 超时）与「跑失败」（非零退出）同样归一为**该门禁未通过**的结果载体，
+    交 `CICDPipeline` 按既有「门禁失败阻断」路径处理 —— 执行器**不向调用方抛裸异常**。
+    """
+
+    def __init__(
+        self,
+        *,
+        commands: Mapping[str, str] | None = None,
+        cwd: str | Path | None = None,
+        timeout: float = _DEFAULT_TIMEOUT,
+    ) -> None:
+        self.commands = dict(commands) if commands is not None else dict(GATE_COMMANDS)
+        self._cwd = Path(cwd) if cwd is not None else None
+        self._timeout = timeout
+
+    def __call__(self, gate: Gate) -> GateResult:
+        command = self.commands.get(gate.kind)
+        if command is None:
+            raise CiCdError(CiCdErrorCode.GATE_FAILED, f"未知门禁类型: {gate.kind}")
+        argv = shlex.split(command)
+        try:
+            proc = subprocess.run(
+                argv,
+                cwd=str(self._cwd) if self._cwd is not None else None,
+                capture_output=True,
+                text=True,
+                timeout=self._timeout,
+                check=False,
+            )
+        except FileNotFoundError:
+            return GateResult(passed=False, reason=f"找不到可执行文件：{argv[0]}")
+        except subprocess.TimeoutExpired:
+            return GateResult(
+                passed=False, reason=f"门禁 {gate.kind} 超过超时阈值 {self._timeout:g}s"
+            )
+        if proc.returncode == 0:
+            return GateResult(passed=True)
+        return GateResult(passed=False, reason=_failure_reason(proc))
+
+
+def build_gate_executor(
+    *,
+    commands: Mapping[str, str] | None = None,
+    cwd: str | Path | None = None,
+    timeout: float = _DEFAULT_TIMEOUT,
+) -> SubprocessGateExecutor:
+    """生产门禁执行器工厂：返回以 stdlib ``subprocess`` 直跑 `GATE_COMMANDS` 的执行器。"""
+    return SubprocessGateExecutor(commands=commands, cwd=cwd, timeout=timeout)
 
 
 class CICDPipeline:
     """质量门禁：顺序执行四道门禁，全通过才放行交付。"""
 
     def __init__(self, *, executor: Callable[[Gate], GateResult] | None = None) -> None:
-        self._executor = executor if executor is not None else build_gate_executor
+        self._executor = executor if executor is not None else build_gate_executor()
 
     def gate(self, kind: str) -> Gate:
         """取回指定门禁；门禁实现引用 development-toolchain。"""

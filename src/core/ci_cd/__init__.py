@@ -2,7 +2,7 @@
 
 from .errors import CiCdError, CiCdErrorCode
 from .models import Artifact, Gate, GateResult, PipelineRun
-from .pipeline import GATE_COMMANDS, CICDPipeline, build_gate_executor
+from .pipeline import GATE_COMMANDS, CICDPipeline, SubprocessGateExecutor, build_gate_executor
 from .publisher import ArtifactPublisher
 
 __all__ = [
@@ -15,5 +15,6 @@ __all__ = [
     "Gate",
     "GateResult",
     "PipelineRun",
+    "SubprocessGateExecutor",
     "build_gate_executor",
 ]
