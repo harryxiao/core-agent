@@ -1875,6 +1875,11 @@
   `tools.<未知>` 由 READ 误判变 HIGH_RISK（deny-by-default 正解）。以上无既有测试断言。
 - **明确不做**：给 `SafetyGate` 加权限档；改 `PolicyEngine.authorize`；「auto-approve 顶部 return」；
   改动 `_WRITE_TOKENS` / `_HIGH_RISK_TOKENS` 其余词元（无证据，避免顺带重构）。
+- **已知边界（无人值守前置条件，change `0096` 补记）**：auto-approve 解的是**权限层**的门，端到端无人值守仍需
+  ① **不配 judgment**（`guardrail` 仅当 `judgment.provider` 存在时注入，缺省 `None` ⇒ 无红线；一旦配了，
+  `noul=False` 仍 `deny` —— 这正是 0095 有意保留的正交红线，不被全放行越过）；② **不用 MCP http/streamable 传输**
+  （`permission.sandbox.host_allowlist` 缺省空 = fail-closed 全拒；`tools.web_fetch` 与 `tools.code_run` 不经该策略）。
+  进化结晶门与权限档零耦合（`engine.py:136`「不引入低风险自动结晶」）⇒ 无人值守下进化循环照跑，但不自动结晶。
 
 ---
 

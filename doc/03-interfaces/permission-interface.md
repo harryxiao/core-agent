@@ -184,6 +184,18 @@ class PermissionModeGate:
 ⇒ 出站网络 / 不可归类动作仍走审批（名实不符）。全放行**仅覆盖权限层**，SHALL NOT 越过与之正交的 guardrail
 拦截（`PermissionGuard` 的 guardrail 分支保留在不可逆写分支**之前**）；read-only 与 high-risk-block 两档逐字不变。
 
+**无人值守前置条件（change `0096`）**：auto-approve 解除的是**权限层**的门；下列与权限档正交者仍可能拦住
+无人值守运行，按「缺省是否成立」列出：
+
+| 机制 | 缺省装配 | 无人值守下是否成立 |
+|---|---|---|
+| judgment guardrail（红线） | `runtime.py:258` 仅当 **配了 `judgment.provider`** 才注入 `Guardrail` ⇒ **缺省 `guardrail=None`、无红线** | 缺省 ✅；**若配了 judgment**，其 `noul=False` 判定仍 `deny`（有意保留，不随权限档放宽；回退/低置信不拦） |
+| MCP 出站白名单（`permission.sandbox.host_allowlist`） | 缺省空 ⇒ `check_outbound` **fail-closed 全拒** | 只在用 MCP http / streamable-http 传输时需要（`tools.web_fetch` 走 urllib、`tools.code_run` 不经 `SandboxManager`，均不受此限） |
+| 进化结晶人工门 | 与权限档**零耦合**（`engine.py:136`：「低风险仍须显式调用、不引入自动结晶」） | 进化循环会跑完四阶段（诊断→提案→验证门→留出评测），但**不会**自动结晶进技能库/插件 |
+
+即：**未配 `judgment`、且不依赖 MCP http 端点时，`--permission-mode auto-approve` 是真无人值守**。
+另记一件「会停但不算要人批」的：`ConstraintsChain` 连续失败熔断（缺省 5 次 / 30s）会中止该轮 —— 可靠性阀，非审批门。
+
 ---
 
 ## 7. 关联
