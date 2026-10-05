@@ -108,6 +108,45 @@ def test_pet_disabled_by_default(capsys: pytest.CaptureFixture[str]) -> None:
     assert "宠物模式未启用" in capsys.readouterr().err
 
 
+def test_pet_yaml_admits_and_honors_persons_dir(tmp_path, monkeypatch, capsys) -> None:
+    """pet 门控与 persona 目录走 ConfigSpec 三层链：yaml 里的 enabled/persons_dir 生效。
+
+    回归账本 E21：CLI 前置判定此前只解析 CLI/env（漏 yaml 层），故 config.yaml 写了
+    ``pet.enabled: true`` 也被判为未启用、``persons_dir`` 被静默忽略（回落 "./persons"）。
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    persons = tmp_path / "kennels"
+    persons.mkdir()
+    (persons / "xiaoju.md").write_text("name: 小橘\nspecies: 猫\n", encoding="utf-8")
+    cfg = _write_pet_config(tmp_path, enabled=True, persons_dir=str(persons))
+
+    assert main(["--config", cfg, "pet", "list"]) == 0
+    captured = capsys.readouterr()
+    assert "宠物模式未启用" not in captured.err  # yaml 的 enabled=true 被采信
+    assert "xiaoju" in captured.out  # persons_dir 取自 yaml（非 cwd 下的 ./persons）
+
+
+def test_pet_env_overrides_yaml(tmp_path, monkeypatch, capsys) -> None:
+    """优先级链 CLI flag > env > yaml：env 显式关（false）压过 yaml 的 true。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("CORE_PET_ENABLED", "false")
+    cfg = _write_pet_config(tmp_path, enabled=True)
+
+    assert main(["--config", cfg, "pet", "list"]) == 0
+    assert "宠物模式未启用" in capsys.readouterr().err
+
+
+def test_pet_missing_config_file_is_tolerated(tmp_path, monkeypatch, capsys) -> None:
+    """配置文件不存在：前置判定按「无 yaml 层」处理（不装配、不报错、退出 0）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    missing = tmp_path / "nope.yaml"
+
+    assert main(["--config", str(missing), "pet", "list"]) == 0
+    captured = capsys.readouterr()
+    assert "宠物模式未启用" in captured.err
+    assert "装配失败" not in captured.err  # 前置判定不因缺文件抛错
+
+
 def test_repl_wires_llm_config(monkeypatch, tmp_path) -> None:
     """无子命令进 REPL：真 runtime 装配 + 注入 LLM 配置（对齐 run 的同构入口）。"""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
@@ -173,6 +212,23 @@ def _write_config(tmp_path) -> str:
         "  model: test-model\n"
         "  endpoint: https://example.com/v1\n"
         "  api_key: ${OPENAI_API_KEY}\n",
+        encoding="utf-8",
+    )
+    return str(cfg)
+
+
+def _write_pet_config(tmp_path, *, enabled: bool, persons_dir: str | None = None) -> str:
+    cfg = tmp_path / "config.yaml"
+    directory = persons_dir if persons_dir is not None else str(tmp_path / "persons")
+    cfg.write_text(
+        "llm:\n"
+        "  provider: openai\n"
+        "  model: test-model\n"
+        "  endpoint: https://example.com/v1\n"
+        "  api_key: ${OPENAI_API_KEY}\n"
+        "pet:\n"
+        f"  enabled: {'true' if enabled else 'false'}\n"
+        f"  persons_dir: {directory}\n",
         encoding="utf-8",
     )
     return str(cfg)

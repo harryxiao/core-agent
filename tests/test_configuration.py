@@ -397,6 +397,48 @@ def test_pet_enabled_env_override(tmp_path: Path) -> None:
     assert config.pet.enabled is False
 
 
+# ---- config_value：装配前单键解析（账本 E21） ----
+
+
+def test_config_value_reads_yaml_layer(tmp_path: Path) -> None:
+    """CLI 前置判定要能看到 yaml 层：pet.* 从 config.yaml 读出（此前只解析 CLI/env）。"""
+    manager = _manager(tmp_path, _PET_YAML)
+    assert manager.config_value("pet.enabled") is True
+    assert manager.config_value("pet.persons_dir") == "./pets"
+
+
+def test_config_value_priority_chain(tmp_path: Path) -> None:
+    """优先级链 CLI flag > env > config.yaml > 缺省，逐层压过。"""
+    manager = _manager(
+        tmp_path,
+        _PET_YAML,
+        environ={"CORE_PET_ENABLED": "false"},
+        cli={"pet.enabled": True},
+    )
+    assert manager.config_value("pet.enabled") is True  # CLI 压过 env 与 yaml
+    env_only = _manager(tmp_path, _PET_YAML, environ={"CORE_PET_ENABLED": "false"})
+    # env 层取字符串原文（与 resolve 口径一致），归一化（如 _as_bool）是调用方的事
+    assert env_only.config_value("pet.enabled") == "false"
+
+
+def test_config_value_falls_back_to_default(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, _VALID_YAML)
+    assert manager.config_value("pet.enabled") is False
+    assert manager.config_value("pet.persons_dir") == "persons"
+
+
+def test_config_value_tolerates_missing_file(tmp_path: Path) -> None:
+    """配置文件不存在按「无 yaml 层」处理（不抛 ConfigurationError）。"""
+    manager = ConfigManager(tmp_path / "nope.yaml", environ={"OPENAI_API_KEY": "sk-test"})
+    assert manager.config_value("pet.enabled") is False
+
+
+def test_config_value_maps_key_differing_from_map_to(tmp_path: Path) -> None:
+    """yaml 键按 ``map_to`` 嵌套、解析键为 ``ConfigSpec.key``，两者不同也须对上。"""
+    manager = _manager(tmp_path, _VALID_YAML + "im:\n  corp_id: wx123\n  secret: ${IM_SECRET}\n")
+    assert manager.config_value("im.corp-id") == "wx123"
+
+
 # ---- M8：judgment.* ConfigSpec 单一真源 ----
 
 

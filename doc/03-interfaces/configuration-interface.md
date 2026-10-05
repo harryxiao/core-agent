@@ -88,6 +88,9 @@ class ConfigManager:
     def circuit_breaker(self) -> tuple[int, float]:
         """熔断阈值/冷却查询 → ``(failure_threshold, cooldown_s)``（缺省 ``(5, 30.0)``），映射 config.constraints.*。"""
 
+    def config_value(self, key: str) -> Any:
+        """装配前单键解析（change 0070）：CLI > env > config.yaml > 缺省；不校验、不缓存，缺文件按无 yaml 层。"""
+
     def apply_change(self, patch: dict) -> AppConfig:
         """变更即生效：写入失败回滚到变更前完整配置，不留半写状态。"""
 
@@ -161,3 +164,17 @@ feature flag 只管**装配**，不改模块自身的二级启用开关（`featu
 - **消费方**：组合根 `build_runtime` 经 `config.circuit_breaker()` 读出后注入 `build_constraints_chain`，
   主 loop 与子 agent loop **共享同一链实例**（熔断态 per-runtime）。
 - 口径来源：`doc/openspec/specs/constraints/spec.md`「容错中间件」（**MODIFIED**）。
+
+### 2.5 装配前单键解析（change `0070`，账本 E21）
+
+`config_value(key)` 是 `load()` 之外的第二条**只读单键**通路，专供 CLI 层在装配前做前置判定
+（当前消费方：`entry._pet` 的 `pet.enabled` 门控与 `pet.persons_dir` 取值）。
+
+- **同源**：内部即 `resolve(key, cli=self._cli, env=self._environ, yaml=<yaml 层>, specs=self._specs)` ——
+  与 `load()` 共用 ConfigSpec 单一真源，**禁止**另起一套解析（规格「宠物模式配置」明文要求）。
+- **yaml 层**：按 `ConfigSpec.map_to` 从嵌套 yaml 逐键取出、以 `ConfigSpec.key` 为键回填
+  （两者对 `im.corp-id` 等键不同名，故不能简单按点分拼键）。
+- **不校验/不阻断/不缓存**：`config.yaml` 缺失按「无 yaml 层」处理（不抛 `ConfigurationError`），
+  供「配置文件可能不存在」的前置判定使用；整份配置的校验仍归 `load()`。
+- **返回原文**：env/CLI 层为字符串，归一化（如 `entry._as_bool`）由调用方负责，与 `resolve` 口径一致。
+- 性能无关紧要：前置判定只读单键，不解析整份配置为 `AppConfig`。

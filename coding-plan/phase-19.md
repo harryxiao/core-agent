@@ -26,14 +26,14 @@
   硬编码类缺省 5 / 30s。**改代码**：两键写进 `_CONFIG_SPECS`（`map_to="constraints.*"`）⇒ CLI flag / env / yaml /
   §2.3 白名单**全部自动派生**（单一真源）；**不新增结构化段**（镜像 `permission.mode` 的 `extra` 驻留，不动规格「五个结构化段」字面）；
   访问器 `circuit_breaker()` + 校验期拒绝（阈值 ≥1 整数 / 冷却 ≥0 数值，**不静默兜底**）；组合根注入、主/子 loop 共享同链。
-  **明确不做**：`features` 未知名告警与值强转（E20）、`entry._pet` yaml 判据（E21）。
+  **明确不做**：`features` 未知名告警与值强转（E20，仍在账）。
 - **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A5、E2/E4/E5 全归此（A4 已随 change `0055` 关闭、E3 已随 change `0057` 关闭）。
 - **一条值得单独记的形态问题**：`cli-contract-baseline.md` 的**内置工具契约与实现已对不上账**（见 E7）——契约列的 5 个工具在代码里从未存在。
 
 | 类别 | 项数 | 最高优先级 | 是否阻塞调试 |
 |---|---|---|---|
 | A Phase 18 收口遗留 | 11 | 中 | 否 |
-| E 早期 Phase 未闭合项 | 20 | 中 | 否 |
+| E 早期 Phase 未闭合项 | 21 | 中 | 否 |
 | B Phase 12 MCP（部分关闭） | 5 | 低（B1 client 侧已闭） | 否（可绕开） |
 | C 真实外部后端未接 | ~20 处 | 低 | 否 |
 | D 文档与仓库杂项 | 6（4 已关闭） | 无 | 否 |
@@ -77,7 +77,8 @@
 | E16 | E | `AsyncNotifier` 无 channel | pet 通知仅入队，`flush()` 投递未接；IM 通道（`im`）为依赖 | 低 | IM 通知通道 |
 | E17 | E | ~~pet 无后台 daemon~~ | ✅ 已关闭（change `0065`，**规格未要求**）：`wake()` 由**宿主**驱动、内核不常驻；接口 §5 / 模块 §4 登记为已知语义 | 低 | — |
 | E20 | E | `features` 未知模块名无告警 + 值非布尔被强转 | 白名单在组合根（配置层不认识模块名）⇒ 拼错的模块名静默生效/失效；`bool("off")` 为真 ⇒ `features.pet: "off"` 实为开 | 低 | E10 收口（change `0067`） |
-| E21 | E | `entry._pet` 的 `pet.enabled` 判据忽略 config.yaml | CLI 用 `resolve(cli=, env=)`（无 yaml 层）判启用，而 `build_runtime` 同谓词含 yaml 层 ⇒ CLI/WebUI/装配三方准入不一致，违反文档优先级链 | 低 | E10 收口（change `0067`） |
+| E21 | E | ~~`entry._pet` 的 `pet.enabled` 判据忽略 config.yaml~~ | ✅ 已关闭（change `0070`）：CLI 前置判定改走 `ConfigManager.config_value(key)`（CLI > env > **config.yaml** > 缺省，ConfigSpec 单一真源），`pet.persons_dir` 同源读取；缺文件按「无 yaml 层」容错 | 低 | — |
+| E22 | E | `config get` 同型缺陷（`resolve(cli=, env=)` 漏 yaml 层） | `entry.py:372` 与 E21 同一缺陷类（CLI 只解析两层）；因开发机存在本地 `config.yaml` 且既有用例断言缺省值，改动会变更该命令输出语义 ⇒ 单独裁决 | 低 | E21 收口（change `0070`） |
 | B1 | B | Phase 12 MCP 安装/传输/安全（client 侧） | 🔶 **部分关闭（change `0054`）**：stdio 传输 + `add` 分流 + 沙箱/白名单/确认门接线 + 组合根装配已落地（ADR-0057）；**余** http 会话 → B2、服务端 stdio → B3、CLI 接线 → B4、白名单配置 → B5 | 低 | 无 |
 | B2 | B | 远端 http/streamable-http 会话 | `build_http_transport` 仅落地「白名单守卫 + SDK 缺失降级 + 会话待接入报错」；`Mcp-Session-Id`/SSE/headers 未实现 | 低 | mcp SDK（离线不可装） |
 | B3 | B | `MCPServer.serve` stdio 事件循环 | 服务端方向（本机作 MCP server 暴露工具）未实现；client 方向 `0054` 已通 | 低 | 无 |
@@ -435,7 +436,7 @@
   避免改配置规格里「五个结构化段」的字面枚举，且 `map_to` 前缀已让白名单自动收纳 `constraints`。
 - **验证**：`tests/test_constraints_config.py` 17 例（缺省 / yaml / env / CLI 优先级 / 非法 5+3 参数化 /
   不静默兜底 / 无未知段告警 / 组合根注入 identity / 端到端阈值驱动生产熔断）；四门全绿（840 passed）。
-- **明确不做**：`features` 未知模块名告警与值强转（**E20**）、`entry._pet` yaml 判据（**E21**）、
+- **明确不做**：`features` 未知模块名告警与值强转（**E20**，仍在账）、
   RetryPolicy/Fallback 可配、半开试探参数（无生产需求）。
 
 ### E17 pet 无后台 daemon（E4 收口时记后续） — ✅ 已关闭（change `0065`；判定「规格未要求」）
@@ -493,6 +494,33 @@
 - **明确不做**：实现环形缓冲 + 异步重试 —— 静默降级会**掩盖磁盘满**（与「已持久化结果不丢失」
   的规格精神相悖），且需为一条无生产需求的愿景引入后台线程 + 两套真源（内存 buffer vs 磁盘）。
 - **前置**：策略裁决（已裁决）。
+
+### E21 `entry._pet` 的 `pet.enabled` 判据忽略 config.yaml — ✅ 已关闭（change `0070`）
+
+- **现象**：`entry.py:954` `resolve("pet.enabled", cli=cli, env=os.environ)` **漏 `yaml=` 参数**
+  ⇒ CLI 前置判定只看两层（CLI/env），永远看不到 `config.yaml`；`pet.persons_dir`（:960）同病，
+  被静默忽略、回落 cwd 下的 `./persons`。而**同一进程**稍后的 `build_runtime(ConfigManager(...))`
+  走 `load()`（**含 yaml 层**）⇒ **同一次调用内两套判据**。
+- **根因**：`resolve` 的 `yaml=` 层缺省为空映射，调用方须自行提供 yaml 层；`_pet` 未提供
+  （`config get`（:372）同型 —— 见 §1 表新行 **E22**）。
+- **裁决**：属「**规格要求 X、实现没有**」型（同 E11②/E12/E15）⇒ **改代码向规格靠拢，规格不动**。
+  规格「宠物模式配置」明文要求经 `resolve()` 优先级链（CLI flag > env > config.yaml > 默认值）
+  读取且「**禁止 pet 配置绕过 ConfigSpec 另起解析**」，场景「pet 配置经 ConfigSpec 声明」要求
+  「CLI flag / env / yaml **三面一一对应**」。
+- **关闭动作**（change `0070`，`skip_specs`）：
+  ① 新增 `ConfigManager.config_value(key)` —— 装配前**只读单键**解析（CLI > env > yaml > 缺省），
+  与 `load()` 共用 ConfigSpec 单一真源；**不校验 / 不阻断 / 不缓存**，`config.yaml` 缺失按
+  「无 yaml 层」处理（**若在此处抛错，CI 无 config.yaml 时 `pet gather` 会由退出 0 变退出 1**）；
+  ② 配套 `_flatten_by_specs` —— yaml 层以 `spec.key` 为键，而文件按 `map_to` 嵌套
+  （`im.corp-id` vs `im.corp_id` 不同名），故经单一真源逐键取路径回填；
+  ③ `entry._pet` 门控与 `persons_dir` 改用 `config_value`，`ConfigManager` 提前构造一次并**复用**给
+  `build_runtime`（同实例，不重复读盘）；`_as_bool` 归一化保留（`config_value` 返回各层原文）。
+- **验证**：先红后绿 —— `tests/test_entry.py::test_pet_yaml_admits_and_honors_persons_dir`
+  在改 `entry.py` 前**实测失败**（yaml 的 `true` 被判为未启用）；`tests/test_entry.py` +3 例
+  （yaml 采信 + persona 目录取自 yaml / env 压过 yaml / 缺文件容错）、`tests/test_configuration.py`
+  +5 例（yaml 层 / 三层链 / 缺省兜底 / 缺文件 / 键名与 `map_to` 不同名）；四门全绿（848 passed）。
+- **转出**：`config get` 同型缺陷登记为 **E22**（本变更**不改** —— 开发机存在本地 `config.yaml`，
+  且 `test_config_get_default` 断言缺省值，改动会变更该命令在开发机的输出语义，须单独裁决）。
 
 ---
 
@@ -632,6 +660,7 @@
 9. **A8 / A11 / E5 / E9 / E13 / E15–E16 / C 类**：随需（**A11 语义兜底候选预筛**（需先有比词法更粗的排序信号，**候选预筛**）/ E15 熔断阈值不可配 / E16 `AsyncNotifier` 无 channel）。✅ **E14 已关闭**（change `0059`，ADR-0062）。✅ **E11 全关闭**（① change `0060`：可靠性用例 9 例，`src/` 零改动；② change `0066`/ADR-0064：**连接复用已实现** —— 线程本地按 origin 复用 keep-alive + 失效重建，真实 socket 用例 9 例）。✅ **A6 / E13 / E19 已关闭**（change `0063`，纯文档：已知语义登记 + 有意不接线判定 + 过度承诺订正）。✅ **E18 已关闭**（change `0064`，ADR-0063：未知配置段仅告警）。✅ **E17 已关闭**（change `0065`：规格未要求 daemon，登记「唤醒由宿主驱动」）。✅ **A9 已关闭**（**规格明文认可现状**：`context/spec.md:9` 逐字写 stage 不参与事实选择（change `0038` 写入），文档与实现三层一致 ⇒ 零变更销账）。✅ **A8 已销账**（**零变更**：`FileBackend` 单把 `RLock` 覆盖全部读写路径 + 压实只归档不删除 ⇒ 规格「加锁/等待」已满足；订正「无并发调用方」——`ui serve` 同步路由线程池与事件循环 `/run` 真并发）。✅ **E10 已关闭**（change `0067`／ADR-0065：门控名单（`pet`/`beast`/`evolution`）归组合根单一真源 + **缺省装配**（未声明即开，仅显式 `false` 才不装配）+ 7 入口拒绝）。 ✅ **E15 已关闭**（change `0068`／ADR-0066：`constraints.failure_threshold` / `constraints.cooldown_s` 经 `ConfigSpec` 单一真源四通道可配 + 非法取值校验期拒绝不兜底 + 组合根注入、主/子 loop 共享同链）。
    ✅ **E9 已关闭**（change `0061`：`data-model.md` 四实体回填 + rag/mcp/git 锚点登记 TC-RAG-10/TC-MCP-06/TC-GIT-11 + 两处日期补记；纯文档、规格中性）。
    ✅ **E12 已关闭**（change `0062`：真子进程 `SIGKILL` 端到端 + **修持久化非原子写入**（tmp + `os.replace`）/ 规格 delta）；另新报 **E19**（durability 文档承诺的持久化故障降级未实现）→ **已由 change `0063` 关闭**（订正模块文档承认现状）。
+   ✅ **E21 已关闭**（change `0070`：`entry._pet` 前置判定接入 `ConfigManager.config_value` —— CLI > env > **config.yaml** > 缺省，ConfigSpec 单一真源；缺文件容错；persona 目录同源读取。同型缺陷 `config get` 转出为 **E22**）。
 10. **真机动作**：活 LLM 全回路冒烟（§8 末）。
 
 ---

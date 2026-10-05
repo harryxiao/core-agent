@@ -1110,6 +1110,37 @@
 
 ---
 
+## ADR-0067：装配前单键解析 `config_value`（只读单键 / 缺文件容错 / 键名经单一真源回填）
+
+- **背景**：语法层 `resolve(key, cli=, env=, yaml=, specs=)` 的 `yaml=` 缺省为空映射 ⇒ 调用方漏传
+  即**静默少一层**。`entry._pet` 正如此（`resolve("pet.enabled", cli=, env=)`）⇒ CLI 前置判定与
+  同进程稍后的 `build_runtime`（走 `load()`，含 yaml 层）判据不一致，违反规格「宠物模式配置」
+  「CLI flag / env / yaml **三面一一对应**…禁止 pet 配置绕过 ConfigSpec 另起解析」（账本 E21）。
+- **决策**：
+  ① **新增装配前只读单键通路** `ConfigManager.config_value(key)`，内部即
+  `resolve(key, cli=self._cli, env=self._environ, yaml=<yaml 层>, specs=self._specs)` ——
+  **不另起解析**、与 `load()` 共用 ConfigSpec 单一真源（规格硬要求）；
+  ② **不校验 / 不阻断 / 不缓存**：前置判定发生在整份配置校验**之前**，只读单键、不构造 `AppConfig`；
+  整份配置的校验仍**唯一归** `load()`（避免第二条校验真源）；
+  ③ **config.yaml 缺失按「无 yaml 层」处理**，不抛 `ConfigurationError` —— 前置判定的前提是
+  「配置文件本就可能不存在」；**若在此抛错，CI（无 config.yaml）`pet gather` 会由退出 0 变退出 1**；
+  ④ **yaml 层经单一真源回填**：`resolve` 的 yaml 层以 **`ConfigSpec.key`** 为键，而文件按
+  **`map_to`** 点分路径嵌套（`im.corp-id` vs `im.corp_id` 不同名）⇒ 由 `map_to` 逐键取路径、
+  以 `key` 回填，不按点分拼键；
+  ⑤ **返回各层原文**：env/CLI 层为字符串，归一化（`entry._as_bool`）归调用方 —— 与 `resolve` 口径一致。
+- **否决**：让 `_pet` 直接调 `load()`（整份校验 + 缺文件抛错，破坏 ③）；在 `entry` 内自读 yaml
+  （第二条解析真源，违反规格「禁止另起解析」）；把 `yaml=` 缺省改为「自动读盘」（语法层不该有 I/O
+  副作用，且 `ParamMapper`/`config get` 等既有调用方语义会被隐式改变）。
+- **后果**：✅ CLI 前置判定与装配判据**同源**，宠物模式三面一致；✅ 缺文件路径不炸（CI 行为不变）；
+  ⚠️ 新通路可被误用为「跳过校验读配置」⇒ 契约写明「只读、不校验；整份校验仍归 `load()`」，
+  且**新增消费方应审慎**（当前仅 `entry._pet`）。
+- **关联**：`configuration` spec「宠物模式配置」（既有条款，**无 spec 改动** ⇒ `skip_specs`）；
+  代码 `src/core/configuration/manager.py`（`config_value` + `_flatten_by_specs`）/ `src/core/entry.py`（`_pet`）；
+  接口 `03-interfaces/configuration-interface.md` §2.5；测试 `tests/test_entry.py`、`tests/test_configuration.py`、
+  `doc/04-testing/test-cases.md`（TC-CONF-04/05）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1171,3 +1202,4 @@
 | ADR-0064 | 03-interfaces/llm-provider-interface.md, 02-modules/llm-provider.md |
 | ADR-0065 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md, 02-modules/pet.md, 02-modules/beast-mode.md |
 | ADR-0066 | 03-interfaces/constraints-interface.md, 03-interfaces/configuration-interface.md, 02-modules/constraints.md |
+| ADR-0067 | 03-interfaces/configuration-interface.md |

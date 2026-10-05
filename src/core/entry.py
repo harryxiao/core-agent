@@ -951,13 +951,16 @@ def _module_disabled(module: str) -> int:
 
 def _pet(args: argparse.Namespace) -> int:  # noqa: PLR0911 — CLI 分支各自退出码
     cli = _cli_overrides(args)
-    if not _as_bool(resolve("pet.enabled", cli=cli, env=os.environ)):
+    mgr = ConfigManager(yaml_path=args.config, cli=cli)
+    # 前置判定同样走 ConfigSpec 单一真源三层链（CLI > env > config.yaml > 缺省）：
+    # 只读单键、不校验整份配置，故无配置文件时按 env/CLI/缺省解析（配置层 E21）。
+    if not _as_bool(mgr.config_value("pet.enabled")):
         print(
             "宠物模式未启用（pet.enabled=false，可用 --pet-enabled 或 CORE_PET_ENABLED 开启）",
             file=sys.stderr,
         )
         return 0
-    persons_dir = str(resolve("pet.persons_dir", cli=cli, env=os.environ) or "persons")
+    persons_dir = str(mgr.config_value("pet.persons_dir") or "persons")
     verb: str | None = args.verb
     name, rest = _split_pet_name(list(args.rest or []))
 
@@ -967,7 +970,7 @@ def _pet(args: argparse.Namespace) -> int:  # noqa: PLR0911 — CLI 分支各自
         )
         return 0
     try:
-        runtime = build_runtime(ConfigManager(yaml_path=args.config, cli=cli))
+        runtime = build_runtime(mgr)
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
         print(f"装配失败: {exc}", file=sys.stderr)
         return 1

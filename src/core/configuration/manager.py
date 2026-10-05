@@ -243,6 +243,20 @@ class ConfigManager:
         self._config = config
         return config
 
+    def config_value(self, key: str) -> Any:
+        """单键解析：CLI flag > env > config.yaml > 默认值（ConfigSpec 单一真源）。
+
+        与 ``load()`` 的分工：本方法**不校验、不阻断、不缓存**，供 CLI 层在装配前做前置
+        判定（如 ``pet.enabled`` 门控）用；config.yaml 缺失按「无 yaml 层」处理（不抛
+        ``ConfigurationError``），故无配置文件时仍按 env / CLI / 缺省解析 —— 前置判定
+        只读单键，不应因整份配置尚未校验而失败。返回各层原文（env/CLI 为字符串），
+        归一化由调用方负责（与 ``resolve`` 口径一致）。
+        """
+        yaml_layer: dict[str, Any] = {}
+        if self._yaml_path.exists():
+            yaml_layer = _flatten_by_specs(self._read_yaml(), self._specs)
+        return resolve(key, cli=self._cli, env=self._environ, yaml=yaml_layer, specs=self._specs)
+
     def validate_schema(self, config: AppConfig) -> ValidationResult:
         """schema 校验：密钥引用同口径（明文/空/不可解析）、LLM 必选项与权限模式枚举。"""
         errors: list[str] = []
@@ -669,6 +683,24 @@ def _set_path(root: dict[str, Any], path: str, value: Any) -> None:
     for part in parts[:-1]:
         node = node.setdefault(part, {})
     node[parts[-1]] = value
+
+
+def _flatten_by_specs(raw: dict[str, Any], specs: list[ConfigSpec]) -> dict[str, Any]:
+    """按 ``ConfigSpec.map_to`` 从嵌套 yaml 取出 ``spec.key`` → 取值 的扁平面。
+
+    ``resolve`` 的 ``yaml`` 层以 **ConfigSpec.key** 为键，而 yaml 文件按 ``map_to`` 点分
+    路径嵌套（``im.corp-id`` 等键两者并不相同），故须经单一真源逐键定位路径回填，
+    不能简单按点分拼键。
+    """
+    flat: dict[str, Any] = {}
+    for spec in specs:
+        parts = spec.map_to.split(".")
+        node: dict[str, Any] = raw
+        for part in parts[:-1]:
+            node = cast("dict[str, Any]", node.get(part) or {})
+        if parts[-1] in node:  # 叶子存在即回填（含显式 false / 空串，故不能用真值判断）
+            flat[spec.key] = node[parts[-1]]
+    return flat
 
 
 def _find_spec(specs: list[ConfigSpec], key: str) -> ConfigSpec | None:

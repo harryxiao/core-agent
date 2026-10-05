@@ -290,6 +290,8 @@
 | TC-CONF-01 | CORE-CFG-R3 | 配置未声明 `features` 段（或缺省）启动装配 | 门控名单内模块（`pet`/`beast`/`evolution`）照常装配 —— 缺省开、与门控落地前行为一致（锚点：`tests/test_feature_gating.py::test_default_assembles_every_gatable_module`） |
 | TC-CONF-02 | CORE-CFG-R3 | `features.pet: false`（或 `beast`/`evolution`）启动装配 | 该模块**完全不装配**：不构造实例、不产生装配期副作用（`beast` 不注册神通、`pet` **不读** `pets.json`）、loop 冷路径置空（Evolution），入口拒绝（锚点：同文件 `test_disabled_*` 组） |
 | TC-CONF-03 | CORE-CFG-R3 | `features.pet` 缺省开而 `pet.enabled=false` 时调用 `pet` CLI | 模块**已装配**（装配面非空），CLI 仍报「宠物模式未启用」—— feature flag 只管装配、不改二级启用开关（锚点：既有 `tests/test_entry.py::test_pet_disabled_by_default` + `tests/test_feature_gating.py::test_cli_refuses_disabled_module[pet]`） |
+| TC-CONF-04 | configuration/spec.md「宠物模式配置」 | `config.yaml` 写 `pet.enabled: true` 且 `pet.persons_dir` 指向含 persona 的目录，调 `pet list` | 前置判定**采信 yaml 层**：不报「宠物模式未启用」，persona 从 yaml 目录加载（此前只解析 CLI/env，yaml 被静默忽略 —— 账本 E21）（锚点：`tests/test_entry.py::test_pet_yaml_admits_and_honors_persons_dir`） |
+| TC-CONF-05 | configuration/spec.md「宠物模式配置」 | 同一键在 CLI / env / yaml 三层同时有值，以及 `--config` 指向不存在的文件 | 优先级链 CLI flag > env > config.yaml > 缺省逐层压过；缺文件按「无 yaml 层」处理（不抛 `ConfigurationError`、不阻断前置判定）（锚点：`tests/test_configuration.py::test_config_value_priority_chain` / `::test_config_value_falls_back_to_default` / `::test_config_value_tolerates_missing_file` / `::test_config_value_maps_key_differing_from_map_to`；`tests/test_entry.py::test_pet_env_overrides_yaml` / `::test_pet_missing_config_file_is_tolerated`） |
 
 ---
 
