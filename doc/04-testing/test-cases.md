@@ -102,6 +102,7 @@
 | TC-OBS-02 | CORE-OBS-R2 | 采样多轮 | 完成率/token/错误率指标可查 |
 | TC-OBS-03 | CORE-OBS-R3 | 按 trace_id 重放 | 单轮可复现 |
 | TC-OBS-04 | CORE-OBS-R4 | 进化经验采集 | 数据源来自统一遥测流 |
+| TC-OBS-05 | CORE-OBS-R1 | 未注入 tracer 的组合根装配并结束一条 trace | 事件 JSONL 落 `$CORE_STATE_DIR`，经缓冲包装，导出失败不阻塞 |
 
 ## 10. 约束与容错（TC-CONS）
 

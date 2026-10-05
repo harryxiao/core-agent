@@ -26,7 +26,7 @@
 | C2 | `git` | `GitBackend` 真实现（subprocess 直调 git）+ 组合根装配 + `git` CLI | 无（git 是本地工具，**零凭证**） | **高**（唯一纯代码项） |
 | E27 | `im` | `IMGateway` 装配 + 宿主入口 + 白名单配置键 + Provider 插拔点 | 平台 SDK / 机器人凭证 / 回调 | **高**（第三入口整体缺席） |
 | C3 | `ci_cd` | 门禁执行器（subprocess 跑已定义的 `GATE_COMMANDS`）+ 制品发布通道 + CLI | 制品仓库凭证 | 中（本仓自己的四门就是它的需求） |
-| C4 | `observability` | `build_runtime` 给 `Tracer(exporter=…)` 一行装配 | OTel 导出 SDK | 中（一行；OTel 适配另算） |
+| C4 | `observability` | ✅ **已关闭（change `0089`／ADR-0084）**：组合根缺省装配 `BufferedExporter(JSONLExporter($CORE_STATE_DIR/traces.jsonl))` + 注入优先；`JSONLExporter` 自建父目录 | OTel 导出 SDK（「指标导出协议」，另案） | ~~中~~ 已闭 |
 | C5 | `skillhub` | 把已实现的 `SkillHubClient` 接进 `skill search/install`（注入内存 `MarketIndex` 即离线可验） | 真实市场 fetcher（网络） | 中（客户端全实现却零调用方） |
 | C6 | `plugin_registry` / `plugins` | `InstallDispatcher.resolve` 增补 GIT_REPO / MARKET_REGISTRY / MCP_ENDPOINT 三种来源 | git remote / 市场 / 端点可达性 | 中（`LOCAL_PATH` 已真） |
 | C7 | `ui` TTS | TTS 接口 + 假实现 + 注入（现**无任何抽象**） | 真实 TTS 后端 | 低 |
@@ -92,7 +92,7 @@
 - **要写**：门禁执行器（`subprocess` 跑已定义的 `GATE_COMMANDS`）+ 制品发布通道 + `ci/gate` 入口。
 - **离线验证**：在本仓真跑四门即端到端；发布通道用 fake channel。
 
-### 4.3 `observability`（C4）
+### 4.3 `observability`（C4）✅ 已关闭（change `0089`／ADR-0084）
 
 - **现状**：`Exporter` Protocol + JSONL / Console / Noop / Buffered **均已实现**（`exporter.py:22-52`）；`Tracer()` 缺省 Noop（`tracer.py:24-26`），组合根 `runtime.py:224` **不传 exporter** ⇒ 生产**没有任何导出**。
 - **要写**：`build_runtime` 一行装配（`Tracer(exporter=JSONLExporter/ConsoleExporter)`）；OTel 导出器是 `Exporter.emit` 的薄包装 + otel SDK（**凭证半**）。

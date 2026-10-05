@@ -80,8 +80,13 @@ class Tracer:
 class Exporter(Protocol):
     def emit(self, events: list[TraceEvent]) -> None: ...
 
-# 内置导出器：JSONLExporter / ConsoleExporter / OTelExporter（可插拔）
+# 内置导出器：JSONLExporter / ConsoleExporter / NoopExporter / BufferedExporter（可插拔）
+# OTel / Prometheus 导出器经同一协议接入（需第三方 SDK，未接）。
 ```
+
+**生产装配**（change 0089）：组合根 `build_runtime` 在未注入 tracer 时装配
+`Tracer(exporter=BufferedExporter(JSONLExporter($CORE_STATE_DIR/traces.jsonl)))` —— 结构化 JSONL 落盘 +
+缓冲 / 退避重试包装（导出失败降级为内存缓冲，不阻塞主循环）；`JSONLExporter` 自建父目录；显式注入的 tracer 优先。
 
 ---
 

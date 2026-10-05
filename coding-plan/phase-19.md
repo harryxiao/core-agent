@@ -119,7 +119,7 @@
 | B6 | B | ~~MCP wire envelope 未对齐标准~~ | ✅ 已关闭（change `0075`，ADR-0072）：两侧最小对齐标准 envelope —— server `tools/list` 回 `{"tools":[...]}` / `tools/call` 回 `{"content":[{"type":"text","text":<JSON 载荷>}],"isError":<bool>}`（载荷恒 JSON 编码保往返保真）；client `initialize` 携标准三元组、解析容器键并**容忍厂商扩展字段**、归一 `isError` 信封，同时**兼容旧式裸形状**；**真机双向验收**：`claude mcp add` 挂本 server 后 `claude mcp list` 报 `✔ Connected`，反向 `core-agent mcp add "claude mcp serve"` 成功并发现 20 工具 | 低 | — |
 | B7 | B | ~~默认暴露面启发式过粗~~ | ✅ 已关闭（change `0076`，ADR-0073）：默认面判据由「无 `write`」改为**安全 coeffect 白名单**（`⊆ {filesystem:read}`，空集视为只读）—— 出网 / 进程派生 / 委托驱动（`agent:delegate`）一律默认不出；`tools.delegate` 补声明 `agent:delegate`（原 `coeffects=[]` 漏声明）使判据结构化识别；白名单语义不动 | 低 | — |
 | B8 | B | ~~远端 JSON-RPC 错误码未映射~~ | ✅ 已关闭（change `0077`／ADR-0074）：`transport.map_remote_error` 按「方法 + 标准码」归一 —— `tools/call` 的 JSON-RPC 错误 → `MCP_TOOL_NOT_FOUND`（= 调用被拒）、其余 `-32700/-32600/-32601/-32602` → `MCP_PROTOCOL_MISMATCH`、`-32603`/未知码 → `MCP_UNAVAILABLE`；原始码保留于文本 | 低 | — |
-| C1 | C | 真实外部后端 ~20 处「未接」 | 抽象 + fake 已落地，真后端待接 | 低 | 见 `debug-gaps.md` §2.3 |
+| C1 | C | 真实外部后端 ~20 处「未接」 | 抽象 + fake 已落地，真后端待接。**代码半 / 凭证半二分见 `phase-20.md`**（8 项有可离线验证的代码半）；**C4 `observability` 代码半已关闭（change `0089`）** | 低 | 见 `debug-gaps.md` §2.3 |
 | D1 | D | ~~README §2 状态行待核实~~ | ✅ 已关闭：Phase 18 行刷新为 ✅；`17.5` 行改为「🔶 部分完成（遗留见 E3/E4）」 | 无 | — |
 | D2 | D | `coding-plan/phase-3-prompt.md` 未跟踪 | 一次性 prompt 残留 | 无 | 删除或 `git add` |
 | D3 | D | ~~根目录 `config.yaml` 未跟踪~~ | ✅ 已关闭：`git check-ignore` 原为**零命中**（仅「没 add 过」）→ 已补 `.gitignore` 守卫 | 无 | — |
@@ -772,6 +772,8 @@
 ---
 
 ## 5. C 类：真实外部后端未接（低，不挡核心回路调试）
+
+> **代码半 / 凭证半二分**：本块原**整块**记「真后端未接」，未区分「凭证」与「接线」；`coding-plan/phase-20.md` 逐行二分 —— **代码半**（可离线用 fake 验证的接线工程）单独记账并在彼处关闭，**凭证半**（真实 SDK / 网络 / 密钥）仍留本节。
 
 抽象 + 可注入 fake 已落地，真后端待接（约 20 处「未接」标记）。**明细见 `coding-plan/debug-gaps.md` §2.3**，涉及模块：`git` / `im` / `mcp transport` / `ui`（TTS、Tauri 桌面壳）/ `observability`（OTel）/ `ci_cd` / `plugin_registry` / `skillhub` / `pet`·`beast`。
 

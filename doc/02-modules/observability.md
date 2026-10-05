@@ -32,6 +32,7 @@ TelemetryHub（横切）
 - 记录：模型输入/输出、工具调用参数、执行耗时、返回结果、副作用（effect）。
 - 结构化 JSONL，每行一个事件，带 `trace_id` + `span_id` + `ts`。
 - 密钥/敏感值**脱敏**后才入日志（与 coeffect `secret` 标记联动）。
+- 组合根缺省装配（change 0089）：未注入 tracer 时以 `BufferedExporter(JSONLExporter($CORE_STATE_DIR/traces.jsonl))` 落盘。
 
 ### 3.2 性能指标监控
 
@@ -65,6 +66,7 @@ TelemetryHub ──事件流──► Diagnoser（定位缺陷/重复模式）
 ## 5. 错误处理与可靠性
 
 - 遥测本身故障（磁盘满/导出失败）**不得阻塞主循环**：降级为内存环形缓冲，异步落盘。
+- 缺省导出面即经缓冲/退避重试包装（`BufferedExporter`）：导出异常在导出器内被吞，绝不抛进 loop（change 0089）。
 - 日志采样策略：热路径可采样（如 1/N 轮），关键事件（高危审批、回滚）不采样。
 
 ---

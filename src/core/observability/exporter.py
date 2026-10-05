@@ -30,6 +30,8 @@ class JSONLExporter:
 
     def __init__(self, path: Path | str) -> None:
         self._path = Path(path)
+        # 父目录不存在则自建（镜像 FileBackend）—— 否则事件落盘时静默丢弃
+        self._path.parent.mkdir(parents=True, exist_ok=True)
 
     def emit(self, events: list[TraceEvent]) -> None:
         with self._path.open("a", encoding="utf-8") as fh:

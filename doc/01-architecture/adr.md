@@ -1650,6 +1650,28 @@
 - **转出**：跨进程控制（注册表 → live 会话的驱动通道）→ 未排期。
 
 ---
+## ADR-0084：可观测性生产导出器装配（JSONL + 缓冲包装，注入优先）
+
+- **背景**：账本 C4（Phase 20 §1）—— `build_runtime` 未注入 tracer 时 `Tracer()` **不传 exporter**，缺省
+  `NoopExporter` ⇒ **生产零导出**；而规格 Requirement「全链路日志」要求「系统 SHALL 记录…结构化」，
+  Requirement「遥测缓冲与导出重试」要求导出失败降级不阻塞主循环。导出器实现（JSONL/Console/Noop/Buffered）
+  **全部已具备且已测**，缺的只是**组合根装配**（与 Phase 19 反复记的「实现已落地、缺生产触达点」同型）。
+- **决策**：
+  ① **缺省导出面 = `BufferedExporter(JSONLExporter($CORE_STATE_DIR/traces.jsonl))`**：JSONL 满足「结构化记录」，
+     外层缓冲满足「导出失败降级不阻塞主循环」（`BufferedExporter.emit` 内 `except` 降级 + 指数退避，绝不抛给 loop）。
+     **裸 `JSONLExporter` 已否决** —— 磁盘满 / 权限不足时会从 `end_trace` 抛进 loop，直接违反规格场景。
+  ② **落 `$CORE_STATE_DIR/traces.jsonl`**：与 checkpoints / memory / pets / mcp-endpoints 同一状态目录约定
+     （新增 `_trace_path()`，**随既有 `_*_path` 风格**，不顺手抽公共 helper —— 避免越界改 5 处既有函数）。
+  ③ **注入优先**：`build_runtime(..., tracer=)` 形参不动，只填 `else` 分支；宿主 / SUT 替换导出面的接缝保持。
+  ④ **`JSONLExporter.__init__` 自建父目录**（镜像 `FileBackend.__init__`）：否则导出目标目录不存在时事件**静默丢弃**
+     —— 不能依赖「缺省 memory 后端恰好建过该目录」这条隐式耦合。
+  ⑤ **不扩面**：不加配置开关（要换导出面走注入；规格未要求可配）、不给 `Runtime` 加字段（其字段集被多测试断言）、
+     不引入 OTel/Prometheus SDK（第三方依赖，与 ADR-0044「核心零三方依赖」红线相关，另案裁决）。
+- **规格**：MODIFIED「全链路日志」（补组合根装配 + 注入优先 + 2 场景）。
+- **前置**：`ADR-0043`（MCP SDK 按 transport 分流 —— 同「零依赖优先、SDK 另案」取向）。
+- **转出**：OTel/Prometheus 指标导出器 + 告警规则（需第三方 SDK）→ Phase 19 §5 凭证 / 依赖半。
+
+---
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1728,3 +1750,4 @@
 | ADR-0081 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |
 | ADR-0082 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |
 | ADR-0083 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md, 03-interfaces/ui-interface.md |
+| ADR-0084 | 03-interfaces/observability-interface.md, 02-modules/observability.md |

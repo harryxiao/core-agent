@@ -59,7 +59,7 @@ from core.memory import (
     batch_embed,
     summarize_with,
 )
-from core.observability import Tracer
+from core.observability import BufferedExporter, JSONLExporter, Tracer
 from core.orchestration import (
     AgentProfile,
     LLMSubtaskPlanner,
@@ -165,6 +165,15 @@ def _memory_path() -> Path:
     return base / "memory.jsonl"
 
 
+def _trace_path() -> Path:
+    """遥测落盘路径：$CORE_STATE_DIR（缺省 ~/.core/state）/traces.jsonl。
+
+    同检查点 / 记忆的状态目录约定；组合根缺省导出器把 trace 事件追加于此（change 0089）。
+    """
+    base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
+    return base / "traces.jsonl"
+
+
 def _skill_state_path(name: str) -> Path:
     """技能态落盘路径：$CORE_STATE_DIR（缺省 ~/.core/state）/<name>。
 
@@ -221,7 +230,13 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         base_url=app.llm.endpoint or None,
         model=app.llm.model,
     )
-    tracer = tracer if tracer is not None else Tracer()
+    # 缺省导出面（change 0089）：JSONL 落 $CORE_STATE_DIR，经缓冲/退避重试包装 ——
+    # 导出失败降级为内存缓冲，绝不抛进主循环（规格「遥测故障不阻塞主循环」）；注入者优先。
+    tracer = (
+        tracer
+        if tracer is not None
+        else Tracer(exporter=BufferedExporter(JSONLExporter(_trace_path())))
+    )
     tracer.register_secret(api_key)
 
     jev: JEVProvider | None = None
