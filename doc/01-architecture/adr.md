@@ -1434,6 +1434,45 @@
   `surprise()`/`MicrotaskRunner` 零调用方；`IMGateway` 零生产装配；无宿主驱动 `wake()`。
 
 ---
+## ADR-0077：pet 安全边界强制执行（专属 loop / 越界即本轮终止不楔死 / 词汇表订正为真实 id）
+
+- **背景**：账本 **E25**。一手核实「比记载严重」：① `Explorer`/`SafetyBounds` 由组合根注入 `PetSession`
+  后**零读取点**（规格 R11/R12 明文要求强制，实现只注入不消费）；② 宠物**跑在主 loop 上**
+  （`pet_loop = cast(LoopPlugin, loop)`）⇒ 一次唤醒可调用主 loop 的**全部**工具，边界无一处在路径上；
+  ③ 两套词汇表（`file.read`/`web.search`/`memory.read`；`file.write`/`git.push`/`rm`）**与真实工具 id 对不上**
+  ⇒ 即使今天接线也一条都匹配不上。
+- **决策**（三项均经用户裁决）：
+  ① **专属 loop 真强制**：组合根新增 `_pet_tools()`（**受限 `ToolProvider`**：只注册 `Explorer.available()`
+  白名单内的真实工具）+ `_pet_loop()`（**专属 `DefaultLoop`**，`middlewares=[build_safety_middleware(...)]`）
+  —— R11 由**注册面收窄**落地（未注册 ⇒ loop 结构化拒绝，fail-closed by construction，且模型看不到越界工具），
+  R12 由 before 中间件落地。先例：`_agent_loop`/`_beast_loop` 均为专属 loop。
+  ② **「越界即暂停」= 本轮阻断 + 通知主人，会话保持 `ACTIVE`**：终止 Action 与 loop 既有 `decline()` 路径
+  **同构**（`observe()` 见 `data["reply"]` 即 `ctx.finish()`），不新增 loop 语义；**不** `suspend()`
+  （无 `resume()` 调用方 ⇒ 永久楔死）、**不**转 `BACKOFF`（把越界当故障，语义过重）。规格原文「宠物暂停」的
+  读法由此**钉死进规格**（本 change 的 MODIFIED requirement），避免将来再记一条「规格说暂停、代码没暂停」。
+  ③ **词汇表订正为真实 id**：`Explorer` 缺省清单 → `tools.file_read`；`SafetyBounds` 不可逆集 →
+  `tools.file_write`/`file_patch`/`code_run`/`install`/`uninstall`；「只读优先」由 `read` 前缀启发式改为
+  **只读白名单**（真实 id 无此前缀，启发式必然失效）。**不做** id→旧词汇映射层（两套词汇长期并存即新真源）。
+- **半径**：`allowed_prefixes` 语义不变，但**仅当 `target` 非空**时判定（真实工具参数名各异 ⇒ middleware 取
+  `path`/`file`/`url`/`target` 首个命中键；取不到不判半径，避免「无目标动作一律被拒」）；组合根缺省
+  `[Path.cwd()]`，构造面可替换。
+- **spec delta**：`pet-mode` MODIFIED「Pet Safety Bounds」（保留标题/正文/既有场景，正文追加「暂停」实现口径，
+  并新增场景「越界阻断不楔死会话」）。
+- **已否决**：共享 `ConstraintsChain` 熔断给 pet loop（单实例熔断态会被宠物流量污染，且本变更无此需求）；
+  `SafetyBounds` 加 `ConfigSpec` 键（构造面可注入即够，YAGNI）；给宠物注册 `tools.list`/插件管理工具
+  （那是插件管理面，非「探索」）；在 middleware 做旧词汇映射；给宠物 loop 接技能/JEV 路由（pet 任务与
+  结晶链路无关）；每宠一 loop（现状共享，多宠隔离已由会话/任务队列/人格承担）。
+- **后果**：✅ R11/R12 在路径上真强制；✅ 宠物可用工具面**收窄**（**行为变更**，proposal/接口/模块三处显式登记）；
+  ✅ 单测与文档词汇表同批订正；⚠️ 宠物 loop 与主 loop 各自独立（工具面/中间件不共享）。
+- **关联**：`pet-mode` spec（R11「Exploration Toolset」/ R12「Pet Safety Bounds」/「Pet Session Runtime Wiring」）；
+  代码 `src/core/runtime.py`（`_pet_tools`/`_pet_loop`）、`src/core/pet/safety/safety.py`、`…/safety/middleware.py`、
+  `src/core/pet/explore/explorer.py`、`src/core/pet/core/layers.py`；接口 `03-interfaces/pet-mode-interface.md` §5.1；
+  模块 `02-modules/pet.md` §3.5；测试 `tests/test_pet_safety.py`、`tests/test_pet_safety_guard.py`、
+  `tests/test_pet_explore.py`、`tests/test_pet_wiring.py`；ADR-0076（通知通道）。
+- **转出**：无新开账本行（E26/E27/E28 各自成行）；E28 语义更新 —— 一旦被宿主驱动，唤醒不仅投递通知（E16），
+  且受安全边界约束（本变更）。
+
+---
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1505,3 +1544,4 @@
 | ADR-0074 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md |
 | ADR-0075 | 03-interfaces/configuration-interface.md, 00-product/user-guide.md |
 | ADR-0076 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |
+| ADR-0077 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |

@@ -55,7 +55,10 @@ PetMode（后台自治循环扩展）
 - `report()` 达到周期向主人汇报，不阻塞主循环；`surprise()` 基于主人偏好代办/取悦，结果反馈主人。
 - 二者均为"后台自治"的价值输出，服务偏好追踪闭环。
 - **通知投递（change `0079`／ADR-0076，账本 E16）**：`wake()` 收尾在反馈周期命中时经通知器把 `report()` 产出**真的投出去**（`notify` 入队 → 组合根收口 flush，不阻塞主循环）；缺省通道 = stderr 一行，真实 IM 通道由宿主注入替换。
-  仍未接线：安全越界通知（`SafetyBounds`/`Explorer` 注入但零消费）与 `surprise()`/`MicrotaskRunner`（零调用方）——见账本转出项。
+- **安全强制执行（change `0081`／ADR-0077，账本 E25）**：`Explorer` 白名单成为宠物专属 `ToolProvider`
+  的注册面（R11），`SafetyBounds` 经安全中间件挂在专属 loop 的 before 接缝（R12）；越界 ⇒ 本轮终止 +
+  通知主人，会话保持 `ACTIVE`（见 §4 生产装配）。仍未接线：`surprise()`/`MicrotaskRunner`（零调用方，
+  账本 E26）——见账本转出项。
 
 ---
 
@@ -73,7 +76,8 @@ PetMode（后台自治循环扩展）
 - 闭环的**驱动者是宿主**：「每次唤醒」这一环由宿主入口（或长驻宿主）按自身周期调用 `wake()`，内核只保证
   单次唤醒是同步薄壳、不常驻、可让行（change `0065` 登记为已知语义，非缺失）。
 - **生产装配**（change `0053`）：pet 依赖由组合根 `build_runtime` 组装 —— 一份 `Explorer`/`SafetyBounds`/`AsyncNotifier`
-  + `PetManager`（落盘 `$CORE_STATE_DIR/pets.json`）+ `PetActivator`（注入 runtime 的 loop / memory）；
+  + `PetManager`（落盘 `$CORE_STATE_DIR/pets.json`）+ `PetActivator`（注入**宠物专属 loop**（受限工具集 +
+  安全中间件，change `0081`）与 runtime 共享 memory）；
   `Runtime.pet_manager`/`pet_activator` 供 `entry._pet`（CLI）与 `UIAPILayer.activate_pet`（WebUI）共用，
   缺省（无组合根）仍走 echo loop 兜底、行为不变。
 - **门控**（change `0067`，账本 E10）：`features.pet: false` 时 pet **完全不装配** —— 不构造

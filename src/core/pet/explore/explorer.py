@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
-# 默认只读优先探索工具清单（真实工具执行由宿主注入，抽象层返回占位结果）。
-_DEFAULT_READONLY_TOOLS = {"file.read", "web.search", "memory.read"}
+# 默认只读探索工具清单 —— **真实工具 id**（change 0081 / 账本 E25）：原清单
+# `file.read`/`memory.read`/`web.search` 与仓库真实 id 不对应（`memory` 也非工具）。
+# `available()` 现为组合根**受限 ToolProvider 的白名单真源**（R11）。
+_DEFAULT_READONLY_TOOLS = {"tools.file_read"}
 
 
 class Explorer:

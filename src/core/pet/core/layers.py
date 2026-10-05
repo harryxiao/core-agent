@@ -43,6 +43,9 @@ class SafetyDecision:
 
 
 class SafetyLayer(Protocol):
-    """安全边界层：只读优先、不可逆禁止、爆炸半径可控。"""
+    """安全边界层：只读优先、不可逆禁止、爆炸半径可控。
 
-    def check(self, op: str, target: str) -> SafetyDecision: ...
+    `op` 为真实工具 id；`target` 可省（工具无路径类参数时不做半径判定）。
+    """
+
+    def check(self, op: str, target: str = "") -> SafetyDecision: ...

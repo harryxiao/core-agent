@@ -77,7 +77,7 @@ from core.permission import PermissionGuard, SandboxManager, SandboxPolicy
 from core.pet.core import PetActivator, PetManager, PetSession
 from core.pet.explore import Explorer
 from core.pet.notify import AsyncNotifier
-from core.pet.safety import SafetyBounds
+from core.pet.safety import SafetyBounds, build_safety_middleware
 from core.plugin_registry import CoeffectResolver, EffectTracker, PluginInstaller
 from core.plugins import InstallDispatcher
 from core.rag import LLMEmbedder
@@ -657,9 +657,11 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
     pet_manager: PetManager | None = None
     pet_activator: PetActivator | None = None
     if not config.is_disabled("pet"):
-        pet_loop = cast(LoopPlugin, loop)
+        # 受限探索工具集（R11）：白名单真源 = Explorer 清单（真实工具 id）；安全边界（R12）：
+        # 词汇表同为真实工具 id，半径缺省 = 启动目录（宠物只在家门口探索），可构造面替换。
         pet_explorer = Explorer()
-        pet_safety = SafetyBounds()
+        pet_allowed = set(pet_explorer.available())
+        pet_safety = SafetyBounds(allowed_prefixes=[str(Path.cwd())])
         pet_notifier = AsyncNotifier(channel=_pet_notification_sink)
 
         def _pet_notify(message: str) -> None:
@@ -671,6 +673,54 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
             pet_notifier.notify(message)
             pet_notifier.flush()
 
+        def _pet_tools() -> ToolProvider:
+            """受限探索工具集（账本 E25 / R11）：只注册白名单内的**真实**工具。
+
+            未注册的工具在 loop 侧是结构化拒绝（不存在即不可调用），且模型**看不到**越界工具
+            —— fail-closed by construction，而非事后拦截。
+            """
+            provider = ToolProvider(
+                coeffect_resolver=resolver,
+                effect_tracker=effect_tracker,
+                gate=guard,
+                approver=approver,
+            )
+            for tool in builtin_tools:
+                if tool.definition.tool_id in pet_allowed:
+                    provider.register(tool)
+            return provider
+
+        def _pet_loop() -> LoopPlugin:
+            """宠物**专属** loop（账本 E25）：受限工具集 + 安全中间件。
+
+            此前宠物直接复用**主 loop**（`cast(LoopPlugin, loop)`）⇒ 可调用全部工具、安全边界
+            不在路径上。专属 loop 沿用 `_agent_loop`/`_beast_loop` 同一形状（planner + 共享
+            记忆/闸门/追踪），差异有二：① 工具集被白名单收窄（`_pet_tools`）；② 只挂安全中间件
+            —— **不**共享 constraints 熔断链（宠物流量不应污染主线/神兽的熔断态），亦不接技能路由
+            （pet 任务与结晶链路无关）。越界 ⇒ 本轮终止 + 通知主人，会话保持 ACTIVE。
+            """
+            provider = _pet_tools()
+            return cast(
+                LoopPlugin,
+                DefaultLoop(
+                    planner=LLMPlanner(
+                        llm,
+                        model=app.llm.model,
+                        reasoning_effort=app.llm.reasoning_effort,
+                        assembler=assembler,
+                        tools=provider,
+                    ),
+                    memory=memory,
+                    tools=provider,
+                    gate=guard,
+                    tracer=tracer,
+                    approver=approver,
+                    compactor=context_compactor,
+                    middlewares=[build_safety_middleware(pet_safety, notify=_pet_notify)],
+                ),
+            )
+
+        pet_loop = _pet_loop()
         pet_manager = PetManager(
             _pet_state_path(),
             factory=lambda record: PetSession.restore(

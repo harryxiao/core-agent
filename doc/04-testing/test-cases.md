@@ -312,6 +312,8 @@
 |---|---|---|---|
 | TC-PET-01 | pet-mode「Pet Notification」 | 反馈周期命中时驱动 `wake()`（`feedback_period` 控制命中），以及未命中周期 / 无 notifier 三种情形 | 命中即经通知器投递 `report()` 产出（含宠物名/状态）；未命中静默（不刷屏）；无 notifier 时唤醒照常完成不报错（缺省兜底行为不变）（锚点：`tests/test_pet_core.py::test_wake_notifies_owner_on_feedback_cycle` / `::test_wake_stays_silent_off_feedback_cycle` / `::test_wake_without_notifier_is_silent`） |
 | TC-PET-02 | pet-mode「Pet Session Runtime Wiring」 | 经组合根装配的 runtime 激活一只宠物，取其注入的通知可调用体并调用 | 通知**真的到达缺省 sink**（stderr 一行 `[pet] …`）—— 三环连通：生产者（`wake()` 收尾）/ 通道（缺省 stderr）/ 投递点（组合根收口 flush）；真实 IM 通道由宿主注入替换（锚点：`tests/test_pet_wiring.py::test_production_pet_notification_reaches_sink`） |
+| TC-PET-03 | pet-mode「Exploration Toolset」+「Pet Session Runtime Wiring」（change `0081`） | 经组合根装配的 runtime 激活宠物，取其会话 loop 的工具面 | 宠物 loop 工具面**仅**白名单真实工具（缺省 `{tools.file_read}`）——未注册即结构化拒绝（fail-closed）；且会话 loop **≠** 主 loop（锚点：`tests/test_pet_wiring.py::test_pet_loop_toolset_restricted_to_explore_allowlist` / `::test_production_pet_session_gets_live_deps`） |
+| TC-PET-04 | pet-mode「Pet Safety Bounds」（change `0081`） | 取宠物 loop 的 before 中间件，喂越界动作（不可逆 / 白名单外 / 半径外）与放行动作 | 越界 ⇒ **终止 Action**（本轮终止、动作不执行）且经通知器**告知主人**（含原因）；会话保持 `ACTIVE`（不楔死）；放行/终止动作原样直通（锚点：`tests/test_pet_safety_guard.py::test_out_of_bounds_action_blocked_and_owner_notified` / `::test_allowed_action_passes_through_unchanged` / `tests/test_pet_wiring.py::test_pet_out_of_bounds_action_blocked_and_notified`） |
 
 ---
 

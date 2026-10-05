@@ -153,6 +153,30 @@ class PetActivator:
 > 是**错误解法**；③ 能承载常驻驱动的只有长驻宿主（`core-agent ui` 的 `serve()`）。故「后台自治调度」是**宿主职责**，
 > 是否常驻由宿主自选（`wake()` 的同步薄壳形态对两种宿主都成立）。
 
+### 5.1 安全边界与受限探索工具集（change `0081`，账本 E25）
+
+规格 R11「Exploration Toolset」/ R12「Pet Safety Bounds」/「Pet Session Runtime Wiring」均明文要求**强制**；
+change `0081` 之前二者只注入不消费，且宠物**跑在主 loop 上**（一次唤醒可调用全部工具），边界无一处在路径上。
+现宠物持有**专属 loop**，两条款各由一处机制落地：
+
+| 条款 | 机制 | 落地方式 |
+|---|---|---|
+| R11 受限探索工具集 | `Explorer.available()` = **白名单真源** | 组合根只把白名单内的真实工具注册进宠物的 `ToolProvider`（缺省 `{"tools.file_read"}`）——未注册即 loop 结构化拒绝（fail-closed by construction），且模型**看不到**越界工具 |
+| R12 安全边界 | `SafetyBounds.check(op, target)` | 经 `build_safety_middleware` 挂到专属 loop 的 before 接缝（`middlewares=`），越界 ⇒ **终止 Action** |
+
+- **判定顺序**：不可逆 → 只读优先 → 爆炸半径（先判最不可逆的）。
+  - **不可逆**（缺省 `tools.file_write` / `file_patch` / `code_run` / `install` / `uninstall`）恒禁止；
+  - **只读优先**（`readonly=True` 缺省）：白名单外操作一律越界 —— 判据是**只读白名单**（`readonly_ops`），
+    不是 `read` 前缀启发式（真实 id 无此前缀，启发式必然失效）；
+  - **爆炸半径**：`allowed_prefixes` 与 `target` **均非空**时才判定（target 从 `args` 的
+    `path`/`file`/`url`/`target` 首个命中键取，取不到即不判半径）；组合根缺省 `[Path.cwd()]`（宠物只在
+    启动目录内探索）。三个集合/清单**构造面可注入**替换缺省，不新增配置键。
+- **「越界即暂停」的实现口径**（规格 MODIFIED 钉死）：越界动作**不执行**，本轮**终止**
+  （返回终止 Action `{"reply": …}`，与 loop 既有 `decline()` 路径同构 —— 无需新增 loop 语义），并**通知主人**
+  （含越界原因；经 `wake()` 通知器，见 §5「反馈」行 / ADR-0076）。**会话保持 `ACTIVE`**
+  —— 不调 `suspend()`：生产无任何 `resume()` 调用方，转 yielding 即**永久楔死**。
+- **宠物不共享主 loop 的熔断链**：专属 loop 只挂安全中间件（宠物流量不应污染主线熔断态）。
+
 ---
 
 ## 6. 错误码
