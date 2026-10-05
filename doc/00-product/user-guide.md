@@ -49,7 +49,7 @@ features:
 - `features.*` 为 feature flag：**门控名单内模块缺省装配**（未声明即开，change `0067` 口径），显式关闭写 `features.<模块>: false`；另有 env `CORE_FEATURES_<NAME>`、CLI `--feature <NAME>[=false]` 两条通道。取值 `true/false`·`yes/no`·`on/off`·`1/0`（大小写不敏感），其余取值**阻断启动**。
 - 覆盖层：`--llm.provider` / `--llm.model` / `--llm.endpoint` / `--llm.api-key`（CLI），`CORE_LLM_PROVIDER` 等（env）。
 
-单键读取：
+单键读取（遵循同一优先级链 **CLI > env > config.yaml > 默认值**，change `0078`）：
 
 ```bash
 core-agent config get permission.mode

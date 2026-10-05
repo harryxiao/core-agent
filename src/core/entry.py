@@ -30,7 +30,6 @@ from core.configuration import (
     ConfigSpec,
     ConfigurationError,
     config_specs,
-    resolve,
 )
 from core.deployment import (
     ClientConnection,
@@ -386,11 +385,12 @@ def _ops(args: argparse.Namespace) -> int:
 
 
 def _config(args: argparse.Namespace) -> int:
+    mgr = ConfigManager(yaml_path=args.config, cli=_cli_overrides(args))
     if args.config_cmd == "get":
-        value = resolve(args.key, cli=_cli_overrides(args), env=os.environ)
+        # 与配置链同口径：CLI > env > config.yaml > 缺省（账本 E22）
+        value = mgr.config_value(args.key)
         print(value if value not in (None, "") else "(未配置)")
         return 0
-    mgr = ConfigManager(yaml_path=args.config, cli=_cli_overrides(args))
     if args.config_cmd == "show":
         return _config_show(mgr, args)
     if args.config_cmd == "validate":

@@ -98,9 +98,36 @@ def test_session_create_returns_id(capsys: pytest.CaptureFixture[str]) -> None:
     assert len(capsys.readouterr().out.strip()) == 32  # noqa: PLR2004 — uuid4 hex 固定 32 位
 
 
-def test_config_get_default(capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["config", "get", "permission.mode"]) == 0
+def test_config_get_default(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    """无 yaml 层时回落内置缺省（显式指向不存在的配置，不依赖开发机本地 config.yaml）。"""
+    argv = ["--config", str(tmp_path / "missing.yaml"), "config", "get", "permission.mode"]
+    assert main(argv) == 0
     assert capsys.readouterr().out.strip() == "interactive"
+
+
+def test_config_get_reads_yaml_layer(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    """账本 E22：`config get` 须与配置链同口径 —— config.yaml 里的值应被读到。
+
+    回归：`entry._config` 此前用 `resolve(key, cli=, env=)`（漏 yaml 层）⇒ 配置文件里写了
+    非缺省值仍显示缺省（E21 修 pet 门控时同型缺陷转出为本项）。
+    """
+    assert main(["--config", _write_config(tmp_path), "config", "get", "llm.model"]) == 0
+    assert capsys.readouterr().out.strip() == "test-model"
+
+
+def test_config_get_cli_overrides_yaml(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    """优先级链 CLI > yaml：`--llm.model` 压过 config.yaml。"""
+    argv = [
+        "--config",
+        _write_config(tmp_path),
+        "--llm.model",
+        "cli-model",
+        "config",
+        "get",
+        "llm.model",
+    ]
+    assert main(argv) == 0
+    assert capsys.readouterr().out.strip() == "cli-model"
 
 
 def test_pet_disabled_by_default(capsys: pytest.CaptureFixture[str]) -> None:

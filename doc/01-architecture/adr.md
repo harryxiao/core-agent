@@ -1138,6 +1138,7 @@
   代码 `src/core/configuration/manager.py`（`config_value` + `_flatten_by_specs`）/ `src/core/entry.py`（`_pet`）；
   接口 `03-interfaces/configuration-interface.md` §2.5；测试 `tests/test_entry.py`、`tests/test_configuration.py`、
   `doc/04-testing/test-cases.md`（TC-CONF-04/05）。
+  ⇒ **末位调用方收口**：`config get` 亦迁至本通路（change `0078`／ADR-0075，账本 E22）。
 
 ## ADR-0068：出站白名单配置化（逗号分隔标量 / 校验期拒绝 / fail-closed 缺省不变）
 
@@ -1371,6 +1372,29 @@
   `map_remote_error`）；接口 `03-interfaces/mcp-interface.md` §8；模块 `02-modules/mcp.md`（故障隔离段）；
   测试 `tests/test_mcp_stdio.py`；`doc/04-testing/test-cases.md`（TC-MCP-13）。
 
+## ADR-0075：`config get` 接入配置链 yaml 层（复用 `config_value` / 构造前移 / 语法层不动）
+
+- **背景**：账本 **E22**。`entry._config` 的 `get` 分支用 `resolve(args.key, cli=, env=)` —— `yaml=`
+  缺省为空映射 ⇒ `config get` **永远看不到 config.yaml**，配置里的非缺省值被显示为缺省（或 `(未配置)`）。
+  与 E21 同型（同一处 `resolve` 漏参），并与同进程 `load()`（含 yaml 层）**判据不一致**。
+  规格「配置源与分层」明文优先级链 CLI > env > config.yaml > 默认值 ⇒ 「规格要求 X、实现没有」型。
+- **决策**：
+  ① `config get` 改用 **`ConfigManager.config_value(key)`** —— 与 `entry._pet` 门控**同一通路**
+  （ADR-0067：只读单键 / 不校验不缓存 / 缺文件容错 / 键名经单一真源回填），**不另起解析**；
+  ② `ConfigManager` **构造前移**至 `_config` 函数开头（`show`/`set` 共用同一实例）；
+  ③ 随之孤儿化的 `resolve` 导入**删除**（`entry.py` 内已无第二调用方）；
+  ④ **不动语法层** `resolve` 的 `yaml=` 缺省（仍为空映射）—— ADR-0067 已否决「自动读盘」，
+  语法层不该有 I/O 副作用；
+  ⑤ **无 spec delta**（规格既有条款已覆盖，`skip_specs`，同 change `0070`）。
+- **已否决**：在 `_config` 内自读 yaml（第二条解析真源，违反规格「禁止另起解析」）；
+  顺手改 `config show/validate/set`（本就走 `load()`，无缺陷）。
+- **后果**：✅ 单键读取与整体装配**同源**，优先级链一致；✅ 无配置文件机器上行为不变（缺文件容错）；
+  ⚠️ `config get` 的**输出会变**（此前漏 yaml 显示的缺省 → yaml 真值）—— 这正是修复目标；
+  既有 `test_config_get_default` 已改 hermetic（显式 `--config <不存在>`），不随开发机 / CI 漂移。
+- **关联**：`configuration` spec「配置源与分层」（既有条款，**无 spec 改动** ⇒ `skip_specs`）；
+  代码 `src/core/entry.py`（`_config`）；接口 `03-interfaces/configuration-interface.md` §2.5；
+  产品 `00-product/user-guide.md`（单键读取）；测试 `tests/test_entry.py`；ADR-0067（通路来源）。
+
 ---
 ## 变更追踪
 
@@ -1441,3 +1465,4 @@
 | ADR-0072 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 07-mcp-server/mcp-server.md |
 | ADR-0073 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md, 07-mcp-server/mcp-server.md |
 | ADR-0074 | 03-interfaces/mcp-interface.md, 02-modules/mcp.md |
+| ADR-0075 | 03-interfaces/configuration-interface.md, 00-product/user-guide.md |

@@ -205,7 +205,7 @@ CLI 面 `--feature <模块>[=<布尔>]` 由 `entry._cli_overrides` 收进覆盖�
 ### 2.5 装配前单键解析（change `0070`，账本 E21）
 
 `config_value(key)` 是 `load()` 之外的第二条**只读单键**通路，专供 CLI 层在装配前做前置判定
-（当前消费方：`entry._pet` 的 `pet.enabled` 门控与 `pet.persons_dir` 取值）。
+（当前消费方：`entry._pet` 的 `pet.enabled` 门控与 `pet.persons_dir` 取值；`entry._config` 的 `config get` 单键读取 —— change `0078`／ADR-0075，账本 E22）。
 
 - **同源**：内部即 `resolve(key, cli=self._cli, env=self._environ, yaml=<yaml 层>, specs=self._specs)` ——
   与 `load()` 共用 ConfigSpec 单一真源，**禁止**另起一套解析（规格「宠物模式配置」明文要求）。
