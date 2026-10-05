@@ -21,7 +21,7 @@ from typing import Any, cast
 from core.context import Compactor, ContextError
 from core.judgment import DecisionResult, DecisionRouter
 from core.memory import MemoryEntry, MemoryStore
-from core.observability import TraceEvent, Tracer
+from core.observability import TraceEvent, TraceLogger, Tracer
 from core.plugin_registry import Plugin
 from core.tools import SafetyGate, ToolProvider
 
@@ -140,6 +140,8 @@ class DefaultLoop(Plugin):
         self._middlewares = list(middlewares or [])
         self._action_observers = list(action_observers or [])
         self._tracer = tracer
+        # 工具调用遥测的生产者 API（唯一生产者；未注入 tracer ⇒ 不产，见 `_log_tool_call`）
+        self._trace_logger = TraceLogger(tracer) if tracer is not None else None
         self._router = router
         self._approver = approver
         self._compactor = compactor
@@ -210,7 +212,7 @@ class DefaultLoop(Plugin):
             else:
                 yield item
 
-    async def astream(  # noqa: C901 — 主管线多分支长管道（事件面七类）
+    async def astream(  # noqa: C901, PLR0915 — 主管线多分支长管道（事件面七类 + 工具调用遥测）
         self, user_input: str, *, session_id: str = ""
     ) -> AsyncIterator[LoopEvent]:
         trace_id = self._start_trace(user_input)
@@ -246,14 +248,18 @@ class DefaultLoop(Plugin):
             act_t0 = time.monotonic()
             result = await self.act(action, trace_id, approved=approved)
             if not action.is_terminal:
+                duration_ms = int((time.monotonic() - act_t0) * 1000)
+                output = _output_excerpt(result.error if result.failed else result.data)
+                # 遥测先于事件外发：不依赖消费方继续拉取生成器（同判据、同点、同载荷）
+                self._log_tool_call(trace_id, action, result, latency_ms=duration_ms, output=output)
                 yield LoopEvent(
                     "action_completed",
                     {
                         "round": ctx.rounds,
                         "tool_id": action.tool_id,
                         "ok": not result.failed,
-                        "duration_ms": int((time.monotonic() - act_t0) * 1000),
-                        "output": _output_excerpt(result.error if result.failed else result.data),
+                        "duration_ms": duration_ms,
+                        "output": output,
                     },
                 )
             self._notify_action_result(ctx, action, result, trace_id)
@@ -538,6 +544,32 @@ class DefaultLoop(Plugin):
                 payload=payload or {},
                 module_id=module_id,
             )
+        )
+
+    def _log_tool_call(
+        self,
+        trace_id: str,
+        action: Action,
+        result: ActionResult,
+        *,
+        latency_ms: float,
+        output: str,
+    ) -> None:
+        """非终止动作完成后**另行**产出工具调用遥测（``kind="tool_call"``；缺省不产）。
+
+        与 ``action_completed`` 事件**同判据、同点、同载荷**（参数/输出复用节选函数 ⇒ 事件面
+        有界）：loop 是**唯一**同时持有「动作 + 执行结果 + 耗时」的位置，工具调用通道由此在
+        **生产**有输入（消费侧 ``EvolutionWorker._to_traces`` 此前只有纸面通道）。
+        经 ``TraceLogger.log_tool_call`` 产出而非直接写事件，避免载荷形状两处漂移。
+        """
+        if self._trace_logger is None:
+            return
+        self._trace_logger.log_tool_call(
+            trace_id,
+            action.tool_id,
+            _args_excerpt(action.args),
+            {"ok": not result.failed, "output": output},
+            float(latency_ms),
         )
 
     async def _allow(self, action: Action) -> bool:

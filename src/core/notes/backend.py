@@ -4,7 +4,8 @@
 实现既有 ``MemoryBackend`` Protocol 的 ``get/put/search/list_index/delete``（**签名不改**）：
 ``put`` 为**覆盖式**（同主题二次写 = 第二次内容，不拼接），先写临时文件再 ``os.replace``
 （原子；替换前中断不留半截 canonical 文件）；``search`` 为**纯词法**（标题 / tags /
-``## Search Queries`` / 正文；中文按 2-gram 切词），**不建向量库**。
+``## Search Queries`` / 正文；中文按 2-gram 切词）并对**语义浓缩字段分区加权**（只影响排序），
+**不建向量库**。
 
 ``MemoryEntry.content`` = canonical 全文（自描述）⇒ ``get`` 用同一解析器还原 ``tags``/
 ``source``/``ts``，**不丢字段**。
@@ -28,6 +29,9 @@ _TMP_SUFFIX = ".md.tmp"
 _NOTE_LAYER: Layer = "L2"
 _CJK_START = "一"
 _CJK_END = "鿿"
+_TITLE_WEIGHT = 3  # 标题：语义浓缩最强
+_META_WEIGHT = 2  # tags / `## Search Queries`：人工提炼的检索意图
+_BODY_WEIGHT = 1  # note_id / 正文
 
 
 def _is_cjk(char: str) -> bool:
@@ -135,8 +139,20 @@ class MarkdownBackend:
 
     @staticmethod
     def _score(note: NoteEntry, terms: list[str]) -> float:
-        haystack = " ".join(
-            [note.note_id, note.title, *note.tags, *note.search_queries, note.content]
-        ).lower()
-        hits = sum(1 for term in terms if term in haystack)
-        return hits / len(terms)
+        """**分区加权**打分：语义浓缩字段（标题 / tags / ``## Search Queries``）权高于正文。
+
+        命中判据仍是纯词法包含（CJK 2-gram 切词不变）；加权**只影响排序**——打分不再 ≤ 1，
+        仅用于 ``> 0`` 过滤与降序排序、不外露。使**标题精确命中**的主题排在**仅正文顺带
+        提及**的主题之前（change `0107`）。
+        """
+        weighted = (
+            (note.title, _TITLE_WEIGHT),
+            (" ".join(note.tags), _META_WEIGHT),
+            (" ".join(note.search_queries), _META_WEIGHT),
+            (note.note_id, _BODY_WEIGHT),
+            (note.content, _BODY_WEIGHT),
+        )
+        score = sum(
+            weight * sum(1 for term in terms if term in text.lower()) for text, weight in weighted
+        )
+        return score / len(terms)

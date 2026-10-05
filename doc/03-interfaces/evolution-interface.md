@@ -237,6 +237,16 @@ class EvolutionWorker:
   —— 带 `module_id` 的事件（如 `loop.default` 自身失败）适配为
   `Trace(plugin_id=module_id, task_type="module_health", success=not payload["failed"])`，
   使架构模块自身失败成为可诊断证据；`plugin_id` 语义为**归因对象 id**（工具 id 或内部核心模块 id）。
+- **两条通道的生产方（change `0107`）**：① `tool_call` 通道由**执行循环在生产链路产出**
+  （`DefaultLoop` 非终止动作完成后经 `TraceLogger.log_tool_call`，见 observability 接口 §2）——
+  此前只有消费侧就绪、无生产调用方（E30）；② 模块归因通道由 loop 自身失败留痕产出（如预算耗尽）。
+- **`plugin_id` = 归因对象身份（change `0107` 钉死口径）**：它标识「进化引擎**监控谁**、缺陷
+  **定位到谁**」，**SHALL NOT 蕴含**该 id 已纳入 `PluginRegistry` 生命周期。**裁决（E31）**：内部核心
+  模块**不**纳入注册表、**不**补 `load`/`unload` 空转形态 —— 依据：注册表全仓仅 `PluginInstaller`
+  内部默认构造、无消费方；14 个模块里仅 8 个具 Plugin 六件套且 `load`/`unload` 全 `return None`、
+  `check()` 7/8 恒真（真检查仅 `evolution.engine` / `composition.resolver`）⇒ 补全后仍无信号、无行为
+  （ADR-0094 决策①已否决）。**重开条件**：出现「真的会产出新一代 `Plugin` 对象」的生产者（模型生成 /
+  人工提交补丁）—— 届时 `promote(plugin: Plugin)` 才有语义（ADR-0100）。
 
 ### 4.2 自动课程（目标选择层，change `0084` / 账本 E5）
 

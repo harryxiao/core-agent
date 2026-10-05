@@ -81,11 +81,14 @@ class TraceLogger:
         self,
         trace_id: str,
         tool: str,
-        args: dict[str, Any],
+        args: dict[str, Any] | str,
         result: dict[str, Any],
         latency_ms: float,
     ) -> None:
-        """记录工具调用参数/结果/耗时。"""
+        """记录工具调用参数/结果/耗时。
+
+        ``args`` 允许为节选字符串（超长参数按调用方节选口径截断）⇒ 事件面有界。
+        """
         self._emit(
             trace_id,
             "tool_call",

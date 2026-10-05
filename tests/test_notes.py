@@ -135,6 +135,42 @@ def test_backend_search_matches_cjk_sentence_query(tmp_path) -> None:
     assert backend.search("报销单据")[0].id == "报销", "另一主题仍可独立命中"
 
 
+def test_backend_search_weights_title_above_content(tmp_path) -> None:
+    """字段加权（change 0107）：标题精确命中排在「正文顺带提及」之前，两者均命中。"""
+    backend = MarkdownBackend(tmp_path)
+    backend.put(
+        _entry(NoteEntry(note_id="alpha", title="无关标题", content="正文里顺带提到 部署 一词"))
+    )
+    backend.put(_entry(NoteEntry(note_id="beta", title="部署流程", content="无关正文")))
+
+    hits = backend.search("部署")
+
+    assert [hit.id for hit in hits] == ["beta", "alpha"], "标题命中优先（加权只改排序、不改过滤）"
+
+
+def test_backend_search_weights_meta_above_content(tmp_path) -> None:
+    """tags / `## Search Queries` 权重高于正文 —— 语义浓缩元数据买得到排名。"""
+    backend = MarkdownBackend(tmp_path)
+    backend.put(_entry(NoteEntry(note_id="alpha", title="A", content="正文顺带提到 alpha-widget")))
+    backend.put(
+        _entry(
+            NoteEntry(note_id="beta", title="B", content="无关", search_queries=["alpha-widget"])
+        )
+    )
+
+    hits = backend.search("alpha-widget")
+
+    assert [hit.id for hit in hits] == ["beta", "alpha"]
+
+
+def test_backend_search_no_hit_returns_empty(tmp_path) -> None:
+    """加权不改过滤：无任何字段命中 ⇒ 空列表（分区加权不得凭空产生 >0 分）。"""
+    backend = MarkdownBackend(tmp_path)
+    backend.put(_entry(NoteEntry(note_id="alpha", title="Alpha", content="正文")))
+
+    assert backend.search("完全不相干的词") == []
+
+
 # ---- NoteStore：读写闭环 / 错误码 / 循环接缝 ----
 
 

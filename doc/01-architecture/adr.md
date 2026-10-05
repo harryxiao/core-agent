@@ -2008,7 +2008,8 @@
      （`installable.py:93`），组合根**没有 `registry` 变量**（原稿写法会直接 `NameError`）；`FAULTED`
      只在注册表驱动的 `load/unload` 失败时产生，而内部模块不经它加载 ⇒ 「纳入」买不到任何一条验收，
      反而要给 `evolution.{collector,diagnoser,evaluator,validator,worker}` 5 个零 `generation/schema/
-     coeffects` 的算法类补 `load/unload` = `pass` 的**空转生命周期**（**ADR-0054 明确拒绝过的形态**）。
+     coeffects` 的算法类补 `load/unload` = `pass` 的**空转生命周期**（**订正**：原括注「ADR-0054 明确
+     拒绝过的形态」为**误引** —— ADR-0054 讲冷路径驱动面；实质依据即本决策三条论证，见 ADR-0100）。
   ② **信号走既有 trace 通道**：`Diagnoser.diagnose` 本就从 `t.plugin_id` 逐条计分 ⇒ **不需要新载体**，
      缺的是**生产端的归因事件**。补三件：收尾回调（让 trace 流进 worker）、模块归因字段（让失败可归因）、
      适配通道（把归因事件采为证据）。
@@ -2026,9 +2027,11 @@
 - **限制（已知且明示）**：
   - **工具级 trace 仍缺**：`action_completed` 作为 `LoopEvent` 外发却**不 `_trace`**，
     `TraceLogger.log_tool_call` 零生产调用方 ⇒ evolution 的 **skill 分支在产线仍无输入**
-    （技能维度主线由 `turn_observer` → SOP/技能反馈承载，未断）。**转出账本**，本 change 不做。
+    （技能维度主线由 `turn_observer` → SOP/技能反馈承载，未断）。**转出账本**，本 change 不做
+    （**已由 ADR-0100 关闭**：生产者接线到 loop 非终止动作分支）。
   - **13 个内部模块未纳入注册表**：等「真的会产出新一代插件实现（模型生成代码 / 人工提交补丁 → 新
-    `Plugin` 对象）」那个 Phase 再做——那时 `promote(plugin: Plugin)` 才有语义。
+    `Plugin` 对象）」那个 Phase 再做——那时 `promote(plugin: Plugin)` 才有语义
+    （**ADR-0100 裁决：不纳入** —— 重开条件即本条所述的生产者）。
   - **未达 `EvolutionTrigger` 阈值时 `_completed` 会缓慢累积**（每轮一条）：这是**既定语义**
     （热路径只登记），由下一次触发统一消费。
 - **影响**：`TraceEvent` 增 `module_id: str | None = None`；`DefaultLoop` 增 `trace_observer` 注入面与
@@ -2268,11 +2271,65 @@
   文档（`03-interfaces/notes-interface.md`、`02-modules/notes.md`、`04-testing/test-cases.md` TC-NOTE-*、
   `coding-plan/contracts_summary.md`）。
 - **已知局限**：①digest 只保证「命中 + 清单」，**无相关性保证**（词法可负相关）；②`_score`
-  对标题与正文**同权**，长正文易压过标题命中；③覆盖式更新**无历史版本**（回溯交给 git）；
+  对标题与正文**同权**，长正文易压过标题命中（**已由 ADR-0100 分区加权关闭**）；③覆盖式更新**无历史版本**（回溯交给 git）；
   ④`observe_turn` 以任务首行 slug 定主题 ⇒ 措辞不同的同一任务会**另起主题**（主题分裂优于
-  覆写他人结论的错合并）；⑤`notes` 未纳入注册表 ⇒ 无 `load/unload` 生命周期语义（同 E31 欠账）。
+  覆写他人结论的错合并）；⑤`notes` 未纳入注册表 ⇒ 无 `load/unload` 生命周期语义（同 **E31** ——
+  ADR-0100 **裁决为「不纳入」**，`plugin_id` 只作归因对象身份）。
 - **规格**：ADDED「canonical Markdown 真相层与可插拔后端」「Consult → Build → Update 循环纪律」
   「结构化错误码与既有链路不变」（notes）。
+
+---
+
+## ADR-0100：工具调用遥测的**生产方**接线（E30）；`plugin_id` = **归因对象身份**、内部核心模块**不**纳入 `PluginRegistry`（E31 裁决）；`notes` 检索**分区加权**（E32）
+
+- **背景**：三处「消费侧就绪、供给侧空转 / 口径不诚实」的缺口 —— ①**E30**：`_to_traces` 的
+  `tool_call` 通道就绪，但其唯一生产者 API `TraceLogger.log_tool_call` 全仓**零生产调用方**；loop 的
+  `action_completed` 只作 `LoopEvent` 外发、从不进遥测 ⇒ 技能维度的进化证据**永不产生**。
+  ②**E31**：`INTERNAL_PLUGIN_IDS` 的 14 个内部核心模块未纳入 `PluginRegistry`，账本长期记为「欠账」，
+  但**补全即空转** —— 注册表全仓仅 `PluginInstaller` 内部默认构造、**无任何消费方**；14 个模块里仅 8 个
+  具 Plugin 六件套，其 `load`/`unload` 全 `return None`、`check()` 7/8 恒真（真检查仅 `evolution.engine` /
+  `composition.resolver`）⇒ 补全后仍无信号、无行为。③**E32**：`notes` 的 `_score` 把
+  `note_id / title / tags / Search Queries / 正文` 拼成一个 haystack **同权**计数 ⇒ 长正文顺带提及
+  即可压过标题精确命中（ADR-0099 已知局限②）。
+- **决策**：
+  ① **E30 —— 生产者放 loop、经生产者 API 产出**：`DefaultLoop` 在 ctor 由注入的 `tracer` 建
+     `TraceLogger`（缺省 `None` ⇒ 不产）；`astream` 在**非终止动作**完成后、与 `action_completed`
+     **同判据同点**调 `_log_tool_call`。载荷 `tool` = 工具 id / `args` / `result = {"ok", "output"}` /
+     `latency_ms`，参数与输出复用既有节选函数（≤400 字符 ⇒ 事件面**有界**，与事件载荷**同源同界**）。
+     **经 `log_tool_call` 而非直接写事件**：否则「生产者 API 零调用」的账目继续挂着、载荷形状两处漂移。
+     遥测**先于** `yield`：不依赖消费方继续拉取生成器。消费侧 `_to_traces` **零改动**。
+     `TraceLogger.log_tool_call` 的 `args` 注解放宽为 `dict | str`（反映既有节选实情，运行期无变化）。
+  ② **E31 —— 裁决：不纳入、不补空转**（ADR-0094 决策①的重申，并把口径钉进规格）：`plugin_id` 在内部
+     核心模块上表示**归因对象身份**（进化引擎**监控谁**、缺陷**定位到谁**），**SHALL NOT 蕴含**注册表
+     成员身份；模块自身的失败证据经**模块归因遥测通道**（`TraceEvent.module_id`）承载，采集与诊断
+     **不要求**该模块在注册表可查。**重开条件**：出现「真的会产出新一代 `Plugin` 对象」的生产者
+     （模型生成 / 人工提交补丁）—— 届时 `promote(plugin: Plugin)` 才有语义；change 0102 把架构级结晶
+     裁决为 `accepted`（待人工实施）= 系统自认短期内没有该生产者。**不采纳**「登记式最小实现 + 诚实
+     标注」：诚实标注在**有消费者、只是输入不足**处成立（如 0102 `accepted`、0103 落盘 JSONL 为真源）；
+     此处**零消费者**，标注只把 documented gap 换成 documented no-op，并留下「这些算法类有生命周期
+     语义」的错误暗示。**连带更正（引用订正）**：账本（`phase-24.md` §2.2 / `phase-21.md` §1.3）与
+     ADR-0094 决策①的括注均把该否决归因到「**ADR-0054 明确拒绝过的形态**」—— 一手核实 **ADR-0054 全文
+     无此裁决**（其主题是冷路径驱动面；`adr.md` 中「空转」仅出现于 ADR-0055/0065 的别处语境）。该否决的
+     实质出处就是 **ADR-0094 决策①** 自身的三条论证（零消费者 / 形态即空转 / 前置条件未满足），旁证为
+     ADR-0065「不造空转闭包」。账本与 ADR-0094 括注同步订正。
+  ③ **E32 —— 分区加权**：`_score` 改 `Σ(字段权重 × 该字段命中词数) ÷ 词数`，权重 `title 3× / tags 2× /
+     Search Queries 2× / note_id 1× / 正文 1×`（模块常量，便于调参 —— 但不做成配置项：无消费者）。
+     命中判据（纯词法包含、CJK 2-gram 切词）与 `search` 返回结构、`MemoryBackend` 契约**均不改**：
+     打分**不再 ≤ 1**，仅用于 `> 0` 过滤与降序排序、**不外露** ⇒ 语义安全。**不采纳**「按字段命中率
+     归一」：会让「长正文命中 1 词」与「标题命中 1 词」重新等权，正是本 ADR 要修的病。
+- **影响**：`src/core/loop/default.py`（+`_trace_logger` / `_log_tool_call` / `astream` 非终止分支；
+  语句数 +3 ⇒ `astream` 的 `noqa` 增 `PLR0915`，同 `orchestration/scheduler.py` 先例）；
+  `src/core/observability/tracer.py`（`log_tool_call` 的 `args: dict | str` 注解 + docstring）；
+  `src/core/notes/backend.py`（`_score` 分区加权 + 3 个权重常量 + 模块 docstring）；
+  `src/core/evolution/plugin_ids.py`（docstring 由「欠账」改**裁决 + 重开条件**）；测试（新
+  `tests/test_tool_trace.py` 5 例、`tests/test_notes.py` +3 例）；文档
+  （`03-interfaces/observability-interface.md` §2、`03-interfaces/evolution-interface.md` §4.1、
+  `02-modules/notes.md` §3.3、`04-testing/test-cases.md`）。
+- **已知局限**：①加权是**启发式**排序（词法命中强度，非相关性 / 语义）；②`latency_ms` 是 loop 侧
+  墙钟计时，非工具内生指标；③工具调用遥测只在**非终止动作**产出（终止动作 = 纯回复，不是工具调用，
+  不产 —— 与 `action_completed` 同判据）。
+- **规格**：MODIFIED「异步流式执行」（loop）/「经验采集」（evolution）/「canonical Markdown 真相层与
+  可插拔后端」（notes）。
 
 ---
 
@@ -2370,3 +2427,4 @@
 | ADR-0097 | 03-interfaces/rag-interface.md, 02-modules/rag.md |
 | ADR-0098 | 03-interfaces/skillhub-interface.md, 02-modules/skillhub.md |
 | ADR-0099 | 03-interfaces/notes-interface.md, 02-modules/notes.md |
+| ADR-0100 | 03-interfaces/observability-interface.md, 03-interfaces/evolution-interface.md, 02-modules/notes.md |

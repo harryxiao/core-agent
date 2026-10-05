@@ -26,12 +26,18 @@ class TraceLogger:
     def log_model_io(self, trace_id: str, prompt: str, completion: str, latency_ms: float) -> None:
         """记录模型输入/输出（密钥脱敏）。"""
 
-    def log_tool_call(self, trace_id: str, tool: str, args: dict, result: dict, latency_ms: float) -> None:
-        """记录工具调用参数/结果/耗时。"""
+    def log_tool_call(self, trace_id: str, tool: str, args: dict | str, result: dict, latency_ms: float) -> None:
+        """记录工具调用参数/结果/耗时（``args`` 允许为节选字符串 ⇒ 事件面有界）。"""
 
     def log_effect(self, trace_id: str, effect: dict) -> None:
         """关联副作用记录。"""
 ```
+
+**`tool_call` 的生产方（change 0107）**：`log_tool_call` 的**唯一生产调用方**是执行循环
+（`DefaultLoop._log_tool_call`）——`astream` 在**非终止动作**完成后、与 `action_completed` **同点**
+产出（载荷 `tool` = 工具 id / `args` / `result = {"ok", "output"}` / `latency_ms`；参数与输出复用
+节选函数 ⇒ 与事件载荷**同源同界**）。判据与 `action_completed` 一致（终止动作不产）；
+**未注入 `tracer` 不产**。该通道供 `EvolutionWorker._to_traces` 按工具 id 归因（`task_type="tool_use"`）。
 
 ---
 

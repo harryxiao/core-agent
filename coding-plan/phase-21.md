@@ -42,7 +42,7 @@
 | 验收 ①（信号接口） | 接口能加，但**无真实生产者** | ✅ 不需要新接口 |
 | 验收 ②（失败记信号） | ❌ `FAULTED` 只在 `load()/unload()` 失败时产生（`registry.py:118-164`），内部模块**不经它加载** ⇒ 仍要在真实失败点插桩 | ✅ 直接在真实失败点插桩 |
 | 验收 ⑥（结晶语义） | ❌ 无新一代 `Plugin` 生产者，`promote()` 仍是空转，且只改 `_generations` 会与 `_plugins[p].generation` 不一致、随后同世代 `register()` 被 `GENERATION_CONFLICT` 挡（`registry.py:52-57`） | ✅ 诚实降级为「登记批准、不谎报」 |
-| 代价 | (b) 全部 **+** 给 `evolution.collector/diagnoser/evaluator/validator/worker`（5 个，零 `generation/schema/coeffects`）补 plugin 形状，`load/unload` 只能 `pass` 空转（**ADR-0054 明确拒绝过的形态**）+ 与 `PluginInstaller` 私有一把注册表（`installable.py:93`）的归属裁决 | 1 个 change 的量 |
+| 代价 | (b) 全部 **+** 给 `evolution.collector/diagnoser/evaluator/validator/worker`（5 个，零 `generation/schema/coeffects`）补 plugin 形状，`load/unload` 只能 `pass` 空转（该形态**被明确拒绝** —— **订正**：出处是 **ADR-0094 决策①**，原稿误引 ADR-0054；ADR-0054 讲冷路径驱动面）+ 与 `PluginInstaller` 私有一把注册表（`installable.py:93`）的归属裁决 | 1 个 change 的量 |
 
 > **战略口径**：等「真的会产出新一代插件实现（模型生成代码 / 人工提交补丁 → 新 `Plugin` 对象）」那个 Phase，再做 (a)——那时 `promote(plugin: Plugin)` 才有语义。本 Phase 的使命是**打通归因与人工门**。
 
@@ -50,6 +50,9 @@
 
 1. **工具级 trace**：`_to_traces` 只认 `kind == "tool_call"`（`worker.py:97`），而工具调用的唯一生产者为 `TraceLogger.log_tool_call`（`tracer.py:69-82`），**零生产调用方**；loop 把 `action_completed` 作为 `LoopEvent` 外发却**不 `_trace`**（`default.py:235-244`）⇒ evolution 的 **skill 分支在产线无输入**（技能维度主线由 `turn_observer` → SOP/技能反馈承载，未断）。
 2. **13 模块纳入注册表 + 世代晋升**：推迟到有新一代实现生产者的 Phase（见 §1.3）。
+
+> **收口（change `0107`／ADR-0100）**：① **已关闭**（生产方接线）；② **改判为「裁决：不纳入」**（不再是待办，
+> 重开条件仍为「有新一代 `Plugin` 对象生产者」，已记入 ADR-0100 与 `plugin_ids.py` docstring）。
 
 ---
 
@@ -63,7 +66,7 @@
 - [x] ④ **诊断落白名单**（change `0101`）：`Diagnoser.diagnose` 能把对比诊断归因到 13 个内部核心模块 id 之一；无模块级归因时按契约「人工介入」（既有语义，**不改 Diagnoser**）。
 - [x] ⑤ **提案动态 kind**（change `0102`）：`Proposer` 按 `diagnosis.target_plugin` 是否命中 13 白名单决定——命中 → `kind="plugin"` + `risk_level="high"` + `status="pending"`；否则 `kind="skill"` + `risk_level="low"`；**显式传入 kind 仍覆盖**（既有调用面不破）。
 - [x] ⑥ **结晶不谎报**（change `0102`）：`kind="plugin"` 走 `crystallize` 返回**新结局 `accepted`**（已批准、待人工实施），**不再返回 `published`**；L3 记忆留痕与观察期开窗保留；技能分支仍为 `published`（确实入库 `SkillLibrary`）。
-- [ ] ⑦ **红线验证**：`kind="plugin"` 候选默认 `pending`，无 `confirm` 绝不 `published`/`accepted`；`risk_level="high"` 必带**已批准且目标一致**的审批单（既有 `confirm` 语义，加守护测试）。
+- [x] ⑦ **红线验证**：`kind="plugin"` 候选默认 `pending`，无 `confirm` 绝不 `published`/`accepted`；`risk_level="high"` 必带**已批准且目标一致**的审批单（既有 `confirm` 语义，加守护测试）。
 
 ---
 
@@ -235,6 +238,8 @@
 - **新增错误码**：无（`accepted` 是**结局词**，不是错误码）。
 - **规格**：`observability` / `loop` / `evolution` 三处 MODIFIED（`evolution` 含「模块级提案」
   「架构级候选强制人工审批」「观察期回归自动溶解」三条）。
-- **转出账本（§1.4，仍待办、已登记）**：① 工具级 trace 缺失（= `phase-19.md` **E30**）；
-  ② 13 模块纳入注册表 + 世代晋升（= `phase-19.md` **E31**，推迟到有新一代 `Plugin` 对象生产者的 Phase）。
+- **转出账本（§1.4）**：① 工具级 trace 缺失（= `phase-19.md` **E30**）—— ✅ **已关闭**（change `0107`／
+  ADR-0100：生产方接线到 loop 非终止动作分支）；② 13（后为 14）模块纳入注册表 + 世代晋升（= `phase-19.md`
+  **E31**）—— ⚖️ **改判为「裁决：不纳入」**（change `0107`／ADR-0100：零消费者 / 形态即空转 / 前置条件更远；
+  重开条件 = 有新一代 `Plugin` 对象生产者，已记入 ADR-0100 与 `plugin_ids.py` docstring）。
 - **未提交**：`coding-plan/phase-21-findings.md`（审计工作底稿，仅本地参考）。

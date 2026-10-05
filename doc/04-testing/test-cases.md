@@ -27,6 +27,8 @@
 | TC-LOOP-07 | loop/spec.md「执行循环」（change `0101`） | 注入 `trace_observer` 跑一轮（含未达维护间隔、回调抛错、未注入三种）；轮数超限失败收尾并回放 `loop_finished` | 回调每轮调用一次并收到本轮 `trace_id`、**事件已齐**（可回放到 `loop_finished`）、**不受维护节拍节流**；抛错降级留痕（`trace_observer_failed`）不改本轮结局；未注入零副作用；失败轮 `loop_finished.module_id == "loop.default"`、正常轮为空（锚点：`tests/test_loop.py::test_trace_observer_called_once_per_run_with_trace_id` / `::test_trace_observer_sees_all_events_of_the_run` / `::test_trace_observer_not_throttled_by_maintenance_cadence` / `::test_trace_observer_failure_degrades` / `::test_trace_observer_absent_is_noop` / `::test_loop_failure_marks_module_attribution` / `::test_loop_success_has_no_module_attribution`；`tests/test_evolution_wiring.py::test_main_loop_wired_to_worker_trace_observer` / `::test_disabled_evolution_does_not_wire_trace_observer` / `::test_loop_failure_flows_to_module_attribution`） |
 | TC-LOOP-08 | loop/spec.md「执行循环」（change `0103`） | 注入装配导出器的 `tracer` 跑一轮 / 连跑 12 轮 / 同时注入 `trace_observer` 在回调里回放本轮 | 开轮 `start_trace`、收尾 `end_trace` 封口：收尾后 `replay(trace_id)` **为空**、本轮事件**经导出器产出**（含 `loop_finished`）；**回调时刻**事件仍可完整回放、封口在其**之后**（顺序守护），封口后 Tracer 内存不随轮次增长；未注入 `tracer` 收尾仍正常（锚点：`tests/test_loop.py::test_loop_releases_trace_after_run` / `::test_loop_emits_to_exporter_on_seal` / `::test_loop_seals_after_trace_observer_snapshot` / `::test_loop_does_not_accumulate_events_across_runs`；`tests/test_phase13.py::test_loop_emits_trace_events`；`tests/test_evolution.py::test_worker_snapshots_events_at_callback_time` / `::test_completed_batch_window_is_bounded`；`tests/test_evolution_wiring.py::test_loop_failure_flows_to_module_attribution`） |
 
+| TC-LOOP-09 | loop/spec.md「异步流式执行」（change `0107`） | 注入装配**捕获导出器**的 `tracer` 跑一轮「首轮调工具、次轮终止回复」的 loop；再用失败工具动作 / 纯终止动作 / 未注入 `tracer` 三种变体跑 | 非终止动作完成 ⇒ 导出事件含 `kind="tool_call"`（载荷 `tool` = 工具 id、`args`、`result.ok`、`latency_ms` 为浮点）——**生产者接线**（此前该 API 零生产调用方）；与 `action_completed` **同判据**：执行失败**仍**产（`result.ok` 为假）、终止动作**不**产、未注入 `tracer` 不产且本轮回复不变（锚点：`tests/test_tool_trace.py::test_tool_action_emits_tool_call_trace` / `::test_failed_tool_action_emits_tool_call_trace_with_failure` / `::test_terminal_action_emits_no_tool_call_trace` / `::test_loop_without_tracer_still_runs`） |
+
 ## 3. 分层记忆（TC-MEM）
 
 | 用例 | 对应需求 | 步骤 | 期望 |
@@ -78,6 +80,8 @@
 | TC-EVO-07 | evolution/spec.md「经验采集」（change `0101`） | 采集带 `module_id` 的失败/成功事件、既有 `tool_call` 事件（直接测适配器 + 端到端经 `maybe_run` 归因） | 带模块归因的事件 ⇒ 可归因到该架构模块的数量证据（`plugin_id == module_id`、失败 ⇒ `success=False`、`task_type="module_health"`）；**既有工具通道逐字不变**（仍 `tool_use`、按工具 id 归因）（锚点：`tests/test_evolution.py::test_worker_adapts_module_attributed_event` / `::test_worker_module_attribution_drives_diagnosis` / `::test_worker_success_module_event_is_not_a_defect` / `::test_worker_tool_channel_unchanged`；`tests/test_evolution_wiring.py::test_successful_loop_produces_no_defect_evidence`） |
 | TC-EVO-08 | evolution/spec.md「模块级提案」+「架构级候选强制人工审批（HITL confirm gate）」（change `0102`） | 喂归因到内部核心模块 / 工具的失败 trace 各一轮，观察提案 `kind`；对架构级候选签获批单 `confirm` → `crystallize`；技能级走同一链路；比对归因白名单与全仓 `plugin_id` 声明 | `kind` 由归因驱动（归因白名单 id ⇒ `plugin`/`high`，否则 ⇒ `skill`/`low`），显式 `kind` 恒优先；架构级结晶结局为 **`accepted`**（无产物、`skill_id is None`，**不得**报 `published`）且仍开观察窗；技能级仍 `published` 且技能确实入库；未 `confirm` 者 `crystallize` 抛 `CANDIDATE_PENDING`；白名单与仓内声明**逐元素一致**（锚点：`tests/test_evolution_attribution.py`） |
 
+| TC-EVO-09 | evolution/spec.md「经验采集」（change `0107`） | 把 loop **在生产链路**产出的 `tool_call` 事件喂 `EvolutionWorker._to_traces`；以及未纳入 `PluginRegistry` 的内部核心模块（如 `loop.default`）产生失败证据 | ①工具调用通道**在生产有产出**：按工具 id 归因为 `task_type="tool_use"`、`success` 取 `result.ok`（此前只有消费侧就绪）；②内部模块归因**不依赖注册表** —— `plugin_id` 语义为**归因对象身份**，模块自身失败经 `module_id` 通道承载即可被判为架构级（`plugin`/`high`）（锚点：`tests/test_tool_trace.py::test_tool_call_trace_feeds_evolution_tool_channel`、`tests/test_evolution_attribution.py`、`tests/test_evolution_wiring.py::test_loop_failure_flows_to_module_attribution`） |
+
 ## 7. 权限与审批管控（TC-PERM）
 
 | 用例 | 对应需求 | 步骤 | 期望 |
@@ -112,6 +116,8 @@
 | TC-OBS-05 | CORE-OBS-R1 | 未注入 tracer 的组合根装配并结束一条 trace | 事件 JSONL 落 `$CORE_STATE_DIR`，经缓冲包装，导出失败不阻塞 |
 | TC-OBS-06 | observability/spec.md「全链路日志」（change `0101`） | 构造 `TraceEvent` 不传 / 传 `module_id`；既有四类 `kind` 路径的记录与序列化 | `module_id` 缺省为 `None`（**向后兼容**，既有 trace_id/span_id/ts/kind/payload 语义逐字不变）；传入时按模块归因携带（锚点：`tests/test_observability.py::test_trace_event_module_id_defaults_to_none` / `::test_trace_event_carries_module_attribution`） |
 | TC-OBS-07 | observability/spec.md「链路追踪」（change `0103`） | 开一条 trace 记录事件 → 封口 `end_trace`；连续开/封口 10 条；装配捕获导出器 | 封口**交付导出器**（事件真到导出器）且**从内存释放**（此后 `replay` 为空）；`_events` 不随已封口 trace 数增长（内存有界，锚点：`tests/test_observability.py::test_end_trace_releases_in_flight_events` / `::test_end_trace_delivers_events_to_exporter` / `::test_in_flight_memory_does_not_grow_across_traces` / `::test_three_event_kinds_logged`（改为落盘真路径断言）） |
+
+| TC-OBS-08 | observability-interface §2「TraceLogger」（change `0107`） | 经 loop 的生产路径调 `log_tool_call`（`args` 为短载荷原样 / 超长载荷节选字符串） | 载荷形状固定为 `{tool, args, result: {ok, output}, latency_ms}`；`args` 允许**节选字符串**（事件面有界，超长参数 ≤400 字符截断）；唯一生产调用方是执行循环（缺省未注入 `tracer` ⇒ 不产）（锚点：`tests/test_tool_trace.py`） |
 
 ## 10. 约束与容错（TC-CONS）
 
@@ -388,6 +394,8 @@
 | TC-NOTE-17 | 同上「循环纪律 + 分层」 | 架构成例扫描 `notes` 包与 `loop` 包的 import 面 | `loop` **不** import `notes`（反向依赖用例含 `notes`）；`notes` 包可导入、有 `__init__.py`（锚点：`tests/test_architecture.py::test_phase3_loop_no_reverse_dependency` / `::test_packages_importable`） |
 | TC-NOTE-18 | 同上 CLI 面 | 跨进程：一进程经 `NoteStore` 写 canonical（含 `observe_turn`），另一进程 `core-agent notes list` / `search <中文任务句>` / `show <id>`；`show` 不存在的 id | 三子命令都在**新进程**里从 canonical Markdown 读到内容（落盘为真源）；中文长句命中；缺失 id ⇒ `NOTE_NOT_FOUND` + 退出码 1（锚点：`tests/test_entry.py` notes 子命令用例 + change 0106 端到端冒烟） |
 | TC-NOTE-19 | notes/spec.md「Consult → Build → Update 循环纪律」+ evolution 归因 | 扫描仓内全部 `plugin_id = "..."` 声明与 `INTERNAL_PLUGIN_IDS` | 逐元素一致（`notes.store` 已登记）—— `notes` 的缺陷归因为**架构级**（`plugin`/`high`）而非技能级，不绕过人工审批（锚点：`tests/test_evolution_attribution.py::test_internal_plugin_ids_match_declared_plugin_ids`） |
+
+| TC-NOTE-20 | notes/spec.md「canonical Markdown 真相层与可插拔后端」（change `0107` 字段加权） | 两篇均含关键词 K：A **标题**命中、B **仅正文顺带**提及；另一组 tags / `## Search Queries` 命中 vs 正文命中；以及**无任何字段**命中 | A 排 B **之前**且两者**均被命中**（加权只改排序、不改过滤）；元数据命中排在正文命中之前；无命中 ⇒ **空列表**（返回结构不变）（锚点：`tests/test_notes.py::test_backend_search_weights_title_above_content` / `::test_backend_search_weights_meta_above_content` / `::test_backend_search_no_hit_returns_empty`） |
 
 ---
 
