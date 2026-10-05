@@ -80,12 +80,30 @@
 - **THEN** 归因到 A（无先验时该情形仍转人工）
 
 ### Requirement: 模块级提案
-系统 SHALL 针对诊断结果生成世代化产物（技能/插件补丁 + delta）。
+系统 SHALL 针对诊断结果生成世代化产物（技能/插件补丁 + delta）。候选的 `kind` SHALL 由**诊断归因**
+驱动：`target_plugin` 属于**内部核心模块**（归因白名单）时 SHALL 产出 `kind="plugin"`，否则 SHALL
+产出 `kind="skill"`；`risk_level` SHALL 随 `kind` 固化（`plugin` → `high`，`skill` → `low`）。
+提案器 MAY 接受**显式覆盖** `kind`，显式值 SHALL 优先于归因判定。
 
 #### Scenario: 生成候选
 - **GIVEN** 一个 DiagnosisReport 已归因到插件
 - **WHEN** Proposer 运行
 - **THEN** 生成 GenerationCandidate，含 delta 与 kind（skill/plugin）
+
+#### Scenario: 归因到内部核心模块产出架构级候选
+- **GIVEN** 一个归因到内部核心模块的 DiagnosisReport（`target_plugin` 属归因白名单，如 `loop.default`）
+- **WHEN** Proposer 未收显式 `kind` 覆盖并运行
+- **THEN** 候选 `kind` 为 `plugin`、`risk_level` 为 `high`、`status` 保持 `pending`
+
+#### Scenario: 归因到工具产出技能级候选
+- **GIVEN** 一个归因到**非**内部核心模块的 DiagnosisReport（如工具 id `tools.file_read`）
+- **WHEN** Proposer 未收显式 `kind` 覆盖并运行
+- **THEN** 候选 `kind` 为 `skill`、`risk_level` 为 `low`
+
+#### Scenario: 显式覆盖优先于归因
+- **GIVEN** Proposer 收显式 `kind="skill"`，而诊断归因到内部核心模块
+- **WHEN** 提案
+- **THEN** 候选 `kind` 为 `skill`（显式值优先，归因判定被覆盖）
 
 #### Scenario: 候选进入验证门
 - **GIVEN** 候选已生成
@@ -172,6 +190,10 @@
 - **可追溯**：审批单 SHALL 携带候选目标与 trace，经审批流归档可回溯。
 - **拒绝不放行**：被拒/过期/超时的审批单 SHALL NOT 放行候选；`crystallize` 对未确认候选仍 SHALL
   拒绝（既有 `CANDIDATE_PENDING` 语义不变）。
+- **结局诚实**：架构级候选获批并过门后 SHALL 以 `accepted` 结局登记（语义为「已批准、**待人工
+  实施**」）——系统 SHALL NOT 在该分支报告 `published`（无架构产物被发布、无世代被晋升）；
+  技能级候选 SHALL 以 `published` 结局登记（确实写入技能库）。两个分支 SHALL 同样开启观察期
+  （观察期判的是「批准之后是否回归」，与是否有产物无关）。
 
 #### Scenario: 架构级候选无审批单不放行
 - **GIVEN** 一个 `risk_level="high"` 的候选已过验证门与留出评测
@@ -180,8 +202,9 @@
 
 #### Scenario: 架构级候选带已批准审批单放行
 - **GIVEN** 一个 `risk_level="high"` 的候选，且已有一张目标一致、经人工批准的审批单
-- **WHEN** 携带该审批单调用 `confirm`
-- **THEN** 候选 `status` 置 `confirmed`，`crystallize` 可发布
+- **WHEN** 携带该审批单调用 `confirm`，随后 `crystallize`
+- **THEN** 候选 `status` 置 `confirmed`，结晶结局为 **`accepted`**（「已批准、待人工实施」，
+  **不**报 `published`），并开启观察期
 
 #### Scenario: 审批被拒不放过
 - **GIVEN** 一个 `risk_level="high"` 的候选，审批单已被人工拒绝
@@ -199,14 +222,24 @@
 - **THEN** 候选置 `confirmed`（人工确认仍是必要条件，只是不要求权限工单），未被确认时
   `crystallize` 仍拒绝
 
+#### Scenario: 技能级候选结晶报 published
+- **GIVEN** 一个已确认、过验证门、留出集不退化的 `risk_level="low"` 候选
+- **WHEN** `crystallize`
+- **THEN** 技能写入技能库且结局为 `published`
+
+#### Scenario: 未确认候选不产出任何发布类结局
+- **GIVEN** 一个 `status="pending"` 的候选（无论 `risk_level`）
+- **WHEN** 直接调用 `crystallize`
+- **THEN** 抛 `CANDIDATE_PENDING`，不产生 `accepted` 亦不产生 `published` 结局
+
 ### Requirement: 观察期回归自动溶解（auto-dissolve）
 系统 SHALL 在**结晶发布后**为该产物开启**观察期窗口**（记录发布时评测基线分），并由调用方持续
 采样发布后的回归指标：观察样本数达下限**且**观察均分低于「基线 − 容差」时 SHALL **自动溶解**
 （技能标 `deprecated`、停止路由，教训 SHALL 写回记忆层并携带回归证据）。溶解后该目标 SHALL 进入
 **冻结冷却期**，期内 SHALL NOT 再次触发溶解。
 
-- **开窗**：仅**已发布**（`crystallize` 成功）的产物开窗；未开窗目标的采样 SHALL 被忽略
-  （不抛异常，也不累积）。
+- **开窗**：仅**结晶成功**（`crystallize` 返回 `published` 或 `accepted`）的产物开窗；未开窗目标的
+  采样 SHALL 被忽略（不抛异常，也不累积）。
 - **判定**：容差为**绝对分差**（与留出评测的 margin 同一形状）；样本数不足时 SHALL NOT 判定回归。
 - **冻结**：冻结期内 SHALL NOT 累积样本、SHALL NOT 触发溶解；冷却期结束 SHALL 自动恢复采样。
 - **可追溯**：自动溶解的回归证据（基线 / 观察均分 / 样本数）SHALL 随教训条目留痕。

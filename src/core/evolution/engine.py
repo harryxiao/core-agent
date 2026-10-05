@@ -268,7 +268,8 @@ class EvolutionEngine:
                     trace_id="evolution",
                 )
             )
-        return EvolutionOutcome(status="published", candidate=candidate)
+        # 结局诚实：架构级候选只「批准登记」，不产出任何可发布产物 ⇒ 不谎报 published
+        return EvolutionOutcome(status="accepted", candidate=candidate)
 
 
 class EvolutionTrigger:

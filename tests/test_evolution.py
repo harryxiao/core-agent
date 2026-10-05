@@ -337,7 +337,8 @@ def test_high_risk_candidate_confirms_with_approved_ticket() -> None:
     candidate = _pending(engine)
     engine.confirm(candidate, approval=_ticket(candidate.target_plugin))
     assert candidate.status == "confirmed"
-    assert engine.crystallize(candidate).status == "published"
+    # 架构级结晶：批准登记即止，无产物发布 ⇒ 结局为 accepted（不谎报 published）
+    assert engine.crystallize(candidate).status == "accepted"
 
 
 def test_rejected_approval_blocks_high_risk_candidate() -> None:

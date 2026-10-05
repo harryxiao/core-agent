@@ -23,6 +23,7 @@ from .models import (
 )
 from .observation import ObservationRegistry, ObservationWindow
 from .pending import PendingItem, PendingQueue
+from .plugin_ids import INTERNAL_PLUGIN_IDS
 from .proposer import Proposer
 from .validator import Validator
 from .worker import EvolutionWorker
@@ -45,6 +46,7 @@ __all__ = [
     "EvolutionWorker",
     "GateReport",
     "GenerationCandidate",
+    "INTERNAL_PLUGIN_IDS",
     "ObservationRegistry",
     "PendingItem",
     "PendingQueue",

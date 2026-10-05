@@ -155,8 +155,8 @@ def test_full_chain_real_defect_published() -> None:
     assert library.lookup(result.skill_id) is not None
 
 
-def test_plugin_candidate_crystallizes_published() -> None:
-    """plugin 候选走 MemoryCrystallizer 结晶：published 且无 skill_id。"""
+def test_plugin_candidate_crystallizes_accepted() -> None:
+    """plugin 候选走 MemoryCrystallizer 结晶：accepted（无产物发布）且无 skill_id。"""
     crystallizer = _SpyCrystallizer()
     engine = EvolutionEngine(
         diagnoser=Diagnoser(),
@@ -171,7 +171,7 @@ def test_plugin_candidate_crystallizes_published() -> None:
 
     engine.confirm(outcome.candidate)
     result = engine.crystallize(outcome.candidate)
-    assert result.status == "published"
+    assert result.status == "accepted"
     assert result.skill_id is None
     assert crystallizer.crystallized  # crystallizer 被调用
 

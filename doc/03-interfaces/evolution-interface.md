@@ -14,8 +14,14 @@ class Diagnoser(Plugin):
 
 class Proposer(Plugin):
     plugin_id = "evolution.proposer"
+    def __init__(self, *, kind: Literal["skill", "plugin"] | None = None) -> None:
+        """``kind`` 是**显式覆盖**：``None``（缺省）⇒ 按诊断归因判定。"""
     def propose(self, diagnosis: DiagnosisReport) -> GenerationCandidate:
-        """生成世代化产物（技能/插件补丁 + delta）。"""
+        """生成世代化产物（技能/插件补丁 + delta）。
+
+        `kind` 由**归因驱动**（change `0102`）：`diagnosis.target_plugin` 命中
+        内部核心模块归因白名单 `INTERNAL_PLUGIN_IDS` ⇒ `plugin`/`high`（架构级，
+        强制人工审批）；否则 ⇒ `skill`/`low`（技能库级）。显式 `kind` 恒优先。"""
 
 class Validator(Plugin):
     plugin_id = "evolution.validator"
@@ -184,11 +190,13 @@ def reject(self, candidate: GenerationCandidate, *, reason: str | None = None) -
 | 命令 | 语义 |
 |---|---|
 | `evolve pending` | 列出待确认候选（id / 风险域 / 目标 / 问题摘要）；空则打印「待确认队列为空」 |
-| `evolve confirm <id>` | 确认并**立即发布结晶**（两步在一次动作内）；`risk_level="high"` 时**本命令即审批签发端**：构造 `ApprovalRequest(op="evolution.publish", target=候选目标, ...)` → `ApprovalWorkflow.approve()` → 携带获批单调 `confirm` |
+| `evolve confirm <id>` | 确认并**立即结晶**（两步在一次动作内）；`risk_level="high"` 时**本命令即审批签发端**：构造 `ApprovalRequest(op="evolution.publish", target=候选目标, ...)` → `ApprovalWorkflow.approve()` → 携带获批单调 `confirm`。**结局文案按分支诚实**（change `0102`）：技能级 ⇒「已确认并发布：published」；架构级 ⇒「已批准（待人工实施）」（**不说「已发布」**） |
 | `evolve reject <id> [--note TEXT]` | 拒绝候选（不再发布，可附理由） |
 
 - **非待确认态不得复活**：`confirm`/`reject` 对不存在或非 `pending` 的候选一律给出反馈 + 非零退出。
 - **签发端在操作面、判定仍在引擎**：操作面即「人工」这一事实的来源；引擎只收单据做判定（`confirm` 三重门语义一字不动）。
+- **架构级结晶结局 = `accepted`**（change `0102`）：`confirm` 的**人工门一步不放宽**（`risk_level="high"`
+  仍必须携带获批单），变的是**结晶结局的诚实性** —— 无产物落地就不报 `published`。
 - **驱动面不变**：`evolve run` 仍是「跑一轮」（§4.1），跑出 `pending` 时提示候选 id。
 
 ---
@@ -269,7 +277,12 @@ class CurriculumPlanner:
 | `EVAL_REGRESSED` | 留出集退化（触发回滚） |
 | `CONFIRM_REQUIRED` | 架构级候选未获人工审批（无审批单 / 未批准 / 目标不符） |
 
-`EvolutionOutcome.status` 取值：`published` / `pending` / `manual` / `rejected` / `rollback` / `no_evidence` / `dissolved`（观察期自动溶解）。
+`EvolutionOutcome.status` 取值：`published` / `accepted` / `pending` / `manual` / `rejected` / `rollback` / `no_evidence` / `dissolved`（观察期自动溶解）。
+
+- `published` = **有产物落地**（技能级候选已写入技能库）。
+- `accepted` = **人工已批准、待人工实施**（架构级候选：本仓无「自动生成并装配新一代 `Plugin` 对象」
+  的生产者，故批准只作**登记**，不产出任何发布物；**不谎报 `published`**）——change `0102`。
+  两种结局**观察期开窗一致**（判「批准/发布之后是否回归」，与是否有产物无关）。
 
 ---
 

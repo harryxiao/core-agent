@@ -22,11 +22,11 @@
 
 | # | 断裂点 | 现象（一手核实） |
 |---|---|---|
-| **0** | **trace 通路未接通**（前置，原稿漏） | `EvolutionWorker` 的输入 `self._completed` 在**生产恒空**：`on_trace_complete` 全仓只有 `worker.py:51` 定义 + `tests/` 调用，**零生产调用方**；loop 的收尾只调 `self._cold_path()`（`default.py:302-306`），而 `ColdPath = Callable[[], None]`（`default.py:43`）**不带 trace_id** ⇒ `_collect()` 恒 `[]` ⇒ `run_cycle` 只会走到 `no_evidence`（`engine.py:92-93`） |
-| **1** | **trace 无模块归因** | `worker.py:112` `plugin_id=tool or None` 绑的是**工具名**；`events.py:19` 的 `kind` 只有 `model_io/tool_call/effect/metric`，**无「架构模块失败」通道**；且 `TraceEvent` **无模块字段** |
-| **2** | **诊断信号源**（订正） | 原稿说「`Diagnoser(plugin_signals)` 无来源」——现象属实（`diagnoser.py:22` + `runtime.py:448` 无参装配），但 `Diagnoser.diagnose` **本就从 trace 归因**（`diagnoser.py:37-39` 按 `t.plugin_id` 计分）⇒ **不需要新载体**，真缺口是**生产端没有带模块归因的 trace**（=断裂 0 + 断裂 1） |
-| **3** | **提案 kind 静态绑定** | `proposer.py:21` `kind: Literal["skill","plugin"] = "skill"`；`runtime.py:449` `Proposer()` 无参 ⇒ `kind` 恒 `"skill"`、`risk_level` 恒 `"low"`（该行在 **`proposer.py:35`**，原稿写 `:33`） |
-| **4** | **结晶谎报发布** | `engine.py:259-271` `_crystallize_plugin` 只写 L3 记忆，却返回 `EvolutionOutcome(status="published")`（`:271`）——**无世代可晋升、也没有任何架构产物被发布**，`published` 是谎报 |
+| **0** | **trace 通路未接通**（前置，原稿漏）　✅ `0101` | `EvolutionWorker` 的输入 `self._completed` 在**生产恒空**：`on_trace_complete` 全仓只有 `worker.py:51` 定义 + `tests/` 调用，**零生产调用方**；loop 的收尾只调 `self._cold_path()`（`default.py:302-306`），而 `ColdPath = Callable[[], None]`（`default.py:43`）**不带 trace_id** ⇒ `_collect()` 恒 `[]` ⇒ `run_cycle` 只会走到 `no_evidence`（`engine.py:92-93`） |
+| **1** | **trace 无模块归因**　✅ `0101` | `worker.py:112` `plugin_id=tool or None` 绑的是**工具名**；`events.py:19` 的 `kind` 只有 `model_io/tool_call/effect/metric`，**无「架构模块失败」通道**；且 `TraceEvent` **无模块字段** |
+| **2** | **诊断信号源**（订正）　✅ `0101` | 原稿说「`Diagnoser(plugin_signals)` 无来源」——现象属实（`diagnoser.py:22` + `runtime.py:448` 无参装配），但 `Diagnoser.diagnose` **本就从 trace 归因**（`diagnoser.py:37-39` 按 `t.plugin_id` 计分）⇒ **不需要新载体**，真缺口是**生产端没有带模块归因的 trace**（=断裂 0 + 断裂 1） |
+| **3** | **提案 kind 静态绑定**　✅ `0102` | `proposer.py:21` `kind: Literal["skill","plugin"] = "skill"`；`runtime.py:449` `Proposer()` 无参 ⇒ `kind` 恒 `"skill"`、`risk_level` 恒 `"low"`（该行在 **`proposer.py:35`**，原稿写 `:33`） |
+| **4** | **结晶谎报发布**　✅ `0102` | `engine.py:259-271` `_crystallize_plugin` 只写 L3 记忆，却返回 `EvolutionOutcome(status="published")`（`:271`）——**无世代可晋升、也没有任何架构产物被发布**，`published` 是谎报 |
 
 ### 1.2 明确不做
 
@@ -61,8 +61,8 @@
 - [x] ② **模块归因字段**（change `0101`）：`TraceEvent` 可携带可选 `module_id`（缺省 `None`，序列化向后兼容）；loop 的**自身失败**事件（`loop_finished{failed:true}`）带 `module_id="loop.default"`。
 - [x] ③ **采集层可归因架构模块**（change `0101`）：`_to_traces` 把**带 `module_id`** 的事件适配为 `Trace(plugin_id=module_id, ...)`；既有 `tool_call` 路径行为不变（端到端已证：loop 预算耗尽 ⇒ 归因 `loop.default`）。
 - [x] ④ **诊断落白名单**（change `0101`）：`Diagnoser.diagnose` 能把对比诊断归因到 13 个内部核心模块 id 之一；无模块级归因时按契约「人工介入」（既有语义，**不改 Diagnoser**）。
-- [ ] ⑤ **提案动态 kind**：`Proposer` 按 `diagnosis.target_plugin` 是否命中 13 白名单决定——命中 → `kind="plugin"` + `risk_level="high"` + `status="pending"`；否则 `kind="skill"` + `risk_level="low"`；**显式传入 kind 仍覆盖**（既有调用面不破）。
-- [ ] ⑥ **结晶不谎报**：`kind="plugin"` 走 `crystallize` 返回**新结局 `accepted`**（已批准、待人工实施），**不再返回 `published`**；L3 记忆留痕与观察期开窗保留；技能分支仍为 `published`（确实入库 `SkillLibrary`）。
+- [x] ⑤ **提案动态 kind**（change `0102`）：`Proposer` 按 `diagnosis.target_plugin` 是否命中 13 白名单决定——命中 → `kind="plugin"` + `risk_level="high"` + `status="pending"`；否则 `kind="skill"` + `risk_level="low"`；**显式传入 kind 仍覆盖**（既有调用面不破）。
+- [x] ⑥ **结晶不谎报**（change `0102`）：`kind="plugin"` 走 `crystallize` 返回**新结局 `accepted`**（已批准、待人工实施），**不再返回 `published`**；L3 记忆留痕与观察期开窗保留；技能分支仍为 `published`（确实入库 `SkillLibrary`）。
 - [ ] ⑦ **红线验证**：`kind="plugin"` 候选默认 `pending`，无 `confirm` 绝不 `published`/`accepted`；`risk_level="high"` 必带**已批准且目标一致**的审批单（既有 `confirm` 语义，加守护测试）。
 
 ---
@@ -140,7 +140,7 @@
 - **注**：原稿 §5.3 的「`tool` 命中 `INTERNAL_PLUGIN_IDS` 时 `plugin_id=tool`」**删除**——tool id 命名空间是
   `tools.*`（`builtin.py:88/118/147/187/222`、`install_tools.py:78/98/117`），与 13 个模块 id **永不相交**，是**不可达逻辑**。
 
-### 5.3 单一真源常量
+### 5.3 单一真源常量　✅ change `0102`
 
 - **模块**：新建 `src/core/evolution/plugin_ids.py`（或就近置于 `evolution/models.py` 旁）。
   ```python
@@ -148,7 +148,7 @@
   ```
   文档串须写明：**归因白名单**，非注册表成员（本仓内部模块未纳入 `PluginRegistry`）。
 
-### 5.4 断裂 3 — Proposer 动态 kind
+### 5.4 断裂 3 — Proposer 动态 kind　✅ change `0102`
 
 - **模块**：`src/core/evolution/proposer.py`。
 - **改动**：构造参数降级为**显式覆盖**——`kind: Literal["skill", "plugin"] | None = None`；
@@ -159,7 +159,7 @@
   `GenerationCandidate(kind="plugin", risk_level="high", status="pending")`；
   `target_plugin="tools.file_read"` → `skill`/`low`。
 
-### 5.5 断裂 4 — 结晶不谎报发布
+### 5.5 断裂 4 — 结晶不谎报发布　✅ change `0102`
 
 - **模块**：`src/core/evolution/engine.py`（`_crystallize_plugin`）+ `src/core/entry.py`（CLI 文案）。
 - **改动**：`kind="plugin"` 的结晶结局由 `published` 改为 **`accepted`**（「已批准、待人工实施」）：
@@ -192,12 +192,14 @@
 
 ## 7. 门禁验收
 
-- [ ] `ruff check` 全绿。
-- [ ] `pyright` 0 errors。
-- [ ] `pytest` 全绿（新增用例覆盖 §5.1~§5.5 各验收点）。
-- [ ] **本 Phase 专属校验**：一条集成测试模拟「`loop.default` 故障 → 事件带 `module_id` → 采集适配为 `Trace`
+- [x] `ruff check` 全绿（change `0102` 收尾时：317 files）。
+- [x] `pyright` 0 errors（`0 errors, 0 warnings, 0 informations`）。
+- [x] `pytest` 全绿（新增用例覆盖 §5.1~§5.5 各验收点；change `0102` 收尾时 **1176 passed**）。
+- [x] **本 Phase 专属校验**：一条集成测试模拟「`loop.default` 故障 → 事件带 `module_id` → 采集适配为 `Trace`
       → `Diagnose` 归因到 `loop.default` → `Propose` 产出 `kind="plugin"`/`risk_level="high"`/`status="pending"`
       → 未 confirm 断言无 `accepted` → 带审批单 confirm → crystallize 断言 `accepted`」（fake planner，**不出网**）。
+      落地：`tests/test_evolution_attribution.py`（7 例，覆盖归因驱动 kind / 显式覆盖 / 白名单逐元素一致性 /
+      架构级 `accepted` / 技能级 `published` / 未确认 `CANDIDATE_PENDING`）。
 
 ---
 
@@ -216,3 +218,23 @@
   `src/core/runtime.py`、`src/core/entry.py` + 对应测试。
 - **不**提交：`phase-21-findings.md`（审计工作底稿，仅本地参考）。
 - **转出账本**（§1.4 两项）须在 `phase-19.md` §5 或 `phase-20.md` 登记为待办行。
+
+---
+
+## 9. 收口状态（2026-10-05）
+
+本 Phase **两个 change 全部交付并归档**，5 个断裂点全闭：
+
+| 断裂点 | change | 归档目录 |
+|---|---|---|
+| 0 trace 通路未接通 / 1 trace 无模块归因 / 2 诊断信号源 | `0101` | `doc/openspec/changes/archive/2026-10-05-0101-trace-module-attribution/` |
+| 3 提案 kind 静态绑定 / 4 结晶谎报发布 / 白名单常量 | `0102` | `doc/openspec/changes/archive/2026-10-05-0102-attribution-driven-proposal/` |
+
+- **新增 ADR**：ADR-0094（trace 通道 + 模块归因，不纳入 `PluginRegistry`）、ADR-0095（归因驱动 `kind` +
+  结晶结局诚实化 `accepted`）。
+- **新增错误码**：无（`accepted` 是**结局词**，不是错误码）。
+- **规格**：`observability` / `loop` / `evolution` 三处 MODIFIED（`evolution` 含「模块级提案」
+  「架构级候选强制人工审批」「观察期回归自动溶解」三条）。
+- **转出账本（§1.4，仍待办、已登记）**：① 工具级 trace 缺失（= `phase-19.md` **E30**）；
+  ② 13 模块纳入注册表 + 世代晋升（= `phase-19.md` **E31**，推迟到有新一代 `Plugin` 对象生产者的 Phase）。
+- **未提交**：`coding-plan/phase-21-findings.md`（审计工作底稿，仅本地参考）。

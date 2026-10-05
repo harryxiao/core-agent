@@ -165,7 +165,7 @@ def test_high_risk_candidate_survives_restart(tmp_path) -> None:
     )
     workflow.approve(ticket)
     second.confirm(restored, approval=ticket)
-    assert second.crystallize(restored).status == "published"
+    assert second.crystallize(restored).status == "accepted"
 
 
 # ---- 队列语义：确认/拒绝即出队 ----
@@ -257,7 +257,10 @@ def test_evolve_confirm_publishes(cli_env, capsys: pytest.CaptureFixture[str]) -
 def test_evolve_confirm_high_risk_signs_ticket(cli_env, capsys: pytest.CaptureFixture[str]) -> None:
     candidate_id = _seed(kind="plugin")
     assert main(["--config", cli_env, "evolve", "confirm", candidate_id]) == 0
-    assert "published" in capsys.readouterr().out
+    # 架构级候选批准后无产物落地 ⇒ CLI 不得说「已发布」
+    out = capsys.readouterr().out
+    assert "待人工实施" in out
+    assert "published" not in out
 
 
 def test_evolve_reject(cli_env, capsys: pytest.CaptureFixture[str]) -> None:

@@ -1019,7 +1019,11 @@ def _evolve_confirm(args: argparse.Namespace) -> int:
     except EvolutionError as exc:
         print(f"确认失败: {exc}", file=sys.stderr)
         return 1
-    print(f"已确认并发布：{outcome.status}（{candidate.target_plugin}）")
+    if outcome.status == "accepted":
+        # 架构级候选：批准已登记，但无产物落地（待人工实施）
+        print(f"已批准（待人工实施）：{candidate.target_plugin}")
+    else:
+        print(f"已确认并发布：{outcome.status}（{candidate.target_plugin}）")
     return 0
 
 

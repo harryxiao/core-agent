@@ -2039,6 +2039,50 @@
 
 ---
 
+## ADR-0095：归因驱动提案 kind + 架构级结晶结局诚实化（`accepted` 而非 `published`）
+
+- **背景**：ADR-0094 让 trace 带上**模块归因**（`plugin_id=<内部核心模块 id>`），但归因在**提案阶段被
+  抹平**：①`Proposer.__init__(*, kind: Literal["skill","plugin"] = "skill")` 把 `kind` **静态固化**，
+  `risk_level` 同点派生（`proposer.py:35`），而组合根 `Proposer()` **不传参**（`runtime.py:450`）⇒
+  产线**每一个候选都是 `skill`/`low`**，模块归因白白流失；②`_crystallize_plugin` 只往 L3 写一条
+  `MemoryEntry`，却返回 `EvolutionOutcome(status="published")`（`engine.py:271`）⇒ CLI 打印
+  「已确认并发布：published」（`entry.py:1022`），而**没有任何可发布产物**。
+- **决策**：
+  ① **`kind` 由诊断归因驱动**：新增归因白名单 `INTERNAL_PLUGIN_IDS`（13 个内部核心模块 `plugin_id`，
+     `evolution/plugin_ids.py`）——`target_plugin` 命中 ⇒ `plugin`/`high`，否则 ⇒ `skill`/`low`。
+     原构造参数降级为**显式覆盖**（`kind=None` 表示按归因判定），既有 `Proposer(kind=…)` 调用语义不变。
+  ② **取「枚举白名单」而非前缀启发式**（`loop.*` / `evolution.*` 前缀 + 排除）：前缀规则要靠**否定表**
+     兜住 `composition.*` / `im.gateway` / `memory.store` 等非同族成员，判定逻辑随之变成「白名单 + 黑名单
+     + 例外」，可读性与可验证性都更差；枚举是**单一真源 + 逐元素一致性用例**（扫全仓
+     `plugin_id = "..."` 声明比对，新增模块漏登记即红）。
+  ③ **常量落在 `evolution` 包内**（不在 `runtime` / `observability`）：它是**进化引擎的归因判据**，
+     唯一消费者是 `Proposer`；放组合根会让 `runtime` 反向依赖领域知识，放 `observability` 会把
+     「谁算架构模块」的**政策**塞进**机制**层。
+  ④ **架构级结晶结局为 `accepted`**（新词，`EvolutionOutcome.status` 词表 +1）：语义 = **人工已批准、
+     待人工实施**。本仓**没有**「自动生成并装配新一代 `Plugin` 对象」的生产者（见 ADR-0094 限制②），
+     所以批准**确实**不产出任何发布物 —— 那就**不谎报 `published`**。技能级分支**一字不动**（确有技能入库
+     ⇒ 仍 `published`）。
+  ⑤ **不复用既有词**：`pending` 语义是「未确认」、`manual` 语义是「系统级 / 无人可归因」，复用会让
+     下游（CLI / UI / 台账）**无法区分「已批准待实施」与「尚未确认」** —— `accepted` 是**新状态**，
+     需要新词。
+  ⑥ **L3 留痕与观察期开窗保留**：`accepted` 只改**结局词**，不改副作用（候选仍写 L3，仍开观察窗口）。
+     观察期判的是「批准/发布之后是否回归」，与是否有产物**无关**。
+  ⑦ **`accepted` 不回灌 `run_cycle`**：`run_cycle` 的结局停留在 `pending`（未确认），`accepted` 只从
+     `crystallize` 产出 ⇒ 不改任何**自动**路径的判定（人工门一步不放宽）。
+- **限制（已知且明示）**：
+  - **架构级候选仍无「实施」能力**：`accepted` 的诚实化只解决「不谎报」，**不**制造实现生产者；
+    真正落地仍需「模型生成代码 / 人工提交补丁 → 新 `Plugin` 对象」的 Phase（同 ADR-0094 限制②）。
+  - **`INTERNAL_PLUGIN_IDS` 是归因白名单，不是 `PluginRegistry` 成员名单**（无注册表驱动的
+    `load`/`unload` 生命周期）；命名空间与工具 id（`tools.*`）互不相交。
+- **影响**：新增 `src/core/evolution/plugin_ids.py`；`Proposer.__init__` 签名 `kind: … | None = None`、
+  `propose` 内归因判定；`_crystallize_plugin` 返回 `accepted`；`EvolutionOutcome.status` 词表 + `accepted`；
+  `entry._evolve_confirm` 结局文案按分支（架构级「已批准（待人工实施）」）；既有 4 处架构级断言改
+  `accepted`（`test_evolution.py` / `test_phase15.py` / `test_evolution_pending.py` ×2）；新
+  `tests/test_evolution_attribution.py`（7 例）。
+- **规格**：MODIFIED「模块级提案」/「架构级候选强制人工审批（HITL confirm gate）」（evolution）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2128,3 +2172,4 @@
 | ADR-0092 | 03-interfaces/ui-interface.md |
 | ADR-0093 | 06-ui-frontend/ui-architecture.md |
 | ADR-0094 | 03-interfaces/observability-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/evolution-interface.md |
+| ADR-0095 | 03-interfaces/evolution-interface.md |
