@@ -20,6 +20,7 @@ from core.pet.core import (
     PetTaskKind,
     WakeOutcome,
 )
+from core.plugin_registry import PluginInstaller
 from core.ui import SessionRegistry
 
 # cli-contract-baseline.md §2 顶层命令面（19 子命令 + 无子命令进 REPL）。
@@ -514,6 +515,36 @@ def test_plugin_install_records_ledger_and_uninstall(
     assert "skills.demo.hello" in capsys.readouterr().out
     assert main(["plugin", "uninstall", "skills.demo.hello"]) == 0
     assert installer.installed() == []
+
+
+def test_plugin_install_runs_full_lifecycle(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI `plugin install` 须走完整生命周期（verify → install → register → activate）。
+
+    change 0108 / 账本 E35：与 `tools.install` 同链（`installable` 声明 + plugin-registry spec
+    「插件来源与安装」），此前 CLI 路径跳过 verify / activate。
+    """
+    calls: list[str] = []
+
+    class _Recording(PluginInstaller):
+        def verify(self, asset, signature) -> None:  # type: ignore[override]
+            calls.append("verify")
+            super().verify(asset, signature)
+
+        def activate(self, plugin_id: str) -> None:
+            calls.append("activate")
+            super().activate(plugin_id)
+
+    installer = _Recording(
+        source_resolver=lambda source, location: {"skill_id": "skills.demo.hello"}
+    )
+    monkeypatch.setattr("core.entry._build_installer", lambda: installer)
+    manifest = tmp_path / "skill.json"
+    manifest.write_text('{"skill_id": "skills.demo.hello"}', encoding="utf-8")
+
+    assert main(["plugin", "install", str(manifest), "--kind", "skill"]) == 0
+    assert calls == ["verify", "activate"]
 
 
 def test_skill_remove_missing(capsys: pytest.CaptureFixture[str]) -> None:

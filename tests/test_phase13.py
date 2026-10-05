@@ -114,6 +114,10 @@ def test_build_runtime_assembles_all_deps(monkeypatch, tmp_path) -> None:
         "tools.code_run",
         "tools.web_fetch",
         "tools.delegate",
+        # 插件安装工具（change 0108 / 账本 E33）：生产工具面可达
+        "tools.install",
+        "tools.uninstall",
+        "tools.list",
     }
     delegate = next(t for t in runtime.tools.active_tools() if t.tool_id == "tools.delegate")
     min_delegate_timeout = 120.0  # 委托跑完整子循环，远超 ToolDef 默认 30s

@@ -102,6 +102,9 @@ from core.tools import (
     file_patch,
     file_read,
     file_write,
+    install_tool,
+    list_tool,
+    uninstall_tool,
     web_fetch,
 )
 
@@ -461,7 +464,17 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
     dispatcher = InstallDispatcher(
         skill_library=skill_library, tool_provider=tools, mcp_client=mcp_client
     )
-    installer = PluginInstaller(source_resolver=dispatcher.resolve, installer=dispatcher.install)
+    # uninstaller 须对称注入（change 0108 / 账本 E33）：否则 `tools.uninstall` 只从 `_assets` 摘账，
+    # 不做 kind 分发的真实回退（skill 移除 / cli·mcp 工具摘除）。
+    installer = PluginInstaller(
+        source_resolver=dispatcher.resolve,
+        installer=dispatcher.install,
+        uninstaller=dispatcher.uninstall,
+    )
+    # 插件安装工具接进生产工具面（change 0108 / 账本 E33，规格 tool-use「插件安装工具」）：
+    # 须与组合根 installer 同一实例（否则装一次性注册表 = 谎报），注册排在 installer 构造之后。
+    for install_op in (install_tool(installer), uninstall_tool(installer), list_tool(installer)):
+        tools.register(install_op)
     # MCP 端点注册表（change 0074 / 账本 B4）：`mcp add` 的成果落 $CORE_STATE_DIR，
     # 装配期读回并经**同一安装管线**连接、把远端工具注册进本地工具集（`mcp.<端点名>.<工具>`）。
     # **单个端点不可达只告警跳过**：坏端点不得让整个系统不可用。

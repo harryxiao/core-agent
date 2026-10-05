@@ -2333,6 +2333,56 @@
 
 ---
 
+## ADR-0101：插件安装链路的**工具面闭环**（E33 三工具接线 + 对称 `uninstaller`；E34 `cli.*` coeffect 声明补正；E35 CLI 安装走完整生命周期）
+
+- **背景**：`coding-plan/phase-25.md` §1 一手复核发现三处**接线不一致**（规格均已在位，实现未跟上）——
+  ①**E33**：`tool-use` spec 明文要求系统提供 `install` / `uninstall` / `list` 三个插件安装工具，但组合根
+  `build_runtime` 只注册 5 个内置工具与 `tools.delegate`，三工具**从未接进生产工具面**（全仓仅
+  `tools/__init__` re-export 与注入式单测调用；`pet/safety` 的不可逆集合甚至已把它们列为「真实工具 id」
+  ——悬空引用）⇒ 规格承诺的对外能力**生产不可达**。②**E34**：`CLIAdapter.adapt` 产出的 `cli.*` 工具
+  `coeffects=[]`，而 handler 走 `subprocess.run` **真派生进程** ⇒ 声明不实；且空 coeffect 被 MCP 默认
+  暴露面判据（`⊆ {"filesystem:read"}`，空集视为只读）判为只读 ⇒ `cli.*` 工具**默认进对外暴露面**
+  （与 change 0076「跨边界能力默认不出」的收窄意图相反；确认门亦因 `process:spawn` 不属高危、`reversible=False`
+  的判据只认含 `write` 的 coeffect 而不触发）。③**E35**：`entry._plugin_install` 只走
+  `discover → install → register`，**跳过 `verify` / `activate`**，而 `installable` 声明与 `plugin-registry`
+  spec「插件来源与安装」要求的是七步链、同链路的 `tools.install` 走全链 ⇒ 两条路径语义分叉。
+- **决策**：
+  ① **E33 —— 三工具接进生产工具面、与 `Runtime.installer` 同一实例**：在 `build_runtime` 内、`installer`
+     构造**之后**注册 `install_tool(installer)` / `uninstall_tool(installer)` / `list_tool(installer)`。
+     **同一实例是关键**：`install_tools` 工厂在缺省参时自造 `PluginInstaller()`（一次性注册表）—— 若注册
+     时不注入组合根 `installer`，装进去也读不到（同 `entry._build_installer` 曾用一次性 `provider` 的缺陷
+     形态）。**连带补 `uninstaller=dispatcher.uninstall`**：`Runtime.installer` 此前只注入了
+     `source_resolver` + `installer`、**漏注入 `uninstaller`**，`tools.uninstall` 只从 `_assets` 摘账、不做
+     kind 分发的真实回退（skill 移除 / cli·mcp 工具摘除）—— 接线后才暴露，故同批修。三工具的
+     `coeffects`（`install`/`uninstall` = `["filesystem:write"]` + `reversible=False`）**不变** ⇒ 经
+     `SafetyGate` 仍走「写 + 不可逆」确认门（非交互入口 fail-closed）。
+  ② **E34 —— 只改声明、不改行为**：`cli_adapter.py` 工具声明由 `[]` 改 `["process:spawn"]`（对齐
+     `code_run` 的规范拼写）⇒ 默认暴露面判据为假、`cli.*` 不再默认对外暴露。**不加 `filesystem:write`**：
+     会因 `reversible=False` 新触发写类确认门、改变既有 CLI 安装流程的审批行为，属另一议题。
+  ③ **E35 —— CLI 路径补齐 `verify` / `activate`**：`_plugin_install` 在 `install` 前补
+     `verify(item, signature)`、`register` 后补 `activate(plugin_id)`，与 `tools.install` 同链。CLI 一次性
+     进程仍适用（`installable.activate` = `load` + `activate`，`StubPlugin` 两侧 no-op）；今日 `_build_installer`
+     未注入 verifier（`_default_verify` 恒真）⇒ **净效果是补齐链条**，非行为变更。
+- **耦合（决策记录的核心理由）**：**接线 E33 会让 E34 变活** —— `InstallDispatcher` 持**生产** `ToolProvider`，
+  一旦经审批执行 `tools.install --kind cli`，`cli.*` 工具会注册进生产工具面；若声明仍为空，同一进程的
+  `mcp serve` 会把它**默认放出**。故 E33 与 E34 **必须同批交付**（本 change 即如此），否则等于把「声明不实的
+  派生进程能力」默认对外开放。
+- **影响**：`src/core/runtime.py`（`PluginInstaller` 补 `uninstaller=` + 注册三工具 + import 三个工厂）；
+  `src/core/plugins/cli_adapter.py`（coeffect 声明 + 注释）；`src/core/entry.py`（`_plugin_install` 补两步）；
+  测试（`tests/test_install_tools.py` +3 例、`tests/test_phase16.py` +1 例并给 CLI 用例注入 `process:spawn`
+  resolver、`tests/test_entry.py` +1 例、`tests/test_phase13.py` 工具 id 精确集合断言补三 id）；文档
+  （`04-testing/test-cases.md` TC-PLUGIN-04/05/06）。
+- **已知局限**：①E35 的 `verify` 今日恒真（无 verifier 注入）—— 补齐的是**链条形状**，签名校验的**实效**须
+  待注入真实 verifier（skillhub 侧）后才有意义；②`tools.install` 接入后，MCP 默认暴露面新增 `tools.list`
+  （只读、`coeffects=[]`）—— 这正是 `mcp/spec.md` 场景「默认面排除跨边界工具」所**期待**的（此前该场景只在
+  测试夹具里成立，现于生产成立）。
+- **未做（明示）**：**E36**（`plugin install --kind cli|mcp` 持久化）—— 规格**无**持久化条款，属
+  「未接线/取舍」，须**规格先行**、单独立项（形状可照 `mcp-endpoints.json` / change 0074），本 ADR 不涉。
+- **规格**：**中性**（无 spec delta）—— `tool-use`（三工具 + coeffect 契约）、`plugin-registry`（七步链）、
+  `mcp`（默认暴露面）均已要求本变更的内容，本 change 是实现回归契约。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2428,3 +2478,4 @@
 | ADR-0098 | 03-interfaces/skillhub-interface.md, 02-modules/skillhub.md |
 | ADR-0099 | 03-interfaces/notes-interface.md, 02-modules/notes.md |
 | ADR-0100 | 03-interfaces/observability-interface.md, 03-interfaces/evolution-interface.md, 02-modules/notes.md |
+| ADR-0101 | 03-interfaces/plugin-registry-interface.md, 03-interfaces/tool-use-interface.md, 03-interfaces/mcp-interface.md |

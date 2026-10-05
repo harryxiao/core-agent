@@ -72,7 +72,9 @@ class CLIAdapter:
                 tool_id=f"cli.{name}",
                 description=description,
                 schema=_DEFAULT_SCHEMA,
-                coeffects=[],
+                # change 0108 / 账本 E34：handler 走 subprocess 真派生进程 ⇒ 须声明 process:spawn
+                # （对齐 code_run）。空声明会被 MCP 默认暴露面判据视为只读 ⇒ cli.* 默认对外暴露。
+                coeffects=["process:spawn"],
                 reversible=False,
                 timeout_s=timeout_s,
             ),

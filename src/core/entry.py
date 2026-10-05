@@ -762,9 +762,14 @@ def _build_installer() -> PluginInstaller:
 def _plugin_install(
     installer: PluginInstaller, asset: str, kind: PluginKind, source: PluginSource
 ) -> int:
-    """`plugin install <asset> --kind K --source S`：来源经 `InstallDispatcher` 解析成 manifest。"""
+    """`plugin install <asset> --kind K --source S`：来源经 `InstallDispatcher` 解析成 manifest。
+
+    走完整生命周期（change 0108 / 账本 E35）：discover → verify → install → register → activate；
+    与 `tools.install` 同链（`installable` 声明 / plugin-registry spec「插件来源与安装」）。
+    """
     try:
         item = installer.discover(source, asset, kind)
+        installer.verify(item, str(item.manifest.get("signature", "")))
         installer.install(item)
         manifest = item.manifest
         plugin_id = str(
@@ -774,6 +779,7 @@ def _plugin_install(
             or f"installed.{kind.value}.{asset}"
         )
         installer.register(item, StubPlugin(plugin_id, manifest))
+        installer.activate(plugin_id)
     except DomainError as exc:
         print(f"安装失败: {exc}", file=sys.stderr)
         return 1

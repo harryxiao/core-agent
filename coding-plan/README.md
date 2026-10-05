@@ -20,7 +20,7 @@
 
 ---
 
-## 1. 文档清单（Phase 文档 27 份）
+## 1. 文档清单（Phase 文档 28 份）
 
 | 文档 | 内容 | 对应里程碑 |
 |---|---|---|
@@ -52,6 +52,7 @@
 | `phase-22.md` | 12 模块系统级审查缺陷修复（observability tracer 生命周期断裂+内存泄漏 / rag 主链路死代码 / skillhub 供给侧三件套死代码） | M3 真实收口（系统级缺陷修补） |
 | `phase-23.md` | 新增「文档化记忆（notes）」capability（canonical Markdown 真相层 + Consult→Build→Update 循环，复用 MemoryBackend Protocol / Skill.instructions） | M4 记忆层扩展（RAG 之外的真相近层） |
 | `phase-24.md` | 进化引擎「内部核心插件」接线收尾 + notes 检索质量优化账本（E30 工具级 trace + E31 内部模块注册表生命周期 + E32 notes 检索打分加权） | M4 自进化（plugin/skill 维度收尾） |
+| `phase-25.md` | 插件安装链路「工具面闭环」缺口账本（E33 install 三工具零生产注册 + E34 CLIAdapter 声明不实 + E35 entry 安装链不齐 + E36 工具类安装不落盘） | —（非里程碑，记账） |
 
 **契约速查**：`contracts_summary.md`（29 capability 的 spec 目标 + interface 核心方法签名 + 模块路径，写代码前先查它）。
 
@@ -90,6 +91,7 @@
 | 22 12 模块系统级审查缺陷修复 | ✅ 完成（P0：change `0103` + ADR-0096；rag P1：change `0104` + ADR-0097；skillhub P1：change `0105` + ADR-0098） | **observability tracer 生命周期断裂+内存泄漏**（P0：`start_trace`/`end_trace` 零生产调用 → JSONL 落盘死路径；`end_trace` 不 pop → `_events` 永久增长）+ **rag 主链路死代码**（P1：仅 `LLMEmbedder` 存活，主链路 7 类零调用无 CLI）+ **skillhub 供给侧三件套死代码**（P1：`SkillPublisher`/`MarketIndex`/`TrustVerifier` 零调用） | M3 真实收口（系统级缺陷修补） | —（不碰 phase-20 已列 E27/B2/C7/C8 与 phase-21 evolution 归因接线；rag/skillhub 可选接线或诚实降级并同步契约） | 依赖 phase-20 / phase-21（去重边界）；3 缺陷证据与行号见 `phase-22.md` §1.1；修复方案见 §2/§3/§4；契约对齐见 §5 |
 | 23 新增「文档化记忆（notes）」capability | ✅ 完成（change `0106` + ADR-0099） | **无文档化真相层**（P1：记忆只有 RAG 扁平片段，无 canonical Markdown 覆盖式更新）+ **无 Consult→Build→Update 循环指令载体**（P1：loop 无任务前/后 Consult/Update 纪律注入）+ **外部插件不可装载**（P0：plugin_registry 内存注册表无外部加载路径，operator-memory 为 TS+npm 仅适配外部 harness） | M4 记忆层扩展（RAG 之外的真相近层） | —（不装 operator-memory 本体；不改现有 RAG memory / MemoryStore / FileBackend；不引入 RAG/embedding 到 notes 层） | 依赖 phase-18（memory 固化）/phase-22（审查）；3 缺口证据见 `phase-23.md` §1.1；复用 MemoryBackend Protocol + Skill.instructions；spec delta ADDED notes 见 §5；**缺口③ 裁决为不修**（第一方 capability，`plugin_registry` 零改动，ADR-0099 §8）；**顺带订正**：`contracts_summary.md` 落第 **29** 节（计划书写 30 有误）、技能 id 取 `skills.notes.consult_build_update`（合既有 `skills.<area>.<name>` 口径）、`INTERNAL_PLUGIN_IDS` 连带 13 → 14（`notes.store`）；偏差全录见归档 `tasks.md` 备注 |
 | 24 进化引擎「内部核心插件」接线收尾 + notes 检索质量优化 | ✅ 完成（change `0107` + ADR-0100；E30 关闭 / E32 关闭 / **E31 改判为「裁决：不纳入」**） | **E30 工具级 trace 接线**（`action_completed` 未 `_trace` → `TraceLogger.log_tool_call` 零生产调用 → `_to_traces` 的 `tool_call` 消费侧无输入，skill 维度产线无证据）+ **E31 内部模块注册表生命周期**（14 内部模块未纳入 `PluginRegistry` → `Diagnoser()` 无参装配 → `plugin_signals` 空 → 世代晋升退化为登记批准）+ **E32 notes 检索打分加权**（`_score` 五字段拼单一 haystack 零权重 → 分区加权 title ×3/tags ×2/search_queries ×2/content ×1） | M4 自进化（plugin/skill 维度收尾） | —（`kind=plugin` 默认 pending、confirm 必审，绝不自动改架构代码；不引入外部插件装载路径，守护 phase-23 缺口③裁决） | 依赖 phase-21（trace 模块归因通道）+ phase-23（`INTERNAL_PLUGIN_IDS` 13→14）；3 缺陷证据与行号见 `phase-24.md` §1；去重边界见 §0（不重复 E27/B2/C7/C8 / observability/rag/skillhub / 缺口③）；**E31 裁决三条依据与重开条件见 ADR-0100 / `phase-24.md` §6**；**顺带订正**「ADR-0054 拒绝空转形态」误引（实为 ADR-0094 决策①） |
+| 25 插件安装链路「工具面闭环」缺口 | ✅ 完成（change `0108` + ADR-0101；E33/E34/E35 关闭 / **E36 仍挂账**（规格先行）） | **E33 install 三工具零生产注册**（`tool-use/spec.md:91` 明文要求，`runtime.py:360-362` 未注册 → 对外能力生产不可达；**连带补 `Runtime.installer` 漏注入的 `uninstaller`**）+ **E34 CLIAdapter 声明不实**（`cli_adapter.py:75` `coeffects=[]` 实为 `subprocess` 真派生 → 确认门不触发 + 默认进 MCP 暴露面 ⇒ 改 `["process:spawn"]`）+ **E35 entry 安装链不齐**（`entry.py:766-776` 跳过 `verify`/`activate` ⇒ 补齐、与 `tools.install` 同链）+ **E36 工具类安装不落盘**（`plugin install --kind cli\|mcp` 进程内即失；规格无条款 ⇒ 未接线/取舍，**规格先行**，未动） | —（非里程碑，记账） | —（不改 `mcp` 判据：空 coeffect 进默认暴露面为规格明文，**已核实不入账**） | 依赖 phase-16（插件安装分发）；4 条证据与行号见 `phase-25.md` §1；**耦合约束见 §0**（接线 E33 会让 E34 变活 ⇒ 二者同批修，本 change 即如此）；**规格中性**（`skip_specs`，三 spec 零改动）；门禁 1248 passed；去重边界见 §0（不重复 E27/B2/C7/C8 / observability/rag/skillhub / 缺口③ / E30·E31·E32） |
 
 > **里程碑口径（M0~M10）**：M0 底座就绪（P0）→ M1 能力可调（P1）→ M2 单 Agent 闭环（P3）→ M3 多 Agent 编排（P4）→ M4 自进化（P5）→ M5 可发布产品（P7）→ M6 可启动产品（P9，M5 的入口侧补缺）→ M7 神兽召唤（P10，前台重大任务）→ M8 决策模型接入（P11，judgment/JEV System One）→ M9 系统级闭环（P13，runtime 组合根 + 单 Agent 真闭环）→ M10 进化闭环（P14+P15，冷路径采集 + 长任务编排 + 验证门/评测/结晶）。
 > Phase 2（横切中间件）、Phase 6（组合分发部署）为**贯穿阶段**，不单设里程碑，其成果在 M2/M5 验收中一并体现。

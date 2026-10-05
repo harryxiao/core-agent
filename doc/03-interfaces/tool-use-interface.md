@@ -77,6 +77,12 @@ class ToolError:
 | `tools.ask_user` | `question`, `candidates` | 人机确认 |
 | `tools.process` | `action`, `pid` | 进程管理（精确 PID） |
 | `tools.memory` | `layer`, `action`, `entry` | 记忆读写 |
+| `tools.install` | `source`, `kind`, `name` | 安装插件（discover→verify→install→register→activate；写 + 不可逆 ⇒ 走确认门） |
+| `tools.uninstall` | `plugin_id` | 卸载插件（deactivate→uninstall 对称回退；写 + 不可逆 ⇒ 走确认门） |
+| `tools.list` | — | 列出已装插件（只读，`coeffects=[]`） |
+
+> 上表为示例清单。插件安装三工具（`tools.install` / `tools.uninstall` / `tools.list`）经组合根
+> `build_runtime` 注册进**生产工具面**、与 `Runtime.installer` **同一实例**（change 0108 / 账本 E33）。
 
 ---
 

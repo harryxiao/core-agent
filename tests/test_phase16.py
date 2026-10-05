@@ -44,6 +44,13 @@ def _write_config(tmp_path) -> str:
     return str(cfg)
 
 
+def _cli_provider(**kwargs) -> ToolProvider:
+    """CLI 工具声明 `process:spawn`（change 0108 / 账本 E34）⇒ resolver 须认得该 coeffect。"""
+    resolver = CoeffectResolver()
+    resolver.register("process:spawn", True)
+    return ToolProvider(coeffect_resolver=resolver, **kwargs)
+
+
 # ---- ③ coeffect 贯通 ----
 
 
@@ -165,7 +172,7 @@ def test_cli_adapter_executes_command() -> None:
         source=PluginSource.LOCAL_PATH,
         manifest={"name": "echo", "command": "echo", "args": ["hello"]},
     )
-    provider = ToolProvider()
+    provider = _cli_provider()
     provider.register(adapter.adapt(asset))
 
     result = provider.invoke("cli.echo", {}, trace_id="t1")
@@ -182,7 +189,7 @@ def test_cli_adapter_nonzero_exit_carries_code() -> None:
         source=PluginSource.LOCAL_PATH,
         manifest={"name": "fail", "command": "false"},
     )
-    provider = ToolProvider()
+    provider = _cli_provider()
     provider.register(adapter.adapt(asset))
 
     result = provider.invoke("cli.fail", {}, trace_id="t1")
@@ -190,6 +197,34 @@ def test_cli_adapter_nonzero_exit_carries_code() -> None:
     assert result.ok  # subprocess 已运行；退出码与错误码在 data 中结构化承载
     assert result.data["returncode"] != 0
     assert result.data["code"] == "CLI_NONZERO_EXIT"
+
+
+# ---- 门控回归 ----
+
+
+def test_cli_adapter_declares_process_spawn() -> None:
+    """CLI 适配工具真派生进程 ⇒ 须声明 process:spawn（对齐 code_run），否则默认进 MCP 暴露面。
+
+    change 0108 / 账本 E34：声明与行为须一致；空 coeffect 被默认暴露面判据（`⊆ {filesystem:read}`）
+    视为只读，会让 `cli.*` 工具**默认对外暴露**（与 B7/change 0076 收窄意图相反）。
+    """
+    from core.mcp import MCPServer, ServerConnection  # noqa: PLC0415 — 就地验证默认面
+
+    adapter = CLIAdapter()
+    asset = InstallableAsset(
+        kind=PluginKind.CLI,
+        source=PluginSource.LOCAL_PATH,
+        manifest={"name": "echo", "command": "echo", "args": ["hi"]},
+    )
+    tool = adapter.adapt(asset)
+    assert tool.definition.coeffects == ["process:spawn"]
+
+    provider = ToolProvider(coeffect_resolver=CoeffectResolver())
+    provider.register(tool)
+    provider.register(file_read())  # 只读基线
+    conn = ServerConnection(connection_id="c1", session_id="s1", client_id="ext")
+    exposed = {t.name for t in MCPServer(tool_provider=provider).list_tools(conn)}
+    assert exposed == {"core.tools.file_read"}
 
 
 # ---- 门控回归 ----
@@ -207,7 +242,7 @@ def test_gate_deny_precedes_cli_execution() -> None:
         def confirm(self, tool_id, args, coeffects, reversible):
             return GateDecision("deny", "blocked")
 
-    provider = ToolProvider(gate=_DenyGate())
+    provider = _cli_provider(gate=_DenyGate())
     provider.register(adapter.adapt(asset))
 
     result = provider.invoke("cli.echo", {}, trace_id="t1")
