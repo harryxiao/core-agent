@@ -7,5 +7,22 @@ CLI 插件适配层 + 按 ``PluginKind`` 分发的真实 resolver/installer，�
 
 from .cli_adapter import CLIAdapter
 from .install import InstallDispatcher
+from .sources import (
+    MANIFEST_FILENAME,
+    Cloner,
+    Fetcher,
+    resolve_git_repo,
+    resolve_market_registry,
+    resolve_mcp_endpoint,
+)
 
-__all__ = ["CLIAdapter", "InstallDispatcher"]
+__all__ = [
+    "MANIFEST_FILENAME",
+    "CLIAdapter",
+    "Cloner",
+    "Fetcher",
+    "InstallDispatcher",
+    "resolve_git_repo",
+    "resolve_market_registry",
+    "resolve_mcp_endpoint",
+]

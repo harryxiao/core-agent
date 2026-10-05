@@ -26,33 +26,55 @@ from core.skills import Skill, SkillLibrary
 from core.tools import Tool, ToolDef, ToolProvider
 
 from .cli_adapter import CLIAdapter
+from .sources import (
+    Cloner,
+    Fetcher,
+    resolve_git_repo,
+    resolve_market_registry,
+    resolve_mcp_endpoint,
+)
 
 
 class InstallDispatcher:
     """按 kind 分发的真实 resolver / installer（组合根注入 PluginInstaller）。"""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — 注入面均为可选依赖注入
         self,
         skill_library: SkillLibrary,
         tool_provider: ToolProvider,
         *,
         mcp_client: MCPClient | None = None,
         cli_adapter: CLIAdapter | None = None,
+        cloner: Cloner | None = None,
+        fetcher: Fetcher | None = None,
     ) -> None:
         self._skills = skill_library
         self._tools = tool_provider
         self._mcp = mcp_client if mcp_client is not None else MCPClient()
         self._adapter = MCPToolAdapter()
         self._cli = cli_adapter if cli_adapter is not None else CLIAdapter()
+        self._cloner = cloner
+        self._fetcher = fetcher
 
     def resolve(self, source: PluginSource, location: str) -> dict[str, Any]:
-        """真实来源解析：LOCAL_PATH 读本地 manifest；外部源离线未接入。"""
+        """真实来源解析：四源分派（`cloner` / `fetcher` 为外部边注入缝，缺省走 stdlib）。"""
         if source is PluginSource.LOCAL_PATH:
-            path = Path(location)
-            if not path.is_file():
-                raise DomainError(ErrorCode.SOURCE_NOT_FOUND, f"来源不可达: {location}")
-            return json.loads(path.read_text(encoding="utf-8"))
-        raise DomainError(ErrorCode.SOURCE_NOT_FOUND, f"来源不可达（未接入 resolver）: {location}")
+            return self._resolve_local(location)
+        if source is PluginSource.GIT_REPO:
+            return resolve_git_repo(location, cloner=self._cloner)
+        if source is PluginSource.MARKET_REGISTRY:
+            return resolve_market_registry(location, fetcher=self._fetcher)
+        if source is PluginSource.MCP_ENDPOINT:
+            return resolve_mcp_endpoint(location)
+        raise DomainError(ErrorCode.SOURCE_NOT_FOUND, f"未知来源: {source}")
+
+    @staticmethod
+    def _resolve_local(location: str) -> dict[str, Any]:
+        """LOCAL_PATH：``location`` 即 manifest 文件路径。"""
+        path = Path(location)
+        if not path.is_file():
+            raise DomainError(ErrorCode.SOURCE_NOT_FOUND, f"来源不可达: {location}")
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def install(self, asset: InstallableAsset) -> None:
         """按 PluginKind 分发：skill / mcp / cli。"""

@@ -182,6 +182,13 @@ def _add_plugin_parser(sub: Any) -> None:
     install = pl_sub.add_parser("install", help="安装三方资产")
     install.add_argument("asset")
     install.add_argument("--kind", choices=["skill", "mcp", "cli"])
+    install.add_argument(
+        "--source",
+        choices=[source.value for source in PluginSource],
+        default=PluginSource.LOCAL_PATH.value,
+        metavar="S",
+        help="来源类型（缺省 local-path）",
+    )
     uninstall = pl_sub.add_parser("uninstall", help="卸载资产")
     uninstall.add_argument("name")
     listp = pl_sub.add_parser("list", help="枚举已装资产")
@@ -605,7 +612,12 @@ def _mcp_whitelist(raw: str) -> list[str]:
 def _plugin(args: argparse.Namespace) -> int:
     """插件/资产安装生命周期（process 内注册，跨进程持久化未接）。"""
     if args.plugin_cmd == "install":
-        return _plugin_install(_build_installer(), args.asset, PluginKind(args.kind or "skill"))
+        return _plugin_install(
+            _build_installer(),
+            args.asset,
+            PluginKind(args.kind or "skill"),
+            PluginSource(args.source),
+        )
     if args.plugin_cmd == "list":
         return _plugin_list(_build_installer(), args.kind)
     if args.plugin_cmd == "uninstall":
@@ -679,8 +691,12 @@ def _sessions(args: argparse.Namespace) -> int:
 
 
 def _build_installer() -> PluginInstaller:
-    """装配轻量插件安装器（无需 LLM/loop，仅本地来源解析）。"""
-    skills = SkillLibrary()
+    """装配轻量插件安装器（无需 LLM/loop；来源解析经 `InstallDispatcher` 四源分派）。
+
+    技能库与组合根**同源**（`$CORE_STATE_DIR/skills.json`，见 `_build_skill_library`）——否则
+    `plugin install --kind skill` 装进一次性空库，「已安装」是谎报、跨进程不可见。
+    """
+    skills = _build_skill_library()
     provider = ToolProvider()
     dispatcher = InstallDispatcher(skill_library=skills, tool_provider=provider)
     return PluginInstaller(
@@ -690,9 +706,12 @@ def _build_installer() -> PluginInstaller:
     )
 
 
-def _plugin_install(installer: PluginInstaller, asset: str, kind: PluginKind) -> int:
+def _plugin_install(
+    installer: PluginInstaller, asset: str, kind: PluginKind, source: PluginSource
+) -> int:
+    """`plugin install <asset> --kind K --source S`：来源经 `InstallDispatcher` 解析成 manifest。"""
     try:
-        item = installer.discover(PluginSource.LOCAL_PATH, asset, kind)
+        item = installer.discover(source, asset, kind)
         installer.install(item)
         manifest = item.manifest
         plugin_id = str(

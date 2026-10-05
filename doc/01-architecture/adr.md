@@ -1760,8 +1760,44 @@
 - **影响**：CLI 行为变更三处（search 搜市场 / install 走市场下载 / remove 作用持久库）；
   `tests/test_entry.py::test_skill_remove_missing` 继续通过（`conftest` 已按测试隔离 `CORE_STATE_DIR`）。
 - **前置**：`ADR-0044`（核心零三方依赖）、`ADR-0085`/`ADR-0086`（同批 C 类代码半）。
-- **转出**：真实市场 fetcher（网络 + 市场凭据）→ Phase 19 §5 凭证半；`skill publish` 子命令（规格有发布审核流，
-  CLI 侧从未声明）→ 未排期。
+## ADR-0088：插件四源解析器 = 执行层 stdlib 实现（`core-plugin.json` 约定 + 临时工作区可逆）
+
+- **背景**：账本 C6（Phase 20 §1/§4.5）—— `PluginInstaller` 四钩子 DI 完整、`InstallDispatcher` 已真装、
+  `LOCAL_PATH` 已真；但 `GIT_REPO` / `MARKET_REGISTRY` / `MCP_ENDPOINT` **一律抛「未接入 resolver」**。
+  规格「插件来源与安装」明文要求四类来源、场景「四类来源安装」已存在 ⇒ **规格为真、实现为假**；
+  且 `plugin install` 入口**已存在**却把来源**硬编码**为 `local-path`（自述能力与实际能力不符）。
+- **决策**：
+  ① **解析器落执行层 `core/plugins/sources.py`**，`plugin_registry` 的 `_default_resolve` 保持「未接入」空壳 ——
+     基座（`BASE_MODULES`）只依赖彼此 + stdlib，真实外部解析属**执行层**职责（`InstallDispatcher` 已兼
+     resolver + installer 双责）。
+  ② **零三方依赖（ADR-0044）**：git-repo 复用 **change 0090** 的 `core.git` stdlib subprocess 后端（不新写
+     shell out、不引 gitpython）；market-registry 走 stdlib `urllib.request`（同 `tools/builtin.py`、
+     `judgment/provider.py` 既有口径）。
+  ③ **`MANIFEST_FILENAME = "core-plugin.json"`**（仓库根目录）：仓内零既有 manifest 文件名约定（全仓检索无命中），
+     故定一个带命名空间前缀的可发现常量，作为 git-repo 来源的**对外契约**写入接口文档与规格。
+  ④ **临时工作区可逆（P2）**：克隆落 `tempfile.TemporaryDirectory`，`with` 退出即删 —— 解析**零残留**、不写 `$CORE_STATE_DIR`。
+  ⑤ **回显脱敏 `_safe`**：沿用 `ADR-0085` 红线，异常文本中的地址经 `urlsplit`/`urlunsplit` **剥掉 userinfo 与 query**；
+     市场凭据的正道是**注入 fetcher 携带**（不进 URL），`_safe` 是纵深防御第二层。**不用 `parts.port`**
+     （畸形端口会 raise），改 `netloc.rpartition("@")[2]`。
+  ⑥ **mcp-endpoint 解析期零网络**：只做端点串 → `{"name", "url"}`（端点名复用 `core.mcp.default_endpoint_name`，不另立解析）；
+     可达性归 install 期 `MCPClient.add`，与 `mcp add`「先连通验证再落盘」同口径，避免「解析成功但装不上」双重语义。
+  ⑦ **CLI `plugin install --source`**：补齐**既有入口的既有契约**（`PluginSource` 四值 + 规格四源），缺省 `local-path`
+     向后兼容 —— 与 C5 的 `skill search --source` 同性质，**不是**新增命令面（对比 `ADR-0085`/`ADR-0086` 拒绝的
+     「无消费者的新入口」）。
+  ⑧ **顺带修 `_build_installer` 技能库同源**：原用 `SkillLibrary()`（无路径 ⇒ 进程内一次性库），`plugin install --kind skill`
+     装完即丢（同 `ADR-0087` 的根因族）；改 `_build_skill_library()`（`$CORE_STATE_DIR/skills.json`）。**mcp/cli 分支不受影响**
+     （工具面本就进程内；MCP 端点持久化归端点注册表，不经此处）。
+  ⑨ **缺省外部边为「真实现」而非 `None`**（异于 `ADR-0087` skillhub）：git-repo / market-registry 的**成功路径可完全离线验证**
+     （本地仓库克隆 / `file://` 文档），无需凭证；skillhub 缺省 `None` 是因其市场索引自带签名与健康语义，插件市场侧无此结构。
+- **规格**：MODIFIED「插件来源与安装」（四源发现契约 + 3 场景）。
+- **影响**：`InstallDispatcher.__init__` 增 2 个 keyword-only 注入缝（纯加法）；`_plugin_install` 增 1 个内部参数；
+  既有 `plugin install` 用例继续通过（缺省 source 不变）；`plugins` 不在 `tests/test_architecture.py` 的任何分层名单
+  或 `forbidden` 映射内 ⇒ 新增 `core.git` 依赖不受门禁约束，依赖方向（执行适配层 → 能力横切）正确。
+- **前置**：`ADR-0044`（核心零三方依赖）、`ADR-0085`（git stdlib 后端 —— 本变更的克隆边复用它）、`ADR-0087`（同批 C 类代码半）。
+- **明确不做**：`mcp add` 改走 `MCP_ENDPOINT` 来源（无收益重构）；`install_tool` / `list_tool` / `uninstall_tool` 接线
+  （`src/` 内**零生产注册**，属**安全决策**：模型可发起安装 ⇒ 需审批/沙箱口径；非 C6 症状，记入账本后续行）；插件市场
+  索引语义（`skillhub` 的 `MarketIndex` 已有，插件侧无消费者）。
+- **转出**：真实市场鉴权凭据 + 真实 git 远端凭据 + MCP 端点真实连通 → Phase 19 §5 凭证半。
 
 ---
 
@@ -1847,3 +1883,4 @@
 | ADR-0085 | 03-interfaces/git-interface.md, 12-git/git-architecture.md |
 | ADR-0086 | 03-interfaces/ci-cd-interface.md, 02-modules/ci-cd.md |
 | ADR-0087 | 03-interfaces/skillhub-interface.md, 02-modules/skillhub.md |
+| ADR-0088 | 03-interfaces/plugin-registry-interface.md |

@@ -180,6 +180,25 @@ class PluginInstaller:
 - `SourceResolver` / `SignatureVerifier` / `Installer` 均可注入，缺省提供「未接入 / 无签名要求 / 无副作用」实现。
 - 签名校验与多源路由语义上提到此统一层，执行实现按 kind 适配（不合并 skillhub/mcp/cli 的执行实现）。
 
+### 8.1 四源发现契约（执行层 `core/plugins/sources.py`，change `0093`）
+
+`plugin_registry` 侧保持「未接入」空壳（底座零外部依赖）；四源的**真实发现**由执行层承担，
+`InstallDispatcher.resolve` 分派：
+
+| 来源 | `location` 语义 | 发现方式 | 外部边（可注入 / 缺省） |
+|---|---|---|---|
+| `local-path` | manifest 文件路径 | 读该文件 | — |
+| `git-repo` | 仓库地址（URL 或本地路径） | 克隆到**临时工作区** → 读仓库**根目录** `core-plugin.json` → 清理工作区 | `Cloner = (url, dest) -> None`／缺省 `core.git` stdlib subprocess 后端 |
+| `market-registry` | manifest 文档地址 | 取该文档（JSON） | `Fetcher = (url) -> dict`／缺省 stdlib `urllib.request` |
+| `mcp-endpoint` | MCP 端点串 | 由端点串**合成** `{"name", "url"}`（解析期**零网络**） | — |
+
+- **`MANIFEST_FILENAME = "core-plugin.json"`** 是 git-repo 来源的对外契约（仓库根目录）。
+- **凭据**：市场鉴权经注入的 `fetcher` 携带，**不写进 URL**；任何回显（异常文本）经 `_safe` **剥掉 userinfo 与 query**。
+- **错误归一**：任一来源不可达 / manifest 非法 ⇒ `SOURCE_NOT_FOUND`（注入边抛出的 `DomainError` 原样透传，不二次包装）。
+- **可达性时机**：`mcp-endpoint` 的端点可达性在 **install 期**由 `MCPClient.add` 判定（与 `mcp add`「先连通验证再落盘」同口径），解析期不探测。
+- **CLI**：`plugin install <asset> --kind K --source S`（`S ∈` 四源，缺省 `local-path`）；`skill install --source` 亦可达市场源
+  （见 skillhub 接口文档）。
+
 ---
 
 ## 9. 关联

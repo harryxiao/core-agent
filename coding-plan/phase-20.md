@@ -28,7 +28,7 @@
 | C3 | `ci_cd` | ✅ **已关闭（change `0091`／ADR-0086）**：`SubprocessGateExecutor`（stdlib `subprocess` 直跑 `GATE_COMMANDS`，不经 shell）+ 失败/工具缺失/超时归一 + `reason` 有界输出尾部；**装配与 `ci gate` CLI 待消费者**（见 §4.2 偏离说明） | 制品仓库凭证（`CHANNEL_UNREACHABLE`） | ~~中~~ 已闭 |
 | C4 | `observability` | ✅ **已关闭（change `0089`／ADR-0084）**：组合根缺省装配 `BufferedExporter(JSONLExporter($CORE_STATE_DIR/traces.jsonl))` + 注入优先；`JSONLExporter` 自建父目录 | OTel 导出 SDK（「指标导出协议」，另案） | ~~中~~ 已闭 |
 | C5 | `skillhub` | ✅ **已关闭（change `0092`／ADR-0087）**：`skill search` / `skill install` 接 `SkillHubClient`（市场搜索 / 签名校验下载）+ **技能库与组合根同源**（`$CORE_STATE_DIR/skills.json`）+ `search --source` | 真实市场 fetcher（网络 + 凭据） | ~~中~~ 已闭 |
-| C6 | `plugin_registry` / `plugins` | `InstallDispatcher.resolve` 增补 GIT_REPO / MARKET_REGISTRY / MCP_ENDPOINT 三种来源 | git remote / 市场 / 端点可达性 | 中（`LOCAL_PATH` 已真） |
+| C6 | `plugin_registry` / `plugins` | ✅ **已关闭（change `0093`／ADR-0088）**：`InstallDispatcher.resolve` 四源分派（git-repo 克隆读根目录 `core-plugin.json` / market-registry 经注入 fetcher / mcp-endpoint 解析期零网络合成）+ CLI `plugin install --source` + `_build_installer` 技能库同源 | 真实 git 远端凭据 / 市场鉴权 / 端点真实连通 | ~~中~~ 已闭 |
 | C7 | `ui` TTS | TTS 接口 + 假实现 + 注入（现**无任何抽象**） | 真实 TTS 后端 | 低 |
 | C8 | `ui` Tauri 桌面壳 | sidecar 拉起器（subprocess spawn）+ `_app` 注入 | Tauri 壳二进制 | 低 |
 | B2 | `mcp transport`（http） | http/streamable-http Transport 适配器（`Mcp-Session-Id` 复用 + SSE 分帧） | `mcp` SDK 可安装（见 §3） | 低（stdio 已闭环） |
@@ -109,11 +109,14 @@
 - **离线验证**：`tests/test_skillhub_cli.py`（7 例）注入**内存 index + fetcher** 走端到端；含「重开技能库可见」（跨进程落盘）与「签名篡改拒绝且不落盘」。
 - **仍归 Phase 19 §5（凭证半）**：真实市场 fetcher（网络 + 市场凭据）⇒ 缺省装配下 `skill search` 如实返回空、`skill install` 如实报「未接入拉取」，**不静默成功**。
 
-### 4.5 `plugin_registry` / `plugins`（C6）
+### 4.5 `plugin_registry` / `plugins`（C6）✅ 已关闭（change `0093`／ADR-0088）
 
-- **现状**：`PluginInstaller` 四钩子 DI + `InstallDispatcher` **已真装**（`runtime.py:378-381`，CLI `plugin install/list/uninstall` + `mcp add` 同一管线）；`LOCAL_PATH` **已真**（`install.py:48-55`）；余 `GIT_REPO` / `MARKET_REGISTRY` / `MCP_ENDPOINT` 三种来源抛「未接入 resolver」。
-- **要写**：三种来源的解析器（clone / 市场 API / 端点安装）。
-- **离线验证**：`LOCAL_PATH` 既有测试覆盖 + 三种来源用 fake 解析器。
+- **现状（关闭前）**：`PluginInstaller` 四钩子 DI + `InstallDispatcher` **已真装**（`runtime.py:378-381`，CLI `plugin install/list/uninstall` + `mcp add` 同一管线）；`LOCAL_PATH` **已真**（`install.py:48-55`）；但 `GIT_REPO` / `MARKET_REGISTRY` / `MCP_ENDPOINT` 三种来源**一律抛「未接入 resolver」** —— 规格「插件来源与安装」明文要求四源、场景已存在 ⇒ **规格为真、实现为假**。且 `plugin install` 入口**已存在**却把来源**硬编码** `local-path`（自述能力≠实际能力）；`_build_installer` 用**无路径** `SkillLibrary()` ⇒ `--kind skill` 装进一次性空库（同 `ADR-0087` 根因族）。
+- **已写**：`src/core/plugins/sources.py`（新）—— 三解析器 + 缺省 stdlib 外部边（git-repo **复用 change `0090` 的 `core.git` 后端**、market-registry 走 `urllib.request`）+ `MANIFEST_FILENAME = "core-plugin.json"` 约定 + `_safe` 回显脱敏；`InstallDispatcher.resolve` 四源分派（构造增 `cloner`/`fetcher` 注入缝）；CLI `plugin install --source`（缺省 `local-path`，向后兼容）；`_build_installer` 技能库改 `_build_skill_library()`（同源）。**`plugin_registry` 基座零改动**（`_default_resolve` 保持「未接入」空壳）。
+- **离线验证**：`tests/test_plugins_sources.py`（16 例）—— git-repo **真实本地仓库克隆**往返 + **临时工作区零残留**（`tempfile.tempdir` 重定向断言）+ 凭据不回显；market 注入 fetcher + **缺省 urllib 边经 `file://` 离线往返** + token 不回显 + `DomainError` 透传；mcp-endpoint 合成零网络；四源分派；CLI `--source git-repo` 端到端且技能**跨进程落盘可见**。
+- **决策要点**：解析器落**执行层**（基座只依赖彼此 + stdlib）；零三方依赖（ADR-0044）；`core-plugin.json` 为**新定的对外契约**（仓内零既有约定）；临时工作区 `with` 退出即删（P2 可逆）；市场凭据**经注入 fetcher** 携带、不进 URL；mcp-endpoint **解析期零网络**（可达性归 install 期 `MCPClient.add`）；`--source` 属**补齐既有入口的既有契约**（非新命令面）。
+- **仍归 Phase 19 §5（凭证半）**：真实 git 远端凭据、市场鉴权凭据、MCP 端点真实连通。
+- **后续行（不在 C6 修）**：`install_tool` / `list_tool` / `uninstall_tool`（模型面安装工具）在 `src/` 内**零生产注册** —— 接线属**安全决策**（模型可发起安装 ⇒ 需审批/沙箱口径），非 C6 症状。
 
 ### 4.6 `ui`（C7 TTS + C8 Tauri 桌面壳）
 
