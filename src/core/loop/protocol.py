@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 
 @dataclass
@@ -124,4 +124,17 @@ class LoopPlugin(Protocol):
 
     def remember(self, trace_id: str, trajectory: list[Any], *, session_id: str = "") -> None:
         """写本轮轨迹/教训入 L2/L3（每轮必做，无行动不记忆），条目带会话归属。"""
+        ...
+
+
+@runtime_checkable
+class LimitsConfigurable(Protocol):
+    """可运行期调整预算上限的 loop（change `0099`）。
+
+    能力探测协议：`UIAPILayer` 保存 LLM 配置后按本协议把派生上限推给**运行中**的 loop，
+    **不**把 UI 层焊死在 `DefaultLoop`（本仓策略插件可替换）。不支持者静默跳过。
+    """
+
+    def set_limits(self, *, max_rounds: int | None = None, token_budget: int | None = None) -> None:
+        """改上限（``None`` = 保持该项）；两值在每轮判定处读取 ⇒ 赋值即下次生效。"""
         ...

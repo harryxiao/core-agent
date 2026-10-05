@@ -1923,6 +1923,40 @@
 
 ---
 
+## ADR-0092：LLM 配置「保存」与「hydrate」双入口；落盘原子提交 + 能力协议热生效
+
+- **背景**：规格「LLM API 可配置」要求 UI 保存后**写入后端配置源并立即生效**，而 `UIAPILayer.set_llm_config`
+  只改内存（归档 change `0003` 明文 deferred）。但 `set_llm_config` 同时被**启动期** `entry._build_ui` 调用，
+  把 runtime 解析出的 LLM 配置 hydrate 进 API 层 ⇒ 若让它落盘，「读配置」会变成「写配置」
+  （每次 `core-agent run` 都重写 config.yaml）。此外 loop 的预算上限只在**装配期**注入（ADR-0091 ⑤），
+  保存配置对**运行中**的循环无效；`PUT /llm-config` 也缺 `context_window` / `output_reserve` 字段。
+- **决策**：
+  ① **入口分离**：`set_llm_config`（启动期 hydrate，纯内存）语义**不变**；新增
+     `apply_llm_config(cfg, *, output_reserve=None, max_rounds=None)` 承载「用户显式保存」
+     （校验 → 落盘 → 重读）；HTTP `PUT /llm-config` 走后者。一个名字无法同时表达两种相反意图。
+  ② **一次 patch、原子落盘**：`llm` 与 `loop` 两段组**单个** patch 提交 ⇒ 不存在「llm 写了、loop 没写」的中间态。
+     `ConfigManager.write_patch` 由 `write_text`（**先截断再整写**）改为 tmp + `os.replace`
+     （`0062` `CheckpointStore` / `0074` 端点注册表同款，stdlib 零依赖）。**为何必须改**：非原子写中途失败留
+     半写文件 ⇒ 调用方「重读回滚」这条路**自身失效**（回滚读到坏文件）；改后失败路径旧文件**逐字不变**。
+  ③ **热生效走能力协议，不焊死 `DefaultLoop`**：`core/loop` 定义 `@runtime_checkable LimitsConfigurable`
+     （仅 `set_limits(*, max_rounds=None, token_budget=None)`），`UIAPILayer` 以 `isinstance` 探测后调用，
+     **不支持者静默跳过**（loop 是可替换策略插件，换插件不该让「保存配置」失败）。`DefaultLoop` 两值在**每轮**
+     判定处读取（轮数上限 / 硬停 / 压实）⇒ 纯赋值即**下一次**生效，无需重建循环。
+  ④ **推给 loop 的值取 `config.loop_limits()` 派生结果**，UI 层**不重算**「窗口 − 预留」（否则是第二个派生真源）。
+     仅**无配置源**（裸 `UIAPILayer`）时降级为就地派生 + 纯内存，且 `get_loop_limits()` 返回 `None` ——
+     **不假装**有生效值。
+  ⑤ **GET 回显「生效值」，PUT 收「旋钮」**：旋钮是输入、预算是可观测结果；回显 `token_budget` 才回答用户
+     「窗口配了生效了吗」。失败语义统一：非法取值 / 落盘失败 ⇒ `UI_LLM_CONFIG_INVALID`（HTTP 400），
+     **内存与 yaml 均回退原值**（`apply_change` 先校验后替换）。
+- **影响**：`UIAPILayer` 增 `apply_llm_config` / `get_loop_limits`；`DefaultLoop` 增 `set_limits`；`core/loop`
+  导出 `LimitsConfigurable`；`write_patch` 原子化；新增错误码 `UI_LLM_CONFIG_INVALID`（→ 400）；
+  `PUT`/`GET /llm-config` 字段扩展。`set_llm_config` 的既有调用方（`entry._build_ui`）**零改动**。
+- **明确不做**：多进程并发写的文件锁（单用户桌面场景，`os.replace` 已保证不半写）；新增显式
+  `loop.token_budget` 键（见 ADR-0091 ①）；前端设置页（归 change `0100`）。
+- **规格**：MODIFIED「LLM API 可配置」（ui）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2009,3 +2043,4 @@
 | ADR-0089 | 03-interfaces/ui-interface.md |
 | ADR-0090 | 03-interfaces/permission-interface.md |
 | ADR-0091 | 03-interfaces/configuration-interface.md, 03-interfaces/loop-interface.md |
+| ADR-0092 | 03-interfaces/ui-interface.md |

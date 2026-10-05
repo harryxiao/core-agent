@@ -142,6 +142,17 @@ class DefaultLoop(Plugin):
 
     # ---- Plugin 生命周期 ----
 
+    def set_limits(self, *, max_rounds: int | None = None, token_budget: int | None = None) -> None:
+        """运行期改预算上限（``None`` = 保持该项；change `0099`）。
+
+        两值在每轮判定处读取 ⇒ 赋值即**下一轮**生效，无需重建循环。
+        合法性由配置层把关（此处不重复校验）。
+        """
+        if max_rounds is not None:
+            self._max_rounds = max_rounds
+        if token_budget is not None:
+            self._token_budget = token_budget
+
     def load(self) -> None:
         return None
 

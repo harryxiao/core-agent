@@ -85,8 +85,20 @@ class UIAPILayer:
 | `POST /session/compact` | compact | `compact(session_id)` | 压实该会话记忆（存储层真实压实，可撤销） |
 | `GET /tools` | list_tools | `list_tools()` | 列出工具 |
 | `POST /tools/invoke` | invoke_tool | `invoke_tool(tool_id, args)` | 调用工具 |
-| `GET /llm-config` | get_llm_config | `get_llm_config()` | 读 LLM 配置 |
-| `PUT /llm-config` | set_llm_config | `set_llm_config(cfg)` | 写 LLM 配置（热更新） |
+| `GET /llm-config` | get_llm_config | `get_llm_config()` | 读 LLM 配置（含**生效**预算，见 §1.4） |
+| `PUT /llm-config` | apply_llm_config | `apply_llm_config(cfg, output_reserve, max_rounds)` | 保存 LLM 配置（原子落盘 + 热生效） |
+
+**`/llm-config` 字段口径**（change `0099`）：`GET` 回 `provider` / `model` / `endpoint` / `api_key_ref` /
+`reasoning_effort` / `embedding_model` / `context_window` / `max_rounds` / `token_budget`；后两者为
+**派生后的生效值**（`token_budget = context_window − output_reserve`，见 ADR-0091），无配置源时为 `null`。
+`PUT` 收 `provider` / `model` / `endpoint` / `api_key_ref`（**只接受 `${VAR}` 引用，明文拒绝**）/ 可选
+`reasoning_effort` / `embedding_model` / `context_window` / `output_reserve` / `max_rounds`。
+
+- **落盘**：`PUT` 经 `UIAPILayer.apply_llm_config` → `apply_change`（校验）→ `write_patch`（**原子提交**）→ 重读，
+  一次 patch 承载 `llm` 与 `loop` 两段 ⇒ 不留半写状态；写盘失败**旧文件逐字不变**、内存回退。
+- **热生效**：保存后按 `LimitsConfigurable` 协议把派生上限推给**运行中**的 loop（不支持者静默跳过）；
+  `set_llm_config`（启动期 hydrate）**不落盘**，二者分工见 ADR-0092。
+- **失败**：非法取值 / 落盘失败 ⇒ `UI_LLM_CONFIG_INVALID`（HTTP 400）。
 
 ### 1.3 会话注册表（SessionRegistry）
 

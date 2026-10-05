@@ -10,7 +10,15 @@ astream）+ 五阶段方法，DefaultLoop 为默认实现，可被 ReAct / Plan-
 
 from .default import ActionObserver, Approver, DefaultLoop, TurnObserver
 from .planner import LLMPlanner
-from .protocol import Action, ActionResult, LoopContext, LoopEvent, LoopPlugin, LoopResult
+from .protocol import (
+    Action,
+    ActionResult,
+    LimitsConfigurable,
+    LoopContext,
+    LoopEvent,
+    LoopPlugin,
+    LoopResult,
+)
 
 __all__ = [
     "Action",
@@ -19,6 +27,7 @@ __all__ = [
     "ActionResult",
     "DefaultLoop",
     "LLMPlanner",
+    "LimitsConfigurable",
     "LoopContext",
     "LoopEvent",
     "LoopPlugin",

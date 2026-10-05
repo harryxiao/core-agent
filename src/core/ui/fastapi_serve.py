@@ -25,9 +25,20 @@ from .models import Event
 _STATUS: dict[UiErrorCode, int] = {
     UiErrorCode.UI_SESSION_NOT_FOUND: 404,
     UiErrorCode.UI_MODALITY_MISSING: 400,
+    UiErrorCode.UI_LLM_CONFIG_INVALID: 400,
     UiErrorCode.UI_LLM_KEY_UNSET: 500,
     UiErrorCode.UI_BARGEIN: 501,
 }
+
+
+def _opt_int(value: Any) -> int | None:
+    """可空整数解析：缺省 / 空串 ⇒ ``None``；无法解析 ⇒ ``UI_LLM_CONFIG_INVALID``（不 500）。"""
+    if value is None or value == "":
+        return None
+    try:
+        return int(cast("int | str", value))
+    except (TypeError, ValueError) as exc:
+        raise UiError(UiErrorCode.UI_LLM_CONFIG_INVALID, f"非法数值字段：{value!r}") from exc
 
 
 def serve(api: UIAPILayer, host: str, port: int) -> None:
@@ -110,23 +121,39 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 10 端点注册，复�
             "effect_id": result.effect_id,
         }
 
-    def get_llm_config() -> dict[str, str]:
+    def get_llm_config() -> dict[str, object]:
         cfg = api.get_llm_config()
+        limits = api.get_loop_limits()
         return {
             "provider": cfg.provider,
             "model": cfg.model,
             "endpoint": cfg.endpoint,
             "api_key_ref": cfg.api_key_ref,
+            "reasoning_effort": cfg.reasoning_effort or "",
+            "embedding_model": cfg.embedding_model,
+            "context_window": cfg.context_window,
+            # 回显**生效值**（派生后的预算），非旋钮原文（change 0099）
+            "max_rounds": limits[0] if limits else None,
+            "token_budget": limits[1] if limits else None,
         }
 
-    def set_llm_config(body: dict[str, Any]) -> dict[str, str]:
-        cfg = LLMConfig(
-            provider=str(body.get("provider", "")),
-            model=str(body.get("model", "")),
-            endpoint=str(body.get("endpoint", "")),
-            api_key_ref=str(body.get("api_key_ref", "")),
+    def set_llm_config(body: dict[str, Any]) -> dict[str, object]:
+        # 用户保存 ⇒ apply_llm_config（落盘 + 热生效），非启动期 hydrate 的 set_llm_config
+        api.apply_llm_config(
+            LLMConfig(
+                provider=str(body.get("provider", "")),
+                model=str(body.get("model", "")),
+                endpoint=str(body.get("endpoint", "")),
+                api_key_ref=str(body.get("api_key_ref", "")),
+                reasoning_effort=str(body["reasoning_effort"])
+                if body.get("reasoning_effort")
+                else None,
+                embedding_model=str(body.get("embedding_model", "")),
+                context_window=_opt_int(body.get("context_window")) or 0,
+            ),
+            output_reserve=_opt_int(body.get("output_reserve")),
+            max_rounds=_opt_int(body.get("max_rounds")),
         )
-        api.set_llm_config(cfg)
         return {"ok": "true"}
 
     app = FastAPI(title="core-agent")

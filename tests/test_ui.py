@@ -172,6 +172,20 @@ def test_set_llm_config_rejects_plaintext() -> None:
     assert exc_info.value.code is UiErrorCode.UI_LLM_KEY_UNSET
 
 
+def test_apply_llm_config_rejects_plaintext() -> None:
+    with pytest.raises(UiError) as exc_info:
+        UIAPILayer().apply_llm_config(_llm("sk-secret-plaintext"))
+    assert exc_info.value.code is UiErrorCode.UI_LLM_KEY_UNSET
+
+
+def test_apply_llm_config_skips_loop_without_limits_protocol() -> None:
+    """loop 不支持 `LimitsConfigurable` ⇒ 静默跳过：换策略插件不该让保存配置失败（change 0099）。"""
+    api = UIAPILayer(loop=FakeLoop([]))
+    api.apply_llm_config(_llm(), output_reserve=4096, max_rounds=3)  # 不抛
+    assert api.get_llm_config().model == "gpt-4o"
+    assert api.get_loop_limits() is None  # 无配置源 ⇒ 不假装有生效值
+
+
 # ---- TUI（ReplApp headless 冒烟）----
 
 

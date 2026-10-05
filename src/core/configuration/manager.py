@@ -490,10 +490,15 @@ class ConfigManager:
         写回基于 yaml 文件原文（``_read_yaml``，未叠加 env/cli），``${VAR}`` 引用
         不解析、原样保留。明文密钥在 ``apply_change`` 已被 ``validate_schema`` 拒绝，
         故不会进入写回。
+
+        原子提交（tmp + ``os.replace``）：直接 ``write_text`` 是**先截断再整写**，中途失败留半写
+        文件 ⇒ 调用方「重读回滚」这条路自己就断了（change `0099`）。
         """
         raw = self._read_yaml()
         _merge_raw(raw, patch)
-        self._yaml_path.write_text(_dump_yaml(raw), encoding="utf-8")
+        tmp = self._yaml_path.with_name(self._yaml_path.name + ".tmp")
+        tmp.write_text(_dump_yaml(raw), encoding="utf-8")
+        os.replace(tmp, self._yaml_path)
 
     # ---- 内部：读取 / 覆盖 / 构造 ----
 

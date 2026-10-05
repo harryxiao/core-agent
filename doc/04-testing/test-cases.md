@@ -151,6 +151,8 @@
 | TC-UI-08 | CORE-UI-R5 | 安装桌面安装包并启动应用 | 桌面壳自动拉起本地后端，加载同一 SPA 可会话 |
 | TC-UI-09 | CORE-UI-R6 | 同版本 Web/桌面打开同一功能页面 | 界面与交互完全一致 |
 | TC-UI-10 | CORE-UI-R7 | CLI `session create` 建 id → **另一进程** `run --session <id>` | 会话有效（不再 `UI_SESSION_NOT_FOUND`）；`GET /sessions` 三入口枚举一致 |
+| TC-UI-11 | CORE-UI-R2「上下文窗口与预算热生效」（change `0099`） | `apply_llm_config` 后新开 `ConfigManager` 重读同一 yaml；观察**运行中** `DefaultLoop` 的 `_max_rounds`/`_token_budget` | 新进程读到 `model`/`context_window`/`loop_limits()` 即落盘值；运行中 loop **无需重建**即取用新上限（锚点：`tests/test_llm_config_hot_update.py::test_apply_persists_and_survives_reload` / `::test_apply_hot_updates_running_loop`） |
+| TC-UI-12 | CORE-UI-R2「密钥安全存储」/「密钥持久化失败」（change `0099`） | `apply_llm_config` 传明文 key / 传窗口不敷预留 / monkeypatch `Path.write_text` 半写后抛 `OSError`；并观察 `set_llm_config` 是否触盘 | 明文 ⇒ `UI_LLM_KEY_UNSET`；非法取值 ⇒ `UI_LLM_CONFIG_INVALID` 且内存与 yaml 均不变；写盘失败 ⇒ 旧 yaml **逐字不变**、内存回退（原子提交）；落盘文件只有 `${OPENAI_API_KEY}`、**无明文**；`set_llm_config`（启动期 hydrate）**不触盘**（锚点：`tests/test_llm_config_hot_update.py::test_plaintext_api_key_rejected` / `::test_invalid_value_rejected_and_original_intact` / `::test_write_failure_leaves_file_untouched` / `::test_api_key_reference_is_preserved_not_plaintext` / `::test_set_llm_config_does_not_touch_disk` / `::test_without_config_manager_keeps_memory_only` / `::test_get_loop_limits_reports_effective_values`；`tests/test_serve.py::test_llm_config_roundtrip_window_and_budget` / `::test_llm_config_invalid_returns_400`；`tests/test_ui.py::test_apply_llm_config_rejects_plaintext` / `::test_apply_llm_config_skips_loop_without_limits_protocol`） |
 
 ## 14. IM 网关（TC-IM）
 

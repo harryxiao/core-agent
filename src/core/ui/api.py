@@ -12,9 +12,9 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
-from core.configuration import ConfigManager
+from core.configuration import ConfigManager, ConfigurationError
 from core.configuration.models import LLMConfig
-from core.loop import DefaultLoop, LoopEvent, LoopPlugin
+from core.loop import DefaultLoop, LimitsConfigurable, LoopEvent, LoopPlugin
 from core.memory import MemoryStore
 from core.orchestration import TaskScheduler
 from core.permission import ApprovalChannel
@@ -35,6 +35,54 @@ _EVENT_MAP = {
     "loop_finished": "loop.result",
     "loop_failed": "loop.error",
 }
+
+
+# 输出预留缺省口径来源：doc/openspec/specs/configuration/spec.md「循环预算配置」。
+# 仅在**无配置源**（裸 UIAPILayer）时就地派生；有配置源一律以 ConfigManager.loop_limits() 为准。
+_DEFAULT_OUTPUT_RESERVE = 8192
+
+
+def _require_ref(ref: str) -> None:
+    """非空且非 ``${VAR}`` 引用 ⇒ 拒绝明文密钥（口径不因入口不同而松动）。"""
+    if ref and not (ref.startswith("${") and ref.endswith("}")):
+        raise UiError(UiErrorCode.UI_LLM_KEY_UNSET, "API key 必须为 ${VAR} 引用，禁止明文")
+
+
+def _llm_patch(
+    cfg: LLMConfig, *, output_reserve: int | None, max_rounds: int | None
+) -> dict[str, Any]:
+    """组**单个** patch（llm + loop）⇒ 一次校验、一次落盘，无「写了一半」的中间态。"""
+    patch: dict[str, Any] = {
+        "llm": {
+            "api_key": cfg.api_key_ref,
+            "provider": cfg.provider,
+            "model": cfg.model,
+            "endpoint": cfg.endpoint,
+            "reasoning_effort": cfg.reasoning_effort,
+            "embedding_model": cfg.embedding_model,
+            "context_window": cfg.context_window,
+        }
+    }
+    loop: dict[str, Any] = {}
+    if output_reserve is not None:
+        loop["output_reserve"] = output_reserve
+    if max_rounds is not None:
+        loop["max_rounds"] = max_rounds
+    if loop:
+        patch["loop"] = loop
+    return patch
+
+
+def _derive_budget(cfg: LLMConfig, output_reserve: int | None) -> int | None:
+    """无配置源时的预算派生；``None`` = 未配窗口 ⇒ 保持 loop 现有预算。"""
+    if cfg.context_window <= 0:
+        return None
+    budget = cfg.context_window - (
+        _DEFAULT_OUTPUT_RESERVE if output_reserve is None else output_reserve
+    )
+    if budget <= 0:
+        raise UiError(UiErrorCode.UI_LLM_CONFIG_INVALID, "上下文窗口不敷输出预留")
+    return budget
 
 
 class UIAPILayer:
@@ -179,12 +227,54 @@ class UIAPILayer:
         return self._require_llm_key()
 
     def set_llm_config(self, cfg: LLMConfig) -> None:
-        """热更新 LLM 配置；api_key 只接受 ${VAR} 引用，拒绝明文。"""
-        if cfg.api_key_ref and not (
-            cfg.api_key_ref.startswith("${") and cfg.api_key_ref.endswith("}")
-        ):
-            raise UiError(UiErrorCode.UI_LLM_KEY_UNSET, "API key 必须为 ${VAR} 引用，禁止明文")
+        """启动期 hydrate LLM 配置（纯内存）；api_key 只接受 ${VAR} 引用，拒绝明文。
+
+        **不落盘**：本入口的值可能来自 env/CLI（yaml 里未必有），落盘等于每次启动重写
+        config.yaml。用户显式保存走 ``apply_llm_config``。
+        """
+        _require_ref(cfg.api_key_ref)
         self._llm_config = cfg
+
+    def apply_llm_config(
+        self,
+        cfg: LLMConfig,
+        *,
+        output_reserve: int | None = None,
+        max_rounds: int | None = None,
+    ) -> None:
+        """用户保存 LLM 配置：校验 → 原子落盘 → 生效 → 热推预算上限（change `0099`）。
+
+        有配置源时按 ``entry._config_set`` 范式（apply_change → write_patch → 重读）；无配置源
+        （裸 ``UIAPILayer``）降级为纯内存 + 尽力热生效，不假装持久化。非法取值、落盘失败一律
+        归为 ``UI_LLM_CONFIG_INVALID``，且**内存与 yaml 均回退到原值**。
+        """
+        _require_ref(cfg.api_key_ref)
+        patch = _llm_patch(cfg, output_reserve=output_reserve, max_rounds=max_rounds)
+        limits: tuple[int | None, int | None]
+        if self._config is not None:
+            try:
+                self._config.apply_change(patch)
+                self._config.write_patch(patch)
+            except ConfigurationError as exc:
+                raise UiError(UiErrorCode.UI_LLM_CONFIG_INVALID, str(exc)) from exc
+            except OSError as exc:
+                self._config.load()  # 原子写保证 yaml 仍是旧值 ⇒ 重读即回滚内存
+                raise UiError(UiErrorCode.UI_LLM_CONFIG_INVALID, f"配置落盘失败：{exc}") from exc
+            try:
+                self._config.load()
+            except ConfigurationError as exc:
+                raise UiError(UiErrorCode.UI_LLM_CONFIG_INVALID, str(exc)) from exc
+            limits = self._config.loop_limits()
+        else:
+            limits = (max_rounds, _derive_budget(cfg, output_reserve))
+
+        self._llm_config = cfg
+        if isinstance(self._loop, LimitsConfigurable):
+            self._loop.set_limits(max_rounds=limits[0], token_budget=limits[1])
+
+    def get_loop_limits(self) -> tuple[int, int] | None:
+        """回显**生效值** ``(max_rounds, token_budget)``；无配置源返回 None。"""
+        return None if self._config is None else self._config.loop_limits()
 
     # ---- 内部辅助 ----
 
