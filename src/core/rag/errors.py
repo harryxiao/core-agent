@@ -15,9 +15,11 @@ class RAGErrorCode(StrEnum):
     """RAG 结构化错误码。"""
 
     EMBEDDING_FAILED = "EMBEDDING_FAILED"
-    # 预留：sqlite-vec 生产实现落地时使用（当前内存实现无损坏场景）
+    # 索引向量维度与当前 embedding 不一致（更换后端后沿用旧索引）⇒ 拒绝并提示重建
     INDEX_CORRUPT = "INDEX_CORRUPT"
     REBUILD_FAILED = "REBUILD_FAILED"
+    # 检索增强生成未装配生成器（服务层无 llm-provider 通路）⇒ fail-closed，不静默给空答案
+    GENERATION_UNAVAILABLE = "GENERATION_UNAVAILABLE"
 
 
 class RAGError(Exception):

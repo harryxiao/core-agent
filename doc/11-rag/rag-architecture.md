@@ -14,18 +14,25 @@ LLM 存在知识缺口：训练截止、私有/领域知识缺失。RAG（检索
 
 ## 2. 架构
 
-调研（`research_findings.md`，2026-09-20）确认：向量库选 sqlite-vec（嵌入式零服务），embedding 用 sentence-transformers + BGE（本地推理）。
+> **订正（change 0104 / ADR-0097）**：调研（`research_findings.md`，2026-09-20）结论中的 `sqlite-vec` 与
+> `sentence-transformers + BGE` **均未落地** —— 前者是需另行安装的扩展（离线不可得），后者从未引入；
+> 「与 Core-Agent 既有 SQLite 生态统一」的前提亦不成立（全仓 `src/` 无 sqlite 使用）。**实际落地**：
+> 落盘向量库为 stdlib `sqlite3`（`SqliteVectorStore`，零三方依赖），embedding 默认 `HashEmbedder`
+> 离线降级基线、配 `llm.embedding_model` 走 `LLMEmbedder` 远端；主链路已由组合根 `runtime.rag` +
+> CLI `rag ingest|search|ask` 接线（change 0104）。下文按此口径阅读。
 
 ```
 摄取管线   知识文档 → 分块 → embedding → 向量索引
-             （sentence-transformers + BGE 本地推理）
-存储       sqlite-vec 嵌入式零服务向量库（与 SQLite 生态统一）
+             （HashEmbedder 离线降级基线 / LLMEmbedder 经 llm-provider）
+存储       stdlib sqlite3 嵌入式零服务向量库（落盘 $CORE_STATE_DIR/rag-index.db）
 检索       查询 embedding → 向量相似度 top-k 片段 + 相关度得分
 生成融合    检索片段 → context 装配器按预算裁剪 → llm-provider 生成
 ```
 
-- **向量库**：sqlite-vec，嵌入式零服务、零外部依赖，与 Core-Agent 既有 SQLite 生态统一，无需独立 daemon。
-- **embedding**：sentence-transformers + BGE 本地推理，无需外部 API；可经 llm-provider 归一化 embedding 入口切换到远端模型。
+- **向量库**：stdlib `sqlite3`，嵌入式零服务、零三方依赖，无需独立 daemon；`sqlite-vec` / 三方向量库
+  可经同一 `VectorStore` 抽象替换（见 ADR-0097）。
+- **embedding**：默认 `HashEmbedder`（确定性向量、零外呼）；可经 llm-provider 归一化 embedding 入口
+  切换到远端模型（`llm.embedding_model`）。
 
 ## 3. 数据流
 
@@ -38,9 +45,9 @@ LLM 存在知识缺口：训练截止、私有/领域知识缺失。RAG（检索
 
 | 接口 | 职责 |
 |---|---|
-| `VectorStore` | sqlite-vec 向量 CRUD + 索引（嵌入式，零服务） |
-| `IngestionPipeline` | 文档导入 → 分块 → embedding → 索引；增量更新 + hash 失效检测 |
-| `Embedder` | 本地 sentence-transformers + BGE 推理；经 llm-provider 归一化入口可切远端 |
+| `VectorStore` | stdlib sqlite3 向量 CRUD + 索引（嵌入式落盘，零服务、零三方依赖） |
+| `IngestionPipeline` | 文档导入 → 分块 → embedding → 索引；增量更新 + hash 失效检测（指纹随索引落盘） |
+| `Embedder` | 默认 `HashEmbedder` 离线降级；经 llm-provider 归一化入口可切远端 |
 | `Retriever` | 向量相似度 top-k 检索，返回片段 + 相关度得分 |
 | `RagGenerator` | 检索片段注入生成链路，经 context 装配器裁剪，检索缺失降级纯 LLM |
 
@@ -57,4 +64,5 @@ LLM 存在知识缺口：训练截止、私有/领域知识缺失。RAG（检索
 
 | ADR | 决策 |
 |---|---|
-| ADR-0025 | RAG 采用 sqlite-vec 本地向量库 + sentence-transformers/BGE 本地 embedding |
+| ADR-0025 | RAG 采用嵌入式零服务本地向量库 + 本地 embedding（**实现口径按 ADR-0097 订正**：stdlib `sqlite3` + `HashEmbedder` 离线降级 / `LLMEmbedder` 远端） |
+| ADR-0097 | rag 主链路接线（`SqliteVectorStore` / `RagService` / CLI `rag …`）；维度不一致结构化拒绝；文档指纹随索引落盘 |

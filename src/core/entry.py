@@ -73,6 +73,7 @@ from core.pet.core import (
 from core.pet.library import load_persona, load_personas
 from core.plugin_registry import DomainError, PluginInstaller, PluginKind, PluginSource
 from core.plugins import InstallDispatcher
+from core.rag import RAGError
 from core.runtime import GATABLE_MODULES, Runtime, build_runtime
 from core.skillhub import SkillHubClient, SkillHubError
 from core.skills import SkillLibrary
@@ -130,6 +131,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_skill_parser(sub)
     _add_session_parser(sub)
     _add_memory_parser(sub)
+    _add_rag_parser(sub)
     _add_evolve_parser(sub)
     _add_run_parser(sub)
     _add_task_parser(sub)
@@ -220,6 +222,20 @@ def _add_memory_parser(sub: Any) -> None:
     memory = sub.add_parser("memory", help="记忆维护")
     mem_sub = memory.add_subparsers(dest="memory_cmd", metavar="<memory-cmd>")
     mem_sub.add_parser("maintain", help="触发一次记忆维护（压实 + 遗忘归档）")
+
+
+def _add_rag_parser(sub: Any) -> None:
+    rag = sub.add_parser("rag", help="知识检索（摄取 / 检索 / 生成）")
+    rag_sub = rag.add_subparsers(dest="rag_cmd", metavar="<rag-cmd>")
+    ingest = rag_sub.add_parser("ingest", help="摄取知识文档建索引（一次性）")
+    ingest.add_argument("path", help="知识文档文件路径")
+    ingest.add_argument("--doc-id", required=True, metavar="ID", help="文档唯一 id")
+    search = rag_sub.add_parser("search", help="语义检索 top-k 片段（不调用生成）")
+    search.add_argument("query", help="查询语句")
+    search.add_argument("--top-k", type=int, default=5, metavar="N", help="返回片段数")
+    ask = rag_sub.add_parser("ask", help="检索增强生成（片段注入 → llm-provider）")
+    ask.add_argument("query", help="查询语句")
+    ask.add_argument("--top-k", type=int, default=5, metavar="N", help="注入片段数")
 
 
 def _add_evolve_parser(sub: Any) -> None:
@@ -1063,6 +1079,77 @@ def _evolve_reject(args: argparse.Namespace) -> int:
     return 0
 
 
+_RAG_USAGE = "用法: core-agent rag {ingest <path> --doc-id ID|search <query>|ask <query>}"
+
+
+def _rag_runtime(args: argparse.Namespace) -> Any | None:
+    """装配 runtime；失败转 stderr 并返回 ``None``（调用方给退出码 1）。"""
+    try:
+        return build_runtime(_config_manager(args))
+    except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
+        print(f"装配失败: {exc}", file=sys.stderr)
+        return None
+
+
+def _rag(args: argparse.Namespace) -> int:
+    """知识检索操作面：摄取建索引 / 语义检索 / 检索增强生成（均一次性，不改运行态）。"""
+    handlers = {"ingest": _rag_ingest, "search": _rag_search, "ask": _rag_ask}
+    handler = handlers.get(args.rag_cmd or "")
+    if handler is None:
+        print(_RAG_USAGE, file=sys.stderr)
+        return 1
+    runtime = _rag_runtime(args)
+    if runtime is None:
+        return 1
+    app = getattr(runtime, "app", None)
+    if app is not None and not app.llm.embedding_model:
+        # 降级提示落 stderr（不污染 stdout 机读输出）：索引维度与后端绑定，换后端须重建索引
+        print(
+            "未配置 llm.embedding_model：检索走离线 HashEmbedder 降级基线"
+            "（检索质量受限，索引维度与 embedding 后端绑定）",
+            file=sys.stderr,
+        )
+    try:
+        return handler(runtime, args)
+    except RAGError as exc:
+        print(f"RAG 错误 [{exc.code.value}]: {exc.message}", file=sys.stderr)
+        return 1
+
+
+def _rag_ingest(runtime: Any, args: argparse.Namespace) -> int:
+    """`rag ingest <path> --doc-id ID`：摄取知识文档（分块 → embedding → 落盘索引）。"""
+    path = Path(args.path)
+    if not path.is_file():
+        print(f"知识文档不存在: {path}", file=sys.stderr)
+        return 1
+    written = runtime.rag.ingest(args.doc_id, path.read_text(encoding="utf-8"))
+    if written:
+        print(f"已摄取 {args.doc_id}：{written} 块")
+    else:
+        print(f"已摄取 {args.doc_id}：无变更（跳过重建）")
+    return 0
+
+
+def _rag_search(runtime: Any, args: argparse.Namespace) -> int:
+    """`rag search <query> --top-k N`：打印按相似度降序的 top-k 片段（不调用生成）。"""
+    hits = runtime.rag.search(args.query, top_k=args.top_k)
+    if not hits:
+        print("无命中")
+        return 0
+    for index, hit in enumerate(hits, start=1):
+        text = hit.chunk.text.replace("\n", " ")
+        print(
+            f"{index}. {hit.score:.4f}  {hit.chunk.chunk_id}  来源 {hit.chunk.doc_id}  {text[:60]}"
+        )
+    return 0
+
+
+def _rag_ask(runtime: Any, args: argparse.Namespace) -> int:
+    """`rag ask <query> --top-k N`：检索片段注入生成链路并打印答案。"""
+    print(runtime.rag.ask(args.query, top_k=args.top_k))
+    return 0
+
+
 def _run(args: argparse.Namespace) -> int:
     prompt = _read_prompt(args)
     if prompt is None:
@@ -1430,6 +1517,7 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "recall": _recall,
     "session": _session,
     "memory": _memory,
+    "rag": _rag,
     "evolve": _evolve,
     "run": _run,
     "task": _task,

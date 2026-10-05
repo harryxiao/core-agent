@@ -2124,6 +2124,56 @@
 
 ---
 
+## ADR-0097：rag 主链路接线用 stdlib `sqlite3` 落盘向量库；维度不一致**拒绝**而非静默截断
+
+- **背景**：①rag 的 7 个类（`VectorStore` / `IngestionPipeline` / `Embedder` / `Retriever` /
+  `RagGenerator` 等）**零生产调用方** —— 组合根不装配、CLI 无入口（死代码）；②规格「默认实现为
+  `sqlite-vec`」离线**不可得**（需另行安装的扩展），且「与既有 SQLite 生态统一」的前提**为假**
+  （全仓 `src/` 无任何 sqlite 使用）；③`_cosine_similarity` 用 `zip(a, b, strict=False)` ⇒ 维度不同的
+  两向量**静默按短边截断**比较，产出无意义相似度 —— 而「先离线 ingest（128 维 HashEmbedder）、后配
+  `llm.embedding_model` 再 search」是**可达**路径；④`IngestionPipeline._hashes` 是**进程内** dict，而
+  CLI 每次调用都是新进程 ⇒ 增量判定形同不存在（每次全量重建 + 重新 embedding）；⑤`llm.api_key` /
+  `provider` / `model` / `endpoint` 是 `validate_schema` 的**必需**项 ⇒ 空配置必然 `ConfigurationError`，
+  `build_runtime` **走不到「未配 LLM」**（草案里「未配置 LLM 的 `rag ask` 报错」在装配链上不可达）。
+- **决策**：
+  ① **落盘用 stdlib `sqlite3`**（`SqliteVectorStore`），而非三方 `sqlite-vec`（离线不可得 + 违反「尽量
+     不依赖三方库」）、亦非 JSON 文件（向量以浮点数组整文件重写，每次 `put` 全量重写、随规模退化）。
+     表结构 = `chunks`（块 + 向量 BLOB）/ `documents`（文档内容指纹）/ `meta`（`dim`），落盘
+     `$CORE_STATE_DIR/rag-index.db`；行级写入与 `DELETE WHERE doc_id` 天然支持增量重建。
+  ② **维度守护**：首个 `put` 定档 `meta.dim`，此后 `put`/`search` 维度不符即
+     `RAGError(INDEX_CORRUPT, "… 须重建索引")` —— **不**静默截断（备选「静默跳过异维块」会让检索**静默
+     变空**，更难诊断；「各存各维度混用」则跨维度余弦无意义）。
+  ③ **文档指纹随索引落盘**（`documents` 表）：`VectorStore` 抽象补 `record_document` / `document_hash`，
+     hash 判定改由**存储侧**承载 ⇒ 跨进程成立、单一真源（删进程内 `_hashes`）。`ingest` 语义合并为
+     **upsert**（返回本次写入块数，无变更 ⇒ 0），`refresh` 退化为 `ingest(...) > 0` 的布尔外壳；
+     embedding 失败仍发生在 `delete` **之前**（旧索引降级契约不变）。
+  ④ **`RagService` 门面收口装配**：`core/rag/service.py` 组合 `IngestionPipeline` + `Retriever` +
+     可选 `RagGenerator`，组合根装配挂 `runtime.rag`、CLI（`rag ingest|search|ask`）只调用门面 ——
+     不让装配知识渗进 CLI 层、也不与 `runtime` 形成两处真源。生成器缺失（服务层未装配）⇒ 新错误码
+     `GENERATION_UNAVAILABLE`（**不**借 `EMBEDDING_FAILED` 误标、**不**抛裸 `RuntimeError`）。
+  ⑤ **embedding 语义优先、离线降级**：配 `llm.embedding_model` ⇒ `LLMEmbedder`（与 memory 通路共用同一
+     `embed_provider`，不重复构造 provider）；未配 ⇒ `HashEmbedder` 离线降级基线 + CLI 打印降级提示。
+     依据 memory 既有裁决（`HashEmbedder` 是降级基线不完善，语义走 `LLMEmbedder`，**不引入本地语义模型**）。
+  ⑥ **明示不做**：不把 RAG 注入 loop 推理链（属特性，牵动 context 预算与 prompt 装配）；不做 ANN
+     （规模未到门槛，保持暴力余弦）；不做索引并发隔离。
+- **限制（已知且明示）**：
+  - **单进程假设**：`SqliteVectorStore` 未开 WAL、无跨进程写互斥（并发 ingest 同一索引无隔离保证）。
+  - **暴力余弦**：检索复杂度 O(N)（全表扫描 + 进程内打分），规模上量须换 ANN 实现（经抽象替换）。
+  - **「无生成器」的可达面是服务层**：CLI 装配链因 LLM 配置必需而**总有**生成器；该错误码由
+    `RagService` 的 API 面承载，CLI 只做「结构化错误 → stderr + 退出码 1」的统一收口。
+  - **`HashEmbedder` 检索质量是降级基线**：仅字符 n-gram 相似度，语义召回弱于 embedding 模型；
+    且其 128 维与远端模型维度不同 ⇒ 换后端须重建索引（由 ② 的拒绝行为强制暴露，不静默错算）。
+- **影响**：`rag/vector_store.py`（`SqliteVectorStore` + 抽象补两法 + `InMemoryVectorStore` 同步）、
+  `rag/service.py`（新）、`rag/errors.py`（+`GENERATION_UNAVAILABLE`）、`rag/ingest.py`（upsert 化）、
+  `rag/__init__.py`（导出）；`runtime.py`（`_rag_index_path()`、`embed_provider` 提前共用、`Runtime.rag`）；
+  `entry.py`（`rag` 命令族 + `_HANDLERS`）；测试（`tests/test_rag.py` 追加、新 `tests/test_rag_wiring.py`）；
+  **文档失真订正**：`02-modules/rag.md`、`11-rag/rag-architecture.md`、`00-product/requirements.md`
+  （CORE-RAG-R1/R3）、`04-testing/test-cases.md`（TC-RAG-04/10）、`doc/README.md` 索引行。
+- **规格**：MODIFIED「本地向量库存储」「本地 Embedding」「存储与 Embedding 依赖注入隔离」（rag）；
+  MODIFIED「运维命令集」（cli-ops）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2215,3 +2265,4 @@
 | ADR-0094 | 03-interfaces/observability-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/evolution-interface.md |
 | ADR-0095 | 03-interfaces/evolution-interface.md |
 | ADR-0096 | 03-interfaces/observability-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/evolution-interface.md |
+| ADR-0097 | 03-interfaces/rag-interface.md, 02-modules/rag.md |

@@ -186,9 +186,9 @@
 
 | ID | 需求描述 | 优先级 | 追踪规格 |
 |---|---|---|---|
-| CORE-RAG-R1 | 系统 SHALL 以 sqlite-vec 作为本地嵌入式向量库存储文档向量与索引：零服务、零外部依赖，与既有 SQLite 生态统一 | P0 | rag/spec.md |
+| CORE-RAG-R1 | 系统 SHALL 以本地嵌入式零服务向量库存储文档向量与索引：零服务、零三方依赖，落盘 `$CORE_STATE_DIR` 且跨进程复用；记录向量维度，不一致时结构化拒绝（默认实现 stdlib `sqlite3`） | P0 | rag/spec.md |
 | CORE-RAG-R2 | 系统 SHALL 提供文档摄取管线：导入→分块→生成 embedding→建向量索引，并支持增量更新与索引失效检测 | P0 | rag/spec.md |
-| CORE-RAG-R3 | 系统 SHALL 用 sentence-transformers + BGE 本地推理生成 embedding，无需外部 API；可经 llm-provider 归一化入口切换远端模型 | P0 | rag/spec.md |
+| CORE-RAG-R3 | 系统 SHALL 本地优先、零外呼地生成 embedding（默认 `HashEmbedder` 离线降级基线）；配置远端模型后经 llm-provider 归一化入口切换 | P0 | rag/spec.md |
 | CORE-RAG-R4 | 系统 SHALL 按向量相似度检索 top-k 最相关片段、弥补 LLM 知识缺口，结果带相关度得分 | P0 | rag/spec.md |
 | CORE-RAG-R5 | 系统 SHALL 将检索片段经 context 装配器按预算裁剪后注入 llm-provider 生成，检索缺失时降级为纯 LLM 生成 | P0 | rag/spec.md |
 | CORE-RAG-R6 | 系统 SHALL 保持与 codebase-memory-mcp 互补：RAG 管知识文档语义检索，codebase-memory-mcp 管代码结构结构化理解 | P1 | rag/spec.md |

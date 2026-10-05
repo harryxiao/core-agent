@@ -84,6 +84,17 @@
   - **口径澄清**：原「若契约确不要求」的假设**不成立**（一手核实：契约要求）⇒ 实际是「a，或者先改规格撤回」。
 - **验收（以 a 为准）**：一条端到端测试：ingest 若干文档 → search 命中相关 chunk → generate 返回带来源的答案；CLI 命令可运行；`ruff`/`pyright`/`pytest` 全绿。
 
+**落地状态**：**已闭**（change `0104` / ADR-0097，2026-10-05；用户裁决 **(a) 接线**）。实施中相对原方案的三处**必须偏离**（均因一手核实推翻原假设）：
+1. **落盘存储不是 `InMemoryVectorStore`**：原方案「串 `IngestionPipeline → InMemoryVectorStore → …`」跨进程即丢 —— 而 CLI 每次调用都是**新进程**（`rag ingest` 与 `rag search` 是两次进程调用）。改用 **stdlib `sqlite3`**（`SqliteVectorStore`，`$CORE_STATE_DIR/rag-index.db`）：零三方依赖（`sqlite-vec` 离线不可得、JSON 全量重写退化），行级写入天然支持增量重建。
+2. **索引记维度、不一致即拒绝**：`_cosine_similarity` 用 `zip(..., strict=False)` ⇒ 换 embedding 后端后沿用旧索引会**静默按短边截断**算出无意义相似度（可达路径：先离线 ingest 后配 `llm.embedding_model`）⇒ 首个 `put` 定档维度，此后不符抛 `INDEX_CORRUPT` 并提示重建索引。
+3. **文档指纹须落盘**：原 `IngestionPipeline._hashes` 是**进程内 dict** ⇒ 新进程里 `refresh` 永远判「有变更」（增量判定形同不存在）⇒ 抽象补 `record_document` / `document_hash`（落 `documents` 表），`ingest` 合并为 upsert（返回写入块数，无变更 ⇒ 0），`refresh` 退化为布尔外壳。
+
+**另订正两处失真**（原方案未列，一手核实发现）：① 规格与 `02-modules/rag.md` 称「与既有 SQLite 生态统一」——全仓 `src/` 无 sqlite 使用，前提为假；② 规格「默认实现 sentence-transformers + BGE」「默认 sqlite-vec」**均未落地** ⇒ 本 change 同步 MODIFIED rag 三条 Requirement（本地向量库存储 / 本地 Embedding / 存储与 Embedding 依赖注入隔离）与 cli-ops「运维命令集」，并订正 `00-product/requirements.md`（CORE-RAG-R1/R3）、`11-rag/rag-architecture.md`、`04-testing/test-cases.md`（TC-RAG-01/04/10）、`doc/README.md`。**「未配 LLM 的 `rag ask` 报错」在装配链上不可达**（`llm.*` 四项为必需配置 ⇒ 空配置必然 `ConfigurationError`）⇒ 该 fail-closed 面由**服务层**承载（新错误码 `GENERATION_UNAVAILABLE`），CLI 只做「结构化错误 → stderr + 退出码 1」的统一收口。
+
+**入口**：CLI `rag ingest <path> --doc-id ID` / `rag search <query> [--top-k N]` / `rag ask <query> [--top-k N]`；组合根装配挂 `runtime.rag`（`RagService` 门面）。embedding 语义优先（配 `llm.embedding_model` ⇒ `LLMEmbedder`，与 memory 通路共用 `embed_provider`）、未配则离线 `HashEmbedder` 降级 + CLI 提示。
+
+**验收证据**：`tests/test_rag_wiring.py`（组合根装配 / 端到端 ingest→search→ask 不出网 / CLI 三子命令 / 结构化错误面）；`tests/test_rag.py` 追加落盘库与门面用例；真机 CLI 冒烟（两进程 ingest→search→再 ingest 判无变更，索引落盘）。四门：`ruff check` / `ruff format --check` / `pyright 0-0-0` / `pytest` **1201 passed**。
+
 ---
 
 ## 4. 缺陷 3 — skillhub 供给侧三件套死代码（P1）

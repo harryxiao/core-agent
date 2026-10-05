@@ -110,7 +110,7 @@ doc/
 │   └── integration-plan.md        codebase-memory-mcp MCP 接入方案（stdio 单 binary）
 │
 ├── 11-rag/                        【RAG 检索增强生成】
-│   └── rag-architecture.md        sqlite-vec 本地向量库语义检索与 ADR-0025
+│   └── rag-architecture.md        本地向量库（stdlib sqlite3）语义检索与 ADR-0025 / ADR-0097
 │
 ├── 12-git/                        【Git 版本控制】
 │   └── git-architecture.md        版本控制核心操作 + .git 保护 + 凭据安全与 ADR-0026

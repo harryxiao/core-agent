@@ -30,8 +30,10 @@ from core.rag import (
     RAGError,
     RAGErrorCode,
     RagGenerator,
+    RagService,
     Retriever,
     SearchHit,
+    SqliteVectorStore,
 )
 
 
@@ -122,6 +124,64 @@ def test_in_memory_store_search_ranks_by_similarity() -> None:
     assert [h.chunk.chunk_id for h in hits] == ["c1", "c3"]
 
 
+# ---- 落盘向量库（change 0104） ----
+
+
+def test_sqlite_store_put_get_delete(tmp_path) -> None:
+    store = SqliteVectorStore(tmp_path / "rag-index.db")
+    store.put(Chunk("c1", "d1", "x", [1.0, 0.0]))
+    store.put(Chunk("c2", "d2", "y", [0.0, 1.0]))
+
+    assert store.get("c1") is not None
+    assert store.get("c1").text == "x"  # type: ignore[union-attr]
+    assert store.get("missing") is None
+
+    store.delete("d1")
+
+    assert store.get("c1") is None, "按文档删除清掉该文档全部块"
+    assert store.get("c2") is not None
+
+
+def test_sqlite_store_search_ranks_by_similarity(tmp_path) -> None:
+    store = SqliteVectorStore(tmp_path / "rag-index.db")
+    store.put(Chunk("c1", "d1", "a", [1.0, 0.0]))
+    store.put(Chunk("c2", "d1", "b", [0.0, 1.0]))
+    store.put(Chunk("c3", "d2", "c", [0.5, 0.5]))
+
+    hits = store.search([1.0, 0.0], top_k=2)
+
+    assert [h.chunk.chunk_id for h in hits] == ["c1", "c3"]
+
+
+def test_sqlite_store_reused_across_instances(tmp_path) -> None:
+    """跨进程复用：新实例装载同一索引文件仍能命中（落盘为检索真源）。"""
+    path = tmp_path / "rag-index.db"
+    first = SqliteVectorStore(path)
+    first.put(Chunk("c1", "d1", "部署流程", [1.0, 0.0]))
+
+    second = SqliteVectorStore(path)
+    hits = second.search([1.0, 0.0], top_k=1)
+
+    assert [h.chunk.chunk_id for h in hits] == ["c1"], "块从落盘索引装载"
+    assert hits[0].chunk.embedding == [1.0, 0.0], "向量往返无损"
+
+
+def test_sqlite_store_rejects_dim_mismatch(tmp_path) -> None:
+    """维度不一致 ⇒ 结构化拒绝（不静默按短边截断比较）。"""
+    path = tmp_path / "rag-index.db"
+    store = SqliteVectorStore(path)
+    store.put(Chunk("c1", "d1", "x", [1.0, 0.0]))
+
+    with pytest.raises(RAGError) as put_exc:
+        store.put(Chunk("c2", "d2", "y", [1.0, 0.0, 0.0]))
+    assert put_exc.value.code == RAGErrorCode.INDEX_CORRUPT
+
+    reopened = SqliteVectorStore(path)
+    with pytest.raises(RAGError) as search_exc:
+        reopened.search([1.0, 0.0, 0.0])
+    assert search_exc.value.code == RAGErrorCode.INDEX_CORRUPT
+
+
 # ---- 摄取管线 ----
 
 
@@ -186,3 +246,63 @@ def test_rag_generator_empty_hits_pure_llm() -> None:
     assert gen.generate("问题", []) == "answer"
     assert provider.last_request is not None
     assert provider.last_request.messages[0].content == "问题"
+
+
+# ---- 主链路门面（change 0104） ----
+
+
+def _service(tmp_path, *, provider: _StubProvider | None = None) -> RagService:
+    store = SqliteVectorStore(tmp_path / "rag-index.db")
+    generator = RagGenerator(provider) if provider is not None else None
+    return RagService(_FixedEmbedder(), store, chunk_size=10, generator=generator)
+
+
+def test_service_ingest_then_search(tmp_path) -> None:
+    service = _service(tmp_path)
+
+    chunks = service.ingest("d1", "0123456789abcdefghij")
+
+    assert chunks == 2, "20 字符 / 块长 10 ⇒ 2 块"  # noqa: PLR2004
+    hits = service.search("query", top_k=2)
+    assert len(hits) == 2  # noqa: PLR2004
+    assert hits[0].chunk.doc_id == "d1"
+    assert service.search("query", top_k=1)[0].score > 0.0
+
+
+def test_service_refresh_detects_change(tmp_path) -> None:
+    service = _service(tmp_path)
+    service.ingest("d1", "same content")
+
+    assert service.refresh("d1", "same content") is False, "内容未变 ⇒ 不重建"
+    assert service.refresh("d1", "changed content") is True, "内容变更 ⇒ 增量重建"
+
+
+def test_service_ask_uses_retrieved_context(tmp_path) -> None:
+    provider = _StubProvider("答案")
+    service = _service(tmp_path, provider=provider)
+    service.ingest("d1", "部署流程说明")
+
+    assert service.ask("如何部署") == "答案"
+    assert provider.last_request is not None
+    assert "部署流程说明" in provider.last_request.messages[0].content, "命中片段注入生成提示词"
+
+
+def test_service_ask_without_generator_is_structured_error(tmp_path) -> None:
+    """未装配生成器（未配 LLM）⇒ 结构化错误提示，不静默给空答案。"""
+    service = _service(tmp_path)
+    service.ingest("d1", "内容")
+
+    with pytest.raises(RAGError) as exc:
+        service.ask("问题")
+
+    assert exc.value.code == RAGErrorCode.GENERATION_UNAVAILABLE
+
+
+def test_service_ask_empty_hits_degrades(tmp_path) -> None:
+    """检索无命中 ⇒ 降级纯 LLM 生成（不阻断）。"""
+    provider = _StubProvider("兜底答案")
+    service = _service(tmp_path, provider=provider)
+
+    assert service.ask("无索引的问题") == "兜底答案"
+    assert provider.last_request is not None
+    assert provider.last_request.messages[0].content == "无索引的问题"

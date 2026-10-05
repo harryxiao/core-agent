@@ -232,16 +232,19 @@
 
 | 用例 | 对应需求 | 步骤 | 期望 |
 |---|---|---|---|
-| TC-RAG-01 | CORE-RAG-R1 | 知识文档完成 embedding 后写入向量库 | 向量落盘于本地 SQLite 向量扩展，无需独立服务或外部向量数据库 |
+| TC-RAG-01 | CORE-RAG-R1 | 知识文档完成 embedding 后写入向量库 | 向量落盘于本地嵌入式向量库（默认 stdlib `sqlite3`，落 `$CORE_STATE_DIR/rag-index.db`），无需独立服务或外部向量数据库 |
 | TC-RAG-02 | CORE-RAG-R2 | 导入一份知识文档经摄取管线处理 | 文档被分块、逐块生成 embedding 并建立向量索引，可被检索 |
 | TC-RAG-03 | CORE-RAG-R2 | 源文档变更导致 hash 不一致 | 触发受影响块增量重建，期间该文档检索降级为旧索引 |
-| TC-RAG-04 | CORE-RAG-R3 | 一段文本经本地 embedding 生成 | 由本地 sentence-transformers + BGE 推理完成，不请求外部 embedding API |
+| TC-RAG-04 | CORE-RAG-R3 | 一段文本经本地 embedding 生成 | 由本地 `HashEmbedder` 推理完成（确定性向量），不请求外部 embedding API |
 | TC-RAG-05 | CORE-RAG-R3 | 经 llm-provider 归一化入口请求远端 embedding 模型 | 无缝切换到远端模型，检索与调用方无感知 |
 | TC-RAG-06 | CORE-RAG-R4 | 执行语义检索 | 返回按向量相似度排序的 top-k 片段及相关度得分 |
 | TC-RAG-07 | CORE-RAG-R5 | 将检索片段注入生成请求 | 片段经 context 装配器按预算裁剪后注入提示词，由 llm-provider 生成 |
 | TC-RAG-08 | CORE-RAG-R5 | 语义检索无相关片段时构建生成请求 | 降级为纯 LLM 生成，不阻断流程 |
 | TC-RAG-09 | CORE-RAG-R6 | 一次查询同时涉及知识文档与代码结构 | 文档语义检索走 RAG，代码结构理解走 codebase-memory-mcp，互不重叠 |
-| TC-RAG-10 | rag「存储与 Embedding 依赖注入隔离」 | 以替身实现注入 `Embedder` / `VectorStore`（`_FixedEmbedder` / `InMemoryVectorStore`） | `Retriever` 及调用方零改动（锚点：`tests/test_rag.py::test_retriever_delegates_to_store`）；**替换向量库**一侧仅单实现（生产 sqlite-vec 未接 → C 类），登记为半覆盖 |
+| TC-RAG-10 | rag「存储与 Embedding 依赖注入隔离」 | 以替身实现注入 `Embedder` / `VectorStore`（`_FixedEmbedder` / `InMemoryVectorStore` / `SqliteVectorStore`） | `Retriever` 及调用方零改动（锚点：`tests/test_rag.py::test_retriever_delegates_to_store`）；生产落盘实现已接（change 0104）⇒ 由半覆盖转全覆盖 |
+| TC-RAG-11 | CORE-RAG-R1（跨进程复用 / 维度守护） | 一次进程 `ingest` 写入落盘索引后，**另一实例**装载同一索引检索；再以不同维度 `put` / `search` | 前者命中该文档块（落盘为真源、向量往返无损）；后者以 `INDEX_CORRUPT` 结构化拒绝并提示重建索引（锚点：`tests/test_rag.py::test_sqlite_store_reused_across_instances` / `test_sqlite_store_rejects_dim_mismatch`） |
+| TC-RAG-12 | cli-ops「运维命令集」（知识摄取 / 语义检索 / 检索增强生成） | 依次执行 `rag ingest <path> --doc-id d1`（两次）→ `rag search <query>` → `rag ask <query>` | 摄取打印块数、重复摄取按 content_hash 判为无变更；检索打印 top-k 片段（块 id / 来源 / 得分），**不调用生成**；ask 打印生成答案（片段注入提示词）；均一次性、不改运行态（锚点：`tests/test_rag_wiring.py::test_cli_rag_ingest_then_search_across_assemblies` / `test_cli_rag_ask_prints_answer`） |
+| TC-RAG-13 | rag「生成融合」+ 错误码（fail-closed） | 服务层未装配生成器时 `ask`；索引维度不一致时 CLI `rag search` | 分别以 `GENERATION_UNAVAILABLE` / `INDEX_CORRUPT` 结构化错误落 stderr + 退出码 1，不静默给空答案、不抛裸栈（锚点：`tests/test_rag.py::test_service_ask_without_generator_is_structured_error` / `tests/test_rag_wiring.py::test_cli_rag_search_rejects_dim_mismatch_with_hint`） |
 
 ---
 

@@ -81,7 +81,7 @@ from core.pet.notify import AsyncNotifier
 from core.pet.safety import SafetyBounds, build_safety_middleware
 from core.plugin_registry import CoeffectResolver, EffectTracker, PluginInstaller
 from core.plugins import InstallDispatcher
-from core.rag import LLMEmbedder
+from core.rag import HashEmbedder, LLMEmbedder, RagGenerator, RagService, SqliteVectorStore
 from core.skills import (
     Skill,
     SkillFeedback,
@@ -125,6 +125,7 @@ class Runtime:
     tools: ToolProvider
     tracer: Tracer
     router: DecisionRouter
+    rag: RagService
     loop: DefaultLoop
     skill_router: SkillRouter
     skill_feedback: SkillFeedback
@@ -172,6 +173,16 @@ def _trace_path() -> Path:
     """
     base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
     return base / "traces.jsonl"
+
+
+def _rag_index_path() -> Path:
+    """rag 落盘索引路径：$CORE_STATE_DIR（缺省 ~/.core/state）/rag-index.db。
+
+    同检查点 / 记忆的状态目录约定；索引是落盘真源 ⇒ 一次 `rag ingest` 的成果在后续
+    进程的检索中可见（见 rag spec「索引跨进程复用」）。
+    """
+    base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
+    return base / "rag-index.db"
 
 
 def _skill_state_path(name: str) -> Path:
@@ -259,16 +270,21 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
     )
     backend = memory_backend if memory_backend is not None else FileBackend(_memory_path())
     effect_tracker = EffectTracker()
-    # 记忆 embedding 来源（0040）：llm.embedding_model 非空时以该模型**另构造** provider
-    # （聊天模型名打 /embeddings 通常 404），经 rag LLMEmbedder → batch_embed 适配为
-    # memory 的批量契约；密钥复用 api_key（已登记脱敏）。未设置则不注入 → 0039 词法路径，
+    # 语义 embedding 来源（0040 / 0104 共用）：llm.embedding_model 非空时以该模型**另构造**
+    # provider（聊天模型名打 /embeddings 通常 404），memory 通路经 rag LLMEmbedder →
+    # batch_embed 适配为批量契约、rag 通路直接消费 LLMEmbedder；密钥复用 api_key（已登记脱敏）。
+    # 未设置则不构造 → memory 走 0039 词法路径、rag 走离线 HashEmbedder 降级基线，
     # 远端不可达由调用期降级兜底，均不阻断启动。
-    if embedder is None and app.llm.embedding_model:
-        embed_provider = StdlibLLMProvider(
+    embed_provider = (
+        StdlibLLMProvider(
             api_key=api_key,
             base_url=app.llm.endpoint or None,
             model=app.llm.embedding_model,
         )
+        if app.llm.embedding_model
+        else None
+    )
+    if embedder is None and embed_provider is not None:
         embedder = batch_embed(LLMEmbedder(embed_provider).embed)
 
     # 记忆摘要接缝（0041）：LLM 提炼经 summarize_with 适配为 memory 的摘要契约
@@ -291,6 +307,13 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
     # 上下文压实接线（0041）：多轮历史 → persist 落 L2；此前 context.Compactor 与
     # memory.compact 都无生产调用方（死路径），现由 loop 的轮数/预算阈值触发。
     context_compactor = ContextCompactor(memory=memory)
+    # rag 主链路装配（0104）：落盘索引 + 语义优先 / 离线降级的 embedding + 生成融合，
+    # 由 RagService 门面收口（CLI / 宿主只调用门面，不各自拼四个对象）。
+    rag = RagService(
+        LLMEmbedder(embed_provider) if embed_provider is not None else HashEmbedder(),
+        SqliteVectorStore(_rag_index_path()),
+        generator=RagGenerator(llm, model=app.llm.model),
+    )
     resolver = CoeffectResolver()
     resolver.register("filesystem:read", True)
     resolver.register("filesystem:write", True)
@@ -798,6 +821,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
         tools=tools,
         tracer=tracer,
         router=router,
+        rag=rag,
         loop=loop,
         skill_router=skill_router,
         skill_feedback=skill_feedback,

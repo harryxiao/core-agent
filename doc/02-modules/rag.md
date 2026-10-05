@@ -17,12 +17,16 @@ LLM 存在固有知识缺口：训练截止、私有/领域知识缺失。RAG（
 
 ```
 RAG（L3）
-├── VectorStore        向量存储：sqlite-vec 嵌入式向量 CRUD + 索引
+├── VectorStore        向量存储：stdlib sqlite3 嵌入式向量 CRUD + 索引（落盘 $CORE_STATE_DIR）
 ├── IngestionPipeline  摄取管线：文档导入 → 分块 → embedding → 索引（增量更新）
-├── Embedder           本地 embedding：sentence-transformers + BGE 推理
+├── Embedder           embedding：离线 HashEmbedder 降级基线 / LLMEmbedder 语义（llm-provider）
 ├── Retriever          语义检索：查询 embedding → 向量相似度 top-k
-└── RagGenerator       生成融合：检索片段注入 → llm-provider 生成（无结果降级）
-```
+├── RagGenerator       生成融合：检索片段注入 → llm-provider 生成（无结果降级）
+└── RagService         主链路门面：组合根装配（runtime.rag）+ CLI `rag ingest|search|ask`
+
+> **接线状态（change 0104）**：上述链路此前**无生产调用方**（死代码）——组合根现装配
+> `RagService` 挂 `runtime.rag`，CLI 三子命令驱动同一门面，一次 `ingest` 的成果在后续进程
+> 的 `search` / `ask` 中可见（落盘索引为真源）。
 
 ---
 
@@ -30,20 +34,28 @@ RAG（L3）
 
 ### 3.1 嵌入式零服务存储
 
-- 向量库选 **sqlite-vec**：嵌入式、零服务、零外部依赖，与 Core-Agent 既有 SQLite 生态统一，无需独立 daemon 或外部向量数据库。
+- 向量库默认取 **stdlib `sqlite3`**（`SqliteVectorStore`）：嵌入式、零服务、**零三方依赖**（`sqlite-vec`
+  是需另行安装的扩展，离线不可得）；表结构 = `chunks`（块 + 向量 BLOB）/ `documents`（内容指纹）/
+  `meta`（`dim` 向量维度），落盘 `$CORE_STATE_DIR/rag-index.db` ⇒ 跨进程复用。
 - 契合「无特权核心」原则，不引入特权服务；`VectorStore` 负责向量 CRUD 与索引，落盘即持久化。
-- 对比 LanceDB（同为嵌入式、多模态更强）作为未来扩展点——若多模态向量需求强再评估切换，不属本期范围。
+- `sqlite-vec` / LanceDB（同为嵌入式、多模态更强）作为经同一抽象替换的扩展点——若规模或多模态需求
+  到位再评估，不属本期范围。
+- **订正**：本文与规格此前称「与 Core-Agent 既有 SQLite 生态统一」——全仓 `src/` 无任何 sqlite 使用，
+  该前提不成立（change 0104 已订正规格与本文）。
 
 ### 3.2 摄取与增量更新
 
 - 摄取管线：`IngestionPipeline.ingest` 将知识文档 **分块 → 逐块 embedding → 写入向量索引**。
-- 增量更新：`refresh` 按 `content_hash` 检测源文档变更，不一致则重建受影响块；重建窗口期该文档检索**降级旧索引**，不阻塞查询。
+- 增量更新：`refresh` 按 `content_hash` 检测源文档变更，不一致则重建受影响块；内容指纹**随索引落盘**（`documents` 表）⇒ 判定跨进程成立（CLI 每次调用都是新进程）；重建窗口期该文档检索**降级旧索引**，不阻塞查询。
 - 摄取/重建失败降级：记录失败、可重试，不阻断主流程。
 
-### 3.3 本地 embedding 与远端切换
+### 3.3 embedding 后端选择与降级
 
-- `Embedder` 默认用 **sentence-transformers + BGE** 本地推理生成向量，不请求外部 embedding API。
-- 可经 **llm-provider 归一化 embedding 入口**切换到远端模型，检索与调用方零改动。
+- 默认 **`HashEmbedder`**：字符 n-gram 哈希生成确定性向量，**零三方依赖、零外呼**（离线降级基线；
+  未配 `llm.embedding_model` 时组合根选用，CLI 打印降级提示）。依据 memory 既有裁决「HashEmbedder
+  是降级基线不完善，语义走 `LLMEmbedder`，不引入本地语义模型」（不引 sentence-transformers）。
+- 配 `llm.embedding_model` ⇒ **`LLMEmbedder`** 经 llm-provider 归一化入口调远端 embedding 模型，
+  检索与调用方零改动。**维度随后端变化**：索引记录 `dim`，不一致即 `INDEX_CORRUPT` 并提示重建。
 
 ### 3.4 语义检索
 
@@ -73,9 +85,10 @@ RAG（L3）
 | 场景 | 行为 |
 |---|---|
 | embedding 生成失败 | 返回 `EMBEDDING_FAILED`，该文档检索降级旧索引或纯 LLM |
-| 向量索引损坏 | 返回 `INDEX_CORRUPT`，降级重建或回退旧索引 |
+| 向量索引损坏 / 维度不一致 | 返回 `INDEX_CORRUPT`，提示重建索引（换 embedding 后端后沿用旧索引） |
 | 增量重建失败 | 返回 `REBUILD_FAILED`，降级旧索引，可重试 |
 | 检索无结果 | 返回空列表，降级纯 LLM 生成，不阻断 |
+| 生成器未装配（服务层无 llm-provider 通路） | 返回 `GENERATION_UNAVAILABLE`，不返回空答案（fail-closed） |
 
 ---
 
@@ -84,5 +97,5 @@ RAG（L3）
 - 接口契约：`doc/03-interfaces/rag-interface.md`
 - 规格：`doc/openspec/specs/rag/spec.md`
 - 架构：`doc/11-rag/rag-architecture.md`（ADR-0025、数据流）
-- 变更：`doc/openspec/changes/0010-rag/`
+- 变更：`doc/openspec/changes/0010-rag/`；**主链路接线**：`doc/openspec/changes/2026-10-05-0104-rag-mainline-wiring/`（ADR-0097）
 - 上游：`doc/02-modules/llm-provider.md`（embedding 归一化入口 + 生成）、`doc/02-modules/context.md`（上下文装配裁剪）
