@@ -1672,6 +1672,37 @@
 - **转出**：OTel/Prometheus 指标导出器 + 告警规则（需第三方 SDK）→ Phase 19 §5 凭证 / 依赖半。
 
 ---
+## ADR-0085：git 生产后端 = stdlib subprocess 直调 CLI（零三方依赖 + 错误不回显）
+
+- **背景**：账本 C2（Phase 20 §1）—— git 抽象（`GitBackend` Protocol）、核心操作（`GitClient`）、.git 保护、
+  高危审批**全部已落地且已测**，唯一缺的是**生产后端实现**：`build_backend()` 直接抛「离线未接」，
+  `GitBackend` 在生产**无任何实现**。`git-architecture.md` §1 明文「Git 独立为 capability（**非 tool**）」
+  ⇒ 无循环工具面待接，缺的就是底层适配器本身。
+- **决策**：
+  ① **stdlib `subprocess` 直调 `git` CLI**（不引 gitpython / dulwich）：`git-interface.md` §3 已列的首选项，
+     且对齐 `ADR-0044`「核心零三方依赖」红线。
+  ② **`cwd` 归属后端实例**（构造参数，缺省 `Path.cwd()`）：13 项原语的多数作用于「当前仓库」，
+     `init` / `clone` 完成后把 `cwd` 指向新仓库 —— 与真实「一次会话绑定一个仓库」一致。
+  ③ **新增 `GIT_COMMAND_FAILED`**：既有 4 码（AUTH / TIMEOUT / WORKTREE_DIRTY / CONFLICT）都不覆盖
+     「本地子命令非零退出」（硬套 `GIT_WORKTREE_DIRTY` 是语义滥用）。**纯加法**，既有码语义与测试不变。
+  ④ **错误信息不回显原始 stderr**：`_classify` 只按特征**归类**（认证 / 冲突 / 其余），异常文本是**固定中文提示**。
+     git 的 stderr 可能含 `https://user:token@host/...`，对齐规格 R3「不泄露凭据与私有仓库地址」与全局
+     「密钥只引用不读取、绝不进日志/记忆」。凭据交给环境中的 git credential helper，本模块不接触、不落盘。
+  ⑤ **`merge` 冲突走结果而非异常**：非零退出且 `git diff --name-only --diff-filter=U` 非空 ⇒
+     `MergeResult(merged=False, conflict_files=[...])`（对齐 Protocol 与接口 §1）；非零且非冲突 ⇒ 抛 `GitError`。
+  ⑥ **不改装配面（**偏离 phase-20 §4.1 原记**）**：不做组合根装配、不加 `git` CLI 入口 —— 消费者（coding 工作流）
+     **尚未存在**，此刻塞进 `Runtime` 或加 CLI = **无消费者的空接缝**（与 §2 对 E27 的判定同理）。装配待消费者
+     出现时并入该消费者的 change。
+  ⑦ **不动远程可靠性半**：只保证错误**归一**（超时 → `GIT_REMOTE_TIMEOUT`），不实现退避重试 / 连接释放策略
+     （无远程消费者，YAGNI）；远程凭据 keychain 归 Phase 19 §5。
+- **影响**：`GitClient()` 现在真的可用；`tests/test_git.py::test_no_backend_raises` 断言的行为**被本变更有意改变**
+  （缺省后端不再是错误），替换为「缺省工厂给出 subprocess 适配器」；其余 git 测试零改动。
+- **规格**：MODIFIED「GitClient 抽象接口与依赖注入隔离」（补缺省后端 + 归一错误码 + 2 场景）。
+- **前置**：`ADR-0026`（Git 独立为 capability）、`ADR-0044`（核心零三方依赖）。
+- **转出**：远程凭据 keychain 集成（R3 凭据半）+ 远程重试 / 连接释放（R5）→ Phase 19 §5；组合根装配 → 待消费者 change。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1751,3 +1782,4 @@
 | ADR-0082 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md |
 | ADR-0083 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md, 03-interfaces/ui-interface.md |
 | ADR-0084 | 03-interfaces/observability-interface.md, 02-modules/observability.md |
+| ADR-0085 | 03-interfaces/git-interface.md, 12-git/git-architecture.md |

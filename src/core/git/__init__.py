@@ -4,6 +4,7 @@ from .backend import GitBackend, build_backend
 from .client import GitClient
 from .errors import GitError, GitErrorCode
 from .models import CommitLog, GitStatus, MergeResult
+from .subprocess_backend import SubprocessGitBackend
 
 __all__ = [
     "CommitLog",
@@ -13,5 +14,6 @@ __all__ = [
     "GitErrorCode",
     "GitStatus",
     "MergeResult",
+    "SubprocessGitBackend",
     "build_backend",
 ]

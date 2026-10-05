@@ -23,7 +23,7 @@
 
 | 项 | 模块 | 代码半（可离线验证） | 凭证半（阻塞，归 Phase 19 §5） | 优先级 |
 |---|---|---|---|---|
-| C2 | `git` | `GitBackend` 真实现（subprocess 直调 git）+ 组合根装配 + `git` CLI | 无（git 是本地工具，**零凭证**） | **高**（唯一纯代码项） |
+| C2 | `git` | ✅ **已关闭（change `0090`／ADR-0085）**：`SubprocessGitBackend`（stdlib `subprocess` 直调 git CLI，13 原语）+ `build_backend()` 返回之 + 新增 `GIT_COMMAND_FAILED` + 错误不回显 stderr；**装配待消费者**（见 §4.1 偏离说明） | 无（git 是本地工具，**零凭证**） | ~~高~~ 已闭 |
 | E27 | `im` | `IMGateway` 装配 + 宿主入口 + 白名单配置键 + Provider 插拔点 | 平台 SDK / 机器人凭证 / 回调 | **高**（第三入口整体缺席） |
 | C3 | `ci_cd` | 门禁执行器（subprocess 跑已定义的 `GATE_COMMANDS`）+ 制品发布通道 + CLI | 制品仓库凭证 | 中（本仓自己的四门就是它的需求） |
 | C4 | `observability` | ✅ **已关闭（change `0089`／ADR-0084）**：组合根缺省装配 `BufferedExporter(JSONLExporter($CORE_STATE_DIR/traces.jsonl))` + 注入优先；`JSONLExporter` 自建父目录 | OTel 导出 SDK（「指标导出协议」，另案） | ~~中~~ 已闭 |
@@ -80,11 +80,13 @@
 
 > 每项给：**现状证据** / **要写的代码** / **离线验证手段**。全部沿用既有 DI 接缝，**不新增架构**。
 
-### 4.1 `git`（C2，唯一零凭证项）
+### 4.1 `git`（C2）✅ 已关闭（change `0090`／ADR-0085）
 
-- **现状**：`GitBackend` Protocol（`git/backend.py:18`）+ `GitClient` 只依赖注入 backend（`client.py:24-27`）；`build_backend` 抛「离线未接」（`backend.py:50-55`）；`runtime.py` / `entry.py` **零出现**。
-- **要写**：`SubprocessGitBackend`（stdlib `subprocess` 直调 `git`，与 `code_run`/门禁同级的本地工具，**零三方依赖** —— gitpython/dulwich 不引入）+ 组合根装配 + `git` CLI 入口。
-- **离线验证**：`git init` 一个临时仓，走真实 `subprocess` 断言读写；fake backend 继续服务既有单测。
+- **现状（关闭前）**：`GitBackend` Protocol（`git/backend.py:18`）+ `GitClient` 只依赖注入 backend（`client.py:24-27`）；`build_backend` 抛「离线未接」；`runtime.py` / `entry.py` **零出现**。
+- **已写**：`SubprocessGitBackend`（`src/core/git/subprocess_backend.py`）—— stdlib `subprocess` 直调 `git`，13 原语齐备（**零三方依赖**，gitpython/dulwich 未引入）；`build_backend()` 返回之；新增错误码 `GIT_COMMAND_FAILED`；`merge` 冲突走 `MergeResult(merged=False, …)`；错误**不回显** stderr（可能含凭据 / 私有仓库地址）。
+- **离线验证**：`tests/test_git_subprocess.py`（9 例）在 `tmp_path` 临时仓库内走**真实 subprocess** 往返；`tests/test_git.py::test_default_backend_is_subprocess_adapter` 锁缺省工厂。
+- **偏离原记（须记）**：本文件原计划的「**组合根装配 + `git` CLI 入口**」**有意不做** —— git 是 capability 非 tool（`git-architecture.md` §1），其消费者（coding 工作流）**尚未存在**；此刻塞进 `Runtime` 或加 `core-agent git <verb>` = **无消费者的空接缝**（与 §2 对 E27 的判定同理）。装配并入**消费者出现时**的该消费者 change。详见 change `0090` `proposal.md`「明确不做」。
+- **仍归 Phase 19 §5（凭证半 / 可靠性半）**：远程凭据 keychain 集成（R3）、远程退避重试与连接释放（R5）。
 
 ### 4.2 `ci_cd`（C3）
 

@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from core.git import GitClient, GitError, GitErrorCode, GitStatus, MergeResult
+from core.git import (
+    GitClient,
+    GitError,
+    GitErrorCode,
+    GitStatus,
+    MergeResult,
+    SubprocessGitBackend,
+)
 from core.permission import AccessControlError
 
 
@@ -100,11 +107,9 @@ def test_push_non_force_no_approval() -> None:
     assert backend.pushed == [("origin", None, False)]
 
 
-def test_no_backend_raises() -> None:
-    client = GitClient()
-    with pytest.raises(GitError) as exc_info:
-        client.commit("x")
-    assert exc_info.value.code is GitErrorCode.GIT_REMOTE_TIMEOUT
+def test_default_backend_is_subprocess_adapter() -> None:
+    """change 0090：缺省后端不再是「离线未接」错误，而是 stdlib subprocess 适配器。"""
+    assert isinstance(GitClient()._require_backend(), SubprocessGitBackend)
 
 
 def test_backend_auth_failed() -> None:

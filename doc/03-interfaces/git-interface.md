@@ -83,6 +83,8 @@ class MergeResult:
 
 - 底层 git 实现（subprocess 直调 git CLI / gitpython / dulwich 等）收敛于**单一适配器**，懒 import，异常归一到领域错误码（见 §4），不泄漏底层库异常结构。
 - 经依赖注入装配（构造 / registry），内核 loop 与调用方只依赖 `GitClient` 抽象；替换底层实现仅改装配点，调用方零改动。
+- **生产缺省后端 = `SubprocessGitBackend`**（`src/core/git/subprocess_backend.py`）：stdlib `subprocess` 直调 `git` CLI，**零第三方依赖**。构造 `SubprocessGitBackend(cwd=None, *, timeout=60.0)`；`cwd` 为**仓库根**（缺省 `Path.cwd()`），`init(path)` / `clone(url, path)` 完成后后端把 `cwd` 指向新仓库（等同「一次会话绑定一个仓库」）。
+- `build_backend()` 恒返回该适配器（构造注入者优先）；`GitClient` 因此**开箱可用**，不再有「离线未接」错误。
 
 ---
 
@@ -94,6 +96,7 @@ class MergeResult:
 | `GIT_REMOTE_TIMEOUT` | 远程操作超时 |
 | `GIT_WORKTREE_DIRTY` | 工作区有未提交改动，操作被拒绝 |
 | `GIT_CONFLICT` | 合并 / 拉取冲突，需人工解决 |
+| `GIT_COMMAND_FAILED` | git 子命令非零退出（非上述分类），信息为固定提示，**不回显 stderr** |
 
 ---
 

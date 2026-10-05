@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from .errors import GitError, GitErrorCode
 from .models import CommitLog, GitStatus, MergeResult
+from .subprocess_backend import SubprocessGitBackend
 
 
 class GitBackend(Protocol):
@@ -48,8 +48,9 @@ class GitBackend(Protocol):
 
 
 def build_backend() -> GitBackend:
-    """生产 git 后端工厂：真实后端（subprocess/gitpython/dulwich）未锁选型，离线未接。"""
-    raise GitError(
-        GitErrorCode.GIT_REMOTE_TIMEOUT,
-        "生产 git 后端需接 subprocess/gitpython/dulwich 适配器（离线未接）",
-    )
+    """生产 git 后端工厂：stdlib ``subprocess`` 直调 git CLI（零第三方依赖，change 0090）。
+
+    真实后端实现见 :class:`core.git.subprocess_backend.SubprocessGitBackend`；如将来改用
+    gitpython / dulwich，仅替换本工厂，调用方零改动。
+    """
+    return SubprocessGitBackend()

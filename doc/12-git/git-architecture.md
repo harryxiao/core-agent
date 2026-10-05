@@ -13,10 +13,15 @@ Core-Agent 需完美支持 Coding 编码功能，默认支持 Git 是编码闭�
 
 | 组件 | 职责 |
 |---|---|
-| Git 操作器 | clone/init/commit/branch/checkout/diff/merge/log/status/pull/push |
+| Git 操作器 | clone/init/commit/branch/checkout/diff/merge/log/status/pull/push（实现：`src/core/git/subprocess_backend.py::SubprocessGitBackend`，stdlib `subprocess` 直调 git CLI） |
 | 仓库守卫 | .git 元数据保护 + 工作区回滚 |
 | 凭据适配 | keychain 存取凭据、日志脱敏 |
 | 审批桥 | 高危操作接入 permission 审批链 |
+
+> **生产后端已落地**（change 0090）：`build_backend()` 返回 stdlib `subprocess` 直调 git CLI 的
+> `SubprocessGitBackend`（零第三方依赖，对齐 ADR-0044）。子命令非零退出归一到领域错误码
+> （认证失败 / 超时 / 冲突 / `GIT_COMMAND_FAILED`），**错误信息不回显 stderr**（可能含凭据或私有仓库地址）。
+> **装配待消费者**：git 是 capability 非 tool，其消费者（coding 工作流）未出现，故本阶段不加组合根字段 / CLI 入口。
 
 ## 3. 核心流程
 

@@ -246,6 +246,8 @@
 | TC-GIT-09 | CORE-GIT-R5 | 远程操作因网络抖动中断且可重试 | 按指数退避自动重试，达上限后失败并保持工作区一致 |
 | TC-GIT-10 | CORE-GIT-R5 | 远程操作结束（完成或失败） | 释放底层连接资源，避免连接泄漏 |
 | TC-GIT-11 | git「GitClient 抽象接口与依赖注入隔离」 | 以替身后端注入（`GitClient(backend=FakeBackend())`） | `GitClient` 及内核 loop 零改动切换底层 git 实现（锚点：`tests/test_git.py`；生产 `build_backend()` 见 `src/core/git/backend.py:50`） |
+| TC-GIT-12 | git「GitClient 抽象接口与依赖注入隔离」 | 未注入后端，缺省工厂取后端并在**真实临时仓库**执行 init/commit/status/log/diff/branch/checkout/merge/stash | 全程成功；缺省后端为 stdlib `subprocess` 适配器（零三方依赖）（锚点：`tests/test_git_subprocess.py`；`tests/test_git.py::test_default_backend_is_subprocess_adapter`） |
+| TC-GIT-13 | git「GitClient 抽象接口与依赖注入隔离」 | 非仓库目录下执行子命令 / 合并产生冲突 | 抛 `GitError(GIT_COMMAND_FAILED)` 且文本**不含** stderr 原文与路径；冲突走 `MergeResult(merged=False, conflict_files=[...])`（锚点：`tests/test_git_subprocess.py::test_command_failure_normalized_and_no_stderr_echo` / `::test_merge_conflict_reports_files`） |
 
 ---
 
