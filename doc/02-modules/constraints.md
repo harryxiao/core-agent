@@ -49,7 +49,7 @@ MiddlewareChain（横切，洋葱模型）
 
 | 中间件 | 行为 |
 |---|---|
-| CircuitBreaker | 连续 N 次失败 → 打开（快速失败）→ 冷却期后半开试探 |
+| CircuitBreaker | 连续 N 次失败 → 打开（快速失败）→ 冷却期后半开试探；**N 与冷却期可经配置覆盖**（`constraints.failure_threshold` / `constraints.cooldown_s`，change `0068` / 账本 E15） |
 | RetryPolicy | 指数退避重试，幂等操作才重试，避免重复副作用 |
 | Fallback | 失败降级：备用工具 / 简化路径 / 转人工 |
 | Rollback | 单步失败回滚本轮 effect，不拖垮整个任务 |
@@ -78,6 +78,8 @@ MiddlewareChain（横切，洋葱模型）
 `core.context.Compactor` 承担（语义等价/同构，均在本模块之外）；`RetryPolicy` 与 `Fallback` 为库能力、
 **生产未接线**（副作用幂等风险 / 无生产 `fallback_fn`）。完整洋葱（`Pipeline.execute` 的逆序 `after`）
 为可插拔能力，生产接缝按需使用；适配层 `src/core/loop/constraints_adapter.py`。
+熔断阈值/冷却由 `ConfigManager.circuit_breaker()` 经 `ConfigSpec` **单一真源**读出后注入适配层
+（change `0068` / 账本 E15；缺省 `5` / `30.0` 秒，非法取值校验期拒绝并阻断启动）。
 
 ---
 
@@ -94,6 +96,6 @@ MiddlewareChain（横切，洋葱模型）
 
 ## 6. 关联
 
-- 接口契约：`doc/03-interfaces/constraints-interface.md`
+- 接口契约：`doc/03-interfaces/constraints-interface.md`、`doc/03-interfaces/configuration-interface.md` §2.4
 - 规格：`doc/openspec/specs/constraints/spec.md`
 - 测试：`doc/04-testing/test-cases.md`（CNS 系列）

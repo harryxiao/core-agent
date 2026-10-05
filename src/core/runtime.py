@@ -428,7 +428,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
 
         cold_path = _cold_path
 
-    constraints_chain = build_constraints_chain()
+    failure_threshold, cooldown_s = config.circuit_breaker()
+    constraints_chain = build_constraints_chain(
+        failure_threshold=failure_threshold, cooldown_s=cooldown_s
+    )
 
     loop = DefaultLoop(
         planner=planner,

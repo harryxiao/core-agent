@@ -34,6 +34,11 @@
 即打开该工具的熔断，后续调用**快速失败、不真正执行**该工具；冷却期后半开试探，
 试探成功即闭合。**策略性拒绝**（输入校验失败 / coeffect 缺失 / 确认门拒绝）**不计入失败计数**、
 也不影响其他工具。
+熔断的**失败阈值 N** 与**冷却期** SHALL **可经配置覆盖**：键为 `constraints.failure_threshold`
+（缺省 5）与 `constraints.cooldown_s`（缺省 30 秒），经 `ConfigSpec` **单一真源**解析
+（优先级 CLI flag > env > config.yaml > 缺省），并据此装配组合根注入 loop 的熔断链。
+取值 SHALL 受约束：阈值须为 **≥1 的整数**、冷却须为 **≥0 的数值**；**非法取值 SHALL 在校验期
+被拒绝并阻断启动**（不得静默兜底为缺省值）。
 
 #### Scenario: 熔断器打开
 - **GIVEN** 某插件连续 N 次失败
@@ -59,6 +64,17 @@
 - **GIVEN** 某工具熔断已打开且冷却期已过
 - **WHEN** 下一次调用执行成功
 - **THEN** 该工具熔断器闭合，后续调用正常执行
+
+#### Scenario: 熔断阈值与冷却可经配置覆盖
+- **GIVEN** 配置将 `constraints.failure_threshold` 设为 2、`constraints.cooldown_s` 设为 10
+- **WHEN** 系统启动装配
+- **THEN** 组合根注入 loop 的熔断链以 2 次失败 / 10 秒冷却为准（覆盖类默认 5 / 30）
+- **AND** 同一取值经 CLI flag / env / config.yaml 任一面设置均生效，优先级链一致
+
+#### Scenario: 非法熔断取值校验期拒绝
+- **GIVEN** 配置将 `constraints.failure_threshold` 设为 0 或非数值、或 `constraints.cooldown_s` 设为负数
+- **WHEN** 配置校验运行
+- **THEN** 校验失败并阻断启动，错误信息指明键名与合法取值范围（不静默兜底为缺省值）
 
 ### Requirement: 上下文压缩中间件
 系统 SHALL 自动清理对话历史中的无效信息，对抗信息腐烂。

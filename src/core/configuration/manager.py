@@ -31,6 +31,11 @@ from .models import (
     ValidationResult,
 )
 
+# 熔断阈值/冷却缺省口径来源：doc/openspec/specs/constraints/spec.md「容错中间件」
+# （配置层不 import 能力层，故缺省值在此复述；变更规格缺省时两处同改）
+_DEFAULT_FAILURE_THRESHOLD = 5
+_DEFAULT_COOLDOWN_S = 30.0
+
 # 配置项单一真源（全量声明）：CLI flag / env / yaml 三面由 ConfigSpec 生成，禁止硬编码第二真源。
 _CONFIG_SPECS: list[ConfigSpec] = [
     ConfigSpec(
@@ -136,6 +141,20 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_JUDGMENT_CONFIDENCE_THRESHOLD",
         default=0.7,
         map_to="judgment.confidence_threshold",
+    ),
+    ConfigSpec(
+        "constraints.failure_threshold",
+        "--constraints.failure-threshold",
+        "CORE_CONSTRAINTS_FAILURE_THRESHOLD",
+        default=_DEFAULT_FAILURE_THRESHOLD,
+        map_to="constraints.failure_threshold",
+    ),
+    ConfigSpec(
+        "constraints.cooldown_s",
+        "--constraints.cooldown-s",
+        "CORE_CONSTRAINTS_COOLDOWN_S",
+        default=_DEFAULT_COOLDOWN_S,
+        map_to="constraints.cooldown_s",
     ),
 ]
 
@@ -244,6 +263,8 @@ class ConfigManager:
             errors.append(
                 f"非法权限模式: permission.mode={mode}（可选：{'/'.join(_PERMISSION_MODES)}）"
             )
+        cons = cast("dict[str, Any]", config.extra.get("constraints") or {})
+        errors.extend(_circuit_breaker_errors(cons))
         return ValidationResult(
             ok=not errors, errors=errors, warnings=self._unknown_section_warnings(config)
         )
@@ -307,6 +328,20 @@ class ConfigManager:
             return _DEFAULT_PERMISSION_MODE
         perm = cast(dict[str, Any], self._config.extra.get("permission") or {})
         return str(perm.get("mode", _DEFAULT_PERMISSION_MODE))
+
+    def circuit_breaker(self) -> tuple[int, float]:
+        """熔断阈值/冷却查询 → ``(failure_threshold, cooldown_s)``，缺省 ``(5, 30.0)``。
+
+        对齐 constraints「容错中间件」；取值已过校验（整数 ≥1 / 数值 ≥0），故此处只做
+        env/CLI 字符串归一（``int()`` / ``float()``），不设二次兜底。
+        """
+        if self._config is None:
+            return _DEFAULT_FAILURE_THRESHOLD, _DEFAULT_COOLDOWN_S
+        raw = cast(dict[str, Any], self._config.extra.get("constraints") or {})
+        return (
+            int(raw.get("failure_threshold", _DEFAULT_FAILURE_THRESHOLD)),
+            float(raw.get("cooldown_s", _DEFAULT_COOLDOWN_S)),
+        )
 
     # ---- 变更即生效 ----
 
@@ -432,6 +467,41 @@ _KNOWN_EXTRA_SECTIONS = frozenset({"permission"})
 # （配置层不 import 能力层，故词表在此复述；变更规格四档时两处同改）
 _PERMISSION_MODES = ("read-only", "interactive", "auto-approve", "high-risk-block")
 _DEFAULT_PERMISSION_MODE = "interactive"
+
+
+def _circuit_breaker_errors(raw: dict[str, Any]) -> list[str]:
+    """熔断阈值/冷却取值校验（对齐 constraints「容错中间件」）。
+
+    阈值须为 **≥1 的整数**、冷却须为 **≥0 的数值**；``bool`` 视作非法（``true`` 不是次数）。
+    非法取值**阻断启动**：静默兜底会把配置错误变成运行时的诡异行为（如阈值 0 ⇒ 首个失败即熔断）。
+    """
+    errors: list[str] = []
+    threshold = _as_number(raw.get("failure_threshold", _DEFAULT_FAILURE_THRESHOLD))
+    if threshold is None or threshold < 1 or threshold != int(threshold):
+        errors.append(
+            f"非法熔断阈值: constraints.failure_threshold={raw.get('failure_threshold')}"
+            "（须为 ≥1 的整数）"
+        )
+    cooldown = _as_number(raw.get("cooldown_s", _DEFAULT_COOLDOWN_S))
+    if cooldown is None or cooldown < 0:
+        errors.append(
+            f"非法熔断冷却: constraints.cooldown_s={raw.get('cooldown_s')}（须为 ≥0 的数值）"
+        )
+    return errors
+
+
+def _as_number(value: Any) -> float | None:
+    """数值解析：``int``/``float`` 直通，字符串按数值解析；``bool`` 与非数值 → None。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
 
 
 def _secret_ref_error(label: str, ref: str, *, resolvable: bool) -> str | None:

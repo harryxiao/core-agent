@@ -550,13 +550,14 @@ def test_unknown_section_warns_but_does_not_block(tmp_path: Path) -> None:
 
 
 def test_known_sections_produce_no_warning(tmp_path: Path) -> None:
-    """已知段（五个结构化段 + permission）一律不告警。"""
+    """已知段（五个结构化段 + permission + ConfigSpec 声明的 constraints）一律不告警。"""
     yaml = (
         _VALID_YAML
         + "im:\n  gateway: wecom\n  corp_id: corp\n  secret: ${IM_SECRET}\n"
         + "pet:\n  enabled: true\n"
         + "judgment:\n  provider: jev\n  api_key: ${JUDGMENT_API_KEY}\n"
         + "permission:\n  mode: read-only\n"
+        + "constraints:\n  failure_threshold: 2\n"
     )
     manager = _manager(tmp_path, yaml, environ={"IM_SECRET": "s", "JUDGMENT_API_KEY": "j"})
     with warnings.catch_warnings(record=True) as caught:

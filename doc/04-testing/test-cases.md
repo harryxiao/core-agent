@@ -100,6 +100,8 @@
 | TC-CONS-02 | CORE-CONS-R2 | 连续失败触发熔断 | 熔断/降级，恢复后自动重试 |
 | TC-CONS-03 | CORE-CONS-R3 | 上下文超预算 | 压缩中间件裁剪至 ≤ budget |
 | TC-CONS-04 | CORE-CONS-R4 | 调整中间件顺序 | 执行顺序随之变化且可观测 |
+| TC-CONS-06 | CORE-CONS-R2 | 配置 `constraints.failure_threshold: 2` 后驱动生产链 | 第 2 次执行失败即熔断；第 3 次调用被拒（回「熔断中（CIRCUIT_OPEN）」）、**工具 handler 不再被调用**（锚点：`tests/test_constraints_config.py::test_configured_threshold_drives_production_breaker`） |
+| TC-CONS-07 | CORE-CONS-R2 | `constraints.failure_threshold` / `cooldown_s` 取非法值（`0`/`-1`/`2.5`/`abc`/负数冷却） | **校验期拒绝并阻断启动**（`ConfigurationError`），**不**静默兜底为缺省值（锚点：`tests/test_constraints_config.py::test_invalid_threshold_blocks_startup` / `::test_invalid_cooldown_blocks_startup` / `::test_invalid_value_does_not_silently_fall_back`） |
 | TC-CONS-05 | CORE-CONS-R1 | 模型输出无法解析为动作 | **不执行工具**，本轮以解析失败终止 reply 收尾、失败原因随观察回灌下一轮（锚点：`tests/test_phase13.py::test_llm_planner_parse_failure_error_code` / `::test_planner_native_tool_call_bad_arguments`；生产实现为动作感知的 `LLMPlanner._parse`，**非** `Validator.parse_output` —— 见 `constraints-interface.md` §2） |
 
 ## 11. 技能封装（TC-SKILL）

@@ -85,6 +85,9 @@ class ConfigManager:
     def permission_mode(self) -> str:
         """权限模式查询（缺省 interactive；取值已在校验期限于四档），映射 config.permission.mode。"""
 
+    def circuit_breaker(self) -> tuple[int, float]:
+        """熔断阈值/冷却查询 → ``(failure_threshold, cooldown_s)``（缺省 ``(5, 30.0)``），映射 config.constraints.*。"""
+
     def apply_change(self, patch: dict) -> AppConfig:
         """变更即生效：写入失败回滚到变更前完整配置，不留半写状态。"""
 
@@ -139,3 +142,22 @@ feature flag 只管**装配**，不改模块自身的二级启用开关（`featu
 - **作用域**：只判**顶层段名**，不递归校验已知段内部的未知子键。
 - **为何不硬拒**：`extra` 是承诺给扩展的宽松兜底，收紧为白名单会**拒绝既有自定义段**
   （改变既有接受行为）；而完全静默会让拼错的段名（`llmm:`）无处暴露（用户只看到「LLM 配置缺失」）。
+
+### 2.4 熔断阈值/冷却可配（change `0068`，账本 E15）
+
+`constraints` 段承载熔断参数，**不新增结构化段**、镜像 `permission.mode` 的 `extra` 驻留先例
+（避免改配置规格里「五个结构化段」的字面枚举；`map_to` 前缀已自动进 §2.3 白名单）：
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `constraints.failure_threshold` | `5` | **≥1 的整数** | 连续执行失败达此值 → 该工具熔断（`OPEN`） |
+| `constraints.cooldown_s` | `30.0` | **≥0 的数值** | 冷却期（秒），过后半开试探 |
+
+- **单一真源**：两键由 `ConfigSpec` 声明（`ConfigSpec(..., map_to="constraints.<键>")`），
+  自动获得 CLI flag（`--constraints.failure-threshold` / `--constraints.cooldown-s`）、env
+  （`CORE_CONSTRAINTS_FAILURE_THRESHOLD` / `CORE_CONSTRAINTS_COOLDOWN_S`）与优先级链，无需另维护。
+- **校验期拒绝**：非法取值（阈值非 ≥1 整数如 `0`/`-1`/`2.5`/`abc`；冷却非 ≥0 数值）
+  在 `validate_schema` 判为错误、**阻断启动**，**不**静默兜底为缺省值。
+- **消费方**：组合根 `build_runtime` 经 `config.circuit_breaker()` 读出后注入 `build_constraints_chain`，
+  主 loop 与子 agent loop **共享同一链实例**（熔断态 per-runtime）。
+- 口径来源：`doc/openspec/specs/constraints/spec.md`「容错中间件」（**MODIFIED**）。

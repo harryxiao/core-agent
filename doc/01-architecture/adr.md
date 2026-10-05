@@ -1083,6 +1083,33 @@
 
 ---
 
+## ADR-0066：熔断阈值/冷却可配（ConfigSpec 单一真源 / 不新增结构化段 / 校验期拒绝而非静默兜底）
+
+- **背景**：`ConstraintsChain` 的构造面（`failure_threshold` / `cooldown_s`）本就为注入而设计
+  （`constraints-interface.md` 自述「可注入便于测试」），但生产唯一调用点 `runtime.py` 不传任何参数 ⇒
+  **硬编码类缺省 5 / 30s**，运维无法按环境调整（账本 E15）。
+- **决策**：
+  ① **ConfigSpec 单一真源**：两键写进 `_CONFIG_SPECS`（`map_to="constraints.*"`），CLI flag / env /
+  yaml / 优先级链与 §2.3 白名单**全部自动派生**，不另维护清单；
+  ② **不新增结构化段**：镜像 `permission.mode` 的 **`extra` 驻留**先例，而非加 `ConstraintsConfig` 段 ——
+  避免改配置规格里「五个结构化段」的字面枚举，且 `map_to` 前缀已让未知段白名单自动收纳 `constraints`；
+  ③ **校验期拒绝，不静默兜底**：阈值须 **≥1 整数**、冷却须 **≥0 数值**，非法即 `validate_schema` 报错并
+  **阻断启动**（对齐既有密钥/枚举校验口径），不落回缺省值 —— 静默兜底会把「配错了」伪装成「配对了」；
+  ④ **组合根注入、链身份不变**：`build_runtime` 经 `config.circuit_breaker()` 读出后传给
+  `build_constraints_chain`，主 loop 与子 agent loop 仍**共享同一实例**（熔断态 per-runtime 语义不破）；
+  ⑤ **类型归一在读侧**：访问器把 `extra` 里的原始值归一到 `(int, float)`，校验已保证合法，读侧仅做转换。
+- **否决**：新增结构化 `ConstraintsConfig` 段（动规格字面枚举、收益仅类型提示）；仅 yaml 无 CLI/env
+  （破坏 ConfigSpec「一处声明、多通道派生」的单一真源，且与其余所有配置项不一致）。
+- **后果**：✅ 阈值/冷却成为配置项，四通道 + 优先级链齐备；✅ 非法配置**启动即暴露**；
+  ✅ 类缺省 `5` / `30.0` 与规格缺省逐位一致 ⇒ 对既有部署**零行为变化**；
+  ⚠️ `constraints` 是 `extra` 驻留段（无 `AppConfig` 类型字段），访问器须自行处理缺失/类型。
+- **关联**：`constraints` spec「容错中间件」（**MODIFIED**：阈值/冷却可配 + 取值约束 + 校验期拒绝）；
+  代码 `src/core/configuration/manager.py`（两 ConfigSpec + `circuit_breaker()` + `validate_schema`）/ `src/core/runtime.py`（注入）；
+  接口 `03-interfaces/constraints-interface.md`、`03-interfaces/configuration-interface.md` §2.4；
+  模块 `02-modules/constraints.md`；测试 `tests/test_constraints_config.py`、`doc/04-testing/test-cases.md`（TC-CONS-06/07）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1143,3 +1170,4 @@
 | ADR-0063 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md |
 | ADR-0064 | 03-interfaces/llm-provider-interface.md, 02-modules/llm-provider.md |
 | ADR-0065 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md, 02-modules/pet.md, 02-modules/beast-mode.md |
+| ADR-0066 | 03-interfaces/constraints-interface.md, 03-interfaces/configuration-interface.md, 02-modules/constraints.md |

@@ -22,6 +22,11 @@
 - **E18（`extra` 未知配置段）已于 change `0064` 关闭**（ADR-0063）：用户裁决**仅告警**（WARN 不阻断，兼容既有自定义段；硬拒会改变既有接受行为）——`ValidationResult.warnings` 产出 + `load()` 发出（stdlib `warnings`，零接线）；已知段白名单**由 `_CONFIG_SPECS` 派生**（单一真源，新增 Spec 自动进白名单）；口径**只到顶层段名**（子键未知不判，属各能力 schema 义务）。
 - **E11（LLM 可靠性）已于 change `0060` + `0066` 全关闭**：① 用例侧 —— 重试/超时/降级/断流 9 例**一次全绿**，`src/` 零改动（实现本就正确，缺的是验证，change `0060`）；② **连接复用已实现**（change `0066` / ADR-0064）—— **关键判定：这是「规格要求 X 而实现没有」**（规格「模型调用可靠性」正文与场景「连接复用」逐字要求 keep-alive 复用 + 失效自动重建）⇒ **改代码向规格靠拢，不订正规格**（与 E12 同型，对比 E17/E19 的「文档过度承诺」型）。实现：`http_pool.HTTPConnectionPool` 线程本地按 origin 复用 keep-alive（无锁）+ 失效重建恰一次 + 代理/3xx 回落 `urlopen` + 非 2xx 转 `HTTPError`（既有状态码映射零改动）+ 读尽才归还；`map_http_error` 补连接层 `OSError`/`HTTPException` → `LLMNetworkError`。
 - **E10（功能开关运行时门控）已于 change `0067` 关闭**（ADR-0065）：用户裁决**缺省装配**——门控名单内可选模块（`pet`/`beast`/`evolution`）**未声明即装配**（保持既有行为），仅显式 `features.<模块>: false` 才**完全不装配**（不构造实例、不注册神通、不读状态文件、`cold_path` 置 `None`、7 个 CLI 入口拒绝并退出 0）。名单由组合根 `runtime.GATABLE_MODULES` **单一真源**维护（配置层不认识模块名）；新增查询谓词 `is_disabled`（与 `is_enabled` 极性相反、用途不同，后者语义不变）。**口径订正**：phase-0「功能开关缺省关闭」的字面与裁决不符，规格已订正为「白名单内缺省开」。
+- **E15（熔断阈值/冷却不可配）已于 change `0068` 关闭**（ADR-0066）：构造面本就可注入、唯一调用点不传参 ⇒
+  硬编码类缺省 5 / 30s。**改代码**：两键写进 `_CONFIG_SPECS`（`map_to="constraints.*"`）⇒ CLI flag / env / yaml /
+  §2.3 白名单**全部自动派生**（单一真源）；**不新增结构化段**（镜像 `permission.mode` 的 `extra` 驻留，不动规格「五个结构化段」字面）；
+  访问器 `circuit_breaker()` + 校验期拒绝（阈值 ≥1 整数 / 冷却 ≥0 数值，**不静默兜底**）；组合根注入、主/子 loop 共享同链。
+  **明确不做**：`features` 未知名告警与值强转（E20）、`entry._pet` yaml 判据（E21）。
 - **共同的形态问题**：A/E 两类绝大多数是同一个根因——**运行时零件「进程内、无状态、无驱动」**，即 Phase 13/16 起反复出现的「抽象已落地、缺生产触达点」。A3/A5、E2/E4/E5 全归此（A4 已随 change `0055` 关闭、E3 已随 change `0057` 关闭）。
 - **一条值得单独记的形态问题**：`cli-contract-baseline.md` 的**内置工具契约与实现已对不上账**（见 E7）——契约列的 5 个工具在代码里从未存在。
 
@@ -68,7 +73,7 @@
 | E19 | E | ~~durability 文档承诺的「持久化故障降级」未实现~~ | ✅ 已关闭（change `0063`）：**用户裁决订正文档承认现状**——该承诺**规格里从来没有**（只在模块文档），静默降级会掩盖磁盘满；`durability.md` §5 改写为「不静默降级，上层断点续跑承接」 | 低 | — |
 | E13 | E | ~~`Validator.parse_output` 零生产调用方~~ | ✅ 已关闭（change `0063`）：规格「输出解析失败不执行」的生产实现是**动作感知**的 `LLMPlanner._parse`（失败 → 终止 Action：工具不执行 + 原因回灌下一轮）；`parse_output` **无动作语义、有意不接线**（非遗漏），补追踪号 `TC-CONS-05` | 低 | — |
 | E14 | E | ~~校验码重复~~ | ✅ 已关闭（change `0059`）：`_matches_type` 双拷贝删除，工具层调用前校验**委托** `Validator.validate_input`（单一真源，行为中性 / ADR-0062） | 低 | — |
-| E15 | E | 熔断阈值/冷却不可配 | 适配层用类默认（5 / 30s），`configuration/` 无 constraints 段 | 低 | E10 配置门控 |
+| E15 | E | ~~熔断阈值/冷却不可配~~ | ✅ 已关闭（change `0068`，ADR-0066）：阈值/冷却成为配置项 `constraints.failure_threshold`（缺省 5）/ `constraints.cooldown_s`（缺省 30s），经 `ConfigSpec` **单一真源**派生四通道（CLI flag / env / yaml / 优先级链）；**不改结构化段**（镜像 `permission.mode` 的 `extra` 驻留）；非法取值**校验期拒绝并阻断启动**（不静默兜底）；组合根注入、主/子 loop 共享同链 | 低 | — |
 | E16 | E | `AsyncNotifier` 无 channel | pet 通知仅入队，`flush()` 投递未接；IM 通道（`im`）为依赖 | 低 | IM 通知通道 |
 | E17 | E | ~~pet 无后台 daemon~~ | ✅ 已关闭（change `0065`，**规格未要求**）：`wake()` 由**宿主**驱动、内核不常驻；接口 §5 / 模块 §4 登记为已知语义 | 低 | — |
 | E20 | E | `features` 未知模块名无告警 + 值非布尔被强转 | 白名单在组合根（配置层不认识模块名）⇒ 拼错的模块名静默生效/失效；`bool("off")` 为真 ⇒ `features.pet: "off"` 实为开 | 低 | E10 收口（change `0067`） |
@@ -416,6 +421,23 @@
 - **明确不做**：`Validator.parse_output`（planner 自解析、零调用方 → **E13**）；不改 `tool-use` 规格
   （行为中性，口径只在 constraints 侧记一次）。
 
+### E15 熔断阈值/冷却不可配 — ✅ 已关闭（change `0068`，ADR-0066）
+
+- **现象**：`ConstraintsChain` 的构造面（`failure_threshold` / `cooldown_s`）本就是为注入而设计
+  （`constraints-interface.md` 自述「可注入便于测试」），但生产唯一调用点 `runtime.py` 不传任何参数 ⇒
+  硬编码类缺省 **5 次 / 30 秒**，运维无法按环境调整；`configuration/` 无 `constraints` 段（E1 走查记后续）。
+- **关闭动作（已落地）**：① `manager.py` 增两条 `ConfigSpec`（`map_to="constraints.*"`，缺省 5 / 30.0）
+  ⇒ CLI flag / env / yaml / §2.3 未知段白名单**全部自动派生**（单一真源）；② 新增访问器
+  `ConfigManager.circuit_breaker() -> (int, float)`；③ `validate_schema` 增取值校验（阈值 **≥1 整数**、
+  冷却 **≥0 数值**），非法即报错**阻断启动**（不静默兜底）；④ `runtime.py` 经访问器读出后传入
+  `build_constraints_chain`，主 loop 与子 agent loop 仍**共享同一链实例**（熔断态 per-runtime 语义不破）。
+- **不新增结构化段（决策）**：镜像 `permission.mode` 的 **`extra` 驻留**先例，而非加 `ConstraintsConfig` 段 ——
+  避免改配置规格里「五个结构化段」的字面枚举，且 `map_to` 前缀已让白名单自动收纳 `constraints`。
+- **验证**：`tests/test_constraints_config.py` 17 例（缺省 / yaml / env / CLI 优先级 / 非法 5+3 参数化 /
+  不静默兜底 / 无未知段告警 / 组合根注入 identity / 端到端阈值驱动生产熔断）；四门全绿（840 passed）。
+- **明确不做**：`features` 未知模块名告警与值强转（**E20**）、`entry._pet` yaml 判据（**E21**）、
+  RetryPolicy/Fallback 可配、半开试探参数（无生产需求）。
+
 ### E17 pet 无后台 daemon（E4 收口时记后续） — ✅ 已关闭（change `0065`；判定「规格未要求」）
 
 - **现象**：`PetSession.wake()` 生产**零调用方**（仅测试）；接口 §5 / 模块 §4 却写着「主循环之上叠加
@@ -600,7 +622,7 @@
 6. **E1 + E7 + E8**（契约与中间件）：✅ **全闭** —— E1 见 change `0052`（ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；**E7/E8 见 change `0056`（ADR-0059）**：E7 裁决「规格为准」→ 纯文档订正；E8 三处缺口修复，第 5 条转出为 E18。
 7. **E3 / E6**（规格裁决）：✅ **全闭** —— 裁决「A 全做・解除 deferred」；**E3** 见 change `0057`（ADR-0060：神通注册 + 专属路由作用域 + 按兽 loop/共享记忆注入 + CLI 走组合根）；**E6** 无需代码（context 压实启发式已由 change `0041` 规格订正为有意行为，余两项转 A7/A8）。
 8. **A7 + E6（miss 复用）**（低优先，同族）：✅ **全闭** —— **A7** 见 change `0058`（ADR-0061：排序分 = 基础分 × 历史成功率因子；预筛转出 A11）；**E6** 无需代码（见上，规格已由 change `0041` 订正）。
-9. **A8 / A11 / E5 / E9 / E13 / E15–E16 / C 类**：随需（**A11 语义兜底候选预筛**（需先有比词法更粗的排序信号，**候选预筛**）/ E15 熔断阈值不可配 / E16 `AsyncNotifier` 无 channel）。✅ **E14 已关闭**（change `0059`，ADR-0062）。✅ **E11 全关闭**（① change `0060`：可靠性用例 9 例，`src/` 零改动；② change `0066`/ADR-0064：**连接复用已实现** —— 线程本地按 origin 复用 keep-alive + 失效重建，真实 socket 用例 9 例）。✅ **A6 / E13 / E19 已关闭**（change `0063`，纯文档：已知语义登记 + 有意不接线判定 + 过度承诺订正）。✅ **E18 已关闭**（change `0064`，ADR-0063：未知配置段仅告警）。✅ **E17 已关闭**（change `0065`：规格未要求 daemon，登记「唤醒由宿主驱动」）。✅ **A9 已关闭**（**规格明文认可现状**：`context/spec.md:9` 逐字写 stage 不参与事实选择（change `0038` 写入），文档与实现三层一致 ⇒ 零变更销账）。✅ **A8 已销账**（**零变更**：`FileBackend` 单把 `RLock` 覆盖全部读写路径 + 压实只归档不删除 ⇒ 规格「加锁/等待」已满足；订正「无并发调用方」——`ui serve` 同步路由线程池与事件循环 `/run` 真并发）。✅ **E10 已关闭**（change `0067`／ADR-0065：门控名单（`pet`/`beast`/`evolution`）归组合根单一真源 + **缺省装配**（未声明即开，仅显式 `false` 才不装配）+ 7 入口拒绝）。
+9. **A8 / A11 / E5 / E9 / E13 / E15–E16 / C 类**：随需（**A11 语义兜底候选预筛**（需先有比词法更粗的排序信号，**候选预筛**）/ E15 熔断阈值不可配 / E16 `AsyncNotifier` 无 channel）。✅ **E14 已关闭**（change `0059`，ADR-0062）。✅ **E11 全关闭**（① change `0060`：可靠性用例 9 例，`src/` 零改动；② change `0066`/ADR-0064：**连接复用已实现** —— 线程本地按 origin 复用 keep-alive + 失效重建，真实 socket 用例 9 例）。✅ **A6 / E13 / E19 已关闭**（change `0063`，纯文档：已知语义登记 + 有意不接线判定 + 过度承诺订正）。✅ **E18 已关闭**（change `0064`，ADR-0063：未知配置段仅告警）。✅ **E17 已关闭**（change `0065`：规格未要求 daemon，登记「唤醒由宿主驱动」）。✅ **A9 已关闭**（**规格明文认可现状**：`context/spec.md:9` 逐字写 stage 不参与事实选择（change `0038` 写入），文档与实现三层一致 ⇒ 零变更销账）。✅ **A8 已销账**（**零变更**：`FileBackend` 单把 `RLock` 覆盖全部读写路径 + 压实只归档不删除 ⇒ 规格「加锁/等待」已满足；订正「无并发调用方」——`ui serve` 同步路由线程池与事件循环 `/run` 真并发）。✅ **E10 已关闭**（change `0067`／ADR-0065：门控名单（`pet`/`beast`/`evolution`）归组合根单一真源 + **缺省装配**（未声明即开，仅显式 `false` 才不装配）+ 7 入口拒绝）。 ✅ **E15 已关闭**（change `0068`／ADR-0066：`constraints.failure_threshold` / `constraints.cooldown_s` 经 `ConfigSpec` 单一真源四通道可配 + 非法取值校验期拒绝不兜底 + 组合根注入、主/子 loop 共享同链）。
    ✅ **E9 已关闭**（change `0061`：`data-model.md` 四实体回填 + rag/mcp/git 锚点登记 TC-RAG-10/TC-MCP-06/TC-GIT-11 + 两处日期补记；纯文档、规格中性）。
    ✅ **E12 已关闭**（change `0062`：真子进程 `SIGKILL` 端到端 + **修持久化非原子写入**（tmp + `os.replace`）/ 规格 delta）；另新报 **E19**（durability 文档承诺的持久化故障降级未实现）→ **已由 change `0063` 关闭**（订正模块文档承认现状）。
 10. **真机动作**：活 LLM 全回路冒烟（§8 末）。

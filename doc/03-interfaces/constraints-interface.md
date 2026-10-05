@@ -60,6 +60,10 @@ class CircuitBreaker(Middleware):
 ```
 
 构造面：`failure_threshold=5` / `cooldown_s=30.0` / `clock`（缺省 `time.monotonic`，可注入便于测试）。
+**配置面（change `0068`，账本 E15）**：阈值与冷却可经配置覆盖 —— `constraints.failure_threshold`（缺省 5）/
+`constraints.cooldown_s`（缺省 30.0 秒），经 `ConfigSpec` **单一真源**解析（CLI flag > env > config.yaml > 缺省），
+由 `ConfigManager.circuit_breaker()` 读出、组合根注入。非法取值（阈值非 ≥1 整数 / 冷却非 ≥0 数值）
+**在校验期拒绝并阻断启动**，不静默兜底为缺省值。
 
 **生产接线**：由 `src/core/loop/constraints_adapter.py` 的 `ConstraintsChain` **按 `tool_id` 隔离**接进 loop
 （每工具一个实例，`dict[str, CircuitBreaker]`——单计数器直连会让一个坏工具全局开闸）；`before` 命中 OPEN
