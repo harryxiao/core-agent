@@ -1139,8 +1139,41 @@
   接口 `03-interfaces/configuration-interface.md` §2.5；测试 `tests/test_entry.py`、`tests/test_configuration.py`、
   `doc/04-testing/test-cases.md`（TC-CONF-04/05）。
 
----
+## ADR-0068：出站白名单配置化（逗号分隔标量 / 校验期拒绝 / fail-closed 缺省不变）
 
+- **背景**：`SandboxPolicy(host_allowlist=...)` 构造面早可注入，但**唯一生产构造点**
+  `runtime.py` 写死 `SandboxPolicy()` ⇒ 白名单**恒空**、http 出站**永远被拒**：规格
+  「沙箱执行颗粒度」场景「网络出站白名单」的**放行半边在生产不可达**（账本 B5；ADR-0057 §⑤
+  已登记「白名单配置化记后续」）。与 E15（change `0068` 熔断阈值）同型：可注入但唯一调用点不传参。
+- **决策**：
+  ① **取值形态 = 逗号分隔标量**（键 `permission.sandbox.host_allowlist`）—— 本仓 yaml 子集解析器
+  明文「不含列表」（`_parse_yaml_subset`），三面（CLI / env / yaml）统一为标量最省：
+  **不动 yaml 解析与写回**；归一（去空白 / 去空项 / 保序去重 / 兼容全角逗号）由访问器
+  `sandbox_host_allowlist()` 内的 `_split_hosts()` 完成；
+  ② **非法条目校验期拒绝**（`validate_schema` → `_sandbox_errors`）：`check_outbound` 的实参是
+  `urlparse(url).hostname`（**不含 scheme / 端口 / 路径**），故带这些的条目**永不匹配** ——
+  静默忽略的后果是「配了却连不上」，与 E15「不静默兜底」同口径；非字符串取值同拒；
+  ③ **缺省空白名单 = fail-closed 全拒**：本变更只把「恒空」变成「可声明」，安全姿态不动
+  （回归用例 `test_unconfigured_production_policy_denies_all_outbound` 锁住）；
+  ④ **访问器口径**：沿用 `circuit_breaker()` / `permission_mode()` 的「寄居 `extra` + 访问器」先例
+  （读嵌套路径、只做归一不做二次兜底）—— **不**改走 `config_value()` 的单键原文通路（见 ADR-0067，
+  那条通路供装配**前**前置判定用）；
+  ⑤ **共用策略实例**：`MCPClient` 与 `SandboxManager` 仍共享 `build_runtime` 里那**一个** `SandboxPolicy`
+  （change `0054` 的既有分发，本变更只接上构造参数）。
+- **否决**：yaml 原生列表（须改解析器 / 写回，三面形态不一）；容错归一（自动剥 scheme / 端口 / 路径
+  —— 掩盖输入错误，且带路径时「究竟想配哪个主机」不可判定）；把 `fs_allowlist` 一并配置化
+  （无生产调用点需要，YAGNI）。
+- **后果**：✅ 白名单成为**可用**能力（此前只有「拦截」可观测），远端 MCP 出站可经配置打开；
+  ✅ 默认安全姿态逐位不变（缺省全拒）；✅ 拼写形态错误在启动期暴露而非运行期静默；
+  ⚠️ 白名单**非密钥**（主机名），不涉及「只引用不读取」的密钥约束。
+- **关联**：`permission` spec「沙箱执行颗粒度」（**MODIFIED**）；代码
+  `src/core/configuration/manager.py`（ConfigSpec + `sandbox_host_allowlist` + `_split_hosts` +
+  `_sandbox_errors`）/ `src/core/runtime.py`；
+  接口 `03-interfaces/permission-interface.md` §4.1、`03-interfaces/configuration-interface.md` §2.6；
+  模块 `02-modules/permission.md` §3.3；测试 `tests/test_permission_sandbox_config.py`、
+  `doc/04-testing/test-cases.md`（TC-PERM-05/06/07）。
+
+---
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -1203,3 +1236,4 @@
 | ADR-0065 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md, 02-modules/pet.md, 02-modules/beast-mode.md |
 | ADR-0066 | 03-interfaces/constraints-interface.md, 03-interfaces/configuration-interface.md, 02-modules/constraints.md |
 | ADR-0067 | 03-interfaces/configuration-interface.md |
+| ADR-0068 | 03-interfaces/permission-interface.md, 03-interfaces/configuration-interface.md, 02-modules/permission.md |

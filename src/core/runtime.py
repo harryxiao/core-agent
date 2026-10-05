@@ -357,8 +357,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, C901
 
     loop_hints, loop_turn = _loop_hooks()
     # MCP 消费侧安全（0054）：stdio 子进程经沙箱资源配额拉起、http 出站经白名单；
-    # 策略与沙箱共用一个实例（同口径）。空白名单 = fail-closed 全拒出站（安全默认）。
-    mcp_policy = SandboxPolicy()
+    # 策略与沙箱共用一个实例（同口径）。白名单经配置注入（change 0071 / 账本 B5）：
+    # `permission.sandbox.host_allowlist`（逗号分隔主机名，ConfigSpec 单一真源）；
+    # 缺省空 = fail-closed 全拒出站（安全默认不变）。
+    mcp_policy = SandboxPolicy(host_allowlist=config.sandbox_host_allowlist())
     mcp_client = MCPClient(sandbox=SandboxManager(policy=mcp_policy), policy=mcp_policy)
     dispatcher = InstallDispatcher(
         skill_library=skill_library, tool_provider=tools, mcp_client=mcp_client

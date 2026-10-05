@@ -114,6 +114,25 @@ class SandboxResult:
     destroyed: bool             # 是否已自动销毁
 ```
 
+### 4.1 出站白名单策略与配置（change `0071`，账本 B5）
+
+```python
+class SandboxPolicy:
+    def __init__(self, host_allowlist: list[str] | None = None,
+                 fs_allowlist: dict[str, str] | None = None) -> None: ...
+    def check_outbound(self, host: str) -> None:
+        """host 不在白名单即抛 `AccessControlError(PERMISSION_DENIED)`（fail-closed 全拒）。"""
+    def check_fs(self, path: str, mode: str = "r") -> None: ...
+```
+
+- **构造面**可注入；**配置面**（change `0071` 起）：`permission.sandbox.host_allowlist`
+  —— 逗号分隔的**裸主机名**标量，经 `ConfigSpec` 单一真源解析（CLI flag / env / config.yaml 三面，
+  优先级链一致），组合根 `build_runtime` 取值后注入，`MCPClient` 与 `SandboxManager` **共用同一实例**。
+- **缺省空 = 全拒出站**（fail-closed，安全默认）；条目须为**裸主机名** —— `check_outbound` 的
+  实参是 `urlparse(url).hostname`（**不含 scheme / 端口 / 路径**），带这些的条目不匹配，
+  故**校验期即拒绝**（不静默忽略），详见 `03-interfaces/configuration-interface.md` §2.6。
+- **生产调用点**：`core/mcp/transport.py` 的 `build_http_transport`（http / streamable-http 出站）。
+
 ---
 
 ## 5. 错误码

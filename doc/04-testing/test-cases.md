@@ -73,6 +73,9 @@
 | TC-PERM-02 | CORE-PERM-R2 | 提交审批 → 超时未批 | 默认拒绝，审计归档 |
 | TC-PERM-03 | CORE-PERM-R3 | 沙箱内执行异常 | fail-closed，沙箱自动销毁 |
 | TC-PERM-04 | CORE-PERM-R4 | coeffect 越权调用 | 拒绝执行，记录越权 |
+| TC-PERM-05 | permission/spec.md「沙箱执行颗粒度」 | `config.yaml` 写 `permission.sandbox.host_allowlist: mcp.example.com`，启动装配后对 http 端点发起出站 | 白名单经 `ConfigSpec` 单一真源三面解析（CLI flag / env / config.yaml，优先级链一致），组合根注入 `SandboxPolicy`（`MCPClient` 与 `SandboxManager` 共用同一实例）；白名单内越过守卫、白名单外 `PERMISSION_DENIED`（锚点：`tests/test_permission_sandbox_config.py::test_build_runtime_injects_configured_allowlist` / `::test_configured_allowlist_governs_production_transport` / `::test_yaml_csv_is_trimmed_and_deduped` / `::test_env_overrides_yaml` / `::test_cli_overrides_env_and_yaml`） |
+| TC-PERM-06 | permission/spec.md「沙箱执行颗粒度」 | 未声明 `permission.sandbox.host_allowlist` 启动装配，对任意主机发起 http 出站 | 白名单为空白名单 ⇒ **全拒**（fail-closed 安全默认不因新增配置项松动）（锚点：`tests/test_permission_sandbox_config.py::test_default_is_empty_fail_closed` / `::test_unconfigured_production_policy_denies_all_outbound`） |
+| TC-PERM-07 | permission/spec.md「沙箱执行颗粒度」 | 白名单条目带 scheme（`https://a.example.com`）/ 端口（`a.example.com:443`）/ 路径（`a.example.com/v1`）/ 内部空白，或取值为非字符串（`123`） | 校验期**阻断启动**并指明键名与合法形态，**不**静默忽略条目（`check_outbound` 实参不含 scheme/端口/路径 ⇒ 此类条目永不匹配）（锚点：`tests/test_permission_sandbox_config.py::test_invalid_entries_block_startup` / `::test_non_string_value_blocks_startup` / `::test_invalid_value_does_not_silently_fall_back`） |
 
 ## 8. 任务编排（TC-ORCH）
 

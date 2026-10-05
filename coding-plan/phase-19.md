@@ -13,7 +13,7 @@
 - **无任何一项阻塞核心回路**：669 tests 覆盖的回路（记忆读写/压实/固化/遗忘、技能提炼/路由/迭代、进化四阶段 + HITL + 自动溶解）在生产路径上均已接通。
 - **A3 全闭（skills 半边 change `0050`，evolution 半边 change `0051`）**；**A5 + 本次新增发现 A10 已于 change `0051` 关闭**（冷路径驱动面 = loop 节拍 + `evolve run`；观察窗口落盘 + 批次成功率采样；ADR-0054）。
 - **A2+E2（会话维度）已于 change `0048` 关闭**（标识透传 + `compact` 接真 + 按会话读取）；**A1 已于 change `0049` 关闭**（收尾维护节拍 + `memory maintain`）。A 类剩 A11（**A6 已随 change `0063` 关闭**、**A9 已销账**——规格明文认可现状、**A8 已销账**——后端单锁已满足规格操作性保证，均零变更）。
-- **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）** —— **B1 的 client 侧（stdio 传输 + 安装分流 + 消费侧安全接线）已于 change `0054` 关闭**（ADR-0057），余 http 会话 / 服务端 stdio / CLI 接线 / 白名单配置 4 行后续；E 类中曾判定有真实行为影响的 **E1（constraints 熔断）** 与 **E2（per-session）** **均已关闭**（E2 → change `0048`；E1 → change `0052`），其余为「接线缺失」。
+- **唯一需要 ADR 裁决的重开项是 B 类（Phase 12 MCP）** —— **B1 的 client 侧（stdio 传输 + 安装分流 + 消费侧安全接线）已于 change `0054` 关闭**（ADR-0057），余 http 会话 / 服务端 stdio / CLI 接线 3 行后续（**白名单配置 B5 已于 change `0071` 关闭**）；E 类中曾判定有真实行为影响的 **E1（constraints 熔断）** 与 **E2（per-session）** **均已关闭**（E2 → change `0048`；E1 → change `0052`），其余为「接线缺失」。
 - **A4 已于 change `0055` 关闭**（候选 `candidate_id` 稳定身份 + 门禁/评测随候选落盘为一条记录 + `core-agent evolve pending|confirm|reject` 操作面；high 风险候选由操作面签发审批单；ADR-0058）。
 - **E1 已于 change `0052` 关闭**（constraints 熔断按 `tool_id` 接入 loop：结果侧观察者 + 按工具熔断 + 只计执行失败；ADR-0055）；核销时一并**订正**了账本原「校验空转」的说法（校验实由工具层承担）。
 - **E7（契约基线漂移）+ E8（配置校验三处缺口）已于 change `0056` 关闭**（密钥引用同口径 + `permission.mode` 枚举校验 + 基线文档订正；ADR-0059），E8 第 5 条转出为 **E18**。
@@ -83,7 +83,7 @@
 | B2 | B | 远端 http/streamable-http 会话 | `build_http_transport` 仅落地「白名单守卫 + SDK 缺失降级 + 会话待接入报错」；`Mcp-Session-Id`/SSE/headers 未实现 | 低 | mcp SDK（离线不可装） |
 | B3 | B | `MCPServer.serve` stdio 事件循环 | 服务端方向（本机作 MCP server 暴露工具）未实现；client 方向 `0054` 已通 | 低 | 无 |
 | B4 | B | `mcp` CLI 接线 + 端点注册表落盘 | CLI `mcp serve/list/add/remove` 仍 stub；`MCPClient.add`/`InstallDispatcher` 已通（`0054`），缺 CLI→installer 与端点持久化 | 低 | 无 |
-| B5 | B | 出站白名单不可配 | `SandboxPolicy(host_allowlist)` 可注入且默认拒绝，但 `configuration/` 无 `permission.sandbox.host_allowlist` 段 | 低 | E10 配置门控 |
+| B5 | B | 出站白名单不可配 | ✅ **已关闭（change `0071`）**：`permission.sandbox.host_allowlist`（CSV 标量，ConfigSpec 单一真源三面）+ 校验期拒绝非法条目 + 组合根注入（缺省空 = fail-closed 不变），ADR-0068 | 低 | ~~E10 配置门控~~（已闭） |
 | C1 | C | 真实外部后端 ~20 处「未接」 | 抽象 + fake 已落地，真后端待接 | 低 | 见 `debug-gaps.md` §2.3 |
 | D1 | D | ~~README §2 状态行待核实~~ | ✅ 已关闭：Phase 18 行刷新为 ✅；`17.5` 行改为「🔶 部分完成（遗留见 E3/E4）」 | 无 | — |
 | D2 | D | `coding-plan/phase-3-prompt.md` 未跟踪 | 一次性 prompt 残留 | 无 | 删除或 `git add` |
@@ -524,7 +524,7 @@
 
 ---
 
-## 4. B 类：Phase 12 MCP（B1 client 侧已关闭，余 4 行后续）
+## 4. B 类：Phase 12 MCP（B1 client 侧 + B5 白名单配置已关闭，余 3 行后续）
 
 - **范围**：transport 生产实现（stdio/http）、client 安装分流、消费侧安全接线（本地 stdio 过 `SandboxManager`、远端 http 走出站白名单、不可逆工具走确认门）。
 
@@ -559,10 +559,37 @@
 
 - **残留**：CLI `mcp serve/list/add/remove` 仍为 stub。`0054` 已把 `MCPClient.add` 与 `InstallDispatcher` 打通，缺的是 **CLI → installer 接线** 与**已安装端点的注册表落盘**（`remove` 的资源释放已随 `close` 终止子进程具备）。
 
-### B5 出站白名单配置项 — ⏭ 待开工
+### B5 出站白名单配置项 — ✅ 已关闭（change `0071`）
 
-- **残留**：`SandboxPolicy(host_allowlist=…)` 已在 `0054` 可注入且生效（默认空 = 全部拒绝，安全默认），但 `configuration/` 无 `permission.sandbox.host_allowlist` 段 → 生产无法配置放行。
-- **前置**：E10 配置门控（与 E15 熔断阈值不可配同源）。
+- **现象**：`SandboxPolicy(host_allowlist=…)` 的**构造面**早在 `0054` 可注入，但**唯一生产构造点**
+  `runtime.py:363` 写死 `SandboxPolicy()`（不传参）⇒ 生产白名单**恒为空**、http 出站**永远被拒**。
+  规格「沙箱执行颗粒度」场景「网络出站白名单」的**放行半边在生产不可达** —— 只有「拦截」可观测。
+- **根因**：与 E15 同型 —— **可注入但唯一调用点不传参 ⇒ 生产不可达**；且 `configuration/` 无
+  `permission.sandbox` 键 ⇒ `config show/set`、env、CLI flag 三条通道都够不着
+  （ADR-0057 §⑤ 早已登记「白名单配置化记后续」）。
+- **裁决**：属「**规格要求 X、实现没有**」型（同 E15/E21）⇒ **改代码向规格靠拢**，
+  `permission` spec 相应 **MODIFIED**（补「白名单可经配置声明」的约束条款）。
+  取值形态由用户裁定为 **CSV 标量**：本仓 `_parse_yaml_subset` 明文「不含列表」，
+  三面（CLI / env / yaml）统一为标量最省，**yaml 解析与写回一行不动**。
+- **关闭动作**（change `0071-sandbox-host-allowlist-config`，2026-10-05，**ADR-0068**）：
+  ① `ConfigSpec` 增 `permission.sandbox.host_allowlist`（cli `--permission.sandbox.host-allowlist` /
+  env `CORE_SANDBOX_HOST_ALLOWLIST` / default `""` / exposure `ADVANCED`）⇒ CLI flag、env、yaml、
+  「未知配置段」白名单四者由单一真源自动派生；
+  ② 访问器 `sandbox_host_allowlist()`（缺省 `[]`）+ `_split_hosts()`（逗号分隔 → 去空白 / 去空项 /
+  保序去重 / 兼容全角逗号），镜像 `circuit_breaker()` 的「寄居 `extra` + 访问器」先例；
+  ③ `_sandbox_errors()` 接入 `validate_schema`：**非裸主机名**（带 scheme / 端口 / 路径 / 内部空白）
+  与**非字符串取值** ⇒ 校验期**阻断启动**，**不静默忽略**（`check_outbound` 的实参是
+  `urlparse().hostname`，此类条目**永不匹配** —— 静默的后果是「配了却连不上」）；
+  ④ `runtime.py`：`SandboxPolicy(host_allowlist=config.sandbox_host_allowlist())`，
+  `MCPClient` 与 `SandboxManager` 仍**共用同一策略实例**；
+  ⑤ **缺省空白名单 = fail-closed 不变**（本变更只把「恒空」变成「可声明」，安全姿态不动）。
+- **验证**：先红后绿 —— `tests/test_permission_sandbox_config.py`（新，15 例）在 stash 源码后
+  **14 failed / 1 passed**（唯一过的是 `test_default_is_empty_fail_closed` —— 缺省全拒本已成立），
+  恢复后 15 passed；含**组合根注入**（策略单实例）与**端到端**（生产 http 守卫：白名单内越过守卫
+  止于 `MCP_CONNECT_FAILED`、白名单外 `PERMISSION_DENIED`）与**缺省全拒回归**；四门全绿。
+- **转出**：`fs_allowlist` 配置化（无生产调用点需要，YAGNI）；通配符 / 后缀匹配
+  （规格只要求白名单，裸主机名精确匹配是 `check_outbound` 现状契约）。
+- **参考**：`archive/2026-10-05-0071-sandbox-host-allowlist-config/`。
 
 - **参考**：`coding-plan/phase-12.md` §5–§7；`archive/2026-10-01-0033-mcp-install-security/`（原始 tasks 真源）、`archive/2026-10-04-0054-mcp-stdio-transport/`（B1 client 侧关闭凭据）。
 
@@ -653,7 +680,7 @@
 2. **A2 + E2 合并做**（同一根因）：会话标识透传 + 每会话独立 loop/memory + `UIAPILayer.compact` 接真。 ✅ **已完成**（change `0048-session-scoped-memory`：标识透传 + `compact` 接真 + `get_memory` 按会话过滤；**未采**每会话独立实例，理由见该 change design 决策 1/2）。
 3. **A1**（记忆驱动侧）：遗忘节拍。宜在 A2 之后（会话维度不生效时，衰减分组也是错的）。 ✅ **已完成**（change `0049-memory-maintenance-cadence`：loop 收尾维护节拍 + `memory maintain` CLI）。
 4. **A3 → A5 → A4 / E4**（进程内态 → 持久化 → 驱动面）：持久化先行，观察窗口 / pending 队列 / `PetManager` 才有意义。 ✅ **A3 全闭 + A5 + A10 + E4 已完成**（change `0050` 技能态落盘 / ADR-0053；change `0051` 进化冷路径驱动面 + 观察窗口落盘 + 批次成功率采样 / **ADR-0054**；A10 为本次走查新增的「冷路径无驱动面」发现；**E4** 见 change `0053` —— pet 纳入组合根 + 注册表落盘 + WebUI NL 入口 / **ADR-0056**）。✅ **A4 已完成**（change `0055-evolution-confirm-surface`：候选稳定身份 + 队列落盘 + `evolve` 操作面签发审批单 / **ADR-0058**）→ 本步**全闭**。
-5. **B1**（独立轨）：🔶 **client 侧已关闭**（change `0054-mcp-stdio-transport`，ADR-0057 —— stdio 传输 / `add` 分流 / 消费侧安全接线 / 组合根装配；ADR-0043 的 ADR + spec delta 早已就绪）。**余 4 行后续**：B2 http 会话（需 SDK）/ B3 服务端 stdio / B4 CLI 接线 / B5 白名单配置。
+5. **B1**（独立轨）：🔶 **client 侧已关闭**（change `0054-mcp-stdio-transport`，ADR-0057 —— stdio 传输 / `add` 分流 / 消费侧安全接线 / 组合根装配；ADR-0043 的 ADR + spec delta 早已就绪）。**余 3 行后续**：B2 http 会话（需 SDK）/ B3 服务端 stdio / B4 CLI 接线。**B5 已关闭**（change `0071`，ADR-0068）。
 6. **E1 + E7 + E8**（契约与中间件）：✅ **全闭** —— E1 见 change `0052`（ADR-0055；账本原「校验空转」说法已订正——校验实由工具层承担，真实残留是熔断）；**E7/E8 见 change `0056`（ADR-0059）**：E7 裁决「规格为准」→ 纯文档订正；E8 三处缺口修复，第 5 条转出为 E18。
 7. **E3 / E6**（规格裁决）：✅ **全闭** —— 裁决「A 全做・解除 deferred」；**E3** 见 change `0057`（ADR-0060：神通注册 + 专属路由作用域 + 按兽 loop/共享记忆注入 + CLI 走组合根）；**E6** 无需代码（context 压实启发式已由 change `0041` 规格订正为有意行为，余两项转 A7/A8）。
 8. **A7 + E6（miss 复用）**（低优先，同族）：✅ **全闭** —— **A7** 见 change `0058`（ADR-0061：排序分 = 基础分 × 历史成功率因子；预筛转出 A11）；**E6** 无需代码（见上，规格已由 change `0041` 订正）。

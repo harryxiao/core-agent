@@ -59,6 +59,11 @@ PermissionGate（横切）
 - 所有代码执行、Shell 执行默认在**独立沙箱环境**运行（子进程 + 受限文件系统/网络 + 资源配额）。
 - 执行完成后**自动销毁**沙箱，不留残留，避免污染宿主系统。
 - 沙箱类型可插拔：`local-subprocess` / `container`（v0.5+），统一由 SandboxManager 调度。
+- **出站网络白名单**（change `0071`，账本 B5）：`SandboxPolicy.check_outbound` 是唯一的网络守卫，
+  生产调用点在 `core/mcp/transport.py` 的 http / streamable-http 传输（host 取自 `urlparse().hostname`）。
+  白名单经 `permission.sandbox.host_allowlist` 声明（逗号分隔的裸主机名标量，`ConfigSpec` 单一真源
+  三面齐备），组合根取值注入，与 `SandboxManager` **共用同一策略实例**；**缺省空 = fail-closed 全拒**，
+  非法条目（带 scheme / 端口 / 路径）在校验期阻断启动（静默忽略的后果是「配了却连不上」）。
 
 ---
 

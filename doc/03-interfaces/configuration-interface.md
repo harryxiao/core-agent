@@ -165,6 +165,29 @@ feature flag 只管**装配**，不改模块自身的二级启用开关（`featu
   主 loop 与子 agent loop **共享同一链实例**（熔断态 per-runtime）。
 - 口径来源：`doc/openspec/specs/constraints/spec.md`「容错中间件」（**MODIFIED**）。
 
+### 2.6 出站白名单可配（change `0071`，账本 B5）
+
+`permission.sandbox` 段承载沙箱出站主机白名单，与 §2.4 同路：**不新增结构化段**，
+镜像 `permission.mode` 的 `extra` 驻留先例（`map_to` 前缀已自动进 §2.3 白名单）。
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `permission.sandbox.host_allowlist` | `""`（空 = 全拒） | 逗号分隔的**裸主机名** | 出站网络白名单（`SandboxPolicy.check_outbound`） |
+
+- **单一真源**：由 `ConfigSpec` 声明（`map_to="permission.sandbox.host_allowlist"`，
+  `exposure=ADVANCED`），自动获得 CLI flag `--permission.sandbox.host-allowlist`、env
+  `CORE_SANDBOX_HOST_ALLOWLIST` 与优先级链（CLI > env > config.yaml > 缺省）。
+- **取值形态为标量**：本仓 yaml 子集解析器**不含列表**（§2.3 同款约束），故三面统一为逗号分隔
+  字符串，归一到裸主机名列表（去空白 / 去空项 / 保序去重，兼容全角逗号）。
+- **校验期拒绝**：条目带 scheme（`https://a.example.com`）、端口（`a.example.com:443`）、
+  路径（`a.example.com/v1`）或内部空白 —— 因 `check_outbound` 的实参是 `urlparse().hostname`，
+  这类条目**永不匹配**，故在 `validate_schema` 判为错误、**阻断启动**，**不**静默忽略；
+  非字符串取值（如 yaml 里写 `123` 被解析成整数）同样阻断。
+- **缺省空白名单 = fail-closed 全拒**，安全默认不因新增配置项而松动。
+- **消费方**：组合根 `build_runtime` 经 `config.sandbox_host_allowlist()` 读出后注入
+  `SandboxPolicy(host_allowlist=...)`，`MCPClient` 与 `SandboxManager` **共用同一策略实例**。
+- 口径来源：`doc/openspec/specs/permission/spec.md`「沙箱执行颗粒度」（**MODIFIED**）。
+
 ### 2.5 装配前单键解析（change `0070`，账本 E21）
 
 `config_value(key)` 是 `load()` 之外的第二条**只读单键**通路，专供 CLI 层在装配前做前置判定

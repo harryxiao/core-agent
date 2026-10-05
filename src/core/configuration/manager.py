@@ -93,6 +93,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         map_to="permission.mode",
     ),
     ConfigSpec(
+        "permission.sandbox.host_allowlist",
+        "--permission.sandbox.host-allowlist",
+        "CORE_SANDBOX_HOST_ALLOWLIST",
+        default="",
+        map_to="permission.sandbox.host_allowlist",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "pet.enabled",
         "--pet-enabled",
         "CORE_PET_ENABLED",
@@ -277,6 +285,7 @@ class ConfigManager:
             errors.append(
                 f"非法权限模式: permission.mode={mode}（可选：{'/'.join(_PERMISSION_MODES)}）"
             )
+        errors.extend(_sandbox_errors(perm))
         cons = cast("dict[str, Any]", config.extra.get("constraints") or {})
         errors.extend(_circuit_breaker_errors(cons))
         return ValidationResult(
@@ -356,6 +365,19 @@ class ConfigManager:
             int(raw.get("failure_threshold", _DEFAULT_FAILURE_THRESHOLD)),
             float(raw.get("cooldown_s", _DEFAULT_COOLDOWN_S)),
         )
+
+    def sandbox_host_allowlist(self) -> list[str]:
+        """出站网络白名单（缺省空 = fail-closed 全拒，安全默认）。
+
+        取值形态为**逗号分隔字符串**（`permission.sandbox.host_allowlist`）：本仓 yaml 子集
+        解析器不含列表，故三面（CLI / env / yaml）统一为标量，归一到裸主机名列表。
+        条目已过校验（无 scheme / 端口 / 路径），此处只做拆分与去重。
+        """
+        if self._config is None:
+            return []
+        perm = cast("dict[str, Any]", self._config.extra.get("permission") or {})
+        sandbox = cast("dict[str, Any]", perm.get("sandbox") or {})
+        return _split_hosts(str(sandbox.get("host_allowlist", "")))
 
     # ---- 变更即生效 ----
 
@@ -502,6 +524,37 @@ def _circuit_breaker_errors(raw: dict[str, Any]) -> list[str]:
             f"非法熔断冷却: constraints.cooldown_s={raw.get('cooldown_s')}（须为 ≥0 的数值）"
         )
     return errors
+
+
+def _split_hosts(raw: str) -> list[str]:
+    """逗号分隔主机名 → 去空白、去空项、去重（保序）。兼容全角逗号。"""
+    hosts: list[str] = []
+    for part in raw.replace("，", ",").split(","):
+        host = part.strip()
+        if host and host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+def _sandbox_errors(perm: dict[str, Any]) -> list[str]:
+    """出站白名单取值校验（对齐 permission「沙箱执行颗粒度」）。
+
+    条目须为**裸主机名**：``check_outbound`` 的实参是 ``urlparse(url).hostname``（不含端口 /
+    路径），带 scheme / 端口 / 路径 / 空白的条目**永不匹配** —— 静默的后果是「配了却连不上」，
+    故与熔断阈值同口径：**校验期拒绝，不静默兜底**。空配置（缺省）合法 = fail-closed 全拒。
+    """
+    sandbox = cast("dict[str, Any]", perm.get("sandbox") or {})
+    raw = sandbox.get("host_allowlist", "")
+    if not isinstance(raw, str):
+        return [
+            f"非法出站白名单取值: permission.sandbox.host_allowlist={raw!r}（须为逗号分隔的主机名）"
+        ]
+    return [
+        f"非法出站白名单条目: permission.sandbox.host_allowlist={host}"
+        "（须为裸主机名，不含 scheme / 端口 / 路径）"
+        for host in _split_hosts(raw)
+        if "/" in host or ":" in host or any(ch.isspace() for ch in host)
+    ]
 
 
 def _as_number(value: Any) -> float | None:
