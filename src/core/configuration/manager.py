@@ -552,6 +552,13 @@ class ConfigManager:
     def _restore(self, config: AppConfig) -> None:
         self._config = config
 
+    def _restore_yaml(self, previous: bytes | None) -> None:
+        """撤销写回：恢复写盘前的 yaml 原文（``None`` ⇒ 原不存在则删除，对称兜底）。"""
+        if previous is None:
+            self._yaml_path.unlink(missing_ok=True)
+        else:
+            self._yaml_path.write_bytes(previous)
+
     def write_patch(self, patch: dict[str, Any]) -> None:
         """把 patch 写回 config.yaml（只合并用户 patch，不落 env/cli 覆盖与明文密钥）。
 
@@ -561,11 +568,30 @@ class ConfigManager:
 
         原子提交（tmp + ``os.replace``）：直接 ``write_text`` 是**先截断再整写**，中途失败留半写
         文件 ⇒ 调用方「重读回滚」这条路自己就断了（change `0099`）。
+
+        写回**是可逆效应**（change `0130` / ADR-0123 / 账本 E68）：配置变更实际作用于**两处状态**
+        （内存 ``AppConfig`` + yaml 文件），而 ``apply_change`` 只记了内存那一处 ⇒ 账不覆盖磁盘时
+        按 trace 回滚会留下「内存已退、磁盘未退」的不一致，下次 ``load()`` 把已回滚的变更复活。
+        故在 ``os.replace`` **之前**记一条同 trace（``"config"``）的效应，undo 恢复**写盘前的原文
+        字节**（重 dump 会改写格式、并可能把 env/cli 覆盖写进 yaml）。记账先于替换：``os.replace``
+        原子，若它抛出则 yaml 仍是旧值，undo 写回旧值即幂等。
         """
         raw = self._read_yaml()
         _merge_raw(raw, patch)
+        previous = self._yaml_path.read_bytes() if self._yaml_path.exists() else None
         tmp = self._yaml_path.with_name(self._yaml_path.name + ".tmp")
         tmp.write_text(_dump_yaml(raw), encoding="utf-8")
+        self._effects.record(
+            Effect(
+                op="config_write_patch",
+                target=str(self._yaml_path),
+                undo=lambda: self._restore_yaml(previous),
+                reversible=True,
+                coeffect=[],
+                trace_id="config",
+                ts=time.time(),
+            )
+        )
         os.replace(tmp, self._yaml_path)
 
     # ---- 内部：读取 / 覆盖 / 构造 ----

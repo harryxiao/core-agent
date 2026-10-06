@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import os
 import warnings
 from pathlib import Path
 
@@ -255,6 +256,65 @@ def test_write_patch_rejects_plaintext_via_apply(tmp_path: Path) -> None:
     # apply_change 拒绝明文密钥，写回不会发生（文件未被篡改）
     reloaded = ConfigManager(tmp_path / "config.yaml", environ={"OPENAI_API_KEY": "sk-test"})
     assert reloaded.load().llm.api_key_ref == "${OPENAI_API_KEY}"
+
+
+# ---- 写回的可逆效应（change `0130` / ADR-0123，账本 E68） ----
+
+
+def test_write_patch_rollback_restores_yaml_bytes(tmp_path: Path) -> None:
+    """回滚 SHALL 恢复写盘前的 **原文**（含注释），而非重新 dump 出的等价内容。"""
+    original = _VALID_YAML + "# 用户注释：与 dump 形态不可互逆\n"
+    effects = EffectTracker()
+    manager = _manager(tmp_path, original, effects=effects)
+    manager.load()
+    manager.write_patch({"llm": {"model": "gpt-4.1"}})
+    assert (tmp_path / "config.yaml").read_text(encoding="utf-8") != original  # 写盘后已变
+
+    report = effects.rollback("config")
+
+    assert report.undo_failed == []
+    assert (tmp_path / "config.yaml").read_text(encoding="utf-8") == original
+
+
+def test_write_patch_and_apply_change_share_config_trace(tmp_path: Path) -> None:
+    """内存变更与写盘变更同记在 `config` trace ⇒ 一次回滚两态一并回退。"""
+    effects = EffectTracker()
+    manager = _manager(tmp_path, _VALID_YAML, effects=effects)
+    manager.load()
+    assert manager.is_enabled("voice_output") is False
+
+    patch = {"features": {"voice_output": True}}
+    manager.apply_change(patch)
+    manager.write_patch(patch)
+    assert manager.is_enabled("voice_output") is True
+    assert {e.op for e in effects.audit("config")} == {"config_apply", "config_write_patch"}
+
+    effects.rollback("config")
+
+    assert manager.is_enabled("voice_output") is False  # 内存已回退
+    assert (tmp_path / "config.yaml").read_text(encoding="utf-8") == _VALID_YAML  # 磁盘已回退
+
+
+def test_write_patch_records_before_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """账记在 `os.replace` **之前**：替换失败 ⇒ yaml 仍为旧值、undo 写回旧值即幂等。"""
+    effects = EffectTracker()
+    manager = _manager(tmp_path, _VALID_YAML, effects=effects)
+    manager.load()
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError  # 模拟替换失败（磁盘错）
+
+    monkeypatch.setattr(os, "replace", _boom)
+    with pytest.raises(OSError):
+        manager.write_patch({"llm": {"model": "gpt-4.1"}})
+
+    assert [e.op for e in effects.audit("config")] == ["config_write_patch"]  # 替换前已记账
+    report = effects.rollback("config")
+
+    assert report.undo_failed == []  # undo 未失败（写回旧值幂等）
+    assert (tmp_path / "config.yaml").read_text(encoding="utf-8") == _VALID_YAML
 
 
 # ---- M5：ConfigSpec 单一真源 + CLI 覆盖层 ----

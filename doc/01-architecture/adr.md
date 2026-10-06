@@ -3340,6 +3340,31 @@
 
 ---
 
+## ADR-0123：配置写回记可逆效应，同 trace 回退内存与磁盘（change 0130 / phase-34 E68）
+
+- **背景**：`coding-plan/phase-34.md` 登记的 **E68**（中高）。`manager.apply_change`（`:529-550`）把内存配置
+  变更记为可逆效应（`op="config_apply"`，`trace_id="config"`），但**落盘**的 `write_patch`（`:555-569`）
+  `tmp.write_text` + `os.replace` **完全不记账**。配置变更实际作用于**两处状态**（内存 `AppConfig` +
+  `config.yaml` 文件），可逆账只覆盖其一 ⇒ 按 `trace_id="config"` 回滚**只回退内存**，磁盘留新值，下次
+  `load()` 把已回滚的变更**复活**。违反 P2（一切副作用可逆）。注意**不是**「原子写没做」——`0099` 已用
+  tmp + `os.replace` 保证不留半写；缺的是**写回这件事本身没有撤销记录**。
+- **决策①：`write_patch` 在 `os.replace` 之前记一条 `Effect(op="config_write_patch", trace_id="config")`，
+  undo 恢复写盘前的 yaml 原文字节。** 与 `apply_change` **同 trace** ⇒ 一次 `rollback("config")` 同时回退
+  内存与磁盘。记账在替换**之前**：`os.replace` 原子，若它抛出则 yaml 仍是旧值，undo 写回旧值即幂等。
+- **决策②：undo 恢复**原文字节**，不重新 dump。** 重 dump 会改写文件格式，并可能把 env/cli 覆盖层写进
+  yaml（`write_patch` docstring 早已写明「只合并用户 patch，不落 env/cli 覆盖与明文密钥」）。原文字节是
+  **唯一的精确逆**。
+- **已知局限**：① **本 change 不新增配置回滚的生产入口**（`EffectTracker.rollback("config")` 今日无调用方
+  —— `entry._config_set:560-563` 与 `ui/api.py:288-305` 的「回滚」都是**重读 yaml** 而非滚账）。本 change
+  只补齐**可逆契约**，无回滚入口 ⇒ **行为零变化**，账目先于消费者就位（同 change `0128` 的 `clear()`）。
+  ② 写盘前文件**必存在**（`_read_yaml` 守门），故 `_restore_yaml(None)`（删除文件）为**对称兜底**、当日
+  不可达。③ 只覆盖 `write_patch` 一处写盘点；若将来出现其他直接改 yaml 的路径须另行登记。
+- **规格**：`configuration`（**MODIFIED**「配置校验与生效」—— 正文补「写回 yaml 的变更 SHALL 记录可逆效应，
+  undo 恢复写盘前原文，SHALL 使磁盘态与内存态一并回退」+ **1** Scenario「写回可逆：回滚恢复磁盘原文」）。
+  **非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3457,3 +3482,4 @@
 | ADR-0120 | 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0121 | 02-modules/plugin-registry.md, 03-interfaces/plugin-registry-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0122 | 03-interfaces/tool-use-interface.md, 02-modules/tool-use.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0123 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

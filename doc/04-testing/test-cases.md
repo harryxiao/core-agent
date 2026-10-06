@@ -701,6 +701,17 @@
 
 ---
 
+## 46. 配置写回的可逆效应（TC-CFGREV，change `0130`／ADR-0123，账本 E68）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-CFGREV-01 | configuration/spec.md「配置校验与生效」（写回可逆：回滚恢复磁盘原文） | `write_patch` 写回后回滚 `config` trace | config.yaml 恢复为**写盘前的原文字节**（含注释，非重 dump 的等价内容）（锚点：`tests/test_configuration.py::test_write_patch_rollback_restores_yaml_bytes`） |
+| TC-CFGREV-02 | 同上 | `apply_change` + `write_patch` 后查账、再回滚一次 | 账上两条 `op` = {`config_apply`, `config_write_patch`}（**同 trace**）；一次回滚后**内存**（`is_enabled`）与**磁盘**同时回退（锚点：`::test_write_patch_and_apply_change_share_config_trace`） |
+| TC-CFGREV-03 | 同上（记账先于替换 ⇒ 幂等） | 令 `os.replace` 抛 `OSError` 后调用 `write_patch` | 替换失败 ⇒ yaml 仍为旧值；记账**已发生**（`config_write_patch` 在账上），回滚 `undo_failed` 为空（写回旧值即 no-op）（锚点：`::test_write_patch_records_before_replace`） |
+| TC-CFGREV-04 | 同上（回归：写回内容与原子性不变） | 既有 `write_patch` 往返用例 | 新进程读回 model 已更新、api_key 引用与未触及键原样保留（锚点：`::test_write_patch_round_trips`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

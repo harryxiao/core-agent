@@ -27,7 +27,7 @@
 | **E65** | 中高 | Web 前端 `reply_delta` **渲染破碎**（逐帧打印 JSON） | `ui/api.py:20-37` 把 `reply_delta` 映射到 `loop.result`；`frontend/src/views/Chat.svelte:44-51` 对 `loop.result` 取 `payload.reply ?? message ?? JSON.stringify(payload)` 并**追加新行** ⇒ delta 帧 `{text:…}` 无 `reply` ⇒ 每帧渲染一段 JSON。TUI 正解：`ui/repl.py:69-79 _event_delta` | 前端渲染 | ✅ |
 | **E66** | 中 | `/session/compact` **压实全部会话**（**会话隔离外泄**） | `ui/api.py:211-215` `compact(session_id)` 调 `self._memory.compact(session_id)`；`memory/store.py:200-224` `compact(query, budget)` 只用 `query` 打分，`:222-223` 直接 `self._summarize_sessions()`；`:298-312` 该方法**无 session 形参**，遍历 `self._episodic_groups().items()` **全量** | 会话隔离破坏 | ✅ |
 | **E67** | 中 | `EffectTracker.rollback` **不清账** ⇒ 重复回滚**二次撤销** + `_effects` **无界增长** | `plugin_registry/effect_tracker.py:61-78` 回滚后既不移除 `_effects` 也不清 `_by_trace`，且**无 clear 方法** | P2 可逆性 + 内存 | ✅ ⇒ **已落地（change `0128` / ADR-0121）** |
-| **E68** | 中 | `write_patch` **绕过可逆性**（磁盘 yaml 不可按 trace 回退） | `configuration/manager.py:555-569` `tmp.write_text(_dump_yaml(raw))` + `os.replace`，**无 `EffectTracker.record`**；对照 `apply_change:538-548` 的 undo 只回滚**内存态** ⇒ 按 trace 回滚时**磁盘不回退** | P2 可逆性 | ✅ |
+| **E68** | 中 | `write_patch` **绕过可逆性**（磁盘 yaml 不可按 trace 回退） | `configuration/manager.py:555-569` `tmp.write_text(_dump_yaml(raw))` + `os.replace`，**无 `EffectTracker.record`**；对照 `apply_change:538-548` 的 undo 只回滚**内存态** ⇒ 按 trace 回滚时**磁盘不回退** ⇒ **已落地（change `0130` / ADR-0123）** | P2 可逆性 | ✅ |
 | **E69** | 低 | `executor.commit` **不校验 `record.gated`**（fail-open 崩溃窗口） | `evolution/models.py:80-81` 明写「`commit` 只认前者（`gated=True`）为真者」；`evolution/executor.py:183` 走 `staged()`（`:215-218` **仅滤 `committed`**），`:178-211` **从不读 `gated`**；全仓 `gated` **只有写**（`:171/:205`）**无读**。窗口：门禁失败回滚后、`clear_implementation` 前**崩溃** ⇒ 重启后 `commit` 可放行**未过门**制品 ⇒ **已落地（change `0127` / ADR-0120）** | fail-open（潜伏） | ✅ |
 | **E70** | 低 | composition `apply_patch` 接受 **bool** 当 generation | `composition/resolver.py:129` `isinstance(override, int)`——**bool ⊂ int**，YAML `true` 生成 `PluginRef(id, True)`（`PluginRef(plugin_id, override)` `:134`） | 类型边界 | ✅ |
 | **E71** | 中 | **L1 索引是空壳**（`read` 从不查 `_index`，全库扫描） | `memory/store.py:110-115` `read()` 用 `backend.search(query)` **全扫** + `_hot`，**从不碰 `_index`**；`:191-192` `index()` 仅调 `list_index()`。规格 `memory/spec.md:26-29` 要求「命中 L1 索引 → 非全库扫描」 | 规格漂移（性能面） | ✅ |
@@ -171,7 +171,7 @@
 | `0127` | E69 | ✅ 已落地（2026-10-06） | ADR-0120 |
 | `0128` | E67 | ✅ 已落地（2026-10-06） | ADR-0121 |
 | `0129` | E64 | ✅ 已落地（2026-10-06） | ADR-0122 |
-| `0130` | E68 | ⏳ 待实施 | — |
+| `0130` | E68 | ✅ 已落地（2026-10-06） | ADR-0123 |
 | `0131` | E66 + E78 | ⏳ 待实施 | — |
 | `0132` | E65 | ⏳ 待实施 | — |
 | `0133` | E72 | ⏳ 待实施 | — |

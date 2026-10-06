@@ -101,6 +101,10 @@ class ConfigManager:
     def apply_change(self, patch: dict) -> AppConfig:
         """变更即生效：写入失败回滚到变更前完整配置，不留半写状态。"""
 
+    def write_patch(self, patch: dict) -> None:
+        """把 patch 写回 config.yaml（只合并用户 patch，不落 env/cli 覆盖与明文密钥）；原子提交
+        （tmp + ``os.replace``），并记一条**可逆效应**（见 §2.9）。"""
+
 
 def resolve(key, *, cli=None, env=None, yaml=None, specs=None) -> Any:
     """按优先级链 CLI flag > env > config.yaml > 默认值 解析配置项（ConfigSpec 单一真源）。"""
@@ -307,6 +311,20 @@ CLI 面 `--feature <模块>[=<布尔>]` 由 `entry._cli_overrides` 收进覆盖�
 - **组合根注入（不得依赖构造缺省）**：`build_runtime` 装配 `TaskScheduler` 时**显式**传两值 ——
   `TaskScheduler` 的构造缺省 `max_concurrency=4` 与既有行为**同值**，不接线**不会暴露**
   （上限判据空转，与账本 E15 同型）；已有用例断言接入的是**配置值**而非构造缺省。
+
+### 2.9 写回的可逆效应（change `0130` / ADR-0123，账本 E68）
+
+`write_patch` 落盘**是**可逆效应：配置变更作用于**两处状态**（内存 `AppConfig` + `config.yaml` 文件），
+`apply_change` 原先只记了内存那一处 ⇒ 按 trace 回滚会留下「内存已退、磁盘未退」的不一致，下次 `load()`
+把已回滚的变更**复活**。
+
+- **记账点**：`os.replace` **之前**记 `Effect(op="config_write_patch", target=<yaml 路径>, trace_id="config")`，
+  与 `apply_change` 的 `config_apply` **同 trace** ⇒ **一次** `rollback("config")` 同时回退内存与磁盘。
+- **undo 恢复写盘前的**原文字节****（不重新 `_dump_yaml`）：重 dump 会改写文件格式，并可能把 env/cli
+  覆盖层写进 yaml（`write_patch` 只合并用户 patch）。
+- **幂等**：`os.replace` 原子 —— 若它抛出则 yaml 仍是旧值，undo 写回旧值即 no-op。
+- **本 change 不新增配置回滚的生产入口**（`rollback("config")` 今日无调用方；`entry._config_set` 与
+  `ui/api.py` 的「回滚」都是**重读 yaml**）⇒ 行为零变化，账目**先于消费者**就位。
 - **CLI 入口**：两键经 ConfigSpec **自动**获得主命令 flag（`--orchestration.difficulty-policy` /
   `--orchestration.max-concurrency`，`_add_config_flag` 单一真源派生）。`config set` 的键前缀白名单
   （`entry._key_to_patch`：`llm.` / `features.` / `im.` / `loop.`）**不含** `orchestration.` ⇒

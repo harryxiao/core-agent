@@ -68,6 +68,9 @@ Configuration（横切）
 
 - 配置做 schema 校验，**校验通过才生效**，否则拒绝并报错误。
 - 变更即生效；写入失败时回滚到变更前完整配置，不留半写状态，并记录告警。
+- **写回是可逆效应（change `0130` / ADR-0123）**：变更作用于**内存 + yaml 文件**两处，`apply_change`
+  与 `write_patch` 记在**同一 trace**（`"config"`）⇒ 按该 trace 回滚时磁盘态与内存态**一并回退**；
+  `write_patch` 的 undo 恢复**写盘前的 yaml 原文**（不重 dump）。
 
 ---
 
@@ -78,6 +81,7 @@ config.yaml ──load(优先级链)──► AppConfig（有效配置聚合）
 ConfigSpec ──三面生成──► CLI flag / env 变量 / yaml schema（一一对应）
 AppConfig ──validate_schema──► 校验通过才生效；yaml 明文密钥被拒绝
 配置变更 ──apply_change──► 写入失败回滚到变更前完整配置
+配置变更 ──write_patch──► 落盘 + 记同 trace 可逆效应（undo 恢复 yaml 原文）
 ```
 
 - 各能力层配置语义统一挂载到本模块，解析、校验、密钥解析、生效共用一条链路，不另起炉灶。
