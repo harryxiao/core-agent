@@ -2943,6 +2943,63 @@
 
 ---
 
+## ADR-0113：结晶面门的**判定面** —— 真实 review + 真实运行时测试（change 0120 / phase-31 切片 2）
+
+- **背景**：`coding-plan/phase-31.md` 立账的 RSI 能力缺口 G1–G5。用户 2026-10-06 裁决 §4.1 六点，
+  ⑥ **拆两次** —— 切片 1（数据面，ADR-0112）已闭；本 ADR 记**切片 2（判定面 G1 + G2）**。一手缺口：
+  `validator.py` 的 `_review_pass` 恒 `True`、`_no_tests` 返 `{}`（空 dict 的 `all()` 为 **真**）且二者
+  是 `__init__` 的**缺省** ⇒ 验证门**恒通过**；`runtime.py` 是 `validator=Validator()` **无参**（连注入点
+  都没有）。引擎**确实消费** `gate.passed`（`engine.py` 不通过即 `status="rejected"`）⇒ 缺口**不在接线**
+  在**产出的值恒为常量** ⇒ 「不合格候选被挡在门外」这句承诺不成立、`rejected` **生产不可达**（G5）。
+  **契约面**：`evolution` spec「验证门」此前只写「SHALL 对候选执行 review + 运行时测试」而**未写谁产出这两个
+  判据** ⇒ 本 change 是**新增条款** ⇒ **规格先行**（`evolution` MODIFIED，**非** `skip_specs`）。
+- **决策①：判定面留在 `run_cycle` 的 `validate` 阶段（冷路径），不挪到操作面。** `if not gate.passed:
+  return rejected` 是 spec「通过才允许发布」的**唯一**落点；把它挪到 `confirm`/`crystallize` 会让该分支在
+  生产**仍然不可达**（候选恒定 `pending`、拒绝改由投放报错表现）—— 正是本 Phase 要消除的形态（G5 验收锚点）。
+  **代价如实登记**：冷路径在 loop 收尾**同步**跑子进程门禁（`pytest -q` 数十秒）+ 一次 review 模型调用；
+  仅当「维护节拍（缺省 900s）到点 **且** 触发阈值命中 **且** 确有可归因证据」时发生，但确实推迟该轮收尾。
+- **决策②：review 的生产者 = 结构化审查者（组合根注入的模型调用）+ **fail-closed** 判定。**
+  `build_review_prompt` 渲染候选**自身是否自洽**的判据面（`kind` / `target_plugin` / `delta`），模型调用
+  经 `review_with(_llm_text)` 注入 —— 复用 `author.py` 已建立的接缝（ADR-0045 依赖方向：prompt 文本属
+  evolution 域，evolution **不 import 任何 LLM 抽象**）。判定只认**首行以「通过词」起首**（`PASS` / `通过`）；
+  空输出 / 词表外 / 调用抛异常 ⇒ **未通过**（不得以「看不懂」当通过）。审的是**自洽性**而非「收益」（收益
+  无留出集不得声称）；也不评实现细节（那是实施面的事）。
+- **决策③：运行时测试的生产者 = 门禁命令单一真源 `GATE_COMMANDS` **按标记派生**的子集。**
+  新增 `CRYSTALLIZATION_GATE_MARKS`（门名 → 可读理由；**只标门名、不复制命令字符串**）+ `crystallization_gates()`
+  按**真源顺序**派生（标记命中未注册门名 ⇒ `CiCdError(GATE_FAILED)`，fail-closed —— 标记与真源漂移必须
+  炸出来、不得静默少跑一门）。结晶面取两道：`lint`（`ruff check`，轻量静态门，亚秒级）与 `test`（`pytest -q`，
+  行为回归门）；`typecheck`（`pyright`）与 `build`（`uv build`）**不进**结晶面 —— 类型卫生与打包属**交付面**
+  判据，与「该候选能否发布」无因果关系且成本高（phase-31 §6 红线：门禁**单一真源**不另立）。执行面复用
+  `SubprocessGateExecutor`（「跑不起来」与「跑失败」同归为该门未通过，不外抛）。
+- **决策④：缺省 `Validator()` = **不得放行**（fail-closed），与切片 1 的 `Evaluator()` 缺省同型。**
+  未注入生产者 ⇒ `GateReport.passed=False` 且理由据实写明「未注入生产者」；只注入一半判据同样不得放行。
+  理由：spec「**通过才**允许发布」在「无判据」时**不得**成立；留着 fail-open 缺省等于把 G1/G2 留在类里等
+  下一个装配者踩。**顺带**：`review` 未过时 **fail-fast**（不再跑子进程门禁）—— 门已未过，不做无谓开销。
+- **决策⑤：口径版本递增 `GATE_CALIBER` 1 → 2。** 判定口径真的变了（两个判据从恒真桩换成真判据）⇒ 按
+  ADR-0112 决策② 的机制，**旧口径候选**（= 按恒通过桩判定的候选，含切片 1 时落入台账者）在 `crystallize`
+  时被 `GATE_CALIBER_STALE` 拒绝，须按现口径**重新提案**；历史结论**不重算**（同机制，无新代码）。
+- **判据订正 3 条**：**(a)** 判定面**位置**不是自由选择：phase-27 §7 记「同步四门阻塞 ⇒ 改操作面显式驱动」
+  是针对**实施面**（`EvolutionExecutor`，其门跑的是**候选专属产物**）的处置，**不可照搬**到结晶面（其门跑
+  **仓库级回归**、且 `rejected` 分支只此一处）—— 见决策①；作废「把验证门挪到操作面」这一原设修法。
+  **(b)** 结果载体 `test_results` **保持 `dict[str, bool]`**（不塞失败原因字符串）：`validate` 用
+  `all(test_results.values())` 汇总结论，值里若混入非空**字符串**会被当成真值 ⇒ **失败读成通过**（与 G2 同源
+  的语义陷阱）；失败原因不进门报告（要看的是「哪道门没过」，review 面文本另有 `GateReport.review`）。
+  **(c)** 「未过门 ⇒ 教训写回 L2/L3」（spec 场景「未过门丢弃」的后半句）本 change **不做**：`run_cycle` 的
+  `rejected` 分支今日即不写记忆，属既有形态，不夹带（该场景前半句「丢弃候选」已满足）。
+- **已知局限**：① **冷路径同步跑子进程门禁**（每轮维护节拍命中时约数十秒；`pytest -q` 单次 ≈40s），
+  **reopen 条件** = 冷路径异步化（独立 change），本 change 不假称无代价；② **review 质量取决于模型与词表** ——
+  词表只认首行起首词，模型若先寒暄再给 PASS 会被判未过（**有意** fail-closed：宁可漏报不误放）；③ 结晶面门禁
+  是**仓库级**基线健康检查，与**候选内容无关**（技能级候选本无代码产物）；候选**专属**产物的验证仍在**实施面**
+  （`EvolutionExecutor` 冻结门，spec「门禁独立性」），两门不同源、不互替；④ **生产未配模型 ⇒ 候选恒
+  `rejected`**（**有意**：无审查判据即不得发布；组合根按既有约定注入模型调用，配置面与其它 DI 接缝一致）；
+  ⑤ 既有依赖「缺省 `Validator()` 即通过」的用例须**改判**（7 个测试文件，逐处显式注入过门替身；读数器仍
+  是真 `Validator`，`validate` 的汇总逻辑不打折）。
+- **规格**：`evolution`（MODIFIED「验证门」+5 条生产者/诚实条款 + 5 Scenario：「未注入生产者不得放行」
+  「review 判定不可解析不得放行」「结晶面门禁子集按标记派生」「运行时测试未过则门未过」「结晶面门禁经独立
+  执行面运行」）。**非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3050,3 +3107,4 @@
 | ADR-0110 | 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/beast-mode-interface.md, 02-modules/memory.md, 02-modules/skills.md, 02-modules/context.md, 04-testing/test-cases.md, coding-plan/phase-30.md |
 | ADR-0111 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md, 04-testing/test-cases.md, coding-plan/phase-30.md |
 | ADR-0112 | 03-interfaces/evolution-interface.md, 02-modules/evolution.md, 04-testing/test-cases.md, coding-plan/phase-31.md |
+| ADR-0113 | 03-interfaces/evolution-interface.md, 03-interfaces/ci-cd-interface.md, 02-modules/evolution.md, 04-testing/test-cases.md, coding-plan/phase-31.md |

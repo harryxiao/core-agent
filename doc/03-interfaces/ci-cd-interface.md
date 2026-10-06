@@ -56,6 +56,14 @@ class CICDPipeline:
 | 超过超时阈值 | `GateResult(passed=False, reason="门禁 <kind> 超过超时阈值 …")` |
 | 未知门禁类型 | 抛 `CiCdError(GATE_FAILED)`（调用/配置错误，非门禁结果） |
 
+**结晶面门禁子集**（change `0120`，供 evolution 验证门消费）：`GATE_COMMANDS` 是门禁命令的**唯一真源**
+（四道：`lint` / `typecheck` / `test` / `build`）。`CRYSTALLIZATION_GATE_MARKS` 只在**门名**上做标记
+（值是可读理由，**不复制命令字符串**）；`crystallization_gates() -> tuple[str, ...]` 按**真源顺序**派生
+子集（当前为 `lint` + `test`：轻量静态门与行为回归门）。标记命中 `GATE_COMMANDS` 中**不存在**的门名 ⇒
+抛 `CiCdError(GATE_FAILED)`（fail-closed：标记与真源漂移必须炸出来）。消费者（evolution 验证门）只拿
+**门名元组**，经组合根注入的执行器跑命令 —— 门的**面**由其消费语境定（交付面跑四道、结晶面跑子集），
+命令本身永不复制第二份。
+
 ---
 
 ## 3. ArtifactPublisher 接口（制品发布）

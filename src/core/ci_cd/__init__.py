@@ -2,7 +2,14 @@
 
 from .errors import CiCdError, CiCdErrorCode
 from .models import Artifact, Gate, GateResult, PipelineRun
-from .pipeline import GATE_COMMANDS, CICDPipeline, SubprocessGateExecutor, build_gate_executor
+from .pipeline import (
+    CRYSTALLIZATION_GATE_MARKS,
+    GATE_COMMANDS,
+    CICDPipeline,
+    SubprocessGateExecutor,
+    build_gate_executor,
+    crystallization_gates,
+)
 from .publisher import ArtifactPublisher
 
 __all__ = [
@@ -11,10 +18,12 @@ __all__ = [
     "CiCdError",
     "CiCdErrorCode",
     "CICDPipeline",
+    "CRYSTALLIZATION_GATE_MARKS",
     "GATE_COMMANDS",
     "Gate",
     "GateResult",
     "PipelineRun",
     "SubprocessGateExecutor",
     "build_gate_executor",
+    "crystallization_gates",
 ]

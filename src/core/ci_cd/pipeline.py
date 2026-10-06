@@ -29,6 +29,33 @@ GATE_COMMANDS: dict[str, str] = {
     "build": "uv build",
 }
 
+# 结晶面（evolution）门禁**标记**：门名 → 选它的可读理由（**不复制命令字符串**）。
+# 结晶面是「候选能否发布」的判据面，只取与之一一因果相关的两道：lint（轻量静态门，
+# 语法/风格面回归，亚秒级）与 test（行为回归门）。typecheck（类型卫生）与 build（打包）
+# 属**交付面**判据，与候选能否发布无因果关系且成本高，不入结晶面。
+# 详见 doc/openspec/specs/evolution/spec.md「验证门」。
+CRYSTALLIZATION_GATE_MARKS: dict[str, str] = {
+    "lint": "轻量静态门：语法/风格面回归，亚秒级",
+    "test": "行为回归门：仓库级测试套件",
+}
+
+
+def crystallization_gates() -> tuple[str, ...]:
+    """派生结晶面门禁子集：**按标记从 `GATE_COMMANDS` 派生**（不另立第二份门禁清单）。
+
+    顺序随**单一真源**（而非标记的书写顺序），命令字符串仍只有 `GATE_COMMANDS` 一份。
+    标记命中真源里不存在的门名 ⇒ 抛 `GATE_FAILED`（fail-closed：标记与真源漂移必须炸出来，
+    不得静默少跑一门）。
+    """
+    unknown = [kind for kind in CRYSTALLIZATION_GATE_MARKS if kind not in GATE_COMMANDS]
+    if unknown:
+        raise CiCdError(
+            CiCdErrorCode.GATE_FAILED,
+            f"结晶面门禁标记命中未注册的门名: {', '.join(sorted(unknown))}",
+        )
+    return tuple(kind for kind in GATE_COMMANDS if kind in CRYSTALLIZATION_GATE_MARKS)
+
+
 # 单道门禁缺省超时：全量 pytest 亦留足余量，同时杜绝无限挂起。
 _DEFAULT_TIMEOUT = 600.0
 

@@ -61,11 +61,16 @@ def _passing_evaluator() -> Evaluator:
     return Evaluator(registry=_RegisteredBaselines(), score_fn=lambda _c: 0.9)
 
 
+def _passing_validator() -> Validator:
+    """过门验证门：review 与运行时测试都判过（0120 起无参 `Validator()` 不再恒通过 = 不得放行）。"""
+    return Validator(review=lambda _c: True, tests=lambda _c: {"lint": True, "test": True})
+
+
 def _engine() -> EvolutionEngine:
     return EvolutionEngine(
         diagnoser=Diagnoser(),
         proposer=Proposer(),
-        validator=Validator(),
+        validator=_passing_validator(),
         evaluator=_passing_evaluator(),
     )
 

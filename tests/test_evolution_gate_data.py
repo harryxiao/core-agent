@@ -82,9 +82,22 @@ def _trace(trace_id: str = "1", *, plugin_id: str = "memory.retrieve") -> Trace:
     )
 
 
+def _passing_validator() -> Validator:
+    """过门验证门：review 与运行时测试都判过。
+
+    本文件断言的是**评测面**（数据面/留出分/口径版本），故给出过门判据让候选走到评测 —
+    0120 起缺省 `Validator()` 不再恒通过（未注入生产者 ⇒ 不得放行）；判定面自身的真实性由
+    `tests/test_evolution_gate_judgment.py` 覆盖。
+    """
+    return Validator(review=lambda _c: True, tests=lambda _c: {"lint": True, "test": True})
+
+
 def _engine(evaluator: Evaluator) -> EvolutionEngine:
     return EvolutionEngine(
-        diagnoser=Diagnoser(), proposer=Proposer(), validator=Validator(), evaluator=evaluator
+        diagnoser=Diagnoser(),
+        proposer=Proposer(),
+        validator=_passing_validator(),
+        evaluator=evaluator,
     )
 
 
@@ -326,8 +339,42 @@ def test_caliber_persists_with_pending_queue(tmp_path: Any) -> None:
 # ---- 6. 组合根装配：产线的评估器不再是「无参裸桩」 ----
 
 
+class _Reply:
+    """模型回复替身（只要求 `.content` = 审查者输出）。"""
+
+    content = "PASS"
+
+
+class _StubProvider:
+    """组合根构造的模型提供者替身：审查者恒判过，调用期不出网。"""
+
+    def __init__(self, **_kw: Any) -> None: ...
+
+    def completion(self, _request: Any) -> _Reply:
+        return _Reply()
+
+
+def _passing_gate_executor(**_kw: Any) -> Any:
+    """门禁执行面替身：所有门禁判过（**不**真跑子进程）。"""
+
+    class _GateResult:
+        passed = True
+        reason = ""
+
+    def _run(_gate: Any) -> _GateResult:
+        return _GateResult()
+
+    return _run
+
+
 def test_runtime_evaluator_is_a_real_gate(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """生产装配：`build_runtime` 的引擎在**未注册任何基准**时判 `frozen`（真门，非恒通过桩）。"""
+    """生产装配：`build_runtime` 的引擎在**未注册任何基准**时判 `frozen`（真门，非恒通过桩）。
+
+    断言的是**留出评测面**，故把另两个外部面打桩（模型端点、门禁子进程）——判定面的真实性由
+    `tests/test_evolution_gate_judgment.py` 覆盖（那里真门禁被跑，只是子进程被替身顶上）。
+    """
+    monkeypatch.setattr("core.runtime.StdlibLLMProvider", _StubProvider)
+    monkeypatch.setattr("core.runtime.build_gate_executor", _passing_gate_executor)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path / "state"))
     cfg = tmp_path / "config.yaml"

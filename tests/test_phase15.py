@@ -142,13 +142,18 @@ def _passing_evaluator() -> Evaluator:
     return Evaluator(registry=_RegisteredBaselines(), score_fn=lambda _c: 0.9)
 
 
+def _passing_validator() -> Validator:
+    """过门验证门：review 与运行时测试都判过（0120 起无参 `Validator()` 不再恒通过 = 不得放行）。"""
+    return Validator(review=lambda _c: True, tests=lambda _c: {"lint": True, "test": True})
+
+
 def test_full_chain_real_defect_published() -> None:
     """工具写错路径的缺陷走完 诊断→提案→验证门→留出评测→结晶 → published。"""
     library = SkillLibrary()
     engine = EvolutionEngine(
         diagnoser=Diagnoser(),
         proposer=Proposer(),
-        validator=Validator(),
+        validator=_passing_validator(),
         evaluator=_passing_evaluator(),
         library=library,
         memory_crystallizer=Crystallizer(),
@@ -173,7 +178,7 @@ def test_plugin_candidate_crystallizes_accepted() -> None:
     engine = EvolutionEngine(
         diagnoser=Diagnoser(),
         proposer=_PluginProposer(),
-        validator=Validator(),
+        validator=_passing_validator(),
         evaluator=_passing_evaluator(),
         memory_crystallizer=crystallizer,
     )

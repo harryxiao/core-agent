@@ -25,8 +25,37 @@ class Proposer(Plugin):
 
 class Validator(Plugin):
     plugin_id = "evolution.validator"
+    def __init__(
+        self,
+        *,
+        review: Callable[[GenerationCandidate], bool] | None = None,          # 未注入 ⇒ 不得放行
+        tests: Callable[[GenerationCandidate], dict[str, bool]] | None = None,  # 同上；值恒 bool
+    ) -> None: ...
     def validate(self, candidate: GenerationCandidate) -> GateReport:
-        """review + 运行时测试，过验证门。"""
+        """review + 运行时测试，过验证门（change `0120` 起两个判据都由**组合根注入**）。
+
+        **缺省 `Validator()` ⇒ 不得放行**（fail-closed，与 `Evaluator()` 的 `freeze` 同型）：
+        未注入生产者 / review 输出不可解析 / 调用失败 / 门禁跑不起来 ⇒ `passed=False`。
+        review 未过时 **fail-fast**（不再跑子进程门禁）。"""
+
+# review 的生产者（evolution 域内、**不 import LLM 抽象**；模型调用由组合根给，先例 author.py）
+def build_review_prompt(candidate: GenerationCandidate) -> str:
+    """渲染候选**自洽性**判据面（kind / target_plugin / delta）+ 判定词表说明。"""
+def parse_review(text: str) -> bool:
+    """解析审查判定：只认**首行**以「通过词」（PASS / 通过）起首；词表外一律不通过。"""
+def review_with(llm: Callable[[str], str]) -> Callable[[GenerationCandidate], bool]:
+    """把「prompt → 文本」的模型调用适配为审查者契约（调用抛异常 ⇒ 不通过、不外抛）。"""
+
+# 运行时测试的生产者（门禁子集**按标记派生**自单一真源，执行面复用 ci-cd 的 SubprocessGateExecutor）
+def run_gate_tests(
+    *, run_gate: Callable[[str], GateOutcome], gates: Sequence[str]
+) -> Callable[[GenerationCandidate], dict[str, bool]]:
+    """按门名逐道执行 ⇒ 门名 → bool（跑不起来 / 跑失败同归为 False，不外抛）。"""
+
+# 门禁子集（ci-cd 域，change `0120`）：标记只标**门名**，命令字符串仍只有 GATE_COMMANDS 一份
+CRYSTALLIZATION_GATE_MARKS: dict[str, str]  # {"lint": …, "test": …}（门名 → 可读理由）
+def crystallization_gates() -> tuple[str, ...]:
+    """派生结晶面门禁子集（顺序随单一真源）；标记命中未注册门名 ⇒ CiCdError(GATE_FAILED)。"""
 
 class Evaluator(Plugin):
     plugin_id = "evolution.evaluator"
@@ -98,8 +127,10 @@ class EvolutionGoal:
 @dataclass
 class GateReport:
     passed: bool
-    review: str
-    test_results: dict
+    review: str                 # 门未过时的据实理由（未注入生产者 / 拒绝 / …）
+    test_results: dict          # 门名 → bool（值恒 bool：混入原因字符串会被 all() 读成真）
+    # 结晶面门是**仓库级**回归门（GATE_COMMANDS 子集），与候选内容无关；候选专属产物的验证
+    # 属**实施面**（EvolutionExecutor 冻结门）—— 两门不同源、不互替
 
 @dataclass
 class EvalReport:
@@ -292,7 +323,7 @@ class EvolutionExecutor:
 | **门禁冻结** | 门名与命令取自**单一真源** `GATE_COMMANDS`（组合根注入，执行器**不自选**）；复用组合根既有 `gate_executor` |
 | **可逆** | 应用与落地各记一条 `Effect`（`undo` 恢复写入前内容）；筹备的临时应用在 `finally` 里回退 ⇒ 工作树不留改动；效应按 trace 分组（`evolution.prepare.<cid>` / `evolution.commit.<cid>`） |
 | **漂移拒绝** | 落地前校验目标文件当前内容与 `before` 一致 ⇒ 不符抛 `IMPLEMENT_STALE`（不把补丁盖到外部改动上）；筹备起点同样拒绝脏树 |
-| **已知局限** | 生产 `Validator`/`Evaluator` 仍是恒通过桩 ⇒ 本切片的冻结门是当前**唯一**真门；无物理隔离；`commit` 的 undo 无 CLI 回退入口；门禁副产物（`dist/`、`.pytest_cache`）不入回退（ADR-0105 照实登记） |
+| **已知局限** | 本切片的冻结门是当时**唯一**真门（**已订正**：change `0119` 起 `Evaluator` 是真门、change `0120` 起 `Validator` 亦是真门 —— 见 §1；结晶面门跑的是**仓库级**回归，候选专属产物的验证仍只由本冻结门承担）；无物理隔离；`commit` 的 undo 无 CLI 回退入口；门禁副产物（`dist/`、`.pytest_cache`）不入回退（ADR-0105 照实登记） |
 
 
 ---

@@ -1,6 +1,6 @@
 # Phase 31：进化引擎「生产验证门名副其实化」—— RSI 能力缺口**提案**（非缺陷账本）
 
-> **状态**：🟡 **切片 1 已闭 / 切片 2 待开工**（2026-10-06 用户裁决 ⇒ 立账为能力缺口 + 拆两次；**切片 1（G4+G3 数据面）已闭**＝change `0119` / ADR-0112：基准集/基线落盘 + 真实留出评分 + 口径版本，产线未接执行器 ⇒ 候选恒 `frozen`；**切片 2（G1+G2 判定面）待开工**）
+> **状态**：✅ **全闭（切片 1 + 切片 2）**（2026-10-06 用户裁决 ⇒ 立账为能力缺口 + 拆两次；**切片 1（G4+G3 数据面）**＝change `0119` / ADR-0112：基准集/基线落盘 + 真实留出评分 + 口径版本；**切片 2（G1+G2 判定面）**＝change `0120` / ADR-0113：真实 review + 真实运行时测试 + `GATE_CALIBER` 递增 —— **G1–G5 全闭**，`rejected` / `rollback` / `frozen` 三态**生产可达**；**遗留**见 §8）
 > **定性**：能力缺口**提案**（非缺陷账本；承接 `phase-27.md` §7 遗留清单第①条 / ADR-0105 已知局限①）
 > **定性**：phase-27 落地**冻结门**（`EvolutionExecutor`）时如实登记：生产装配的 `Validator()` / `Evaluator()` 是**恒通过桩** ⇒ 进化闭环四阶段中的**第 3（验证门）与第 4（留出评测）在产线上恒为常量**。当时判「另一件事」（波及既有 `confirm`/`crystallize` 与观察期基线）**不并入**该切片。本 Phase 把它**立账**：**须用户裁决 → 规格先行 → ADR** 之后才能拆 change，**不得**以缺陷修复名义静默实施。
 > **与 phase-27 的关系**：phase-27 让**实施面**（补丁落地的四道门禁）有了唯一真门；本 Phase 要让**结晶面**（候选发布的验证门 + 留出评测）名副其实。两者是**两条不同的门**，共用 `GATE_COMMANDS` 真源但不可互替。
@@ -25,6 +25,15 @@
 > —— 属切片 2）；产线**执行器映射**未接 ⇒ 候选恒 `frozen`（**这是「不再凭空发布」的有意结果**，
 > 见 §7 与 ADR-0112 已知局限①）。
 
+> **切片 2 后的状态（2026-10-06，change `0120` / ADR-0113）**：**G1 已闭**（review 由**结构化审查者**
+> 产出：`build_review_prompt` 审候选自洽性、模型调用经组合根 `review_with(_llm_text)` 注入 —— 复用
+> `author.py` 接缝，evolution 仍不 import LLM 抽象）；**G2 已闭**（运行时测试 = **按标记派生**的结晶面
+> 门禁子集 `lint` + `test`，命令仍只有 `GATE_COMMANDS` 一份；执行面复用 `SubprocessGateExecutor`）；
+> **缺省 `Validator()` 改为不得放行**（fail-closed，与切片 1 的 `Evaluator()` 同型）；`GATE_CALIBER`
+> **1 → 2**（旧口径候选投放时 `GATE_CALIBER_STALE`）。**G5 验收锚点实测**：`rejected` 生产可达
+> （装真判据后未过门即 `status="rejected"`，此前恒 `pending`）。**代价照实登记**：冷路径**同步**跑
+> 子进程门禁（数十秒，仅在维护节拍 + 阈值命中 + 有证据时；reopen = 冷路径异步化）。
+
 ---
 
 ## 1. 一手核实（证据与行号）
@@ -34,6 +43,9 @@
 `src/core/evolution/validator.py`：`_review_pass`（`:15-16`）恒 `True`、`_no_tests`（`:19-20`）返空 dict，两者是 `__init__`（`:28-35`）的**缺省**；`validate`（`:37-42`）判 `passed = review_ok and all(test_results.values())` —— **空 dict 的 `all()` 为真** ⇒ `passed` 恒 `True`、`review` 恒 `"通过"`。
 
 生产装配实证：`src/core/runtime.py:589-590` 为 `validator=Validator(), evaluator=Evaluator()` —— **无参**（不注入 `review` / `tests` / `score_fn` / `registry`）。
+
+> **订正（2026-10-06）**：本节行号是**立账时**的快照；`validator.py` 已由 change `0120` 重写（恒通过桩
+> 已删，两个判据生产者改为注入 + fail-closed），`G1/G2` 已闭 —— 见文首状态与 §0 两段状态块。
 
 ### 1.2 Evaluator 在生产恒 publish
 
@@ -161,9 +173,27 @@
   **freeze**）+ 口径版本（`GATE_CALIBER`，候选台账盖章 + `crystallize` 校验）+ 结局词表 +1 `frozen`；
   组合根注入落盘 registry + 打分器。**G5 验收锚点实测**：**`frozen` 分支生产可达**（产线装配下
   `run_cycle` ⇒ `status="frozen"`）；**`rollback` 亦可达**（注册基准 + 基线 + 执行器时）。
-- **🔲 切片 2（G1+G2 判定面）待开工** —— 真实 `review`（复用 `evolution/author.py` 的 LLM 面）+
-  运行时测试（**复用** `SubprocessGateExecutor`，**按标记派生** `GATE_COMMANDS` 的**子集**且 **spec
-  明文**写出哪几道、为什么）；届时**必须递增 `GATE_CALIBER`**（判定口径变了 ⇒ 旧口径候选不得投放）。
-  **另**：接入真实任务**执行器映射**（`runners`）使 `frozen` 不再恒真 —— 属**独立 change**（ADR-0112
-  已知局限① 的 reopen 条件）。
+- **✅ 切片 2（G1+G2 判定面）已闭** —— change `0120` / **ADR-0113**：真实 `review`
+  （`build_review_prompt` / `parse_review` / `review_with`，模型面复用 `_llm_text` 接缝、判定 fail-closed）
+  + 真实运行时测试（`crystallization_gates()` **按标记派生** + `run_gate_tests`，spec 明文写出结晶面跑
+  `lint` + `test` 及为什么）+ **缺省 `Validator()` 不得放行** + `GATE_CALIBER` **1 → 2**。
+  **G5 验收锚点实测**：`rejected` 生产可达。7 个既有测试文件**改判**（显式注入过门替身，读数器仍是真门）。
+- **遗留给独立 change**：接入真实任务**执行器映射**（`runners`）使 `frozen` 不再恒真（ADR-0112 已知
+  局限① 的 reopen 条件）；冷路径**异步化**（ADR-0113 已知局限① 的 reopen 条件）。
 - 依赖：phase-27（`GATE_COMMANDS` / `SubprocessGateExecutor` / ADR-0105）+ phase-21/24（归因与结晶语义）。
+
+---
+
+## 8. 遗留清单（Phase 31 全闭时登记，2026-10-06）
+
+> 本 Phase 的两个切片（`0119` 数据面 / `0120` 判定面）已闭；下列为**已知局限**，均**另有** reopen 条件，
+> 不在本 Phase 范围内补做 —— 登记在此以免「门已名副其实」被读成「门已完美」。
+
+| # | 遗留 | 性质 | reopen 条件 / 归属 |
+|---|---|---|---|
+| L1 | **产线未接基准执行器映射**（`runners` 空）⇒ 候选恒 `frozen` | 数据面完整、执行面**有意**留空（fail-closed 优先于「看得出在动」） | 接入真实任务执行器面并把 `runners` 注入组合根（ADR-0112 已知局限①） |
+| L2 | **冷路径同步跑子进程门禁**（每轮维护节拍命中时 `pytest -q` ≈40s + 一次 review 调用） | 判定面在 `run_cycle` 的**唯一**落点（挪到操作面会让 `rejected` 仍不可达） | 冷路径**异步化**（ADR-0113 已知局限①） |
+| L3 | **review 质量取决于模型与判定词表**（只认首行「通过词」起首） | **有意** fail-closed：宁可漏报不误放（模型先寒暄再 PASS ⇒ 判未过） | 需要否，另议；改词表即改判定口径 ⇒ **须递增 `GATE_CALIBER`** |
+| L4 | 结晶面门禁是**仓库级**回归（与候选内容无关） | 技能级候选本无代码产物；候选**专属**产物的验证仍在**实施面**（冻结门） | 无（两门不同源、不互替，属设计而非缺陷） |
+| L5 | 生产**未配模型** ⇒ 候选恒 `rejected` | **有意**：无审查判据即不得发布 | 组合根按既有约定注入模型调用（配置面） |
+| L6 | 「未过门 ⇒ 教训写回 L2/L3」（spec 场景后半句）**未实现** | 既有形态（`run_cycle` 的 `rejected` 分支今日即不写记忆），本 Phase **不夹带** | 需要否，另议（ADR-0113 判据订正 (c)） |

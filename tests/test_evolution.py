@@ -70,6 +70,16 @@ def _passing_evaluator() -> Evaluator:
     return Evaluator(registry=_RegisteredBaselines(), score_fn=lambda _c: 0.9)
 
 
+def _passing_validator() -> Validator:
+    """过门验证门：review 与运行时测试**都真实地**判过。
+
+    change 0120 起缺省 `Validator()` 不再恒通过（未注入生产者 ⇒ 不得放行），故测试须给出两个
+    判据，而非绕过验证门 —— 读数器仍是真 `Validator`（`validate` 汇总逻辑不打折）。生产装配跑的是
+    真门禁子进程（`lint` + `test`）；替身只替**判据内容**，不替汇总，也不跑子进程。
+    """
+    return Validator(review=lambda _c: True, tests=lambda _c: {"lint": True, "test": True})
+
+
 def _engine(  # noqa: PLR0913 — 测试构造辅助
     *,
     library: SkillLibrary | None = None,
@@ -83,7 +93,7 @@ def _engine(  # noqa: PLR0913 — 测试构造辅助
     return EvolutionEngine(
         diagnoser=diagnoser or Diagnoser(),
         proposer=proposer or Proposer(),
-        validator=validator or Validator(),
+        validator=validator or _passing_validator(),
         evaluator=evaluator or _passing_evaluator(),
         library=library,
         memory=memory,  # type: ignore[arg-type]

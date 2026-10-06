@@ -20,7 +20,13 @@ from typing import cast
 
 from core.beast import BeastActivator, BeastManager, BeastRegistry, register_innate_skills
 from core.beast.models import Beast
-from core.ci_cd import GATE_COMMANDS, Gate, GateResult, build_gate_executor
+from core.ci_cd import (
+    GATE_COMMANDS,
+    Gate,
+    GateResult,
+    build_gate_executor,
+    crystallization_gates,
+)
 from core.configuration import ConfigManager
 from core.configuration.models import AppConfig
 from core.context import Compactor as ContextCompactor
@@ -52,6 +58,7 @@ from core.evolution import (
 # （它们的消费方只有组合根与操作面；包出口保持「进化闭环本体」的语义）。
 from core.evolution.author import patch_author_with
 from core.evolution.executor import EvolutionExecutor, source_reader
+from core.evolution.validator import review_with, run_gate_tests
 from core.judgment import Compactor, DecisionRouter, Guardrail, JEVProvider, SkillMatcher
 from core.llm_provider import LLMProvider, LLMRequest, Message, StdlibLLMProvider
 from core.loop import Approver, DefaultLoop, LoopPlugin, TurnObserver
@@ -593,7 +600,16 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         evolution_engine = EvolutionEngine(
             diagnoser=Diagnoser(),
             proposer=Proposer(),
-            validator=Validator(),
+            # 结晶面门的**判定面**（0120）：review 接组合根模型接缝 `_llm_text`（与摘要/补丁同一
+            # 依赖方向：evolution 不 import LLM 抽象），运行时测试跑**按标记派生**的结晶面门禁
+            # 子集（`lint` + `test`；命令仍只有单一真源 `GATE_COMMANDS` 一份），执行器复用门禁工具面
+            # 那份 `gate_executor`（不造第二份执行面）。两判据均 fail-closed：未注入 / 模型不可用 /
+            # 门禁跑不起来 ⇒ 门未过 ⇒ 不发布（此前 `Validator()` 无参 = 两个恒通过桩，门恒开）。
+            # 代价如实登记：冷路径**同步**跑子进程门禁（ADR-0113 已知局限①，reopen：冷路径异步化）。
+            validator=Validator(
+                review=review_with(_llm_text),
+                tests=run_gate_tests(run_gate=_run_gate, gates=crystallization_gates()),
+            ),
             # 留出评测接**真实打分器**（0119）：留出分由绑定基准的样本经执行器真实执行产出。
             # 执行器映射（`task_type` → 可调用体）由组合根/运维注入，本装配**暂未接**
             # （生产无通用任务执行器面）⇒ 产线判 `frozen`（无法评测 ⇒ 不下发、不发布），
