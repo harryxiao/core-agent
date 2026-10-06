@@ -627,6 +627,7 @@ class ConfigManager:
             reasoning_effort=_opt_str(llm_raw.get("reasoning_effort")),
             embedding_model=str(llm_raw.get("embedding_model", "")),
             context_window=_llm_context_window(llm_raw),
+            show_thinking=_llm_show_thinking(llm_raw),
         )
         features_raw = cast(dict[str, Any], merged.get("features") or {})
         features = _normalize_features(features_raw)
@@ -726,6 +727,27 @@ def _llm_context_window(raw: dict[str, Any]) -> int:
             f"非法上下文窗口: llm.context_window={value!r}（须为 0 或 ≥1 的整数）"
         )
     return window
+
+
+def _llm_show_thinking(raw: dict[str, Any]) -> bool:
+    """llm 段 `show_thinking` 解析（结构化段 ⇒ **构建前阻断**，取值口径与 feature flag 同集）。
+
+    缺省 ``False``；接受原生布尔与 ``true/false``·``yes/no``·``on/off``·``1/0``（大小写不敏感、
+    忽略首尾空白）。其余取值当场拒绝 —— `bool("<非空字符串>")` 为真，放行等于把 `maybe` 这类
+    笔误静默当作**开启**，与「未开启时事件面与三端呈现逐字一致」的可证伪边界相冲突。
+    """
+    value = raw.get("show_thinking", False)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in _FEATURE_TRUE:
+        return True
+    if text in _FEATURE_FALSE:
+        return False
+    raise ConfigurationError(  # noqa: TRY003
+        f"非法思考回显开关: llm.show_thinking={value!r}"
+        "（须为布尔或 true/false、yes/no、on/off、1/0）"
+    )
 
 
 def _loop_errors(raw: dict[str, Any]) -> list[str]:
@@ -917,6 +939,7 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
         "reasoning_effort": config.llm.reasoning_effort,
         "embedding_model": config.llm.embedding_model,
         "context_window": config.llm.context_window,
+        "show_thinking": config.llm.show_thinking,
     }
     llm_raw.update(cast(dict[str, Any], patch.get("llm") or {}))
     features = dict(config.features)
@@ -950,6 +973,7 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
             reasoning_effort=_opt_str(llm_raw.get("reasoning_effort")),
             embedding_model=str(llm_raw.get("embedding_model", "")),
             context_window=_llm_context_window(llm_raw),
+            show_thinking=_llm_show_thinking(llm_raw),
         ),
         features=features,
         im=im,

@@ -26,7 +26,15 @@ from core.observability import TraceEvent, TraceLogger, Tracer
 from core.plugin_registry import Plugin
 from core.tools import SafetyGate, ToolProvider
 
-from .protocol import Action, ActionResult, LoopContext, LoopEvent, LoopResult, collect_result
+from .protocol import (
+    Action,
+    ActionResult,
+    LoopContext,
+    LoopEvent,
+    LoopResult,
+    Thinking,
+    collect_result,
+)
 
 # 中间件契约：返回 Action 放行/改写，返回 None 表示拒绝（短路）。
 Middleware = Callable[[LoopContext, Action], Action | None]
@@ -216,7 +224,8 @@ class DefaultLoop(Plugin):
         """推理步事件流：planner 支持流式时逐 delta 转 reply_delta，末态产出 Action。
 
         planner 无 ``astream``（含 None/纯 callable）时退化为 reason()，仅产出单个
-        Action，事件序与非流式实现完全一致。
+        Action，事件序与非流式实现完全一致。``Thinking`` item 转 ``loop.reasoning``
+        （开启思考回显时 planner 才产出该 item ⇒ 事件面的开关在 planner 一侧把关）。
         """
         planner = getattr(self._planner, "astream", None)
         if planner is None:
@@ -225,6 +234,8 @@ class DefaultLoop(Plugin):
         async for item in planner(ctx):
             if isinstance(item, str):
                 yield LoopEvent("reply_delta", {"text": item})
+            elif isinstance(item, Thinking):
+                yield LoopEvent("loop.reasoning", {"text": item.delta})
             else:
                 yield item
 
@@ -237,7 +248,9 @@ class DefaultLoop(Plugin):
         ctx = self.perceive(user_input, session_id=session_id)
         self._consult_notes(ctx, trace_id)
         limit_reason = ""
-        streamed = False  # 本轮循环是否已流式外发 reply_delta（避免终态重复全文）
+        # 本轮循环是否已流式外发**回复**增量（避免终态重复全文）。判据**只认** `reply_delta`：
+        # 思考回显事件（`loop.reasoning`）与回复增量同形相异类，计入会吞掉终态补发。
+        streamed = False
         while not ctx.done():
             if ctx.rounds >= self._max_rounds:
                 limit_reason = "LOOP_LIMIT_EXCEEDED"
@@ -245,7 +258,7 @@ class DefaultLoop(Plugin):
             action: Action | None = None
             async for item in self._reason_events(ctx):
                 if isinstance(item, LoopEvent):
-                    streamed = True
+                    streamed = streamed or item.type == "reply_delta"
                     yield item
                 else:
                     action = item

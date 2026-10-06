@@ -904,6 +904,41 @@
 
 ---
 
+## 61. Think 思考过程回显链路（TC-THINK，change `0145`／ADR-0137，账本 E56~E60）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-THINK-01 | llm-provider/spec.md「默认实现与配置归一化」（E56） | 响应体 `message.reasoning_content="想"` | `LLMResponse.thinking == "想"` 且 `content` 不含该文本（锚点：`test_llm_provider.py::test_response_maps_thinking_from_reasoning_content`） |
+| TC-THINK-02 | 同上（OpenAI o 系 `reasoning` 兜底） | 响应体 `message.reasoning="想"`（无 `reasoning_content`） | `LLMResponse.thinking == "想"`（锚点：`::test_response_maps_thinking_from_openai_reasoning`） |
+| TC-THINK-03 | 同上（流式增量归一） | SSE `delta.reasoning_content` = `想` / `一下` / `好` | 逐 chunk `LLMChunk.thinking` 依次为三段（锚点：`::test_chunk_maps_thinking_delta`） |
+| TC-THINK-04 | 同上（字段缺失 ⇒ 空串，零回归） | 响应/增量均无思考字段 | `thinking == ""`，既有字段逐字不变（锚点：`::test_thinking_empty_when_absent`） |
+| TC-THINK-05 | loop/spec.md「异步流式执行」Scenario「开启时逐段产出 loop.reasoning」（E57） | `LLMPlanner(show_thinking=True)` + 桩 provider 产 `thinking` 三段 + `content="好"` | 产出序 `[Thinking("想"), Thinking("一下"), "好", Action(reply="好")]`（锚点：`test_phase13.py::test_planner_astream_emits_thinking_when_enabled`） |
+| TC-THINK-06 | 同上 Scenario「关闭时不产」（开关缺省关） | `LLMPlanner(show_thinking=False)` + 同上桩 | 产出序零 `Thinking`，与既有缺省逐字一致（锚点：`::test_planner_astream_no_thinking_when_disabled`） |
+| TC-THINK-07 | 同上 Scenario「非流式路径支持终态思考」（降级分支） | 无 `astream` 的 completion-only 桩 + `show_thinking=True` | 先 `Thinking(全文)` 后 `Action`（锚点：`::test_planner_degraded_stream_emits_terminal_thinking`） |
+| TC-THINK-08 | 同上 Scenario「关闭时不产」（降级分支） | 同上桩 + `show_thinking=False` | 零 `Thinking`（锚点：`::test_planner_degraded_stream_no_thinking_when_disabled`） |
+| TC-THINK-09 | loop/spec.md「异步流式执行」（E58：`Thinking` ⇒ `loop.reasoning`） | `DefaultLoop.astream` + `Thinking` 桩 planner | 事件序含 `("loop.reasoning", {"text": "想"})` / `{"text": "一下"}`（锚点：`test_loop.py::test_astream_thinking_planner_emits_loop_reasoning`） |
+| TC-THINK-10 | 同上（思考事件**不吞**终态全文补发） | 思考事件 + `reply_delta` 混合 | 终态回复仍完整外发（`streamed` 判据只认 `reply_delta`）（锚点：`::test_astream_thinking_events_do_not_suppress_terminal_reply`） |
+| TC-THINK-11 | 同上（红线：纯呈现层） | 思考原文经 `loop.reasoning` 外发 | 思考文本**仅**出现在 `loop.reasoning` 载荷；`_RecordingMemory.written` / 其余事件面**均不含**（锚点：`::test_thinking_only_visible_through_reasoning_event`） |
+| TC-THINK-12 | ui/spec.md「思考过程回显（Think）」（E59：映射） | 断言 `_EVENT_MAP["loop.reasoning"]` | 恒等映射；SSE 类型序 `["session.created", "loop.reasoning", "loop.delta", "loop.result"]`，载荷 `{"text": "想"}`（锚点：`test_ui.py::test_loop_reasoning_maps_to_identity_type`） |
+| TC-THINK-13 | ui/spec.md 同上 Scenario「TUI 折叠块默认收起 + 同轮归并」（E60） | TUI 消费两段 `loop.reasoning` + `reply_delta` + 终态 | **单个** 折叠块、`display is False`（缺省收起）、块内含两段思考全文、主回复不受影响（锚点：`test_repl.py::test_tui_thinking_renders_in_single_collapsed_block`） |
+| TC-THINK-14 | loop/spec.md 红线（思考**不**上子任务回流通道） | 子任务 `_ThinkingPlanner` 产 `Thinking` | 回流进度 `event` 集**不含** `loop.reasoning`；其余里程碑照常回流（锚点：`test_orchestration_progress.py::test_loop_reasoning_never_relayed`） |
+| TC-THINK-15 | 同上（白名单第二道防线） | 断言 `scheduler._PROGRESS_FIELDS` | `"loop.reasoning"` **不在**白名单内（锚点：`::test_progress_whitelist_excludes_loop_reasoning`） |
+| TC-THINK-16 | configuration/spec.md「LLM 提供商配置（必选）」子项 `show_thinking` | `llm.show_thinking` 缺省 / 原生 bool / `true·yes·on·1·TRUE·" On "` / `false·no·off·0·OFF` / 非法 `maybe·""·{}` | 缺省 `False`；真值集归一为开、假值集归一为关；非法值 `ConfigurationError` **阻断启动**（锚点：`test_configuration.py::test_show_thinking_default_off` / `_native_bool` / `_truthy_set` / `_falsy_set` / `_invalid_blocks_startup`） |
+| TC-THINK-17 | ui/spec.md（非交互 `run` 不刷屏） | `core-agent run` 消费 `loop.delta` / `loop.reasoning` / `loop.result` | 思考与增量帧**均不**逐段打印；终态回复照常打印（锚点：`test_entry.py::test_run_stream_skips_reasoning_frames`） |
+
+> **手工验收项（无自动门禁）**：
+> 1. **真端点字段取证**（ADR-0137 已知局限①）—— 「实测 glm-5.3 流式思考字段名」被**凭据物化**阻断
+>    （`config.yaml` 密钥只引用不读取、绝不回显），双键归一按公开口径（`reasoning_content` 优先 /
+>    `reasoning` 兜底）落地。**须**在具备密钥的环境下对 `provider=zai / model=glm-5.3` 跑一次真实
+>    流式请求，确认 `delta` 的思考字段落于两键之内；若落在两键之外，仅需扩 `_thinking_text` 的键位
+>    （单点）而无涉链路。
+> 2. **Web (Svelte) 渲染** —— 前端无 JS 测试面，`Chat.svelte` 的 `<details>` 折叠块（增量追加、
+>    缺省收起、终态不改写）**须**浏览器手工验收：开启 `llm.show_thinking` 后发一条触发思考的消息，
+>    确认折叠块出现且缺省收起、展开见全文、会话切换后清空。
+> 3. **APP 同构面** —— 复用同一 SPA 产物（§4 约束 1），随 Web 面验收。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

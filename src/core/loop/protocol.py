@@ -58,6 +58,18 @@ class LoopContext:
         self._done = True
 
 
+@dataclass(frozen=True)
+class Thinking:
+    """推理原文增量（change `0145` / ADR-0137 / 账本 E57）。
+
+    planner 流式协议中与 ``str``（回复增量）、``Action``（终态动作）**并存**的第三类
+    item：仅在思考回显开启时外发，转 ``loop.reasoning`` 事件供三端折叠呈现 —— **纯呈现层**，
+    不进转录 / 记忆 / 日志 / trace，亦不经子任务运行态回流。
+    """
+
+    delta: str
+
+
 @dataclass
 class Action:
     """模型决策的下一步动作；tool_id 为空串表示本轮结束（终止动作）。"""

@@ -65,6 +65,7 @@ class LLMResponse:
     provider: str  # 审计标注：实际响应的 provider
     model: str  # 审计标注：实际使用的 model
     tool_calls: list[ToolCall] | None = None  # 原生 function call（缺失走 content 协议）
+    thinking: str = ""  # 推理原文（归一化后；与 content **互不拼接**，缺省空串）
 
 
 @dataclass
@@ -80,3 +81,4 @@ class LLMChunk:
 
     content: str
     tool_calls: list[ToolCall] | None = None  # delta.tool_calls 增量片段
+    thinking: str = ""  # 推理原文增量（归一化后；缺省空串）

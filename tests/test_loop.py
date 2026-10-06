@@ -10,7 +10,7 @@ import asyncio
 import time
 
 from core.context import Compactor
-from core.loop import Action, DefaultLoop
+from core.loop import Action, DefaultLoop, Thinking
 from core.memory import MemoryEntry, MemoryStore
 from core.observability import TraceEvent, Tracer
 from core.plugin_registry import CoeffectResolver
@@ -163,6 +163,49 @@ def test_astream_non_streaming_planner_keeps_full_delta() -> None:
     events = _collect_events(loop, "问题")
     deltas = [e for e in events if e.type == "reply_delta"]
     assert len(deltas) == 1 and deltas[0].payload == {"text": "ok"}
+
+
+# ---- 思考回显事件面（change 0145 / 账本 E58）----
+
+
+class _ThinkingPlanner:
+    """duck-typed 流式 planner：外发 `Thinking` 增量（+ 可选回复增量）后产终 Action。"""
+
+    def __init__(self, items: list[object], action: Action) -> None:
+        self._items = items
+        self._action = action
+
+    async def astream(self, ctx):
+        for item in self._items:
+            yield item
+        yield self._action
+
+
+def test_astream_thinking_planner_emits_loop_reasoning() -> None:
+    """planner 外发 `Thinking` ⇒ 逐段转 `loop.reasoning`（与 `reply_delta` 类型相异）。"""
+    loop = DefaultLoop(
+        planner=_ThinkingPlanner(
+            [Thinking("想"), Thinking("一下"), "好"], Action(args={"reply": "好"})
+        )
+    )
+    events = _collect_events(loop, "问题")
+    reasoning = [(e.type, e.payload) for e in events if e.type == "loop.reasoning"]
+    deltas = [(e.type, e.payload) for e in events if e.type == "reply_delta"]
+    assert reasoning == [
+        ("loop.reasoning", {"text": "想"}),
+        ("loop.reasoning", {"text": "一下"}),
+    ]
+    assert deltas == [("reply_delta", {"text": "好"})]
+    assert events[-1].payload.reply == "好"
+
+
+def test_astream_thinking_events_do_not_suppress_terminal_reply() -> None:
+    """`streamed` 判据只认 `reply_delta`：仅思考事件不吞终态全文补发。"""
+    loop = DefaultLoop(planner=_ThinkingPlanner([Thinking("想")], Action(args={"reply": "好"})))
+    events = _collect_events(loop, "问题")
+    deltas = [(e.type, e.payload) for e in events if e.type == "reply_delta"]
+    assert deltas == [("reply_delta", {"text": "好"})]
+    assert [e.type for e in events if e.type == "loop.reasoning"] == ["loop.reasoning"]
 
 
 # ---- 端到端冒烟：loop 驱动 tool-use + memory ----
@@ -733,6 +776,19 @@ def test_memory_session_defaults_empty() -> None:
     loop = DefaultLoop(planner=lambda ctx: Action(args={"reply": "done"}), memory=memory)  # type: ignore[arg-type]
     loop.run("任务")
     assert [entry.session_id for entry in memory.written] == [""]
+
+
+def test_thinking_only_visible_through_reasoning_event() -> None:
+    """思考原文仅经 `loop.reasoning` 可见：其余事件面与记忆沉淀均不含（红线）。"""
+    memory = _RecordingMemory()
+    loop = DefaultLoop(
+        planner=_ThinkingPlanner([Thinking("内部草稿")], Action(args={"reply": "结论"})),
+        memory=memory,  # type: ignore[arg-type]
+    )
+    events = _collect_events(loop, "任务")
+    assert [e.type for e in events if "内部草稿" in str(e.payload)] == ["loop.reasoning"]
+    assert "内部草稿" not in "\n".join(entry.content for entry in memory.written)
+    assert "结论" in "\n".join(entry.content for entry in memory.written)
 
 
 # ---- 记忆维护节拍（spec：执行循环「维护节拍触发遗忘」） ----

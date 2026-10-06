@@ -3799,6 +3799,55 @@
 
 ---
 
+## ADR-0137：Think 思考过程回显链路（change 0145 / phase-32 E56~E60）
+
+- **背景**：`phase-32.md` 提案的「聊天窗口 Think 思考过程回显」是**一条链全断**：provider 解析
+  **丢** `reasoning_content`（E56）⇒ planner 的 `astream` 协议**无**思考通道（E57）⇒ loop
+  永不 emit `loop.reasoning`（E58）⇒ `ui/api.py::_EVENT_MAP` 未登记该类型（E59）⇒ 三端不渲染
+  （E60）。五层任缺其一则用户**不可见**，故五处 delta 必须**一次落齐**（不可拆 change）。
+- **决策①：口径归一收在 provider 层，单内部字段 `thinking`。** `LLMResponse` / `LLMChunk` 各增
+  `thinking: str = ""`；`stdlib_provider._thinking_text(message)` 双键归一 —— **`reasoning_content`
+  优先**（GLM / DeepSeek 系），`reasoning` **兜底**（OpenAI o 系），两者皆缺 / 非字符串 ⇒ 空串。
+  理由：差异只发生在**一家 SDK 的字段名**上，归一化放得越靠上游，下游（planner / loop / UI）
+  越不必知道「是哪家」。**绝不掺入 `content`** —— 思考原文与回复正文是两个语义，混进 `content`
+  会被下游当作回复落进转录（破红线）。
+- **决策②：通道用**新增 dataclass item**，不改 `str` 协议。** `loop/protocol.py` 增
+  `Thinking(delta: str)`（frozen）；`LLMPlanner.astream` 返回型扩为
+  `AsyncIterator[str | Action | Thinking]`。理由：`astream` 既有两种 item（`str` 回复增量 /
+  `Action` 终态）承载的是**互斥语义**（增量 vs 终态），若用「带标记的 str」表达思考会污染既有
+  判据（`chunk.content.startswith("{")` 的工具调用嗅探、`reply_stream` 判定）；新增类型让
+  `isinstance` 分流**显式且零歧义**，且既有消费方（`default.py::_reason_events`）的 `str` / `Action`
+  分支逐字不动。
+- **决策③：开关挂在 planner 实例，且**只注入主 planner**。** `LLMPlanner(show_thinking=False)`
+  （缺省关）；`runtime.py:597` 主 planner 注入 `app.llm.show_thinking`，**子任务 / 神兽 / 宠物
+  planner 不注入**。理由：①缺省关 ⇒ 事件面与既有缺省**逐字一致**（`show_thinking and chunk.thinking`
+  短路，零 `Thinking` 产出）；②「思考原文**不上**子任务回流通道」这条红线由**注入面**天然保证，
+  不依赖 `scheduler._PROGRESS_FIELDS` 白名单去兜 —— 白名单是**第二道**防线（`loop.reasoning`
+  不登记，见决策⑤）。
+- **决策④：`_reason_events` 增 `Thinking ⇒ loop.reasoning` 分支，并把 `streamed` 判据收窄
+  为**只认 `reply_delta`**。** 原判据 `streamed = streamed or item.type.startswith("reply")` 在
+  思考事件出现时会把 `streamed` 置真 ⇒ **吞掉**终态全文补发（用户看到半句）。收窄为
+  `item.type == "reply_delta"` 后：思考事件**不**参与「是否已流式」判定，终态补发照旧。这是本
+  change **修掉的既有隐患**（开关开启时才会显形）。
+- **决策⑤：`_EVENT_MAP` 登记 `loop.reasoning` 为**恒等映射**。** `ui/api.py::_EVENT_MAP` 是
+  显式契约表（SSE 类型 → 前端事件名）；`_map_event` 对未登记类型本有**恒等兜底**，故严格说
+  登记**非行为必需** —— 但显式登记使「该类型是**有意**透传，不是漏登记走了兜底」在代码面**可读**，
+  并被 `test_ui.py` 以**契约表断言**钉住。三端渲染一律**折叠块默认收起**（TUI 单块 `▸ 思考`、
+  同轮增量归并；Web `<details>`；APP 同构）。
+- **已知局限**：① 第一步「**实测** glm-5.3 实际流式字段名」被**凭据物化**阻断（`config.yaml`
+  密钥只引用不读取、绝不回显）⇒ 双键归一按 **GLM/DeepSeek 系 `reasoning_content` + OpenAI o 系
+  `reasoning`** 的公开口径落地，**真端点字段取证转为手工验收项**（记 `04-testing/test-cases.md`
+  TC-THINK-05）。若实测字段名不在两键之内，只需扩 `_thinking_text` 的键位（单点）而无涉链路。
+  ② 前端 (Svelte) 无 JS 测试面 ⇒ `Chat.svelte` 渲染同记手工验收项（TC-THINK-04）。③ 思考原文
+  **不进**转录 / 记忆 / 日志 / 事件持久化（守 change `0115` 边界，`test_loop.py` 以红线断言钉住
+  `_RecordingMemory.written` 不含思考文本）。
+- **规格**：`llm-provider`「默认实现与配置归一化」（MODIFIED）、`loop`「异步流式执行」
+  （MODIFIED）、`ui`「思考过程回显（Think）」（**ADDED**）、`configuration`「LLM 提供商配置（必选）」
+  （MODIFIED）；接口面 `03-interfaces/llm-provider-interface.md`、`03-interfaces/loop-interface.md`、
+  `03-interfaces/ui-interface.md`、`00-product/user-guide.md`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3930,3 +3979,4 @@
 | ADR-0134 | 03-interfaces/core-profile-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0135 | 03-interfaces/composition-interface.md, 03-interfaces/deployment-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0136 | 03-interfaces/durability-interface.md, coding-plan/cli-contract-baseline.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0137 | 03-interfaces/llm-provider-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/ui-interface.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/phase-32.md |

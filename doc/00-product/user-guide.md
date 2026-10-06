@@ -162,6 +162,7 @@ LLM 归一化经 stdlib OpenAI 兼容 HTTP，配置项与主 Agent 配置同源�
 | 键 | 说明 |
 |---|---|
 | `llm.embedding_model` | 记忆检索向量化模型（如 `text-embedding-3-small`），复用 `endpoint` 与密钥引用。未设置或不可达时记忆检索回退词法相似，不影响启动。 |
+| `llm.show_thinking` | **思考过程回显**开关（change `0145`）。开启后三端（TUI / Web / APP）以**折叠块**呈现模型的思考原文，**缺省收起**、可展开；**缺省 `false`（关）** ⇒ 不产思考事件、输出与既有缺省逐字一致。取值 `true/false`·`yes/no`·`on/off`·`1/0`（大小写不敏感），其余取值**阻断启动**。思考原文**只**用于呈现，不进转录 / 记忆 / 日志。 |
 
 覆盖层（CLI flag > env > yaml）：
 

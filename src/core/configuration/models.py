@@ -41,6 +41,7 @@ class LLMConfig:
     reasoning_effort: str | None = None  # 推理档位 low/medium/high（可选）
     embedding_model: str = ""  # 记忆检索向量化模型（可选；空=不注入 embedder，回退词法）
     context_window: int = 0  # 模型上下文窗口（可选；0=未配置，不派生预算 —— 见 loop 预算控制）
+    show_thinking: bool = False  # 思考回显开关（可选；缺省关 ⇒ 事件面零新增，见 loop / ui）
 
 
 @dataclass(frozen=True)

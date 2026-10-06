@@ -1104,3 +1104,27 @@ def test_repl_without_flag_passes_empty_session(monkeypatch, tmp_path) -> None:
 
     assert main(["--config", _write_config(tmp_path)]) == 0
     assert captured["session_id"] == ""
+
+
+def test_run_stream_skips_reasoning_frames(capsys: pytest.CaptureFixture[str]) -> None:
+    """思考回显不逐段刷屏：`loop.reasoning` 与 `loop.delta` 同处置（change 0145 / 账本 E56~E60）。
+
+    非交互 `core-agent run` 无折叠块可承载思考原文 ⇒ 逐段打印只会刷屏；完整回复由终态
+    `loop.result` 携带（与 `loop.delta` 同判据）。
+    """
+    import asyncio  # noqa: PLC0415 — 驱动异步 `_stream`
+
+    from core.entry import _stream  # noqa: PLC0415 — 内部流式打印口径
+    from core.ui import Event  # noqa: PLC0415 — 事件构造
+
+    class _Api:
+        async def run_loop(self, session_id: str, prompt: str):
+            yield Event(type="loop.delta", payload={"text": "你"})
+            yield Event(type="loop.reasoning", payload={"text": "内部草稿"})
+            yield Event(type="loop.result", payload="好了")
+
+    asyncio.run(_stream(_Api(), "s", "hi"))  # type: ignore[arg-type]
+    out = capsys.readouterr().out
+    assert "内部草稿" not in out
+    assert "你" not in out
+    assert "[loop.result] 好了" in out

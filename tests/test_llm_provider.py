@@ -233,6 +233,87 @@ def test_astream_parses_sse() -> None:
     assert body["stream"] is True
 
 
+# ---- 推理原文归一（change 0145 / 账本 E56）----
+
+
+def _completion(payload: dict) -> LLMResponse:
+    provider = _make_provider(_FakeTransport(_fake_json_response(payload)))
+    return asyncio.run(
+        provider.acompletion(LLMRequest(messages=[Message("user", "hi")], model="m"))
+    )
+
+
+def _chunks(lines: list[bytes]) -> list[LLMChunk]:
+    provider = _make_provider(_FakeTransport(_stream_response(lines)))
+
+    async def _collect() -> list[LLMChunk]:
+        return [
+            chunk
+            async for chunk in provider.astream(
+                LLMRequest(messages=[Message("user", "hi")], model="m")
+            )
+        ]
+
+    return asyncio.run(_collect())
+
+
+def _sse_lines(*payloads: str) -> list[bytes]:
+    """把 JSON 载荷串编成 SSE `data:` 行（UTF-8 字节）并以 `[DONE]` 收尾。"""
+    return [f"data: {payload}\n".encode() for payload in payloads] + [b"data: [DONE]\n"]
+
+
+def test_response_maps_thinking_from_reasoning_content() -> None:
+    """非流式：`message.reasoning_content` 归一为 `thinking`（与正文分属两字段，互不拼接）。"""
+    result = _completion(
+        {
+            "choices": [
+                {
+                    "message": {"content": "答案 42", "reasoning_content": "先算 6×7"},
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+    )
+    assert result.thinking == "先算 6×7"
+    assert result.content == "答案 42"
+
+
+def test_response_maps_thinking_from_openai_reasoning() -> None:
+    """OpenAI 兼容口径 `reasoning`：同归一为 `thinking`（两家既有口径并存）。"""
+    result = _completion(
+        {
+            "choices": [
+                {"message": {"content": "答案", "reasoning": "推理全文"}, "finish_reason": "stop"}
+            ]
+        }
+    )
+    assert result.thinking == "推理全文"
+
+
+def test_chunk_maps_thinking_delta() -> None:
+    """流式：`delta.reasoning_content` 逐段归一为 `thinking`，`content` 逐字不受影响。"""
+    chunks = _chunks(
+        _sse_lines(
+            '{"choices":[{"delta":{"reasoning_content":"想"}}]}',
+            '{"choices":[{"delta":{"reasoning_content":"一下"}}]}',
+            '{"choices":[{"delta":{"content":"好"}}]}',
+        )
+    )
+    assert [c.thinking for c in chunks] == ["想", "一下", ""]
+    assert [c.content for c in chunks] == ["", "", "好"]
+
+
+def test_thinking_empty_when_absent() -> None:
+    """端点未返回推理字段 ⇒ `thinking` 为空串，既有字段解析逐字不变（零回归）。"""
+    response = _completion({"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]})
+    assert response.thinking == ""
+    assert response.content == "hi"
+    assert (
+        _chunks([b'data: {"choices":[{"delta":{"content":"x"}}]}\n', b"data: [DONE]\n"])[0].thinking
+        == ""
+    )
+
+
 def test_response_maps_native_tool_calls() -> None:
     """非流式：message.tool_calls 归一为 ToolCall（原生 function call 协议）。"""
     provider = _make_provider()

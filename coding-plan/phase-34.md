@@ -138,7 +138,7 @@
 | 14 | 34 | **E84** 双 bundle 哈希口径 | 账目校准 | 低 | D |
 | 15 | 34 | **E85** 题词模板 doc-only（○） | 账目校准 | 低 | D |
 | 16 | 34 | E69 / E70 / E73 / E75 / E78 / E79 / E80 / E81 / E83 / E87 | 单点小修 | 低 | 随批 |
-| **F1** | **32** | **E56~E60** Think 回显（provider → planner → loop → UI 映射 → 三端） | **新能力 feature**（链式五段） | 取决需求 | **32-A / 32-B / 32-C** |
+| **F1** | **32** | **E56~E60** Think 回显（provider → planner → loop → UI 映射 → 三端） | **新能力 feature**（链式五段） | 取决需求 | **32-A / 32-B / 32-C** ⇒ **已落地（change `0145` / ADR-0137）** |
 
 **推荐执行序**：
 
@@ -194,6 +194,20 @@
 | `0142` | E85 | ✅ 已落地（2026-10-07） | ADR-0134 |
 | `0143` | E84-a | ✅ 已落地（2026-10-07） | ADR-0135 |
 | `0144` | E73 | ✅ 已落地（2026-10-07） | ADR-0136 |
-| `0145` | E56~E60 | ⏳ 待实施 | — |
+| `0145` | E56~E60 | ✅ 已落地（2026-10-07，feature 支线） | ADR-0137 |
 
 **终裁（本轮锁定，2026-10-06）**：范围 = 含 Think 回显（全做）；E73 / E77 死面 = 都补齐接线；E78 = 规格改两档；E80 = 回退成功即返回官方源结果。
+
+**feature 支线落点（E56~E60，change `0145` / ADR-0137，2026-10-07）**：phase-32 五层一条链**一次落齐**（不可拆）：
+
+| 账 | 层 | 落点 |
+|---|---|---|
+| **E56** | provider 数据面 | `llm_provider/models.py` 加 `LLMResponse.thinking` / `LLMChunk.thinking`；`stdlib_provider._thinking_text` **双键归一**（`reasoning_content` 优先 / `reasoning` 兜底，缺 / 非字符串 ⇒ 空串），`_map_response` / `_map_chunk` 各接一处；`thinking` **绝不掺入 `content`** |
+| **E57** | planner 通道 | `loop/protocol.py` 新增 `Thinking(delta)` frozen dataclass（**不改 `str` 协议**）；`LLMPlanner(show_thinking=…)` + `astream` 产出型扩为 `str \| Action \| Thinking`，`_complete` 携终态思考（`__call__` / 降级分支共用） |
+| **E58** | loop 事件面 | `loop/default.py::_reason_events` `Thinking ⇒ LoopEvent("loop.reasoning", {"text": …})`；`streamed` 判据**收窄为只认 `reply_delta`**（思考事件不吞终态全文补发） |
+| **E59** | UI 映射 | `ui/api.py::_EVENT_MAP` 登记 `"loop.reasoning": "loop.reasoning"`（**恒等**，注明有意透传；`ui/models.py` docstring 同步） |
+| **E60** | 三端呈现 | TUI `repl.py::_add_reasoning_widget`（**单块** `▸ 思考`、缺省收起、同轮增量归并）；Web `Chat.svelte` `<details>` 块（增量追加、终态不改写）；APP 复用同一 SPA。开关 `llm.show_thinking`（**缺省关**）经 `configuration` 双处读取（`_build_config` / `_merge_patch`）＋ `_llm_show_thinking` 归一（非法 ⇒ `ConfigurationError` 阻断），**只注入主 planner**（子任务 / 神兽 / 宠物 planner 不注入 ⇒ 思考不上子任务回流链） |
+
+- **红线守点**：`loop.reasoning` ∉ `scheduler._PROGRESS_FIELDS`（`test_orchestration_progress.py` 钉住）＋ 思考原文 ∉ 转录 / 记忆 / 日志 / trace（`test_loop.py` 钉住）；`entry.py::_stream` 对 `loop.delta` / `loop.reasoning` 同处置（非交互 `run` 不刷屏）。
+- **已知局限**：① 「**实测** glm-5.3 流式思考字段名」被**凭据物化**阻断（密钥只引用不读取、绝不回显）⇒ 双键归一按公开口径落地，**真端点字段取证转手工验收**（`doc/04-testing/test-cases.md` §61 TC-THINK 手工项 1）；若实测字段落于两键之外，只扩 `_thinking_text` 键位（单点）。② `Chat.svelte` 渲染无 JS 门禁 ⇒ 手工验收（TC-THINK 手工项 2/3）。
+- **规格面**：`llm-provider` MODIFIED ＋ `loop` MODIFIED ＋ `ui` **ADDED** ＋ `configuration` MODIFIED（**非** `skip_specs`，`validate --all` 31/0 ⇒ 归档后 30/0）。四门禁：`ruff check` / `ruff format --check` 全绿、`pyright` **0/0/0**、`pytest -q` **1729 passed**（基线 1697 + 32）。

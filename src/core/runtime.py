@@ -598,6 +598,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         llm,
         model=app.llm.model,
         reasoning_effort=app.llm.reasoning_effort,
+        # 思考回显**只注入主 planner**（change 0145 / ADR-0137）：子任务 / 神兽 / 宠物 planner
+        # 不注入 ⇒ 思考原文不上子任务运行态回流通道（红线，见 loop「异步流式执行」）。
+        show_thinking=app.llm.show_thinking,
         assembler=assembler,
         skill_router=loop_hints,
         tools=tools,

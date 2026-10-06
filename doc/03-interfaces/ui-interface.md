@@ -79,7 +79,7 @@ class UIAPILayer:
 |---|---|---|
 | `session.created` | session_id | 会话建立 |
 | `loop.perception` | turn_id, observation | 感知阶段 |
-| `loop.reasoning` | turn_id, plan | 推理阶段（折叠块展示） |
+| `loop.reasoning` | text | **思考原文增量**（`Thinking` item 映射；**与 `loop.delta` 同形相异类**，change `0145`/ADR-0137）—— 仅 `show_thinking=True` 时产出，三端**折叠块默认收起**呈现（TUI 单块 `▸ 思考`、同轮增量归并；Web `<details>`；APP 同构），关闭时不产、输出与既有缺省逐字一致 |
 | `loop.action` | turn_id, action | 回合推进（step_completed 映射，既有契约） |
 | `loop.action_started` | round, tool_id, args | 工具动作开工（⏺ 动作行，TUI 折叠块呈现） |
 | `loop.action_completed` | round, tool_id, ok, duration_ms, output | 工具动作收尾（标题落 ✓/✗+耗时，展开含输出节选） |

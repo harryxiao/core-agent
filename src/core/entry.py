@@ -1502,8 +1502,9 @@ async def _stream(api: UIAPILayer, session_id: str, prompt: str) -> None:
     async for event in api.run_loop(session_id, prompt):
         payload = event.payload if event.payload is not None else ""
         # 增量帧（Event 层映射为专类型 loop.delta，change `0132` / ADR-0125）不逐行打印，
-        # 完整回复由终态 LoopResult 事件（loop.result）携带
-        if event.type == "loop.delta":
+        # 完整回复由终态 LoopResult 事件（loop.result）携带；思考回显（loop.reasoning，
+        # change 0145 / ADR-0137）同判据 —— 非交互入口无折叠块可承载，逐段打印只会刷屏
+        if event.type in ("loop.delta", "loop.reasoning"):
             continue
         if event.type.startswith("loop.action_"):  # 工具动作行（与 TUI 同构单行）
             line = format_action_event(event.type.removeprefix("loop."), payload)

@@ -79,6 +79,17 @@ def _iter_sse_payloads(resp: Any) -> Iterator[str]:
         yield payload
 
 
+def _thinking_text(message: dict[str, Any]) -> str:
+    """推理原文归一（change `0145` / ADR-0137 / 账本 E56）。
+
+    兼容**两家既有口径**：`reasoning_content`（GLM/DeepSeek 系）与 `reasoning`
+    （OpenAI o 系）—— 前者优先。取值恒为字符串、**绝不掺入 `content`**（两字段分属
+    正文与推理，拼接会污染回复正文与转录）；字段缺失 / 非字符串 ⇒ 空串（零回归）。
+    """
+    raw = message.get("reasoning_content") or message.get("reasoning")
+    return raw if isinstance(raw, str) else ""
+
+
 class StdlibLLMProvider(LLMProvider):
     """默认实现：stdlib 直连 OpenAI 兼容端点（零第三方运行时依赖）。"""
 
@@ -243,6 +254,7 @@ class StdlibLLMProvider(LLMProvider):
             provider="stdlib",
             model=model,
             tool_calls=self._map_tool_calls(message.get("tool_calls")),
+            thinking=_thinking_text(message),
         )
 
     def _map_chunk(self, part: Any) -> LLMChunk:
@@ -253,6 +265,7 @@ class StdlibLLMProvider(LLMProvider):
         return LLMChunk(
             content=str(delta.get("content") or ""),
             tool_calls=self._map_tool_calls(delta.get("tool_calls")),
+            thinking=_thinking_text(delta),
         )
 
     @staticmethod

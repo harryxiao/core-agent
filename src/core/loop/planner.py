@@ -18,7 +18,7 @@ from core.context import DynamicAssembler
 from core.llm_provider import LLMError, LLMProvider, LLMRequest, Message, ToolCall
 from core.tools import ToolProvider
 
-from .protocol import Action, LoopContext
+from .protocol import Action, LoopContext, Thinking
 
 # 解析模型输出失败时的结构化错误码（终端回复，不中断循环）。
 _PARSE_FAILED = "LLM_PLAN_PARSE_FAILED"
@@ -49,6 +49,7 @@ class LLMPlanner:
         *,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        show_thinking: bool = False,
         assembler: DynamicAssembler | None = None,
         # 技能路由：``(task, session_id)``——既有 1 参闭包/替身仍可赋值（可选第二实参）
         skill_router: Callable[..., list[SkillHint]] | None = None,
@@ -57,30 +58,44 @@ class LLMPlanner:
         self._llm = llm
         self._model = model
         self._reasoning_effort = reasoning_effort
+        self._show_thinking = show_thinking
         self._assembler = assembler
         self._skill_router = skill_router
         self._tools = tools
 
     async def __call__(self, ctx: LoopContext) -> Action:
+        action, _ = await self._complete(ctx)
+        return action
+
+    async def _complete(self, ctx: LoopContext) -> tuple[Action, str]:
+        """非流式一次补全 →（终态动作, 推理原文）。``__call__`` 与降级分支共用。"""
         request = self._build_request(ctx)
         try:
             response = await self._llm.acompletion(request)
         except LLMError as exc:
-            return Action(args={"reply": f"LLM 调用失败: {exc}"})
+            return Action(args={"reply": f"LLM 调用失败: {exc}"}), ""
         if response.tool_calls:  # 原生 function call 优先于 content 协议
-            return self._from_tool_calls(response.tool_calls)
-        return self._parse(response.content)
+            return self._from_tool_calls(response.tool_calls), response.thinking
+        return self._parse(response.content), response.thinking
 
-    async def astream(self, ctx: LoopContext) -> AsyncIterator[str | Action]:
+    async def astream(  # noqa: C901 — 长管道：降级分支 + 回复增量 + 原生工具片段 + 思考增量
+        self, ctx: LoopContext
+    ) -> AsyncIterator[str | Action | Thinking]:
         """流式推理：自然语言回复逐 delta 外发，末态产出终 Action。
 
         首个 ``{`` 判定为工具调用 JSON：缓冲不外泄（逐 token 外发半截 JSON 无意义），
         拼完整后走 ``_parse``；原生 tool_calls 片段按 index 累积（name/arguments），
         同样缓冲不外发。provider 不支持流式（缺 astream）或流式失败时与
         ``__call__`` 同语义（终端回复，不抛裸异常）。
+
+        思考回显开启（``show_thinking``）时**额外**外发 ``Thinking`` 增量；关闭时该
+        分支整体不产出（事件面与既有缺省逐字一致）。
         """
         if not hasattr(self._llm, "astream"):
-            yield await self(ctx)  # completion-only provider：退化为单 Action，无 delta
+            action, thinking = await self._complete(ctx)  # completion-only provider
+            if self._show_thinking and thinking:
+                yield Thinking(thinking)  # 终态思考一次性全文（先于终态动作）
+            yield action
             return
         request = self._build_request(ctx)
         chunks: list[str] = []
@@ -95,6 +110,8 @@ class LLMPlanner:
                     index = fragment.index
                     tool_names[index] = tool_names.get(index, "") or fragment.tool_id
                     tool_args[index] = tool_args.get(index, "") + fragment.arguments
+                if self._show_thinking and chunk.thinking:
+                    yield Thinking(chunk.thinking)  # 纯思考增量的 chunk 无 content，先行外发
                 if not chunk.content:
                     continue
                 chunks.append(chunk.content)

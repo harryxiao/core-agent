@@ -8,10 +8,14 @@
   let lines = $state([]);
   let busy = $state(false);
   let error = $state("");
+  // 思考回显（change 0145 / ADR-0137）：**纯呈现**态 —— 独立于 `lines`（不落转录、不参与
+  // 会话回放），单轮归并到同一折叠块、终态帧不改写；未开启时恒为空串（不渲染任何块）。
+  let thinking = $state("");
 
   // 切会话 ⇒ 拉该会话转录并按追加次序渲染（竞态守门：回来时目标会话已变则丢弃）。
   $effect(() => {
     const sid = sessionId;
+    thinking = ""; // 切会话 ⇒ 丢弃上一会话的思考块（呈现态，不入转录）
     if (!sid) {
       lines = [];
       return;
@@ -40,6 +44,7 @@
     error = "";
     busy = true;
     input = "";
+    thinking = ""; // 新一轮 ⇒ 思考块重新起（同轮增量归并到同一块）
     lines = [...lines, { role: "user", text }];
     try {
       for await (const ev of runStream(sessionId, text)) {
@@ -55,6 +60,10 @@
           } else {
             lines = [...lines, { role: "agent", text: delta, streaming: true }];
           }
+        } else if (ev.type === "loop.reasoning") {
+          // 思考回显（专类型，载荷 {text}）：追加到**同一**折叠块 —— 不逐帧新建块、不渲染
+          // JSON 载荷；纯呈现层（不落 `lines`），终态帧不改写该块。
+          thinking += String(ev.payload.text ?? "");
         } else if (ev.type === "loop.result" || ev.type === "loop.error") {
           // 终态帧：若本轮有流式行则**原位收口**为完整回复（不重复一行），否则新建行。
           const reply = ev.payload.reply ?? ev.payload.message ?? JSON.stringify(ev.payload);
@@ -82,6 +91,12 @@
       <li class={line.role}><strong>{line.role}</strong> {line.text}</li>
     {/each}
   </ul>
+  {#if thinking}
+    <details class="thinking">
+      <summary>思考</summary>
+      <pre>{thinking}</pre>
+    </details>
+  {/if}
   {#if error}<p class="error">{error}</p>{/if}
   <form
     onsubmit={(e) => {
@@ -121,6 +136,20 @@
   }
   .error {
     color: #cf222e;
+  }
+  details.thinking {
+    margin-bottom: 0.4rem;
+    color: #59636e;
+    font-size: 0.9rem;
+  }
+  details.thinking summary {
+    cursor: pointer;
+  }
+  details.thinking pre {
+    margin: 0.3rem 0 0;
+    white-space: pre-wrap;
+    font: inherit;
+    color: #59636e;
   }
   form {
     display: flex;

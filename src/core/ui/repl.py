@@ -346,6 +346,7 @@ Collapsible > CollapsibleTitle:hover {
             self._focus_box: Collapsible | None = None  # 焦点折叠块（身份绑定：sid 跨任务复用）
             self._focus_detail: Static | None = None  # 焦点折叠块详情（面板正文取此渲染文本）
             self._actions: dict[str, tuple[Collapsible, Static]] = {}  # round:tool→(块, 详情)
+            self._reasoning: tuple[Collapsible, Static] | None = None  # 本轮思考块（同轮归并）
             self._spin_timer: Timer | None = None  # 工作状态行驱动
             self._spin_t0 = 0.0
             self._spin_idx = 0
@@ -682,6 +683,28 @@ Collapsible > CollapsibleTitle:hover {
                 box.title = f"⏺ {tool} ✗"
             detail.update(f"输出：{data.get('output', '')}")
 
+        def _add_reasoning_widget(self, event: Event) -> None:
+            """思考回显事件 → `▸ 思考` 折叠块（change `0145` / ADR-0137 / 账本 E60）。
+
+            **缺省收起**（标题可见、正文藏折叠区）；同一轮的增量**归并到同一块**（增量追加，
+            不逐段新建）。思考原文是**纯呈现层**：只在此处落块，不进转录 / 记忆 / 日志。
+            """
+            payload = event.payload
+            if not isinstance(payload, dict):
+                return
+            text = str(cast(dict[str, Any], payload).get("text", ""))
+            if not text:
+                return
+            entry = self._reasoning
+            if entry is None:
+                detail = Static(text, classes="hint", markup=False)
+                box = Collapsible(detail, title="▸ 思考", collapsed=True)
+                self._add(box)
+                self._reasoning = (box, detail)
+                return
+            _, detail = entry
+            detail.update(str(detail.render()) + text)
+
         def _open_subtask(self, sid: str, data: dict[str, Any]) -> None:
             """子任务开工：单行折叠块 + 验收详情（构造期入折叠区，收尾 update 补判定）。"""
             goal = str(data.get("goal", ""))
@@ -808,11 +831,15 @@ Collapsible > CollapsibleTitle:hover {
         async def _run_turn(self, text: str) -> None:
             """单轮执行：流式增量上 live、终态/错误落时间线；结束复位状态。"""
             self._spin_start("思考中")
+            self._reasoning = None  # 思考块按**轮**归并（跨轮不复用同一折叠块）
             try:
                 async for event in api.run_loop(session_id, text):
                     delta = _event_delta(event)
                     if delta is not None:
                         self._show_delta(delta)
+                        continue
+                    if event.type == "loop.reasoning":  # 思考回显（折叠块，缺省收起）
+                        self._add_reasoning_widget(event)
                         continue
                     if event.type.startswith("loop.action_"):  # 工具动作行（折叠块）
                         self._add_action_widget(event)

@@ -425,6 +425,56 @@ def test_tui_action_widget_lifecycle() -> None:
     assert "输出：1" in text  # 展开区：输出节选
 
 
+# ---- TUI 思考回显（change 0145 / 账本 E60 呈现面）----
+
+
+def test_tui_thinking_renders_in_single_collapsed_block() -> None:
+    """TUI 思考回显：`loop.reasoning` 增量归并到**单个**缺省收起折叠块，主回复不受影响。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+
+    from core.ui.repl import build_app  # noqa: PLC0415 — 可选依赖懒 import
+
+    app = build_app(api)
+
+    class _ThinkingLoop:
+        """回放思考增量、回复增量与终态的 loop 替身。"""
+
+        async def astream(self, user_input: str, *, session_id: str = ""):
+            from core.loop import LoopEvent  # noqa: PLC0415 — 事件构造
+
+            yield LoopEvent("loop_started", {"trace_id": "t1"})
+            yield LoopEvent("loop.reasoning", {"text": "先读文件"})
+            yield LoopEvent("loop.reasoning", {"text": "，再改配置"})
+            yield LoopEvent("reply_delta", {"text": "好了"})
+            yield LoopEvent("loop_finished", {"reply": "好了", "trace_id": "t1"})
+
+    api._loop = _ThinkingLoop()  # noqa: SLF001 — 注入替身驱动事件面
+
+    async def drive() -> tuple[str, int, bool, str]:
+        async with app.run_test() as pilot:
+            from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+            from textual.widgets import Collapsible, Input  # noqa: PLC0415 — 可选依赖懒 import
+
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            inp.value = "怎么做"
+            await pilot.press("enter")
+            for _ in range(30):
+                await pilot.pause()
+            boxes = list(app.query_one("#timeline", Vertical).query(Collapsible))
+            collapsed = [b.query_one(Collapsible.Contents).display is False for b in boxes]
+            return _timeline_text(app), len(boxes), all(collapsed), str(app._last_reply)
+
+    text, boxes, all_collapsed, reply = asyncio.run(drive())
+    assert boxes == 1, "同轮思考增量归并到同一块（不逐段新建）"
+    assert all_collapsed, "思考块缺省收起（标题可见、正文藏折叠区）"
+    assert "思考" in text  # 折叠块标题
+    assert "先读文件，再改配置" in text  # 增量按序拼接
+    assert reply == "好了"  # 主回复呈现不受影响（终态收口原文）
+
+
 # ---- TUI 子任务运行态与里程碑详情（change 0124 / 账本 E52） ----
 
 

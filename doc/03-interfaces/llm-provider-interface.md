@@ -61,12 +61,26 @@ class LLMResponse:
     provider: str        # 审计标注：实际响应的 provider
     model: str           # 审计标注：实际使用的 model
     tool_calls: list[ToolCall] | None = None  # 原生 function call（缺失走 content 协议）
+    thinking: str = ""                        # 推理原文（归一化后；缺省空串，见 §2.1）
 
 @dataclass
 class LLMChunk:
     content: str
     tool_calls: list[ToolCall] | None = None  # delta.tool_calls 增量片段（index 分组）
+    thinking: str = ""                        # 推理原文增量（归一化后；缺省空串，见 §2.1）
 ```
+
+### 2.1 思考原文归一（`thinking`，change `0145` / ADR-0137 / 账本 E56）
+
+`thinking` 是**推理原文**（reasoning content）的统一内部字段，承载模型的思考过程（如 GLM / DeepSeek
+的 `reasoning_content`、OpenAI o 系的 `reasoning`）。两家字段名差异**只在此处归一**，下游
+（loop / UI）只见 `thinking`，无需知道来源厂商。
+
+- **键位**：`reasoning_content` **优先**，`reasoning` **兜底**；两者皆缺或非字符串 ⇒ 空串。
+- **不与 `content` 拼接**：思考原文与回复正文是**两个语义**，`thinking` 与 `content` **互不掺和**
+  —— 否则思考文本会被下游当作回复落进转录（红线）。
+- **非流式与流式均携带**：`LLMResponse.thinking` 为该次响应的**终态全文**；`LLMChunk.thinking`
+  为**增量片段**（逐 chunk 追加即得全文）。
 
 ---
 

@@ -10,7 +10,15 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
-from core.loop import Action, DefaultLoop, LoopEvent, LoopPlugin, LoopResult, collect_result
+from core.loop import (
+    Action,
+    DefaultLoop,
+    LoopEvent,
+    LoopPlugin,
+    LoopResult,
+    Thinking,
+    collect_result,
+)
 from core.orchestration import (
     AgentProfile,
     MultiAgentRouter,
@@ -134,6 +142,44 @@ def test_reply_delta_never_relayed() -> None:
     assert progress, "里程碑仍应回流（reply_delta 排除不影响其余类型）"
     assert "reply_delta" not in {p["event"] for p in progress}
     assert "秘密" not in str(progress)
+
+
+class _ThinkingPlanner:
+    """duck-typed 流式 planner：先外发思考增量，再逐 delta 外发回复，末态终 Action。"""
+
+    def __init__(self, thinking: list[str], deltas: list[str], action: Action) -> None:
+        self._thinking = thinking
+        self._deltas = deltas
+        self._action = action
+
+    async def astream(self, ctx: Any) -> AsyncIterator[str | Action | Thinking]:
+        for delta in self._thinking:
+            yield Thinking(delta)
+        for delta in self._deltas:
+            yield delta
+        yield self._action
+
+
+def test_loop_reasoning_never_relayed() -> None:
+    """思考原文（`loop.reasoning`）不外发子任务回流 —— 与 `reply_delta` 同守「未定稿原文」边界。"""
+    loop = DefaultLoop(
+        planner=_ThinkingPlanner(["内", "部"], ["答"], Action(args={"reply": "答"})), max_rounds=3
+    )
+    events = _task_events(_scheduler(loop))
+    progress = [cast(dict[str, Any], e.payload) for e in events if e.type == "subtask_progress"]
+
+    assert progress, "里程碑仍应回流（loop.reasoning 排除不影响其余类型）"
+    assert "loop.reasoning" not in {p["event"] for p in progress}
+    assert "内部" not in str(progress)
+
+
+def test_progress_whitelist_excludes_loop_reasoning() -> None:
+    """红线：`loop.reasoning` 不在运行态回流白名单内（`_PROGRESS_FIELDS`）。"""
+    from core.orchestration.scheduler import (  # noqa: PLC0415, PLC2701 — 白名单红线锚点
+        _PROGRESS_FIELDS,
+    )
+
+    assert "loop.reasoning" not in _PROGRESS_FIELDS
 
 
 # ---- 载荷白名单化 ----

@@ -129,6 +129,45 @@ def test_resolve_secret_from_keychain(tmp_path: Path) -> None:
     assert manager.resolve_secret("${IM_SECRET}") == "im-sk"
 
 
+# ---- 思考回显开关（change 0145 / ADR-0137，账本 E60 开关面）----
+
+
+def _yaml_with_show_thinking(raw: str) -> str:
+    """把 `show_thinking` 插进 llm 段（`_VALID_YAML` 末尾已是 features 段）。"""
+    anchor = "  api_key: ${OPENAI_API_KEY}\n"
+    return _VALID_YAML.replace(anchor, anchor + f"  show_thinking: {raw}\n")
+
+
+def test_show_thinking_default_off(tmp_path: Path) -> None:
+    """缺省：`llm.show_thinking` 为**关**（既有配置逐字可载，行为零回归）。"""
+    assert _manager(tmp_path, _VALID_YAML).load().llm.show_thinking is False
+
+
+def test_show_thinking_native_bool(tmp_path: Path) -> None:
+    """原生布尔直取，不经验证期改写。"""
+    assert _manager(tmp_path, _yaml_with_show_thinking("true")).load().llm.show_thinking is True
+    assert _manager(tmp_path, _yaml_with_show_thinking("false")).load().llm.show_thinking is False
+
+
+@pytest.mark.parametrize("raw", ["true", "yes", "on", "1", "TRUE", " On "])
+def test_show_thinking_truthy_set(tmp_path: Path, raw: str) -> None:
+    """真值集合（含大小写与首尾空白变体）归一为**开**（与 feature flag 同集）。"""
+    assert _manager(tmp_path, _yaml_with_show_thinking(raw)).load().llm.show_thinking is True
+
+
+@pytest.mark.parametrize("raw", ["false", "no", "off", "0", "OFF"])
+def test_show_thinking_falsy_set(tmp_path: Path, raw: str) -> None:
+    """假值集合归一为**关** —— 不得因 `bool("<非空字符串>")` 为真被当作开启。"""
+    assert _manager(tmp_path, _yaml_with_show_thinking(raw)).load().llm.show_thinking is False
+
+
+@pytest.mark.parametrize("raw", ["maybe", "", "{}"])
+def test_show_thinking_invalid_blocks_startup(tmp_path: Path, raw: str) -> None:
+    """非法取值**当场拒绝并阻断启动**（不静默强转，错误信息指明键名与合法取值）。"""
+    with pytest.raises(ConfigurationError):
+        _manager(tmp_path, _yaml_with_show_thinking(raw)).load()
+
+
 # ---- 用户级目录回落与 .env 兜底 ----
 
 _DOTENV_YAML = _VALID_YAML.replace("${OPENAI_API_KEY}", "${CORE_TEST_DOTENV_KEY}")

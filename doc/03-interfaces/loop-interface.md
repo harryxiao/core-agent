@@ -86,10 +86,11 @@ class LoopResult:
 @dataclass
 class LoopEvent:
     type: str                   # loop_started / action_started / action_completed /
-                                # step_completed / reply_delta / loop_finished / loop_failed
+                                # step_completed / reply_delta / loop_finished / loop_failed /
+                                # loop.reasoning（推理原文增量，见 §2.1）
                                 # 动作事件仅非终止动作产出：started(round/tool_id/args 节选)、
                                 # completed(round/tool_id/ok/duration_ms/output 节选，≤400 字符)
-    payload: Any                # 事件负载（delta token / step 结果 / 终态原因）
+    payload: Any                # 事件负载（delta token / step 结果 / 终态原因 / {"text": 思考增量}）
 
 @dataclass
 class LoopContext:
@@ -111,6 +112,34 @@ class LoopContext:
 class Action:
     is_irreversible: bool       # True → 触发确认门
 ```
+
+### 2.1 思考回显通道（`Thinking` / `loop.reasoning`，change `0145` / ADR-0137 / 账本 E57~E58）
+
+规划器 `astream` 的产出 item 除既有的 `str`（回复增量）与 `Action`（终态动作）外，**新增**第三类：
+
+```python
+@dataclass(frozen=True)
+class Thinking:
+    delta: str                  # 推理原文增量（provider 归一化后的 ``thinking``）
+```
+
+**为何新增类型而非「带标记的 str」**：`astream` 既有两类 item 承载**互斥语义**（回复增量 vs 终态
+动作）；若用带标记的字符串表达思考，会污染既有判据（`content.startswith("{")` 的工具调用嗅探、
+`reply_stream` 判定）。新增 frozen dataclass 使 `isinstance` 分流**显式无歧义**，且 `default.py`
+的 `str` / `Action` 分支逐字不动。
+
+事件面：`DefaultLoop._reason_events` 把 `Thinking(delta)` 转 `LoopEvent("loop.reasoning",
+{"text": delta})`。语义约定（红线）：
+
+- **开关驱动**：仅当 `LLMPlanner(show_thinking=True)` 时产出 —— 缺省关（`False`）时事件面与既有
+  缺省**逐字一致**（零 `loop.reasoning`）。
+- **非流式路径一并支持**：provider 无 `astream` 走降级分支时，终态思考以**一次性全文**先行外发
+  （先 `Thinking` 后 `Action`）。
+- **不吞终态补发**：`astream` 的 `streamed` 判据**只认** `reply_delta`，思考事件**不**参与
+  「是否已流式」判定 —— 否则终态全文补发会被吞掉（用户只看到半句）。
+- **不进持久面**：思考原文 **SHALL NOT** 进转录 / 记忆 / 日志 / 事件持久化（守 change `0115`
+  边界）；**SHALL NOT** 进 `scheduler._PROGRESS_FIELDS` 白名单、**不外发**子任务回流通道
+  —— 由「**只**主 planner 注入 `show_thinking`」天然保证。
 
 阶段方法签名（私有，但为策略替换点）：
 

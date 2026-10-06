@@ -128,6 +128,43 @@ def test_reply_delta_maps_to_dedicated_type() -> None:
     assert not isinstance(streamed[3].payload, dict), "终态载荷为 LoopResult 对象"
 
 
+def test_loop_reasoning_maps_to_identity_type() -> None:
+    """思考回显事件以 **identity** 类型透传（change 0145 / ADR-0137 / 账本 E59）。
+
+    `loop.reasoning` 与 `loop.delta` 载荷同形（`{"text": …}`）而**类型相异**：前者为未定稿
+    推理原文、后者为回复增量，三端按专类型分别落折叠块与正文。类型须在 `_EVENT_MAP`
+    **显式**登记（该表是本层「LoopEvent → SSE 类型」的唯一契约面；缺登记虽可经 `_map_event`
+    的 identity 兜底侥幸透传，但契约面即失真）。
+    """
+    from core.loop import LoopResult  # noqa: PLC0415 — 流式事件构造
+    from core.ui.api import _EVENT_MAP  # noqa: PLC0415, PLC2701 — 契约表断言锚点
+
+    assert _EVENT_MAP["loop.reasoning"] == "loop.reasoning"
+
+    api = UIAPILayer(
+        loop=FakeLoop(
+            [
+                LoopEvent("loop_started", {"trace_id": "t1"}),
+                LoopEvent("loop.reasoning", {"text": "想"}),
+                LoopEvent("reply_delta", {"text": "好"}),
+                LoopEvent("loop_finished", LoopResult(reply="好", trace_id="t1")),
+            ]
+        )
+    )
+    api.set_llm_config(_llm())
+    session_id = api.create_session("cli")
+
+    streamed = _collect(api, session_id, "hi")
+
+    assert [e.type for e in streamed] == [
+        "session.created",
+        "loop.reasoning",
+        "loop.delta",
+        "loop.result",
+    ]
+    assert streamed[1].payload == {"text": "想"}
+
+
 # ---- 四错误码 ----
 
 

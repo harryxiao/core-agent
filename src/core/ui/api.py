@@ -36,6 +36,10 @@ _EVENT_MAP = {
     "action_started": "loop.action_started",
     "action_completed": "loop.action_completed",
     "reply_delta": "loop.delta",
+    # 思考回显（change `0145` / ADR-0137）：**有意**同名透传 —— 与 `loop.delta` 载荷同形
+    # （`{"text": …}`）而类型相异，三端据此分落折叠块与正文。显式登记而非依赖 `_map_event`
+    # 的 identity 兜底，使本表始终是「LoopEvent → SSE 类型」的完整契约面。
+    "loop.reasoning": "loop.reasoning",
     "loop_finished": "loop.result",
     "loop_failed": "loop.error",
 }

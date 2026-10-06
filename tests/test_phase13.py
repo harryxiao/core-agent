@@ -19,7 +19,7 @@ from core.configuration import ConfigManager, ConfigurationError
 from core.context import DynamicAssembler
 from core.judgment import DecisionPrimitive, DecisionResult, SkillMatcher
 from core.llm_provider import Embedding, LLMChunk, LLMError, LLMResponse, TokenUsage, ToolCall
-from core.loop import Action, DefaultLoop, LLMPlanner, LoopContext
+from core.loop import Action, DefaultLoop, LLMPlanner, LoopContext, Thinking
 from core.memory import MemoryEntry, MemoryStore
 from core.observability import TraceEvent, Tracer
 from core.permission import PermissionGuard
@@ -369,8 +369,8 @@ class _StreamingFakeLLM:
             yield item if isinstance(item, LLMChunk) else LLMChunk(content=str(item))
 
 
-def _collect_planner_stream(planner: LLMPlanner) -> list[str | Action]:
-    async def _run() -> list[str | Action]:
+def _collect_planner_stream(planner: LLMPlanner) -> list[str | Action | Thinking]:
+    async def _run() -> list[str | Action | Thinking]:
         return [item async for item in planner.astream(LoopContext(messages=["hi"]))]
 
     return asyncio.run(_run())
@@ -457,6 +457,70 @@ def test_planner_astream_accumulates_native_tool_fragments() -> None:
     )
     items = _collect_planner_stream(LLMPlanner(fake))
     assert items == [Action(tool_id="tools.echo", args={"text": "hi"})]
+
+
+# ---- 思考回显通道（change 0145 / 账本 E57）----
+
+
+class _CompletionOnlyLLM:
+    """仅支持非流式 ``acompletion`` 的假 LLM（携推理原文）。"""
+
+    def __init__(self, content: str, thinking: str = "") -> None:
+        self._content = content
+        self._thinking = thinking
+
+    async def acompletion(self, request: object) -> LLMResponse:
+        return LLMResponse(
+            content=self._content,
+            usage=TokenUsage(prompt_tokens=0, completion_tokens=0),
+            finish_reason="stop",
+            provider="fake",
+            model="test-model",
+            thinking=self._thinking,
+        )
+
+
+def test_planner_astream_emits_thinking_when_enabled() -> None:
+    """开启思考回显：推理原文增量以 `Thinking` item 外发，与回复增量并存互不干扰。"""
+    planner = LLMPlanner(
+        _StreamingFakeLLM(
+            [
+                LLMChunk(content="", thinking="想"),
+                LLMChunk(content="", thinking="一下"),
+                LLMChunk(content="好"),
+            ]
+        ),
+        show_thinking=True,
+    )
+    assert _collect_planner_stream(planner) == [
+        Thinking("想"),
+        Thinking("一下"),
+        "好",
+        Action(args={"reply": "好"}),
+    ]
+
+
+def test_planner_astream_no_thinking_when_disabled() -> None:
+    """关闭（缺省）：事件面**零新增**，既有流式语义逐字一致。"""
+    planner = LLMPlanner(
+        _StreamingFakeLLM([LLMChunk(content="", thinking="想"), LLMChunk(content="好")])
+    )
+    assert _collect_planner_stream(planner) == ["好", Action(args={"reply": "好"})]
+
+
+def test_planner_degraded_stream_emits_terminal_thinking() -> None:
+    """provider 无 `astream` ⇒ 降级分支以一次性全文外发终态思考（先于终态动作）。"""
+    planner = LLMPlanner(_CompletionOnlyLLM("好", "思考全文"), show_thinking=True)
+    assert _collect_planner_stream(planner) == [
+        Thinking("思考全文"),
+        Action(args={"reply": "好"}),
+    ]
+
+
+def test_planner_degraded_stream_no_thinking_when_disabled() -> None:
+    """降级分支同样守开关：关闭时零新增，与非流式既有语义一致。"""
+    planner = LLMPlanner(_CompletionOnlyLLM("好", "思考全文"))
+    assert _collect_planner_stream(planner) == [Action(args={"reply": "好"})]
 
 
 # ---- 热路径 TraceEvent ----
