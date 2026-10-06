@@ -34,8 +34,12 @@ class DynamicAssembler:
         （beast-mode spec「记忆分区封存」；见 beast-mode-interface §4/§10）。
         """
 
-    def build(self, task: str, stage: str, *, budget: int) -> ContextPack:
-        """按任务装配上下文（事实以 task 为 query 召回）；超预算裁剪低相关度内容。"""
+    def build(self, task: str, stage: str, *, budget: int, session_id: str = "") -> ContextPack:
+        """按任务装配上下文（事实以 task 为 query 召回）；超预算裁剪低相关度内容。
+
+        ``session_id`` 为调用方会话标识（缺省空串 = 未归属），透传至 L2 事实检索的会话维度
+        （见 change 0114 / ADR-0107）。
+        """
 
     def fetch_detail(self, pointer: str) -> str:
         """按信息地图指针跳转取细节。"""
@@ -76,8 +80,12 @@ class Compactor:
     def compact(self, history: list[dict]) -> Compaction:
         """多轮关键信息摘要沉淀，保证关键信息不丢失。"""
 
-    def persist(self, c: Compaction) -> None:
-        """沉淀产物写回 MemoryStore（L2 提炼事实）：kind="semantic"，tags 带原始 id 出处。"""
+    def persist(self, c: Compaction, *, session_id: str = "") -> None:
+        """沉淀产物写回 MemoryStore（L2 提炼事实）：kind="semantic"，tags 带原始 id 出处。
+
+        产物按**本轮会话**归属（缺省空串 = 未归属），条目 id 带会话键（缺省 ``default``）
+        ⇒ 跨会话不再同名覆盖（见 change 0114 / ADR-0107）。
+        """
 
 @dataclass
 class Compaction:

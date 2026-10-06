@@ -26,8 +26,10 @@ class LoopPlugin(Plugin):
     ) -> AsyncIterator[LoopEvent]:
         """流式执行入口：按生命周期顺序产出 LoopEvent 事件流。
 
-        ``session_id`` 为本轮会话归属（缺省空串 = 未归属），随调用传递、不驻留实例，
-        由「记忆」步写入 L2 条目的 ``session_id``（供压实/固化/遗忘按会话归组）。
+        ``session_id`` 为本轮会话归属（缺省空串 = 未归属），随调用传递、不驻留实例；
+        装入 :class:`LoopContext` 后**同时**作为：①「记忆」步写入 L2 条目的 ``session_id``
+        （供压实/固化/遗忘按会话归组）；②**推理期检索与技能路由**的归属维度（装配器召回、
+        路由未命中记录）——SHALL NOT 只用于写入（change 0114 / ADR-0107）。
         """
 ```
 
@@ -93,6 +95,8 @@ class LoopContext:
     tools: list[ToolSchema]     # 可调用工具 schema
     trajectory: list[Step]      # 本轮轨迹（供 Remember 写入）
     reply: str = ""
+    notes: str = ""             # 任务前 Consult 摘要（文档化记忆；缺省空 ⇒ 不注入）
+    session_id: str = ""        # 本轮会话标识（缺省空串 = 未归属）；推理期检索/技能路由的归属维度
 
     def done(self) -> bool:
         """推理判定可结束本轮时返回 True。"""
@@ -105,7 +109,7 @@ class Action:
 阶段方法签名（私有，但为策略替换点）：
 
 ```python
-def perceive(self, user_input: str) -> LoopContext
+def perceive(self, user_input: str, *, session_id: str = "") -> LoopContext
 def reason(self, ctx: LoopContext) -> Action
 def act(self, action: Action, trace_id: str) -> ActionResult   # 经 EffectTracker.record
 def observe(self, ctx: LoopContext, result: ActionResult) -> LoopContext

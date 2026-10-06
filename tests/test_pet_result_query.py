@@ -37,7 +37,7 @@ class FakeLoop:
         self.reply = reply
         self.prompts: list[str] = []
 
-    def run(self, user_input: str) -> LoopResult:
+    def run(self, user_input: str, *, session_id: str = "") -> LoopResult:
         self.prompts.append(user_input)
         return LoopResult(reply=self.reply, trace_id="t1")
 
@@ -101,7 +101,7 @@ def test_result_reflects_failed_run() -> None:
 
 
 class _FailingLoop:
-    def run(self, user_input: str) -> LoopResult:
+    def run(self, user_input: str, *, session_id: str = "") -> LoopResult:
         return LoopResult(reply="", trace_id="t1", failed=True)
 
 

@@ -548,8 +548,8 @@ def test_loop_compaction_persists_history_and_summarizes_prior_memory() -> None:
     summary = entries.get("compaction.summary.s1")
     assert summary is not None, "轮数达阈值 → 触发压实，历史 episodic 提炼为 semantic 摘要"
     assert summary.kind == "semantic" and "from:loop.prior" in summary.tags
-    assert "compaction.fact.0" in entries, "上下文压实产物同批落 L2（persist）"
-    assert entries["compaction.fact.0"].kind == "semantic"
+    assert "compaction.fact.default.0" in entries, "上下文压实产物同批落 L2（persist）"
+    assert entries["compaction.fact.default.0"].kind == "semantic"
     assert dict(memory.index().entries)["loop.prior"] == "L4", "被摘要的原条目归档 L4"
 
 

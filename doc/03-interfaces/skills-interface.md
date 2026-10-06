@@ -90,8 +90,14 @@ class SkillRouter:
         threshold: float = 0.5,
     ) -> None: ...
 
-    def match(self, task: str, *, domain: str | None = None, top_k: int = 3) -> list[SkillMatch]:
-        """按任务类型匹配，返回**排序分**降序的 Top-K；domain 为专属技能作用域。"""
+    def match(
+        self, task: str, *, domain: str | None = None, top_k: int = 3, session_id: str = ""
+    ) -> list[SkillMatch]:
+        """按任务类型匹配，返回**排序分**降序的 Top-K；domain 为专属技能作用域。
+
+        ``session_id`` 为调用方会话标识（缺省空串 = 未归属）：决定**未命中记录**的归属，
+        非空记录不再成为他会话可见的全局条目（change 0114 / ADR-0107）。
+        """
 
 @dataclass
 class SkillMatch:
@@ -99,7 +105,8 @@ class SkillMatch:
     score: float                # 排序分 = 基础分（词法命中率 / 语义分）× 历史成功率因子
 ```
 
-无匹配时返回空列表，由 loop 回退通用流程并记录未命中（供新技能沉淀）。
+无匹配时返回空列表，由 loop 回退通用流程并记录未命中（供新技能沉淀）；未命中条目的 id 带
+会话键（``skills.miss.<session_id or "default">.<n>``）并按会话归属（change 0114 / ADR-0107）。
 
 | 维度 | 口径 |
 |---|---|

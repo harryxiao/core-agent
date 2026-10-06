@@ -35,7 +35,7 @@
 
 ```
 MemoryStore
-├── read(query, budget) -> 相关记忆（按相关性排序，受 token 上界约束）
+├── read(query, budget, *, exclude_source_prefixes, session_id) -> 相关记忆（排序 + token 上界）
 ├── write(layer, entry) -> 写入（带 trace_id、来源、时间戳）
 ├── migrate(src_layer, dst_layer, entry_id) -> 层间迁移（结晶/溶解）
 ├── index() -> L1 索引（最小化）
@@ -47,6 +47,17 @@ MemoryStore
 - 相关性打分：`relevance = f(关键词/向量相似度, 新鲜度, 复用次数, 层权重)`。
 - **硬性 budget**：`read` 返回的总 token 不超过预算；超限按 `layer_priority × relevance` 截断。
 - 层权重默认：L0 > L3（相关技能）> L2（相关事实）> L1 > L4。
+
+### 3.2.1 按会话隔离的检索（change `0114`／ADR-0107）
+
+- **一张店、按会话归组**：不给每个会话建独立 `(loop, memory)` 实例（change `0048` 已裁否决）；
+  会话维度作为 `read`/`write` 的可选参数穿透，条目按 `session_id` 归属。
+- `read(session_id=…)` **非空**时只返回「归属该会话的条目 + **全局层**」（`session_id == ""`
+  的未归属条目，含 L0 人格与文档化笔记层）；**空串**（未归属调用者）⇒ 不过滤，与既往逐字一致。
+- 会话过滤在**排名与预算之前**生效（被滤项不吃预算、不被 `reuse_count` 强化），与
+  `exclude_source_prefixes` 同点同口径，二者可叠加。
+- **归属原则**：执行轨迹按**发起会话**归属（主/子/神兽/宠物 loop、压实产物、路由未命中）；
+  **刻意知识留全局层**（L0 人格、文档化笔记、`pet.observe` 的主人偏好）。
 
 ### 3.3 结晶与溶解（与 L4 进化联动）
 

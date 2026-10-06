@@ -33,13 +33,16 @@ class DynamicAssembler:
         self._project_info = list(project_info or [])
         self._exclude_source_prefixes = tuple(exclude_source_prefixes)
 
-    def build(self, task: str, stage: str, *, budget: int) -> ContextPack:
-        """按任务装配上下文：宪法 + 项目信息必保，事实按任务检索（query=task），超预算裁剪。"""
+    def build(self, task: str, stage: str, *, budget: int, session_id: str = "") -> ContextPack:
+        """按任务装配上下文：宪法 + 项目信息必保，事实按任务检索（query=task），超预算裁剪。
+
+        ``session_id`` 为调用方会话标识（缺省空串 = 未归属），透传至 L2 事实检索的会话维度。
+        """
         project = [{"source": "project", "content": line} for line in self._project_info]
         pack = ContextPack(
             task=task,
             stage=stage,
-            facts=project + self._gather_facts(task, budget),
+            facts=project + self._gather_facts(task, budget, session_id),
             constitution=list(self._constitution),
             pending=[],
         )
@@ -55,16 +58,20 @@ class DynamicAssembler:
 
     # ---- 内部辅助 ----
 
-    def _gather_facts(self, query: str, budget: int) -> list[dict[str, str]]:
+    def _gather_facts(self, query: str, budget: int, session_id: str = "") -> list[dict[str, str]]:
         """以任务目标为检索 query 召回 L2 事实（stage 不参与检索，架构图 :117）。
 
-        ``exclude_source_prefixes`` 为装配级配置（缺省空 ⇒ 不含排除，检索语义不变）。
+        ``exclude_source_prefixes`` 为装配级配置（缺省空 ⇒ 不含排除）；``session_id`` 为调用方
+        会话标识（缺省空串 ⇒ 不过滤）。两者皆缺省时调用形态与既往逐字一致。
         """
         if self._memory is None:
             return []
-        if self._exclude_source_prefixes:
+        if self._exclude_source_prefixes or session_id:
             entries = self._memory.read(
-                query, budget, exclude_source_prefixes=self._exclude_source_prefixes
+                query,
+                budget,
+                exclude_source_prefixes=self._exclude_source_prefixes,
+                session_id=session_id,
             )
         else:
             entries = self._memory.read(query, budget)  # 未启用排除 ⇒ 调用形态与既往逐字一致

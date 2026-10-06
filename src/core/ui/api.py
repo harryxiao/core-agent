@@ -157,7 +157,7 @@ class UIAPILayer:
         if self._orchestrator is None:
             raise UiError(UiErrorCode.UI_ORCHESTRATOR_UNSET, "编排器未注入（任务入口不可用）")
         task_id = f"task-{uuid.uuid4().hex[:8]}"
-        async for task_event in self._orchestrator.astream(task_id, goal):
+        async for task_event in self._orchestrator.astream(task_id, goal, session_id=session_id):
             yield Event(type=f"task.{task_event.type}", payload=task_event.payload)
 
     def barge_in(self) -> None:

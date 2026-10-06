@@ -93,9 +93,14 @@ class MemoryStore:
         budget: int = 4096,
         *,
         exclude_source_prefixes: tuple[str, ...] = (),
+        session_id: str = "",
     ) -> list[MemoryEntry]:
         """检索相关记忆；``exclude_source_prefixes`` 命中的来源在**排名与预算之前**剔除
         （被排除项不吃预算、不被复用计数强化）。缺省空元组 ⇒ 检索语义与既往逐字一致。
+
+        ``session_id`` 非空时**只**返回归属该会话的条目 + **全局层**（未归属 ``""``）条目；
+        会话过滤与来源排除同一位置（排名与预算之前），故被滤项同样不吃预算、不被强化。
+        缺省空串 = 未归属调用者 ⇒ 不过滤（与既往语义逐字一致）。
         """
         try:
             cold = self._backend.search(query)
@@ -108,6 +113,12 @@ class MemoryStore:
                 entry_id: entry
                 for entry_id, entry in candidates.items()
                 if not entry.source.startswith(exclude_source_prefixes)
+            }
+        if session_id:
+            candidates = {
+                entry_id: entry
+                for entry_id, entry in candidates.items()
+                if entry.session_id in ("", session_id)
             }
         embedder = self._memo_embedder() if self._embedder is not None else None
         ranked = sorted(

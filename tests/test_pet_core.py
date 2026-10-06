@@ -26,7 +26,7 @@ class FakeLoop:
         self.trace_id = trace_id
         self.prompts: list[str] = []
 
-    def run(self, user_input: str) -> LoopResult:
+    def run(self, user_input: str, *, session_id: str = "") -> LoopResult:
         self.prompts.append(user_input)
         return LoopResult(reply=self.reply, trace_id=self.trace_id)
 
@@ -254,7 +254,7 @@ class _FailOnSecondCallLoop:
     def __init__(self) -> None:
         self.calls = 0
 
-    def run(self, user_input: str) -> LoopResult:
+    def run(self, user_input: str, *, session_id: str = "") -> LoopResult:
         self.calls += 1
         if self.calls > 1:
             raise RuntimeError("惊喜执行失败")

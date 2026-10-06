@@ -465,9 +465,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         """
         surfaced: list[tuple[Skill, str]] = []
 
-        def hints(task: str) -> list[SkillHint]:
+        def hints(task: str, session_id: str = "") -> list[SkillHint]:
             result: list[SkillHint] = []
-            for matched in skill_router.match(task, domain=domain):
+            for matched in skill_router.match(task, domain=domain, session_id=session_id):
                 skill = matched.skill
                 version, text = skill_iterator.resolve(skill)
                 skill_feedback.record_hit(skill.skill_id, version=version)

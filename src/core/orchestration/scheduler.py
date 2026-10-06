@@ -125,14 +125,22 @@ class TaskScheduler:
         plan: Plan | None = None,
         completed: set[str] | None = None,
         results: dict[str, str] | None = None,
+        session_id: str = "",
     ) -> list[SubtaskOutcome]:
         """同步语义收口：消费 astream；终态失败按原错误码抛 OrchestrationError。
 
         plan / completed / results 为断点续跑注入面：跳过拆解、跳过已完成
-        子任务、重建依赖结果上下文。
+        子任务、重建依赖结果上下文。``session_id`` 为发起方会话标识（缺省空串 =
+        未归属），透传至子 Agent 执行 ⇒ 子任务轨迹按发起会话归属。
         """
         async for event in self.astream(
-            task_id, goal, success_criteria, plan=plan, completed=completed, results=results
+            task_id,
+            goal,
+            success_criteria,
+            plan=plan,
+            completed=completed,
+            results=results,
+            session_id=session_id,
         ):
             if event.type == "task_failed":
                 data = cast(dict[str, Any], event.payload)
@@ -154,6 +162,7 @@ class TaskScheduler:
         plan: Plan | None = None,
         completed: set[str] | None = None,
         results: dict[str, str] | None = None,
+        session_id: str = "",
     ) -> AsyncIterator[LoopEvent]:
         """流式任务执行：拆解 → 波次扇出 → 验收推进，进度事件依序外发。"""
         yield LoopEvent("task_started", {"task_id": task_id, "goal": goal})
@@ -195,7 +204,9 @@ class TaskScheduler:
         for wave in plan.waves:
             yield LoopEvent("wave_started", {"task_id": task_id, "wave": list(wave)})
             queue: asyncio.Queue[LoopEvent | None] = asyncio.Queue()
-            gather_task = asyncio.create_task(self._fan_out(task_id, plan, wave, queue.put_nowait))
+            gather_task = asyncio.create_task(
+                self._fan_out(task_id, plan, wave, queue.put_nowait, session_id=session_id)
+            )
             while True:  # 排水子任务事件（None 哨兵 = 波次收拢）
                 event = await queue.get()
                 if event is None:
@@ -307,7 +318,7 @@ class TaskScheduler:
             self._state_machine.transition(task_id, TaskState.EXECUTING)
 
     async def _fan_out(
-        self, task_id: str, plan: Plan, wave: list[str], emit: Emit
+        self, task_id: str, plan: Plan, wave: list[str], emit: Emit, *, session_id: str = ""
     ) -> list[SubtaskOutcome]:
         """波次内子任务优先级排序 + 真并发扇出（资源上限分批）+ 汇总。"""
         subtasks = [s for s in plan.subtasks if s.id in wave]
@@ -315,7 +326,12 @@ class TaskScheduler:
         semaphore = asyncio.Semaphore(self._max_concurrency)
         try:
             outcomes = await asyncio.gather(
-                *(self._run_subtask(task_id, plan, subtask, semaphore, emit) for subtask in ordered)
+                *(
+                    self._run_subtask(
+                        task_id, plan, subtask, semaphore, emit, session_id=session_id
+                    )
+                    for subtask in ordered
+                )
             )
             return list(outcomes)
         finally:
@@ -328,8 +344,13 @@ class TaskScheduler:
         subtask: Subtask,
         semaphore: asyncio.Semaphore,
         emit: Emit,
+        *,
+        session_id: str = "",
     ) -> SubtaskOutcome:
-        """执行单个子任务：幂等跳过已完成 → 匹配 Agent → 异步执行 → 验收门。"""
+        """执行单个子任务：幂等跳过已完成 → 匹配 Agent → 异步执行 → 验收门。
+
+        ``session_id`` 为发起方会话标识（缺省空串 = 未归属），透传至子 Agent 执行。
+        """
         if subtask.id in self._tracker.completed(task_id):
             emit(
                 LoopEvent(
@@ -372,7 +393,12 @@ class TaskScheduler:
                     error=OrchestrationErrorCode.NO_AGENT_MATCH,
                     reason="无匹配 Agent",
                 )
-            result = await profile.loop.arun(self._handoff_goal(task_id, plan, subtask))
+            goal = self._handoff_goal(task_id, plan, subtask)
+            # 子任务轨迹按**发起方会话**归属（缺省空串 = 未归属）⇒ 非空才传第二实参
+            if session_id:
+                result = await profile.loop.arun(goal, session_id=session_id)
+            else:
+                result = await profile.loop.arun(goal)
             verify = await self._decomposer.verify(subtask, result.reply)
             self._trace(
                 task_id,

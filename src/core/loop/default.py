@@ -221,7 +221,7 @@ class DefaultLoop(Plugin):
         trace_id = self._start_trace(user_input)
         yield LoopEvent("loop_started", {"trace_id": trace_id})
         self._trace(trace_id, "loop_started", {"trace_id": trace_id})
-        ctx = self.perceive(user_input)
+        ctx = self.perceive(user_input, session_id=session_id)
         self._consult_notes(ctx, trace_id)
         limit_reason = ""
         streamed = False  # 本轮循环是否已流式外发 reply_delta（避免终态重复全文）
@@ -382,7 +382,9 @@ class DefaultLoop(Plugin):
         """
         assert self._compactor is not None  # noqa: S101 — 调用点已判空
         try:
-            self._compactor.persist(self._compactor.compact(ctx.messages))
+            self._compactor.persist(
+                self._compactor.compact(ctx.messages), session_id=ctx.session_id
+            )
         except ContextError:
             pass  # 无可沉淀关键信息：非错误，不替换原文
         except Exception as err:  # noqa: BLE001 — 压实失败降级，本轮继续
@@ -400,13 +402,15 @@ class DefaultLoop(Plugin):
 
     # ---- 阶段方法 ----
 
-    def perceive(self, user_input: str) -> LoopContext:
+    def perceive(self, user_input: str, *, session_id: str = "") -> LoopContext:
         # 检索归 ContextEngine.assemble（架构图 :117）；perceive 只观察，不检索记忆。
+        # ``session_id`` 只装入上下文包（供推理期检索/技能路由归属），不驻留循环实例。
         tools = self._tools.active_tools() if self._tools is not None else []
         return LoopContext(
             messages=[{"role": "user", "content": user_input}],
             tools=tools,
             token_used=len(user_input) // 4,
+            session_id=session_id,
         )
 
     async def reason(self, ctx: LoopContext) -> Action:

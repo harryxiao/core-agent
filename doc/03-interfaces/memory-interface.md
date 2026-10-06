@@ -11,13 +11,23 @@ class MemoryStore(Plugin):
     plugin_id = "memory.store"
 
     def read(
-        self, query: str, budget: int = 4096, *, exclude_source_prefixes: tuple[str, ...] = ()
+        self,
+        query: str,
+        budget: int = 4096,
+        *,
+        exclude_source_prefixes: tuple[str, ...] = (),
+        session_id: str = "",
     ) -> list[MemoryEntry]:
         """检索相关记忆，返回按相关性排序的条目，总 token ≤ budget。
 
         ``exclude_source_prefixes`` 命中的 ``source`` 前缀在**排名与预算之前**剔除
         （被排除项不吃预算、不被复用计数强化）；缺省空元组 ⇒ 检索语义与既往逐字一致。
         记忆分区隔离（如主 loop 不命中 `beast.*`）的**读取侧**开关，见 beast-mode-interface §4。
+
+        ``session_id`` 非空时**只**返回归属该会话的条目 + **全局层**（``session_id == ""``
+        的未归属条目，含 L0 人格与文档化笔记层）；过滤与来源排除**同一位置**（排名与预算
+        之前）⇒ 被滤项同样不吃预算、不被复用计数强化。缺省空串 = 未归属调用者 ⇒
+        **不过滤**（fail-open，与既往逐字一致）。见 change 0114 / ADR-0107。
         """
 
     def write(self, layer: Layer, entry: MemoryEntry) -> MemoryId:
@@ -197,6 +207,8 @@ MVP 实现：`FileBackend`（`memory/*.md` + `memory/*.jsonl`）。
 - 密钥/敏感内容**只存引用**，绝不进入任何记忆层。
 - `read` 返回 token 硬性 ≤ budget，超限截断并标记被截断项。
 - `read` 命中即 `reuse_count += 1`（复用即强化；进程内强化，不落盘避免写放大）。
+- `read` 的会话过滤在**排名/预算之前**生效（被滤项不吃预算、不被强化），与来源排除同口径；
+  空标识不过滤 ⇒ 存量未归属条目构成全局层（ADR-0107）。
 
 ---
 

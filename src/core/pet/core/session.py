@@ -146,7 +146,7 @@ class PetSession:
             self._go_idle()
             raise PetError(PetErrorCode.PET_YIELDING, "无待办任务，宠物入睡")
         task = self._tasks.popleft()
-        result = self._loop.run(self._compose_prompt(task.goal))
+        result = self._loop.run(self._compose_prompt(task.goal), session_id=self.session_id)
         self.last_result = result
         self._last_trace_id = result.trace_id
         self._wake_count += 1
@@ -251,7 +251,7 @@ class PetSession:
             return None
         key, value = next(iter(self._preferences.items()))
         goal = self._compose_prompt(f"基于主人偏好「{key}={value}」为主人代办一件小事")
-        result = self._loop.run(goal)
+        result = self._loop.run(goal, session_id=self.session_id)
         return f"发现可代办：{key}={value} —— {result.reply}"
 
     # ---- 内部辅助 ----

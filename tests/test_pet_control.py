@@ -29,7 +29,7 @@ class FakeLoop:
     def __init__(self) -> None:
         self.prompts: list[str] = []
 
-    def run(self, user_input: str) -> LoopResult:
+    def run(self, user_input: str, *, session_id: str = "") -> LoopResult:
         self.prompts.append(user_input)
         return LoopResult(reply="ok", trace_id="t1")
 

@@ -2657,6 +2657,55 @@
 
 ---
 
+## ADR-0107：按会话隔离记忆 —— 读侧机制 + 写入侧归属闭合（change 0114 / phase-28 E47）
+
+- **背景**：用户要求「WebUI / CLI 可开 N 个主题各异的会话，**会话之间内容肯定隔离**」。一手复核发现
+  缺口比账本记载的**更宽**：账本原记「读侧不过滤会话」（一项），实为 **1 处读侧 + 4 处写侧归属 +
+  1 处绕过通道 + 2 处 id 覆盖**：
+  - **读侧（R）**：`session_id` 在 `memory/protocol.py:32` / `loop/default.py` 的 `remember` /
+    `store.py` 的会话摘要处**写入**，但喂给 LLM 的唯一检索路径
+    `planner._system_prompt` → `DynamicAssembler.build` → `MemoryStore.read` **从不消费**它
+    （唯一过滤是来源前缀排除，生产只接了 `("beast.",)`）⇒ **A 会话沉淀的事实会进 B 会话的 system prompt**。
+    `ui/api.py:174` 的「只返回本会话」是读后 Python 过滤，**只盖展示面**。
+  - **写侧（W1–W4）**：压实产物 `compaction.fact.{i}` **每次压实从 0 重数**（后一次静默覆盖前一次）
+    且无 `session_id`；`skills.miss.{n}` 把**本轮任务原文**写全局条目，且经 `planner._skill_hints`
+    **每轮推理**触达（⇒ 普通聊天每轮任务原话进全局记忆）；宠物 `self._loop.run(goal)` 缺省空标识
+    ⇒ 轨迹与主线未归属条目**同形不可区分**；编排 `profile.loop.arun(goal)` 无会话 + `run_task`
+    **有 session_id 却不传** ⇒ 子任务轨迹全局化。
+  - **绕过通道（W5）**：`ctx.notes`（`_consult_notes` → `NoteStore.digest`）与会话隔离**零交集**。
+- **决策①：隔离点在 `MemoryStore.read` **内部**，与 `exclude_source_prefixes` 同点（排名/预算之前）。**
+  否决「装配器后置过滤」：后置过滤时被滤项**已吃预算、已被 `reuse_count` 强化**，与既有排除条款
+  口径**不自洽**，且装配器不是唯一读取方（`memory.compact()` 内部也读）。同点即同语义：被滤项
+  不吃预算、不被强化。`read(query, budget, *, exclude_source_prefixes, session_id)` 三参形态下，
+  **两者皆缺省时仍走两参调用**（逐字兼容既有 2 参 `read` 替身）。
+- **决策②：非空标识 ⇒ 「本会话 + 全局层」；**空标识 ⇒ 不过滤**（承认 fail-open）。** 「全局层」=
+  未归属（`session_id == ""`）条目 + L0 人格 + **文档化笔记层**。空串不是「某个会话」，而是
+  **未归属调用者**（CLI 库层直调、`memory.compact()` 内部读、非 UI 调用方）⇒ 施加过滤既无依据
+  也破兼容。与既有 `exclude_source_prefixes` 的「缺省空 ⇒ 逐字一致」**同构**。**承认这是 fail-open**：
+  专属分区在**未归属读**路径上不生效（主 loop 的读一直带会话标识，故生产路径上不 fail-open）。
+- **决策③：归属原则（本 change 的仲裁线）。** **执行轨迹按发起会话归属**：主 / 子 / 神兽 / 宠物 loop
+  的 `remember`、压实产物、路由未命中。**刻意知识留全局层**：L0 人格、**文档化笔记**（`notes`）、
+  `pet.observe` 的 `source="user"` 主人偏好 —— 后者是**被有意记录的知识**，不是某一轮对话的残留。
+  用户对 `notes` 作**显式**裁定：不参与隔离，并加**可执行的守门用例**（内省 Consult/写入面参数名）。
+- **决策④：条目 id 带会话键（缺省 `default`）。** 沿用 store 内**既有**口径
+  `key = session_id or "default"`（先例 `_commit_summary` 的 `compaction.summary.{key}`），**不另造第二套**。
+  `compaction.fact.<key>.<i>` / `compaction.open.<key>.<i>` / `skills.miss.<key>.<n>` ⇒ 跨会话不再同名覆盖。
+- **决策⑤：不上每会话实例；不动 `LoopPlugin.perceive` 协议签名。** phase-19 E2 / change `0048` 已裁
+  「会话标识透传 + 单店按会话归组」，**否决**每会话 `(loop, memory)` 实例 ⇒ 本 change 只给既有读写路径
+  补会话维度。会话标识经 `LoopContext.session_id`（新增字段）**随上下文包传递**至推理期（装配检索 +
+  技能路由）；`perceive` **协议面保持一参**（实现层加可选 kwarg 即结构满足），避免逼所有替身改签名。
+  技能路由注解放宽为 `Callable[..., list[SkillHint]]`（既有 1 参闭包/替身仍可赋值）。
+- **已知局限（照实登记）**：
+  1. 存量 `memory.jsonl` 的未归属历史条目**成为全局层**（对任何非空会话可见）—— 向后兼容的代价。
+  2. `notes` **不隔离**（显式裁定）：笔记是刻意知识，跨会话共享。
+  3. **同一会话内连续压实 / 跨进程重启**的 id 仍会复用覆盖（`{key}.{i}` 的 `i` 单次调用内递增、
+     `skills.miss` 计数进程内递增）—— **既有缺陷**，登记 `phase-28.md` 残留面，本 change 不扩范围。
+  4. 未归属读（`session_id == ""`）路径上**专属分区 fail-open**（见决策②）。
+- **规格**：`memory` **ADDED**「按会话隔离的检索」；`context`（动态上下文构建 / 上下文自动压实）、
+  `loop`、`skills`、`pet-mode`、`orchestration`、`ui`、`notes` 各 **MODIFIED**。**非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2758,3 +2807,4 @@
 | ADR-0104 | 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/phase-27.md |
 | ADR-0105 | 03-interfaces/evolution-interface.md, 03-interfaces/configuration-interface.md, 02-modules/configuration.md, 04-testing/test-cases.md, coding-plan/phase-27.md |
 | ADR-0106 | 03-interfaces/pet-mode-interface.md, 03-interfaces/beast-mode-interface.md, 04-testing/test-cases.md, coding-plan/phase-28.md |
+| ADR-0107 | 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/pet-mode-interface.md, 03-interfaces/orchestration-interface.md, 02-modules/memory.md, 02-modules/context.md, 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/phase-28.md |

@@ -50,7 +50,8 @@ class LLMPlanner:
         model: str | None = None,
         reasoning_effort: str | None = None,
         assembler: DynamicAssembler | None = None,
-        skill_router: Callable[[str], list[SkillHint]] | None = None,
+        # 技能路由：``(task, session_id)``——既有 1 参闭包/替身仍可赋值（可选第二实参）
+        skill_router: Callable[..., list[SkillHint]] | None = None,
         tools: ToolProvider | None = None,
     ) -> None:
         self._llm = llm
@@ -132,7 +133,9 @@ class LLMPlanner:
     def _system_prompt(self, ctx: LoopContext) -> str:
         blocks: list[str] = [_SYSTEM_PROMPT]
         if self._assembler is not None:
-            pack = self._assembler.build(self._task(ctx), stage="reason", budget=2048)
+            pack = self._assembler.build(
+                self._task(ctx), stage="reason", budget=2048, session_id=ctx.session_id
+            )
             if pack.constitution:
                 blocks.append("宪法规则：\n" + "\n".join(f"- {line}" for line in pack.constitution))
             if pack.facts:
@@ -142,7 +145,7 @@ class LLMPlanner:
                 )
         if ctx.notes.strip():
             blocks.append("相关笔记：\n" + ctx.notes.strip())
-        skills = self._skill_hints(self._task(ctx))
+        skills = self._skill_hints(self._task(ctx), ctx.session_id)
         if skills:
             blocks.append("可用技能：\n" + "\n".join(_format_skill_hint(s) for s in skills))
         if self._tools is not None:
@@ -166,9 +169,12 @@ class LLMPlanner:
             for t in self._tools.active_tools()
         ]
 
-    def _skill_hints(self, task: str) -> list[SkillHint]:
+    def _skill_hints(self, task: str, session_id: str = "") -> list[SkillHint]:
+        """技能路由提示；``session_id`` 非空才作第二实参（既有 1 参闭包/替身调用形态不变）。"""
         if self._skill_router is None:
             return []
+        if session_id:
+            return self._skill_router(task, session_id)
         return self._skill_router(task)
 
     @staticmethod

@@ -43,6 +43,7 @@ class LoopContext:
     rounds: int = 0
     token_used: int = 0
     notes: str = ""  # 任务前 Consult 摘要（文档化记忆；缺省空 ⇒ 不注入。见 change 0106）
+    session_id: str = ""  # 本轮会话标识（缺省空串 = 未归属）；推理期检索/技能路由的归属维度
     _done: bool = field(default=False, repr=False)
 
     def done(self) -> bool:

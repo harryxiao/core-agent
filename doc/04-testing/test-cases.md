@@ -28,6 +28,7 @@
 | TC-LOOP-08 | loop/spec.md「执行循环」（change `0103`） | 注入装配导出器的 `tracer` 跑一轮 / 连跑 12 轮 / 同时注入 `trace_observer` 在回调里回放本轮 | 开轮 `start_trace`、收尾 `end_trace` 封口：收尾后 `replay(trace_id)` **为空**、本轮事件**经导出器产出**（含 `loop_finished`）；**回调时刻**事件仍可完整回放、封口在其**之后**（顺序守护），封口后 Tracer 内存不随轮次增长；未注入 `tracer` 收尾仍正常（锚点：`tests/test_loop.py::test_loop_releases_trace_after_run` / `::test_loop_emits_to_exporter_on_seal` / `::test_loop_seals_after_trace_observer_snapshot` / `::test_loop_does_not_accumulate_events_across_runs`；`tests/test_phase13.py::test_loop_emits_trace_events`；`tests/test_evolution.py::test_worker_snapshots_events_at_callback_time` / `::test_completed_batch_window_is_bounded`；`tests/test_evolution_wiring.py::test_loop_failure_flows_to_module_attribution`） |
 
 | TC-LOOP-09 | loop/spec.md「异步流式执行」（change `0107`） | 注入装配**捕获导出器**的 `tracer` 跑一轮「首轮调工具、次轮终止回复」的 loop；再用失败工具动作 / 纯终止动作 / 未注入 `tracer` 三种变体跑 | 非终止动作完成 ⇒ 导出事件含 `kind="tool_call"`（载荷 `tool` = 工具 id、`args`、`result.ok`、`latency_ms` 为浮点）——**生产者接线**（此前该 API 零生产调用方）；与 `action_completed` **同判据**：执行失败**仍**产（`result.ok` 为假）、终止动作**不**产、未注入 `tracer` 不产且本轮回复不变（锚点：`tests/test_tool_trace.py::test_tool_action_emits_tool_call_trace` / `::test_failed_tool_action_emits_tool_call_trace_with_failure` / `::test_terminal_action_emits_no_tool_call_trace` / `::test_loop_without_tracer_still_runs`） |
+| TC-LOOP-10 | loop/spec.md「执行循环」（change `0114`／ADR-0107） | `astream(session_id="A")` 后的 `LoopContext.session_id`；真装配器端到端 prompt | 标识**经上下文包**传至推理（装配检索）与技能路由，SHALL NOT 只用于记忆写入；A 会话事实不进 B 的 system prompt（详见 §30 TC-SESS-07/08/09/10） |
 
 ## 3. 分层记忆（TC-MEM）
 
@@ -38,6 +39,7 @@
 | TC-MEM-03 | CORE-MEM-R3 | L3 技能结晶为插件 | 注册为代码，undo 可回滚 |
 | TC-MEM-04 | CORE-MEM-R3 | 插件溶解回 L3 | 语义+教训回写，历史不丢 |
 | TC-MEM-05 | CORE-MEM-R4 | 切换记忆后端 | 同一接口，行为一致 |
+| TC-MEM-06 | memory/spec.md「按会话隔离的检索」（change `0114`） | 非空会话标识检索 / 空标识检索 / 与来源排除叠加 | 非空 ⇒ 只返回本会话 + 全局层；空 ⇒ 不过滤（逐字兼容）；过滤先于预算与强化（详见 §30 TC-SESS-01～05） |
 
 ## 4. 工具使用（TC-TOOL）
 
@@ -153,6 +155,7 @@
 | TC-CTX-02 | CORE-CTX-R2 | 索引失效后 fetch | hash 校验触发重建，按需加载 |
 | TC-CTX-03 | CORE-CTX-R3 | 多轮对话 | 关键信息自动压实并写回记忆 |
 | TC-CTX-04 | CORE-CTX-R4 | 千页文档 | 仅呈现目录索引，细节按需跳转 |
+| TC-CTX-05 | context/spec.md「动态上下文构建」+「上下文自动压实」（change `0114`） | `build(session_id=…)` 透传；`persist(session_id=…)` 归属与 id 会话键 | 事实召回按会话隔离；压实产物按会话归属且 id 带会话键（跨会话不覆盖）（详见 §30 TC-SESS-06/13/14/15） |
 
 ## 13. UI 界面（TC-UI）
 
@@ -410,6 +413,7 @@
 | TC-NOTE-19 | notes/spec.md「Consult → Build → Update 循环纪律」+ evolution 归因 | 扫描仓内全部 `plugin_id = "..."` 声明与 `INTERNAL_PLUGIN_IDS` | 逐元素一致（`notes.store` 已登记）—— `notes` 的缺陷归因为**架构级**（`plugin`/`high`）而非技能级，不绕过人工审批（锚点：`tests/test_evolution_attribution.py::test_internal_plugin_ids_match_declared_plugin_ids`） |
 
 | TC-NOTE-20 | notes/spec.md「canonical Markdown 真相层与可插拔后端」（change `0107` 字段加权） | 两篇均含关键词 K：A **标题**命中、B **仅正文顺带**提及；另一组 tags / `## Search Queries` 命中 vs 正文命中；以及**无任何字段**命中 | A 排 B **之前**且两者**均被命中**（加权只改排序、不改过滤）；元数据命中排在正文命中之前；无命中 ⇒ **空列表**（返回结构不变）（锚点：`tests/test_notes.py::test_backend_search_weights_title_above_content` / `::test_backend_search_weights_meta_above_content` / `::test_backend_search_no_hit_returns_empty`） |
+| TC-NOTE-21 | notes/spec.md「Consult → Build → Update 循环纪律」（**显式全局层**，change `0114`） | 内省 Consult/写入面参数名；两会话下同一 query Consult | 均无 `session` 维度；两处命中集**相同** —— 笔记是被有意文档化的刻意知识、不参与会话隔离（详见 §30 TC-SESS-20/21） |
 
 ---
 
@@ -438,6 +442,35 @@
 | 用例 | 对应需求 | 步骤 | 期望 |
 |---|---|---|---|
 | TC-BEAST-01 | beast-mode「Task Result Visibility」结果可见性（change `0113`／ADR-0106，账本 E46） | 未执行会话 / 已执行会话分别调 `BeastSession.result_summary()`；经 `summon` CLI（真 argv，runtime 打桩 + fake router）召唤；无 router 的 manager 再召唤一次；查询与召唤全流程挂 `_SpyMemory` | 未执行 ⇒ `has_result=False`、`reply=None`（**不编造**）；已执行 ⇒ 返回 `{agent_id, has_result, reply, failed}`（数据源 = `last_result`，`failed` 如实）；CLI stdout 含结果正文与成败；**无结果时不打印结果行**（不谎报）；查询与召唤**零 L2 写入** —— 封存语义（`source=beast.*` 不被主 loop read 命中）不受结果面影响（锚点：`tests/test_beast_result_visibility.py::test_result_summary_before_run_reports_no_result` / `::test_result_summary_exposes_reply_and_failure` / `::test_result_summary_reflects_failed_run` / `::test_query_writes_nothing_to_memory` / `::test_summon_does_not_write_result_to_l2` / `::test_cli_summon_prints_result_reply` / `::test_cli_summon_without_router_does_not_fabricate_reply`） |
+
+---
+
+## 30. 按会话隔离记忆（TC-SESS）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-SESS-01 | memory/spec.md「按会话隔离的检索」（change `0114`／ADR-0107） | 同店写 A / B / 未归属三组同 query 条目，`read(session_id="A")` | 只返回 `{本会话 A, 全局层未归属}`（锚点：`tests/test_session_isolation.py::test_read_scopes_to_session_plus_global_layer`） |
+| TC-SESS-02 | 同上（**反例守门**） | 同上看 `read(session_id="B")` | **不含** A 会话条目 —— 会话之间内容严格隔离（锚点：`::test_other_session_facts_are_invisible`） |
+| TC-SESS-03 | 同上（缺省兼容） | `read(query)` 与 `read(query, session_id="")` | 两者**逐字一致**：三组全出现、不过滤（fail-open，未归属调用者不属任何会话）（锚点：`::test_blank_session_id_does_not_filter`） |
+| TC-SESS-04 | 同上「过滤先于预算」 | 两会话同长条目，先缺省 `read` 一次，再 `read(budget=1, session_id="A")`，比对 `reuse_count` | 返回项为 A 条（B 条被滤 ⇒ 不占预算）；命中项 +1，被滤项 `reuse_count` **不变**（锚点：`::test_session_filter_precedes_budget_and_reinforcement`） |
+| TC-SESS-05 | 同上「与来源排除可叠加」 | A 会话含 `loop` 与 `beast.qinglong` 各一条，`read(session_id="A", exclude_source_prefixes=("beast.",))` | 两条件同时生效，只返回 A 的 `loop` 条（锚点：`::test_session_filter_composes_with_source_exclusion`） |
+| TC-SESS-06 | context/spec.md「动态上下文构建」 | 记录型 `read` 替身的装配器分别 `build(session_id="A")` / `build()` | 前者 `read` 收到 `session_id="A"`；后者**不含**该实参（缺省调用形态与既往逐字一致）（锚点：`::test_assembler_forwards_session_id_only_when_present`） |
+| TC-SESS-07 | loop/spec.md「会话标识参与推理期检索」（端到端反向守门） | `build_runtime` + A 会话事实，主 loop 规划器分别对 A / B 上下文调 `_system_prompt` | A 的 prompt 含该事实、**B 的不含**（改前 B 可见）（锚点：`::test_prompt_from_one_session_never_reaches_another`） |
+| TC-SESS-08 | loop-interface §1（`LoopContext.session_id`） | `astream(session_id="A")` 驱动记录型 planner；再 `perceive("任务")` | 上下文包 `session_id == "A"`（标识真的落到推理期）；缺省 `perceive` 一参调用仍为 `""`（锚点：`::test_loop_threads_session_id_onto_context`） |
+| TC-SESS-09 | skills/spec.md「技能路由」+ loop-interface §3（调用形态红线） | `LLMPlanner(skill_router=<1 参 lambda>)._skill_hints("任务一")` | 空标识下**只传 1 实参** ⇒ 既有 1 参替身/闭包不被逼改签名（锚点：`::test_planner_skill_hint_call_shape_is_backward_compatible`） |
+| TC-SESS-10 | 同上（透传） | `planner._skill_hints("任务二", "A")` | 路由回调收到 `("任务二", "A")`（会话是归属维度、不只用于记忆写入）（锚点：`::test_planner_forwards_session_to_skill_router_when_present`） |
+| TC-SESS-11 | skills/spec.md「技能路由」未命中归属 | `SkillRouter(SkillLibrary(), memory=store).match("无人认领…", session_id="A")` | 未命中条目 `session_id == "A"`、id 为 `skills.miss.A.1`；B 会话 `read` 检索不到它（锚点：`::test_router_miss_record_is_session_scoped`） |
+| TC-SESS-12 | 同上（缺省键） | `match("无人认领…")`（不传会话） | id 为 `skills.miss.default.1`、`session_id == ""`（旧调用形态结果逐字不变）（锚点：`::test_router_miss_defaults_to_default_key`） |
+| TC-SESS-13 | context/spec.md「上下文自动压实」 | `Compactor.persist(compact(...), session_id="s1")` | 产物 `session_id == "s1"`、id 为 `compaction.fact.s1.0`（锚点：`::test_compactor_persist_attributes_session`） |
+| TC-SESS-14 | 同上（缺省键） | `persist(compact(...))` | id 为 `compaction.fact.default.0`、`session_id == ""`（沿用 store 内既有 `session_id or "default"` 口径）（锚点：`::test_compactor_persist_defaults_to_default_key`） |
+| TC-SESS-15 | 同上（**反例守门**：跨会话覆盖） | 两会话各压实一次 | 两条产物**并存**（改前 `compaction.fact.0` 后者覆盖前者）（锚点：`::test_two_sessions_compaction_does_not_overwrite`） |
+| TC-SESS-16 | pet-mode/spec.md「Pet Session Runtime Wiring」 | 记录型 loop 的 `PetSession(session_id="pet-1")`，`start` + `wake` | `run` 收到 `session_id="pet-1"`（宠物轨迹按宠物会话归属）（锚点：`::test_pet_trajectory_carries_pet_session_id`） |
+| TC-SESS-17 | 同上（缺省非空） | `PetSession().session_id` | 为可解析 uuid（始终非空 ⇒ 宠物轨迹天然不进任何前台会话检索）（锚点：`::test_pet_default_session_id_is_non_blank`） |
+| TC-SESS-18 | orchestration/spec.md「子任务拆解」 | 真 `TaskScheduler` + 记录型子 loop，`run("task", "goal", session_id="A")` | 子 Agent `arun` 收到 `session_id="A"`（子任务轨迹按发起会话归属）（锚点：`::test_scheduler_forwards_session_id_to_sub_loop`） |
+| TC-SESS-19 | 同上（缺省兼容） | `run("task", "goal")`（不传会话） | 子 loop 收到 `""`（与既往语义逐字一致）（锚点：`::test_scheduler_default_keeps_sub_loop_call_unchanged`） |
+| TC-SESS-20 | notes/spec.md「Consult → Build → Update 循环纪律」（**显式全局层**） | 内省 `NoteStore.digest` / `consult` / `observe_turn` 参数名 | 三者均**不含** `session` 维度 —— 可执行地钉住「笔记不参与会话隔离」（锚点：`::test_notes_api_has_no_session_dimension`） |
+| TC-SESS-21 | 同上「笔记不参与会话隔离」 | 真 `NoteStore` 写入一篇，`DefaultLoop(notes_consult=digest)` 在 A / B 两会话下各 Consult 一次 | 两处 `ctx.notes` **相同**且非空（刻意知识跨会话共享）（锚点：`::test_notes_consult_is_not_session_scoped`） |
+| TC-SESS-22 | context/spec.md「上下文自动压实」（id 口径变更） | 既有压实链路用例的产物 id 断言 | `compaction.fact.default.0`（缺省会话键；**id 口径变更而非放宽语义**）（锚点：`tests/test_loop.py::test_loop_compaction_persists_history_and_summarizes_prior_memory`） |
 
 ---
 

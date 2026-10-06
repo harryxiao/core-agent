@@ -64,11 +64,20 @@ class SkillRouter:
         self._threshold = threshold
         self.misses: list[str] = []
 
-    def match(self, task: str, *, domain: str | None = None, top_k: int = 3) -> list[SkillMatch]:
+    def match(
+        self,
+        task: str,
+        *,
+        domain: str | None = None,
+        top_k: int = 3,
+        session_id: str = "",
+    ) -> list[SkillMatch]:
         """按任务类型匹配，返回匹配度排序的 Top-K；无匹配返回空列表并记录未命中。
 
         词法命中即返回（fast path，零模型调用）；词法全无命中时才走语义兜底，
         语义有命中即视为命中（不记未命中）。
+
+        ``session_id`` 为调用方会话标识（缺省空串 = 未归属），决定未命中记录的归属。
 
         ``domain`` 是**专属技能作用域**（缺省 = 通用视角）：三节 ``beast.<域>.<技能>`` 形式的
         专属技能仅当 ``domain == "beast.<域>"`` 时进候选——主 Agent 不带 domain，故神兽神通
@@ -89,7 +98,7 @@ class SkillRouter:
         scored = [SkillMatch(skill=m.skill, score=self._rank(m.skill, m.score)) for m in scored]
         scored.sort(key=lambda m: m.score, reverse=True)
         if not scored:
-            self._record_miss(task)
+            self._record_miss(task, session_id)
         return scored[:top_k]
 
     # ---- 内部辅助 ----
@@ -129,19 +138,26 @@ class SkillRouter:
         hits = sum(1 for t in terms if t in haystack)
         return hits / len(terms)
 
-    def _record_miss(self, task: str) -> None:
+    def _record_miss(self, task: str, session_id: str = "") -> None:
+        """记录未命中任务；条目按调用方会话归属（缺省空串 = 全局层）。
+
+        id 带会话键（缺省 ``default``）⇒ 不同会话的未命中记录不互相覆盖；``session_id``
+        非空的记录不再成为他会话可见的全局条目（技能沉淀仍按会话归组）。
+        """
         self.misses.append(task)
         if self._memory is None:
             return
+        key = session_id or "default"
         self._memory.write(
             "L2",
             MemoryEntry(
-                id=f"skills.miss.{len(self.misses)}",
+                id=f"skills.miss.{key}.{len(self.misses)}",
                 layer="L2",
                 content=f"路由未命中: {task}",
                 tags=["skills", "miss"],
                 source="skills",
                 trace_id="skills",
+                session_id=session_id,
             ),
         )
 

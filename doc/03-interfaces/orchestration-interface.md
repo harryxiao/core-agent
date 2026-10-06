@@ -104,14 +104,15 @@ class TaskScheduler:
     async def run(
         self, task_id: str, goal: str, success_criteria: list[str] | None = None,
         *, plan: Plan | None = None, completed: set[str] | None = None,
-        results: dict[str, str] | None = None,
+        results: dict[str, str] | None = None, session_id: str = "",
     ) -> list[SubtaskOutcome]:
         """同步语义收口：消费 astream，终态失败按原错误码抛 OrchestrationError。
         plan/completed/results 为断点续跑注入面（跳过拆解与已完成子任务、
-        重建依赖结果上下文）。"""
+        重建依赖结果上下文）。``session_id`` 为**发起方会话标识**（缺省空串 = 未归属），
+        透传至子 Agent 执行 ⇒ 子任务轨迹按发起会话归属（change 0114 / ADR-0107）。"""
 
     def astream(self, task_id, goal, success_criteria=None, *, plan=None, completed=None,
-        results=None
+        results=None, session_id=""
     ) -> AsyncIterator[LoopEvent]:
         """流式任务执行（进度事件）：task_started / plan_ready / wave_started /
         subtask_started / subtask_completed / task_checkpoint / task_finished /

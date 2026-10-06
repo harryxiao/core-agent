@@ -70,26 +70,32 @@ class Compactor:
             source_ids=source_ids,
         )
 
-    def persist(self, c: Compaction) -> None:
+    def persist(self, c: Compaction, *, session_id: str = "") -> None:
         """压实产物写回 MemoryStore（L2 提炼事实），丢失关键信息抛 COMPACTION_LOSSY。
 
         产物为 `kind="semantic"`（提炼事实，非事件），`tags` 携带贡献历史的原始 id
         （`from:<id>`）——沉淀不再是无出处的匿名条目。
+
+        产物按**本轮会话**归属（``session_id``，缺省空串 = 未归属），条目 id 带会话键
+        （缺省 ``default``，沿用 store 内既有 ``session_id or "default"`` 口径）⇒ 跨会话
+        不再同名覆盖。
         """
         self._guard(c)
         if self._memory is None:
             return
         provenance = [f"from:{source_id}" for source_id in c.source_ids]
+        key = session_id or "default"
         for i, line in enumerate(c.conclusions + c.decisions):
             self._memory.write(
                 "L2",
                 MemoryEntry(
-                    id=f"compaction.fact.{i}",
+                    id=f"compaction.fact.{key}.{i}",
                     layer="L2",
                     content=line,
                     tags=["compaction", "fact", *provenance],
                     source="context",
                     trace_id="compaction",
+                    session_id=session_id,
                     kind="semantic",
                 ),
             )
@@ -97,12 +103,13 @@ class Compactor:
             self._memory.write(
                 "L2",
                 MemoryEntry(
-                    id=f"compaction.open.{i}",
+                    id=f"compaction.open.{key}.{i}",
                     layer="L2",
                     content=item,
                     tags=["compaction", "open", *provenance],
                     source="context",
                     trace_id="compaction",
+                    session_id=session_id,
                     kind="semantic",
                 ),
             )
