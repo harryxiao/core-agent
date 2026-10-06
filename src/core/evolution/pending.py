@@ -231,11 +231,13 @@ class PendingQueue:
                 return
 
     def staged(self) -> list[ImplementationRecord]:
-        """**待复核**制品（门禁已过、尚未落地）—— 已落地的不再出现。"""
+        """**待复核**制品（门禁已过、尚未落地）—— 未过门的残留与已落地的不出现。"""
         return [
             r.implementation
             for r in self._records
-            if r.implementation is not None and not r.implementation.committed
+            if r.implementation is not None
+            and r.implementation.gated
+            and not r.implementation.committed
         ]
 
     def _load(self) -> None:

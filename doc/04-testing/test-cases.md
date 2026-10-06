@@ -666,6 +666,16 @@
 
 ---
 
+## 43. 落地只认门禁全过的制品（TC-GATED，change `0127`／ADR-0120，账本 E69）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-GATED-01 | evolution/spec.md「架构级候选的原生实施（可选）」（未过门的残留制品不被放行落地） | 假门禁执行器在 `typecheck` **抛异常**中断筹备 ⇒ 台账留下 `gated=False` 残留、工作树已回退；随后携带**合格**复核单落地 | 抛 `IMPLEMENT_REJECTED`、工作区逐字不变、`candidate.status == "confirmed"`（锚点：`tests/test_evolution_executor.py::test_commit_rejects_artifact_left_by_an_interrupted_prepare`） |
+| TC-GATED-02 | 同上（待复核定义收窄） | 同上的中断筹备后查 `executor.staged()` / `staged_all()` / `queue.implementation_of()` | 前两者**不列出**该残留；后者**仍可见**（留痕，不静默抹掉）（锚点：`::test_ungated_artifact_is_not_staged`） |
+| TC-GATED-03 | 同上（回归：门禁全过路径逐字不变） | 正常筹备（四门全过）后查 `staged_all()` | 恰一条、`gated is True`，且 `staged(id) is staged_all()[0]`（锚点：`::test_staged_lists_gated_artifacts_after_successful_prepare`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

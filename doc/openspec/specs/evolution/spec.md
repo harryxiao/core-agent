@@ -376,10 +376,14 @@ SHALL NOT 落地**：
 - **复核（review）**：制品 SHALL 以**可复核的形式**（补丁差异 + 门禁报告）呈现给人工，并 SHALL
   经人工**复核关**——要求一张与候选目标一致的**已批准**审批单，其操作标识 SHALL 与 `confirm` 阶段
   的审批单**可区分**（不得跨阶段复用同一张单）；缺失、未批准或目标不符时 SHALL NOT 落地（fail-closed）。
+  **待复核**仅指**门禁全过**（`gated=True`）的制品：未过门的制品 SHALL NOT 被列为待复核项
+  （呈现面 `evolve pending` 与落地面 `commit` 取同一判据）。
 - **落地（commit）**：复核通过后 SHALL 应用**被复核的那一份**制品（SHALL NOT 重新产出补丁），
   记录**可逆效应**（undo 可回退），候选状态与结局 SHALL 为 **`implemented`**
   （`EvolutionOutcome.status` 的**新增**词表项）；`accepted` 的「已批准、未实施」诚实语义 SHALL NOT
-  被回退为 `published`。
+  被回退为 `published`。落地 SHALL **只认门禁全过的制品**：无制品**或**制品未过门（`gated=False`，
+  含筹备异常抛出 / 进程中断留下的**残留制品**）⇒ SHALL 结构化拒绝（`IMPLEMENT_REJECTED`）并提示
+  重新筹备，SHALL NOT fail-open（断线式放行会让从未跑过门禁的补丁被永久应用）。
 
 约束：
 
@@ -435,6 +439,13 @@ SHALL NOT 落地**：
 - **GIVEN** 执行器已开启，一个已 `accepted` 的架构级候选**尚未**筹备
 - **WHEN** 直接要求落地（未先 `--dry-run`）
 - **THEN** 结构化拒绝并提示先筹备，**不应用**任何改动、不落 `implemented`
+
+#### Scenario: 未过门的残留制品不被放行落地
+- **GIVEN** 执行器已开启，一次筹备在门禁跑动中中断（门禁执行抛出异常 / 进程被杀），台账里留下一条
+  **未过门**（`gated=False`）的残留制品，且工作树已回退到筹备前
+- **WHEN** 后续进程携带一张目标一致、已批准的实施复核单要求落地
+- **THEN** 结构化拒绝（`IMPLEMENT_REJECTED`）并提示重新筹备，**不应用**任何改动（工作区逐字不变）、
+  不落 `implemented`；该残留制品 SHALL NOT 出现在待复核列表
 
 #### Scenario: 复核单缺失或目标不符不放行
 - **GIVEN** 一个已筹备待复核的架构级候选

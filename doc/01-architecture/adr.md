@@ -3252,6 +3252,40 @@
 
 ---
 
+## ADR-0120：落地只认门禁全过的制品（fail-closed 收口）（change 0127 / phase-34 E69）
+
+- **背景**：`coding-plan/phase-34.md` 登记的 **E69**（低危、**fail-open 潜伏**）。`EvolutionExecutor.
+  commit` **从不读 `record.gated`** —— 全仓 `gated` **只有写**（`executor.py:171` 筹备产物 / `:205`
+  落地产物）**无读**。两个「待复核」访问器（`executor.staged:215-218`、`pending.staged`）的谓词**只有
+  `not committed`**，尽管 `models.py:79-80` 与 `pending.staged` 的 docstring 都写着「`gated` 标记『门禁
+  全过、可复核』—— `commit` **只认**前者为真者」「待复核制品（**门禁已过**、尚未落地）」。**可达窗口**：
+  门禁执行**抛异常**（或进程在门禁跑动中被杀）⇒ `_run_gates` 的 `finally` 已回退工作树，但
+  `clear_implementation`（只在「门禁返回失败」分支调用）**不跑**，而制品早在 `:152` 就 `attach_
+  implementation` + `flush` 落盘 ⇒ 台账留下一条 `gated=False` 残留；此时工作树与 `record.before`
+  **一致**（已回退）⇒ 重启后**漂移校验通过**、复核单可正常签发 ⇒ **从未跑过门禁的补丁被永久应用**。
+- **决策①：判据只加在**读取面**（两个「待复核」访问器），不在 `commit` 里另立分支。** `gated` 的语义
+  已由模型 docstring 与 `pending.staged` docstring 定义为「待复核」的**构成要件**（缺它就不是待复核）
+  ⇒ 把判据收在访问器即**单点**生效：`commit`（落地面）与 `evolve pending`（呈现面）**同时**正确，
+  不产生「同一制品在 A 面可复核、B 面不可复核」的双口径。`commit` 因此无须新增分支 —— 未过门时
+  `staged()` 返 `None`，落的正是既有的「没有待复核制品，先 `--dry-run`」拒绝路径。
+- **决策②：拒绝理由沿用既有 `IMPLEMENT_REJECTED`，不新增错误码。** 失败因由是「没有可复核的制品」，
+  与「未筹备直接落地」是**同一件事**（`staged` 为 `None`），操作面提示（先筹备）也正是本窗口的正解；
+  新增码只会让同一处置路径分叉出两个名字。**不**改 `IMPLEMENT_STALE`（漂移是另一条判据，两者正交）。
+- **决策③：不静默丢弃残留制品。** `gated=False` 的记录**仍留在台账**（`implementation_of` 可见），
+  本 change 只让它**不可复核 / 不可落地**——留痕优于抹掉（抹掉会让「筹备中断过」这一事实消失）。
+  **不**顺手给 `_run_gates` 的异常路径补 `clear_implementation`（见已知局限①）。
+- **已知局限**：① 门禁中断后**没有**「自动清账」——残留制品要等**下一次筹备**被 `_reject_drifted_
+  worktree` 作废（工作树与 `before` 一致 ⇒ 走 `clear_implementation` 重新筹备）；本 change 只保证它
+  **不构成放行路径**，不负责回收。② `records`/`implementation` 的**跨进程**重读取决于台账落盘（既有
+  能力，本 change 未改）。③ 呈现面过滤会让「台账有记录、`evolve pending` 不列」在**异常残留**时出现
+  —— 这正是规格要求（未过门 = 非待复核），落地报错信息已指向重新筹备。
+- **规格**：`evolution`（**MODIFIED**「架构级候选的原生实施（可选）」——「复核」bullet 补「**待复核**
+  仅指门禁全过的制品」，「落地」bullet 补「SHALL 只认门禁全过的制品 / 未过门 ⇒ `IMPLEMENT_REJECTED`
+  / SHALL NOT fail-open」+ **1** Scenario「未过门的残留制品不被放行落地」）。**非** `skip_specs`
+  （规格此前未写这条判据，非违约口径）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3366,3 +3400,4 @@
 | ADR-0117 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/phase-29.md |
 | ADR-0118 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/phase-33.md |
 | ADR-0119 | 03-interfaces/orchestration-interface.md, 02-modules/orchestration.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0120 | 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

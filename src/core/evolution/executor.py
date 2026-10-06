@@ -11,6 +11,8 @@
    （不建第二个持久化库：CLI 是一次性进程，制品不落盘则「待复核」只活在一次进程里）。
 2. **落地**：人工复核关（与候选目标一致、`op` 可区分的**已批准**审批单）+ 漂移校验之后，应用
    **被复核的那一份**制品（不重新产出补丁），记可逆效应，候选状态与结局置 `implemented`。
+   落地**只认门禁全过**（`gated=True`）的制品：筹备中断留下的 `gated=False` 残留不构成可复核对象
+   （E69／change 0127）—— 否则从未跑过门禁的补丁会被永久应用。
 
 两条独立判据协同守卫「改哪儿」：①**范围守卫**（`_scope_violation`，形状/白名单减信任集）；
 ②**路径与归因一致**（路径须由候选 `target_plugin` 经约定解析得出且文件确实存在）。守卫只查
@@ -213,9 +215,14 @@ class EvolutionExecutor:
     # ---- 查询 ----
 
     def staged(self, candidate_id: str) -> ImplementationRecord | None:
-        """该候选的**待复核**制品（未筹备 / 已落地 ⇒ ``None``）。"""
+        """该候选的**待复核**制品（未筹备 / **未过门** / 已落地 ⇒ ``None``）。
+
+        「待复核」≡ **门禁全过**（`gated=True`）且尚未落地：筹备中断（门禁抛错 / 进程被杀）留下的
+        `gated=False` 残留制品**不是**可复核对象（E69／change 0127），否则从未跑过门禁的补丁会被
+        放行落地。
+        """
         record = self.queue.implementation_of(candidate_id)
-        return record if record is not None and not record.committed else None
+        return record if record is not None and record.gated and not record.committed else None
 
     def staged_all(self) -> list[ImplementationRecord]:
         """全部待复核制品（操作面 `evolve pending` 的呈现源）。"""

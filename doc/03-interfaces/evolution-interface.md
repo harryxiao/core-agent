@@ -323,6 +323,7 @@ class EvolutionExecutor:
 | **门禁冻结** | 门名与命令取自**单一真源** `GATE_COMMANDS`（组合根注入，执行器**不自选**）；复用组合根既有 `gate_executor` |
 | **可逆** | 应用与落地各记一条 `Effect`（`undo` 恢复写入前内容）；筹备的临时应用在 `finally` 里回退 ⇒ 工作树不留改动；效应按 trace 分组（`evolution.prepare.<cid>` / `evolution.commit.<cid>`） |
 | **漂移拒绝** | 落地前校验目标文件当前内容与 `before` 一致 ⇒ 不符抛 `IMPLEMENT_STALE`（不把补丁盖到外部改动上）；筹备起点同样拒绝脏树 |
+| **待复核判据** | 「待复核」≡ **门禁全过**（`gated=True`）且未落地：筹备中断（门禁抛错 / 进程被杀）留下的 `gated=False` 残留制品**不是**可复核对象 ⇒ 落地拒绝（`IMPLEMENT_REJECTED`）、`evolve pending` 不列出（留痕仍可经台账查得）—— change `0127` / E69 |
 | **已知局限** | 本切片的冻结门是当时**唯一**真门（**已订正**：change `0119` 起 `Evaluator` 是真门、change `0120` 起 `Validator` 亦是真门 —— 见 §1；结晶面门跑的是**仓库级**回归，候选专属产物的验证仍只由本冻结门承担）；无物理隔离；`commit` 的 undo 无 CLI 回退入口；门禁副产物（`dist/`、`.pytest_cache`）不入回退（ADR-0105 照实登记） |
 
 
@@ -416,7 +417,7 @@ class CurriculumPlanner:
 | `EVAL_FROZEN` | 候选**无法评测**（无绑定基准 / 无样本 / 无执行器 / 无基线）⇒ 不下发、不发布；**非**「退化」——change `0119` |
 | `GATE_CALIBER_STALE` | 候选口径版本与现口径不符（旧口径候选不得投放，须按现口径重新提案）——change `0119` |
 | `CONFIRM_REQUIRED` | 架构级候选未获人工审批（无审批单 / 未批准 / 目标不符）；原生实施的复核单缺失 / 未批准 / 目标不符 / `op` 非 `evolution.implement` 亦复用之 |
-| `IMPLEMENT_REJECTED` | 原生实施前置不满足（候选非已确认的架构级 / 归因不在白名单 / 范围守卫拒绝 / 未筹备即落地 / 筹备回退失败）——change `0112` |
+| `IMPLEMENT_REJECTED` | 原生实施前置不满足（候选非已确认的架构级 / 归因不在白名单 / 范围守卫拒绝 / 未筹备即落地 / **未过门的残留制品**（change `0127`）/ 筹备回退失败）——change `0112` |
 | `IMPLEMENT_STALE` | 目标文件自筹备以来已被改动（落地前漂移校验失败）——change `0112` |
 
 `EvolutionOutcome.status` 取值：`published` / `accepted` / `pending` / `manual` / `rejected` / `rollback` / `frozen`（无法评测，change `0119`）/ `no_evidence` / `dissolved`（观察期自动溶解）/ `implemented`（制品已复核落地，change `0112`）。

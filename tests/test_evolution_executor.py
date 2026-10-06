@@ -67,6 +67,20 @@ class _GateRunner:
         )
 
 
+class _RaisingGate:
+    """假门禁执行器：跑到指定门即**抛异常**（模拟门禁中断 ⇒ 留下 `gated=False` 残留制品的窗口）。"""
+
+    def __init__(self, *, at: str = "typecheck") -> None:
+        self.at = at
+        self.runs: list[str] = []
+
+    def __call__(self, kind: str) -> _GateOutcome:
+        self.runs.append(kind)
+        if kind == self.at:
+            raise RuntimeError("门禁执行中断")
+        return _GateOutcome(True)
+
+
 def _candidate(*, status: str = "confirmed", target: str = _TARGET) -> GenerationCandidate:
     return GenerationCandidate(
         generation=1,
@@ -110,10 +124,10 @@ def _executor(  # noqa: PLR0913 — 测试构造辅助
     candidate: GenerationCandidate,
     *,
     author: _Author | None = None,
-    runner: _GateRunner | None = None,
+    runner: _GateRunner | _RaisingGate | None = None,
     queue: PendingQueue | None = None,
     effects: EffectTracker | None = None,
-) -> tuple[EvolutionExecutor, _Author, _GateRunner, PendingQueue, EffectTracker]:
+) -> tuple[EvolutionExecutor, _Author, _GateRunner | _RaisingGate, PendingQueue, EffectTracker]:
     """构造执行器：候选先登记进台账（制品与候选同一条记录承载）。"""
     author = author or _Author()
     runner = runner or _GateRunner()
@@ -413,3 +427,52 @@ def test_staged_is_empty_until_prepare(tree: Path) -> None:
     assert executor.staged(candidate.candidate_id) is not None
     executor.commit(candidate, approval=_ticket())
     assert executor.staged(candidate.candidate_id) is None
+
+
+# ---- 落地只认门禁全过的制品（change 0127 / E69） ----
+
+
+def test_commit_rejects_artifact_left_by_an_interrupted_prepare(tree: Path) -> None:
+    """筹备在门禁中中断 ⇒ 台账留下未过门制品；带合格复核单也**不得**放行落地（fail-closed）。"""
+    candidate = _candidate()
+    executor, _, _, queue, _ = _executor(tree, candidate, runner=_RaisingGate(at="typecheck"))
+
+    with pytest.raises(RuntimeError):
+        executor.prepare(candidate)
+
+    record = queue.implementation_of(candidate.candidate_id)
+    assert record is not None and record.gated is False, "中断残留的制品落在台账里"
+    assert _read(tree) == _ORIGINAL, "门禁中断亦已回退工作树（异常路径同样回退）"
+
+    with pytest.raises(EvolutionError) as exc:
+        executor.commit(candidate, approval=_ticket())
+
+    assert exc.value.code == EvolutionErrorCode.IMPLEMENT_REJECTED
+    assert _read(tree) == _ORIGINAL, "未过门制品拒绝落地 ⇒ 工作区逐字不变"
+    assert candidate.status == "confirmed", "不落 implemented"
+
+
+def test_ungated_artifact_is_not_staged(tree: Path) -> None:
+    """「待复核」仅指门禁全过的制品：残留不出现在呈现面，但仍**留痕**在台账（不静默抹掉）。"""
+    candidate = _candidate()
+    executor, _, _, queue, _ = _executor(tree, candidate, runner=_RaisingGate(at="lint"))
+
+    with pytest.raises(RuntimeError):
+        executor.prepare(candidate)
+
+    assert executor.staged(candidate.candidate_id) is None
+    assert executor.staged_all() == []
+    assert queue.implementation_of(candidate.candidate_id) is not None, "留痕：中断事实可见"
+
+
+def test_staged_lists_gated_artifacts_after_successful_prepare(tree: Path) -> None:
+    """回归：筹备成功（门禁全过）⇒ 制品正常列为待复核，`gated is True`。"""
+    candidate = _candidate()
+    executor, _, _, _, _ = _executor(tree, candidate)
+
+    executor.prepare(candidate)
+
+    staged = executor.staged_all()
+    assert [r.candidate_id for r in staged] == [candidate.candidate_id]
+    assert staged[0].gated is True
+    assert executor.staged(candidate.candidate_id) is staged[0]
