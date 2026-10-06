@@ -8,6 +8,8 @@
 
 宠物会话是编排层「后台自治循环」的核心句柄：启动、休眠、恢复、异常退避、终止全生命周期由 `PetSession` 收口，每次唤醒复用 `Loop.run(user_input: str, *, session_id=...) -> LoopResult` 同步薄壳（asyncio.run 桥接）逐次执行，异常退避不残留半运行状态。执行**携带宠物自身 `session_id`**（缺省 uuid、始终非空）⇒ 宠物轨迹按宠物会话归属，**不与主线未归属条目混同**；而 `observe()` 记下的主人偏好（`source=user`）为**刻意知识**，保持全局层（change `0114`／ADR-0107）。
 
+轨迹另落**独立记忆命名空间**（`source=pet`，专属 loop 构造期固定）⇒ 与主 Agent（`source=loop`）、神兽（`source=beast.<agent_id>`）三者互不混同：主侧（及神兽）装配器排除面**封存** `pet`（`exclude_source_prefixes=("beast.", "pet")`），宠物自身用**派生**装配器放行 `pet`（`with_allow_source_prefixes("pet")`）以免失忆。`source` 划 **Agent 身份**（宠物 loop 单实例共享 ⇒ 常量 `"pet"`）、`session_id` 划**会话个体**（哪只宠物），二维同时成立、互不替代（change `0118`／ADR-0111）。
+
 ```python
 class PetSessionState(Enum):
     IDLE = "idle"            # 未激活

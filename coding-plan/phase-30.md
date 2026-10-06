@@ -128,11 +128,11 @@
 
 ## 8. 遗留清单（Phase 30 全闭后仍在册项）
 
-**A. 待裁决（唯一未决项）**
+**A. ~~待裁决（唯一未决项）~~ ⇒ 已裁决并关闭（change `0118` / ADR-0111）**
 
-| 项 | 内容 | 决策点 |
+| 项 | 内容 | 结论 |
 |---|---|---|
-| 宠物记忆命名空间 | `_pet_loop`（`runtime.py:890-922`）`DefaultLoop`（`:902`）**不传 `source=`** ⇒ 宠物轨迹以默认 `source="loop"` 落库，**进主命名空间**（主 Agent 检索得到），且无「宠物专属分区」；对照神兽（`source=beast.<agent_id>` + 装配器排除/放行）。**契约面上 `pet-mode` spec 未要求独立命名空间** ⇒ **非违约**，属**接线缺口**。 | ① **立账并修**（宠物接 `source="pet.<pet_id>"` + 与神兽同形的派生装配器；须**规格先行**，且注意 `pet-mode` spec `:249`/`:255` 的隐私条款）；② **销账**（判「宠物记忆**有意**与主人共享」——今天宠物主人偏好走全局层，若共享是设计意图则只须**补一句 ADR 说明**）。**建议**：先裁「宠物记忆**是否应与主人隔离**」，再决定修法 |
+| 宠物记忆命名空间 | `_pet_loop` 构造 `DefaultLoop` 时**不传 `source=`** ⇒ 宠物轨迹以默认 `source="loop"` 落库，**进主命名空间**（主 Agent 检索得到）。**契约面上 `pet-mode` spec 未要求独立命名空间** ⇒ **非违约**，属**接线缺口**。 | **已关闭**（2026-10-06 用户裁决「物接独立命名空间，先做」⇒ 取向＝与 phase-26 神兽**同型**：标注 + 封存 + 自放行）。**规格先行** `pet-mode` MODIFIED（**非** `skip_specs`；`pet-mode` spec 此前只钉 `session_id` 归属与 `source=user` 全局层，**未规定轨迹命名空间** ⇒ 新增能力，先例 `0028`）。**判据订正**：原决策点①写 `source="pet.<pet_id>"` —— 勘察后**不成立**：宠物 loop 是**单实例共享**（一只 `pet_loop` 被 `PetManager` factory 复用于所有宠物会话），`source` 在 loop 构造期固定，**无法承载个体 id** ⇒ 取**常量 `"pet"`**（`source` 划 Agent 身份、`session_id` 划会话个体）。修的是**可达泄漏**：`MemoryStore.read` 的会话过滤仅在 `session_id` 非空时生效（**空串 fail-open**）⇒ 未带会话的主线运行（CLI 一次性 `run`、库层直调）会吸收宠物自治轨迹。实现：主装配器排除面 `("beast.",)` → `("beast.", "pet")`；`_pet_loop` 用**派生**装配器 `with_allow_source_prefixes("pet")` + `DefaultLoop(source="pet")`。**原 ②「销账」分支未采纳**（泄漏可达 ⇒ 非有意共享）。7 新用例**先红后绿**；1484 passed；validate 30-0；归档 `archive/2026-10-06-0118-pet-memory-namespace/` |
 
 **B. 已知局限（有意行为 / 已裁决不改，非缺陷）**
 

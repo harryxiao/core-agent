@@ -2848,6 +2848,48 @@
 
 ---
 
+## ADR-0111：宠物记忆**独立命名空间**（`source="pet"` + 主侧封存 + 自身放行）（change 0118 / phase-30 §8-A）
+
+- **背景**：`coding-plan/phase-30.md` §8-A 登记的**唯一待裁决项** —— `_pet_loop`（`runtime.py`
+  `_pet_loop()`）构造 `DefaultLoop` 时**不传 `source=`** ⇒ 宠物自治轨迹以默认 `source="loop"` 落库，
+  与主 Agent **同命名空间**。2026-10-06 用户裁决「**物接独立命名空间，先做**」，取向＝与 phase-26 神兽
+  **同型**（标注 + 封存 + 自放行）。**契约面**：`pet-mode` spec 此前只钉了宠物轨迹的**会话归属**
+  （`session_id`）与主人偏好 `source=user` 的全局层地位，**未规定轨迹命名空间** ⇒ 本 change 是**新增能力**
+  ⇒ **规格先行**（`pet-mode` MODIFIED，**非** `skip_specs`；先例 change `0028`）。与 phase-26 神兽**不可
+  类比**：`beast-mode` spec `:54` 早已明写「独立记忆命名空间」，那次断的只是**接线**。
+- **决策①：修的是**可达泄漏**，不是命名整洁。** 泄漏路径：`MemoryStore.read` 的会话过滤**仅在
+  `session_id` 非空时生效**（change `0114` 语义，空串 **fail-open**）。主 Agent 以**未带会话**方式运行
+  （CLI 一次性 `run`、库层直调 `DefaultLoop()`）时，宠物轨迹（`session_id=宠物会话 id`）**不被会话面挡住**，
+  且因 `source="loop"` 也不被来源面挡住 ⇒ **被主 Agent 读成自身 L2 事实**（system prompt 污染）。补上
+  `source` 维度后，排除面成为该路径下的**唯一防线**。
+- **决策②：命名空间取**常量 `"pet"`**，而非 `pet.<个体 id>`（订正 §8-A 决策点①的原文表述）。** 宠物 loop 是
+  **单实例共享**（一只 `pet_loop` 被 `PetManager` 的 factory 复用于所有宠物会话）—— `source` 在 loop
+  **构造期固定**，无法承载个体 id。故 **`source` = 子系统身份**、**`session_id` = 个体身份**（哪只宠物）。
+  与神兽不同（神兽**每兽一个 loop 实例** ⇒ `source=beast.<agent_id>` 天然带个体），但两者语义闭合：
+  `source` 划 **Agent 身份**，个体粒度由 `session_id` 承载 —— 规格明写二者**同时成立、互不替代**。
+- **决策③：排除前缀用**裸根** `"pet"`。** 命名空间字符串就是 `"pet"`，`startswith("pet.")` **不命中**自身。
+  全仓 `source` 字面量全集 = `loop` / `beast.<id>` / `user` / `core-profile` / `evolution` / `skills` /
+  `context` / `notes.turn` —— **无一以 `pet` 开头** ⇒ 裸前缀无语义误伤。
+- **决策④：宠物用**派生装配器**（`with_allow_source_prefixes("pet")`），不原地改。** 与 ADR-0110 决策④
+  同机制：主 loop、神兽、子 Agent **共用**同一份装配器配置，原地改放行面会波及全体（破封存红线）；
+  派生保证「同一配置 + 换放行面」。主装配器的 `"beast."` **逐字不动**（phase-26 E37/E38/E39 红线），
+  仅**追加** `"pet"`。
+- **决策⑤：宠物**只放行自身**，不放行神兽。** 派生实例的排除面仍是 `("beast.", "pet")`、放行面仅 `"pet"`
+  ⇒ 宠物读不到 `beast.*`（后台自治体之间亦不混同）。**神兽装配面**由同一配置派生 ⇒ 亦不命中 `pet`：
+  语义一致，且**今日无实际行为变化**（神兽读取恒带 `session_id=beast.<agent_id>`，宠物条目本就被会话
+  过滤挡下）—— 据实写明，不夸大为行为变更。
+- **决策⑥：主人偏好通道逐字不动。** `PetSession.observe` 的 `source="user"`（刻意知识、全局层，
+  spec `:233/:239`）不受命名空间封存影响 —— 排除面只加 `"pet"`，不触碰 `user`。
+- **已知局限**：① 命名空间是**常量** ⇒ 若未来改为「每宠物独立 `(loop, memory)` 实例」（change `0048` 已裁
+  否决），须重开本条（改 `source=pet.<id>` + 逃逸放行面）；② 排除面是**前缀**匹配 ⇒ 若未来出现以 `pet`
+  开头的**其他**来源命名，会被**静默封存**（今天全集已穷举，无此风险）；③ 主 Agent **未带会话**时不再
+  看到宠物自治所得 —— 这是**本 change 的目的**，但意味着「宠物发现 + 主线复用」需**显式**经主人偏好或
+  `notes` 等全局层通道，**无隐式捷径**；④ **未**改 `DefaultLoop.remember` 的 `id=f"loop.{trace_id}"` 硬编码
+  （与神兽同型：神兽条目亦为 `id=loop.<trace_id>` + `source=beast.*`；change `0048`/phase-26 有意保留）。
+- **规格**：`pet-mode`（MODIFIED「Pet Session Runtime Wiring」，+4 Scenario）。**非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2953,3 +2995,4 @@
 | ADR-0108 | 03-interfaces/memory-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/ui-interface.md, 03-interfaces/configuration-interface.md, 02-modules/memory.md, 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/phase-28.md |
 | ADR-0109 | 03-interfaces/ui-interface.md, 03-interfaces/cli-ops-interface.md, 02-modules/cli-ops.md, 06-ui-frontend/ui-architecture.md, 04-testing/test-cases.md, coding-plan/phase-28.md |
 | ADR-0110 | 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/beast-mode-interface.md, 02-modules/memory.md, 02-modules/skills.md, 02-modules/context.md, 04-testing/test-cases.md, coding-plan/phase-30.md |
+| ADR-0111 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md, 04-testing/test-cases.md, coding-plan/phase-30.md |

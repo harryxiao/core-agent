@@ -563,7 +563,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             project_info=list(profile.context),
             # 神兽记忆分区封存（beast-mode spec `:89`）：主 loop 装配不命中 `beast.*`
             # （神兽轨迹由 `_beast_loop` 以 `source=beast.<agent_id>` 落库，见下）
-            exclude_source_prefixes=("beast.",),
+            # 宠物命名空间封存（pet-mode：「Pet Session Runtime Wiring」）：主 loop 装配不命中 `pet`
+            # —— `session_id` 为空时（未带会话）会话面不过滤，此处是唯一防线（见 `_pet_loop`）
+            exclude_source_prefixes=("beast.", "pet"),
         )
     planner = LLMPlanner(
         llm,
@@ -892,9 +894,12 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
 
             此前宠物直接复用**主 loop**（`cast(LoopPlugin, loop)`）⇒ 可调用全部工具、安全边界
             不在路径上。专属 loop 沿用 `_agent_loop`/`_beast_loop` 同一形状（planner + 共享
-            记忆/闸门/追踪），差异有二：① 工具集被白名单收窄（`_pet_tools`）；② 只挂安全中间件
+            记忆/闸门/追踪），差异有三：① 工具集被白名单收窄（`_pet_tools`）；② 只挂安全中间件
             —— **不**共享 constraints 熔断链（宠物流量不应污染主线/神兽的熔断态），亦不接技能路由
-            （pet 任务与结晶链路无关）。越界 ⇒ 本轮终止 + 通知主人，会话保持 ACTIVE。
+            （pet 任务与结晶链路无关）；③ 轨迹落**独立命名空间**（`source="pet"`，pet-mode spec
+            「Pet Session Runtime Wiring」）—— 主装配器已封存 `pet`，故此处须用**派生**装配器
+            放行自身，否则宠物读不到自己的轨迹（与 `_beast_loop` 的 E54 同型）。
+            越界 ⇒ 本轮终止 + 通知主人，会话保持 ACTIVE。
             """
             provider = _pet_tools()
             return cast(
@@ -904,7 +909,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                         llm,
                         model=app.llm.model,
                         reasoning_effort=app.llm.reasoning_effort,
-                        assembler=assembler,
+                        assembler=assembler.with_allow_source_prefixes("pet"),
                         tools=provider,
                     ),
                     memory=memory,
@@ -916,6 +921,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                     middlewares=[build_safety_middleware(pet_safety, notify=_pet_notify)],
                     max_rounds=max_rounds,
                     token_budget=token_budget,
+                    source="pet",
                 ),
             )
 

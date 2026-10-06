@@ -527,6 +527,11 @@
 | TC-MISS-06 | 同上（缺省无副作用） | `allow` 非空但 `exclude` 为空 / 两者皆空 | 与既往**逐字一致**（无排除即无所放行）（锚点：`::test_allow_source_prefixes_without_exclusion_is_noop`） |
 | TC-MISS-07 | context-interface.md §2（派生装配器） | `DynamicAssembler(exclude=("beast.",))` 派生出放行自身的实例 | 派生实例只含自身命名空间条目；**原实例**的检索结果不变（封存不受影响）（锚点：`::test_assembler_can_be_derived_for_one_namespace`） |
 | TC-MISS-08 | beast-mode/spec.md「Independent Sub-Agent with Shared Capability」（自身轨迹可召回） | 真 `Runtime` 神兽会话的 `_planner._assembler.build(…, session_id="beast.qinglong")` | 含 `beast.qinglong`、**不含** `beast.baihu`；**主**装配器 facts 无任何 `beast.` 源（双向守门）（锚点：`tests/test_beast_wiring.py::test_beast_loop_recalls_own_namespace_only`） |
+| TC-PETNS-01 | pet-mode/spec.md「Pet Session Runtime Wiring」（宠物轨迹落独立命名空间） | 真 `Runtime` 激活宠物并 `wake()` 跑完一轮自治任务 | 共享记忆中 `source=pet` 的条目存在，且其 `session_id` **全为**该宠物会话 id（命名空间 + 会话个体双维度）（锚点：`tests/test_pet_memory_namespace.py::test_production_pet_trajectory_lands_in_pet_namespace`） |
+| TC-PETNS-02 | 同上（主 Agent 检索面封存宠物命名空间） | 宠物跑完一轮后，主 loop 真实装配器以 `session_id=""`（会话面**不过滤**，改前泄漏路径）检索 | facts 无 `source=pet` 条目、**且**无宠物回复正文（内容级守门）；主线条目**仍出现**（反例守门）（锚点：`::test_main_loop_context_seals_pet_partition`） |
+| TC-PETNS-03 | 同上（宠物自身轨迹可召回） | 宠物真实装配器（派生、放行 `pet`）检索，库中另有 `beast.qinglong` | 含 `pet`、**不含** `beast.qinglong`（封存不放行他者）（锚点：`::test_pet_loop_recalls_own_namespace_only`） |
+| TC-PETNS-04 | 同上（主人偏好不受封存影响） | `source=user` 偏好 + `source=pet` 轨迹同店，主侧检索 | 偏好条目**仍出现**（刻意知识全局层，逐字不动）（锚点：`::test_user_preference_survives_pet_sealing`） |
+| TC-PETNS-05 | 同上（红线：不放宽神兽封存） | 主装配器排除面新增 `pet` 后 | 仍**不含**任何 `beast.*` 源（phase-26 E37/E38/E39 逐字不动）（锚点：`::test_pet_sealing_does_not_relax_beast_sealing`） |
 
 ---
 

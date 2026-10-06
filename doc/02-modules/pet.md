@@ -45,6 +45,7 @@ PetMode（后台自治循环扩展）
 
 - `observe()` 观察主人行为/反馈，以 `MemoryEntry.source="user"` 落 L2 facts 层，**不新造记忆层**；`prefer()` 复用已记录偏好，供任务执行/沟通时对齐主人。
 - 偏好复用既有 memory 闭环，与"记忆即光谱"一致。
+- **轨迹命名空间**：宠物专属 loop 的 `DefaultLoop(source="pet")` ⇒ 自治轨迹落独立命名空间（`source=pet`），主侧装配器封存、宠物自身经**派生**装配器放行（见 `03-interfaces/pet-mode-interface.md` §1）—— `source` 划 Agent 身份、`session_id` 划会话个体，二维并行（change `0118`／ADR-0111）。
 
 ### 3.4 三入口激活
 

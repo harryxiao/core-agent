@@ -233,6 +233,13 @@ SHALL NOT 以未归属（空串）形态落库、SHALL NOT 与主线未归属条
 其轨迹不属于任何前台对话会话。宠物**观察到的主人偏好**（`source=user`）为**刻意知识**，
 SHALL 保持全局层（未归属），不随本条归属。
 
+宠物经由该 loop 产生的**执行轨迹** SHALL 另落**独立记忆命名空间**（条目 `source=pet`），与主 Agent
+（`source=loop`）、神兽（`source=beast.<agent_id>`）三者互不混同——宠物是后台自治体，其自治所得
+SHALL NOT 被主 Agent（及神兽）的检索面吸收为自身事实：上述 Agent 的记忆检索面 SHALL **封存**
+`pet` 命名空间。该封存 SHALL NOT 使宠物读不到**自身**轨迹：宠物的上下文装配 SHALL 在排除面内
+**放行自身**命名空间。本条的命名空间归属与上段的会话归属 SHALL 同时成立、互不替代——会话标识隔离
+**会话个体**（哪只宠物），命名空间隔离 **Agent 身份**（宠物 / 神兽 / 主 Agent）。
+
 #### Scenario: 生产激活的宠物偏好落 L2
 - **GIVEN** 经组合根装配的运行系统
 - **WHEN** 生产入口激活一只宠物并观察主人偏好
@@ -247,6 +254,26 @@ SHALL 保持全局层（未归属），不随本条归属。
 - **GIVEN** 经组合根装配的运行系统，一只宠物被唤醒并跑完一轮自治任务
 - **WHEN** 该轮轨迹沉淀进记忆
 - **THEN** 条目 `session_id` 等于该宠物会话 id，**不等于**空串，前台会话检索不到它
+
+#### Scenario: 宠物轨迹落独立命名空间
+- **GIVEN** 经组合根装配的运行系统，一只宠物被唤醒并跑完一轮自治任务
+- **WHEN** 该轮轨迹沉淀进记忆
+- **THEN** 条目 `source=pet`，与主 Agent（`source=loop`）命名空间隔离
+
+#### Scenario: 主 Agent 检索面封存宠物命名空间
+- **GIVEN** 库中已沉淀 `source=pet` 的宠物轨迹（另含主线 `source=loop` 条目）
+- **WHEN** 主 Agent 按任务检索（**未带会话标识**，即会话面不过滤）
+- **THEN** `source=pet` 条目**不出现**，主线条目**仍出现**
+
+#### Scenario: 宠物自身轨迹可召回
+- **GIVEN** 宠物自身已有 `source=pet` 轨迹沉淀，且库中另有 `source=beast.*` 条目
+- **WHEN** 该宠物装配上下文并检索
+- **THEN** 自身 `source=pet` 条目**出现**（排除面内放行自身命名空间）；`source=beast.*` 条目**不出现**
+
+#### Scenario: 主人偏好不受命名空间封存影响
+- **GIVEN** 宠物已观察到主人偏好（`source=user`，全局层）
+- **WHEN** 主 Agent 按任务检索
+- **THEN** 该偏好条目**仍可出现**（刻意知识，不随宠物命名空间封存）
 
 ### Requirement: Pet Control Surface
 系统 SHALL 提供统一的宠物**控制面**，让宿主层（前台 `/pet [cmd]`、`pet <verb>` CLI argv、WebUI 自然语言）
