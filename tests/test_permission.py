@@ -68,6 +68,22 @@ def test_classify_namespace_substring_not_read() -> None:
     assert engine.classify("tools.file_write", "x", ["filesystem:write"]) == RiskLevel.DATA_EDIT
 
 
+def test_classify_substring_trap_not_read() -> None:
+    """子串陷阱：`target` 含 `get`、`category` 含 `cat`，词元非只读 ⇒ deny-by-default（0135）。"""
+    engine = _engine()
+    assert engine.classify("tools.target", "x", []) == RiskLevel.HIGH_RISK
+    assert engine.classify("tools.category_sync", "x", []) == RiskLevel.HIGH_RISK
+    # 目标侧同样按词元判定：路径含 `target` 不得据此判只读
+    assert engine.classify("tools.whatever", "/var/log/target", []) == RiskLevel.HIGH_RISK
+
+
+def test_classify_whole_token_still_matches() -> None:
+    """整词元照旧命中（切词不误伤）：`fs.list` / `tools.file_read` 判只读（change 0135）。"""
+    engine = _engine()
+    assert engine.classify("fs.list", "x", []) == RiskLevel.READ
+    assert engine.classify("tools.file_read", "x", []) == RiskLevel.READ
+
+
 def test_classify_delegate_coeffect_is_read() -> None:
     """字面量 `agent:delegate` 豁免为只读（保持 change 0076 后的委托放行行为）。"""
     assert _engine().classify("tools.delegate", "x", ["agent:delegate"]) == RiskLevel.READ

@@ -32,12 +32,13 @@ class Decision:
     approval_required: bool     # 是否需要人工审批
 ```
 
-**分级判定契约（change `0095`）**：`classify` 按**语义词元**判定，不对标识串做**任意子串**匹配 ——
-`_READ_TOKENS` / `_WRITE_TOKENS` / `_HIGH_RISK_TOKENS` 的命中均以完整词元语义为准；命名空间前缀
-（如 `tools.`）偶然含只读词子串（如 `"ls"`）**不构成**只读判定（否则所有 `tools.*` 会误判为 READ，
-deny-by-default 兜底失效）。判定顺序：高危词元 → 高危 coeffect 前缀（`secret:` / `network:` / `external`）
-→ **字面量委托豁免** `agent:delegate`（list 元素**等值**匹配，判 READ）→ 写词元 → 只读词元 → 兜底 HIGH_RISK。
-该豁免 SHALL NOT 放宽为 `agent:` 前缀（其余 `agent:*` 仍按高危及后续规则处理）。
+**分级判定契约（change `0095` 立规 / `0135` 补齐实现）**：`classify` 按**语义词元**判定，不对标识串做**任意子串**匹配 ——
+`_READ_TOKENS` / `_WRITE_TOKENS` / `_HIGH_RISK_TOKENS` 的命中均以完整词元语义为准；**操作与目标**先按
+`._:-/` 切成词元集合（`_tokens`）再命中，命名空间前缀（如 `tools.`）偶然含只读词子串（如 `"ls"`）**不构成**
+只读判定 —— 同理 `tools.target`（含 `get`）、`tools.category_sync`（含 `cat`）亦判 `HIGH_RISK`
+（否则所有 `tools.*` 会误判为 READ，deny-by-default 兜底失效）。判定顺序：高危词元 → 高危 coeffect 前缀
+（`secret:` / `network:` / `external`）→ **字面量委托豁免** `agent:delegate`（list 元素**等值**匹配，判 READ）
+→ 写词元 → 只读词元 → 兜底 HIGH_RISK。该豁免 SHALL NOT 放宽为 `agent:` 前缀（其余 `agent:*` 仍按高危及后续规则处理）。
 
 ---
 
@@ -147,7 +148,7 @@ class SandboxPolicy:
 | 错误码 | 含义 |
 |---|---|
 | `PERMISSION_DENIED` | 未授权操作（含所需风险等级） |
-| `APPROVAL_REQUIRED` | 高危操作需人工审批 |
+| `APPROVAL_REQUIRED` | 高危操作需人工审批（raise 落点：高危 git 审批门 `GitClient._require_approval`，change `0135`） |
 | `APPROVAL_TIMEOUT` | 审批超时，fail-closed |
 | `SANDBOX_UNAVAILABLE` | 沙箱不可用（不降级直跑） |
 | `APPROVAL_EXPIRED` | 审批单已过期 |

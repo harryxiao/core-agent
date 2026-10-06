@@ -3486,6 +3486,42 @@
 
 ---
 
+## ADR-0128：分级按完整词元 + 高危审批门用 `APPROVAL_REQUIRED`（change 0135 / phase-34 E76）
+
+- **背景**：`coding-plan/phase-34.md` 登记的 **E76**（规格漂移）。两处**规格/文档早已立规、代码未跟上**：
+  ① `permission/spec.md`「分级权限体系」SHALL 依据**语义分词**（完整词元）判定、命名空间或无关子串的
+  偶然命中 SHALL NOT 影响等级，`03-interfaces/permission-interface.md` §2 更以 change `0095` 立下同一契约
+  —— 但 `policy.py` 的实现一直是**裸子串** `tok in op_l`：`tools.target`（含 `get`）、
+  `tools.category_sync`（含 `cat`）、乃至**目标侧** `/var/log/target` 都被误判为 `read` ⇒
+  「无法归类 → deny-by-default」的兜底在命名空间前缀下**失效**（`tools.*` 一族本可全被漏判）。
+  ② `permission/errors.py:18` 定义 `APPROVAL_REQUIRED`（错误码表口径「高危操作需人工审批」），
+  但 `src/` **零 raise**（死码）；而唯一的高危审批门 `GitClient._require_approval`
+  却抛 `PERMISSION_DENIED`（「无权限」）—— **事由张冠李戴**。
+- **决策①：`classify` 按词元集合命中，不做任意子串匹配。** 操作与目标先经 `_tokens` 按 `._:-/`
+  切成**小写词元集合**（命名空间 `.`、路径 `/`、snake / kebab / coeffect 式 `_` `-` `:`），
+  三个词元表转为 `frozenset` 后以集合交判定。判定顺序逐字不变（高危词元 → 高危 coeffect 前缀
+  → 字面量委托豁免 → 写词元 → 只读词元 → 兜底 HIGH_RISK）。**目标侧同样切词** ——
+  `tok in target_l` 的旧写法与操作侧是同一个缺陷。
+- **决策②：`APPROVAL_REQUIRED` 的生产 raise 落点 = 高危 git 审批门。** 「缺审批」与「无权限」是两件事：
+  前者应 `APPROVAL_REQUIRED`（错误码表原文），后者才 `PERMISSION_DENIED`。改 `_require_approval`
+  抛 `APPROVAL_REQUIRED`，该码自此有**真实可达的 raise 落点**，非死码。
+  **判据订正（明示偏离计划原文）**：计划原文写「`authorize` 的 `approval_required=True` 无审批时
+  `raise`」——**未采纳**：`PolicyEngine.authorize` 对 HIGH_RISK **返回**
+  `Decision(approval_required=True)` 是 loop confirm 门的**契约**（`guard._to_gate` 据此翻成
+  `confirm` 走审批通道，`provider.py` / `loop/default.py` 依此 fail-closed），改成抛异常会**打断
+  审批流**并令 `guard` 的 `approval_required` 分支成为新死分支 —— 以「消除死码」之名造新死码，
+  得不偿失。同一错误的另一处（`git._require_approval`）才是该码的**正确语义落点**。
+  **又一处订正**：计划所列测试例 `tools.list` **不**判 `read` 与实现自洽性矛盾 —— 词元 `list`
+  本就是只读词，切词后 `tools.list` **应判 `READ`**（这是正确结果，不是缺陷）；真正的子串陷阱是
+  `tools.target` / `tools.category_sync` 一类**词元非只读但含子串**的标识，测试据此改写。
+- **已知局限**：词元表仍是**白名单**（`_READ_TOKENS` 等）——词元不在表内者一律落 deny-by-default
+  HIGH_RISK，因此 `tools.stats`（词元 `stats` ≠ `stat`）从「子串误判 READ」变为「**保守地**判高危」；
+  这是**有意**的 fail-closed 取舍（宁可多要一次审批，不放过一次误放行），新动作词入表即回归精确。
+- **规格**：**无 delta** —— 两条均为「实现回归既有契约」（spec `分级权限体系` / 错误码表早已声明），
+  故 `.openspec.yaml` 置 `skip_specs: true`（先例 `0110` / `0083`）。**非** 新增 Requirement。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3608,3 +3644,4 @@
 | ADR-0125 | 03-interfaces/ui-interface.md, 06-ui-frontend/ui-architecture.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0126 | 03-interfaces/skills-interface.md, 02-modules/skills.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0127 | 03-interfaces/skillhub-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0128 | 03-interfaces/permission-interface.md, 02-modules/permission.md, 03-interfaces/git-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

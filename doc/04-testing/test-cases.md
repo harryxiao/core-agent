@@ -762,6 +762,18 @@
 
 ---
 
+## 51. 分级按词元 + 高危审批码（TC-PERMTOK，change `0135`／ADR-0128，账本 E76）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-PERMTOK-01 | permission/spec.md 分级权限体系（语义分词；命名空间 / 无关子串 SHALL NOT 影响等级） | `classify("tools.target")`（含子串 `get`）、`classify("tools.category_sync")`（含 `cat`）、`classify("tools.whatever", "/var/log/target")`（**目标侧**含 `get`） | 一律 `HIGH_RISK`（deny-by-default），SHALL NOT 判 `read`（锚点：`tests/test_permission.py::test_classify_substring_trap_not_read`） |
+| TC-PERMTOK-02 | 同上（切词不误伤：整词元照旧命中） | `classify("fs.list")`、`classify("tools.file_read")` | `READ`（词元 `list` / `read` 命中）（锚点：`::test_classify_whole_token_still_matches`） |
+| TC-PERMTOK-03 | 同上（命名空间前缀子串反例，既有回归） | `classify("tools.whatever")` / `classify("tools.file_write", coeffect=["filesystem:write"])` | 前者 `HIGH_RISK`；后者 `DATA_EDIT`（锚点：`::test_classify_namespace_substring_not_read`） |
+| TC-PERMTOK-04 | permission/spec.md 人工审批流（高危须审批）+ permission 错误码表（`APPROVAL_REQUIRED` = 高危需人工审批） | `GitClient(approval=lambda op: False).push(force=True)` | 抛 `AccessControlError` 且 `code is APPROVAL_REQUIRED`（非 `PERMISSION_DENIED`），后端**未被调用**（fail-closed 且未执行）（锚点：`tests/test_git.py::test_force_push_requires_approval`） |
+| TC-PERMTOK-05 | 同上（批准即放行，既有回归） | `GitClient(approval=lambda op: True).push(force=True)` | 后端收到 `("origin", None, True)`（锚点：`::test_force_push_approved`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

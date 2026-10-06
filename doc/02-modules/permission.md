@@ -40,9 +40,11 @@ PermissionGate（横切）
 
 - 分类依据：操作类型 × 作用对象 × 影响面（爆炸半径）。
 - 分级结果进入每个 effect 的 `risk_level` 字段，供 EffectTracker 与审计复用。
-- **判定按语义词元，非任意子串**（change `0095`）：命名空间前缀偶然含只读词子串（`tools.` 含 `"ls"`）
-  SHALL NOT 判为 `read`（否则所有 `tools.*` 误判只读、deny-by-default 失效）；显式声明的字面量 coeffect
-  `agent:delegate` 判 `read`，且**不放宽为 `agent:` 前缀**。
+- **判定按语义词元，非任意子串**（change `0095` 立规；change `0135` 补齐实现）：操作与目标先按
+  `._:-/` 切成**词元集合**再命中，命名空间前缀偶然含只读词子串（`tools.` 含 `"ls"`）SHALL NOT 判为 `read`
+  —— 同理 `tools.target`（含 `get`）、`tools.category_sync`（含 `cat`）亦 SHALL NOT 判只读（否则所有
+  `tools.*` 误判只读、deny-by-default 失效）；显式声明的字面量 coeffect `agent:delegate` 判 `read`，
+  且**不放宽为 `agent:` 前缀**。
 
 **模式覆盖（`PermissionModeGate`）**：四档启动开关覆盖上述默认判定（映射 `config.permission.mode`
 + CLI `--permission-mode`）：
@@ -102,6 +104,12 @@ PermissionGate（横切）
 | 高危操作未经审批 | 拦截，返回 `APPROVAL_REQUIRED`，创建审批单 |
 | 审批超时 | fail-closed 拒绝，写审计 |
 | 沙箱启动失败 | 阻断执行，返回 `SANDBOX_UNAVAILABLE`，不降级到宿主直跑 |
+
+`APPROVAL_REQUIRED` 的**生产 raise 落点**（change `0135`）：高危 git 操作的审批门
+（`GitClient._require_approval`，force-push / 删远程分支 / 历史改写）—— 「缺审批」与「无权限」
+是两回事，此前误用 `PERMISSION_DENIED`（错误码表早有 `APPROVAL_REQUIRED` ⇒ 定义处零 raise 的死码）。
+`PolicyEngine.authorize` 一侧仍以 `Decision(approval_required=True)` 表达「需审批」：它是 loop
+confirm 门的契约（`guard._to_gate` 据此翻成 `confirm` 走审批通道），改成抛异常会打断审批流。
 
 ---
 

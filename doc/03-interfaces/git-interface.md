@@ -51,6 +51,10 @@ class GitClient:
 ```
 
 > 高危操作（`force=True` 推送、删除远程分支、历史改写）由 permission 审批链拦截；凭据经 keychain 注入，不落盘明文、不进日志（见 `03-interfaces/permission-interface.md`）。
+>
+> **审批门错误码**（change `0135`）：未获批准的高危操作 **fail-closed** 阻断并抛
+> `AccessControlError(APPROVAL_REQUIRED)`（「缺审批」而非「无权限」；此前误用 `PERMISSION_DENIED`）。
+> 非交互（无 `approval` 回调）恒视为未批准 ⇒ 默认拒绝，后台子进程若要自动化须显式注入审批回调。
 
 ---
 

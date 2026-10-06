@@ -1,6 +1,6 @@
 """权限分级策略引擎（permission）。
 
-按操作 / 目标 / coeffect 关键词分级：删杀 / 密钥 / 出站网络 → HIGH_RISK，
+按操作 / 目标 / coeffect **语义分词**分级：删杀 / 密钥 / 出站网络 → HIGH_RISK，
 写 → DATA_EDIT，读 → READ，无法归类 → HIGH_RISK（deny-by-default）。
 
 对应接口：doc/03-interfaces/permission-interface.md §2
@@ -8,49 +8,64 @@
 
 from __future__ import annotations
 
+import re
+
 from .errors import AccessControlError, PermissionErrorCode
 from .models import Decision, PermissionMode, RiskLevel
 
-_HIGH_RISK_TOKENS = (
-    "delete",
-    "rm",
-    "kill",
-    "exec",
-    "shell",
-    "install",
-    "purge",
-    "drop",
-    "terminate",
-    "sudo",
-    "admin",
+_HIGH_RISK_TOKENS = frozenset(
+    {
+        "delete",
+        "rm",
+        "kill",
+        "exec",
+        "shell",
+        "install",
+        "purge",
+        "drop",
+        "terminate",
+        "sudo",
+        "admin",
+    }
 )
-_WRITE_TOKENS = (
-    "write",
-    "edit",
-    "update",
-    "patch",
-    "put",
-    "post",
-    "create",
-    "set",
-    "append",
-    "modify",
-    "grant",
-    "revoke",
+_WRITE_TOKENS = frozenset(
+    {
+        "write",
+        "edit",
+        "update",
+        "patch",
+        "put",
+        "post",
+        "create",
+        "set",
+        "append",
+        "modify",
+        "grant",
+        "revoke",
+    }
 )
-_READ_TOKENS = ("read", "get", "list", "search", "query", "cat", "view", "show", "stat")
+_READ_TOKENS = frozenset({"read", "get", "list", "search", "query", "cat", "view", "show", "stat"})
+# 词元分隔符：命名空间（`.`）/ 路径（`/`）与 snake / kebab / coeffect 式（`_` `-` `:`）。
+# 分级 SHALL 按**完整词元**命中，SHALL NOT 对标识串做任意子串匹配 ——
+# 否则 `tools.target`（含子串 `get`）、`tools.category_sync`（含 `cat`）会被误判为只读，
+# deny-by-default 兜底失效（规格「分级权限体系」/ change 0135）。
+_TOKEN_SPLIT = re.compile(r"[._:\-/]+")
 # 委托类 coeffect 的**字面量**只读豁免：SHALL NOT 放宽为 "agent:" 前缀，
 # 否则将来任何 `agent:*` coeffect 会静默变只读（同 change 0095 的「按词元非子串」口径）。
 _DELEGATE_COEFFECT = "agent:delegate"
+
+
+def _tokens(op: str, target: str) -> set[str]:
+    """把操作与目标切成**词元集合**（小写、按 `._:-/` 切分）。"""
+    return {token for chunk in (op, target) for token in _TOKEN_SPLIT.split(chunk.lower()) if token}
 
 
 class PolicyEngine:
     """风险分级与授权。"""
 
     def classify(self, op: str, target: str, coeffect: list[str]) -> RiskLevel:
-        op_l = op.lower()
-        target_l = target.lower()
-        if any(tok in op_l or tok in target_l for tok in _HIGH_RISK_TOKENS):
+        tokens = _tokens(op, target)
+        if tokens & _HIGH_RISK_TOKENS:
             return RiskLevel.HIGH_RISK
         if any(
             c.startswith("secret:") or c.startswith("network:") or c == "external" for c in coeffect
@@ -58,9 +73,9 @@ class PolicyEngine:
             return RiskLevel.HIGH_RISK
         if _DELEGATE_COEFFECT in coeffect:  # list 元素等值匹配，非子串
             return RiskLevel.READ
-        if any(tok in op_l for tok in _WRITE_TOKENS):
+        if tokens & _WRITE_TOKENS:
             return RiskLevel.DATA_EDIT
-        if any(tok in op_l for tok in _READ_TOKENS):
+        if tokens & _READ_TOKENS:
             return RiskLevel.READ
         return RiskLevel.HIGH_RISK  # 无法归类 → deny-by-default
 

@@ -12,7 +12,7 @@ from core.git import (
     MergeResult,
     SubprocessGitBackend,
 )
-from core.permission import AccessControlError
+from core.permission import AccessControlError, PermissionErrorCode
 
 
 class FakeBackend:
@@ -88,10 +88,12 @@ def test_git_metadata_protection() -> None:
 
 
 def test_force_push_requires_approval() -> None:
+    """未获批准的高危推送 fail-closed：错误码为 `APPROVAL_REQUIRED`（「缺审批」非「无权」）。"""
     backend = FakeBackend()
     client = GitClient(backend=backend, approval=lambda op: False)
-    with pytest.raises(AccessControlError):
+    with pytest.raises(AccessControlError) as exc_info:
         client.push(force=True)
+    assert exc_info.value.code is PermissionErrorCode.APPROVAL_REQUIRED
     assert backend.pushed == []
 
 

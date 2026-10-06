@@ -95,10 +95,16 @@ class GitClient:
         return self._backend
 
     def _require_approval(self) -> None:
+        """高危 git 操作的审批门：未获批准即 fail-closed 阻断（非交互默认拒）。
+
+        阻断的**事由是「缺审批」而非「无权」** ⇒ 返回 `APPROVAL_REQUIRED`
+        （permission 错误码表「高危操作需人工审批」/ change 0135）；
+        这正是 `APPROVAL_REQUIRED` 的生产 raise 落点（此前误用 `PERMISSION_DENIED`）。
+        """
         approved = self._approval("git.push(force)") if self._approval is not None else False
         if not approved:
             raise AccessControlError(
-                PermissionErrorCode.PERMISSION_DENIED, "force-push 属高危操作，需审批通过"
+                PermissionErrorCode.APPROVAL_REQUIRED, "force-push 属高危操作，需审批通过"
             )
 
     @staticmethod
