@@ -3045,6 +3045,45 @@
 
 ---
 
+## ADR-0115：编排任务的 **HTTP 面与 Web 任务区**（change 0122 / phase-29 change B：E53）
+
+- **背景**：`coding-plan/phase-29.md` 的缺口 **E53**（用户需求②「CLI 和 web/app 都动态显示子 agent 主题 +
+  运行状态」的**消费面**）。change `0121`（ADR-0114）已产出运行态事件，但**无处可见**。**判据订正**：
+  phase-29 §0.6 原把 E53 归因为「`fastapi_serve` 无 subtask 消费 ⇒ 缺事件转发」，复核后**转发层已在**
+  （`api.py` 的 `run_task` 早已把编排事件映射为 `task.*` SSE，且 change `0121` 的新事件**零改动**即已随之透出）；
+  **真缺口 = ① HTTP 面未暴露**（`fastapi_serve.py` 的 11 端点**无 `/task` 路由**；`run_task` 的生产消费者
+  **只有 CLI** `repl.py` 的 `/task`）+ **② 前端为零**（3 视图、`lib/api.js` 无 task 导出）。契约面：`ui` spec
+  **无一条**规定编排任务在 HTTP 面的暴露与 Web 呈现 ⇒ 本 change **规格先行**（**ADDED**，新能力，先例
+  change `0028`；**非** `skip_specs`）。
+- **决策①：只补 HTTP 暴露，**不碰**转发层。** 新增 `POST /task`（SSE），复用 `UIAPILayer.run_task`
+  ——与 `/run` 同型：异步生成器 ⇒ 会话校验 / 编排器缺失在**首帧**才抛，故在 `stream()` 内捕 `UiError`
+  转**错误帧**（`UI_SESSION_NOT_FOUND` / `UI_ORCHESTRATOR_UNSET`），不裸抛、不静默成功。注册在
+  `StaticFiles` 挂载**之前**（与既有 11 端点同序 ⇒ 不被静态兜底吞掉）。端点计数 **11 → 12**。
+- **决策②：任务区与会话列表**并列不混池**。** SPA 右栏在会话列表**之上**新增 `TaskPanel` 区块，二者
+  **同列而各自独立**（`App.svelte` 用 `.rail` 容器承载两个块，`SessionList` 零改动）。判据：任务是**在途**
+  运行态、会话是**持久**记录，**生命周期不同**——混池会把「运行中的任务」误当「可切换的会话」。
+  **排布取「同列独立区块」义**，**不取**「替换/覆盖会话列表」义（后者会让在途任务挤掉会话导航，与「不混池」
+  所防的问题同型）。子任务行 = 标题（`subtask_started.goal`）+ 状态徽标（待执行 / 运行中 / 完成 / 失败）
+  + `<details>` 可展开详情（里程碑行由 `subtask_progress` 的 `event`/`data` 转写、验收标准、完成 / 失败理由）
+  —— **全部取自既有事件载荷，不建第二数据源**。
+- **决策③：收尾回落，且**不**建子 agent 会话切换。** 任务收尾（`task_finished` / `task_failed`）⇒ 该任务
+  **移出在途列表**（任务区回落至空态）并以**一次性提示**呈现终态，**不**进入会话列表（任务不产生会话）。
+  **「进入子 agent 会话 / 主-子焦点切换」不实现**：子 Agent 消息流**无数据源**（转录只注入主 loop，
+  change `0115` 明文；`ctx.messages` 不跨回合），硬做必须**先裁决**与 `0115` 边界的冲突（phase-29 §7 红线②）。
+  故本 change 的「详情」**只**指既有事件载荷内可见的字段。**范围订正**：phase-29 §3.3 草记 Web 侧含
+  「主/子切换」，按此收窄（§4 裁决点③已认可只对 CLI 收窄、对 Web 只定「复用右栏位置、不混池」）。
+- **已知局限**：① **前端无 JS 测试基建** ⇒ 「并列不混池 / 标题·状态·详情 / 收尾回落」三条**无自动化回归**，
+  以 `npm run build` + 手工冒烟验收（端点面**有** pytest 回归）；② 任务区**不持久**：刷新页面即丢失在途任务
+  （任务在途态只在事件流上，无落盘；要持久须先裁决任务态归属，登记后续）；③ 任务区**单任务串行**（`busy`
+  期间启动按钮禁用），与 CLI `/task`「不可并发放任务」同口径，但**无**服务端并发守门（多客户端可并发派发）；
+  ④ 子任务详情**只显示事件载荷已有字段** ⇒ 子 Agent 的模型原文与逐轮动作**不可见**（有意：`reply_delta`
+  不外发，见 ADR-0114）。
+- **规格**：`ui`（**ADDED**「任务编排的 HTTP 面与 Web 任务区」+ 6 Scenario：「HTTP 派发任务并流式呈现进度」
+  「未登记会话标识被拒绝」「编排器未注入时报结构化错误」「任务区与会话列表并列不混池」「子任务标题与状态
+  可见、详情可展开」「任务收尾后回落」）。**非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3154,3 +3193,4 @@
 | ADR-0112 | 03-interfaces/evolution-interface.md, 02-modules/evolution.md, 04-testing/test-cases.md, coding-plan/phase-31.md |
 | ADR-0113 | 03-interfaces/evolution-interface.md, 03-interfaces/ci-cd-interface.md, 02-modules/evolution.md, 04-testing/test-cases.md, coding-plan/phase-31.md |
 | ADR-0114 | 03-interfaces/orchestration-interface.md, 03-interfaces/loop-interface.md, 02-modules/orchestration.md, 04-testing/test-cases.md, coding-plan/phase-29.md |
+| ADR-0115 | 03-interfaces/ui-interface.md, 06-ui-frontend/ui-architecture.md, 04-testing/test-cases.md, coding-plan/phase-29.md |

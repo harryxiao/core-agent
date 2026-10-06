@@ -556,6 +556,20 @@
 
 ---
 
+## 35. 编排任务的 HTTP 面与 Web 任务区（TC-TASKHTTP，change `0122`／ADR-0115，账本 E53）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-TASKHTTP-01 | ui/spec.md「任务编排的 HTTP 面与 Web 任务区」（HTTP 派发任务并流式呈现进度） | 真 `TaskScheduler`（单子任务 + 假子 Agent loop：`action_started` / `step_completed` / `loop_finished`）经 `UIAPILayer(orchestrator=…)`，`POST /task` 流式读取 | SSE 帧序 **首 `task.task_started`、末 `task.task_finished`**，且 `task_started` < `subtask_started` < **`subtask_progress`** < `subtask_completed` < `task_finished`（change `0121` 的回流事件经**未改动**转发层到达 HTTP 面）；`subtask_started` 载荷带 `subtask_id`/`goal`（任务区标题面）；`subtask_progress` 的 `event` 依序 `action_started`/`step_completed`、`data` 白名单字段逐字（锚点：`tests/test_serve.py::test_task_sse_streams_progress`） |
+| TC-TASKHTTP-02 | 同上（未登记会话标识被拒绝） | 未登记 `session_id` 经 `POST /task` | body 含 `UI_SESSION_NOT_FOUND` 错误帧（fail-closed，不放宽既有会话校验）（锚点：`::test_task_unknown_session_sse_error`） |
+| TC-TASKHTTP-03 | 同上（编排器未注入时报结构化错误） | 未注入编排器的 `UIAPILayer` 经 `POST /task` | body 含 `UI_ORCHESTRATOR_UNSET` 错误帧（不裸抛、不静默成功）（锚点：`::test_task_without_orchestrator_sse_error`） |
+| TC-TASKHTTP-04 | 同上（静态挂载不遮蔽端点，change `0100` 契约延伸） | 挂载 SPA 产物后 `POST /task` | 得 **200**（`StaticFiles` 对 POST 会给 405 ⇒ 200 即已路由到处理器），与既有 11 端点同序注册（锚点：`::test_with_dist_serves_spa_without_shadowing_endpoints`） |
+
+> **Web 任务区**（并列不混池 / 子任务标题·状态·详情 / 收尾回落）无 JS 测试基建 ⇒ 以 `npm run build`
+> + 手工冒烟验收（**如实登记为已知局限**，见 ADR-0115）。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

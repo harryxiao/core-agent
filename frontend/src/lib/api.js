@@ -49,17 +49,17 @@ export async function fetchMessages(sessionId) {
 }
 
 /**
- * 跑一轮并逐帧产出 SSE 事件（`{type, payload}`）。
- * 用 fetch 读流而非 EventSource：`/run` 需要 POST body，EventSource 只支持 GET。
+ * POST 一个 SSE 端点并逐帧产出事件（`{type, payload}`）。
+ * 用 fetch 读流而非 EventSource：这些端点需要 POST body，EventSource 只支持 GET。
  */
-export async function* runStream(sessionId, userInput) {
-  const resp = await fetch("/run", {
+async function* postSSE(path, payload, label) {
+  const resp = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, user_input: userInput }),
+    body: JSON.stringify(payload),
   });
   if (!resp.ok || !resp.body) {
-    throw new Error(`HTTP_${resp.status}: 会话流开启失败`);
+    throw new Error(`HTTP_${resp.status}: ${label}流开启失败`);
   }
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
@@ -77,4 +77,14 @@ export async function* runStream(sessionId, userInput) {
       cut = buf.indexOf("\n\n");
     }
   }
+}
+
+/** 跑一轮并逐帧产出会话循环事件。 */
+export function runStream(sessionId, userInput) {
+  return postSSE("/run", { session_id: sessionId, user_input: userInput }, "会话");
+}
+
+/** 派发一个编排任务并逐帧产出 `task.*` 进度事件（与 CLI `/task` 同一事件面）。 */
+export function runTask(sessionId, goal) {
+  return postSSE("/task", { session_id: sessionId, goal }, "任务");
 }

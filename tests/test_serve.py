@@ -1,16 +1,26 @@
-"""serve 单元测试（对齐契约红线：11 端点 / SSE 流式 / 错误码映射 / 三模复用同一内核）。"""
+"""serve 单元测试（对齐契约红线：12 端点 / SSE 流式 / 错误码映射 / 三模复用同一内核）。"""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from starlette import status
 
 from core.configuration import ConfigManager
 from core.configuration.models import LLMConfig
-from core.loop import DefaultLoop, LoopEvent
+from core.loop import DefaultLoop, LoopEvent, LoopPlugin, LoopResult
 from core.memory import TranscriptStore
+from core.orchestration import (
+    AgentProfile,
+    MultiAgentRouter,
+    StateMachine,
+    Subtask,
+    SubtaskDecomposer,
+    TaskScheduler,
+)
 from core.ui import UIAPILayer, fastapi_serve
 from core.ui.fastapi_serve import build_app
 
@@ -263,6 +273,105 @@ def test_sessions_entry_shape_unchanged_without_transcript() -> None:
     assert set(entry) == {"session_id", "mode", "created_at"}
 
 
+# ---- 编排任务的 HTTP 面（change 0122 / phase-29 change B：E53）----
+
+
+def _task_scheduler() -> TaskScheduler:
+    """真 `TaskScheduler` + 假子 Agent loop（单子任务、无依赖 ⇒ 一个波次一条进度）。
+
+    终态载荷须是**真 `LoopResult`**：`collect_result` 把 `loop_finished` 载荷直接当终态
+    （`DefaultLoop` 即如此外发），编排层随后读 `.reply` 走验收门。
+    """
+    profile = AgentProfile(
+        agent_id="a",
+        capabilities=["t"],
+        loop=cast(
+            "LoopPlugin",
+            FakeLoop(
+                [
+                    LoopEvent("action_started", {"round": 1, "tool_id": "tools.echo", "args": {}}),
+                    LoopEvent("step_completed", {"round": 1, "failed": False}),
+                    LoopEvent("loop_finished", LoopResult(reply="done", trace_id="t1")),
+                ]
+            ),
+        ),
+    )
+    return TaskScheduler(
+        decomposer=SubtaskDecomposer(
+            planner=lambda goal: [Subtask(id="s1", goal="t-one", acceptance="")]
+        ),
+        router=MultiAgentRouter(agents=[profile]),
+        state_machine=StateMachine(),
+    )
+
+
+def _task_client() -> tuple[UIAPILayer, object]:
+    api = UIAPILayer(
+        loop=FakeLoop([LoopEvent("loop_finished", LoopResult(reply="done", trace_id="t1"))]),
+        orchestrator=_task_scheduler(),
+    )
+    return api, TestClient(build_app(api))
+
+
+def _sse_events(body: str) -> list[dict[str, Any]]:
+    """SSE body → 帧序列（逐帧 JSON 解析，供顺序断言）。"""
+    return [
+        json.loads(line[len("data: ") :]) for line in body.splitlines() if line.startswith("data: ")
+    ]
+
+
+def test_task_sse_streams_progress() -> None:
+    """`POST /task`（change 0122）：HTTP 面暴露编排入口，SSE 依序外发 `task.*` 进度事件。"""
+    _, client = _task_client()
+    session_id = client.post("/session", json={"mode": "web"}).json()["session_id"]
+
+    with client.stream(
+        "POST", "/task", json={"session_id": session_id, "goal": "复合目标"}
+    ) as resp:
+        assert resp.status_code == status.HTTP_200_OK
+        body = "".join(resp.iter_text())
+
+    events = _sse_events(body)
+    types = [event["type"] for event in events]
+    assert types[0] == "task.task_started"  # noqa: PLR2004 — 首帧契约
+    assert types[-1] == "task.task_finished"  # 末帧契约（收尾回落的数据面）
+    # 依序：子任务开始 → 运行态回流 → 完成 → 任务收尾（同 CLI `/task` 的同一事件面）
+    assert (
+        types.index("task.subtask_started")
+        < types.index("task.subtask_progress")
+        < types.index("task.subtask_completed")
+        < types.index("task.task_finished")
+    )
+
+    started = next(e for e in events if e["type"] == "task.subtask_started")
+    assert started["payload"]["subtask_id"] == "s1"  # 任务区渲染的「标题」面
+    assert started["payload"]["goal"] == "t-one"
+
+    # 运行态回流经 HTTP 面透出（change 0121 的事件在**未改动转发层**的前提下到达前端）
+    progress = [e["payload"] for e in events if e["type"] == "task.subtask_progress"]
+    assert [p["event"] for p in progress] == ["action_started", "step_completed"]
+    assert progress[0]["data"] == {"round": 1, "tool_id": "tools.echo", "args": {}}
+
+
+def test_task_unknown_session_sse_error() -> None:
+    """未登记标识仍拒绝（fail-closed，不放宽既有会话校验）。"""
+    _, client = _task_client()
+    with client.stream("POST", "/task", json={"session_id": "nope", "goal": "g"}) as resp:
+        body = "".join(resp.iter_text())
+    assert "UI_SESSION_NOT_FOUND" in body
+
+
+def test_task_without_orchestrator_sse_error() -> None:
+    """编排器未注入 ⇒ 结构化错误帧（不裸抛、不静默成功）。"""
+    client = TestClient(build_app(UIAPILayer(loop=DefaultLoop())))
+    session_id = client.post("/session", json={"mode": "web"}).json()["session_id"]
+
+    with client.stream("POST", "/task", json={"session_id": session_id, "goal": "g"}) as resp:
+        body = "".join(resp.iter_text())
+
+    assert "UI_ORCHESTRATOR_UNSET" in body
+
+
 # ---- SPA 静态挂载（change 0100）----
 
 
@@ -290,3 +399,6 @@ def test_with_dist_serves_spa_without_shadowing_endpoints(
     assert "spa-shell" in root.text
     assert client.get("/llm-config").status_code == status.HTTP_200_OK
     assert client.get("/tools").status_code == status.HTTP_200_OK
+    # 新增端点同样不被静态兜底吞掉（StaticFiles 对 POST 会给 405 ⇒ 200 即已路由到处理器）
+    task = client.post("/task", json={"session_id": "nope", "goal": "g"})
+    assert task.status_code == status.HTTP_200_OK

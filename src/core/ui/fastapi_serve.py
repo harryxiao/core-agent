@@ -4,7 +4,7 @@
 按 ADR-0040 MAL 隔离：fastapi/uvicorn 仅此文件持有且函数内懒 import，
 上层（web_bridge / UIAPILayer）不依赖具体 Web 框架。
 
-对应接口：doc/03-interfaces/ui-interface.md §1.2（11 端点）。
+对应接口：doc/03-interfaces/ui-interface.md §1.2（12 端点）。
 """
 
 from __future__ import annotations
@@ -54,8 +54,8 @@ def serve(api: UIAPILayer, host: str, port: int) -> None:
     uvicorn.run(build_app(api), host=host, port=port)
 
 
-def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 11 端点注册，复杂度固有
-    """构建 FastAPI 应用（懒 import fastapi），暴露 11 端点。"""
+def build_app(api: UIAPILayer) -> Any:  # noqa: C901, PLR0915 — 12 端点注册，复杂度/语句数固有
+    """构建 FastAPI 应用（懒 import fastapi），暴露 12 端点。"""
     from fastapi import FastAPI, Request  # noqa: PLC0415 — MAL 懒 import
     from fastapi.responses import (  # noqa: PLC0415 — MAL 懒 import
         JSONResponse,
@@ -87,6 +87,29 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 11 端点注册，复�
                 async for event in api.run_loop(
                     session_id, user_input, modalities=body.get("modalities")
                 ):
+                    yield _sse_frame(event)
+            except UiError as err:
+                yield _sse_frame(
+                    Event(
+                        type="error",
+                        payload={"code": err.code.value, "message": err.message},
+                    )
+                )
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    async def run_task(body: dict[str, Any]) -> StreamingResponse:
+        """编排任务入口（change 0122）：SSE 流式外发 `task.*` 进度事件（与 CLI `/task` 同事件面）。
+
+        `run_task` 为异步生成器 ⇒ 会话校验 / 编排器缺失在**首帧**才抛出，故与 `run` 同型地
+        在 `stream()` 内捕获 `UiError` 并转成**错误帧**（不裸抛、不静默成功）。
+        """
+        session_id = str(body.get("session_id", ""))
+        goal = str(body.get("goal", ""))
+
+        async def stream() -> AsyncIterator[str]:
+            try:
+                async for event in api.run_task(session_id, goal):
                     yield _sse_frame(event)
             except UiError as err:
                 yield _sse_frame(
@@ -173,6 +196,7 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 11 端点注册，复�
     # 3 段路径：与 `/session`(POST) / `/session/compact`(POST) 段数或方法不同，无遮蔽
     app.add_api_route("/session/{session_id}/messages", session_messages, methods=["GET"])
     app.add_api_route("/run", run, methods=["POST"])
+    app.add_api_route("/task", run_task, methods=["POST"])  # 编排任务（change 0122）
     app.add_api_route("/barge-in", barge_in, methods=["POST"])
     app.add_api_route("/memory", get_memory, methods=["GET"])
     app.add_api_route("/session/compact", compact, methods=["POST"])

@@ -69,11 +69,11 @@ class UIAPILayer:
 | `loop.action_completed` | round, tool_id, ok, duration_ms, output | 工具动作收尾（标题落 ✓/✗+耗时，展开含输出节选） |
 | `loop.result` | turn_id, result | 结果回传 |
 | `loop.error` | turn_id, error | 结构化错误（不中断循环） |
-| `task.*` | 编排事件载荷 | 任务进度（task_started / plan_ready / wave_started / subtask_started / subtask_completed / task_checkpoint / task_finished / task_failed，type 前缀 `task.`；TUI 时间线呈现：任务/波次浅灰单行，子任务 Collapsible 折叠块，展开含验收/判定/结果节选） |
+| `task.*` | 编排事件载荷 | 任务进度（task_started / plan_ready / wave_started / subtask_started / subtask_progress / subtask_completed / task_checkpoint / task_finished / task_failed，type 前缀 `task.`；TUI 时间线呈现：任务/波次浅灰单行，子任务 Collapsible 折叠块，展开含验收/判定/结果节选；Web 任务区呈现见 §1.2 末） |
 
 ### 1.2 HTTP 端点清单（WebBridge.serve）
 
-`WebBridge.serve(host, port)` 将 `UIAPILayer` 11 方法暴露为 HTTP 端点（REST + SSE）：
+`WebBridge.serve(host, port)` 将 `UIAPILayer` 12 方法暴露为 HTTP 端点（REST + SSE）：
 
 | 端点 | 方法 | 映射 | 说明 |
 |---|---|---|---|
@@ -81,6 +81,7 @@ class UIAPILayer:
 | `GET /sessions` | list_sessions | `list_sessions()` | 枚举对话会话（`{session_id, mode, created_at}` + 注入转录时的派生 `title`/`updated_at`，见 §1.3.1） |
 | `GET /session/{id}/messages` | session_messages | `session_messages(session_id)` | 读该会话**对话转录**（按追加次序）；未登记仍 `UI_SESSION_NOT_FOUND` |
 | `POST /run` | run_loop | `run_loop(session_id, user_input)` | SSE 流式 loop 事件 |
+| `POST /task` | run_task | `run_task(session_id, goal)` | SSE 流式**编排任务**进度（`task.*`；change `0122`。未登记仍 `UI_SESSION_NOT_FOUND`、编排器未注入 ⇒ `UI_ORCHESTRATOR_UNSET`，二者均以**错误帧**报告） |
 | `POST /barge-in` | barge_in | `barge_in()` | 打断当前语音播报 |
 | `GET /memory` | get_memory | `get_memory(session_id)` | 读会话记忆（只含本会话归属条目） |
 | `POST /session/compact` | compact | `compact(session_id)` | 压实该会话记忆（存储层真实压实，可撤销） |
@@ -166,6 +167,14 @@ fail-closed，先于进入 TUI 拒绝），缺省 ⇒ 新建（既有行为不�
 （派生标题 + 最近活跃，**呈现层**降序），点选经 `GET /session/{id}/messages` 渲染转录并继续对话；
 会话标识与列表由 `App.svelte` 单点持有，「新建会话」为**显式**动作（无选中会话时发送被拒，
 不隐式建会话 ⇒ 列表不留空会话）。
+
+**Web 任务区（change 0122 / ADR-0115）**：SPA 右栏在**会话列表之上**新增**任务区**（`views/TaskPanel.svelte`），
+经 `POST /task` 驱动编排器并消费 `task.*` 事件：逐子任务渲染**标题**（`subtask_started.goal`）与**状态**
+（待执行 / 运行中 / 完成 / 失败），`<details>` 展开**详情**（里程碑行由 `subtask_progress` 的 `event`/`data`
+转写、验收标准、完成 / 失败理由）—— 全部取自**既有事件载荷**，不建第二数据源。任务区与会话列表
+**并列不混池**（在途运行态 vs 持久记录）；任务收尾（`task_finished` / `task_failed`）该任务**移出在途列表**
+（回落）并以一次性提示呈现终态，**不**进入会话列表。「进入子 agent 会话 / 主-子焦点切换」不在其内
+（子 Agent 消息流**无数据源**：转录只注入主 loop，见 change `0115`）。
 
 **Web Client 与 Host 分离**：Web 前端（SPA）作为纯静态资源独立托管，`WebBridge` 仅暴露统一后端 API；前端经该 API 连接远程 / 本机常驻 Harness Host（见 `deployment-interface.md`），前端升级无需重启 Host 后端。
 

@@ -2,6 +2,7 @@
   import Chat from "./views/Chat.svelte";
   import SessionList from "./views/SessionList.svelte";
   import Settings from "./views/Settings.svelte";
+  import TaskPanel from "./views/TaskPanel.svelte";
   import { createSession, listSessions } from "./lib/api.js";
 
   // 两页签（不引路由库）；会话页两栏 —— 会话列表与会话标识由本层持有（同一真源）。
@@ -42,7 +43,11 @@
   {#if tab === "chat"}
     <div class="columns">
       <Chat {sessionId} onTurnEnd={refresh} />
-      <SessionList {sessions} {sessionId} onSelect={(id) => (sessionId = id)} onNew={newSession} />
+      <div class="rail">
+        <!-- 任务区与会话列表同处右栏、**各自独立**（在途运行态 vs 持久记录，不混池） -->
+        <TaskPanel {sessionId} />
+        <SessionList {sessions} {sessionId} onSelect={(id) => (sessionId = id)} onNew={newSession} />
+      </div>
     </div>
     {#if error}<p class="error">{error}</p>{/if}
   {:else}
@@ -66,6 +71,13 @@
     display: flex;
     gap: 1rem;
     align-items: flex-start;
+  }
+  .rail {
+    width: 260px;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
   }
   nav {
     display: flex;
