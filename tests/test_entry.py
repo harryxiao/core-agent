@@ -821,6 +821,7 @@ def _patch_fake_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
         orchestrator=None,
         pet_activator=None,
         pet_manager=None,
+        transcript=None,  # change 0115：`_build_ui` 读该字段；None ⇒ 读取面逐字保持原形状
         app=SimpleNamespace(
             llm=LLMConfig(
                 provider="openai", model="gpt-4o", endpoint="https://x", api_key_ref="${K}"

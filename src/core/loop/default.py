@@ -15,12 +15,13 @@ import inspect
 import json
 import time
 import uuid
+import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, cast
 
 from core.context import Compactor, ContextError
 from core.judgment import DecisionResult, DecisionRouter
-from core.memory import MemoryEntry, MemoryStore
+from core.memory import MemoryEntry, MemoryStore, TranscriptStore
 from core.observability import TraceEvent, TraceLogger, Tracer
 from core.plugin_registry import Plugin
 from core.tools import SafetyGate, ToolProvider
@@ -103,6 +104,15 @@ def _output_excerpt(value: Any) -> str:
     return str(value or "")[:_MAX_ACTION_EXCERPT]
 
 
+def _history_tokens(history: list[Any]) -> int:
+    """历史占用的 token 记账（与 ``token_used`` 同口径），使预算终止与压实看得见它。"""
+    return sum(
+        len(str(cast("dict[str, Any]", entry).get("content", ""))) // 4
+        for entry in history
+        if isinstance(entry, dict)
+    )
+
+
 class DefaultLoop(Plugin):
     """默认执行循环：ReAct 式「观察→推理→行动→记忆」闭环。"""
 
@@ -131,6 +141,8 @@ class DefaultLoop(Plugin):
         source: str = "loop",
         max_rounds: int = 10,
         token_budget: int = 65536,
+        transcript: TranscriptStore | None = None,
+        history_turns: int = 20,
         maintenance_interval: float = _MAINTENANCE_INTERVAL_S,
         clock: Callable[[], float] | None = None,
     ) -> None:
@@ -154,22 +166,33 @@ class DefaultLoop(Plugin):
         self._source = source
         self._max_rounds = max_rounds
         self._token_budget = token_budget
+        # 对话转录：按会话落盘本轮 (user 原话, 最终回复)；缺省未注入 ⇒ 零落盘零回灌
+        self._transcript = transcript
+        self._history_turns = history_turns
         self._maintenance_interval = maintenance_interval
         self._clock = clock if clock is not None else time.monotonic
         self._last_maintenance = self._clock()
 
     # ---- Plugin 生命周期 ----
 
-    def set_limits(self, *, max_rounds: int | None = None, token_budget: int | None = None) -> None:
+    def set_limits(
+        self,
+        *,
+        max_rounds: int | None = None,
+        token_budget: int | None = None,
+        history_turns: int | None = None,
+    ) -> None:
         """运行期改预算上限（``None`` = 保持该项；change `0099`）。
 
-        两值在每轮判定处读取 ⇒ 赋值即**下一轮**生效，无需重建循环。
+        各值在每轮读取处生效 ⇒ 赋值即**下一轮**生效，无需重建循环。
         合法性由配置层把关（此处不重复校验）。
         """
         if max_rounds is not None:
             self._max_rounds = max_rounds
         if token_budget is not None:
             self._token_budget = token_budget
+        if history_turns is not None:
+            self._history_turns = history_turns
 
     def load(self) -> None:
         return None
@@ -215,7 +238,7 @@ class DefaultLoop(Plugin):
             else:
                 yield item
 
-    async def astream(  # noqa: C901, PLR0915 — 主管线多分支长管道（事件面七类 + 工具调用遥测）
+    async def astream(  # noqa: C901, PLR0912, PLR0915 — 主管线多分支长管道（事件面七类 + 工具调用遥测）
         self, user_input: str, *, session_id: str = ""
     ) -> AsyncIterator[LoopEvent]:
         trace_id = self._start_trace(user_input)
@@ -282,6 +305,10 @@ class DefaultLoop(Plugin):
         if limit_reason:
             ctx.reply = f"{limit_reason}: 本轮终止"
             yield LoopEvent("loop_failed", {"reason": limit_reason, "trace_id": trace_id})
+        # 转录在 `remember` **之前**追加（记忆失败不牵连会话历史）；门控 `limit_reason`：
+        # 上面刚把 `ctx.reply` 覆盖为**合成**终止文案，落盘即谎报模型原话。
+        if not limit_reason:
+            self._append_transcript(session_id, "assistant", ctx.reply)
         self.remember(trace_id, [*ctx.trajectory, {"reply": ctx.reply}], session_id=session_id)
         self._maintain(trace_id)
         self._trace(
@@ -406,12 +433,17 @@ class DefaultLoop(Plugin):
         # 检索归 ContextEngine.assemble（架构图 :117）；perceive 只观察，不检索记忆。
         # ``session_id`` 只装入上下文包（供推理期检索/技能路由归属），不驻留循环实例。
         tools = self._tools.active_tools() if self._tools is not None else []
-        return LoopContext(
+        # 次序不可颠倒：先取历史（不含本轮），再落本轮 user 行 —— 否则本轮被回灌两遍。
+        history = self._load_history(session_id)
+        ctx = LoopContext(
             messages=[{"role": "user", "content": user_input}],
             tools=tools,
-            token_used=len(user_input) // 4,
+            token_used=len(user_input) // 4 + _history_tokens(history),
             session_id=session_id,
+            history=history,
         )
+        self._append_transcript(session_id, "user", user_input)
+        return ctx
 
     async def reason(self, ctx: LoopContext) -> Action:
         if self._planner is None:
@@ -514,6 +546,34 @@ class DefaultLoop(Plugin):
         else:
             content = str(first)
         return f"已完成：{content}"
+
+    def _load_history(self, session_id: str) -> list[Any]:
+        """本会话最近历史（双重上界：`history_turns` 轮 + 独立 token 切片）。
+
+        空标识 / 未注入转录 / 关闭回灌（`history_turns <= 0`）⇒ 空。
+        转录异常一律降级为空历史（不回灌），不阻断本轮。
+        """
+        if self._transcript is None or not session_id or self._history_turns <= 0:
+            return []
+        try:
+            return self._transcript.tail(
+                session_id, self._history_turns, max_tokens=self._token_budget // 2
+            )
+        except Exception as err:  # noqa: BLE001 — 转录读失败降级，本轮不回灌
+            warnings.warn(f"转录读取失败，本轮不回灌历史: {err}", RuntimeWarning, stacklevel=2)
+            return []
+
+    def _append_transcript(self, session_id: str, role: str, content: str) -> None:
+        """追加一条转录；空标识 / 未注入转录 ⇒ 不落盘。
+
+        独立于 `remember`（后者失败**不影响**已落盘的会话历史）；写失败降级不阻断本轮。
+        """
+        if self._transcript is None or not session_id:
+            return
+        try:
+            self._transcript.append(session_id, role, content)
+        except Exception as err:  # noqa: BLE001 — 转录落盘失败降级，不阻断本轮
+            warnings.warn(f"转录写入失败: {err}", RuntimeWarning, stacklevel=2)
 
     def _start_trace(self, task_id: str) -> str:
         """开轮取 trace_id：经注入的 tracer 建链（其 id 贯穿全链路）。

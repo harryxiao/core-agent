@@ -36,6 +36,17 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
   技能路由的归属维度（不只用于 Remember 写入）⇒ 会话之间对话内容严格隔离
   （change `0114`／ADR-0107）。
 
+### 3.1.1 会话历史回灌（change `0115`／ADR-0108）
+
+- **记忆隔离 ≠ 不失忆**：隔离解决「A 会话的沉淀进 B 的 prompt」；回灌解决「下一轮从一条全新
+  user 消息开始 ⇒ 刷新即失忆」。二者互补，缺一不可。
+- **载入点**：`perceive` 按**双重上界** `min(history_turns, token_budget // 2)` 从会话转录取既往轮次
+  装入 `LoopContext.history`（**新字段**，不前置进 `messages` —— 后者首位被四处 accessor 当本轮任务）；
+  历史 token 按 `len // 4` 计入 `token_used`。请求组装次序：系统提示 → `history` → 本轮 `messages`。
+- **落盘点**：`perceive` 落本轮 user 行；收尾在 `remember` **之前**落 (user, 最终 reply) ——
+  且**终止轮不落 reply**（此时 `ctx.reply` 是合成串，落盘即谎报模型原话）。
+- **不变量**：`session_id == ""` / 未注入转录 / `history_turns == 0` ⇒ 零写入零回灌（逐字向后兼容）。
+
 ### 3.2 行动可回滚（Act 阶段）
 
 - 每个 action 经 `EffectTracker.record` 落 undo 栈。

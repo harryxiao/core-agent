@@ -50,6 +50,8 @@ class DefaultLoop(Plugin):
     #   loop 不 import constraints——生产侧由组合根注入适配层，见 constraints-interface §7 / ADR-0055）
     # 注入面（可选）：source: str = "loop"（落记忆的**命名空间**：本轮轨迹写入 L2 条目的 ``source``；
     #   神兽 loop 由组合根注入 "beast.<agent_id>" ⇒ 与主 Agent "loop" 隔离，见 beast-mode-interface §4/§10）
+    # 注入面（可选）：transcript: TranscriptStore | None = None（会话转录；缺省未注入 ⇒ 零回灌零写入）；
+    #   history_turns: int = 20（回灌最近 N 轮，0 = 关闭；与 token 切片取**双重上界**，见 change 0115/ADR-0108）
 
     def run(self, user_input: str, *, session_id: str = "") -> LoopResult:
         trace_id = new_trace_id()
@@ -97,6 +99,10 @@ class LoopContext:
     reply: str = ""
     notes: str = ""             # 任务前 Consult 摘要（文档化记忆；缺省空 ⇒ 不注入）
     session_id: str = ""        # 本轮会话标识（缺省空串 = 未归属）；推理期检索/技能路由的归属维度
+    history: list[Message] = field(default_factory=list)
+                                # 本会话**既往**轮次的 (user, assistant) 对（转录回灌；缺省空 ⇒ 不回灌）
+                                # **独立字段**：SHALL NOT 前置进 ``messages``——后者首位被四处 accessor
+                                # 当「本轮任务」（change 0115 / ADR-0108 决策③）
 
     def done(self) -> bool:
         """推理判定可结束本轮时返回 True。"""
@@ -166,6 +172,13 @@ def remember(self, trace_id: str, trajectory: list[Step]) -> None
   见 ADR-0096。
 - 模块归因：循环**自身失败**（轮数/token 预算耗尽）时其 `loop_finished` 遥测事件带
   `module_id="loop.default"`；正常收尾缺省为空（不产虚假缺陷证据）。见 ADR-0094。
+- 会话历史回灌与转录（change 0115 / ADR-0108，`session_id` 非空时）：`perceive` 先按**双重上界**
+  `min(history_turns, token_budget // 2)` 从会话转录取既往轮次装入 `ctx.history`（历史 token 按
+  `len // 4` 计入 `token_used`），**再**落本轮 user 行；请求组装次序 SHALL 为
+  「系统提示 → `history` → 本轮 `messages`」；收尾在 `remember` **之前**追加本轮
+  (user 原话, 最终回复)——**终止轮（`limit_reason` 非空）不落 reply**（此时 `ctx.reply` 是合成串，
+  落盘即谎报模型原话）。转录读写各自 `try/except` 降级（`warnings.warn`），不阻断主流程。
+  `session_id == ""`、未注入转录、`history_turns == 0` ⇒ 零写入零回灌（逐字向后兼容）。
 
 ---
 

@@ -2704,6 +2704,75 @@
 - **规格**：`memory` **ADDED**「按会话隔离的检索」；`context`（动态上下文构建 / 上下文自动压实）、
   `loop`、`skills`、`pet-mode`、`orchestration`、`ui`、`notes` 各 **MODIFIED**。**非** `skip_specs`。
 
+## ADR-0108：对话转录**另立存储**（非记忆层级）+ 历史经 `LoopContext.history` 回灌（change 0115 / phase-28 E49）
+
+- **背景**：change `0114` / ADR-0107 让 `session_id` 成为**推理期记忆检索**的归属维度；但用户要的
+  「开 N 个会话、**查看记录**、**继续聊天**」还缺三块，且**互相耦合**：
+  1. **无转录**：`DefaultLoop.perceive`（`loop/default.py:411` 附近）是 `ctx.messages` 的**唯一**构造点，
+     只装 `[{"role":"user","content":user_input}]`；`planner._build_request` = 一条 system + 全部
+     `ctx.messages`、**零截断** ⇒ **刷新即失忆**，「继续聊天」无从谈起。
+  2. **看不到记录**：`GET /sessions` 从未被 SPA 调用，也没有按会话取历史的端点。
+  3. **列表不可用**：注册表条目只有 `{session_id, mode, created_at}` —— 32 位 hex 肉眼不可辨。
+- **决策①：转录**新建**（`memory/transcript.py`），不复用 L2 记忆。** 八条实证，任一条即否决：
+  (a) L2 排名是**倒排 + 温度**，**无时序保证** ⇒ 回放会乱序；(b) **user 原文从未写入 memory**
+  （`remember` 只落模型答复与工具观察）⇒ 无从「重建」历史；(c) 既有注入摘要裁剪到 `[:2048]`；
+  (d) 读侧过滤是 `session_id in ("", sid)` ⇒ 会**灌入全局层**；(e) 读路径带 `reuse_count += 1`
+  ⇒ **回放会扭曲 `_decay_score`**（记忆被「历史回放」反复强化）；(f) 随 `budget` 的**跳选**不可复现；
+  (g) `forget` 把低分条目**迁 L4** ⇒ 对话会被遗忘机制吞掉；(h) L2 线性膨胀触发节流。
+- **决策②：转录落盘 = 单文件 + 逐行 `O_APPEND`。** `os.open(path, O_APPEND|O_CREAT|O_WRONLY)` +
+  单次 `os.write` 整行 —— POSIX 追加对**小于 PIPE_BUF** 的整行写是原子的，跨进程并发追加不写坏行；
+  `Path.open("a")` 带缓冲、**跨进程不原子**，故不用。**否决**每会话一文件：多一层目录生命周期，
+  且会产生「会话已建、消息文件未建」的**中间态**。与记忆**同店形态**（单店 + `session_id` 列），
+  不翻案 change `0048`（否决每会话存储实例）。
+- **决策③：`history` 是 `LoopContext` 的**新字段**，**不**前置进 `ctx.messages`。** 实证：`ctx.messages[0]`
+  被**四处**当「本轮任务」——`default._task_text:87`、`default._echo:540`、`planner._task:183`；
+  `ctx.messages[1:]` 被 `_action_steps:95` 当动作序列。前置即**同时打破四处**，且技能路由 / 动作抽取
+  会把历史当本轮动作。
+- **决策④：转录**只存** `(user 原话, 最终 assistant 回复)` 两行，**不存** `ctx.messages`。** `ctx.messages`
+  含 `role="tool"` 观察（`_record_observation` 写入），而 `planner._to_messages:192` → `stdlib_provider:196`
+  是**逐条 1:1** 发 `{"role", "content"}`、**不带 `tool_calls` 信封** ⇒ 把历史 `role="tool"` 回放给
+  OpenAI 兼容端点**大概率 400**。按 (user, reply) 存/灌同时解决 **wire 格式 / token 体积 / 标题抽取**。
+- **决策⑤：`title` / `updated_at` **从转录派生**，**不写注册表**。** 先例 ADR-0098（删 `_published`，
+  拒第二真源）：标题是**读模型**，落进 `conversations.json` 即第二真源。派生面在
+  `TranscriptStore.summaries()`；`api.list_sessions` 注入转录时**逐条附齐** `title`（无用户消息 ⇒
+  空串）与 `updated_at`（无转录 ⇒ 回落注册表 `created_at`）—— 消费方**无需为缺键特判**；**未注入**
+  转录 ⇒ 条目形状逐字不变（只增不减）。
+- **决策⑥：`LoopContext.history` 的**双重上界** = `min(最近 N 轮, token 切片)`，切片 = `token_budget // 2`。**
+  否则历史自身可能 ≥ `token_budget` ⇒ **第 1 轮就跑完立即 `TOKEN_BUDGET_EXCEEDED`**，且
+  `_should_compact` 从首轮起按 token 维**误触发**。留一半给本轮消息 / 系统提示 / 工具观察。
+  历史 token 按**既有** `len // 4` 口径计入 `token_used`（预算终止与压实**看得见**历史）。
+- **决策⑦：落盘时点 = `perceive` 落 user 行 + `astream` 收尾**在 `self.remember(...)` **之前**落 reply，
+  且**门控 `not limit_reason`**。 `astream` 收尾处 `if limit_reason:` 会把 `ctx.reply` **覆盖为合成串**
+  （`f"{limit_reason}: 本轮终止"`）⇒ 此时落盘即**谎报模型原话**。录在 `remember` 之前 ⇒ 记忆写入炸掉
+  也不丢对话（两处**各自** `try/except` 降级 + `warnings.warn`，不阻断主流程）。**不动** `EffectTracker`：
+  既有 `remember` 同样不经它 —— 据实写明，**不假装可逆**。
+- **决策⑧：`loop.history_turns` 走**独立访问器** `ConfigManager.history_turns()`，**不**扩 `loop_limits()` 元组。**
+  后者被 **20+ 处**解包断言钉死（`limits[0]` / `limits[1]`），且会话回灌与**预算派生**无语义关系，
+  塞进同一元组是**概念污染**；先例 `permission_mode()` / `sandbox_host_allowlist()` 同为标量访问器。
+  `0` = 关闭回灌（合法值，用于「只要隔离不要上下文」的部署）。经 `LimitsConfigurable.set_limits`
+  **加第三 keyword** 热推（扩展而非另立协议）：本仓 `_merge_patch` 源码注释把「报成功却不生效」
+  显式列为**缺陷类**，故保存配置必须**同时**落盘与生效。
+- **决策⑨：L4 措辞校正属本 change（先修旧账，也是新 Requirement 的前提）。** canonical
+  `memory/spec.md:9` 把 L4 写作「**原始会话**」，与**同文档** `:119`（压实归档层）、`:181`（遗忘归档层）
+  及实现（`forget` 迁 L4、检索降权 `relevance.py:24` `"L4": 0.2`）**自相矛盾**。「转录」这一新概念
+  要进 `memory` 包，必须先消掉同一文档里「L4 才是原始会话」的误导性表述。
+- **已知局限（照实登记）**：
+  1. **注册表进程内锁不跨进程**：同进程多线程 `create` 已互斥（`RLock`）；**跨进程**同刻并发创建
+     不受保护（`ui/spec.md` 已据实收窄，不再声称跨进程安全）。
+  2. **转录单文件随会话数线性增长**，读单会话需全扫文件（当前规模无碍；分片留待真实压力）。
+  3. **有界牺牲**：超出 N 轮 / 超出 token 切片的历史**不回灌**（不做摘要压缩，避免引入「回灌的是
+     摘要还是原话」的新歧义）。
+  4. **历史与 reason 阶段 L2 检索的重复**：`remember` 落的主 loop 条目 `source="loop"`、同 `session_id`，
+     装配器只排除 `("beast.",)` ⇒ 同会话过往轮次**今天就已**作为「相关事实」进 system prompt；
+     本 change 只是加了**时序完整**的第二份。**不修**（判据：改变检索行为超出本 change 范围）。
+     修法备查：reason 阶段排除 `("beast.", "loop")` —— `store.py:111` 已支持多前缀且该点**先于**
+     排名/预算。
+  5. `conversations.json` 丢失/损坏 ⇒ 注册表**空态启动**，转录成为**孤儿数据**但端点按既有
+     **fail-closed 拒绝**（`ui/spec.md` 的未登记拒绝**不放宽**）。
+- **规格**：`memory`（MODIFIED「分层记忆模型」L4 校正 + ADDED「对话转录持久化（非记忆层级）」）、
+  `loop`（MODIFIED「执行循环」）、`configuration`（MODIFIED「循环预算配置」）、`ui`（ADDED「会话转录的
+  读取面」+ MODIFIED「会话注册表持久化与跨入口共享」）。**非** `skip_specs`。
+
 ---
 
 ## 变更追踪
@@ -2808,3 +2877,4 @@
 | ADR-0105 | 03-interfaces/evolution-interface.md, 03-interfaces/configuration-interface.md, 02-modules/configuration.md, 04-testing/test-cases.md, coding-plan/phase-27.md |
 | ADR-0106 | 03-interfaces/pet-mode-interface.md, 03-interfaces/beast-mode-interface.md, 04-testing/test-cases.md, coding-plan/phase-28.md |
 | ADR-0107 | 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/pet-mode-interface.md, 03-interfaces/orchestration-interface.md, 02-modules/memory.md, 02-modules/context.md, 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/phase-28.md |
+| ADR-0108 | 03-interfaces/memory-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/ui-interface.md, 03-interfaces/configuration-interface.md, 02-modules/memory.md, 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/phase-28.md |

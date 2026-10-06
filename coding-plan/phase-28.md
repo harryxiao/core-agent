@@ -1,6 +1,6 @@
-# Phase 28：上下文压缩 / 多流复用机制 + pet/beast 返回内容——缺陷账本（E44 + E45 + E46 + E47；新登记 E48）
+# Phase 28：上下文压缩 / 多流复用机制 + pet/beast 返回内容——缺陷账本（E44 + E45 + E46 + E47 + E48；新登记并已闭 E49）
 
-> **状态**：E46 已闭（0113/ADR-0106）、**E47 主体已闭（0114/ADR-0107）**；E44 / E45-隔离 待裁决；E47 附属（会话注册表丢更新）与 **E48**（新登记）未闭 → Change B。
+> **状态**：E46 已闭（0113/ADR-0106）、**E47 主体已闭（0114/ADR-0107）**、**E49 已闭（0115/ADR-0108）**；E44 / E45-隔离 待裁决；E47 附属（会话注册表丢更新）与 **E48**（新登记）未闭 → Change B（余 **B2** 前端 + CLI）。
 
 > **定性**：本 Phase 承接两条机制 review（「memory 超过 context window 的压缩机制」是否 ready、「多流复用机制」是否完善）与一条新增关注点（pet/beast 任务完成/召回时主 Agent 能否查看返回内容）。
 > 一手核实结论：**机制①＝「抢救 + 强制终止」，非「压缩续聊」**（`ctx.messages` 全程不截断，LLM 每轮收全量历史）；**机制②＝「复用同一条 TCP」并发场景不成立 + 记忆隔离单向**（主不读兽、兽可读主）；**pet/beast 返回内容＝死数据**（无工具查询、不落 L2、状态接口不含正文）。
@@ -8,6 +8,7 @@
 > **第四项（E47）＋一条裁决**：承接「开不同 session 对话框时的多流复用」追问 —— 一手核实：复用点＝**共享一个 runtime + 一个 loop 实例**（`ui/api.py:105`；session 只是 `session_id` 标签，非 loop 实例），多流并发在环内**安全**（每轮自建 `ctx`，无 per-call 实例状态），但**检索面不按 session 过滤** ⇒ 会话之间互读记忆（登记 **E47**）。同批裁决：**E45 的 TCP 半条不列为缺陷** —— ADR-0064 的**有意取舍**（线程本地免锁）＋规格未要求「跨线程同一条 TCP」⇒ **不改**，登记为已知局限。
 > **E46 已闭（change 0113 / ADR-0106）**：结果可见性改走**查询面接线** —— beast `BeastSession.result_summary()` + `summon` CLI 呈现；pet `PetControl.result` 独立查询面（`status` 面逐字不变）。**两半原写修法皆判据订正**：beast「落 L2」自败（`runtime.py:564` 排除 `beast.*` + beast spec `:89` 封存 ⇒ 主 Agent 检索不到）、pet「`status` 暴露正文」违 `pet-mode` spec `:249`/`:255`。详见 §1.3 订正表与 §4。
 > **E47 已闭（change 0114 / ADR-0107）**：用户裁决「隔离边界＝**严格隔离 + 保留全局层**」⇒ 规格先行（8 spec / 9 需求块）→ 测试先行（红 18）→ 实现 → 四门禁（ruff / ruff format / pyright 0-0-0 / **1415 passed**）→ 手工归档 → `openspec validate --all` **30 passed / 0 failed**。**判据订正**：原记「读侧不过滤」一项，实为**读侧 1 + 写侧归属 4 + 绕过通道 1 + id 覆盖 2**（详见 §1.4 订正表）。**附属未闭**：`SessionRegistry.create` 丢更新转 Change B（§5）。
+> **E49 新登记并已闭（change 0115 / ADR-0108）**：承接本条需求后半（「右边是会话列表管理…可以选不同的会话**查看记录**或者**继续聊天**」）—— 一手核实：`perceive`（`loop/default.py:432`）是 `ctx.messages` 的**唯一**构造点、每轮只装**一条** user 消息，`planner._build_request`（`planner.py:120-129`）**零截断** ⇒ 服务端**不保留对话历史**，页面刷新即失忆、无法「继续聊天」（登记 **E49**：会话历史不落盘 / 不回灌；同时缺「查看记录」读取面）。修法＝**另立转录存储**（非记忆层级）+ 历史经**新字段** `LoopContext.history` 回灌 + `GET /session/{id}/messages` 读取面 + `GET /sessions` 派生 `title`/`updated_at`。**同批顺带订正一条旧账**：canonical `memory/spec.md:9` 把 L4 写作「原始会话」，与同文档 `:119`/`:181` 及实现（遗忘/压实归档层、检索降权 `relevance.py:24`）相悖 —— 见 §1.5 订正表与 §5.2。
 
 ## 0. 结论总览
 
@@ -17,6 +18,7 @@
 | E45 | 多流复用「同一条 TCP」并发不成立 + 记忆隔离单向 | `llm_provider/http_pool.py:9-11/70-74` 连接池 `threading.local` 线程本地 + `stdlib_provider.py:147/172/186` 全走 `to_thread` 任意工作线程 ⇒ 并发不共享同一条连接；`runtime.py:564` 主 loop 排除 `beast.*` 而 `_beast_loop` 不排除主 loop 记忆 ⇒ 单向 | 复用仅单线程串行成立；隔离＝「主不读兽、兽可读主」 | TCP：**已裁决不改**（ADR-0064 有意取舍，登记已知局限）；隔离：双向排除或登记共享记忆设计 |
 | E46 | pet/beast 任务完成/召回后返回内容死数据 | `beast/manager.py:74-76` result 存 `session.last_result` 但**零读取方**；`pet/core/session.py:146-147` `wake()` 存 `_last_trace_id` 后于 `:153` `return result`，而驱动侧 `driver.py:67` 丢弃返回值；`tools/` 无 beast/pet 工具、不落 L2、CLI 仅 print 状态（`_print_pet_status :1601`） | 主 Agent 无法查看返回内容（beast 真死 / pet 半死） | ✅ **已闭（change 0113 / ADR-0106）**：**两半修法皆订正**，改走**查询面接线**（见 §4） |
 | E47 | **会话之间**记忆检索不隔离（附属：会话注册表丢更新） | `context/assembler.py:66-70` → `memory/store.py:95` `read(query, budget)` **只按 source 前缀过滤、无 session 过滤**（而 `loop/default.py:469-474` `remember()` 落库**是带 `session_id` 的**）；`ui/api.py:174-175` 的会话隔离是**调用方手写后置过滤**（只覆盖展示，未覆盖喂给 LLM 的检索）；`ui/sessions.py:33-40` `create` 读回→合并→写回**无锁** | 会话**不是**隔离边界：A 对话框沉淀的事实可进 B 的 system prompt（`planner._system_prompt` → `assembler.build`） | ✅ **主体已闭（change 0114 / ADR-0107）**：**复用既有过滤管线**给 `read()` 补 session 维度（**不新造机制**）+ **四处写侧归属闭合**（见 §5）。**附属（`SessionRegistry` 丢更新）未闭**，转 Change B |
+| E49 | **会话历史不落盘 / 不回灌**（刷新即失忆、无「查看记录」读取面） | `loop/default.py:432-443` `perceive` 是 `ctx.messages` 的**唯一**构造点、每轮只装 `[{"role":"user","content":user_input}]` **一条**；`planner.py:120-129` `_build_request` = 一条 system + 全部 `ctx.messages`、**零截断** ⇒ 服务端不保留 per-session 历史，多轮连贯全靠前端回传 + L2 检索；`ui/api.py` 只有 `list_sessions`（`{session_id, mode, created_at}`，无标题无最近活跃），**无取历史端点** | 会话**不可用**：刷新页面即失忆、无法「继续聊天」；32 位 hex 肉眼不可辨，**无法「查看记录」** | ✅ **已闭（change 0115 / ADR-0108）**：**另立转录存储**（`TranscriptStore`，单文件逐行 `O_APPEND`）+ 历史经**新字段** `LoopContext.history` 回灌（不前置进 `ctx.messages`）+ `GET /session/{id}/messages` + `GET /sessions` 派生 `title`/`updated_at`（见 §5.2） |
 
 ## 1. 一手核实（证据）
 
@@ -112,6 +114,27 @@
 
 **裁决（用户，开工前）**：隔离边界＝「**严格隔离 + 保留全局层**」；历史＝「落盘 + 回灌 prompt」（Change B）；交付＝「拆两个 change」；写侧＝「核心链路 + 同批全修」；`notes`＝「显式定为全局层」。**不可推翻**：phase-19 E2 / change `0048` 已否决每会话独立 `(loop, memory)` 实例 ⇒ 只做「标识透传 + 单店按会话归组」。
 
+### 1.5 E49 会话历史不落盘 / 不回灌（Change B 前半，B1 后端）
+
+| 证据点 | 位置 | 实况 |
+|---|---|---|
+| 消息构造（唯一） | `loop/default.py:432-443` `perceive` | 每轮**新建** `ctx.messages = [{"role":"user","content":user_input}]` **一条**；服务端**不保留**上轮 —— 注释自陈「只观察，不检索记忆」 |
+| 请求组装 | `loop/planner.py:120-129` `_build_request` | `[system] + _to_messages(ctx.messages)`，**无窗口截断 / 无摘要替换** ⇒ 上一轮内容**不进**下一轮请求 |
+| 多轮连贯的真源 | 前端 `Chat.svelte`（`lines` 为纯内存 `$state`）+ L2 检索 | 刷新即丢；服务端侧无转录 |
+| 会话枚举 | `ui/api.py:139` `list_sessions`（旧形） | 条目仅 `{session_id, mode, created_at}`（`ui/sessions.py:37`）——**无标题、无最近活跃**；32 位 hex 肉眼不可辨 |
+| 取历史面 | `ui/api.py` | **无** `GET /session/{id}/messages`（`session_messages` 于本 change 新增，`:162`） |
+
+**结论**：用户要的「右边会话列表管理 + 查看记录 + 继续聊天」缺三块 —— ① **转录**（服务端不落盘）；② **读取面**（无端点）；③ **可辨识的列表**（无标题/最近活跃）。**非规格违约**（旧 spec 未明文要求「会话历史落盘 / 回灌 / 转录读取面」），故须**规格先行**（4 spec：`memory` MODIFIED + ADDED、`loop` MODIFIED、`configuration` MODIFIED、`ui` ADDED + MODIFIED）。
+
+**实施期判据订正（change 0115 / ADR-0108，一手复核）** —— 上述证据全部成立，补两条订正：
+
+| 面 | 原记 / 隐患 | 订正后（一手） |
+|---|---|---|
+| **L4 措辞背离（旧账）** | canonical `memory/spec.md:9`「L2→L3→L4（**原始会话**）」（Change B 计划中记为待校正旧账） | 与同文档 `:119`/`:181`（L4 为**遗忘/压实的归档层**）及实现（`memory/store.py` 遗忘迁 L4、压实后原条目迁 L4；`context/relevance.py:24` `"L4": 0.2` 检索**降权**）**相悖** ⇒ 本 change 一并订正为「L4（归档层：遗忘与压实的下沉目标，检索降权、不参与固化）」。**这是新概念（转录非记忆层级）入 `memory` 包的前提** |
+| 「回灌进 `ctx.messages`」 | 直觉修法（把历史前置进 `messages`） | **不可行**：`ctx.messages[0]` 被**四处**当「本轮任务」（`default._task_text:87`、`default._echo:540`、`planner._task:183`），`ctx.messages[1:]` 被 `_action_steps:95` 当动作序列 ⇒ 历史必须走**新字段** `LoopContext.history`（§5.2） |
+
+**附注（录入 ADR-0108 已知局限）**：历史与 reason 阶段 L2 检索存在**重复面** —— `remember()` 条目 `source="loop"` 且同 `session_id`，装配器**只排除 `beast.`** ⇒ 同会话过往轮次**今天就已**作为「相关事实」进 system prompt；本 change 只是加了**时序完整**的第二份。**不修**（修法备查：reason 阶段排除 `("beast.","loop")`，`store.py:111` 支持多前缀且先于排名/预算）。
+
 ## 2. E44 修复方向
 
 - 若产品方向要求「压缩续聊」：在 `_build_request` 前对 `ctx.messages` 做摘要替换（保留 system + 压缩中间历史 + 尾部近窗），或在 `_compact` 里把旧历史替换为 compactor 产出的摘要 Message。
@@ -151,6 +174,21 @@
 - **修法方向**：id 改用**内容/时间派生**的唯一键（如 `trace_id` 或单调序号随库落盘），或 `write` 面对同 id 改为「追加不同 id」；须先裁决「同主题压实产物是否应保留历史」。
 - **复用点**：Change B（会话列表 UI + 历史回灌）若把历史落盘，会**显著放大**该面（同一会话多轮压实），故列为 Change B 的前置观察项。
 
+## 5.2 E49 修复方向 —— ✅ 已闭（change 0115 / ADR-0108）
+
+**取向（用户裁决，开工前）**：切片＝「**拆 B1 后端 / B2 前端+CLI**」；回灌边界＝「**新增配置键** `loop.history_turns`」；转录落盘＝「**单文件** `messages.jsonl`」；会话标题＝「**自动取首条用户消息**」。本 change 只做 **B1 后端**（B2 前端 + CLI 另 change 另 commit）。
+
+- **另立转录存储（非记忆层级）**：新 `src/core/memory/transcript.py` `TranscriptStore` —— 单文件逐行 `O_APPEND`（`os.open(..., O_APPEND|O_CREAT|O_WRONLY)` + **单次 `os.write` 整行**；`Path.open("a")` 带缓冲**跨进程不原子**），`read(session_id)` / `tail(session_id, turns, *, max_tokens)` / `summaries()`；坏行/缺文件降级跳过。**放 `memory` 包**（`loop/default.py` 已 import memory，零新增架构边；放 `ui` 需新增 `runtime→ui` 边）。**明写 SHALL NOT 参与**温度分层 / 排名 / `reuse_count` / 压实 / 固化 / 遗忘 —— 只能经按会话的转录读取面取出。
+- **历史走新字段回灌**：`LoopContext.history`（**独立字段**，SHALL NOT 前置进 `messages`）；`perceive` 先 `tail` 再落本轮 user 行（次序不可颠倒，否则本轮回灌两遍）；`planner._build_request` 按「系统提示 → 历史 → 本轮消息」组装；历史 token **计入** `token_used`（否则预算终止与压实触发看不见它）。**双重上界**：`min(最近 N 轮, token 切片)`，切片 = `token_budget // 2`（否则历史自身可能 ≥ `token_budget`，第 1 轮即跑完）。
+- **落盘点门控**：`astream` 收尾的转录 append 插在 `remember(...)` **之前**（记忆失败不牵连会话历史）且门控 `not limit_reason`（`:310-311` —— 上面刚把 `ctx.reply` 覆盖为**合成**终止文案，落盘即**谎报模型原话**）。
+- **读侧**：`ui/api.py` `list_sessions` 注入转录时**逐条**附派生 `title`（**无用户消息 ⇒ 空串，不伪造**）与 `updated_at`（**无转录 ⇒ 回落注册表 `created_at`**）；`transcript is None` ⇒ 条目形状**逐字不变**（只增不减）。新增 `session_messages(session_id)`（先 `_require_session`，未登记仍 `UI_SESSION_NOT_FOUND`）+ 端点 `GET /session/{id}/messages`。
+- **配置**：`loop.history_turns`（缺省 `20`，≥0，`0` = 关闭）三面可配（CLI flag / env / yaml）；走**独立访问器** `history_turns()`（**不动** `loop_limits()` 元组 arity —— 20+ 处解包断言钉死）；经 `LimitsConfigurable.set_limits(history_turns=...)` **热推**。
+- **规格**：`memory` **MODIFIED**「分层记忆模型」（**L4 措辞校正**）+ **ADDED**「对话转录持久化（非记忆层级）」；`loop` **MODIFIED**（会话维度那条 + 5 新场景）；`configuration` **MODIFIED**（增键 + 校验场景）；`ui` **ADDED**「会话转录的读取面」+ **MODIFIED**（注册表并发声明收窄为**进程内**）。**非** `skip_specs`。
+- **落地**：`memory/transcript.py`（新）/ `loop/{protocol,default,planner}.py` / `configuration/manager.py` / `ui/{api,fastapi_serve,sessions}.py` / `runtime.py` / `entry.py`。测试 `tests/test_transcript.py` / `test_history_replay.py` / `test_history_persistence.py` + `test_serve.py` / `test_session_registry.py` / `test_loop_budget_config.py` 增补。**1462 passed**。
+- **已知局限**（写进 ADR-0108）：① 注册表进程内锁对**跨进程**并发创建无效；② 转录单文件随会话数线性增长、读单会话需全扫；③ 超出 N 轮 / 超 token 切片的历史不回灌（有界牺牲）；④ **历史与 reason 阶段 L2 检索重复**（同会话过往轮次**今天就已**进 system prompt，本 change 只是加了时序完整的第二份 ⇒ **不修**，修法备查「reason 阶段排除 `("beast.","loop")`」）；⑤ `conversations.json` 丢失/损坏 ⇒ 注册表空态、转录成孤儿数据但端点按既有 fail-closed 拒绝。
+
+**与 E48 的关系**：本 change **不消解** E48（id 唯一性未动 —— 转录用**追加**（非 upsert），天然无覆盖问题；E48 指 `compaction.*` / `skills.miss.*`，与转录不同面）⇒ **E48 保持挂账**。
+
 ## 6. 去重边界
 
 - 不重复 E27/B2/C7/C8（phase-20 已列）/ observability/rag/skillhub（phase-22）/ 缺口③（phase-23）/ E30·E31·E32（phase-24）/ E33·E34·E35·E36（phase-25）/ E37·E38·E39（phase-26）/ E40·E41·E42·E43（phase-27）。
@@ -158,6 +196,8 @@
 - E46 与 phase-26（E37 神兽记忆命名空间断裂）**不重复**：phase-26 修的是「神兽轨迹混入主记忆污染」（写入侧 source + 读取侧排除），E46 指向「任务**返回内容**主 Agent 不可查」（结果可见性）。
 - E47 与 E45 **不重复**：E45-隔离指向「主 loop 与神兽之间」（**source 命名空间**），E47 指向「**会话之间**」（`session_id`）——同属「检索面缺过滤」的同型症状，但边界不同。E47 与 phase-26（E37）亦不重复：E37 是**写入侧** source 注入 + 读取侧 source 排除（跨命名空间），E47 是**同一命名空间内**按会话切分。
 - E48（**新登记**，会话维度产物 id 不唯一）与 E47 **不重复**：E47 修的是「条目**归属**哪个会话」（可见性），E48 指的是「**同会话内**连续调用 id 重数 ⇒ 覆盖」（**持久化唯一性**）——`0114` 只补会话键，消的是**跨会话**覆盖，**未**消同会话内覆盖。
+- **E49（新登记并已闭）与 E47 / E44 不重复**：E47 是「**记忆检索**面缺会话过滤」（喂给 LLM 的**事实**），E49 是「**对话历史**不落盘 / 不回灌」（喂给 LLM 的**时序**）——两条同属「会话不可用」症状，但**面不同**（检索 vs 转录），故 E47 修完 E49 仍立（`perceive` 依旧每轮只装一条 user）。E49 与 E44 **不重复**：E44 指「**对话历史**在**单轮内**无裁剪 / 无压缩续聊」（`ctx.messages` 全程不截断），E49 指「**跨轮**不保留 / 不回灌」——E44 是「历史太长」，E49 是「历史没有」。E49 的转录**另立存储**（非记忆层级），**不复用** E47 的记忆检索管线、**不改**其过滤口径。
+- **E49 与 change `0048`（每会话独立实例已否决）不重复**：转录为**单店 + `session_id` 列**（与记忆同店形态一致），**未**为每会话建独立存储实例 —— 与 `0048` 的裁决同向。
 
 ## 7. 红线与裁决
 
@@ -165,11 +205,13 @@
 - E45 若改「双向隔离」会破坏现有「共享记忆」设计（兽读主记忆获取上下文），须先裁决。
 - E46（**已闭**）：落地走**查询面**，**不落 L2**（落 L2 会被封存条款挡在主 loop 检索之外 —— 自败）；**不得**改 `status`/`snapshot` 的隐私面（改则违 `pet-mode` 已有 Requirement，须先走过规格变更 + 隐私裁决）；**不得**改 `exclude_source_prefixes=("beast.",)`（会破 phase-26 的 E37/E38/E39 隔离语义）。（原文「落 L2 须复用 `source=beast.<agent_id>` 注入面」随本次裁决**作废**。）
 - **E47（主体已闭）**：原判「现状非违约」（规格未把会话定为隔离边界）⇒ 用户裁决后**规格先行**（8 spec），修法上**复用了既有过滤管线**（`read()` 的 session 分支与 `exclude_source_prefixes` 同点同口径），**未新造第二套记忆检索**。**红线仍守**：不给每个会话建独立 `(loop, memory)` 实例（phase-19 E2 / change `0048` 已裁否决）；不破 `exclude_source_prefixes=("beast.",)`（phase-26 的 E37/E38/E39）；`notes` 不接入会话维度（用户裁决＝全局层）。**附属 `SessionRegistry` 丢更新仍开**（转 Change B）。
+- **E49（已闭）**：原判「现状非违约」（旧 spec 未要求会话历史落盘 / 转录读取面）⇒ 用户裁决后**规格先行**（4 spec），修法上**另立转录存储**（非记忆层级、单文件 `O_APPEND`），**不复用**记忆检索管线。**红线仍守**：不为每个会话建独立存储实例（phase-19 E2 / change `0048`）；不破 `exclude_source_prefixes=("beast.",)` 与 E47 的会话过滤口径（转录**不是**记忆，`MemoryStore.read` 恒不返回它）；`notes` 不接入会话维度；`session_id == ""` 一律**不落盘、不回灌**（逐字不变）；**不为 title 写注册表**（派生读模型，先例 ADR-0098 拒第二真源）。**B1 已闭**，余 **B2**（前端右侧面板 + CLI `session show` + REPL 续聊）另 change 另 commit。
 - **已裁决（本次）**：E45 的 TCP 半条**不列为缺陷**（ADR-0064 有意取舍），登记为已知局限。
 
 ## 8. 收口
 
 - **E46 已闭**（change `0113` / ADR-0106）：用户裁决「A 查询面接线 + ① 独立查询面」⇒ 规格先行（两 spec **ADDED**）→ 测试先行（红 17/20）→ 实现 → 四门禁（ruff / ruff format / pyright 0-0-0 / **1392 passed**）→ 手工归档 → `openspec validate --all` **30 passed / 0 failed**。**两半原写修法均判据订正**（beast 落 L2 自败 / pet 改 `status` 违规）。
 - **E47 主体已闭**（change `0114` / ADR-0107）：用户裁决「严格隔离 + 保留全局层」⇒ 规格先行（8 spec / 9 需求块，`memory` ADDED + 7 处 MODIFIED）→ 测试先行（新 `tests/test_session_isolation.py`，红 **18 failed**）→ 实现（读侧 1 处 + 写侧归属 4 处）→ 四门禁（ruff / ruff format / pyright 0-0-0 / **1415 passed**）→ 手工归档 `archive/2026-10-06-0114-session-scoped-memory/` → `openspec validate --all` **30 passed / 0 failed**。**判据订正**：原记一项，实为「读侧 1 + 写侧归属 4 + 绕过通道 1 + id 覆盖 2」（§1.4）。**新登记 E48**（会话维度产物 id 不唯一，§5.1）。
-- **余两条**等待产品方向裁决（E44「压缩续聊 vs 有意行为」、E45-隔离「双向隔离 vs 共享记忆」）；**两项未闭附属**：E47 的 `SessionRegistry` 丢更新 + 新登记的 **E48**，二者随 **Change B**（会话列表 UI + 历史落盘/回灌）一并处理，B 的轮廓见下条。
-- **下一步＝Change B**（承接本条需求的后半）：对话历史落盘 + 回灌 prompt（`perceive` 目前只装当前一条 ⇒ 会话连贯性全压在检索上）；前端右侧**会话列表管理面板** + 新建/切换（后端 `GET /sessions` 已有，`frontend/src/lib/api.js` 缺 `listSessions`；`Chat.svelte` 目前单时间线 + 惰性 `ensureSession()`，仅内存）；会话 `title` / `updated_at`；CLI `session list/switch`；顺带修 `SessionRegistry.create`（E47 附属）与观察 **E48**。
+- **E49 已闭**（change `0115` / ADR-0108，Change B 前半 = B1 后端）：用户裁决「拆 B1/B2、回灌边界＝新配置键 `loop.history_turns`、转录单文件、标题自动取首条用户消息」⇒ 规格先行（4 spec：`memory` MODIFIED+ADDED、`loop` MODIFIED、`configuration` MODIFIED、`ui` ADDED+MODIFIED）→ 测试先行（新 `test_transcript.py` / `test_history_replay.py` / `test_history_persistence.py`）→ 实现（新 `memory/transcript.py` + `LoopContext.history` + 读取面 + `loop.history_turns`）→ 四门禁（ruff / ruff format / pyright 0-0-0 / **1462 passed**）→ 手工归档 `archive/2026-10-06-0115-session-transcript/` → `openspec validate --all` **30 passed / 0 failed**。**判据订正**：① **L4 措辞背离**（canonical `memory/spec.md:9`「原始会话」与 `:119`/`:181` + 实现相悖 ⇒ 订正为归档层）；② 「回灌进 `ctx.messages`」不可行（四处 accessor ⇒ 走新字段）。**E48 未被本 change 消解**（转录用追加、非 upsert，与 id 覆盖不同面）⇒ 保持挂账。
+- **余两条**等待产品方向裁决（E44「压缩续聊 vs 有意行为」、E45-隔离「双向隔离 vs 共享记忆」）；**两项未闭附属**：E47 的 `SessionRegistry` 丢更新 + **E48**。E47 附属的 `SessionRegistry` 丢更新**已随 0115 顺带闭合**（`create` 加进程内 `RLock`，`ui/sessions.py:35`）；**E48 仍挂账**。二者原计划的载体 **Change B** 前半（B1 后端）已由 `0115` 交付。
+- **下一步＝Change B 后半（B2）**（承接本条需求的后半）：前端右侧**会话列表管理面板**（title + 最近活跃）+ 新建/切换（后端 `GET /sessions` 与 `GET /session/{id}/messages` **已就绪**；`frontend/src/lib/api.js` 缺 `listSessions` / `fetchMessages`；`Chat.svelte` 目前单时间线 + 惰性 `ensureSession()`，仅内存）；CLI `session show <id>` 与 `_repl` 的 `--session <id>` 续聊；规格 `cli-ops` MODIFIED。**另 change 另 commit**。

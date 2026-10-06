@@ -62,6 +62,7 @@ from core.memory import (
     MemoryBackend,
     MemoryEntry,
     MemoryStore,
+    TranscriptStore,
     batch_embed,
     summarize_with,
 )
@@ -152,6 +153,7 @@ class Runtime:
     router: DecisionRouter
     rag: RagService
     loop: DefaultLoop
+    transcript: TranscriptStore  # 对话转录（主 loop 的会话历史来源；见 change 0115）
     skill_router: SkillRouter
     skill_feedback: SkillFeedback
     skill_iterator: SkillIterator
@@ -630,6 +632,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     # 同源同参。
     max_rounds, token_budget = config.loop_limits()
 
+    # 对话转录（change 0115）：**只注入主 loop** —— 会话维度是主 Agent 的门面概念，
+    # 子 / 神兽 / 宠物 loop 不接（零行为变化）。回灌轮数经独立访问器（不走 loop_limits()）。
+    transcript = TranscriptStore(_skill_state_path("messages.jsonl"))
+
     loop = DefaultLoop(
         planner=planner,
         memory=memory,
@@ -647,6 +653,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         action_observers=[constraints_chain.observe_result],
         max_rounds=max_rounds,
         token_budget=token_budget,
+        transcript=transcript,
+        history_turns=config.history_turns(),
     )
 
     # 子 Agent 独立 loop：各自 ToolProvider（不含 tools.delegate，结构上杜绝再委托），
@@ -956,6 +964,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         router=router,
         rag=rag,
         loop=loop,
+        transcript=transcript,
         skill_router=skill_router,
         skill_feedback=skill_feedback,
         skill_iterator=skill_iterator,

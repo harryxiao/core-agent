@@ -14,6 +14,7 @@ from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
 from .relevance import rank, recency_decay, relevance
 from .store import MemoryStore
 from .summarize import Summarizer, build_prompt, summarize_with
+from .transcript import TranscriptStore
 
 __all__ = [
     "Crystallizer",
@@ -26,6 +27,7 @@ __all__ = [
     "MemoryStore",
     "PluginCandidate",
     "Summarizer",
+    "TranscriptStore",
     "batch_embed",
     "build_prompt",
     "rank",

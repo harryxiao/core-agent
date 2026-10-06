@@ -40,6 +40,8 @@ _DEFAULT_COOLDOWN_S = 30.0
 _DEFAULT_MAX_ROUNDS = 10
 _DEFAULT_OUTPUT_RESERVE = 8192
 _DEFAULT_TOKEN_BUDGET = 65536
+# 回灌轮数缺省口径来源：doc/openspec/specs/configuration/spec.md「循环预算配置」
+_DEFAULT_HISTORY_TURNS = 20
 
 # 配置项单一真源（全量声明）：CLI flag / env / yaml 三面由 ConfigSpec 生成，禁止硬编码第二真源。
 _CONFIG_SPECS: list[ConfigSpec] = [
@@ -191,6 +193,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_LOOP_MAX_ROUNDS",
         default=_DEFAULT_MAX_ROUNDS,
         map_to="loop.max_rounds",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "loop.history_turns",
+        "--loop.history-turns",
+        "CORE_LOOP_HISTORY_TURNS",
+        default=_DEFAULT_HISTORY_TURNS,
+        map_to="loop.history_turns",
         exposure=ConfigExposure.ADVANCED,
     ),
 ]
@@ -443,6 +453,18 @@ class ConfigManager:
             return max_rounds, window - (_DEFAULT_OUTPUT_RESERVE if reserve is None else reserve)
         return max_rounds, _DEFAULT_TOKEN_BUDGET
 
+    def history_turns(self) -> int:
+        """会话历史回灌轮数（缺省 ``20``，``0`` = 关闭回灌；change `0115`）。
+
+        **独立访问器**：与 ``loop_limits()`` 无语义关系（后者是预算派生），且既有
+        ``(max_rounds, token_budget)`` 二元组被多处解包断言钉死，不合并以免概念污染。
+        """
+        if self._config is None:
+            return _DEFAULT_HISTORY_TURNS
+        raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
+        turns = _parse_int(raw.get("history_turns", _DEFAULT_HISTORY_TURNS))
+        return _DEFAULT_HISTORY_TURNS if turns is None else turns
+
     def sandbox_host_allowlist(self) -> list[str]:
         """出站网络白名单（缺省空 = fail-closed 全拒，安全默认）。
 
@@ -637,7 +659,7 @@ def _llm_context_window(raw: dict[str, Any]) -> int:
 def _loop_errors(raw: dict[str, Any]) -> list[str]:
     """循环预算取值校验（对齐 loop「错误与预算控制」）。
 
-    轮数上限须为 **≥1 的整数**、输出预留须为 **≥0 的整数**；``bool`` 视作非法
+    轮数上限须为 **≥1 的整数**、输出预留与回灌轮数须为 **≥0 的整数**；``bool`` 视作非法
     （``true`` 不是次数）。非法取值**阻断启动**：静默兜底会把配置错误变成运行时的诡异行为。
     """
     errors: list[str] = []
@@ -650,6 +672,11 @@ def _loop_errors(raw: dict[str, Any]) -> list[str]:
     if reserve is None or reserve < 0:
         errors.append(
             f"非法输出预留: loop.output_reserve={raw.get('output_reserve')}（须为 ≥0 的整数）"
+        )
+    turns = _parse_int(raw.get("history_turns", _DEFAULT_HISTORY_TURNS))
+    if turns is None or turns < 0:
+        errors.append(
+            f"非法回灌轮数: loop.history_turns={raw.get('history_turns')}（须为 ≥0 的整数）"
         )
     return errors
 

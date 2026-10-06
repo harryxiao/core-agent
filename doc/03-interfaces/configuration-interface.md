@@ -251,18 +251,25 @@ CLI 面 `--feature <模块>[=<布尔>]` 由 `entry._cli_overrides` 收进覆盖�
 | `llm.context_window` | `0`（= 未配置） | `0` 或 **≥1 的整数** | 模型上下文窗口；`> 0` 时参与派生 token 预算 |
 | `loop.output_reserve` | `8192` | **≥0 的整数** | 固定保留的输出头寸（推理/回答用），从窗口中扣除 |
 | `loop.max_rounds` | `10` | **≥1 的整数** | 单任务最大循环次数上限 |
+| `loop.history_turns` | `20` | **≥0 的整数**（`0` = 关闭回灌） | 会话历史回灌轮数（change `0115`）：注入转录存储时 `perceive` 载入本会话最近 N 轮进 `LoopContext.history`；与 token 切片 `token_budget // 2` 取**双重上界**（ADR-0108） |
 
-- **单一真源**：三键由 `ConfigSpec` 声明（`map_to="llm.context_window"` / `"loop.output_reserve"` /
-  `"loop.max_rounds"`，`exposure=ADVANCED`），自动获得 CLI flag（`--llm.context-window` /
-  `--loop.output-reserve` / `--loop.max-rounds`）、env（`CORE_LLM_CONTEXT_WINDOW` /
-  `CORE_LOOP_OUTPUT_RESERVE` / `CORE_LOOP_MAX_ROUNDS`）与优先级链（CLI > env > config.yaml > 缺省）。
+- **单一真源**：四键由 `ConfigSpec` 声明（`map_to="llm.context_window"` / `"loop.output_reserve"` /
+  `"loop.max_rounds"` / `"loop.history_turns"`，`exposure=ADVANCED`），自动获得 CLI flag（`--llm.context-window` /
+  `--loop.output-reserve` / `--loop.max-rounds` / `--loop.history-turns`）、env（`CORE_LLM_CONTEXT_WINDOW` /
+  `CORE_LOOP_OUTPUT_RESERVE` / `CORE_LOOP_MAX_ROUNDS` / `CORE_LOOP_HISTORY_TURNS`）与优先级链
+  （CLI > env > config.yaml > 缺省）。
+- **`loop.history_turns` 走独立访问器** `ConfigManager.history_turns()`，**不**并入 `loop_limits()` 元组
+  （后者被 20+ 处 `limits[0]`/`limits[1]` 解包断言钉死，且回灌轮数与预算派生无语义关系）——
+  同 `permission_mode()` 先例；经 `LimitsConfigurable.set_limits(history_turns=...)` **热推**
+  （本仓把「报成功却不生效」列为缺陷类，保存配置须落盘与生效同步）。取舍详见 ADR-0108。
 - **派生口径（固定保留头寸）**：`loop_limits()` 返回
   `token_budget = context_window - output_reserve`（当 `context_window > 0`），否则回落内置缺省 `65536`
   （**与变更前逐位一致**）；`max_rounds` 独立取 `loop.max_rounds`。**不**新开显式 `loop.token_budget` 键 ——
   用户选的是「由窗口派生」，派生式即机制（少一层会与窗口矛盾的开关）。取舍详见 ADR-0091。
 - **校验期拒绝（不静默兜底）**：`llm.context_window` 非 `0`/≥1 整数（含 `bool`）、`loop.output_reserve`
-  非 ≥0 整数、`loop.max_rounds` 非 ≥1 整数，均在 `validate_schema` 判为错误、**阻断启动**；
-  **交叉校验** `context_window > output_reserve`，否则报「窗口不敷输出预留」。
+  非 ≥0 整数、`loop.max_rounds` 非 ≥1 整数、`loop.history_turns` 非 ≥0 整数（含 `bool`），
+  均在 `validate_schema` 判为错误、**阻断启动**；**交叉校验** `context_window > output_reserve`，
+  否则报「窗口不敷输出预留」。
   为何**必须**阻断而非兜底：`token_budget <= 0` 在 loop 里的语义是「**关闭** token 维度」，
   静默兜底会把一个配置错误伪造成「预算维度失效」（更危险），详见 ADR-0091。
 - **构建前阻断**：`llm.context_window` 在 `_build_config` 即化为整数（结构化段原文不可追溯），

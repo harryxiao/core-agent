@@ -67,6 +67,32 @@ MemoryStore(
 )
 ```
 
+### 1.1 对话转录存储（TranscriptStore，change 0115 / ADR-0108）
+
+**非记忆层级**：对话转录是原始对话流，**不经** `MemoryStore.read` 取出，也**不**参与温度分层检索、
+排名、`reuse_count` 强化、压实、固化与遗忘；只能经本接口按会话读取。落盘为 `$CORE_STATE_DIR` 下
+**单文件** JSONL（单店 + `session_id` 列，不翻案 change `0048` 的「单店按会话归组」），
+写入用 `os.open(O_APPEND)` + 单次 `os.write` 整行（POSIX 追加原子，跨进程并发不写坏行）。
+
+```python
+TranscriptStore(path: Path | None = None)      # path=None ⇒ 纯内存（测试用）
+
+    def append(session_id, role, content, *, created_at: float | None = None) -> None
+        # 逐行追加；session_id == ""（未归属）⇒ **不落盘**（不制造幻影会话）
+
+    def read(session_id: str) -> list[dict]     # 该会话全部转录（按追加次序）
+
+    def tail(session_id: str, turns: int, *, max_tokens: int = 0) -> list[dict]
+        # 最近 turns 轮（轮 = 一条 user 提问及其答复）；max_tokens > 0 时再按 token
+        # 从新到旧截断，截断后若开头剩孤儿 assistant 行则一并丢弃；turns <= 0 ⇒ 空
+
+    def summaries() -> dict[str, dict]          # {session_id: {title, updated_at}}（排除未归属）
+        # title = 该会话**首条用户消息**压平换行后截断 30 字（超长补「…」），无 user 行 ⇒ 空串
+```
+
+降级：文件缺失 / 坏行 ⇒ 跳过（不抛错、不阻断主流程）。对应规格：`memory/spec.md`
+「对话转录持久化（非记忆层级）」。
+
 ---
 
 ## 2. 数据结构

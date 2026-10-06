@@ -15,7 +15,7 @@ from typing import Any, cast
 from core.configuration import ConfigManager, ConfigurationError
 from core.configuration.models import LLMConfig
 from core.loop import DefaultLoop, LimitsConfigurable, LoopEvent, LoopPlugin
-from core.memory import MemoryStore
+from core.memory import MemoryStore, TranscriptStore
 from core.orchestration import TaskScheduler
 from core.permission import ApprovalChannel
 from core.pet.core import PetActivator, PetControl
@@ -49,7 +49,11 @@ def _require_ref(ref: str) -> None:
 
 
 def _llm_patch(
-    cfg: LLMConfig, *, output_reserve: int | None, max_rounds: int | None
+    cfg: LLMConfig,
+    *,
+    output_reserve: int | None,
+    max_rounds: int | None,
+    history_turns: int | None = None,
 ) -> dict[str, Any]:
     """组**单个** patch（llm + loop）⇒ 一次校验、一次落盘，无「写了一半」的中间态。"""
     patch: dict[str, Any] = {
@@ -68,6 +72,8 @@ def _llm_patch(
         loop["output_reserve"] = output_reserve
     if max_rounds is not None:
         loop["max_rounds"] = max_rounds
+    if history_turns is not None:
+        loop["history_turns"] = history_turns
     if loop:
         patch["loop"] = loop
     return patch
@@ -101,6 +107,7 @@ class UIAPILayer:
         pet_activator: PetActivator | None = None,
         pet_control: PetControl | None = None,
         registry: SessionRegistry | None = None,
+        transcript: TranscriptStore | None = None,
     ) -> None:
         self._loop = loop if loop is not None else DefaultLoop()
         self._memory = memory
@@ -114,6 +121,8 @@ class UIAPILayer:
         self._pet_activator = pet_activator
         self._pet_control = pet_control
         self._registry = registry if registry is not None else SessionRegistry()
+        # 对话转录存储（缺省未注入 ⇒ 枚举不做富化、`session_messages` 走空，形状不变）
+        self._transcript = transcript
         self._llm_config: LLMConfig | None = None
 
     @property
@@ -128,8 +137,34 @@ class UIAPILayer:
         return self._registry.create(mode)
 
     def list_sessions(self) -> list[dict[str, object]]:
-        """枚举已登记对话会话（`{session_id, mode, created_at}`）。"""
-        return self._registry.list()
+        """枚举已登记对话会话（`{session_id, mode, created_at}`）。
+
+        注入转录存储时**附派生** `title`（该会话首条用户消息截断，无则空串）与
+        `updated_at`（最近一条转录时间戳，无转录则回落注册表 `created_at`）；派生值
+        **不写注册表**（避免第二真源）。未注入 ⇒ 形状不变（既有消费方不受影响）。
+        """
+        entries = self._registry.list()
+        if self._transcript is None:
+            return entries
+        summaries = self._transcript.summaries()
+        enriched: list[dict[str, object]] = []
+        for entry in entries:
+            summary = summaries.get(str(entry.get("session_id", "")), {})
+            enriched.append(
+                {
+                    **entry,
+                    "title": summary.get("title", ""),
+                    "updated_at": summary.get("updated_at", entry.get("created_at", 0.0)),
+                }
+            )
+        return enriched
+
+    def session_messages(self, session_id: str) -> list[dict[str, object]]:
+        """该会话的对话转录（按追加次序）；未登记标识仍拒绝（不放宽会话校验）。"""
+        self._require_session(session_id)
+        if self._transcript is None:
+            return []
+        return self._transcript.read(session_id)
 
     async def run_loop(
         self,
@@ -243,6 +278,7 @@ class UIAPILayer:
         *,
         output_reserve: int | None = None,
         max_rounds: int | None = None,
+        history_turns: int | None = None,
     ) -> None:
         """用户保存 LLM 配置：校验 → 原子落盘 → 生效 → 热推预算上限（change `0099`）。
 
@@ -251,8 +287,11 @@ class UIAPILayer:
         归为 ``UI_LLM_CONFIG_INVALID``，且**内存与 yaml 均回退到原值**。
         """
         _require_ref(cfg.api_key_ref)
-        patch = _llm_patch(cfg, output_reserve=output_reserve, max_rounds=max_rounds)
+        patch = _llm_patch(
+            cfg, output_reserve=output_reserve, max_rounds=max_rounds, history_turns=history_turns
+        )
         limits: tuple[int | None, int | None]
+        turns: int | None = None
         if self._config is not None:
             try:
                 self._config.apply_change(patch)
@@ -267,12 +306,13 @@ class UIAPILayer:
             except ConfigurationError as exc:
                 raise UiError(UiErrorCode.UI_LLM_CONFIG_INVALID, str(exc)) from exc
             limits = self._config.loop_limits()
+            turns = self._config.history_turns()
         else:
             limits = (max_rounds, _derive_budget(cfg, output_reserve))
 
         self._llm_config = cfg
         if isinstance(self._loop, LimitsConfigurable):
-            self._loop.set_limits(max_rounds=limits[0], token_budget=limits[1])
+            self._loop.set_limits(max_rounds=limits[0], token_budget=limits[1], history_turns=turns)
 
     def get_loop_limits(self) -> tuple[int, int] | None:
         """回显**生效值** ``(max_rounds, token_budget)``；无配置源返回 None。"""

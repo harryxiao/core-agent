@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 from core.ui import SessionRegistry
@@ -80,3 +81,25 @@ def test_exists_reads_through_to_late_writer(tmp_path: Path) -> None:
 
     assert watcher.exists(session_id)
     assert session_id in _ids(watcher)
+
+
+def test_concurrent_create_in_process_loses_nothing(tmp_path: Path) -> None:
+    """进程内互斥：同进程多线程并发创建不相互覆盖（**不**声称跨进程安全）。"""
+    path = tmp_path / "conversations.json"
+    registry = SessionRegistry(path=path)
+    created: list[str] = []
+    guard = threading.Lock()
+
+    def worker() -> None:
+        session_id = registry.create("cli")
+        with guard:
+            created.append(session_id)
+
+    threads = [threading.Thread(target=worker) for _ in range(32)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(set(created)) == len(threads)  # 标识无重复
+    assert _ids(SessionRegistry(path=path)) == set(created)  # 落盘无丢失

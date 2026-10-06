@@ -269,3 +269,66 @@ def test_configured_max_rounds_drives_production_loop(tmp_path: Path) -> None:
     )
     result = loop.run("hi")
     assert "LOOP_LIMIT_EXCEEDED" in result.reply
+
+
+# ---- 会话历史回灌轮数（change 0115）----
+
+# 规格缺省：回灌最近 20 轮对话历史（configuration/spec.md「循环预算配置」）
+_DEFAULT_HISTORY_TURNS = 20
+
+
+def test_history_turns_spec_declared() -> None:
+    """新键经 ConfigSpec 单一真源声明 ⇒ 三面齐备（不走 `loop_limits()` 元组）。"""
+    spec = {spec.key: spec for spec in config_specs()}["loop.history_turns"]
+    assert (spec.cli_flag, spec.env_var, spec.default) == (
+        "--loop.history-turns",
+        "CORE_LOOP_HISTORY_TURNS",
+        _DEFAULT_HISTORY_TURNS,
+    )
+
+
+def test_history_turns_default(tmp_path: Path) -> None:
+    assert _manager(tmp_path).history_turns() == _DEFAULT_HISTORY_TURNS
+
+
+def test_history_turns_from_yaml(tmp_path: Path) -> None:
+    turns = 3
+    assert _manager(tmp_path, f"loop:\n  history_turns: {turns}\n").history_turns() == turns
+
+
+def test_history_turns_env_overrides_yaml(tmp_path: Path) -> None:
+    env_turns = 4
+    manager = _manager(
+        tmp_path,
+        "loop:\n  history_turns: 3\n",
+        environ={"CORE_LOOP_HISTORY_TURNS": str(env_turns)},
+    )
+    assert manager.history_turns() == env_turns
+
+
+def test_history_turns_cli_overrides_env_and_yaml(tmp_path: Path) -> None:
+    cli_turns = 5
+    manager = _manager(
+        tmp_path,
+        "loop:\n  history_turns: 3\n",
+        environ={"CORE_LOOP_HISTORY_TURNS": "4"},
+        cli={"loop.history_turns": str(cli_turns)},
+    )
+    assert manager.history_turns() == cli_turns
+
+
+def test_history_turns_zero_disables_replay(tmp_path: Path) -> None:
+    """`0` 合法（关闭回灌）——与 `max_rounds` 的「须 ≥1」不同。"""
+    assert _manager(tmp_path, "loop:\n  history_turns: 0\n").history_turns() == 0
+
+
+@pytest.mark.parametrize("value", ["-1", "2.5", "abc", "true"])
+def test_invalid_history_turns_blocks_startup(tmp_path: Path, value: str) -> None:
+    """回灌轮数须为 ≥0 的整数：负数 / 小数 / 非数值 / 布尔一律阻断启动。"""
+    with pytest.raises(ConfigurationError, match="非法回灌轮数"):
+        _manager(tmp_path, f"loop:\n  history_turns: {value}\n")
+
+
+def test_history_turns_keeps_loop_limits_arity(tmp_path: Path) -> None:
+    """新键走**独立访问器** ⇒ `loop_limits()` 仍是 (max_rounds, token_budget) 二元组。"""
+    assert _manager(tmp_path, "loop:\n  history_turns: 5\n").loop_limits() == (10, 65536)

@@ -1,4 +1,4 @@
-"""serve 单元测试（对齐契约红线：10 端点 / SSE 流式 / 错误码映射 / 三模复用同一内核）。"""
+"""serve 单元测试（对齐契约红线：11 端点 / SSE 流式 / 错误码映射 / 三模复用同一内核）。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from starlette import status
 from core.configuration import ConfigManager
 from core.configuration.models import LLMConfig
 from core.loop import DefaultLoop, LoopEvent
+from core.memory import TranscriptStore
 from core.ui import UIAPILayer, fastapi_serve
 from core.ui.fastapi_serve import build_app
 
@@ -185,6 +186,81 @@ def test_sessions_endpoint_empty() -> None:
     resp = client.get("/sessions")
     assert resp.status_code == status.HTTP_200_OK
     assert resp.json() == {"sessions": []}
+
+
+# ---- 会话转录读取面（change 0115 / phase-28 E49）----
+
+
+def _client_with_transcript(tmp_path: Path) -> tuple[UIAPILayer, object, TranscriptStore]:
+    store = TranscriptStore(tmp_path / "messages.jsonl")
+    api = UIAPILayer(
+        loop=FakeLoop([LoopEvent("loop_finished", {"reply": "done"})]), transcript=store
+    )
+    api.set_llm_config(_llm())
+    return api, TestClient(build_app(api)), store
+
+
+def test_session_messages_returns_transcript(tmp_path: Path) -> None:
+    _, client, store = _client_with_transcript(tmp_path)
+    session_id = client.post("/session", json={"mode": "cli"}).json()["session_id"]
+    store.append(session_id, "user", "第一问")
+    store.append(session_id, "assistant", "第一答")
+
+    resp = client.get(f"/session/{session_id}/messages")
+
+    assert resp.status_code == status.HTTP_200_OK
+    body = resp.json()
+    assert body["session_id"] == session_id
+    assert [m["content"] for m in body["messages"]] == ["第一问", "第一答"]
+
+
+def test_session_messages_unknown_session_404(tmp_path: Path) -> None:
+    """未登记标识仍拒绝（fail-closed，不放宽既有会话校验）。"""
+    _, client, _ = _client_with_transcript(tmp_path)
+
+    resp = client.get("/session/nope/messages")
+
+    assert resp.status_code == status.HTTP_404_NOT_FOUND
+    assert resp.json()["error"] == "UI_SESSION_NOT_FOUND"
+
+
+def test_sessions_entry_enriched_with_derived_title(tmp_path: Path) -> None:
+    _, client, store = _client_with_transcript(tmp_path)
+    session_id = client.post("/session", json={"mode": "cli"}).json()["session_id"]
+    store.append(session_id, "user", "看看标题")
+
+    entry = client.get("/sessions").json()["sessions"][0]
+
+    assert entry["session_id"] == session_id
+    assert entry["mode"] == "cli"
+    assert entry["title"] == "看看标题"
+    assert isinstance(entry["updated_at"], (int, float))
+
+
+def test_sessions_entry_without_transcript_gets_empty_title(tmp_path: Path) -> None:
+    """无转录的会话 SHALL NOT 被伪造出标题：形状齐备但 `title` 为空串。
+
+    `updated_at` 回落注册表 `created_at`（空会话的「最近活跃」即创建时刻）——
+    消费方无需为缺键特判。
+    """
+    _, client, _ = _client_with_transcript(tmp_path)
+    session_id = client.post("/session", json={"mode": "cli"}).json()["session_id"]
+
+    entry = client.get("/sessions").json()["sessions"][0]
+
+    assert entry["session_id"] == session_id
+    assert entry["title"] == ""
+    assert entry["updated_at"] == entry["created_at"]
+
+
+def test_sessions_entry_shape_unchanged_without_transcript() -> None:
+    """未注入转录存储 ⇒ 条目形状只增不减（既有消费方不受影响）。"""
+    _, client = _client()
+    client.post("/session", json={"mode": "cli"})
+
+    entry = client.get("/sessions").json()["sessions"][0]
+
+    assert set(entry) == {"session_id", "mode", "created_at"}
 
 
 # ---- SPA 静态挂载（change 0100）----

@@ -1,10 +1,10 @@
 """FastAPI/uvicorn 适配器（ui 接入层边界依赖）。
 
-把 UIAPILayer 10 方法暴露为 REST + SSE 端点，供 `WebBridge.serve()` 使用。
+把 UIAPILayer 方法暴露为 REST + SSE 端点，供 `WebBridge.serve()` 使用。
 按 ADR-0040 MAL 隔离：fastapi/uvicorn 仅此文件持有且函数内懒 import，
 上层（web_bridge / UIAPILayer）不依赖具体 Web 框架。
 
-对应接口：doc/03-interfaces/ui-interface.md §1.2（10 端点）。
+对应接口：doc/03-interfaces/ui-interface.md §1.2（11 端点）。
 """
 
 from __future__ import annotations
@@ -54,8 +54,8 @@ def serve(api: UIAPILayer, host: str, port: int) -> None:
     uvicorn.run(build_app(api), host=host, port=port)
 
 
-def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 10 端点注册，复杂度固有
-    """构建 FastAPI 应用（懒 import fastapi），暴露 10 端点。"""
+def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 11 端点注册，复杂度固有
+    """构建 FastAPI 应用（懒 import fastapi），暴露 11 端点。"""
     from fastapi import FastAPI, Request  # noqa: PLC0415 — MAL 懒 import
     from fastapi.responses import (  # noqa: PLC0415 — MAL 懒 import
         JSONResponse,
@@ -74,6 +74,9 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 10 端点注册，复�
 
     def list_sessions() -> dict[str, object]:
         return {"sessions": api.list_sessions()}
+
+    def session_messages(session_id: str) -> dict[str, object]:
+        return {"session_id": session_id, "messages": api.session_messages(session_id)}
 
     async def run(body: dict[str, Any]) -> StreamingResponse:
         session_id = str(body.get("session_id", ""))
@@ -159,6 +162,7 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 10 端点注册，复�
             ),
             output_reserve=_opt_int(body.get("output_reserve")),
             max_rounds=_opt_int(body.get("max_rounds")),
+            history_turns=_opt_int(body.get("history_turns")),
         )
         return {"ok": "true"}
 
@@ -166,6 +170,8 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 10 端点注册，复�
     app.add_exception_handler(UiError, _ui_error_handler)
     app.add_api_route("/session", create_session, methods=["POST"])
     app.add_api_route("/sessions", list_sessions, methods=["GET"])
+    # 3 段路径：与 `/session`(POST) / `/session/compact`(POST) 段数或方法不同，无遮蔽
+    app.add_api_route("/session/{session_id}/messages", session_messages, methods=["GET"])
     app.add_api_route("/run", run, methods=["POST"])
     app.add_api_route("/barge-in", barge_in, methods=["POST"])
     app.add_api_route("/memory", get_memory, methods=["GET"])

@@ -73,12 +73,13 @@ class UIAPILayer:
 
 ### 1.2 HTTP 端点清单（WebBridge.serve）
 
-`WebBridge.serve(host, port)` 将 `UIAPILayer` 10 方法暴露为 HTTP 端点（REST + SSE）：
+`WebBridge.serve(host, port)` 将 `UIAPILayer` 11 方法暴露为 HTTP 端点（REST + SSE）：
 
 | 端点 | 方法 | 映射 | 说明 |
 |---|---|---|---|
 | `POST /session` | create_session | `create_session(mode)` | 新建会话（登记至共享注册表，见 §1.3） |
-| `GET /sessions` | list_sessions | `list_sessions()` | 枚举对话会话（`{session_id, mode, created_at}`） |
+| `GET /sessions` | list_sessions | `list_sessions()` | 枚举对话会话（`{session_id, mode, created_at}` + 注入转录时的派生 `title`/`updated_at`，见 §1.3.1） |
+| `GET /session/{id}/messages` | session_messages | `session_messages(session_id)` | 读该会话**对话转录**（按追加次序）；未登记仍 `UI_SESSION_NOT_FOUND` |
 | `POST /run` | run_loop | `run_loop(session_id, user_input)` | SSE 流式 loop 事件 |
 | `POST /barge-in` | barge_in | `barge_in()` | 打断当前语音播报 |
 | `GET /memory` | get_memory | `get_memory(session_id)` | 读会话记忆（只含本会话归属条目） |
@@ -86,13 +87,14 @@ class UIAPILayer:
 | `GET /tools` | list_tools | `list_tools()` | 列出工具 |
 | `POST /tools/invoke` | invoke_tool | `invoke_tool(tool_id, args)` | 调用工具 |
 | `GET /llm-config` | get_llm_config | `get_llm_config()` | 读 LLM 配置（含**生效**预算，见 §1.4） |
-| `PUT /llm-config` | apply_llm_config | `apply_llm_config(cfg, output_reserve, max_rounds)` | 保存 LLM 配置（原子落盘 + 热生效） |
+| `PUT /llm-config` | apply_llm_config | `apply_llm_config(cfg, output_reserve, max_rounds, history_turns)` | 保存 LLM 配置（原子落盘 + 热生效） |
 
 **`/llm-config` 字段口径**（change `0099`）：`GET` 回 `provider` / `model` / `endpoint` / `api_key_ref` /
 `reasoning_effort` / `embedding_model` / `context_window` / `max_rounds` / `token_budget`；后两者为
 **派生后的生效值**（`token_budget = context_window − output_reserve`，见 ADR-0091），无配置源时为 `null`。
 `PUT` 收 `provider` / `model` / `endpoint` / `api_key_ref`（**只接受 `${VAR}` 引用，明文拒绝**）/ 可选
-`reasoning_effort` / `embedding_model` / `context_window` / `output_reserve` / `max_rounds`。
+`reasoning_effort` / `embedding_model` / `context_window` / `output_reserve` / `max_rounds` /
+`history_turns`（change `0115`）。
 
 - **落盘**：`PUT` 经 `UIAPILayer.apply_llm_config` → `apply_change`（校验）→ `write_patch`（**原子提交**）→ 重读，
   一次 patch 承载 `llm` 与 `loop` 两段 ⇒ 不留半写状态；写盘失败**旧文件逐字不变**、内存回退。
@@ -108,15 +110,25 @@ CLI / Web / Desktop 三入口（含各自独立进程）共享同一注册表；
 
 | 方法 | 说明 |
 |---|---|
-| `create(mode) -> str` | 新建会话（**读回 → 合并 → 写回**），返回 32 位 hex |
+| `create(mode) -> str` | 新建会话（**读回 → 合并 → 写回**），返回 32 位 hex；**进程内互斥**（`RLock`） |
 | `exists(session_id) -> bool` | 是否已登记（**每次读透磁盘**） |
 | `list() -> list[{session_id, mode, created_at}]` | 枚举全部会话（**每次读透磁盘**） |
 
-- **读透 + 写时合并**（非「ctor 载入一次」）：长驻 `serve` 进程可即时见到 CLI 新建的会话；
-  两进程并发创建不相互覆盖。注册表为**派生状态**，文件缺失 / 损坏 ⇒ 空态启动（不阻断）。
+- **读透 + 写时合并**（非「ctor 载入一次」）：长驻 `serve` 进程可即时见到 CLI 新建的会话。
+  注册表为**派生状态**，文件缺失 / 损坏 ⇒ 空态启动（不阻断）。
+- **并发口径（change 0115 据实收窄）**：`create` 以**进程内互斥**保护，**同进程多线程**并发创建
+  互不覆盖；**跨进程**同刻并发创建**不受保护**（进程内锁不跨进程，属已知局限，不得据此断言跨进程安全）。
 - **fail-closed 不放宽**：未登记 id 仍抛 `UI_SESSION_NOT_FOUND`。
 - 与 `sessions.jsonl`（`HarnessHost` **连接记录**，`session-{N}` 另一套 id 空间，见 `core-agent sessions`）
   **名与义均不同**。取舍见 `ADR-0089`。
+
+#### 1.3.1 枚举条目的派生字段（change 0115 / ADR-0108）
+
+注入转录存储（`UIAPILayer(transcript=...)`）时，`GET /sessions` 的条目**逐条**附派生字段：
+`title`（该会话**首条用户消息**截断 30 字；无用户消息 ⇒ **空串**，不伪造标题）与
+`updated_at`（最近一条转录时间戳；该会话无转录 ⇒ 回落注册表 `created_at`）。派生值**不写注册表**
+（注册表只承载标识与模式，避免第二真源）。**未注入**转录 ⇒ 条目形状逐字不变（只增不减）。
+数据面见 `memory-interface.md` §1.1。
 
 ---
 

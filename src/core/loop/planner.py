@@ -119,7 +119,9 @@ class LLMPlanner:
         yield self._parse("".join(chunks))
 
     def _build_request(self, ctx: LoopContext) -> LLMRequest:
+        # 次序：系统提示 → 本会话历史 → 本轮消息（历史走**独立字段**，不掺进 ctx.messages）
         messages = [Message(role="system", content=self._system_prompt(ctx))]
+        messages.extend(self._to_messages(ctx.history))
         messages.extend(self._to_messages(ctx.messages))
         return LLMRequest(
             messages=messages,

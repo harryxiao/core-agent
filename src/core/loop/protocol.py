@@ -44,6 +44,9 @@ class LoopContext:
     token_used: int = 0
     notes: str = ""  # 任务前 Consult 摘要（文档化记忆；缺省空 ⇒ 不注入。见 change 0106）
     session_id: str = ""  # 本轮会话标识（缺省空串 = 未归属）；推理期检索/技能路由的归属维度
+    # 本会话最近历史对话（「用户原话 / 最终回复」成对；缺省空 ⇒ 不回灌）。
+    # **独立字段**：不得前置进 `messages` —— 后者首条被当「本轮任务」、其后被当动作序列。
+    history: list[Any] = field(default_factory=list[Any])
     _done: bool = field(default=False, repr=False)
 
     def done(self) -> bool:
@@ -108,8 +111,12 @@ class LoopPlugin(Protocol):
 
     # ---- 阶段方法（私有，但为策略替换点）----
 
-    def perceive(self, user_input: str) -> LoopContext:
-        """收集状态，拼上下文包（token 有硬上界，按优先级裁剪）。"""
+    def perceive(self, user_input: str, *, session_id: str = "") -> LoopContext:
+        """收集状态，拼上下文包（token 有硬上界，按优先级裁剪）。
+
+        ``session_id`` 非空时载入该会话最近历史（受轮数与 token 双重上界）进
+        `LoopContext.history`，并把历史 token 计入本轮记账。
+        """
         ...
 
     async def reason(self, ctx: LoopContext) -> Action:
@@ -137,6 +144,12 @@ class LimitsConfigurable(Protocol):
     **不**把 UI 层焊死在 `DefaultLoop`（本仓策略插件可替换）。不支持者静默跳过。
     """
 
-    def set_limits(self, *, max_rounds: int | None = None, token_budget: int | None = None) -> None:
-        """改上限（``None`` = 保持该项）；两值在每轮判定处读取 ⇒ 赋值即下次生效。"""
+    def set_limits(
+        self,
+        *,
+        max_rounds: int | None = None,
+        token_budget: int | None = None,
+        history_turns: int | None = None,
+    ) -> None:
+        """改上限（``None`` = 保持该项）；各值在每轮读取处生效 ⇒ 赋值即下次生效。"""
         ...

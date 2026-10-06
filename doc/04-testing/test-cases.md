@@ -474,6 +474,31 @@
 
 ---
 
+## 31. 对话转录与会话历史回灌（TC-XSCRIPT，change `0115`／ADR-0108，账本 E49）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-XSCRIPT-01 | memory/spec.md「对话转录持久化（非记忆层级）」 | `TranscriptStore` append 两条后 `read`；换同路径新实例再 `read` | 往返一致；**跨实例可见**（落盘而非进程内） |
+| TC-XSCRIPT-02 | 同上（**反例守门**） | A 会话 append 后 `read("B")` | 空 —— 会话之间转录互不可见（锚点：`tests/test_transcript.py::test_read_is_scoped_by_session`） |
+| TC-XSCRIPT-03 | 同上（未归属不落盘） | `append("", "user", "孤儿")` | 纯 no-op（`messages.jsonl` **根本不创建**）（锚点：`::test_unaffiliated_append_is_noop`） |
+| TC-XSCRIPT-04 | 同上（`tail` 轮边界） | `tail(sid, turns)` 取 0 / 大于总轮数 / 正常 | `turns=0` ⇒ 空；大于总数 ⇒ 全部；按**轮**（user 起始）切片，尾部未答 user 行**保留** |
+| TC-XSCRIPT-05 | 同上（`tail` token 上界） | 5 轮各 160 字符（40 token），`max_tokens=100` 从新到旧累加 | 只留最近 2 轮；**截断后不从中途起**（开头孤儿 assistant 行一并丢弃）（锚点：`::test_tail_token_bound_drops_oldest_lines` / `::test_tail_token_bound_never_starts_mid_round`） |
+| TC-XSCRIPT-06 | 同上（降级） | 缺文件 `read`；文件混入坏行 | 缺文件 ⇒ `[]`；坏行**跳过**、不抛（不阻断主流程） |
+| TC-XSCRIPT-07 | 同上（`summaries` 派生） | 两会话各写若干条 | `{sid: {title, updated_at}}`；`title` = **首条用户消息**压平换行截断 30 字（超长补「…」）；`updated_at` = 最近一条时间戳；**排除未归属**（锚点：`::test_summaries_title_from_first_user_message`） |
+| TC-XSCRIPT-08 | 同上（**反例守门**：非记忆层级） | 转录写入后 `MemoryStore.read` | 结果**不含**转录内容；反向：`MemoryStore.write` 不落进转录（锚点：`tests/test_transcript_memory_boundary.py::test_transcript_never_returned_by_memory_read` / `::test_memory_write_never_reaches_transcript`） |
+| TC-XSCRIPT-09 | loop/spec.md「执行循环」回灌 | 真 `DefaultLoop` + 真转录，第二轮捕获 LLM 请求 | 序列 `[system, 历史 user, 历史 assistant, 本轮 user]`（锚点：`tests/test_history_replay.py::test_history_replayed_between_system_and_current_turn`） |
+| TC-XSCRIPT-10 | 同上（**四处 accessor 红线**） | 有历史时读 `_task_text` / `_echo` / `LLMPlanner._task` / `_action_steps` / `ctx.messages` | 只见**本轮**（历史在 `ctx.history`，不被当本轮任务/动作序列）（锚点：`::test_current_turn_accessors_see_only_this_turn`） |
+| TC-XSCRIPT-11 | 同上（双重上界与关闭） | `history_turns=1` 有 2 轮历史；`history_turns=0`；未注入转录；`session_id=""` | 前者只回灌 1 轮；后三者**零回灌**（锚点：`::test_history_turns_bound_limits_replayed_rounds` / `::test_history_turns_zero_disables_replay` / `::test_no_transcript_means_no_history` / `::test_empty_session_id_never_replays`） |
+| TC-XSCRIPT-12 | 同上（历史计入记账） | 200 token 历史 + 本轮，捕获 `ctx.token_used` | 历史 token **计入** `token_used`（预算终止/压实看得见它）（锚点：`::test_history_tokens_counted_into_budget`） |
+| TC-XSCRIPT-13 | 同上（落盘时点与门控） | 一轮成功 / 预算耗尽轮（`max_rounds=0`）/ `remember` 抛错 / 推理抛错 | 成功 ⇒ 落 (user, reply) 两条；**终止轮不落合成串**（只留 user 行）；`remember` 抛错 **不影响**已落盘对话（锚点：`tests/test_history_persistence.py::test_turn_failed_with_synthetic_reply_writes_no_reply` / `::test_transcript_lands_before_memory_write` / `::test_user_line_survives_later_failure`） |
+| TC-XSCRIPT-14 | 同上（缺省逐字兼容） | `astream("未归属的一轮")`（不传 `session_id`） | 零写入（`messages.jsonl` 不存在）（锚点：`::test_empty_session_id_writes_nothing`） |
+| TC-XSCRIPT-15 | ui/spec.md「会话转录的读取面」 | `GET /session/{id}/messages` 正常 / 未登记 | 正常 ⇒ 按追加次序返回；未登记 ⇒ **404 `UI_SESSION_NOT_FOUND`**（不放宽）（锚点：`tests/test_serve.py::test_session_messages_returns_transcript` / `::test_session_messages_unknown_session_404`） |
+| TC-XSCRIPT-16 | 同上（枚举派生字段） | `GET /sessions` 注入 / 未注入转录 | 注入 ⇒ 条目附 `title`/`updated_at`（无用户消息 ⇒ `title` 空串、`updated_at` 回落 `created_at`）；未注入 ⇒ 形状**逐字不变**（锚点：`::test_sessions_entry_enriched_with_derived_title` / `::test_sessions_entry_without_transcript_gets_empty_title` / `::test_sessions_entry_shape_unchanged_without_transcript`） |
+| TC-XSCRIPT-17 | configuration/spec.md「循环预算配置」 | `loop.history_turns` 缺省 / yaml / env / CLI 四面；非法值 | 缺省 `20`；优先级 CLI > env > yaml；非 ≥0 整数 ⇒ **阻断启动**（报「非法回灌轮数」）；`loop_limits()` **仍 2 元组**（既有 20+ 处解包断言不动）（锚点：`tests/test_loop_budget_config.py::test_history_turns_spec_declared` / `::test_invalid_history_turns_blocks_startup` / `::test_history_turns_keeps_loop_limits_arity`） |
+| TC-XSCRIPT-18 | ui/spec.md「会话注册表持久化与跨入口共享」 | 32 线程并发 `create`，换新实例 `list` | 除重后条数 == 线程数（进程内互斥不丢会话）（锚点：`tests/test_session_registry.py::test_concurrent_create_in_process_loses_nothing`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

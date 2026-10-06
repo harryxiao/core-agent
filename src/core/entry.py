@@ -420,6 +420,8 @@ def _build_ui(args: argparse.Namespace, *, interactive: bool = False) -> UIAPILa
         ),
         # 四入口（repl/serve/app/run）共享同一落盘会话注册表 ⇒ CLI ↔ serve 互认会话
         registry=SessionRegistry(path=_state_path("conversations.json")),
+        # 转录与主 loop **同源同文件**（`$CORE_STATE_DIR/messages.jsonl`）⇒ 读取面与回灌一致
+        transcript=runtime.transcript,
     )
     api.set_llm_config(runtime.app.llm)
     return api
