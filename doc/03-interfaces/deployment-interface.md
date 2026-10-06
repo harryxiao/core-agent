@@ -77,10 +77,20 @@ class HarnessHost:
     def serve(self) -> None: ...                       # 常驻运行，承载内核并对外暴露统一接入端点
     def accept(self, client: ClientConnection) -> Session: ...  # 客户端接入，建立独立会话
     def sessions(self) -> list[Session]: ...           # 枚举当前接入的客户端会话（互不串扰）
+    def touch(self, session_id: str) -> bool: ...      # 心跳：刷新 last_seen（在连会话 ⇒ True）
+    def disconnect(self, session_id: str) -> None: ...  # 客户端断线清理
+    def reap(self, timeout: float) -> list[str]: ...    # 超时回收：回收 timeout 内无活动者
 ```
 
 - 单一 Harness Host 进程常驻承载内核，作为统一接入端点；多个 Web/Desktop 客户端并发接入，各自建立独立会话。
 - Host 生命周期与单个客户端解耦：客户端断开不导致 Host 退出，Host 异常依赖 `LifecycleController` 探活恢复。
+- **活动 vs 超时**（change `0139` / ADR-0132）：`reap` 判据是「**无活动**超过 `timeout`」，
+  `last_seen` 由 `accept` **与心跳 `touch`** 共同刷新 ⇒ 活跃长连客户端不被误回收。
+  `touch` **只认在连（`CONNECTED`）会话**：未知 / 已断线 / 已回收 ⇒ 返 `False` 且**不复活**
+  （心跳不得撤销清理）；刷新成功即持久化（与 `accept` / `disconnect` / `reap` 同口径）。
+- **已知局限**：`touch` / `reap` 今日**无生产驱动**（`entry._serve` 注册一个 `serve` 会话后直接阻塞于
+  uvicorn，从不 `reap`）—— 本接口补的是**规格 SHALL 的心跳检测能力**（与 change `0138` 补 git
+  高危原语同类），驱动接线不在本账范围。
 
 ## 7. 约束
 

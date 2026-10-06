@@ -3627,6 +3627,45 @@
 
 ---
 
+## ADR-0132：Harness Host 心跳 + Desktop 端口单点与安装包开启（change 0139 / phase-34 E81 + E83）
+
+- **背景**：`coding-plan/phase-34.md` 登记的 **E81**（设计缺失）与 **E83**（设计缺失）。
+  E81：`deployment/spec.md`「客户端断线与会话清理」SHALL「检测客户端断开（**含心跳**/超时判定）」，
+  Scenario「连接超时回收」的前提是「客户端**长时间无活动**」—— 但 `deployment/host.py` 的
+  `last_seen` **仅 `accept` 赋值**，全类**无 touch / heartbeat** ⇒ `reap` 只能按「接入时刻」计时，
+  一个**始终活跃**的长连客户端照样被判超时回收（「按活动计时」无从表达）。
+  E83：`ui/spec.md`「桌面打包」SHALL 打包三平台可执行安装文件，而 `src-tauri/tauri.conf.json`
+  ① 窗口 `url` **硬编码** `http://127.0.0.1:8000`，与 `main.rs` 尊重 `CORE_PORT` 的 sidecar 启动端口
+  **可漂移**（内核换端口 ⇒ 壳指向空地址白屏）；② `bundle.active=false` ⇒ **产不出安装包**。
+- **决策①：心跳以 `touch(session_id) -> bool` 落在 `HarnessHost`，只认在连会话。** 刷新 `last_seen`
+  即 `True`；未知 / `DISCONNECTED` / `EXPIRED` ⇒ `False` 且**不复活** —— 心跳是**保活**语义，
+  **不是复活**语义：若允许心跳把已回收会话拉回 `CONNECTED`，清理就形同虚设（断线客户端只要再发一次
+  心跳即复权），与「回收该客户端会话与连接资源」的 SHALL 相悖。
+- **决策②：`touch` 成功即持久化。** 与 `accept` / `disconnect` / `reap` 同口径（四处皆 `_persist`）。
+  若不落盘，进程重启后重载的是**陈旧** `last_seen` ⇒ 活跃会话被按旧时刻误回收，正是本账要修的病。
+  代价是心跳触发全量重写（JSONL 行数 = 会话数，量级极小）—— 记为已知取舍。
+- **决策③：Desktop 端口**单点**取自 `CORE_PORT`，配置**不再出现端口**。** `tauri.conf.json` 的
+  `app.windows` 清空（`url` 一并去掉），改由 `main.rs` 的 `resolve_port()` 解析一次，
+  **同一变量**供 `spawn_sidecar` 与 `open_window`（`WebviewWindowBuilder` + `WebviewUrl::External`）
+  使用 ⇒ 「壳与 sidecar 端口漂移」在结构上不可能（此前是两处独立字面量）。
+  壳仍只做三件事（开窗 / 挂 SPA / 启 sidecar，ADR-0015），不含业务逻辑。
+- **决策④：`bundle.active: true` + `targets: "all"`。** 三平台安装包构建改为**显式开启**；
+  `targets: "all"` 而非枚举清单 —— 缺平台工具链时由 Tauri 跳过该 target（枚举清单会在无该平台
+  依赖时直接失败）。实际产物为**手工验收**项（本仓四门禁无 Rust/打包面）。
+- **已知局限**：① **驱动面** —— `HarnessHost.touch` / `reap` 今日**无生产驱动**（`entry._serve`
+  注册一个 `serve` 会话后阻塞于 uvicorn，从不 reap）；本 change 与 `0138` 同类：补的是**规格 SHALL 的
+  机制**，**驱动接线**不在 E81 闭账范围，登记为残留口径（不静默当作已完成）。② **心跳频率**
+  由调用方决定，本 change 不引入后台心跳线程（避免在阻塞式 `serve` 路径里加并发面）。
+  ③ **Rust 面验证强度** —— 四门禁不含 Rust；本次拟以 `cargo check` 为额外验证（非门禁，
+  不入 CI 口径），但**本轮未跑通**（本地 vendored 依赖树与 `Cargo.lock` 版本不一致 ——
+  `tauri-build` 锁定 2.7.1 而缓存为 2.5.6；`--offline` 直接解析失败，联网取包在本环境 13 分钟
+  零进展后中止）⇒ **壳编译未经编译验证**，与安装包产出一并归**手工验收**（`test-cases.md` §55）。
+- **规格**：**无 delta**（`deployment/spec.md:59-70` 与 `ui/spec.md`「桌面打包」早已是硬 SHALL，
+  实现侧纯背离 ⇒ conformance 修复）⇒ `.openspec.yaml` 写 `schema: spec-driven` + `skip_specs: true`
+  （先例 `0110` / `0135` / `0137` / `0138`）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3753,3 +3792,4 @@
 | ADR-0129 | 03-interfaces/composition-interface.md, 02-modules/composition.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0130 | 03-interfaces/beast-mode-interface.md, 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0131 | 03-interfaces/git-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0132 | 03-interfaces/deployment-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

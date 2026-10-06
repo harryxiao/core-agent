@@ -7,19 +7,13 @@
     "frontendDist": "../frontend/dist"
   },
   "app": {
-    "windows": [
-      {
-        "title": "core-agent",
-        "width": 1100,
-        "height": 760,
-        "url": "http://127.0.0.1:8000"
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "targets": "all"
   }
 }

@@ -68,6 +68,20 @@ class HarnessHost:
             and session.state is not SessionState.EXPIRED
         ]
 
+    def touch(self, session_id: str) -> bool:
+        """心跳：刷新该会话的 `last_seen`（供在连客户端周期性调用，免遭超时误回收）。
+
+        只对**在连**（`CONNECTED`）会话生效 ⇒ `True`；未知会话、已断线（`DISCONNECTED`）
+        或已回收（`EXPIRED`）⇒ `False` 且**不复活**已判定失效的会话（心跳不得撤销清理）。
+        刷新成功即持久化 —— 与 `accept` / `disconnect` / `reap` 同口径，重启后不误回收。
+        """
+        session = self._sessions.get(session_id)
+        if session is None or session.state is not SessionState.CONNECTED:
+            return False
+        session.last_seen = self._clock()
+        self._persist()
+        return True
+
     def disconnect(self, session_id: str) -> None:
         """客户端断线清理：标记会话断线，不影响其他并发客户端。"""
         session = self._sessions.get(session_id)

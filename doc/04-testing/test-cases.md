@@ -820,6 +820,18 @@
 
 ---
 
+## 55. Harness Host 心跳 + Desktop 交付面（TC-DEPLOY，change `0139`／ADR-0132，账本 E81 + E83）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-DEPLOY-01 | deployment/spec.md「客户端断线与会话清理」Scenario「连接超时回收」（客户端**长时间无活动**才回收）+ `:60`（检测断线**含心跳**判定） | 注入时钟：`accept` → 推进 100s → `touch` ⇒ `reap(timeout=10)`；再推进 100s（期间无 touch）⇒ `reap` | 首次 `touch` 返 `True` 且 `reap` 返 `[]`、会话仍在；此后 100s 无活动 ⇒ 照旧回收（锚点：`tests/test_deployment.py::test_host_touch_keeps_active_session_alive`） |
+| TC-DEPLOY-02 | 同上（心跳是保活、**非复活**） | `touch("session-999")`（未知）/ 断线后 `touch` / 回收后 `touch` | 三者皆 `False`，且会话状态**不变**（不复活）（锚点：`::test_host_touch_ignores_unknown_and_dead_sessions`） |
+| TC-DEPLOY-03 | deployment-interface.md §6（刷新成功即持久化，与 `accept`/`disconnect`/`reap` 同口径） | `path` 落盘：`accept` → 推进 100s → `touch` → 新实例（时钟再 +5s）`reap(timeout=10)` | 返 `[]`（心跳后仅过 5s）；活跃会话仍在（不按陈旧 `last_seen` 误回收）（锚点：`::test_host_touch_persists_last_seen`） |
+| TC-DEPLOY-04 | ui/spec.md「桌面打包」（SHALL 打包为可执行安装文件；SHALL 复用同一 SPA 产物） | **手工验收**（本仓四门禁无 Rust/打包面）：`src-tauri/tauri.conf.json` `bundle.active=true` + `targets="all"`；`app.windows` 空 ⇒ 端口不落配置 | `cargo check`（`src-tauri/`）为拟用的额外验证手段（非门禁），**本轮未跑通**（缓存依赖树与 `Cargo.lock` 版本不一致 + 联网取包未成功）⇒ **壳编译未经自动验证**；壳经 `resolve_port()`（`CORE_PORT`，缺省 8000）**与 sidecar 同源端口**程序化开窗；实际安装包产出随平台工具链，属手工验收 |
+| TC-DEPLOY-05 | 同上（端口不得漂移 —— 内核换端口而壳指向空地址 ⇒ 白屏） | 静态检查：`grep -n "127.0.0.1:" src-tauri/tauri.conf.json` | 无命中（硬编码端口已移入 `main.rs` 单点 `resolve_port()`；`tauri.conf.json` 只留 `frontendDist`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

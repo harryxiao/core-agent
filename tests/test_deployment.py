@@ -44,6 +44,51 @@ def test_host_reap_timeout() -> None:
     assert host.sessions() == []
 
 
+def test_host_touch_keeps_active_session_alive() -> None:
+    """心跳刷新 `last_seen`：活跃客户端不被超时误回收（change 0139 / 账本 E81）。"""
+    now = [0.0]
+    host = HarnessHost(clock=lambda: now[0])
+    session = host.accept(ClientConnection("alice"))
+
+    now[0] = 100.0
+    assert host.touch(session.session_id) is True
+    assert host.reap(timeout=10.0) == []  # 刚刚心跳过 ⇒ 不算超时
+    assert host.sessions() == [session]
+
+    now[0] = 200.0  # 此后 100s 无活动（> timeout=10）⇒ 照旧回收
+    assert host.reap(timeout=10.0) == [session.session_id]
+
+
+def test_host_touch_ignores_unknown_and_dead_sessions() -> None:
+    """心跳只认在连会话：未知 / 已断线 / 已回收一律拒刷且**不复活**。"""
+    now = [0.0]
+    host = HarnessHost(clock=lambda: now[0])
+    gone = host.accept(ClientConnection("alice"))
+    host.disconnect(gone.session_id)
+    assert host.touch("session-999") is False
+    assert host.touch(gone.session_id) is False  # 断线后不复活
+
+    live = host.accept(ClientConnection("bob"))
+    now[0] = 100.0
+    assert host.reap(timeout=10.0) == [live.session_id]
+    assert host.touch(live.session_id) is False  # 已回收不复活
+
+
+def test_host_touch_persists_last_seen(tmp_path) -> None:
+    """心跳落盘：重启（新实例）后活跃会话不被按陈旧 `last_seen` 误回收。"""
+    now = [0.0]
+    path = tmp_path / "sessions.jsonl"
+    host = HarnessHost(clock=lambda: now[0], path=path)
+    session = host.accept(ClientConnection("alice"))
+    now[0] = 100.0
+    assert host.touch(session.session_id) is True
+
+    now[0] = 105.0
+    reloaded = HarnessHost(clock=lambda: now[0], path=path)
+    assert reloaded.reap(timeout=10.0) == []  # 心跳后仅过 5s ⇒ 不回收
+    assert [s.client_id for s in reloaded.sessions()] == ["alice"]
+
+
 def test_host_persists_sessions(tmp_path) -> None:
     host = HarnessHost(path=tmp_path / "sessions.jsonl")
     host.serve()
