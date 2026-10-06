@@ -18,6 +18,7 @@ from .protocol import (
     LoopEvent,
     LoopPlugin,
     LoopResult,
+    collect_result,
 )
 
 __all__ = [
@@ -33,4 +34,5 @@ __all__ = [
     "LoopPlugin",
     "LoopResult",
     "TurnObserver",
+    "collect_result",
 ]

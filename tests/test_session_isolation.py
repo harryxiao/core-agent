@@ -321,15 +321,16 @@ def test_pet_default_session_id_is_non_blank() -> None:
 
 
 class _SessionRecordingLoop(DefaultLoop):
-    """记录 `arun` 收到的会话标识的测试循环。"""
+    """记录 `astream` 收到的会话标识的测试循环（编排层即经流式入口执行子任务）。"""
 
     def __init__(self) -> None:
         super().__init__(planner=lambda ctx: Action(args={"reply": "ok"}))
         self.session_ids: list[str] = []
 
-    async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
+    async def astream(self, user_input: str, *, session_id: str = "") -> AsyncIterator[LoopEvent]:
         self.session_ids.append(session_id)
-        return await super().arun(user_input, session_id=session_id)
+        async for event in super().astream(user_input, session_id=session_id):
+            yield event
 
 
 def _scheduler(loop: DefaultLoop) -> TaskScheduler:

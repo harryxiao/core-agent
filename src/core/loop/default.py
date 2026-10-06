@@ -26,7 +26,7 @@ from core.observability import TraceEvent, TraceLogger, Tracer
 from core.plugin_registry import Plugin
 from core.tools import SafetyGate, ToolProvider
 
-from .protocol import Action, ActionResult, LoopContext, LoopEvent, LoopResult
+from .protocol import Action, ActionResult, LoopContext, LoopEvent, LoopResult, collect_result
 
 # 中间件契约：返回 Action 放行/改写，返回 None 表示拒绝（短路）。
 Middleware = Callable[[LoopContext, Action], Action | None]
@@ -209,18 +209,8 @@ class DefaultLoop(Plugin):
         return asyncio.run(self.arun(user_input, session_id=session_id))
 
     async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
-        reply = ""
-        trace_id = ""
-        failed = False
-        async for event in self.astream(user_input, session_id=session_id):
-            if event.type == "loop_started":
-                trace_id = str(event.payload.get("trace_id", ""))
-            elif event.type == "loop_finished":
-                return event.payload
-            elif event.type == "loop_failed":
-                reply = str(event.payload.get("reason", "LOOP_FAILED"))
-                failed = True
-        return LoopResult(reply=reply, trace_id=trace_id, failed=failed)
+        """异步执行入口：只取终态（三态归一由 `collect_result` 单一实现）。"""
+        return await collect_result(self.astream(user_input, session_id=session_id))
 
     async def _reason_events(self, ctx: LoopContext) -> AsyncIterator[LoopEvent | Action]:
         """推理步事件流：planner 支持流式时逐 delta 转 reply_delta，末态产出 Action。

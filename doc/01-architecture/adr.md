@@ -3000,6 +3000,51 @@
 
 ---
 
+## ADR-0114：子任务**运行态实时回流** —— `subtask_progress` 事件（change 0121 / phase-29 change A：E51）
+
+- **背景**：`coding-plan/phase-29.md` 的缺口 **E51**（用户需求②「串行/并行都需 CLI + web/app 动态显示子
+  agent 主题 + 运行状态」的**数据面**）；phase-29 §6 已裁决该 Phase 拆 A/B/C/D 四 change，本 change 是最小的
+  **A**。一手缺口：`scheduler.py` 的 `_run_subtask` 以 `await profile.loop.arun(goal)` **只取终态** `LoopResult`
+  ⇒ 子 Agent 的动作/步进中间态在**编排层被吞**，CLI/Web 只能看到「开始 / 完成」两个离散点。**通道面**：
+  `Emit` 早已是 `_run_subtask` 形参、`_fan_out` 已透传、`run` 已排水（`asyncio.Queue`）、`api.py` 的 `run_task`
+  已把编排事件映射为 `task.*` SSE ⇒ **外送通道与消费面均已存在**，缺的只是**产出**。契约面：`orchestration`
+  spec「任务入口与进度事件」的进度事件词表**无运行态事件** ⇒ 本 change **规格先行**（MODIFIED，**非** `skip_specs`）。
+- **决策①：复用既有通道，不另建旁路。** 回流与 `subtask_started` / `subtask_completed` **同源同序**（同一条
+  `emit` → `run` 排水 → `run_task` 映射链）。新事件 `subtask_progress` 载荷 = `task_id` / `subtask_id` /
+  `event`（内层事件类型）/ `data`（白名单载荷）/ `ts`。**不**新增 emit 参数、**不**改 `_fan_out` 结构。
+- **决策②：里程碑 + **封闭白名单**载荷。** 只回流三类里程碑：`action_started` / `action_completed` /
+  `step_completed`；**显式排除**模型流式原文 `reply_delta`（既洪泛又暴露未定稿原文）。载荷按内层事件类型
+  **白名单取键**（`_PROGRESS_FIELDS`：动作开始 → round / tool_id / args；动作完成 → round / tool_id / ok /
+  duration_ms / output；步进完成 → round / failed）；**表外类型（含未来新增）一律不外发**、内层载荷里多带的
+  字段（如疑似凭据）一律不取。守「密钥只引用不读取、绝不进日志/记忆/**事件面**」。
+- **决策③：终态归一抽为共享实现 `core.loop.collect_result`，`DefaultLoop.arun` 改为其薄壳。**
+  `astream` 的「三态归一」（`loop_finished` 取载荷 / `loop_failed` 归 `failed=True` 且回复取 `reason` /
+  未达终态不抛）现在有**两个**消费者（`arun` 与编排层），两处各写一遍必然漂移。抽为**纯函数**后语义单一真源；
+  该函数**不**进 `LoopPlugin` 协议（不得迫使所有实现新增方法）。**代价如实登记**：编排层由 `arun` 改走
+  `astream` ⇒ **5 处测试替身**须从 `arun` 迁到 `astream`（`test_orchestration._TrackingLoop` /
+  `_FixedReplyLoop`、`test_phase14._FakeLoop`、`test_phase15._FakeLoop`、
+  `test_session_isolation._SessionRecordingLoop`）+ `test_orchestration` 的**帧序列断言**改为忽略回流事件。
+  **不提供**「无 `astream` 则回落 `arun`」的兜底 —— `astream` 是协议成员，为测试替身留生产分支不划算
+  （`default.py` 的 planner 降级不属此列：`planner=` 是**公开可注入**的裸 callable，确有非流式实现）。
+- **判据订正 2 条**：**(a)** 内层键名取 `event` / `data`，**不取** phase-29 §3.2 草记的 `event_type` /
+  `payload` —— 后者会造出 `LoopEvent.payload["payload"]` 的嵌套同名，读侧写 `event.payload["payload"]["…"]`
+  易错且不可读。**(b)** phase-29 §0.6 记「E51 层面零改动」**不完全**：外送通道确实零改动，但**协议声明面**
+  与**测试替身面**有真实改动 —— `LoopPlugin.astream` 原声明为 `async def … -> AsyncIterator[LoopEvent]`
+  （= 待 await 的**协程**返回迭代器），与实现（`async def` + `yield` **异步生成器**）**形态不符**；此前
+  无任何经 `LoopPlugin` 类型变量的 `async for` 调用 ⇒ 该声明从未被检验。本 change 是第一个消费者，故
+  **按实现订正声明**（stub 形式：`def astream(…) -> AsyncIterator[LoopEvent]`），并**顺带**删去 `api.py` 中
+  为绕开该不符而写的 `cast`。
+- **已知局限**：① 回流只到**编排层事件面**为止 —— **CLI/TUI 呈现**（折叠块展开细节）与 **HTTP 面 + 前端**
+  （`POST /task` SSE 路由、任务区视图）分别是 phase-29 **change D / change B**，本 change **不**触；②
+  `subtask_progress` 的量级随子 Agent 循环轮数增长（已由「只回里程碑 + 排除 `reply_delta`」压到每轮至多 3 条），
+  但**无**节流/采样（消费方按需丢弃；若未来成患，reopen = 事件面加节流）；③ 内层摘要（`args` / `output`）
+  的**截断口径**沿用 `default.py` 的 `_MAX_ACTION_EXCERPT`，本 change **不**另设上界；④ 「进入子 agent 会话 /
+  回到主 Agent」不在本 change（子 agent 消息流**无数据源** —— 转录只注入主 loop，change `0115` 明文）。
+- **规格**：`orchestration`（MODIFIED「任务入口与进度事件」+3 条口径 + 3 Scenario：「子任务运行态实时回流」
+  「载荷白名单与非里程碑不外发」「回流不改变终态判定」）。**非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3108,3 +3153,4 @@
 | ADR-0111 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md, 04-testing/test-cases.md, coding-plan/phase-30.md |
 | ADR-0112 | 03-interfaces/evolution-interface.md, 02-modules/evolution.md, 04-testing/test-cases.md, coding-plan/phase-31.md |
 | ADR-0113 | 03-interfaces/evolution-interface.md, 03-interfaces/ci-cd-interface.md, 02-modules/evolution.md, 04-testing/test-cases.md, coding-plan/phase-31.md |
+| ADR-0114 | 03-interfaces/orchestration-interface.md, 03-interfaces/loop-interface.md, 02-modules/orchestration.md, 04-testing/test-cases.md, coding-plan/phase-29.md |

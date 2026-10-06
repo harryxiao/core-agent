@@ -115,8 +115,8 @@ class TaskScheduler:
         results=None, session_id=""
     ) -> AsyncIterator[LoopEvent]:
         """流式任务执行（进度事件）：task_started / plan_ready / wave_started /
-        subtask_started / subtask_completed / task_checkpoint / task_finished /
-        task_failed；关键节点（拆解/验收/检查点/终态）经 tracer 写 trace。"""
+        subtask_started / subtask_progress / subtask_completed / task_checkpoint /
+        task_finished / task_failed；关键节点（拆解/验收/检查点/终态）经 tracer 写 trace。"""
 ```
 
 - CLI 入口：`core-agent task <目标> [--task-id ID | --resume ID]` 流式打印进度事件；
@@ -129,6 +129,21 @@ class TaskScheduler:
 - 事件复用 `core.loop.LoopEvent`（type + dict 载荷），与 loop/ui 事件面同构；
   载荷携带 UI 折叠详情所需字段：`subtask_started` 含 `goal` + `acceptance`（验收
   标准），`subtask_completed` 含 `reason`（判定）+ `reply` 节选（600 字符）。
+- **子任务运行态回流**（change 0121 / ADR-0114）：子 Agent 经 `astream` 流式执行，
+  里程碑事件实时转译为 `subtask_progress`（**附加通道**，与 `subtask_started` /
+  `subtask_completed` 同源同序，**不**新建旁路；终态判定仍由 `SubtaskOutcome` 决定）。
+  载荷形状 `{"task_id", "subtask_id", "event", "data", "ts"}`：`event` 为内层事件类型，
+  `data` 为**按类型白名单**取键的载荷子集。白名单（`_PROGRESS_FIELDS`）：
+
+  | 内层 `event` | `data` 允许键 |
+  |---|---|
+  | `action_started` | `round` / `tool_id` / `args` |
+  | `action_completed` | `round` / `tool_id` / `ok` / `duration_ms` / `output` |
+  | `step_completed` | `round` / `failed` |
+
+  **表外事件类型（含未来新增）一律不外发**；模型流式原文 `reply_delta` **有意排除**
+  （洪泛 + 暴露未定稿原文）。终态归一由 `core.loop.collect_result`（`DefaultLoop.arun`
+  的同一实现）承担，编排层与同步入口共用 ⇒ 语义单一真源。
 - TUI 入口：REPL 会话内输入 `/task <目标>`，经 `UIAPILayer.run_task` 驱动同一编排器，
   进度事件以 `task.*` 前缀映射为 UI Event 流式呈现（与 CLI 同一格式化）。
 

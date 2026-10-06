@@ -182,8 +182,7 @@ class UIAPILayer:
                     UiErrorCode.UI_MODALITY_MISSING,
                     f"模型不具备 {modality} 模态理解能力",
                 )
-        stream = self._loop.astream(user_input, session_id=session_id)
-        async for loop_event in cast(AsyncIterator[LoopEvent], stream):
+        async for loop_event in self._loop.astream(user_input, session_id=session_id):
             yield self._map_event(session_id, loop_event)
 
     async def run_task(self, session_id: str, goal: str) -> AsyncIterator[Event]:

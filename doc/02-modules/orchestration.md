@@ -78,6 +78,10 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
 - Orchestrator **不替换** loop，而是驱动多个 loop 实例 / 复用单 loop 处理子任务。
 - 每个子任务仍遵守 loop 的四阶段 + 确认门 + 可逆效应约束。
 - 状态机事件通过 L0 EventBus 发布，observability 模块订阅做遥测。
+- **子任务经 `astream` 流式驱动**（change 0121 / ADR-0114）：编排层消费子 Agent 的事件流，
+  把里程碑事件（`action_started` / `action_completed` / `step_completed`）按**封闭白名单**
+  转译为 `subtask_progress` 实时外发（附加通道，不改终态判定）；终态归一复用
+  `core.loop.collect_result`（与 `DefaultLoop.arun` 同一实现，避免语义漂移）。
 
 ---
 

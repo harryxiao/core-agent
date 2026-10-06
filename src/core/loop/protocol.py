@@ -10,9 +10,9 @@ LoopPlugin 声明同步 run / 异步 arun / 流式 astream 三入口 + 阶段方
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 
 @dataclass
@@ -102,7 +102,9 @@ class LoopPlugin(Protocol):
         """异步执行入口：与 run 同构，事件循环内非阻塞。"""
         ...
 
-    async def astream(self, user_input: str, *, session_id: str = "") -> AsyncIterator[LoopEvent]:
+    # 声明为**异步生成器**（stub 形式：`def` 返回 `AsyncIterator`）——与实现（`async def` + `yield`）
+    # 的调用形态一致：`astream(...)` 直接产出可 `async for` 的事件流，**不是**待 await 的协程。
+    def astream(self, user_input: str, *, session_id: str = "") -> AsyncIterator[LoopEvent]:
         """流式执行入口：按生命周期顺序产出 LoopEvent 事件流。
 
         ``session_id`` 为本轮的会话归属（缺省空串 = 未归属），随调用传递、不驻留实例。
@@ -153,3 +155,32 @@ class LimitsConfigurable(Protocol):
     ) -> None:
         """改上限（``None`` = 保持该项）；各值在每轮读取处生效 ⇒ 赋值即下次生效。"""
         ...
+
+
+async def collect_result(
+    stream: AsyncIterator[LoopEvent],
+    on_event: Callable[[LoopEvent], None] | None = None,
+) -> LoopResult:
+    """驱动事件流：逐事件回调（``on_event``，可选），返回**归一化终态** `LoopResult`。
+
+    「三态归一」语义的**唯一实现**（`DefaultLoop.arun` 即其薄壳；编排层消费子 Agent 事件流时
+    复用同一实现，避免两处语义漂移）：
+
+    - `loop_finished` 的载荷即终态结果；
+    - `loop_failed` 归一为 `failed=True` 且回复取失败原因；
+    - 流未给终态（异常实现）⇒ 不抛，返回 `failed=False` 的空回复（保持 `arun` 既有语义）。
+    """
+    reply = ""
+    trace_id = ""
+    failed = False
+    async for event in stream:
+        if on_event is not None:
+            on_event(event)
+        if event.type == "loop_started":
+            trace_id = str(event.payload.get("trace_id", ""))
+        elif event.type == "loop_finished":
+            return cast(LoopResult, event.payload)
+        elif event.type == "loop_failed":
+            reply = str(event.payload.get("reason", "LOOP_FAILED"))
+            failed = True
+    return LoopResult(reply=reply, trace_id=trace_id, failed=failed)

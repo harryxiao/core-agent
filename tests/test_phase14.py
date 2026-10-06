@@ -9,6 +9,7 @@ TaskScheduler 多 Agent 编排真 DefaultLoop + checkpoint 每波次回调一次
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 
 from core.configuration import ConfigManager
 from core.durability import CheckpointManager
@@ -21,7 +22,7 @@ from core.evolution import (
     Proposer,
     Validator,
 )
-from core.loop import LoopResult
+from core.loop import LoopEvent, LoopResult, collect_result
 from core.observability import TraceLogger, Tracer
 from core.orchestration import (
     AgentProfile,
@@ -76,14 +77,17 @@ def _engine() -> EvolutionEngine:
 
 
 class _FakeLoop:
-    """最小 LoopPlugin 替身：arun 返回固定 LoopResult，记录调用目标。"""
+    """最小 LoopPlugin 替身：astream 产固定终态、记录调用目标（arun 供 handoff 路径）。"""
 
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
+    async def astream(self, user_input: str, *, session_id: str = "") -> AsyncIterator[LoopEvent]:
         self.calls.append(user_input)
-        return LoopResult(reply="ok", trace_id="fake-trace")
+        yield LoopEvent("loop_finished", LoopResult(reply="ok", trace_id="fake-trace"))
+
+    async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
+        return await collect_result(self.astream(user_input, session_id=session_id))
 
 
 # ---- ① EvolutionWorker 消费 Tracer 轨迹 ----

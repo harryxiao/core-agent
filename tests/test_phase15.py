@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -23,7 +24,7 @@ from core.evolution import (
     Trace,
     Validator,
 )
-from core.loop import LoopResult
+from core.loop import LoopEvent, LoopResult, collect_result
 from core.memory import Crystallizer
 from core.orchestration import (
     AgentProfile,
@@ -84,14 +85,17 @@ def _write_config(tmp_path) -> str:
 
 
 class _FakeLoop:
-    """最小 LoopPlugin 替身：arun 返回固定 LoopResult，携带 trace_id。"""
+    """最小 LoopPlugin 替身：astream 产固定终态、记录调用目标（携带 trace_id）。"""
 
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    async def arun(self, user_input: str) -> LoopResult:
+    async def astream(self, user_input: str, *, session_id: str = "") -> AsyncIterator[LoopEvent]:
         self.calls.append(user_input)
-        return LoopResult(reply="ok", trace_id="fake-trace")
+        yield LoopEvent("loop_finished", LoopResult(reply="ok", trace_id="fake-trace"))
+
+    async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
+        return await collect_result(self.astream(user_input, session_id=session_id))
 
 
 class _SpyCrystallizer(Crystallizer):

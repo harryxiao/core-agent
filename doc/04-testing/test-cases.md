@@ -544,6 +544,16 @@
 | TC-EVGJ-04 | evolution/spec.md「验证门」（change `0120`，G5 锚点） | 装真判据（真 `review_with` + 真 `run_gate_tests`）后 `run_cycle`：未过门 / 过门；`GATE_CALIBER` 读数 | 未过门 ⇒ `status="rejected"`（**生产可达**，不再恒 pending）；门过 ⇒ 进留出评测（无基准 ⇒ `frozen`，非 `rejected`）；`GATE_CALIBER >= 2`（判定面真实化已递增口径）（锚点：`::test_run_cycle_reports_rejected_on_failed_gate` / `::test_run_cycle_reaches_eval_when_gate_passes` / `::test_gate_caliber_bumped_for_judgment_face`） |
 | TC-EVGJ-05 | evolution/spec.md「验证门」（change `0120`，装配级 + 回归改判） | 真 `build_runtime` 下 `run_cycle`（模型提供者与门禁子进程两外部面打桩）：审查者判过 / 模型端点不可用；既有依赖「缺省 `Validator()` 即通过」的测试文件显式注入过门替身 | 生产装配**真的走**真 review + 真门禁子集（实际跑 `["lint", "test"]`）⇒ 全过进留出评测 ⇒ `frozen`；模型不可用 ⇒ `rejected` 且门禁**零调用**（fail-fast）；既有用例改**显式注入**判据后仍**真实过门**（读数器仍是真 `Validator`，汇总逻辑不打折 —— 改判理由见 ADR-0113）（锚点：`tests/test_evolution_gate_judgment.py::test_runtime_runs_real_review_and_marked_gates` / `::test_runtime_denies_when_review_unavailable` / `tests/test_evolution_gate_data.py::test_runtime_evaluator_is_a_real_gate` / `tests/test_evolution.py`（46 例）/ `tests/test_evolution_attribution.py` / `tests/test_evolution_pending.py` / `tests/test_phase14.py` / `tests/test_phase15.py`） |
 
+## 34. 子任务运行态实时回流（TC-OSP，change `0121`／ADR-0114，账本 E51）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-OSP-01 | orchestration/spec.md「任务入口与进度事件」（子任务运行态回流） | 真 `TaskScheduler` + 真 `DefaultLoop`（planner 先调 `tools.echo` 再终止）执行单子任务，收集 `astream` 事件 | 里程碑依序外发为 `subtask_progress`（`action_started` / `action_completed` / `step_completed` ×2），每条带 `task_id` / `subtask_id` / `float ts`；且 `subtask_progress` 索引 **<** `subtask_completed`（**实时**而非收尾补发）（锚点：`tests/test_orchestration_progress.py::test_milestone_events_relayed_as_subtask_progress`） |
+| TC-OSP-02 | 同上（回流粒度） | 流式 planner 逐 delta 外发自然语言后给终 Action | 里程碑**仍**回流，但 `reply_delta` **绝不出现在** `subtask_progress` 中，正文不外泄（洪泛 + 未定稿原文双重排除）（锚点：`::test_reply_delta_never_relayed`） |
+| TC-OSP-03 | 同上（载荷白名单） | 内层事件载荷**多带**字段（`args` 旁挂 `api_key`、`output` 旁挂 `secret`） | 每条 `subtask_progress.data` 的键集 **⊆** 该事件类型的白名单（`action_started` → round/tool_id/args；`action_completed` → round/tool_id/ok/duration_ms/output；`step_completed` → round/failed）；疑似凭据**不外发**（锚点：`::test_payload_is_whitelisted_per_event_type`） |
+| TC-OSP-04 | 同上（表外类型不外发） | 内层流含 `custom_event` / `loop_started` | **零** `subtask_progress`（白名单外类型含未来新增一律静默丢弃）（锚点：`::test_unknown_event_type_not_relayed`） |
+| TC-OSP-05 | 同上（附加通道、终态不变）+ loop-interface §2.1 | 有里程碑 / 无里程碑两次运行比对 `SubtaskOutcome`；`arun` 与 `collect_result(astream)` 同轮比对（成功轮 / `loop_failed` 轮） | 终态 `(ok, trace_id, reply)` **逐字一致**（回流不改判定）；`arun` 即 `collect_result·astream` 薄壳 ⇒ 成功/失败两态回复与 `failed` 逐字一致（终态归一单一真源）（锚点：`::test_progress_is_additive_terminal_outcome_unchanged` / `::test_collect_result_matches_arun_on_success` / `::test_collect_result_normalizes_loop_failed`） |
+
 ---
 
 ## 关联

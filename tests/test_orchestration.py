@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
 from core.llm_provider import LLMError
-from core.loop import Action, DefaultLoop, LoopEvent, LoopResult
+from core.loop import Action, DefaultLoop, LoopEvent
 from core.orchestration import (
     AgentProfile,
     LLMSubtaskPlanner,
@@ -201,18 +202,18 @@ class _ConcurrencyTracker:
 
 
 class _TrackingLoop(DefaultLoop):
-    """带并发窗口与顺序记录的测试循环。"""
+    """带并发窗口与顺序记录的测试循环（编排层经流式入口执行子任务）。"""
 
     def __init__(self, reply: str, tracker: _ConcurrencyTracker) -> None:
         super().__init__(planner=lambda ctx: Action(args={"reply": reply}))
         self._tracker = tracker
 
-    async def arun(self, user_input: str) -> LoopResult:
+    async def astream(self, user_input: str, *, session_id: str = "") -> AsyncIterator[LoopEvent]:
         self._tracker.enter(user_input)
         await asyncio.sleep(0.01)
-        result = await super().arun(user_input)
         self._tracker.exit()
-        return result
+        async for event in super().astream(user_input, session_id=session_id):
+            yield event
 
 
 class _FixedReplyLoop(DefaultLoop):
@@ -222,9 +223,10 @@ class _FixedReplyLoop(DefaultLoop):
         super().__init__(planner=lambda ctx: Action(args={"reply": reply}))
         self.inputs: list[str] = []
 
-    async def arun(self, user_input: str) -> LoopResult:
+    async def astream(self, user_input: str, *, session_id: str = "") -> AsyncIterator[LoopEvent]:
         self.inputs.append(user_input)
-        return await super().arun(user_input)
+        async for event in super().astream(user_input, session_id=session_id):
+            yield event
 
 
 def test_run_completes_and_marks_done() -> None:
@@ -524,7 +526,9 @@ def test_scheduler_astream_emits_progress_events() -> None:
         tracer=recorder,
     )
     events = _collect(scheduler, "task", "goal")
-    assert [e.type for e in events] == [
+    types = [e.type for e in events]
+    # 子任务运行态回流（`subtask_progress`）是**附加**事件 ⇒ 任务帧序列按非回流事件断言
+    assert [t for t in types if t != "subtask_progress"] == [
         "task_started",
         "plan_ready",
         "wave_started",
@@ -537,6 +541,9 @@ def test_scheduler_astream_emits_progress_events() -> None:
         "task_checkpoint",
         "task_finished",
     ]
+    # 运行态与任务帧**同流**，且回流发生在该子任务收拢之前（实时而非收尾补发）
+    assert "subtask_progress" in types
+    assert types.index("subtask_progress") < types.index("subtask_completed")
     plan_payload = cast(dict[str, Any], events[1].payload)
     assert [s["id"] for s in plan_payload["subtasks"]] == ["1", "2"]
     finished = cast(dict[str, Any], events[-1].payload)

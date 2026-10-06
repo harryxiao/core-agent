@@ -3,8 +3,9 @@
 波次内子任务异步扇出（真并发，受资源上限约束分批），fan-in 汇总校验；
 目标进度追踪 + 死循环哨兵；挂起 / 恢复 / 取消断点续跑。子任务按优先级
 降序调度（同优先级稳定序 FIFO），已完成子任务幂等跳过。run 为同步语义
-收口（失败按原错误码抛错），astream 流式外发任务进度事件，拆解 / 验收 /
-检查点 / 终态等关键节点写 trace 审计。
+收口（失败按原错误码抛错），astream 流式外发任务进度事件（含子任务**运行态**
+回流 `subtask_progress`：里程碑事件按白名单转译），拆解 / 验收 / 检查点 /
+终态等关键节点写 trace 审计。
 
 对应接口：doc/03-interfaces/orchestration-interface.md §1（断点续跑）§2.2
 """
@@ -18,7 +19,7 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
-from core.loop import LoopEvent
+from core.loop import LoopEvent, collect_result
 from core.observability import TraceEvent, Tracer
 
 from .decomposer import SubtaskDecomposer
@@ -36,6 +37,15 @@ Emit = Callable[[LoopEvent | None], None]
 
 _MAX_HANDOFF_CHARS = 2000  # 依赖结果注入/检查点留存的回复截断（上下文有界）
 _MAX_EVENT_EXCERPT = 600  # 进度事件携带的回复节选（UI 折叠详情用）
+
+# 子任务运行态回流白名单：内层循环事件类型 → 允许外发的载荷键。
+# **白名单封闭**：表内没有的类型（含模型流式原文 `reply_delta` 与未来新增类型）一律不外发
+# —— 既不洪泛，也不把未定稿原文/凭据带进事件面（「密钥只引用不读取」）。
+_PROGRESS_FIELDS: dict[str, tuple[str, ...]] = {
+    "action_started": ("round", "tool_id", "args"),
+    "action_completed": ("round", "tool_id", "ok", "duration_ms", "output"),
+    "step_completed": ("round", "failed"),
+}
 
 
 class ProgressTracker:
@@ -395,10 +405,15 @@ class TaskScheduler:
                 )
             goal = self._handoff_goal(task_id, plan, subtask)
             # 子任务轨迹按**发起方会话**归属（缺省空串 = 未归属）⇒ 非空才传第二实参
-            if session_id:
-                result = await profile.loop.arun(goal, session_id=session_id)
-            else:
-                result = await profile.loop.arun(goal)
+            stream = (
+                profile.loop.astream(goal, session_id=session_id)
+                if session_id
+                else profile.loop.astream(goal)
+            )
+            # 流式执行：里程碑事件实时回流，终态仍归一为 LoopResult（附加通道，不改判定）
+            result = await collect_result(
+                stream, lambda event: self._emit_progress(task_id, subtask.id, event, emit)
+            )
             verify = await self._decomposer.verify(subtask, result.reply)
             self._trace(
                 task_id,
@@ -436,6 +451,26 @@ class TaskScheduler:
                 reason=verify.reason,
                 trace_id=result.trace_id,
             )
+
+    def _emit_progress(self, task_id: str, subtask_id: str, event: LoopEvent, emit: Emit) -> None:
+        """里程碑事件按白名单转译为 `subtask_progress`；表外类型与非字典载荷**静默丢弃**。"""
+        fields = _PROGRESS_FIELDS.get(event.type)
+        raw = event.payload
+        if fields is None or not isinstance(raw, dict):
+            return
+        payload = cast("dict[str, Any]", raw)
+        emit(
+            LoopEvent(
+                "subtask_progress",
+                {
+                    "task_id": task_id,
+                    "subtask_id": subtask_id,
+                    "event": event.type,
+                    "data": {key: payload[key] for key in fields if key in payload},
+                    "ts": time.time(),
+                },
+            )
+        )
 
     def _handoff_goal(self, task_id: str, plan: Plan, subtask: Subtask) -> str:
         """交接目标：子任务 goal + 前置依赖的验收通过结果（结果驱动后继）。"""
