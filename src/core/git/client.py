@@ -84,8 +84,18 @@ class GitClient:
     ) -> None:
         """推送本地分支；force=True 属高危操作，经审批链拦截。"""
         if force:
-            self._require_approval()
+            self._require_approval("git.push(force)", "force-push 属高危操作，需审批通过")
         self._require_backend().push(remote=remote, branch=branch, force=force)
+
+    def delete_remote_branch(self, branch: str, *, remote: str = "origin") -> None:
+        """删除远程分支（高危）；经审批链拦截，非交互默认拒绝。"""
+        self._require_approval("git.delete_remote_branch", "删除远程分支属高危操作，需审批通过")
+        self._require_backend().delete_remote_branch(branch, remote=remote)
+
+    def rewrite_history(self, message: str) -> str:
+        """改写历史（`--amend` 最近一次提交，高危）；经审批链拦截，返回新 commit id。"""
+        self._require_approval("git.rewrite_history", "改写历史属高危操作，需审批通过")
+        return self._require_backend().rewrite_history(message)
 
     # ---- 内部辅助 ----
 
@@ -94,18 +104,16 @@ class GitClient:
             return build_backend()  # 未注入真实后端 → 抛「离线未接」
         return self._backend
 
-    def _require_approval(self) -> None:
+    def _require_approval(self, op: str, reason: str) -> None:
         """高危 git 操作的审批门：未获批准即 fail-closed 阻断（非交互默认拒）。
 
-        阻断的**事由是「缺审批」而非「无权」** ⇒ 返回 `APPROVAL_REQUIRED`
-        （permission 错误码表「高危操作需人工审批」/ change 0135）；
-        这正是 `APPROVAL_REQUIRED` 的生产 raise 落点（此前误用 `PERMISSION_DENIED`）。
+        `op` 为**互异**的操作标识（`git.push(force)` / `git.delete_remote_branch` /
+        `git.rewrite_history`），供审批回调区分事由。阻断的**事由是「缺审批」而非「无权」**
+        ⇒ 抛 `APPROVAL_REQUIRED`（permission 错误码表「高危操作需人工审批」/ change 0135）。
         """
-        approved = self._approval("git.push(force)") if self._approval is not None else False
+        approved = self._approval(op) if self._approval is not None else False
         if not approved:
-            raise AccessControlError(
-                PermissionErrorCode.APPROVAL_REQUIRED, "force-push 属高危操作，需审批通过"
-            )
+            raise AccessControlError(PermissionErrorCode.APPROVAL_REQUIRED, reason)
 
     @staticmethod
     def _guard_git_paths(paths: list[str] | None) -> None:

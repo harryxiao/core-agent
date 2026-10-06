@@ -48,13 +48,26 @@ class GitClient:
 
     def push(self, *, remote: str = "origin", branch: str | None = None, force: bool = False) -> None:
         """推送本地分支；force=True 属高危操作，经 permission 审批链拦截，不经由本接口静默绕过。"""
+
+    def delete_remote_branch(self, branch: str, *, remote: str = "origin") -> None:
+        """删除远程分支；属高危操作，经 permission 审批链拦截，非交互默认拒绝。"""
+
+    def rewrite_history(self, message: str) -> str:
+        """改写历史（`--amend` 最近一次提交），返回新 commit id；属高危操作，经审批链拦截。"""
 ```
 
 > 高危操作（`force=True` 推送、删除远程分支、历史改写）由 permission 审批链拦截；凭据经 keychain 注入，不落盘明文、不进日志（见 `03-interfaces/permission-interface.md`）。
+> **三处高危 op id 互异**（change `0138`）：`git.push(force)` / `git.delete_remote_branch` /
+> `git.rewrite_history` —— 审批回调可据此区分事由；三者**均在触碰后端前**阻断。
 >
 > **审批门错误码**（change `0135`）：未获批准的高危操作 **fail-closed** 阻断并抛
 > `AccessControlError(APPROVAL_REQUIRED)`（「缺审批」而非「无权限」；此前误用 `PERMISSION_DENIED`）。
 > 非交互（无 `approval` 回调）恒视为未批准 ⇒ 默认拒绝，后台子进程若要自动化须显式注入审批回调。
+
+> **远程可靠性（change `0138` / ADR-0131）**：`clone` / `pull` / `push` / `delete_remote_branch`
+> 走**可重试**路径（`_run_remote`）：瞬态网络故障按**指数退避**（`backoff * 2**(n-1)`）重试至
+> `attempts` 上限（缺省 3 次 / 0.5s 基数），达上限抛归一错误；**认证失败 / 超时 / 冲突 / 非瞬态失败不重试**。
+> 本地原语（`commit` / `status` / `merge` …）不重试。
 
 ---
 
@@ -87,7 +100,7 @@ class MergeResult:
 
 - 底层 git 实现（subprocess 直调 git CLI / gitpython / dulwich 等）收敛于**单一适配器**，懒 import，异常归一到领域错误码（见 §4），不泄漏底层库异常结构。
 - 经依赖注入装配（构造 / registry），内核 loop 与调用方只依赖 `GitClient` 抽象；替换底层实现仅改装配点，调用方零改动。
-- **生产缺省后端 = `SubprocessGitBackend`**（`src/core/git/subprocess_backend.py`）：stdlib `subprocess` 直调 `git` CLI，**零第三方依赖**。构造 `SubprocessGitBackend(cwd=None, *, timeout=60.0)`；`cwd` 为**仓库根**（缺省 `Path.cwd()`），`init(path)` / `clone(url, path)` 完成后后端把 `cwd` 指向新仓库（等同「一次会话绑定一个仓库」）。
+- **生产缺省后端 = `SubprocessGitBackend`**（`src/core/git/subprocess_backend.py`）：stdlib `subprocess` 直调 `git` CLI，**零第三方依赖**。构造 `SubprocessGitBackend(cwd=None, *, timeout=60.0, attempts=3, backoff=0.5, sleep=None)`；`cwd` 为**仓库根**（缺省 `Path.cwd()`），`init(path)` / `clone(url, path)` 完成后后端把 `cwd` 指向新仓库（等同「一次会话绑定一个仓库」）。`attempts` / `backoff` 控制远程重试上限与退避基数；`sleep` 可注入（缺省 `time.sleep`）⇒ 测试零真实等待。
 - `build_backend()` 恒返回该适配器（构造注入者优先）；`GitClient` 因此**开箱可用**，不再有「离线未接」错误。
 
 ---
@@ -101,6 +114,11 @@ class MergeResult:
 | `GIT_WORKTREE_DIRTY` | 工作区有未提交改动，操作被拒绝 |
 | `GIT_CONFLICT` | 合并 / 拉取冲突，需人工解决 |
 | `GIT_COMMAND_FAILED` | git 子命令非零退出（非上述分类），信息为固定提示，**不回显 stderr** |
+
+**可重试分类**（change `0138`）：仅 `GIT_COMMAND_FAILED` **且** stderr 命中瞬态网络特征
+（`could not resolve host` / `connection reset` / `connection refused` / `rpc failed` / `early eof` /
+`network is unreachable` …）者按指数退避重试；`GIT_AUTH_FAILED`（凭据不会自愈）、`GIT_REMOTE_TIMEOUT`
+（spec 要求超时即中止）、`GIT_CONFLICT`（需人工）与确定性 `GIT_COMMAND_FAILED` **一律不重试**。
 
 ---
 

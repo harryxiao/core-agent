@@ -16,7 +16,7 @@ from .subprocess_backend import SubprocessGitBackend
 
 
 class GitBackend(Protocol):
-    """底层 git 适配器：13 项版本控制原语。"""
+    """底层 git 适配器：15 项版本控制原语。"""
 
     def init(self, path: str) -> str: ...
 
@@ -45,6 +45,10 @@ class GitBackend(Protocol):
     def push(
         self, *, remote: str = "origin", branch: str | None = None, force: bool = False
     ) -> None: ...
+
+    def delete_remote_branch(self, branch: str, *, remote: str = "origin") -> None: ...
+
+    def rewrite_history(self, message: str) -> str: ...
 
 
 def build_backend() -> GitBackend:

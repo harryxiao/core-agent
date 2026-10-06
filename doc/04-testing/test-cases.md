@@ -803,6 +803,23 @@
 
 ---
 
+## 54. git 远程断线重试 + 高危原语（TC-GITREL，change `0138`／ADR-0131，账本 E79）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-GITREL-01 | git/spec.md「远程操作可靠性」Scenario「断线重试」（SHALL 按指数退避自动重试，达上限后失败并保持工作区一致） | 桩 `_invoke`：瞬态失败 2 次后成功；`SubprocessGitBackend(sleep=记录, attempts=3, backoff=0.5).pull()` | 返回成功；`_invoke` 调用 **3** 次；退避序列 `[0.5, 1.0]`（锚点：`tests/test_git_subprocess.py::test_remote_transient_jitter_retries_with_exponential_backoff`） |
+| TC-GITREL-02 | 同上（达上限后失败，不无限重试） | 桩 `_invoke` 恒瞬态失败：`push()` | 抛 `GitError(GIT_COMMAND_FAILED)`；调用 **3** 次；退避 `[0.5, 1.0]`（末次不再睡）（锚点：`::test_remote_retry_gives_up_at_attempt_limit`） |
+| TC-GITREL-03 | git/spec.md「远程操作可靠性」Scenario「认证失败」（SHALL 明确报错，不泄露凭据） | 桩 stderr = `fatal: Authentication failed for '…'` | 抛 `GIT_AUTH_FAILED` 且 `_invoke` **仅 1 次**（凭据不会自愈 ⇒ 不重试）（锚点：`::test_remote_auth_failure_not_retried`） |
+| TC-GITREL-04 | git-interface.md §4「可重试分类」（确定性失败不重试） | 桩 stderr = `fatal: not a git repository` | 抛 `GIT_COMMAND_FAILED` 且 `_invoke` **仅 1 次**（锚点：`::test_remote_deterministic_failure_not_retried`） |
+| TC-GITREL-05 | git/spec.md「远程操作可靠性」Scenario「远程超时」（SHALL 中止该操作并返回超时错误，不无限挂起） | `subprocess.run` 抛 `TimeoutExpired`：`pull()` | 抛 `GIT_REMOTE_TIMEOUT` 且 `_invoke` **仅 1 次**（超时优先中止，不重试）（锚点：`::test_remote_timeout_not_retried`） |
+| TC-GITREL-06 | git/spec.md「与 permission 沙箱协作」（SHALL 删除远程分支走审批链，非交互默认拒绝）+ Scenario「高危操作审批」 | `GitClient(approval=lambda op: False).delete_remote_branch("feature")` | 抛 `AccessControlError(APPROVAL_REQUIRED)`；后端**零调用**（触碰后端前阻断）（锚点：`tests/test_git.py::test_delete_remote_branch_requires_approval`） |
+| TC-GITREL-07 | 同上（历史改写走审批链） | `GitClient(approval=lambda op: False).rewrite_history("fix: reword")` | 抛 `APPROVAL_REQUIRED`；后端零调用（锚点：`::test_rewrite_history_requires_approval`） |
+| TC-GITREL-08 | 同上（批准即放行） | `approval=lambda op: True`：`delete_remote_branch` / `rewrite_history` | 后端收到 `("origin","feature")` / `amend("fix: reword") == "a1"`（锚点：`::test_delete_remote_branch_approved`、`::test_rewrite_history_approved`） |
+| TC-GITREL-09 | git-interface.md §1（三处高危 op id 互异） | `approval` 记录 op 序列：force-push → 删远程分支 → 改写历史 | `["git.push(force)", "git.delete_remote_branch", "git.rewrite_history"]`（锚点：`::test_high_risk_ops_use_distinct_approval_ids`） |
+| TC-GITREL-10 | git/spec.md「与 permission 沙箱协作」（非交互默认拒绝） | `GitClient(backend=…)`（**无** `approval` 回调）：两新原语 | 均抛 `AccessControlError`；后端零调用（锚点：`::test_non_interactive_high_risk_defaults_to_denied`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

@@ -3588,6 +3588,45 @@
 
 ---
 
+## ADR-0131：git 远程断线重试 + 高危原语补面（change 0138 / phase-34 E79）
+
+- **背景**：`coding-plan/phase-34.md` 登记的 **E79**（规格已 SHALL、代码纯背离）。`git/spec.md`
+  「远程操作可靠性」SHALL「断线自动重试（retry，**指数退避**）」，Scenario 要求「按指数退避自动
+  重试，达上限后失败并保持工作区一致」—— 而 `subprocess_backend.py` 的 `clone` / `pull` / `push`
+  各**单次** `_run`，一次网络抖动即整操作失败。「与 permission 沙箱协作」SHALL 高危操作（强制推送、
+  **删除远程分支**、**历史改写**）走审批链 —— 而 `client.py` **只有** force-push 走审批，另两原语
+  在 13 项里**根本不存在**（无实现、无门）。
+- **决策①：重试只覆盖远程三原语（`clone` / `pull` / `push`），经新私有 `_run_remote`。** 本地原语
+  （`commit` / `status` / `merge` …）仍走 `_run`（本地失败重试无意义，且 `merge` 的冲突语义不能
+  被重试掩盖）。首次成功路径与旧实现**逐字等价**（不重试即成功 ⇒ 零可观察差异）。
+- **决策②：指数退避可注入（`sleep` / `backoff` / `attempts`），默认 `time.sleep` + `0.5s` + 3 次。**
+  注入睡眠使测试**零真实等待**且能断言退避序列（`0.5, 1.0`）；不引随机 jitter —— 上限仅 3 次、
+  面向单机 CLI，抖动收益不抵测试确定性损失（记为已知局限）。
+- **决策③：超时**不**重试，认证失败**不**重试，冲突**不**重试。** 三类**显式**排除，理由是语义而非
+  惰性：① **超时** —— spec「远程超时」Scenario 明写「中止该操作并返回超时错误，不无限挂起」，
+  与「自动重试」字面冲突，本 change 取**超时优先中止**（`subprocess.TimeoutExpired` 在 `_invoke`
+  即被转为 `GIT_REMOTE_TIMEOUT` 抛出，不经重试循环）；② **认证失败** —— 凭据不会在 0.5s 内自愈，
+  重试只是把明确报错延迟 3 倍（spec「认证失败」Scenario 要求「明确报错」）；③ **冲突** —— 需人工
+  解决，重试不可能变好。故 `_is_retryable` 只放行「`GIT_COMMAND_FAILED` **且** stderr 命中瞬态
+  特征（`could not resolve host` / `connection reset` / `connection refused` / `rpc failed` /
+  `early eof` / `network is unreachable` …）」一类 —— 瞬态判据**先于**通用归类，故「非仓库目录」
+  这类确定性 `GIT_COMMAND_FAILED` **不**被重试（`_invoke` 一次）。
+- **决策④：删除远程分支 / 历史改写复用同型审批门（泛化 `_require_approval(op, reason)`）。**
+  三处高危各持**互异 op id**（`git.push(force)` / `git.delete_remote_branch` /
+  `git.rewrite_history`），非交互（无回调）恒未批 ⇒ `AccessControlError(APPROVAL_REQUIRED)`
+  且**在触碰后端前阻断**（与 force-push 同判据：缺审批非无权，见 change `0135` / ADR-0128）。
+  两原语的最小真实形态：删远程分支 = `git push <remote> --delete <branch>`；历史改写 =
+  `git commit --amend -m <message>`（**确属**历史改写，非本地提交）。
+- **已知局限**：① 退避为**同步阻塞** `time.sleep`（worker 线程内），无 async 化 —— 本模块是同步
+  subprocess 后端，async 化属另一面改动；② 重试**上限 3 次 / 无 jitter**（见决策②）；③ `rewrite_history`
+  只覆盖**最近一次**提交改写（`--amend`），交互式 rebase 等更广改写面未纳入（够 spec Scenario 所需，
+  超出即过度设计）。
+- **规格**：**无 delta**（`git/spec.md`「与 permission 沙箱协作」`:61-67` + 「远程操作可靠性」
+  `:69-91` 早已是硬 SHALL，实现侧纯背离 ⇒ conformance 修复）⇒ `.openspec.yaml` 写
+  `schema: spec-driven` + `skip_specs: true`（先例 `0110` / `0135` / `0137`）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3713,3 +3752,4 @@
 | ADR-0128 | 03-interfaces/permission-interface.md, 02-modules/permission.md, 03-interfaces/git-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0129 | 03-interfaces/composition-interface.md, 02-modules/composition.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0130 | 03-interfaces/beast-mode-interface.md, 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0131 | 03-interfaces/git-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

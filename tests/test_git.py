@@ -21,6 +21,8 @@ class FakeBackend:
     def __init__(self) -> None:
         self.commits: list[str] = []
         self.pushed: list[tuple[str, str | None, bool]] = []
+        self.deleted: list[tuple[str, str]] = []
+        self.amended: list[str] = []
         self.auth_fail = False
         self.merge_conflict = False
 
@@ -69,6 +71,13 @@ class FakeBackend:
         if self.auth_fail:
             raise GitError(GitErrorCode.GIT_AUTH_FAILED, "401")
         self.pushed.append((remote, branch, force))
+
+    def delete_remote_branch(self, branch: str, *, remote: str = "origin") -> None:
+        self.deleted.append((remote, branch))
+
+    def rewrite_history(self, message: str) -> str:
+        self.amended.append(message)
+        return f"a{len(self.amended)}"
 
 
 def test_init_commit_status_roundtrip() -> None:
@@ -129,3 +138,61 @@ def test_backend_conflict() -> None:
     with pytest.raises(GitError) as exc_info:
         GitClient(backend=backend).merge("feature")
     assert exc_info.value.code is GitErrorCode.GIT_CONFLICT
+
+
+# ---- change 0138（账本 E79）：删除远程分支 / 历史改写 —— 同型审批门 ----
+
+
+def test_delete_remote_branch_requires_approval() -> None:
+    """删远程分支属高危：未批 fail-closed，且**在触碰后端前**阻断（后端零调用）。"""
+    backend = FakeBackend()
+    client = GitClient(backend=backend, approval=lambda op: False)
+    with pytest.raises(AccessControlError) as exc_info:
+        client.delete_remote_branch("feature")
+    assert exc_info.value.code is PermissionErrorCode.APPROVAL_REQUIRED
+    assert backend.deleted == []
+
+
+def test_delete_remote_branch_approved() -> None:
+    backend = FakeBackend()
+    GitClient(backend=backend, approval=lambda op: True).delete_remote_branch("feature")
+    assert backend.deleted == [("origin", "feature")]
+
+
+def test_rewrite_history_requires_approval() -> None:
+    """历史改写属高危：未批 fail-closed（非交互默认拒）。"""
+    backend = FakeBackend()
+    client = GitClient(backend=backend, approval=lambda op: False)
+    with pytest.raises(AccessControlError) as exc_info:
+        client.rewrite_history("fix: reword")
+    assert exc_info.value.code is PermissionErrorCode.APPROVAL_REQUIRED
+    assert backend.amended == []
+
+
+def test_rewrite_history_approved() -> None:
+    backend = FakeBackend()
+    commit_id = GitClient(backend=backend, approval=lambda op: True).rewrite_history("fix: reword")
+    assert commit_id == "a1"
+    assert backend.amended == ["fix: reword"]
+
+
+def test_high_risk_ops_use_distinct_approval_ids() -> None:
+    """三类高危各持互异 op id：审批请求可区分「推 / 删远程分支 / 改写历史」。"""
+    seen: list[str] = []
+    backend = FakeBackend()
+    client = GitClient(backend=backend, approval=lambda op: seen.append(op) or True)
+    client.push(force=True)
+    client.delete_remote_branch("feature")
+    client.rewrite_history("fix: reword")
+    assert seen == ["git.push(force)", "git.delete_remote_branch", "git.rewrite_history"]
+
+
+def test_non_interactive_high_risk_defaults_to_denied() -> None:
+    """无 `approval` 回调（非交互）恒视为未批 ⇒ 默认拒绝（与 spec「非交互默认拒绝」一致）。"""
+    backend = FakeBackend()
+    client = GitClient(backend=backend)
+    with pytest.raises(AccessControlError):
+        client.delete_remote_branch("feature")
+    with pytest.raises(AccessControlError):
+        client.rewrite_history("fix: reword")
+    assert backend.deleted == [] and backend.amended == []

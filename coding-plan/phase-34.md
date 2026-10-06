@@ -45,7 +45,7 @@
 | **E76** | 规格漂移 | permission **子串匹配**（违反「分词 / 完整词元」）＋ `APPROVAL_REQUIRED` **定义无人 `raise`** | `permission/policy.py:53,61,63` 用裸子串 `tok in op_l`；spec `permission/spec.md:9,19,26-29` 要求语义分词且 **namespace-子串 SHALL NOT 判读**；`permission/errors.py:18` 定义 `APPROVAL_REQUIRED`，**`src/` 零 `raise`**（死码） ⇒ **已落地（change `0135` / ADR-0128）：`classify` 改**词元集合**命中（`_tokens` 按 `._:-/` 切词，操作**与目标**两侧；三表转 `frozenset`，顺序逐字不变）—— `tools.target`／`tools.category_sync` 由误判 `read` 收敛为 `HIGH_RISK`（fail-closed 兜底归位）；`APPROVAL_REQUIRED` 的 raise 落点订正为**高危 git 审批门** `GitClient._require_approval`（原误用 `PERMISSION_DENIED`；`authorize` 一侧仍以 `Decision(approval_required=True)` 供审批通道，**不**改抛异常）** | ✅ |
 | **E77** | 设计缺失 | **信息地图不可达**（构造了却从不查） | `context/assembler.py:54-75` `build()` **从不读** `_info_map`（`:32` 只在 ctor 存下）；`fetch_detail():69-75` **零调用**；`context/info_map.py:90-100 _linear_scan` **死码**（`index()` 恒同写 `_docs`+`_maps`） | ✅ |
 | **E78** | 规格漂移 | memory **规格三档（热 / 温 / 冷）vs 实现两档（hot + cold）** | 实现无温层载体；spec `memory/spec.md:31-32` 写三档 ⇒ **已落地（change `0131` / ADR-0124）：规格改**热/冷两档**，删温层条文** | ✅ |
-| **E79** | 规格漂移 | git **「断线重试 / 指数退避」无实现** ＋ **删远程分支 / 历史改写**原语缺失 | `git/subprocess_backend.py:141-154` `pull`/`push`（及 `clone`）单次 `_run`，`_run:158-163` **无 retry/backoff**；`git/client.py:86-101` 仅 force-push 走审批，13 原语**无**「删远程分支 / 历史改写」。spec `git/spec.md:69-91` 有对应 Scenario（C2 的「偏离原记」`phase-20.md:93` 只记「不装配 CLI 入口」，**未记**此二缺口） | ✅ |
+| **E79** | 规格漂移 | git **「断线重试 / 指数退避」无实现** ＋ **删远程分支 / 历史改写**原语缺失 | `git/subprocess_backend.py:141-154` `pull`/`push`（及 `clone`）单次 `_run`，`_run:158-163` **无 retry/backoff**；`git/client.py:86-101` 仅 force-push 走审批，13 原语**无**「删远程分支 / 历史改写」。spec `git/spec.md:69-91` 有对应 Scenario（C2 的「偏离原记」`phase-20.md:93` 只记「不装配 CLI 入口」，**未记**此二缺口） ⇒ **已落地（change `0138` / ADR-0131）：`_run_remote` 瞬态网络失败按指数退避重试（`attempts=3`/`backoff=0.5`，可注入 `sleep`；认证失败 / 超时 / 冲突 / 非瞬态不重试）；`GitClient` 补 `delete_remote_branch` / `rewrite_history` 原语，复用同型审批门（`_require_approval(op, reason)`，三处 op id 互异），非交互默认拒** | ✅ |
 | **E80** | 规格漂移 | skillhub **「回退官方源」只报错**（**spec 自相矛盾**） | `skillhub/index.py:134-140` `_ensure_healthy` 直接 `raise SOURCE_UNHEALTHY`（文本却写「（回退官方源）」），**无回退动作**；`tests/test_skillhub.py:42` 亦断报错。spec `skillhub/spec.md:34-38` **同句**既写「回退官方源」又写「返回 `SOURCE_UNHEALTHY`」⇒ 实现/测试选了后半句 ⇒ **已落地（change `0134` / ADR-0127）：规格拆句为「不健康 ⇒ 回退官方源**并以其结果响应**（标记该源不健康）；官方源亦不可用 ⇒ `SOURCE_UNHEALTHY`」；`_ensure_healthy` 改返回**可用源名**，`list`/`route` 用其取结果** | ✅ |
 | **E81** | 设计缺失 | deployment `reap` **无心跳刷新 `last_seen`** ⇒ 活跃客户端可能被误回收 | `deployment/host.py:56` `last_seen` **仅 `accept` 赋值**，`reap:78-88` 据其判超时，全类**无 touch / heartbeat** 更新 | ✅ |
 | **E82** | 规格漂移 | **pet / beast Web 面缺失**：12 个 HTTP 端点**无** pet/summon/recall | `ui/fastapi_serve.py:194-206` 共 12 条 `add_api_route`，**无** pet/summon/recall（与 E74 同源：UIAPILayer 有 `activate_pet`/`pet_command` 方法但未暴露为端点，`api.py:223` 仅内部接宠物） | ✅ |
@@ -179,7 +179,7 @@
 | `0135` | E76 | ✅ 已落地（2026-10-06） | ADR-0128 |
 | `0136` | E75 + E70 | ✅ 已落地（2026-10-06） | ADR-0129 |
 | `0137` | E74 | ✅ 已落地（2026-10-06） | ADR-0130 |
-| `0138` | E79 | ⏳ 待实施 | — |
+| `0138` | E79 | ✅ 已落地（2026-10-07） | ADR-0131 |
 | `0139` | E81 + E83 | ⏳ 待实施 | — |
 | `0140` | E77 | ⏳ 待实施 | — |
 | `0141` | E86+E82+E87+E71+E84-b | ⏳ 待实施 | — |

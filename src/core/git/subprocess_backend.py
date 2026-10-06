@@ -11,6 +11,8 @@ helper 处理：本模块不接触、不落盘、不进日志。
 from __future__ import annotations
 
 import subprocess
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 from .errors import GitError, GitErrorCode
@@ -26,6 +28,19 @@ _AUTH_MARKERS = (
     "terminal prompts disabled",
 )
 
+# 瞬时网络故障的可识别特征（大小写不敏感；仅决定「可重试」，不回显原文）
+_TRANSIENT_MARKERS = (
+    "could not resolve host",
+    "connection reset",
+    "connection refused",
+    "connection timed out",
+    "network is unreachable",
+    "rpc failed",
+    "early eof",
+    "the remote end hung up unexpectedly",
+    "temporary failure in name resolution",
+)
+
 # porcelain 行前缀宽度：XY 状态 2 字符 + 1 空格
 _PORCELAIN_PREFIX = 3
 
@@ -39,12 +54,35 @@ def _is_conflict(code: str) -> bool:
     return "U" in code or code in ("AA", "DD")
 
 
+def _is_retryable(error: GitError, stderr: str) -> bool:
+    """是否值得重试：**仅**「瞬时网络」类（通用失败码 + stderr 命中瞬态特征）。
+
+    认证失败（凭据不会自愈）/ 超时（spec「远程超时」要求中止）/ 冲突（需人工）一律不重试；
+    「非仓库目录」这类确定性 `GIT_COMMAND_FAILED` 亦不命中瞬态特征 ⇒ 一次即抛。
+    """
+    if error.code is not GitErrorCode.GIT_COMMAND_FAILED:
+        return False
+    lowered = stderr.lower()
+    return any(marker in lowered for marker in _TRANSIENT_MARKERS)
+
+
 class SubprocessGitBackend:
     """以 stdlib ``subprocess`` 直调 git CLI 的 :class:`GitBackend` 生产实现。"""
 
-    def __init__(self, cwd: str | Path | None = None, *, timeout: float = 60.0) -> None:
+    def __init__(
+        self,
+        cwd: str | Path | None = None,
+        *,
+        timeout: float = 60.0,
+        attempts: int = 3,
+        backoff: float = 0.5,
+        sleep: Callable[[float], None] | None = None,
+    ) -> None:
         self._cwd = Path(cwd) if cwd is not None else Path.cwd()
         self._timeout = timeout
+        self._attempts = max(1, attempts)  # 远程操作最大尝试次数（含首次）
+        self._backoff = backoff  # 指数退避基数（秒）：n 次退避 = backoff * 2**(n-1)
+        self._sleep = sleep if sleep is not None else time.sleep  # 可注入 ⇒ 测试零真实等待
 
     # ---- 仓库生命周期 ----
 
@@ -61,7 +99,7 @@ class SubprocessGitBackend:
         if branch is not None:
             args += ["--branch", branch]
         args += [url, str(root)]
-        self._run(*args)
+        self._run_remote(*args)
         self._cwd = root
         return str(root)
 
@@ -140,7 +178,7 @@ class SubprocessGitBackend:
 
     def pull(self, *, remote: str = "origin", branch: str | None = None) -> None:
         args = ["pull", remote] + ([branch] if branch is not None else [])
-        self._run(*args)
+        self._run_remote(*args)
 
     def push(
         self, *, remote: str = "origin", branch: str | None = None, force: bool = False
@@ -151,7 +189,16 @@ class SubprocessGitBackend:
         args.append(remote)
         if branch is not None:
             args.append(branch)
-        self._run(*args)
+        self._run_remote(*args)
+
+    def delete_remote_branch(self, branch: str, *, remote: str = "origin") -> None:
+        """删除远程分支（`git push <remote> --delete <branch>`）；高危 ⇒ 审批门在 `GitClient`。"""
+        self._run_remote("push", remote, "--delete", branch)
+
+    def rewrite_history(self, message: str) -> str:
+        """改写历史：`git commit --amend` 最近一次提交并返回新 commit id；高危 ⇒ 审批门在上层。"""
+        self._run("commit", "--amend", "-m", message)
+        return self._run("rev-parse", "HEAD").strip()
 
     # ---- 内部辅助 ----
 
@@ -161,6 +208,23 @@ class SubprocessGitBackend:
         if result.returncode != 0:
             raise self._classify(result.stderr)
         return result.stdout
+
+    def _run_remote(self, *args: str) -> str:
+        """执行**远程** git 子命令：瞬态错误按指数退避重试，至 `attempts` 上限后抛归一错误。
+
+        只用于 `clone` / `pull` / `push` / `delete_remote_branch`（本地原语失败重试无意义）；
+        认证失败 / 超时 / 冲突 / 非瞬态失败 **不**重试（见 `_is_retryable`）。
+        """
+        attempt = 1
+        while True:
+            result = self._invoke(args)
+            if result.returncode == 0:
+                return result.stdout
+            error = self._classify(result.stderr)
+            if attempt >= self._attempts or not _is_retryable(error, result.stderr):
+                raise error
+            self._sleep(self._backoff * 2 ** (attempt - 1))
+            attempt += 1
 
     def _invoke(
         self, args: tuple[str, ...], *, cwd: Path | None = None
