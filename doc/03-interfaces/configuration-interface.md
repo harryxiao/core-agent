@@ -132,14 +132,23 @@ def generate_yaml_defaults(specs=None) -> dict: ...
 
 | 谓词 | 真值条件 | 缺省 | 用途 |
 |---|---|---|---|
-| `is_enabled(module)` | `features.<模块>` 显式为**真** | `false` | 「显式开启查询」：供**缺省关**的模块自查二级开关（如 `pet.enabled`） |
+| `is_enabled(module)` | `features.<模块>` 显式为**真** | `false` | **缺省关装配**（change `0112`）：名单 `OPT_IN_MODULES`（当前 `evolution_executor`）由组合根消费；二级开关自查（如 `pet.enabled`）同用 |
 | `is_disabled(module)` | `features.<模块>` 显式为**假** | `false`（即不关） | **装配裁剪**：门控名单内**缺省装配**的可选模块，由组合根消费 |
 
-**装配裁剪契约**（规格「功能开关（feature flag）」）：门控名单 `core.runtime.GATABLE_MODULES`
-（当前 `pet` / `beast` / `evolution`）是**组合根单一真源** —— 配置层不认识模块名。名单内模块
-**缺省装配**（未声明即开，兼容既有行为），仅显式 `false` 才完全不装配；名单外的名字不触发任何裁剪。
+**装配裁剪契约**（规格「功能开关（feature flag）」）：组合根以**两条极性相反的名单**消费上述谓词
+（同一名字**不能**承载两种缺省语义）：
+
+| 名单（`core.runtime`，单一真源） | 消费谓词 | 缺省 | 成员 |
+|---|---|---|---|
+| `GATABLE_MODULES` | `is_disabled` | **装配**（未声明即开） | `pet` / `beast` / `evolution` |
+| `OPT_IN_MODULES` | `is_enabled` | **不装配**（未声明即关，fail-closed） | `evolution_executor` |
+
+派生 `KNOWN_FEATURE_MODULES = GATABLE_MODULES + OPT_IN_MODULES` 供「未知功能开关」告警（见 §2.3）。
+配置层不认识模块名：`GATABLE_MODULES` 内模块**缺省装配**（未声明即开，兼容既有行为），仅显式 `false`
+才完全不装配；`OPT_IN_MODULES` 内模块**必须显式 `true`** 才装配（缺省关，fail-closed）；两侧名单外的
+名字不触发任何裁剪。
 关闭的含义是**彻底**的：不构造实例、不产生装配期副作用（`beast` 连 20 神通都不注册、`pet` 不读
-`pets.json`）、`loop` 冷路径一并置 `None`、CLI 入口拒绝（stderr 说明 + 退出码 0）。
+`pets.json`）、`loop` 冷路径一并置 `None`、CLI 入口给出说明（**rc 0** —— 能力被关闭不是错误）。
 feature flag 只管**装配**，不改模块自身的二级启用开关（`features.pet` 缺省开 ≠ `pet.enabled` 开）。
 
 **三面取值同口径 + CLI 面接线**（change `0072`，账本 E20②、E23）：三条通道**全部生效**，取值收敛在
@@ -167,7 +176,8 @@ CLI 面 `--feature <模块>[=<布尔>]` 由 `entry._cli_overrides` 收进覆盖�
 - **作用域**：只判**顶层段名**，不递归校验已知段内部的未知子键。
 - **例外：`features` 段子键（change `0085`，账本 E20①）** —— `features` 段子键是**模块名**，
   拼错会**静默 no-op**（`features.peet: false` 关不掉 `pet`：`is_disabled("pet")` 查不到 `"pet"`）。
-  故当 `ConfigManager` **注入了已知模块名集合**（`known_modules`，组合根传 `runtime.GATABLE_MODULES`）时，
+  故当 `ConfigManager` **注入了已知模块名集合**（`known_modules`，组合根传
+  `runtime.KNOWN_FEATURE_MODULES`（两条名单之并，change `0112`））时，
   `features` 段的未知子键**仅告警**（含子键名 + 已知清单 + 「拼错将静默不生效」提示）、**不阻断**；
   未注入（缺省 `None`）时**不校验**子键。作用域**仅** `features` —— 其它已知段的未知子键（如 `llm.typo_key`）
   仍不告警（各能力 schema 义务，非本项）。模块名集合仍归组合根单一真源，配置层只**消费注入**（不 import runtime）。

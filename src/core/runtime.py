@@ -45,6 +45,11 @@ from core.evolution import (
     Proposer,
     Validator,
 )
+
+# 原生实施（0112，可选能力）：执行器与补丁生产者接缝按子模块引入 —— 不进包出口
+# （它们的消费方只有组合根与操作面；包出口保持「进化闭环本体」的语义）。
+from core.evolution.author import patch_author_with
+from core.evolution.executor import EvolutionExecutor, source_reader
 from core.judgment import Compactor, DecisionRouter, Guardrail, JEVProvider, SkillMatcher
 from core.llm_provider import LLMProvider, LLMRequest, Message, StdlibLLMProvider
 from core.loop import Approver, DefaultLoop, LoopPlugin, TurnObserver
@@ -121,12 +126,21 @@ from core.tools import (
 # 名单外的名字不触发任何裁剪。见 configuration spec「功能开关（feature flag）」。
 GATABLE_MODULES: tuple[str, ...] = ("pet", "beast", "evolution")
 
+# 缺省关名单（change 0112 / DS1-a）：与上一份名单**极性相反**的第二个单一真源 —— 名单内模块
+# **未声明即视为关闭**（fail-closed），仅显式 `features.<模块>: true` 才装配。自改代码一类的
+# 能力须「关得住、且是关着的」（同 `permission.mode` / `sandbox.host_allowlist` 取向），塞进
+# `GATABLE_MODULES` 会反转为缺省开 —— 故两极性各由**独立名单**承载，不共用一个名单的两种默认。
+# 两个名单之**并**即「已知模块名集合」（供 configuration 的未知开关名告警，账本 E20①）。
+OPT_IN_MODULES: tuple[str, ...] = ("evolution_executor",)
+KNOWN_FEATURE_MODULES: tuple[str, ...] = GATABLE_MODULES + OPT_IN_MODULES
+
 
 @dataclass
 class Runtime:
     """组合根产物：已装配运行系统。
 
-    除 `GATABLE_MODULES` 三项对应的字段（见各字段旁注，关闭时为空）外，所有依赖非空。
+    除 `GATABLE_MODULES` 三项与缺省关的 `OPT_IN_MODULES` 对应的字段（见各字段旁注，关闭时为空）
+    外，所有依赖非空。
     """
 
     app: AppConfig
@@ -145,6 +159,8 @@ class Runtime:
     installer: PluginInstaller
     mcp_client: MCPClient
     evolution: EvolutionWorker | None  # 空 = features.evolution: false（未装配）
+    # 空 = features.evolution_executor 未开启（缺省关；见 OPT_IN_MODULES）
+    evolution_executor: EvolutionExecutor | None
     orchestrator: TaskScheduler
     checkpoints: CheckpointManager
     time_travel: TimeTravel
@@ -334,7 +350,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     # 记忆摘要接缝（0041）：LLM 提炼经 summarize_with 适配为 memory 的摘要契约
     # （与 embedding 同一依赖方向：memory 不 import LLM 抽象，组合根注入模型调用）。
     def _llm_text(prompt: str) -> str:
-        """prompt → 文本：摘要（memory）与提炼（skills）两条 DI 接缝共用的模型调用外壳。"""
+        """prompt → 文本：摘要（memory）/ 提炼（skills）/ 补丁（evolution）三条 DI 接缝共用。"""
         response = llm.completion(
             LLMRequest(messages=[Message(role="user", content=prompt)], model=app.llm.model)
         )
@@ -558,9 +574,13 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     # 门控（0067）：evolution 关闭 ⇒ 引擎/worker 不建，loop 冷路径与 trace 完成回调一并置 None
     # （不为「未装配」造空转闭包 —— DefaultLoop 本就接受 cold_path / trace_observer =None）。
     evolution: EvolutionWorker | None = None
+    evolution_executor: EvolutionExecutor | None = None
     cold_path: Callable[[], None] | None = None
     trace_observer: Callable[[str], None] | None = None
     if not config.is_disabled("evolution"):
+        # 候选台账在此显式构造并注入（0112）：实施制品与候选**同一条记录**，故执行器必须与
+        # 引擎共用同一实例（各持一份 ⇒ 制品落在对方看不见的库里，跨进程复核不成立）。
+        pending_queue = PendingQueue(path=_skill_state_path("evolution-pending.json"))
         evolution_engine = EvolutionEngine(
             diagnoser=Diagnoser(),
             proposer=Proposer(),
@@ -570,7 +590,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             memory=backend,
             memory_crystallizer=Crystallizer(),
             observations=ObservationRegistry(path=_skill_state_path("observations.json")),
-            pending=PendingQueue(path=_skill_state_path("evolution-pending.json")),
+            pending=pending_queue,
         )
         evolution_worker = EvolutionWorker(
             tracer=tracer, engine=evolution_engine, trigger=EvolutionTrigger()
@@ -584,6 +604,21 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         cold_path = _cold_path
         # 主 loop 每轮收尾登记本轮 trace（热路径只登记、不触发；不随维护节拍节流）
         trace_observer = evolution_worker.on_trace_complete
+
+        # 原生实施执行器（0112，**缺省关**）：只在显式开启时装配。门禁复用**同一** `_run_gate`
+        # / `gate_executor`（同 `GATE_COMMANDS` 单一真源，不为执行器另立第二份门禁清单），
+        # 补丁生产者复用 `_llm_text`（同一条 DI 接缝），制品落**同一个** `pending_queue`。
+        # 只由操作面显式驱动（`evolve implement`）：不入工具面、不挂热/冷路径节拍。
+        if config.is_enabled("evolution_executor"):
+            _source_root = Path(__file__).resolve().parents[2]  # 仓根（源码树）
+            evolution_executor = EvolutionExecutor(
+                author=patch_author_with(_llm_text, read_source=source_reader(_source_root)),
+                run_gate=_run_gate,
+                gates=tuple(GATE_COMMANDS),
+                effects=effect_tracker,
+                queue=pending_queue,
+                root=_source_root,
+            )
 
     failure_threshold, cooldown_s = config.circuit_breaker()
     constraints_chain = build_constraints_chain(
@@ -928,6 +963,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         installer=installer,
         mcp_client=mcp_client,
         evolution=evolution,
+        evolution_executor=evolution_executor,
         orchestrator=orchestrator,
         checkpoints=checkpoints,
         time_travel=time_travel,

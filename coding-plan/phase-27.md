@@ -9,10 +9,10 @@
 
 | 编号 | 初稿断言 | 复核判定 | 档位（初稿→复核） |
 |---|---|---|---|
-| E40 | 无原生执行器 ⇒ 闭环断头 | **非缺陷**：规格明文把架构级分支定为「已批准、待人工实施」 | 高 → **已裁决：允许，缺省关闭**（DS1，见 §5.1） |
-| E41 | 执行器与 loop 无接线 | **依附 E40**：无执行器自然无接线；非独立缺陷 | 高 → **依附**（随 E40 一道开工） |
+| E40 | 无原生执行器 ⇒ 闭环断头 | **非缺陷**：规格明文把架构级分支定为「已批准、待人工实施」 | 高 → **已裁决：允许，缺省关闭**（DS1，见 §5.1）→ ✅ **已闭**（change `0112` / ADR-0105） |
+| E41 | 执行器与 loop 无接线 | **依附 E40**：无执行器自然无接线；非独立缺陷 | 高 → **依附**（随 E40 一道开工）→ ✅ **已闭**；**形态订正**：改由**操作面显式驱动**（`evolve implement`），**不**接 loop 热/冷路径（依据见 §5.4 订正栏） |
 | E42 | 门禁工具缺位 | **判据不实**：执行器已存在，缺的是**工具面**；且提案的「白名单免审批」= E34 同类声明不实 | 高 → 中 → ✅ **已闭**（change `0111` / ADR-0104：`tools.gate_run`） |
-| E43 | proposer delta 信息量不足 | **部分不实**：`module_id` 已由 `target_plugin` 承载；余 `suggested_patch`/`acceptance` | 中 → 低 |
+| E43 | proposer delta 信息量不足 | **部分不实**：`module_id` 已由 `target_plugin` 承载；余 `suggested_patch`/`acceptance` | 中 → 低 → ✅ **随 S0 关闭**：补丁改由**执行器的 LLM 生产者**产出（`evolution/author.py`），delta **不新增** `suggested_patch` 键 |
 
 > **共同口径**：四条共同指向一件**真问题**——`core_harness_architecture.md:150-151/158` 承诺「验证通过 ⇒ 产出不可变世代」「记忆结晶成插件」，
 > 而 `evolution/spec.md:203/215` 把这个分支**明文否掉**（「SHALL NOT 在该分支报告 `published`」「无世代被晋升」「已批准、**待人工实施**」）。
@@ -103,29 +103,31 @@ E40 要做的正是搬掉该前提 ⇒ 须同步复核 E31 裁决。
 | 编号 | 裁决问题 | **裁决** |
 |---|---|---|
 | DS1 | `accept` 之后是否允许**自动实施核心代码**？ | **允许**，但落为**可配置开关**：**缺省 `false`（fail-closed）**，显式开启即「自动实施进化」。与 `permission.mode` 缺省 `interactive`（`manager.py:405-406`）、`sandbox.host_allowlist` 缺省空（fail-closed）同取向。 |
-| DS1-a | 开关**形态** | **装配裁剪**：关 ⇒ 不装配 `EvolutionExecutor` ⇒ `crystallize` accepted 后无 `enqueue` ⇒ 逐字回到现状。落点 `features.evolution_executor`，**须同步加进 `runtime.GATABLE_MODULES`**（`runtime.py:120`）—— 否则触发 E20① 未知功能开关告警（`manager.py:351-363`）。**不采用**「executor 常驻 + 二级开关」形态：change `0067` 规格明文「feature flag SHALL ONLY 作用于**模块装配**，SHALL NOT 改变模块**自身**的二级启用开关」。 |
+| DS1-a | 开关**形态** | **装配裁剪**：关 ⇒ 不装配 `EvolutionExecutor` ⇒ 逐字回到现状。落点 `features.evolution_executor`。**落点订正（2026-10-06 开工时一手核实）**：原记「须同步加进 `runtime.GATABLE_MODULES`」**不成立且与 DS1 相反** —— 该元组由 `is_disabled`（缺省**不关**）消费，放进去等于**缺省开**。改为新设**缺省关名单** `OPT_IN_MODULES = ("evolution_executor",)`，判据用 `is_enabled`（缺省 `false`）；`GATABLE_MODULES` **逐字不动**；派生 `KNOWN_FEATURE_MODULES = 二者之并` 注入配置层，仍满足「不触发 E20① 未知功能开关告警」（`manager.py:351-363`）。**不采用**「executor 常驻 + 二级开关」形态：change `0067` 规格明文「feature flag SHALL ONLY 作用于**模块装配**，SHALL NOT 改变模块**自身**的二级启用开关」。 |
 | DS2 | 实施结果的**复核关** | **保留人工复核**（保守）。与 `confirm` 分工：`confirm` 批「做什么」，复核批「改得对不对」；执行器产出的 patch 落 `implemented` 前须人工过目。 |
 | DS3 | 验证门**独立性** | **冻结**（不可协商，R1）：只允许跑 `GATE_COMMANDS` 单一真源、独立执行环境、禁止执行器自选门禁命令。 |
 | DS4 | 是否修改 `:203/215`？ | **必改**。门控能力**本身**即规格变更 —— 先例 change `0067`（feature-flag-gating）：**默认开也照样**写 `configuration/spec.md` MODIFIED + 4 Scenario，**非** `skip_specs`。「缺省不走到那段代码」不构成豁免。 |
 
-### 5.2 规格先行（delta 草案）
+### 5.2 规格先行（delta 草案；**实际落地以此为准**）
 
-- `evolution/spec.md` **MODIFY**「结晶为技能/SOP」HITL 段：给 `:203` 加**限定语** —— 「**未启用原生执行器时**，系统 SHALL NOT 在该分支报告 `published`（无架构产物被发布、无世代被晋升）」；`:215` 的 `accepted` 保留为「已批准、**未实施**」。
-- `evolution/spec.md` **ADDED** 新 Requirement「架构级候选的原生实施（可选）」：明写「**仅当** `features.evolution_executor` 开启时，`accepted` 候选 SHALL 由 `EvolutionExecutor` 实施，实施结局 SHALL 经**独立验证门**（冻结 `GATE_COMMANDS`）**＋**人工复核（DS2）后落不可变世代」；Scenario：①开启 ⇒ 实施并落 `implemented` / ②关闭 ⇒ 逐字回到现状（不实施）/ ③验证门不过 ⇒ `dissolve` 回退。
-- `configuration/spec.md` **MODIFY**「功能开关」：门控名单（单一真源）**＋ `evolution_executor`**（对齐 change `0067` 的名单条款）。
+- `evolution/spec.md` **MODIFY**「架构级候选强制人工审批（HITL confirm gate）」的**结局诚实** bullet：给 `:203` 加**限定语** —— 「**未启用原生执行器时**，系统 SHALL NOT 在该分支报告 `published`（无架构产物被发布、无世代被晋升）」；`:215` 的 `accepted` 保留为「已批准、**未实施**」（**逐字不变**）。
+- `evolution/spec.md` **ADDED** 新 Requirement「架构级候选的原生实施（可选）」：明写「**仅当** `features.evolution_executor` 显式开启时装配 `EvolutionExecutor`」，实施**仅由操作面显式驱动**、两阶段（筹备 → 人工复核关 → 落地 `implemented`），门禁取自**单一真源** `GATE_COMMANDS`；Scenario（**实际 9 个**）：①开启 ⇒ 筹备并落 `implemented` / ②关闭（缺省）⇒ 逐字回到现状 / ③门禁不过 ⇒ **回退工作树**、不留制品（**订正**：非 `dissolve` —— 走结构化 `GATE_REJECTED`）/ ④补丁触碰验证装置 ⇒ 范围守卫拒绝 / ⑤路径与归因不符 ⇒ 拒绝 / ⑥未筹备即落地 ⇒ 拒绝 / ⑦复核单缺失或不可区分 ⇒ `CONFIRM_REQUIRED` / ⑧落地前漂移 ⇒ `IMPLEMENT_STALE` / ⑨落地后可跨进程查得。
+- `configuration/spec.md` **MODIFY**「功能开关（feature flag）」：新设**缺省关名单**（`OPT_IN_MODULES`）与 `is_enabled` 判据，**两个名单各承载一种极性**、二者之并为已知模块名集合（对齐 change `0067` 的名单条款；**订正**见 §5.1 DS1-a —— **不**直接把 `evolution_executor` 加进门控名单）。
 - `EvolutionOutcome.status` 词表 **+1**（`implemented`）；change `0102` 的 `accepted` 诚实语义**不回退**（R4）。
-- 连带：`phase-19.md` E31 重开条件复核（其前提「待人工实施」被限定为**缺省口径**）。
+- **E31 关系（不改判）**：S0 产出的制品是**源文件补丁**（`PatchProposal`），**不是** `Plugin` 对象 ⇒ `promote(plugin)` 依旧无生产方，E31 的**重开条件未触发**（其「待人工实施」前提亦未因本切片消失）。
 
-### 5.3 ADR（DS1 已通过 ⇒ 拟 ADR-0104）
+### 5.3 ADR（DS1 已通过 ⇒ **ADR-0105**）
 
-自改代码的安全边界：不可变世代冻结 / 快照 + 时间旅行回退 / 验证门独立性（R1）/ 执行隔离机制（R2）/ HITL 边界重述（R3）/ **为何此处缺省 fail-closed**（DS1）；
-并说明与 P1「无特权核心」、P4「验证门 + 不可变世代」的关系。
+> **编号订正**：初稿拟 ADR-0104，该号已由 S1（change `0111`）占用 ⇒ S0 取 **ADR-0105**。
+
+自改代码的安全边界：**缺省 fail-closed**（DS1）/ **两级名单**（缺省装配 vs 缺省关，各自名单）/ 验证门独立性（R1 = 冻结 `GATE_COMMANDS` + 范围守卫）/ 执行隔离机制（R2 = 操作面驱动、不入任何工具面）/ HITL 边界重述（R3 = `confirm` 批「做什么」、复核批「改得对不对」）/ 世代语义（R4 = `accepted` 不回退、新增 `implemented`）/ **筹备「应用→跑门→回退」为何不违反 `CORE-EVO-R3`**；
+并说明与 P1「无特权核心」、P2「可逆副作用」、P4「验证门 + 不可变世代」的关系。
 
 ### 5.4 落地切片
 
 | 切片 | 内容 | 规格中性？ | 判据 |
 |---|---|---|---|
-| **S0（E40+E41 主体）** | 新增 `evolution/executor.py` `EvolutionExecutor` + `runtime` 装配受 `not is_disabled("evolution_executor")` 裁剪 + `crystallize` accepted 分支 `enqueue` | ❌ **须先 §5.2 规格 + §5.3 ADR** | 缺省不装配（DS1）；开启才实施；结局 `implemented` 经独立门 + 人工复核（DS2/DS3） |
+| **S0 ✅ 已闭**（change `0112` / ADR-0105） | 新增 `evolution/executor.py` `EvolutionExecutor` + `evolution/author.py`（LLM 补丁生产者）+ `runtime` 装配受 `is_enabled("evolution_executor")` 裁剪 + `entry.py` 操作面 `evolve implement` | ❌ **非中性**（DS4：`evolution` + `configuration` 两 spec 均 MODIFIED/ADDED） | 缺省不装配（DS1）且 `crystallize` 返回值恒 `accepted`（R4，`engine.py` **零改动**）；开启才实施；结局 `implemented` 经**冻结门**（`GATE_COMMANDS` 单一真源）+ 人工**复核单**（DS2/DS3）；范围守卫 + 归因一致双判据；1297→**1372 passed**；`validate` 30-0 |
 | S1 ✅ **已闭**（change `0111` / ADR-0104） | 把既有门禁执行器暴露为**工具面**（不新写 `gate_run` 执行器）：`tools.gate_run`，执行器经组合根**注入** | ❌ **非中性**（**订正**，见下） | 复用单一真源 `GATE_COMMANDS`（schema 枚举由其生成，用例断言逐字一致）；coeffects **诚实声明** `["process:spawn","filesystem:write"]` + 不可逆 ⇒ **照旧过确认门**；结构化返回 `{gate, passed, reason}`；1274→**1297 passed**；`tool-use` spec **+1 Requirement**（4 场景） |
 | S2 ❌ **改判不纳入**（并入 S0） | ~~`proposer` delta 补 `suggested_patch` / `acceptance`~~ | — | 见 §3.2 二次复核三条（无消费者＝空转 / 无规格依据无生产者 / 真消费方是 S0） |
 
@@ -135,15 +137,32 @@ E40 要做的正是搬掉该前提 ⇒ 须同步复核 E31 裁决。
 > **ADDED** 而非 `skip_specs`（`openspec validate` 通过；spec 文件项数不变，仍 30）。
 
 > **顺序**：S0 走完整 SDD（规格先行 → ADR → 测试先行 → 实现）；S1 属「工具面补齐」，**不触碰** §2 的规格边界
-> （只新增 `tool-use` 需求），**已独立先做**（S1 也是 S0 的前置：执行器需要能结构化跑门禁）。S0 落地后 S1 加壳进执行器。
-> S2 已改判并入 S0（§3.2 二次复核）。
+> （只新增 `tool-use` 需求），**已独立先做**。S2 已改判并入 S0（§3.2 二次复核）。
+>
+> **S0 形态订正 3 条（2026-10-06，开工时一手核实，逐条否决初稿）**：
+> ① **不接 loop 热/冷路径**：初稿拟 `crystallize` accepted 分支 `enqueue` + 冷路径 `drain()`。核实后否决 ——
+> `ColdPath = Callable[[], None]` 是**同步**调用、唯一调用点在 `DefaultLoop._maintenance`（智能体一轮收尾处），
+> 在其中同步跑四道门禁（单门超时上界 600s）= **阻塞热路径**（与 `worker.py`「热路径只取快照」直接冲突）；
+> 且 `evolve confirm` 是**一次性 CLI 进程**，冷路径**永不命中** ⇒ 筹备成**死路径**。改由**操作面显式驱动**
+> （`evolve implement <cid> [--dry-run]`），两阶段 prepare → 人工复核 → commit（DS2 不打折）。
+> ② **`engine.py` 不改**：因规格钉死「`crystallize` 的返回值在任何情况下 SHALL 不变（恒 `accepted`）」，
+> 故初稿的 `enqueue` 参数 / `_crystallize_plugin` 改动 / `_cold_path` 改动**全部取消**（R4 由此天然满足）。
+> ③ **S1 不进执行器路径**：初稿拟「S0 落地后 S1 加壳进执行器」，实际执行器**复用组合根既有 `gate_executor`/`_run_gate`**
+> （同一份 `GATE_COMMANDS` 单一真源，且**不**第二次 `build_gate_executor()` —— 同进程两个门禁执行器即稀释单一真源）；
+> S1 的 `tools.gate_run` 是**给 Agent 用的工具面**，与执行器的门禁调用是**两条**互不相干的消费路径（后者不暴露给模型）。
+>
+> **一手发现 2 条（写进 ADR-0105 已知局限，不隐瞒）**：① 生产 `Validator()` / `Evaluator()` 现为**恒通过桩**
+> （`runtime.py:564-574`：`review` 恒真、`tests` 返空 ⇒ `passed` 恒真；无 `score_fn` ⇒ 留出分/基线/margin 恒 0 ⇒
+> `verdict` 恒 `publish`）⇒ 既有 `confirm`/`crystallize` 的「过门」**不构成真实检验**，本切片的**冻结门是当前唯一真门**；
+> ② `is_enabled` 在**生产代码零调用点**（此前仅测试用），本切片给它**首个生产消费者**。
 
 ---
 
 ## 6. 收口
 
-- **当前状态**：🚧 **S1 已闭，S0 待开工** —— DS1 通过（允许自动实施、**缺省 false 可开启**、**装配裁剪**形态），DS4 通过（规格必改）。前置：§5.2 规格先行 → §5.3 ADR-0104 → 才能开 S0。
+- **当前状态**：✅ **Phase 27 全闭** —— S1（`tools.gate_run`，change `0111` / ADR-0104）与 S0（原生执行器，change `0112` / ADR-0105）均已落地；S2 改判并入 S0。四条账目 **E40/E41/E42/E43 全部关闭**（关闭方式见 §0 表）。
+- **S0 ✅ 已闭**（change `0112` / ADR-0105，2026-10-06）：`EvolutionExecutor` + LLM 补丁生产者 + `evolve implement` 操作面；1372 passed / `openspec validate --all` 30-0；非 `skip_specs`（`evolution` MODIFIED+ADDED、`configuration` MODIFIED）。
 - **S1 ✅ 已闭**（change `0111` / ADR-0104，2026-10-06）：`tools.gate_run` 工具面落地，1297 passed，`tool-use` spec +1 Requirement。**S2 ❌ 改判不纳入**（并入 S0，理由见 §3.2 二次复核）。
-- **裁决留痕**：DS1/DS1-a/DS2/DS3/DS4 见 §5.1；形态否决依据 = change `0067` 规格原文（feature flag 只作用于模块装配）。
-- **验收见**：§5.4（S0/S1/S2 判据）/ §4（红线前置）。
-- **复核留痕**：改判依据见 §1；订正 4 条（E42 判据、E43 判据、delta 无 `schema`、`module_id` 已有）。
+- **裁决留痕**：DS1/DS1-a/DS2/DS3/DS4 见 §5.1（DS1-a **落点已订正**：`GATABLE_MODULES` → 新设缺省关名单 `OPT_IN_MODULES`）；形态否决依据 = change `0067` 规格原文（feature flag 只作用于模块装配）。
+- **验收见**：§5.4（S0/S1/S2 判据 + S0 形态订正 3 条与一手发现 2 条）/ §4（红线前置）。
+- **复核留痕**：改判依据见 §1；订正 4 条（E42 判据、E43 判据、delta 无 `schema`、`module_id` 已有）+ 开工时订正 3 条（S0 不接冷路径 / `engine.py` 不改 / S1 不进执行器路径）+ DS1-a 落点订正 1 条。

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import difflib
 import hashlib
 import json
 import os
@@ -41,6 +42,7 @@ from core.deployment import (
     ServeStateStore,
 )
 from core.evolution import EvolutionError, GenerationCandidate
+from core.evolution.executor import COMMIT_TRACE, IMPLEMENT_OP
 from core.loop import LoopPlugin
 from core.mcp import (
     EndpointRecord,
@@ -75,7 +77,7 @@ from core.pet.library import load_persona, load_personas
 from core.plugin_registry import DomainError, PluginInstaller, PluginKind, PluginSource
 from core.plugins import InstallDispatcher, default_install_store
 from core.rag import RAGError
-from core.runtime import GATABLE_MODULES, Runtime, build_runtime
+from core.runtime import KNOWN_FEATURE_MODULES, Runtime, build_runtime
 from core.skillhub import (
     MarketIndex,
     SkillHubClient,
@@ -268,11 +270,20 @@ def _add_evolve_parser(sub: Any) -> None:
     ev_sub = evolve.add_subparsers(dest="evolve_cmd", metavar="<evolve-cmd>")
     run = ev_sub.add_parser("run", help="强制跑一轮进化冷路径（诊断/提案 dry-run）")
     run.add_argument("--goal", metavar="PLUGIN_ID", help="显式指定本轮迭代目标（插件 id）")
-    ev_sub.add_parser("pending", help="列出待人工确认的候选")
+    ev_sub.add_parser("pending", help="列出待人工确认的候选与待复核的实施制品")
     confirm = ev_sub.add_parser("confirm", help="确认候选并发布结晶")
     confirm.add_argument("candidate_id", help="候选身份（见 evolve pending）")
     confirm.add_argument("--approver", default="human", metavar="NAME")
     confirm.add_argument("--note", metavar="TEXT")
+    implement = ev_sub.add_parser(
+        "implement", help="原生实施架构级候选：筹备（--dry-run）→ 人工复核 → 落地"
+    )
+    implement.add_argument("candidate_id", help="候选身份（见 evolve pending）")
+    implement.add_argument(
+        "--dry-run", action="store_true", help="只筹备（跑门禁 → 回退），打印待复核差异、不落地"
+    )
+    implement.add_argument("--approver", default="human", metavar="NAME")
+    implement.add_argument("--note", metavar="TEXT")
     reject = ev_sub.add_parser("reject", help="拒绝候选（不再发布）")
     reject.add_argument("candidate_id", help="候选身份（见 evolve pending）")
     reject.add_argument("--note", metavar="TEXT")
@@ -462,12 +473,14 @@ def _config_manager(
     """构造配置管理器：**单点注入**组合根维护的已知模块名（`features` 段子键校验，账本 E20①）。
 
     10 处 `ConfigManager(...)` 构造点收口于此 —— 漏传一处即该入口静默丢失告警；集中在此消除该风险。
+    注入的是**两名单之并**（`KNOWN_FEATURE_MODULES`）：缺省关的模块名同样不得被告警成「未知开关」
+    （否则开启 `evolution_executor` 的正确写法会被建议「订正」）。
     `yaml_path` 缺省取 `args.config`（覆盖 `config validate --file` 的自定义路径）。
     """
     return ConfigManager(
         yaml_path=yaml_path if yaml_path is not None else args.config,
         cli=_cli_overrides(args),
-        known_modules=GATABLE_MODULES,
+        known_modules=KNOWN_FEATURE_MODULES,
     )
 
 
@@ -1036,15 +1049,19 @@ def _memory(args: argparse.Namespace) -> int:
     return 0
 
 
-_EVOLVE_USAGE = "用法: core-agent evolve {run [--goal ID]|pending|confirm <id>|reject <id>}"
+_EVOLVE_USAGE = (
+    "用法: core-agent evolve {run [--goal ID]|pending|confirm <id>|"
+    "implement <id> [--dry-run]|reject <id>}"
+)
 
 
 def _evolve(args: argparse.Namespace) -> int:
-    """进化冷路径操作面：跑一轮 / 看待确认 / 确认发布 / 拒绝。"""
+    """进化冷路径操作面：跑一轮 / 看待确认 / 确认发布 / 原生实施 / 拒绝。"""
     handlers = {
         "run": _evolve_run,
         "pending": _evolve_pending,
         "confirm": _evolve_confirm,
+        "implement": _evolve_implement,
         "reject": _evolve_reject,
     }
     handler = handlers.get(args.evolve_cmd or "")
@@ -1090,7 +1107,7 @@ def _evolve_run(args: argparse.Namespace) -> int:
 
 
 def _evolve_pending(args: argparse.Namespace) -> int:
-    """`evolve pending`：列出待人工确认的候选。"""
+    """`evolve pending`：列出待人工确认的候选与待复核的实施制品（含门禁报告）。"""
     runtime = _evolve_runtime(args)
     if runtime is None:
         return 1
@@ -1098,15 +1115,24 @@ def _evolve_pending(args: argparse.Namespace) -> int:
     if evolution is None:
         return _module_disabled("evolution")
     candidates = evolution.engine.pending()
-    if not candidates:
+    executor = runtime.evolution_executor
+    staged = executor.staged_all() if executor is not None else None
+    if not candidates and not staged:
         print("待确认队列为空")
         return 0
-    print(f"待确认候选 {len(candidates)} 项：")
-    for candidate in candidates:
-        print(
-            f"  {candidate.candidate_id}  风险={candidate.risk_level}  "
-            f"目标={candidate.target_plugin}  {candidate.delta.get('issue', '')}"
-        )
+    if candidates:
+        print(f"待确认候选 {len(candidates)} 项：")
+        for candidate in candidates:
+            print(
+                f"  {candidate.candidate_id}  风险={candidate.risk_level}  "
+                f"目标={candidate.target_plugin}  {candidate.delta.get('issue', '')}"
+            )
+    if staged:
+        # 复核材料就地呈现：人不必去翻台账 JSON（差异用 `evolve implement <id> --dry-run` 重看）
+        print(f"待复核（原生实施）{len(staged)} 项：")
+        for record in staged:
+            passed = sum(1 for entry in record.gate.values() if entry.get("passed"))
+            print(f"  {record.candidate_id}  {record.path}  门禁 {passed}/{len(record.gate)} 通过")
     return 0
 
 
@@ -1150,23 +1176,98 @@ def _evolve_confirm(args: argparse.Namespace) -> int:
 
 
 def _sign_approval(
-    candidate: GenerationCandidate, *, approver: str, note: str | None
+    candidate: GenerationCandidate,
+    *,
+    approver: str,
+    note: str | None,
+    op: str = "evolution.publish",
 ) -> ApprovalTicket | None:
-    """架构级候选的审批单签发：本操作面即「人工」来源（技能库级无需工单）。"""
+    """架构级候选的审批单签发：本操作面即「人工」来源（技能库级无需工单）。
+
+    `op` 区分**两道不同的关**：`confirm` 批「做什么」（`evolution.publish`）、原生实施落地批
+    「改得对不对」（`IMPLEMENT_OP`）—— 同一张单不得跨关复用（见 executor 的复核关）。
+    """
     if candidate.risk_level != "high":
         return None
+    implement = op == IMPLEMENT_OP
     workflow = ApprovalWorkflow()
     ticket = workflow.create(
         ApprovalRequest(
-            op="evolution.publish",
+            op=op,
             target=candidate.target_plugin,
             impact_summary=str(candidate.delta.get("issue", "")),
-            rollback_plan="dissolve 回 L3（技能标 deprecated + 教训写回 L2）",
+            rollback_plan=(
+                f"按 EffectTracker 的 undo 还原目标文件"
+                f"（trace={COMMIT_TRACE}.{candidate.candidate_id}）"
+                if implement
+                else "dissolve 回 L3（技能标 deprecated + 教训写回 L2）"
+            ),
             trace_id="evolution",
         )
     )
     workflow.approve(ticket, approver=approver, note=note)
     return ticket
+
+
+#: 执行器未装配（`features.evolution_executor` 缺省关）时的入口说明。
+#: 不复用 `_module_disabled`：那句文案是「缺省装配」极性（「移除该项即恢复缺省装配」），
+#: 对**缺省关**的能力说反了 —— 移除 `features.evolution_executor` 恰恰是「保持关闭」。
+_EXECUTOR_DISABLED = (
+    "evolution_executor 已关闭（features.evolution_executor 未开启；显式置 true 才装配原生执行器）"
+)
+
+
+def _unified_diff(before: str, content: str, path: str) -> str:
+    """待复核差异：没有它，「复核」只是签个字（人得看得见改了什么）。"""
+    return "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            content.splitlines(keepends=True),
+            fromfile=path,
+            tofile=path,
+        )
+    )
+
+
+def _evolve_implement(args: argparse.Namespace) -> int:
+    """`evolve implement`：筹备（`--dry-run`）→ 人工复核 → 落地（可选的原生执行器）。
+
+    两阶段是本操作面的**唯一**形态：`--dry-run` 只筹备（跑完冻结门即回退工作树）并把制品落
+    台账，落地要**另跑一次**并携带实施复核单 —— 复核之前工作树上没有任何改动残留。
+    """
+    runtime = _evolve_runtime(args)
+    if runtime is None:
+        return 1
+    evolution = runtime.evolution
+    if evolution is None:
+        return _module_disabled("evolution")
+    executor = runtime.evolution_executor
+    if executor is None:
+        print(_EXECUTOR_DISABLED, file=sys.stderr)
+        return 0
+    candidate = evolution.engine.find(args.candidate_id)
+    if candidate is None:
+        print(f"候选不存在: {args.candidate_id}", file=sys.stderr)
+        return 1
+    try:
+        if args.dry_run:
+            record = executor.prepare(candidate)
+            print(f"待复核：{record.path}")
+            print(_unified_diff(record.before, record.content, record.path), end="")
+            print(
+                f"复核通过后落地：core-agent evolve implement "
+                f"{candidate.candidate_id} --approver NAME"
+            )
+        else:
+            approval = _sign_approval(
+                candidate, approver=args.approver, note=args.note, op=IMPLEMENT_OP
+            )
+            outcome = executor.commit(candidate, approval=approval)
+            print(f"已实施：{candidate.target_plugin}（{outcome.status}）")
+    except EvolutionError as exc:
+        print(f"实施失败: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _evolve_reject(args: argparse.Namespace) -> int:

@@ -2558,6 +2558,69 @@
 
 ---
 
+## ADR-0105：自改代码的安全边界 —— 原生执行器 `EvolutionExecutor`（change 0112 / phase-27 切片 S0）
+
+- **背景**：`core_harness_architecture.md:150-153/158` 承诺「验证通过 ⇒ **产出不可变世代**」「稳定技能
+  **提升为插件（记忆→代码）**」，而 `evolution/spec.md` 的「架构级候选强制人工审批」把这**同一个分支**
+  明文否掉（`accepted` = 「已批准、**待人工实施**」，「无架构产物被发布、无世代被晋升」）。phase-27
+  §2 已把这件「矛盾」改判为 **RSI 能力扩展提案**（非缺陷修复），并完成裁决：**DS1** 允许自动实施但
+  **缺省 `false`（fail-closed）**、**DS2** 保留人工复核、**DS3** 验证门**冻结**、**DS4** 规格**必改**
+  （先例 change `0067`，**非** `skip_specs`）。本 ADR 记录落地形态与安全边界。
+- **决策**：
+
+  | # | 决策 | 理由 |
+  |---|---|---|
+  | ① | 门控落点 = `features.evolution_executor`，判据用 **`is_enabled`（缺省 `false`）** | **订正 DS1-a**（`phase-27.md:106` 原记「加进 `runtime.GATABLE_MODULES`」）：该元组由 `is_disabled`（`features.<m> is False`，**缺省不关**）消费 ⇒ 放进去等于**缺省开**，与 DS1 的 fail-closed 相反。`is_enabled` 的既有 docstring 本就写着「缺省关闭，未显式开启的模块不加载、不初始化」⇒ 本切片给它**首个生产消费者** |
+  | ② | **两级名单**：`GATABLE_MODULES`（缺省装配）**逐字不动** + 新 `OPT_IN_MODULES = ("evolution_executor",)`（缺省关）；派生 `KNOWN_FEATURE_MODULES = 二者之并` 注入配置层 | 一个名单**不能**承载两种缺省语义（同一名字一个缺省）。分开承载 ⇒ 既有门控名单的缺省开口径与 `tests/test_feature_gating.py:84` 的逐元素断言**零改动**；并集供「未知功能开关」告警（否则 E20① 会为新开关误报拼写错） |
+  | ③ | 触发形态 = **操作面显式驱动**（`core-agent evolve implement <cid> [--dry-run]`），**两阶段**：筹备（补丁 → 范围守卫 → 应用 → 跑冻结门 → **回退**）→ 人工复核 → 落地 | **否决**原设计的「冷路径 `_cold_path` → `drain()`」：① `ColdPath = Callable[[], None]` 是**同步**调用，唯一调用点在 `DefaultLoop._maintenance`（`loop/default.py:359-363`）⇒ 在智能体**一轮收尾处**同步跑四道门禁（单门超时上界 600s）等于**阻塞热路径**，与 `worker.py` 明写的「热路径只取快照、不阻塞」直接冲突；② `evolve confirm` 是**一次性 CLI 进程**，跑完即退，冷路径**永不命中** ⇒ 筹备是**死路径**。操作面同步执行同时满足 R2「独立任务面」（**不进任何工具面**、与 `evolve confirm` 同形，比「冷路径后台步」更贴） |
+  | ④ | 制品（补丁 / 被改文件原内容 / 各门结论）落**既有候选台账**（`PendingItem.implementation`），**不**新建第二个持久化库；落地时候选状态置 `implemented` | 第二库的候选生命周期必须与台账一致 ⇒ 两个文件必然**同步撒谎**（change `0105` 删 `_published`、`0103` 收窄 `replay` 反复钉的「双真源」反模式）。且操作面是**一次性进程** ⇒ 结论若只活在 stdout，跨进程**不可查**（`implemented` 会变成不可观察的谎） |
+  | ⑤ | 验证门独立性（R1）= **冻结 `GATE_COMMANDS` 单一真源** + **复用**组合根既有 `gate_executor`/`_run_gate`（`runtime.py:377-382`）+ **范围守卫** | 执行器**不得**自选门禁命令、**不得**第二次 `build_gate_executor()`（同进程两个门禁执行器 = 稀释「单一真源」）。守卫用**白名单**形态（`src/core/` 内的 `.py`，减去**信任集**：`ci_cd/**`、`permission/**`、`evolution/**`、`configuration/**`、`runtime.py`、`entry.py`、`persistence.py`）⇒ 未来新增的验证装置**构造性**被覆盖，而非靠枚举追补；另拒绝绝对路径 / `..` / 非 `.py` |
+  | ⑥ | 补丁路径 SHALL 由**候选归因**（`target_plugin` ∈ `INTERNAL_PLUGIN_IDS`）经**约定** `src/core/<点转斜杠>.py` 解析，且目标文件**必须存在** | 守卫只校验路径**形状**是不够的：归因到 `loop.default` 的候选，其补丁可被作者指向 `src/core/notes/store.py`。约定已一手核实 **14/14** 命中，并加**派生不变量测试**守护（否则改个文件名就让执行器指向不存在的路径） |
+  | ⑦ | 崩溃安全 + 漂移拒绝：原内容**先随制品落盘再应用**；应用／跑门／回退包在 `try/finally`；落地前校验目标文件当前内容与筹备时记录的原内容**一致**（不符 ⇒ `IMPLEMENT_STALE`） | `EffectTracker` 是**纯进程内** undo 栈，中途 `KeyboardInterrupt`/OOM 会把补丁留在工作树里，而下次启动 `PendingQueue._load` 只恢复台账、**不检测脏树**（fail-open）。落盘制品同时充当「被复核的那一份」（LLM 非确定 ⇒ 落地 SHALL 消费被复核的制品，**不重新产出**） |
+  | ⑧ | HITL 边界（R3）：`confirm` 批「做什么」、复核批「改得对不对」，**两道关都不打折**；复核单 `op="evolution.implement"`，与 `confirm` 的 `"evolution.publish"` **可区分**，且目标须一致 | 「不把人工审核自动化」是红线；自动化**实施**不等于移除人工关。`op` 可区分 = 「不得跨阶段复用同一张审批单」的可执行形态 |
+  | ⑨ | 世代语义（R4）：`EvolutionOutcome.status` **+1** `implemented`；`crystallize` 的**返回值与文案逐字不动**（恒 `accepted`），既有用例保持绿 | change `0102` 刚把 `published` → `accepted` 诚实化（**不谎报发布**）；新增「已实施」只能**新增**词表项，SHALL NOT 悄悄改回 `published` |
+  | ⑩ | 不动既有 `Validator()` / `Evaluator()` 恒通过桩 | 它们是**另一件事**（生产验证门名副其实化），波及既有 `confirm`/`crystallize` 与观察期基线 ⇒ 列已知局限，不并入本切片 |
+
+- **为何不违反 `CORE-EVO-R3`「过验证门前不进入运行」**：筹备窗口内进程内模块**已加载、不重入 loop**；
+  窗口内不启动任何常驻进程 —— 起子进程的只有门禁本身，而**那正是「过门前的检验」**，不是「进入运行」；
+  补丁在人工复核落地之前不成为运行系统的行为（且落地后 `git` 工作树变更即可见、`EffectTracker` 有 undo）。
+- **影响**：
+  - 新增 `src/core/evolution/executor.py`（`PatchProposal` / `GateOutcome` 结构协议 / 范围守卫 +
+    归因一致性 / `EvolutionExecutor.prepare|commit`）、`src/core/evolution/author.py`
+    （`patch_author_with(llm, read_source)`，照 `summarize_with` / `sop_writer_with` 惯用法由组合根注入）。
+  - 改动 `evolution/models.py`（`ImplementationRecord` + 词表 +1）、`evolution/errors.py`
+    （**+2**：`IMPLEMENT_REJECTED`（未确认 / 守卫拒绝 / 未筹备 / 回退失败）与 `IMPLEMENT_STALE`
+    （工作树漂移）；未过门复用既有 `GATE_REJECTED`、复核缺失复用既有 `CONFIRM_REQUIRED`）、
+    `evolution/pending.py`（制品字段 + 落盘往返，
+    `record()` **保留**既有制品不静默抹掉）、`runtime.py`（`OPT_IN_MODULES` / `KNOWN_FEATURE_MODULES`
+    + 门控装配 + `Runtime.evolution_executor`）、`entry.py`（`KNOWN_FEATURE_MODULES` 注入 +
+    `evolve implement` 三件套 + `_sign_approval(op=…)`）。
+  - 测试：新 `tests/test_evolution_executor.py` / `_wiring.py` / `_cli.py` / `test_evolution_author.py`；
+    扩 `tests/test_feature_gating.py`（不动 `:84`）；`tests/test_evolution.py` **只增不改**（钉 R4）。
+  - 文档：`03-interfaces/evolution-interface.md`（§3.2 / §4 / §5 词表与错误码）、
+    `03-interfaces/configuration-interface.md` + `02-modules/configuration.md`（两谓词用途栏与
+    装配裁剪契约补「缺省关名单」）、`04-testing/test-cases.md`。
+- **已知局限（照实登记，不隐瞒）**：
+  1. 生产 `Validator()` / `Evaluator()` **仍是恒通过桩**（`runtime.py:564-574`：缺省 `review` 恒真、
+     `tests` 返空 dict ⇒ `passed` 恒真；无 `score_fn` ⇒ 留出分/基线/margin 恒 0、`verdict` 恒 `publish`）
+     ⇒ 既有 `confirm`/`crystallize` 路径的「过门」**不构成真实检验**，本切片的冻结门是当前**唯一**真门。
+     故新 Requirement 只承诺**冻结门**，**不**承诺留出评测参与实施验证。
+  2. 物理隔离**未落地**：隔离只到「操作面 + subprocess 门」，**不是**独立工作树 / 容器（R2 仅部分落地）。
+  3. `commit` 记录了 undo，但**未**新增 CLI 回退入口（沿总纲「回滚 = 卸载上一代」的完整形态留后续）。
+  4. 门禁自身产生的副产物（`build` 门的 `dist/`、`pytest` 的 `.pytest_cache`/`__pycache__`）**不**纳入
+     `EffectTracker` 回退 —— 它们不是被实施产物，属门禁的执行痕迹（**不**谎称「一切副作用可逆」）。
+  5. 门禁跑的是**全量既有测试**而范围守卫**禁止**改测试 ⇒ 当前表达力约等于「行为保持的重构 / 新增模块」，
+     会改变既有可观测行为的补丁**过不了门即回退**（fail-closed 的诚实结果，非缺陷）。
+- **与 E31 的关系（不改判）**：E31（13 个内部模块未入 `PluginRegistry`）的重开条件是「出现需要被
+  `promote` 的 `Plugin` 对象」。本切片产出的制品是**源文件补丁**（`PatchProposal`），**不是** `Plugin`
+  实例 ⇒ `promote(plugin)` 依旧无生产方，**未**触发重开；`INTERNAL_PLUGIN_IDS` 在此只作**归因白名单**
+  使用（沿用 change `0102` 的定位：它是归因对象身份，**非**注册表成员）。
+- **规格**：`evolution/spec.md` **MODIFIED**「架构级候选强制人工审批（HITL confirm gate）」（结局诚实
+  bullet 加限定语）+ **ADDED**「架构级候选的原生实施（可选）」；`configuration/spec.md` **MODIFIED**
+  「功能开关（feature flag）」（补第二条极性）。**非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2657,3 +2720,4 @@
 | ADR-0102 | 03-interfaces/plugin-registry-interface.md, 03-interfaces/mcp-interface.md |
 | ADR-0103 | 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 03-interfaces/orchestration-interface.md, 03-interfaces/beast-mode-interface.md, 03-interfaces/pet-mode-interface.md |
 | ADR-0104 | 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/phase-27.md |
+| ADR-0105 | 03-interfaces/evolution-interface.md, 03-interfaces/configuration-interface.md, 02-modules/configuration.md, 04-testing/test-cases.md, coding-plan/phase-27.md |

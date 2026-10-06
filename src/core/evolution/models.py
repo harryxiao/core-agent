@@ -53,10 +53,38 @@ class GenerationCandidate:
     target_plugin: str
     delta: dict[str, Any]
     kind: Literal["skill", "plugin"]
-    status: str = "pending"  # pending | confirmed | rejected（候选不得自动发布）
+    # pending | confirmed | rejected | implemented（implemented = 制品已复核落地）
+    status: str = "pending"  # 候选不得自动发布（低风险亦须显式 confirm）
     risk_level: Literal["low", "high"] = "low"  # 风险域：架构级(plugin)=high 必审；技能库级=low
     # 稳定身份：构造即固化、不依赖对象标识 —— 待确认队列跨进程可用（见 pending.py）
     candidate_id: str = field(default_factory=lambda: uuid4().hex[:12])
+
+
+@dataclass
+class ImplementationRecord:
+    """架构级候选的原生实施制品（`PendingItem` 的一个字段，与候选同生共死）。
+
+    ``before`` 是**应用之前**的目标文件原内容（筹备一开始就随本记录落盘）：崩溃/异常发生在
+    应用之后也不致把「被改过的内容」当成原内容。``gate`` 形如 ``{门名: {"passed": bool,
+    "reason": str}}``（纯 dict，落盘零转换）。``gated`` 标记「门禁全过、可复核」，
+    ``committed`` 标记「已复核落地」—— `commit` 只认前者为真者，落地后两者皆为真。
+    """
+
+    candidate_id: str
+    path: str  # 仓内相对路径（与范围守卫校验的同一形态）
+    before: str
+    content: str
+    gate: dict[str, dict[str, Any]] = field(default_factory=dict[str, dict[str, Any]])
+    gated: bool = False
+    committed: bool = False
+
+
+@dataclass
+class PatchProposal:
+    """补丁生产者交出的单文件补丁：`path` 由**归因**解析得出，`content` 是**完整**文件内容。"""
+
+    path: str
+    content: str
 
 
 @dataclass
@@ -83,7 +111,9 @@ class EvolutionOutcome:
     """一次进化闭环的最终产物。"""
 
     # published | accepted | pending | manual | rejected | rollback | no_evidence | dissolved
+    # | implemented
     # accepted = 人工已批准、待人工实施（架构级候选：无自动产物落地）
+    # implemented = 架构级候选的制品经人工复核后**已落地**（可选的原生执行器，见 executor.py）
     status: str
     diagnosis: DiagnosisReport | None = None
     candidate: GenerationCandidate | None = None

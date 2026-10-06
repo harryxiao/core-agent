@@ -157,18 +157,24 @@ class PendingItem:                       # 一条候选记录：候选 + 门禁/
     candidate: GenerationCandidate
     gate: GateReport | None = None
     eval: EvalReport | None = None       # 参数名对齐领域词表（遮蔽内建 eval）
+    implementation: ImplementationRecord | None = None   # 原生实施制品（change `0112`）
 
 class PendingQueue:
     def __init__(self, *, path: Path | None = None) -> None:
-        """``path`` 注入则整体落盘（候选 + 门禁 + 评测）并在启动时恢复；缺省纯内存。"""
+        """``path`` 注入则整体落盘（候选 + 门禁 + 评测 + 实施制品）并在启动时恢复；缺省纯内存。"""
     def record(self, candidate, gate=None, eval=None) -> None:
-        """登记一条候选（同 id 覆盖：门禁先行、评测补充）并落盘。"""
+        """登记一条候选（同 id 覆盖：门禁先行、评测补充）并落盘；**保留**既有制品不静默抹掉。"""
     def flush(self) -> None:                          # 候选状态变更后重写
     def records(self) -> list[PendingItem]: ...       # 台账快照（含已确认/已拒绝痕迹）
     def pending(self) -> list[GenerationCandidate]:   # 只含 status == "pending"
     def find(self, candidate_id: str) -> GenerationCandidate | None: ...
     def gate_of(self, candidate_id: str) -> GateReport | None: ...
     def eval_of(self, candidate_id: str) -> EvalReport | None: ...
+    def implementation_of(self, candidate_id: str) -> ImplementationRecord | None: ...
+    def attach_implementation(self, record: ImplementationRecord) -> bool:
+        """挂制品到**既有**候选记录；候选不在台账 ⇒ 返回 ``False``（不静默造条目）。"""
+    def clear_implementation(self, candidate_id: str) -> None: ...
+    def staged(self) -> list[ImplementationRecord]: ...   # 待复核（gated 且未 committed）
 
 # EvolutionEngine 增量
 def pending(self) -> list[GenerationCandidate]: ...   # 待确认快照（status == "pending"）
@@ -180,7 +186,7 @@ def reject(self, candidate: GenerationCandidate, *, reason: str | None = None) -
 | 维度 | 口径 |
 |---|---|
 | **稳定身份** | `GenerationCandidate.candidate_id`（UUID 前 12 位，**构造即固化**）——`Proposer._generation` 是进程内自增，跨进程不唯一，**不可作键**；门禁/评测检索一律按它 |
-| **结论随候选** | 门禁与评测报告与候选**同一条记录**落盘：不留「候选在而结论缺」的半状态（否则重启后 `crystallize` 误判 `GATE_REJECTED` / `EVAL_REGRESSED`） |
+| **结论随候选** | 门禁与评测报告、以及（可选）**原生实施制品**都与候选**同一条记录**落盘：不留「候选在而结论缺」的半状态（否则重启后 `crystallize` 误判 `GATE_REJECTED` / `EVAL_REGRESSED`） |
 | **待确认子集** | `pending()` 只列 `status == "pending"`；`confirm`/`reject` 后即出队，记录留在台账充当最小审计痕迹 |
 | **拒绝语义** | `reject` 置 `rejected` 并落盘；被拒候选 `crystallize` 抛 `CANDIDATE_PENDING` |
 | **持久化** | 组合根注入 `$CORE_STATE_DIR/evolution-pending.json`；缺省纯内存（零行为变化）；落盘缺失/损坏降级为**空台账**（不抛、不阻断启动） |
@@ -192,12 +198,62 @@ def reject(self, candidate: GenerationCandidate, *, reason: str | None = None) -
 | `evolve pending` | 列出待确认候选（id / 风险域 / 目标 / 问题摘要）；空则打印「待确认队列为空」 |
 | `evolve confirm <id>` | 确认并**立即结晶**（两步在一次动作内）；`risk_level="high"` 时**本命令即审批签发端**：构造 `ApprovalRequest(op="evolution.publish", target=候选目标, ...)` → `ApprovalWorkflow.approve()` → 携带获批单调 `confirm`。**结局文案按分支诚实**（change `0102`）：技能级 ⇒「已确认并发布：published」；架构级 ⇒「已批准（待人工实施）」（**不说「已发布」**） |
 | `evolve reject <id> [--note TEXT]` | 拒绝候选（不再发布，可附理由） |
+| `evolve implement <id> [--dry-run] [--approver NAME] [--note TEXT]` | 架构级候选的**原生实施**（**可选能力**，见 §3.3）：`--dry-run` = **筹备**（产出补丁 → 跑冻结门 → **回退**）并打印待复核 diff；缺省 = 复核后**永久落地**（结局 `implemented`）。**未启用执行器** ⇒ stderr 说明 + **rc 0**（能力关闭不是错误，沿 `_module_disabled` 惯例） |
 
 - **非待确认态不得复活**：`confirm`/`reject` 对不存在或非 `pending` 的候选一律给出反馈 + 非零退出。
 - **签发端在操作面、判定仍在引擎**：操作面即「人工」这一事实的来源；引擎只收单据做判定（`confirm` 三重门语义一字不动）。
 - **架构级结晶结局 = `accepted`**（change `0102`）：`confirm` 的**人工门一步不放宽**（`risk_level="high"`
   仍必须携带获批单），变的是**结晶结局的诚实性** —— 无产物落地就不报 `published`。
 - **驱动面不变**：`evolve run` 仍是「跑一轮」（§4.1），跑出 `pending` 时提示候选 id。
+- **原生实施是「第二阶段」，不是「第二个人工门」**（change `0112`）：`confirm` 批「**做什么**」、
+  `implement` 的复核批「**改得对不对**」；复核单 `op="evolution.implement"`，与 `confirm` 的
+  `evolution.publish` **不可互换**（跨阶段复用同一张单 ⇒ `CONFIRM_REQUIRED`）。
+
+### 3.3 原生实施执行器（可选，change `0112`）
+
+`accepted`（人工已批准、**待人工实施**）**不能**闭合架构总纲承诺的「验证通过 ⇒ 产出不可变世代」
+（`core_harness_architecture.md:150-153/158`）—— 缺的是最后一跳：把「已批准」变成「已落地」。
+`EvolutionExecutor` 补上这一跳，且**缺省不启用**（`features.evolution_executor`，fail-closed；
+取舍见 ADR-0105）。
+
+```python
+@dataclass
+class ImplementationRecord:              # 与候选同一条记录承载（PendingItem.implementation）
+    candidate_id: str
+    path: str                            # 仓内相对路径（与范围守卫校验的同一形态）
+    before: str                          # **应用之前**的目标文件原内容（先落盘再应用 ⇒ 崩溃安全）
+    content: str                         # 被复核的那一份补丁（完整文件内容）
+    gate: dict[str, dict[str, Any]]      # {门名: {"passed": bool, "reason": str}}
+    gated: bool = False                  # 门禁全过、可复核
+    committed: bool = False              # 已复核落地
+
+@dataclass
+class PatchProposal:                     # 补丁生产者交出的单文件补丁
+    path: str
+    content: str
+
+class EvolutionExecutor:
+    def __init__(self, *, author: PatchAuthor, run_gate: Callable[[str], GateOutcome],
+                 gates: tuple[str, ...], effects: EffectTracker,
+                 queue: PendingQueue, root: Path) -> None: ...
+    def prepare(self, candidate: GenerationCandidate) -> ImplementationRecord: ...
+    def commit(self, candidate: GenerationCandidate, *,
+               approval: Any | None = None) -> EvolutionOutcome: ...
+    def staged(self, candidate_id: str) -> ImplementationRecord | None: ...
+    def staged_all(self) -> list[ImplementationRecord]: ...
+```
+
+| 维度 | 口径 |
+|---|---|
+| **触发形态** | **操作面显式驱动**（`evolve implement`）：**不**挂 loop 热/冷路径节拍（同步跑四道门禁 = 阻塞热路径，且 `confirm` 是一次性进程 ⇒ 冷路径永不命中）、**不**注册为任何 Agent 工具（自改代码不经模型手）；两阶段、**复核前 SHALL NOT 落地** |
+| **补丁来源** | 注入的补丁生产者；组合根以 `patch_author_with(llm, read_source)` 接地（照 `summarize_with` / `sop_writer_with` 惯用法），执行器只依赖 `PatchAuthor` Protocol |
+| **归因一致** | 补丁路径 **SHALL** 由候选 `target_plugin`（须 ∈ `INTERNAL_PLUGIN_IDS`）经约定 `src/core/<点转斜杠>.py` 解析，且目标文件**必须存在** |
+| **范围守卫** | 白名单形态：仅 `src/core/` 内的 `.py`，减去**信任集**（`ci_cd/**`、`permission/**`、`evolution/**`、`configuration/**`、`runtime.py`、`entry.py`、`persistence.py`）；另拒绝对路径 / `..` 段 / 非 `.py` |
+| **门禁冻结** | 门名与命令取自**单一真源** `GATE_COMMANDS`（组合根注入，执行器**不自选**）；复用组合根既有 `gate_executor` |
+| **可逆** | 应用与落地各记一条 `Effect`（`undo` 恢复写入前内容）；筹备的临时应用在 `finally` 里回退 ⇒ 工作树不留改动；效应按 trace 分组（`evolution.prepare.<cid>` / `evolution.commit.<cid>`） |
+| **漂移拒绝** | 落地前校验目标文件当前内容与 `before` 一致 ⇒ 不符抛 `IMPLEMENT_STALE`（不把补丁盖到外部改动上）；筹备起点同样拒绝脏树 |
+| **已知局限** | 生产 `Validator`/`Evaluator` 仍是恒通过桩 ⇒ 本切片的冻结门是当前**唯一**真门；无物理隔离；`commit` 的 undo 无 CLI 回退入口；门禁副产物（`dist/`、`.pytest_cache`）不入回退（ADR-0105 照实登记） |
+
 
 ---
 
@@ -227,7 +283,8 @@ class EvolutionWorker:
 |---|---|---|
 | loop 收尾维护节拍 | 组合根把冷路径回调注入 `DefaultLoop(cold_path=...)`；与记忆维护**共用节拍闸门**（`maintenance_interval`），各自失败降级、不中断本轮 | 节拍只给**机会**，阈值门决定是否做事（未达阈值 `maybe_run()` 返回 `None`） |
 | loop 收尾 trace 完成回调（change `0101`） | 组合根把 `EvolutionWorker.on_trace_complete` 注入 `DefaultLoop(trace_observer=...)`；**按轮、不节流**（与 `cold_path` 是两个独立节律），在本轮**全部遥测记录完毕后**提交 `trace_id`（只登记、不触发、不阻塞），失败降级留痕 | 只**登记**已完成 trace（追加 `_completed`），是否跑 cycle 仍由阈值门在下次冷路径机会决定 |
-| 门控（change `0067`） | `features.evolution: false` ⇒ 组合根**不建**引擎/worker，`DefaultLoop(cold_path=None)` —— 冷路径连同其唯一消费者一起消失（不是「装配了但不做事」）；`evolve` 四子命令同时拒绝 | 门控关闭时 `Runtime.evolution` 为空，`Runtime.loop._cold_path` 为 `None` |
+| 门控（change `0067`） | `features.evolution: false` ⇒ 组合根**不建**引擎/worker，`DefaultLoop(cold_path=None)` —— 冷路径连同其唯一消费者一起消失（不是「装配了但不做事」）；`evolve` 五子命令同时拒绝 | 门控关闭时 `Runtime.evolution` 为空，`Runtime.loop._cold_path` 为 `None` |
+| 实施器门控（change `0112`） | `features.evolution_executor`（**缺省关**，`is_enabled` 判据，与上面**极性相反**）⇒ 组合根**不建** `EvolutionExecutor`；`evolve implement` 给出「能力已关闭」说明 + **rc 0** | 缺省 `Runtime.evolution_executor is None`；`features.evolution: false` 时实施器同样不存在（转出源码无处安放） |
 | CLI `core-agent evolve run [--goal ID]` | 装配 runtime → `maybe_run(force=True, goal=…)` → 打印结局（指定 `--goal` 时先回显「本轮目标」） | **一次性动作**，不启常驻进程、不改运行态；装配失败 → stderr + 退出码 1 |
 
 - **阈值门不搬进驱动面**：节奏语义（累计 trace 数）仍归 `EvolutionTrigger`，两处阈值必然漂移。
@@ -285,14 +342,19 @@ class CurriculumPlanner:
 | `CANDIDATE_PENDING` | 候选未过人工确认（禁止自动发布） |
 | `GATE_REJECTED` | 验证门拒绝（review / 运行时测试不过） |
 | `EVAL_REGRESSED` | 留出集退化（触发回滚） |
-| `CONFIRM_REQUIRED` | 架构级候选未获人工审批（无审批单 / 未批准 / 目标不符） |
+| `CONFIRM_REQUIRED` | 架构级候选未获人工审批（无审批单 / 未批准 / 目标不符）；原生实施的复核单缺失 / 未批准 / 目标不符 / `op` 非 `evolution.implement` 亦复用之 |
+| `IMPLEMENT_REJECTED` | 原生实施前置不满足（候选非已确认的架构级 / 归因不在白名单 / 范围守卫拒绝 / 未筹备即落地 / 筹备回退失败）——change `0112` |
+| `IMPLEMENT_STALE` | 目标文件自筹备以来已被改动（落地前漂移校验失败）——change `0112` |
 
-`EvolutionOutcome.status` 取值：`published` / `accepted` / `pending` / `manual` / `rejected` / `rollback` / `no_evidence` / `dissolved`（观察期自动溶解）。
+`EvolutionOutcome.status` 取值：`published` / `accepted` / `pending` / `manual` / `rejected` / `rollback` / `no_evidence` / `dissolved`（观察期自动溶解）/ `implemented`（制品已复核落地，change `0112`）。
 
 - `published` = **有产物落地**（技能级候选已写入技能库）。
 - `accepted` = **人工已批准、待人工实施**（架构级候选：本仓无「自动生成并装配新一代 `Plugin` 对象」
   的生产者，故批准只作**登记**，不产出任何发布物；**不谎报 `published`**）——change `0102`。
   两种结局**观察期开窗一致**（判「批准/发布之后是否回归」，与是否有产物无关）。
+- `implemented` = 架构级候选的**源文件补丁**经人工复核后**已永久落地**（`features.evolution_executor`
+  开启时的第二阶段结局）。它与 `published` 的区别在**产物形态**：`published` 是 L3 技能库产物，
+  `implemented` 是 `src/core/**` 源码补丁；`accepted` 的「未实施」诚实语义**不回退**为 `published`。
 
 ---
 

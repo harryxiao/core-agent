@@ -12,7 +12,7 @@ import pytest
 
 from core.configuration import ConfigManager
 from core.entry import main
-from core.runtime import GATABLE_MODULES, build_runtime
+from core.runtime import GATABLE_MODULES, KNOWN_FEATURE_MODULES, OPT_IN_MODULES, build_runtime
 
 _QX_TASK = "架构设计 / 蓝图与骨架生成"  # 与 beast.qinglong 神通 task_types 词元重合（同 A7）
 _QX_DOMAIN = "beast.qinglong"
@@ -82,6 +82,38 @@ def test_explicit_true_equals_default(tmp_path, state_dir) -> None:
 def test_gating_whitelist_is_pet_beast_evolution() -> None:
     """门控名单是组合根单一真源（规格正文点名同一组）。"""
     assert set(GATABLE_MODULES) == {"pet", "beast", "evolution"}
+
+
+# ---- 第二条极性：缺省关名单（change 0112） ----
+
+
+def test_opt_in_whitelist_is_evolution_executor() -> None:
+    """缺省关名单同样是组合根单一真源（规格正文点名）。"""
+    assert set(OPT_IN_MODULES) == {"evolution_executor"}
+
+
+def test_two_polarities_are_carried_by_separate_lists() -> None:
+    """两极性各由**独立**名单承载：同一个名字不会同时是「缺省开」与「缺省关」。"""
+    assert set(OPT_IN_MODULES) & set(GATABLE_MODULES) == set()
+
+
+def test_known_feature_modules_is_the_union() -> None:
+    """已知模块名集合 = 两名单之**并**（供未知开关名告警，账本 E20①）。"""
+    assert KNOWN_FEATURE_MODULES == GATABLE_MODULES + OPT_IN_MODULES
+    assert set(KNOWN_FEATURE_MODULES) == set(GATABLE_MODULES) | set(OPT_IN_MODULES)
+
+
+def test_opt_in_module_is_off_until_explicitly_true(monkeypatch, tmp_path) -> None:
+    """缺省关：未声明 ⇒ 关；显式 `false` ⇒ 关；只有显式 `true` ⇒ 开（fail-closed）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    undeclared = _manager(tmp_path, "undeclared")
+    off = _manager(tmp_path, "off", flags={"evolution_executor": False})
+    on = _manager(tmp_path, "on", flags={"evolution_executor": True})
+
+    assert undeclared.is_enabled("evolution_executor") is False
+    assert undeclared.is_disabled("evolution_executor") is False  # 缺省关 ≠ 缺省装配名单
+    assert off.is_enabled("evolution_executor") is False
+    assert on.is_enabled("evolution_executor") is True
 
 
 # ---- 关闭 ⇒ 装配面为空、装配期副作用不发生 ----
@@ -158,7 +190,8 @@ def test_is_disabled_polarity(monkeypatch, tmp_path) -> None:
 
 
 def test_is_enabled_semantics_unchanged(monkeypatch, tmp_path) -> None:
-    """`is_enabled`（显式开启查询，缺省 false）语义不变 —— 装配裁剪用 `is_disabled`。"""
+    """`is_enabled`（显式开启查询，缺省 false）语义不变 —— 缺省装配名单仍用 `is_disabled`，
+    缺省关名单（`OPT_IN_MODULES`）以本谓词作装配判据（见本文件第二条极性一节）。"""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     undeclared = _manager(tmp_path, "undeclared")
     on = _manager(tmp_path, "on", flags={"pet": True})
@@ -178,6 +211,7 @@ _REFUSALS = [
     ([], ["evolve", "pending"], "evolution"),
     ([], ["evolve", "confirm", "abc123"], "evolution"),
     ([], ["evolve", "reject", "abc123"], "evolution"),
+    ([], ["evolve", "implement", "abc123"], "evolution_executor"),
 ]
 
 

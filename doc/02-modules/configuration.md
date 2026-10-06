@@ -46,8 +46,12 @@ Configuration（横切）
   名单为组合根单一真源 `core.runtime.GATABLE_MODULES`）的可选模块**缺省装配** —— 未声明即开，
   仅显式 `false`（yaml / env `CORE_FEATURES_*` / CLI `--feature`）才**完全不装配**：不构造实例、
   不产生装配期副作用（`beast` 不注册神通、`pet` 不读 `pets.json`）、CLI 入口拒绝。谓词
-  `is_disabled`（缺省不关）与 `is_enabled`（显式开启查询，缺省 false）极性相反、用途不同。
+  `is_disabled`（缺省不关）与 `is_enabled`（缺省 false）极性相反、用途不同。
   feature flag 只管**装配**，不改模块自身二级开关（`pet.enabled`）。
+- **第二条极性：缺省关名单**（change `0112`）：`core.runtime.OPT_IN_MODULES`（`evolution_executor`）
+  内的能力**未声明即不装配**（fail-closed，仅显式 `true` 装配），由 `is_enabled` 消费 —— 自改代码的
+  执行器必须先被显式打开才存在。两条名单都是组合根单一真源，配置层只消费注入的
+  `KNOWN_FEATURE_MODULES`（二者之并，供未知开关名告警）。
 
 - feature flag **取值三面同口径**（change `0072`，账本 E20②、E23）：原生布尔与 `true/false`、`yes/no`、
   `on/off`、`1/0`（大小写不敏感、忽略首尾空白）归一为布尔；其余取值（`maybe` / 空串 / 映射）**校验期

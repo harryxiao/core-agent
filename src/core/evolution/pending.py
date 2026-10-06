@@ -9,6 +9,10 @@
 充当最小审计痕迹（不额外建归档结构）。未注入路径（``path=None``）纯内存（零行为变化、不写盘）；
 落盘缺失或损坏降级为空台账（不抛异常、不阻断启动）。
 
+架构级候选的**实施制品**（`ImplementationRecord`，见 executor.py）也挂在同一条记录上
+（`implementation` 字段）：候选的「门禁报告 / 评测报告 / 实施制品」同生共死，不建第二个
+持久化库 —— CLI 是一次性进程，制品不落盘则「已筹备待复核」只活在一次进程里（不可复核）。
+
 对应接口：doc/03-interfaces/evolution-interface.md §3.2
 ｜ 规格 evolution/spec.md「人工确认队列的持久化与操作面」
 """
@@ -21,16 +25,17 @@ from typing import Any, Literal, cast
 
 from core.persistence import read_state, write_state
 
-from .models import EvalReport, GateReport, GenerationCandidate
+from .models import EvalReport, GateReport, GenerationCandidate, ImplementationRecord
 
 
 @dataclass
 class PendingItem:
-    """一条候选记录：候选 + 其门禁/评测结论（同生共死，不留半状态）。"""
+    """一条候选记录：候选 + 其门禁/评测结论 + 实施制品（同生共死，不留半状态）。"""
 
     candidate: GenerationCandidate
     gate: GateReport | None = None
     eval: EvalReport | None = None
+    implementation: ImplementationRecord | None = None
 
 
 def _candidate_to_dict(candidate: GenerationCandidate) -> dict[str, Any]:
@@ -105,6 +110,38 @@ def _eval_from_dict(raw: Any) -> EvalReport | None:
     )
 
 
+def _implementation_to_dict(record: ImplementationRecord | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    return {
+        "candidate_id": record.candidate_id,
+        "path": record.path,
+        "before": record.before,
+        "content": record.content,
+        "gate": record.gate,
+        "gated": record.gated,
+        "committed": record.committed,
+    }
+
+
+def _implementation_from_dict(raw: Any) -> ImplementationRecord | None:
+    if not isinstance(raw, dict):
+        return None
+    data = cast("dict[str, Any]", raw)
+    if not data.get("path"):
+        return None
+    gate = data.get("gate")
+    return ImplementationRecord(
+        candidate_id=str(data.get("candidate_id") or ""),
+        path=str(data["path"]),
+        before=str(data.get("before") or ""),
+        content=str(data.get("content") or ""),
+        gate=cast("dict[str, dict[str, Any]]", gate) if isinstance(gate, dict) else {},
+        gated=bool(data.get("gated")),
+        committed=bool(data.get("committed")),
+    )
+
+
 class PendingQueue:
     """候选与结论台账：落盘恢复 + 待确认子集 + 出队语义。"""
 
@@ -119,11 +156,18 @@ class PendingQueue:
         gate: GateReport | None = None,
         eval: EvalReport | None = None,  # noqa: A002 — 对齐领域词表（EvalReport）
     ) -> None:
-        """登记一条候选（同 id 覆盖：门禁先行、评测补充），并落盘。"""
+        """登记一条候选（同 id 覆盖：门禁先行、评测补充），并落盘。
+
+        覆盖 SHALL **保留**已有实施制品 —— 四阶段回填（门禁/评测）与实施筹备是两条独立
+        驱动线，谁后写都不该抹掉对方（否则「制品落在台账」不成立）。
+        """
+        kept = self.implementation_of(candidate.candidate_id)
         self._records = [
             r for r in self._records if r.candidate.candidate_id != candidate.candidate_id
         ]
-        self._records.append(PendingItem(candidate=candidate, gate=gate, eval=eval))
+        self._records.append(
+            PendingItem(candidate=candidate, gate=gate, eval=eval, implementation=kept)
+        )
         self.flush()
 
     def flush(self) -> None:
@@ -157,6 +201,38 @@ class PendingQueue:
                 return record.eval
         return None
 
+    def implementation_of(self, candidate_id: str) -> ImplementationRecord | None:
+        """该候选的实施制品（未筹备 ⇒ ``None``）。"""
+        for record in self._records:
+            if record.candidate.candidate_id == candidate_id:
+                return record.implementation
+        return None
+
+    def attach_implementation(self, record: ImplementationRecord) -> bool:
+        """把实施制品挂到**已存在**的候选记录上；该候选不在台账 ⇒ ``False``（不凭空造条目）。"""
+        for item in self._records:
+            if item.candidate.candidate_id == record.candidate_id:
+                item.implementation = record
+                self.flush()
+                return True
+        return False
+
+    def clear_implementation(self, candidate_id: str) -> None:
+        """摘掉该候选的实施制品（重新筹备 / 门禁不过时用：不留半份或过期制品）。"""
+        for item in self._records:
+            if item.candidate.candidate_id == candidate_id:
+                item.implementation = None
+                self.flush()
+                return
+
+    def staged(self) -> list[ImplementationRecord]:
+        """**待复核**制品（门禁已过、尚未落地）—— 已落地的不再出现。"""
+        return [
+            r.implementation
+            for r in self._records
+            if r.implementation is not None and not r.implementation.committed
+        ]
+
     def _load(self) -> None:
         raw = read_state(self._path)
         if not isinstance(raw, dict):
@@ -176,6 +252,7 @@ class PendingQueue:
                     candidate=_candidate_from_dict(record),
                     gate=_gate_from_dict(record.get("gate")),
                     eval=_eval_from_dict(record.get("eval")),
+                    implementation=_implementation_from_dict(record.get("implementation")),
                 )
             )
 
@@ -188,6 +265,7 @@ class PendingQueue:
                         **_candidate_to_dict(r.candidate),
                         "gate": _gate_to_dict(r.gate),
                         "eval": _eval_to_dict(r.eval),
+                        "implementation": _implementation_to_dict(r.implementation),
                     }
                     for r in self._records
                 ]

@@ -24,6 +24,19 @@
 
 from __future__ import annotations
 
+CORE_ROOT = "src/core"  # 内部核心模块源码根（与范围守卫的校验形态同一口径）
+
+
+def module_path(plugin_id: str) -> str:
+    """归因目标 id ⇒ 其源码文件（仓内相对路径）：`a.b` → `src/core/a/b.py`。
+
+    归因白名单是「id ↔ 模块」知识的**唯一**居所，故该约定与名单同处一文件。约定不得漂移：
+    原生执行的**路径与归因一致**校验与范围守卫都建立在它之上；14 个 id 如实命中真实文件，
+    另有派生不变量用例守护（`tests/test_evolution_author.py`）。
+    """
+    return f"{CORE_ROOT}/{plugin_id.replace('.', '/')}.py"
+
+
 INTERNAL_PLUGIN_IDS: frozenset[str] = frozenset(
     {
         "composition.engine",
