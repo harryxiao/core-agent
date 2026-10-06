@@ -219,7 +219,7 @@
 - 涉及文件清单：`doc/openspec/specs/{evolution,observability,loop}/spec.md`、
   `src/core/observability/events.py`、`src/core/loop/default.py`、`src/core/evolution/{worker,proposer,engine,plugin_ids}.py`、
   `src/core/runtime.py`、`src/core/entry.py` + 对应测试。
-- **不**提交：`phase-21-findings.md`（审计工作底稿，仅本地参考）。
+- **不**提交：`phase-21-findings.md`（审计工作底稿，仅本地参考）。（**2026-10-06 订正**：**已提交入库** —— 归档 change `0101` 的 proposal 以本文件为审计出处，不入库该引用即悬空；同上 §9 末补记。）
 - **转出账本**（§1.4 两项）须在 `phase-19.md` §5 或 `phase-20.md` 登记为待办行。
 
 ---
@@ -242,4 +242,4 @@
   ADR-0100：生产方接线到 loop 非终止动作分支）；② 13（后为 14）模块纳入注册表 + 世代晋升（= `phase-19.md`
   **E31**）—— ⚖️ **改判为「裁决：不纳入」**（change `0107`／ADR-0100：零消费者 / 形态即空转 / 前置条件更远；
   重开条件 = 有新一代 `Plugin` 对象生产者，已记入 ADR-0100 与 `plugin_ids.py` docstring）。
-- **未提交**：`coding-plan/phase-21-findings.md`（审计工作底稿，仅本地参考）。
+- **未提交**：`coding-plan/phase-21-findings.md`（审计工作底稿，仅本地参考）。（**2026-10-06 补记**：**已提交入库** —— 原判「仅本地参考」作废，理由同上：`doc/openspec/changes/archive/2026-10-05-0101-trace-module-attribution/proposal.md` 正文以「审计（`coding-plan/phase-21-findings.md`）」为证据出处，底稿不入库则该引用不可达。历史正文不改写，仅追加此条。）
