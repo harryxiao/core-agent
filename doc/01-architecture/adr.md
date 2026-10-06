@@ -3286,6 +3286,32 @@
 
 ---
 
+## ADR-0121：可逆效应账的清账与幂等（change 0128 / phase-34 E67）
+
+- **背景**：`coding-plan/phase-34.md` 登记的 **E67**（中危）。`plugin_registry/effect_tracker.py:61-78`
+  的 `rollback` **只撤不清**：撤销成功后既不移除 `_effects[id]`、也不清 `_by_trace[trace]`，且**无
+  `clear` 方法**。后果二：① 对同一 `trace_id` **再滚一次**，快照仍含全部 `EffectId` ⇒ **undo 被二次
+  调用**（P2「可逆」退化为**非幂等**）；② `_effects` 只增不减，`runtime.py:343` 的**全进程单例** tracker
+  内存**无界增长**。可达面：`fault_tolerance.py:138` `Rollback.on_failure`、`loop/default.py:284` 与
+  `:523`、`durability/manager.py:148` 均按 trace 回滚 —— 任何「同一 trace 被回滚两次」的路径（重试 /
+  恢复 / 中断后收尾）都会走到。规格面：`grep -rn EffectTracker doc/openspec/specs/` **仅** `evolution`
+  间接提及，该能力**无 canonical 归属** ⇒ 补 **ADDED Requirement**（**非** `skip_specs`）。
+- **决策①：清账放在 `rollback` 内部（隐式），另给 `clear`（显式）。** 回滚的语义就是「这一轮到此结束」：
+  账目留着既无待撤销项、又让幂等失效 ⇒ 撤销成功即出账；而 `clear(trace_id=None)` 覆盖「只想**丢弃**
+  账目、**不执行**撤销」的场景（调用方已另行恢复现场），两者职责不同、不可互相替代。
+- **决策②：撤销失败者留账隔离，且其 trace 键不因清账而删。** 失败项须继续可见于 `audit`（留痕优于
+  抹掉）、并由 `undo_failed` 报告；trace 映射只在**已无未了结项**时删键（避免空键残留）。
+- **决策③：不可逆效应随清账一并出账（不永久留账）。** 它从未被撤销、也无失败可隔离；若留下，
+  「账目 SHALL NOT 无界增长」会在**最易触发**的路径（每次 `code_run` 记一条不可逆效应）上失效。
+- **已知局限**：① **未回滚**过的 trace 仍按原设计留账（账目随 trace 数增长）—— 本 change 只保证
+  「已回滚的 trace 彻底出账」，不做 TTL / 上限淘汰。② 已出账的 `EffectId` 再 `replay` 抛 `KeyError`
+  （与「未知 id」同型，不另立错误码）。③ undo 闭包仍在**不持锁**处调用（保留既有「撤销闭包可重入
+  tracker」的设计），故并发同 trace 双回滚不在本 change 的保证范围内（顺序重复回滚已幂等）。
+- **规格**：`plugin-registry`（**ADDED**「可逆效应追踪（清账与幂等）」—— 账 / 回滚 / 清账三件套的 SHALL
+  口径 + **4** Scenario：出账与幂等 / 账清空且 trace 隔离 / 失败留账隔离 / 显式清账不触发 undo）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3401,3 +3427,4 @@
 | ADR-0118 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/phase-33.md |
 | ADR-0119 | 03-interfaces/orchestration-interface.md, 02-modules/orchestration.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0120 | 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0121 | 02-modules/plugin-registry.md, 03-interfaces/plugin-registry-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

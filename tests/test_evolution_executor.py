@@ -269,8 +269,12 @@ def test_prepare_restores_worktree_and_stages_artifact(tree: Path) -> None:
         _GATES, True
     )
     assert queue.implementation_of(candidate.candidate_id) is not None, "制品落既有候选台账"
-    report = effects.rollback(f"{PREPARE_TRACE}.{candidate.candidate_id}")
-    assert report.reverted and not report.undo_failed, "筹备的临时应用是可逆效应"
+    # 筹备的临时应用**是**可逆效应（工作树复原即其 undo 的实证）：`_run_gates` 的 finally 内
+    # 已按 trace 回退并**清账**（change 0128 / E67）⇒ 再滚一次为空、不二次撤销。
+    trace = f"{PREPARE_TRACE}.{candidate.candidate_id}"
+    report = effects.rollback(trace)
+    assert report.reverted == [] and report.undo_failed == [], "筹备已清账 ⇒ 重复回滚幂等"
+    assert effects.audit(trace) == []
 
 
 def test_prepare_requires_confirmed_candidate(tree: Path) -> None:

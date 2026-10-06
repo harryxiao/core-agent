@@ -65,14 +65,23 @@ class EffectTracker:
         """记录一个可逆效应及其撤销闭包。"""
 
     def rollback(self, trace_id: str | None = None) -> RollbackReport:
-        """回滚：按 trace_id 回滚单轮；None 则全局回滚。"""
+        """回滚：按 trace_id 逆序回滚单轮；None 则全局回滚。撤销成功即**出账**。"""
+
+    def clear(self, trace_id: str | None = None) -> None:
+        """显式清账：移除账目（trace 级 / 全局），**不**触发任何 undo。"""
 
     def replay(self, effect_id: EffectId) -> None:
         """重放（复现）某效应，用于可观测性。"""
 
     def audit(self, trace_id: str) -> list[Effect]:
-        """审计：某轮的所有效应记录。"""
+        """审计：某轮**尚未了结**（未出账）的效应记录；回滚成功后为空。"""
 ```
+
+**清账与幂等（change `0128` / ADR-0121 / E67）**：回滚 SHALL 清账 —— 撤销**成功**的效应与
+**不可逆**效应随即出账（`EffectId` 离账、trace 映射同步清理、空键删除），故同一 trace **重复回滚
+SHALL NOT 二次撤销**、账目 SHALL NOT 无界增长（`EffectTracker` 在进程中为长驻单例）。撤销**失败**者
+**留账隔离**（`audit` 仍可见，并由 `RollbackReport.undo_failed` 报告），SHALL NOT 静默丢弃；单条失败
+不中断其余撤销。已出账的 `EffectId` 再 `replay` 抛 `KeyError`。
 
 `Effect` 结构：
 

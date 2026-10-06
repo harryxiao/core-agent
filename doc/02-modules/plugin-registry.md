@@ -50,6 +50,9 @@ effect = {
 ```
 
 - 所有写操作必须 `record(effect)`；undo 栈按 trace_id 分组，支持**按轮回滚**或**全局回滚**。
+- **回滚清账（change `0128` / ADR-0121）**：撤销**成功**的效应与**不可逆**效应随即出账 ⇒ 同一 trace
+  **重复回滚不二次撤销**、账目**不无界增长**（tracker 为长驻单例）；撤销**失败**者**留账隔离**（仍在
+  `audit` 可见，由 `undo_failed` 报告，绝不静默丢弃）；`clear(trace_id=None)` 提供只清账、不撤销的入口。
 - 不可逆效应（`reversible: false`）必须提前通过确认门（ask_user），并进入特殊审计区。
 
 ### 3.3 Coeffect 解析

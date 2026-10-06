@@ -676,6 +676,19 @@
 
 ---
 
+## 44. 可逆效应账的清账与幂等（TC-EFFECT，change `0128`／ADR-0121，账本 E67）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-EFFECT-01 | plugin-registry/spec.md「可逆效应追踪（清账与幂等）」（撤销成功后出账且重复回滚不二次撤销） | 同一 trace 记两条可逆效应，**连滚两次** | 首次逆序各调一次 undo、二者均入 `reverted`；第二次 `reverted` / `undo_failed` **均空**且 undo **不再被调用**（锚点：`tests/test_plugin_registry.py::test_rollback_clears_ledger_and_is_idempotent`） |
+| TC-EFFECT-02 | 同上（回滚后账目清空且不越界） | 记 `t1` / `t2` 两轮效应，回滚 `t1`；再对全局回滚 | `audit("t1") == []` 而 `t2` 逐条不受影响；全局回滚后两轮皆空（锚点：`::test_rollback_is_trace_scoped`、`::test_rollback_clears_all_traces_globally`） |
+| TC-EFFECT-03 | 同上（撤销失败者留账隔离） | 同一 trace 一条 undo 抛异常、另一条正常，回滚该 trace | 失败者入 `undo_failed` 且**仍在账**（`audit` 可见），正常者出账，回滚**不抛**异常（锚点：`::test_effect_tracker_undo_failed_stays_in_ledger`） |
+| TC-EFFECT-04 | 同上（不可逆效应不参与撤销、随清账出账） | 记一条 `reversible=False` 效应后回滚 | undo **未被调用**、`reverted` / `undo_failed` 均空、`audit` 为空（锚点：`::test_irreversible_effect_is_cleared_without_undo`） |
+| TC-EFFECT-05 | 同上（显式清账不触发撤销） | `clear("t1")` 后 `clear()` | 两轮账目均移除且**未调用任何 undo**（锚点：`::test_clear_removes_ledger_without_undo`） |
+| TC-EFFECT-06 | 同上（回归：筹备的临时应用仍在 finally 内回退并清账） | 进化筹备（四门全过）后对 `prepare` trace 再滚一次 | `reverted` / `undo_failed` 均空、`audit` 为空（筹备已清账 ⇒ 幂等）（锚点：`tests/test_evolution_executor.py::test_prepare_restores_worktree_and_stages_artifact`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

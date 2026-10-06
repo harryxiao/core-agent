@@ -4,12 +4,13 @@
 - 注册并校验 / 卸载干净 / 并发热插拔原子性 / 注册超时
 - 依赖满足 / 循环依赖检测
 - 能力边界 / 插件崩溃隔离
-以及 EffectTracker / CoeffectResolver 的可逆效应与密钥句柄语义。
+以及 EffectTracker（清账与幂等）/ CoeffectResolver 的可逆效应与密钥句柄语义。
 """
 
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -141,6 +142,32 @@ def test_crash_isolation() -> None:
     assert registry.state("good") is PluginState.LOADED
 
 
+def _effect(
+    target: str,
+    *,
+    trace_id: str,
+    undo: Callable[[], None] | None = None,
+    reversible: bool = True,
+) -> Effect:
+    """构造一条可逆效应；``undo`` 缺省为空操作。"""
+    return Effect(
+        op="file_write",
+        target=target,
+        undo=undo if undo is not None else (lambda: None),
+        reversible=reversible,
+        coeffect=["filesystem:write"],
+        trace_id=trace_id,
+        ts=1.0,
+    )
+
+
+def _recorder(seen: list[str], name: str) -> Callable[[], None]:
+    def undo() -> None:
+        seen.append(name)
+
+    return undo
+
+
 def test_effect_tracker_rollback_and_audit() -> None:
     tracker = EffectTracker()
     applied: list[str] = []
@@ -173,31 +200,93 @@ def test_effect_tracker_rollback_and_audit() -> None:
             ts=2.0,
         )
     )
+    assert tracker.audit("t1") == [tracker.replay(e1), tracker.replay(e2)]
     report = tracker.rollback("t1")
     assert applied == ["b", "a"]  # 逆序撤销
     assert set(report.reverted) == {e1, e2}
-    assert tracker.audit("t1") == [tracker.replay(e1), tracker.replay(e2)]
+    assert tracker.audit("t1") == []  # 撤销成功即出账（change 0128）
 
 
-def test_effect_tracker_undo_failed() -> None:
+def test_rollback_clears_ledger_and_is_idempotent() -> None:
+    """回滚后账目清空 ⇒ 同一 trace 重复回滚不二次撤销（change 0128 / E67）。"""
+    tracker = EffectTracker()
+    applied: list[str] = []
+    tracker.record(_effect("a", trace_id="t1", undo=_recorder(applied, "a")))
+    tracker.record(_effect("b", trace_id="t1", undo=_recorder(applied, "b")))
+
+    first = tracker.rollback("t1")
+    assert applied == ["b", "a"]
+    assert first.undo_failed == []
+    assert len(first.reverted) == len(applied)
+    assert tracker.audit("t1") == []
+
+    second = tracker.rollback("t1")
+    assert second.reverted == []
+    assert second.undo_failed == []
+    assert applied == ["b", "a"]
+
+
+def test_rollback_clears_all_traces_globally() -> None:
+    tracker = EffectTracker()
+    tracker.record(_effect("a", trace_id="t1"))
+    tracker.record(_effect("b", trace_id="t2"))
+
+    tracker.rollback()
+    assert tracker.audit("t1") == []
+    assert tracker.audit("t2") == []
+
+
+def test_rollback_is_trace_scoped() -> None:
+    tracker = EffectTracker()
+    tracker.record(_effect("a", trace_id="t1"))
+    kept = tracker.record(_effect("b", trace_id="t2"))
+
+    tracker.rollback("t1")
+    assert tracker.audit("t1") == []
+    assert tracker.audit("t2") == [tracker.replay(kept)]
+
+
+def test_irreversible_effect_is_cleared_without_undo() -> None:
+    tracker = EffectTracker()
+    applied: list[str] = []
+    tracker.record(_effect("proc", trace_id="t", undo=_recorder(applied, "proc"), reversible=False))
+
+    report = tracker.rollback("t")
+    assert report.reverted == []
+    assert report.undo_failed == []
+    assert applied == []  # 不可逆：不撤销
+    assert tracker.audit("t") == []  # 随清账出账
+
+
+def test_effect_tracker_undo_failed_stays_in_ledger() -> None:
     tracker = EffectTracker()
 
     def failing_undo() -> None:
         raise RuntimeError
 
-    tracker.record(
-        Effect(
-            op="file_write",
-            target="x",
-            undo=failing_undo,
-            reversible=True,
-            coeffect=[],
-            trace_id="t",
-            ts=1.0,
-        )
-    )
+    failed = tracker.record(_effect("x", trace_id="t", undo=failing_undo))
+    ok = tracker.record(_effect("y", trace_id="t"))
+
     report = tracker.rollback("t")
-    assert report.undo_failed != []
+    assert report.undo_failed == [failed]
+    assert report.reverted == [ok]
+    assert [e.target for e in tracker.audit("t")] == ["x"]  # 失败者留账隔离
+
+
+def test_clear_removes_ledger_without_undo() -> None:
+    tracker = EffectTracker()
+    applied: list[str] = []
+    tracker.record(_effect("a", trace_id="t1", undo=_recorder(applied, "a")))
+    tracker.record(_effect("b", trace_id="t2", undo=_recorder(applied, "b")))
+
+    tracker.clear("t1")
+    assert applied == []  # 清账不触发 undo
+    assert tracker.audit("t1") == []
+    assert tracker.audit("t2") != []
+
+    tracker.clear()
+    assert applied == []
+    assert tracker.audit("t2") == []
 
 
 def test_coeffect_resolve_missing() -> None:
