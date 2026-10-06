@@ -54,6 +54,7 @@ from core.mcp import (
     default_endpoint_name,
     mcp_endpoints_path,
 )
+from core.memory import TranscriptStore
 from core.notes import NoteError, NoteStore, render_note
 from core.orchestration import Plan, TaskScheduler, plan_from_dict
 from core.permission import (
@@ -232,6 +233,8 @@ def _add_session_parser(sub: Any) -> None:
     sess_sub = session.add_subparsers(dest="session_cmd", metavar="<session-cmd>")
     sess_sub.add_parser("create", help="新建会话（返回 session_id）")
     sess_sub.add_parser("list", help="枚举对话会话（跨入口共享）")
+    show = sess_sub.add_parser("show", help="打印该会话的对话转录")
+    show.add_argument("session_id", metavar="<session-id>")
 
 
 def _add_memory_parser(sub: Any) -> None:
@@ -335,6 +338,12 @@ def _add_beast_parser(sub: Any) -> None:
 def _add_global_flags(parser: argparse.ArgumentParser) -> None:
     # 启动参数（F1-F3）
     parser.add_argument("--profile", metavar="P", help="Bundle 组合清单（独立文件）")
+    parser.add_argument(
+        "--session",
+        metavar="ID",
+        dest="session_id",
+        help="交互入口续聊既有会话（缺省新建；同 run --session 语义）",
+    )
     parser.add_argument("--cwd", metavar="DIR", help="工作目录")
     parser.add_argument(
         "--config",
@@ -428,11 +437,11 @@ def _build_ui(args: argparse.Namespace, *, interactive: bool = False) -> UIAPILa
 
 
 def _repl(args: argparse.Namespace) -> int:
-    """无子命令进入 Textual 交互会话循环（阻塞，退出后返回）。"""
+    """无子命令进入 Textual 交互会话循环（阻塞，退出后返回）；`--session` 续聊既有会话。"""
     api = _build_ui(args, interactive=True)
     if api is None:
         return 1
-    CLIBridge(api=api).connect()
+    CLIBridge(api=api, session_id=args.session_id or "").connect()
     return 0
 
 
@@ -1030,8 +1039,27 @@ def _session(args: argparse.Namespace) -> int:
         for entry in entries:
             print(f"{entry['session_id']} ({entry['mode']})")
         return 0
-    print("用法: core-agent session create | list", file=sys.stderr)
+    if args.session_cmd == "show":
+        return _session_show(registry, args.session_id)
+    print("用法: core-agent session create | list | show <session-id>", file=sys.stderr)
     return 1
+
+
+def _session_show(registry: SessionRegistry, session_id: str) -> int:
+    """打印该会话的对话转录（与内核回灌**同一** `TranscriptStore`，不另建副本）。
+
+    未登记标识 fail-closed 拒绝（不放宽会话校验）；无转录 ⇒ 明示、退出码 0（不伪造内容）。
+    """
+    if not registry.exists(session_id):
+        print(f"会话不存在: {session_id}", file=sys.stderr)
+        return 1
+    entries = TranscriptStore(path=_state_path("messages.jsonl")).read(session_id)
+    if not entries:
+        print("（无对话记录）")
+        return 0
+    for entry in entries:
+        print(f"{entry['role']}: {entry['content']}")
+    return 0
 
 
 def _memory(args: argparse.Namespace) -> int:

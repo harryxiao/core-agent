@@ -65,8 +65,13 @@ def _streaming_api() -> tuple[UIAPILayer, str]:
 def test_three_modes_share_api_layer() -> None:
     api = UIAPILayer()
     connected: list[UIAPILayer] = []
-    CLIBridge(api=api, connect_impl=connected.append).connect()
+    CLIBridge(api=api, connect_impl=lambda a, _s: connected.append(a)).connect()
     assert connected == [api]
+    resumed: list[tuple[UIAPILayer, str]] = []
+    CLIBridge(
+        api=api, connect_impl=lambda a, s: resumed.append((a, s)), session_id="sid-1"
+    ).connect()
+    assert resumed == [(api, "sid-1")]
     calls: list[tuple] = []
     WebBridge(api=api, serve_impl=lambda a, h, p: calls.append((a, h, p))).serve("0.0.0.0", 8000)
     assert calls == [(api, "0.0.0.0", 8000)]

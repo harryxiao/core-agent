@@ -61,6 +61,12 @@ ConfigSpec ──generate_*──► CLI 参数面 / env 变量面 / yaml schema
 - 命令路由与参数映射都由 ConfigSpec 单一真源收敛，配置项定义一处、三面生成，杜绝参数面漂移。
 - 非法 map_to（目标不存在或冲突）在启动时阻断，防止映射错配进入运行期。
 
+**会话命令族（change 0116 / ADR-0109）**：`session create`（新建并登记共享注册表）、
+`session list`（枚举标识 + 模式）、`session show <session_id>`（打印该会话转录，取自内核回灌的
+**同一** `TranscriptStore`；无转录 ⇒ 明示、退出码 0；未登记 ⇒ 非零退出码）；无子命令的交互入口接受
+顶层 `--session <session_id>` **续聊**既有会话（复用标识、不新建；未登记 fail-closed）。语义与
+`run --session` 一致（同 `dest`；`argparse` 子解析器默认值不覆盖已置属性 ⇒ 二者不冲突）。
+
 ---
 
 ## 5. 错误处理

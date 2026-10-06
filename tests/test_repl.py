@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from core.configuration.models import LLMConfig
 from core.loop import LoopEvent, LoopResult
-from core.ui import Event, UIAPILayer, UiErrorCode
+from core.memory import TranscriptStore
+from core.ui import Event, UIAPILayer, UiError, UiErrorCode
 from core.ui.repl import _format_event, barge_in_event, build_app, format_task_event, repl_loop
 
 
@@ -400,3 +403,59 @@ def test_tui_action_widget_lifecycle() -> None:
     assert "⏺ Bash ✓ (1.5s)" in text  # 友好名 + 完成标题（tools.code_run → Bash）
     assert "参数" not in text  # 回显不含原始参数（args 不进用户可见层）
     assert "输出：1" in text  # 展开区：输出节选
+
+
+# ---- 会话续聊（`--session <id>`，change 0116） ----
+
+
+def _api_with_history(turns: list[tuple[str, str]]) -> tuple[UIAPILayer, str]:
+    """真 `TranscriptStore` + 已发生若干轮的会话（返回 api 与 session_id）。"""
+    transcript = TranscriptStore()
+    api = UIAPILayer(loop=RecordingLoop(), transcript=transcript)
+    api.set_llm_config(_llm())
+    session_id = api.create_session("cli")
+    for user, reply in turns:
+        transcript.append(session_id, "user", user)
+        transcript.append(session_id, "assistant", reply)
+    return api, session_id
+
+
+def _timeline_texts(app: object) -> list[str]:
+    async def drive() -> list[str]:
+        async with app.run_test() as pilot:  # type: ignore[attr-defined]
+            await pilot.pause()
+            return [str(w.render()) for w in app.query("#timeline Static")]  # type: ignore[attr-defined]
+
+    return asyncio.run(drive())
+
+
+def test_build_app_resumes_existing_session(monkeypatch) -> None:
+    """`--session <id>` 续聊：复用既有会话（不新建），既有转录渲染进时间线。"""
+    api, session_id = _api_with_history([("早前的问题", "早前的回答")])
+    monkeypatch.setattr(api, "create_session", lambda *a, **kw: pytest.fail("不应新建会话"))
+
+    texts = _timeline_texts(build_app(api, session_id))
+
+    assert any("早前的问题" in text for text in texts)
+    assert any("早前的回答" in text for text in texts)
+
+
+def test_build_app_rejects_unknown_session() -> None:
+    """续接未登记会话：fail-closed 抛 `UiError`，且不静默新建会话顶替。"""
+    api = UIAPILayer(loop=RecordingLoop())
+    api.set_llm_config(_llm())
+
+    with pytest.raises(UiError):
+        build_app(api, "nope")
+
+    assert api.list_sessions() == []
+
+
+def test_build_app_default_creates_session() -> None:
+    """缺省不传 `session_id`：新建会话（既有行为不变）。"""
+    api = UIAPILayer(loop=RecordingLoop())
+    api.set_llm_config(_llm())
+
+    build_app(api)
+
+    assert len(api.list_sessions()) == 1

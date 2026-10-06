@@ -22,16 +22,18 @@ class CLIBridge:
         self,
         *,
         api: UIAPILayer | None = None,
-        connect_impl: Callable[[UIAPILayer], None] | None = None,
+        connect_impl: Callable[[UIAPILayer, str], None] | None = None,
+        session_id: str = "",
     ) -> None:
         self._api = api if api is not None else UIAPILayer()
         self._connect_impl = connect_impl if connect_impl is not None else _default_connect
+        self._session_id = session_id
 
     def connect(self) -> None:
-        """进入交互会话循环（真实 Textual 循环经 connect_impl 注入）。"""
-        self._connect_impl(self._api)
+        """进入交互会话循环（真实 Textual 循环经 connect_impl 注入；非空会话标识 ⇒ 续聊）。"""
+        self._connect_impl(self._api, self._session_id)
 
 
-def _default_connect(api: UIAPILayer) -> None:
+def _default_connect(api: UIAPILayer, session_id: str = "") -> None:
     """启动真实 Textual 交互会话循环（经 repl 适配器）。"""
-    _run_repl(api)
+    _run_repl(api, session_id)

@@ -160,7 +160,7 @@ core-agent 内核（loop / memory / tool-use / mcp / evolution / permission / �
 | 阶段 | 交付 | 说明 |
 |---|---|---|
 | P1 | 后端 API 层 | ✅ 已落地：FastAPI 暴露 loop/session/memory/tools + SSE 流式；CLI 直连内核先跑通 |
-| P2 | Web SPA | 🟡 已落地（`0100`）：会话（chat + SSE）/ **设置（LLM API 配置）** 两页；会话管理 / 用量页未做 |
+| P2 | Web SPA | 🟡 已落地（`0100`，`0116`）：会话（chat + SSE + **右栏会话列表 / 切换 / 历史**）/ **设置（LLM API 配置）** 两页；会话**重命名 / 删除**、用量页未做 |
 | P3 | Tauri 桌面壳 | 🟡 壳与 sidecar 已落地（`0100`）；**打包安装包未验证**（未入四门） |
 | P4 | Textual CLI | ⬜ 未做：复刻 Ink 式交互（折叠块 / diff 高亮 / 多面板 / 焦点管理） |
 

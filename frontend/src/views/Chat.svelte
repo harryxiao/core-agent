@@ -1,29 +1,48 @@
 <script>
-  import { createSession, runStream } from "../lib/api.js";
+  import { fetchMessages, runStream } from "../lib/api.js";
 
-  let sessionId = $state("");
+  // 会话由父组件持有（右栏列表同一真源）；本组件只负责该会话的呈现与发送。
+  let { sessionId = "", onTurnEnd = () => {} } = $props();
+
   let input = $state("");
   let lines = $state([]);
   let busy = $state(false);
   let error = $state("");
 
-  async function ensureSession() {
-    if (sessionId) return sessionId;
-    const body = await createSession();
-    sessionId = body.session_id;
-    return sessionId;
-  }
+  // 切会话 ⇒ 拉该会话转录并按追加次序渲染（竞态守门：回来时目标会话已变则丢弃）。
+  $effect(() => {
+    const sid = sessionId;
+    if (!sid) {
+      lines = [];
+      return;
+    }
+    (async () => {
+      try {
+        const body = await fetchMessages(sid);
+        if (sid !== sessionId) return;
+        lines = (body.messages ?? []).map((m) => ({
+          role: m.role === "user" ? "user" : "agent",
+          text: m.content,
+        }));
+      } catch (exc) {
+        if (sid === sessionId) error = String(exc.message || exc);
+      }
+    })();
+  });
 
   async function send() {
     const text = input.trim();
     if (!text || busy) return;
+    if (!sessionId) {
+      error = "请先新建或选择会话";
+      return;
+    }
     error = "";
     busy = true;
     input = "";
     lines = [...lines, { role: "user", text }];
     try {
-      const sid = await ensureSession();
-      for await (const ev of runStream(sid, text)) {
+      for await (const ev of runStream(sessionId, text)) {
         if (ev.type === "error") {
           error = `${ev.payload.code}: ${ev.payload.message}`;
         } else if (ev.type === "loop.result" || ev.type === "loop.error") {
@@ -35,12 +54,13 @@
       error = String(exc.message || exc);
     } finally {
       busy = false;
+      onTurnEnd(); // 最近活跃变化 ⇒ 刷新右栏排序
     }
   }
 </script>
 
 <section>
-  <p class="meta">会话：{sessionId || "（发首条消息时创建）"}</p>
+  <p class="meta">会话：{sessionId || "（尚未选择）"}</p>
   <ul>
     {#each lines as line}
       <li class={line.role}><strong>{line.role}</strong> {line.text}</li>
@@ -59,6 +79,10 @@
 </section>
 
 <style>
+  section {
+    flex: 1;
+    min-width: 0;
+  }
   .meta {
     color: #59636e;
     font-size: 0.85rem;

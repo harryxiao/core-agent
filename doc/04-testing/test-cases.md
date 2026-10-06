@@ -499,6 +499,22 @@
 
 ---
 
+## 32. 会话列表面与 CLI 会话可见面（TC-XLIST，change `0116`／ADR-0109，账本 E49 B2）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-XLIST-01 | cli-ops/spec.md「会话命令族与交互入口续聊」 | 建会话 + 写 (user, assistant) 两条 → `session show <id>` | 按追加次序打印两行（user 先于 assistant），取自**同一** `TranscriptStore`（锚点：`tests/test_entry.py::test_session_show_prints_transcript`） |
+| TC-XLIST-02 | 同上（无转录） | 已登记但无转录的会话 → `session show <id>` | 明示「无对话记录」、退出码 0（不伪造内容）（锚点：`::test_session_show_without_transcript`） |
+| TC-XLIST-03 | 同上（**反例**：未登记） | `session show nope` | 退出码 1 + stderr 提示（fail-closed，不放宽会话校验）（锚点：`::test_session_show_unknown_session_rejected`） |
+| TC-XLIST-04 | 同上（交互入口续聊） | 顶层 `--session <id>` 进 REPL / 缺省 | 标识透传至 `CLIBridge`；缺省透传**空串**（由 REPL 新建，既有行为不变）（锚点：`::test_repl_resumes_session_via_flag` / `::test_repl_without_flag_passes_empty_session`） |
+| TC-XLIST-05 | 同上（续聊复用不新建 + 呈现） | `build_app(api, session_id=<已登记>)`，`create_session` 替换为断言失败 | **不新建**会话；既有转录（user/assistant）渲染进时间线（锚点：`tests/test_repl.py::test_build_app_resumes_existing_session`） |
+| TC-XLIST-06 | 同上（**反例**：续接未登记） | `build_app(api, "nope")` | 抛 `UiError`；注册表**仍为空**（不静默新建顶替）（锚点：`::test_build_app_rejects_unknown_session`） |
+| TC-XLIST-07 | 同上（缺省不回归） | `build_app(api)` | 新建 1 个 CLI 会话（缺省路径逐字不变）（锚点：`::test_build_app_default_creates_session`） |
+| TC-XLIST-08 | 同上（桥接透传） | `CLIBridge(api, connect_impl=…)` 默认 / `session_id="sid-1"` | `connect_impl(api, "")` / `connect_impl(api, "sid-1")`（注入点签名对齐）（锚点：`tests/test_ui.py::test_three_modes_share_api_layer`） |
+| TC-XLIST-09 | ui/spec.md「Web 会话列表与切换」 | SPA 构建 + 临时 `CORE_STATE_DIR` 起 `serve` 冒烟 | `npm run build` 通过；`GET /sessions` 呈派生标题、`GET /session/{id}/messages` 可读、SPA 静态产物挂载到 `/`；列表 / 切换 / 新建为显式动作（**无 JS 测试基建** ⇒ 以构建 + 离线冒烟为据，见 change 0116 `tasks.md` §5） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

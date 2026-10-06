@@ -37,6 +37,17 @@ export async function createSession(mode = "web") {
   );
 }
 
+/** 枚举对话会话（后端附**派生**标题与最近活跃时间）。 */
+export async function listSessions() {
+  const body = await toJson(await fetch("/sessions"));
+  return body.sessions ?? [];
+}
+
+/** 读该会话的对话转录（按追加次序）。 */
+export async function fetchMessages(sessionId) {
+  return toJson(await fetch(`/session/${encodeURIComponent(sessionId)}/messages`));
+}
+
 /**
  * 跑一轮并逐帧产出 SSE 事件（`{type, payload}`）。
  * 用 fetch 读流而非 EventSource：`/run` 需要 POST body，EventSource 只支持 GET。

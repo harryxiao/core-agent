@@ -15,6 +15,7 @@ from core.configuration.models import LLMConfig
 from core.deployment import ServeStateStore
 from core.entry import _build_installer, _build_parser, _state_path, main
 from core.loop import LoopEvent
+from core.memory import TranscriptStore
 from core.orchestration import Plan, Subtask, plan_to_dict
 from core.pet.core import (
     FAILED,
@@ -315,7 +316,7 @@ def test_repl_wires_llm_config(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 
     class _FakeBridge:
-        def __init__(self, *, api=None, connect_impl=None) -> None:
+        def __init__(self, *, api=None, connect_impl=None, session_id="") -> None:
             captured["api"] = api
 
         def connect(self) -> None:
@@ -888,3 +889,73 @@ def test_run_unknown_session_still_rejected(
 
     assert rc == 1
     assert "运行失败" in capsys.readouterr().err
+
+
+def test_session_show_prints_transcript(capsys: pytest.CaptureFixture[str]) -> None:
+    """`session show`：按追加次序打印该会话转录（与内核回灌同一存储）。"""
+    assert main(["session", "create"]) == 0
+    session_id = capsys.readouterr().out.strip()
+    store = TranscriptStore(path=_state_path("messages.jsonl"))
+    store.append(session_id, "user", "第一问")
+    store.append(session_id, "assistant", "第一答")
+
+    assert main(["session", "show", session_id]) == 0
+
+    out = capsys.readouterr().out
+    assert "第一问" in out
+    assert "第一答" in out
+    assert out.index("第一问") < out.index("第一答")
+
+
+def test_session_show_without_transcript(capsys: pytest.CaptureFixture[str]) -> None:
+    """无转录的会话：明示无记录、退出码 0（不伪造内容）。"""
+    assert main(["session", "create"]) == 0
+    session_id = capsys.readouterr().out.strip()
+
+    assert main(["session", "show", session_id]) == 0
+
+    assert "无对话记录" in capsys.readouterr().out
+
+
+def test_session_show_unknown_session_rejected(capsys: pytest.CaptureFixture[str]) -> None:
+    """反例：未登记 id 的转录读取 fail-closed（不放宽会话校验）。"""
+    assert main(["session", "show", "nope"]) == 1
+    assert "nope" in capsys.readouterr().err
+
+
+def test_repl_resumes_session_via_flag(monkeypatch, tmp_path) -> None:
+    """顶层 `--session <id>`：交互入口续接既有会话（标识透传至 CLIBridge）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    captured: dict[str, object] = {}
+
+    class _FakeBridge:
+        def __init__(self, *, api=None, connect_impl=None, session_id="") -> None:
+            captured["api"] = api
+            captured["session_id"] = session_id
+
+        def connect(self) -> None:
+            return None
+
+    monkeypatch.setattr("core.entry.CLIBridge", _FakeBridge)
+    session_id = SessionRegistry(path=_state_path("conversations.json")).create("cli")
+
+    assert main(["--config", _write_config(tmp_path), "--session", session_id]) == 0
+    assert captured["session_id"] == session_id
+
+
+def test_repl_without_flag_passes_empty_session(monkeypatch, tmp_path) -> None:
+    """缺省不指定 `--session`：透传空串（由 repl 新建会话，既有行为不变）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    captured: dict[str, object] = {}
+
+    class _FakeBridge:
+        def __init__(self, *, api=None, connect_impl=None, session_id="") -> None:
+            captured["session_id"] = session_id
+
+        def connect(self) -> None:
+            return None
+
+    monkeypatch.setattr("core.entry.CLIBridge", _FakeBridge)
+
+    assert main(["--config", _write_config(tmp_path)]) == 0
+    assert captured["session_id"] == ""

@@ -175,8 +175,17 @@ def _format_event(event: Event) -> str | None:
     return None
 
 
-def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体推高复杂度
-    """构建 Textual 应用（懒 import textual），暴露给 headless 冒烟测试驱动。"""
+def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — 内嵌 ReplApp 类体推高复杂度
+    """构建 Textual 应用（懒 import textual），暴露给 headless 冒烟测试驱动。
+
+    `session_id` 非空 ⇒ **续聊**既有会话（复用该标识并载入其转录；未登记 ⇒ `UiError`，
+    fail-closed，不静默新建顶替）；缺省 ⇒ 新建 CLI 会话（既有行为不变）。
+    """
+    history: list[dict[str, Any]] = []
+    if session_id:
+        history = api.session_messages(session_id)  # 未登记 ⇒ UiError（先于进入 TUI 拒绝）
+    else:
+        session_id = api.create_session("cli")
     from rich.markup import escape  # noqa: PLC0415 — MAL 懒 import
     from textual.app import App, ComposeResult  # noqa: PLC0415 — MAL 懒 import
     from textual.containers import Horizontal, Vertical  # noqa: PLC0415 — MAL 懒 import
@@ -190,7 +199,6 @@ def build_app(api: UIAPILayer) -> Any:  # noqa: C901 — 内嵌 ReplApp 类体�
         Static,
     )
 
-    session_id = api.create_session("cli")
     approval = api.approval  # 审批通道（None 表示非交互入口，confirm 门 fail-closed）
     core_theme = Theme(name="core", primary=_ACCENT, accent=_ACCENT, secondary=_ACCENT, dark=True)
 
@@ -332,6 +340,16 @@ Collapsible > CollapsibleTitle:hover {
             )
             if approval is not None:
                 approval.handler = self._ask_approval  # 审批通道接终端 y/n
+            if history:  # 续聊：把既有转录铺进时间线（否则界面空白、看不出已接上）
+                self._add(
+                    Static(f"↻ 续接会话 {session_id}（{len(history)} 条历史已载入）", classes="ok")
+                )
+                for item in history:
+                    content = escape(str(item.get("content", "")))
+                    if item.get("role") == "user":
+                        self._add(Static(f"[{_ACCENT}]❯[/] {content}", classes="echo", markup=True))
+                    else:
+                        self._add(Static(content, classes="hint", markup=False))
 
         # ---- 时间线 ----
 
@@ -633,6 +651,6 @@ Collapsible > CollapsibleTitle:hover {
     return ReplApp()
 
 
-def run_repl(api: UIAPILayer) -> None:
-    """启动 Textual 交互会话循环（阻塞；懒 import textual）。"""
-    build_app(api).run()
+def run_repl(api: UIAPILayer, session_id: str = "") -> None:
+    """启动 Textual 交互会话循环（阻塞；懒 import textual）。`session_id` 非空 ⇒ 续聊既有会话。"""
+    build_app(api, session_id).run()

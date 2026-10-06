@@ -2775,6 +2775,30 @@
 
 ---
 
+## ADR-0109：会话转录的**消费面**接线 —— Web 右栏列表 + CLI `session show` / `--session` 续聊（change 0116 / phase-28 E49）
+
+- **背景**：ADR-0108 只交付**机制**（转录落盘、读取端点、派生标题、有界回灌）。**零消费方** ⇒ 机制
+  悬空（`api.js` 无 `listSessions`、`Chat.svelte` 的 `lines` 是纯内存 `$state`、`repl.py` 硬编码
+  `api.create_session("cli")`）。本 ADR 记录**接入既有机制**时的四处取舍。
+- **决策①：CLI 续聊复用**同名** `--session <id>`（顶层 flag），不新造参数名。** 既有先例
+  `run --session`（`entry.py` `_add_run_parser`）语义相同（复用既有会话、不新建）。`argparse` 子解析器
+  的默认值只在属性**缺席**时套用 ⇒ 与 `run --session` 同 `dest` **不冲突**（已由既有用例覆盖）。
+- **决策②：`CLIBridge.connect_impl` 签名扩为 `Callable[[UIAPILayer, str], None]`。** 会话标识必须到达
+  `build_app`（今天硬编码新建），而**不**绕过 `CLIBridge`（绕过即让 `cli_bridge` 沦为死代码，
+  破「三模桥接」的单一入口）。代价是与注入点对齐（测试替身两处）。
+- **决策③：Web 端**显式新建**取代首条消息**惰性**建会话。** 惰性路径会在每次打开页面留下 32 位 hex 的
+  **空会话**，与「列表记录了当前已创建会话」直接冲突 ⇒ 无选中会话时发送被拒绝并提示，由「新建会话」
+  按钮显式创建。**呈现层**承担 `updated_at` 降序排序（后端响应形状不动，ADR-0108 的兼容承诺不破）。
+- **决策④：续聊时把既有转录**渲染进 TUI 时间线**。** 否则按 `--session` 进来看到空时间线、以为没接上
+  （模型有上下文、界面没显示 ⇒ 误导）。复用既有 `.echo`/`.hint` 样式与 `escape`，**不新增渲染通道**。
+- **已知局限**：① 会话列表全量拉取 + 前端排序，会话数很大时无分页（与 ADR-0108 的单文件全扫同源）；
+  ② SPA 无 JS 测试基建 ⇒ 前端靠 `npm run build` + 离线冒烟验证（四门禁覆盖 Python 侧）；
+  ③ 未选中会话时发送被拒是**有意**的 UX 代价（换取列表不留空会话）。
+- **规格**：`cli-ops`（ADDED「会话命令族与交互入口续聊」）、`ui`（ADDED「Web 会话列表与切换」）。
+  **非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2878,3 +2902,4 @@
 | ADR-0106 | 03-interfaces/pet-mode-interface.md, 03-interfaces/beast-mode-interface.md, 04-testing/test-cases.md, coding-plan/phase-28.md |
 | ADR-0107 | 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/pet-mode-interface.md, 03-interfaces/orchestration-interface.md, 02-modules/memory.md, 02-modules/context.md, 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/phase-28.md |
 | ADR-0108 | 03-interfaces/memory-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/ui-interface.md, 03-interfaces/configuration-interface.md, 02-modules/memory.md, 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/phase-28.md |
+| ADR-0109 | 03-interfaces/ui-interface.md, 03-interfaces/cli-ops-interface.md, 02-modules/cli-ops.md, 06-ui-frontend/ui-architecture.md, 04-testing/test-cases.md, coding-plan/phase-28.md |

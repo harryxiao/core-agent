@@ -1,9 +1,37 @@
 <script>
   import Chat from "./views/Chat.svelte";
+  import SessionList from "./views/SessionList.svelte";
   import Settings from "./views/Settings.svelte";
+  import { createSession, listSessions } from "./lib/api.js";
 
-  // 两页签而已，一个状态足够 —— 不引路由库（最小职责）。
+  // 两页签（不引路由库）；会话页两栏 —— 会话列表与会话标识由本层持有（同一真源）。
   let tab = $state("chat");
+  let sessions = $state([]);
+  let sessionId = $state("");
+  let error = $state("");
+
+  async function refresh() {
+    try {
+      sessions = await listSessions();
+    } catch (exc) {
+      error = String(exc.message || exc);
+    }
+  }
+
+  async function newSession() {
+    error = "";
+    try {
+      const body = await createSession();
+      sessionId = body.session_id;
+      await refresh();
+    } catch (exc) {
+      error = String(exc.message || exc);
+    }
+  }
+
+  $effect(() => {
+    if (tab === "chat") refresh();
+  });
 </script>
 
 <main>
@@ -12,7 +40,11 @@
     <button class:active={tab === "settings"} onclick={() => (tab = "settings")}>设置</button>
   </nav>
   {#if tab === "chat"}
-    <Chat />
+    <div class="columns">
+      <Chat {sessionId} onTurnEnd={refresh} />
+      <SessionList {sessions} {sessionId} onSelect={(id) => (sessionId = id)} onNew={newSession} />
+    </div>
+    {#if error}<p class="error">{error}</p>{/if}
   {:else}
     <Settings />
   {/if}
@@ -26,9 +58,14 @@
     background: #f6f8fa;
   }
   main {
-    max-width: 860px;
+    max-width: 1100px;
     margin: 0 auto;
     padding: 1rem;
+  }
+  .columns {
+    display: flex;
+    gap: 1rem;
+    align-items: flex-start;
   }
   nav {
     display: flex;
@@ -46,5 +83,8 @@
     background: #1f6feb;
     border-color: #1f6feb;
     color: #fff;
+  }
+  .error {
+    color: #cf222e;
   }
 </style>

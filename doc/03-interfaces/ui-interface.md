@@ -157,6 +157,16 @@ class DesktopBridge:  # ③ Desktop：Tauri 壳 + sidecar
 
 **CLIBridge 交互会话循环（REPL）**：`connect()` 进入 Textual 交互循环（而非仅返回 `UIAPILayer`）——无子命令时进 REPL，多轮上下文保持，`barge_in()` 支持打断语音播报；运维命令面（status/doctor/logs/install/mcp/auth/gateway）复用 cli-ops，不并入 REPL。
 
+**会话续聊（change 0116 / ADR-0109）**：`CLIBridge(api=…, session_id=…)` 的会话标识透传至
+`run_repl` → `build_app`；非空 ⇒ **复用**该会话（载入其转录铺进时间线；未登记 ⇒ `UiError`，
+fail-closed，先于进入 TUI 拒绝），缺省 ⇒ 新建（既有行为不变）。CLI 侧读取面：
+`core-agent session show <session_id>` 打印同一 `TranscriptStore` 的会话转录（未登记以非零退出码拒绝）。
+
+**Web 会话列表面（change 0116 / ADR-0109）**：SPA 由 `GET /sessions` 呈现右栏会话列表
+（派生标题 + 最近活跃，**呈现层**降序），点选经 `GET /session/{id}/messages` 渲染转录并继续对话；
+会话标识与列表由 `App.svelte` 单点持有，「新建会话」为**显式**动作（无选中会话时发送被拒，
+不隐式建会话 ⇒ 列表不留空会话）。
+
 **Web Client 与 Host 分离**：Web 前端（SPA）作为纯静态资源独立托管，`WebBridge` 仅暴露统一后端 API；前端经该 API 连接远程 / 本机常驻 Harness Host（见 `deployment-interface.md`），前端升级无需重启 Host 后端。
 
 ---
