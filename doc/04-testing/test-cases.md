@@ -527,24 +527,46 @@
 | TC-MISS-06 | 同上（缺省无副作用） | `allow` 非空但 `exclude` 为空 / 两者皆空 | 与既往**逐字一致**（无排除即无所放行）（锚点：`::test_allow_source_prefixes_without_exclusion_is_noop`） |
 | TC-MISS-07 | context-interface.md §2（派生装配器） | `DynamicAssembler(exclude=("beast.",))` 派生出放行自身的实例 | 派生实例只含自身命名空间条目；**原实例**的检索结果不变（封存不受影响）（锚点：`::test_assembler_can_be_derived_for_one_namespace`） |
 | TC-MISS-08 | beast-mode/spec.md「Independent Sub-Agent with Shared Capability」（自身轨迹可召回） | 真 `Runtime` 神兽会话的 `_planner._assembler.build(…, session_id="beast.qinglong")` | 含 `beast.qinglong`、**不含** `beast.baihu`；**主**装配器 facts 无任何 `beast.` 源（双向守门）（锚点：`tests/test_beast_wiring.py::test_beast_loop_recalls_own_namespace_only`） |
+
+---
+
+## 34. 宠物记忆独立命名空间（TC-PETNS，change `0118`／ADR-0111，账本 phase-30 §8-A）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
 | TC-PETNS-01 | pet-mode/spec.md「Pet Session Runtime Wiring」（宠物轨迹落独立命名空间） | 真 `Runtime` 激活宠物并 `wake()` 跑完一轮自治任务 | 共享记忆中 `source=pet` 的条目存在，且其 `session_id` **全为**该宠物会话 id（命名空间 + 会话个体双维度）（锚点：`tests/test_pet_memory_namespace.py::test_production_pet_trajectory_lands_in_pet_namespace`） |
 | TC-PETNS-02 | 同上（主 Agent 检索面封存宠物命名空间） | 宠物跑完一轮后，主 loop 真实装配器以 `session_id=""`（会话面**不过滤**，改前泄漏路径）检索 | facts 无 `source=pet` 条目、**且**无宠物回复正文（内容级守门）；主线条目**仍出现**（反例守门）（锚点：`::test_main_loop_context_seals_pet_partition`） |
 | TC-PETNS-03 | 同上（宠物自身轨迹可召回） | 宠物真实装配器（派生、放行 `pet`）检索，库中另有 `beast.qinglong` | 含 `pet`、**不含** `beast.qinglong`（封存不放行他者）（锚点：`::test_pet_loop_recalls_own_namespace_only`） |
 | TC-PETNS-04 | 同上（主人偏好不受封存影响） | `source=user` 偏好 + `source=pet` 轨迹同店，主侧检索 | 偏好条目**仍出现**（刻意知识全局层，逐字不动）（锚点：`::test_user_preference_survives_pet_sealing`） |
 | TC-PETNS-05 | 同上（红线：不放宽神兽封存） | 主装配器排除面新增 `pet` 后 | 仍**不含**任何 `beast.*` 源（phase-26 E37/E38/E39 逐字不动）（锚点：`::test_pet_sealing_does_not_relax_beast_sealing`） |
+
+---
+
+## 35. 结晶面门的数据面与留出评测（TC-EVGD，change `0119`／ADR-0112，账本 Phase 31 切片 1：G4+G3）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
 | TC-EVGD-01 | evolution/spec.md「评测基建」（change `0119`） | `BenchmarkRegistry(path=tmp)` 注册基准 + 设基线后用**同 path 的新实例**读回；损坏 JSON / 结构不符 / 文件缺失三态；`BenchmarkRegistry()` 无 path | 跨进程可读（`list()` 与基线分一致）；损坏 ⇒ 空表 + `warnings` 留痕 + 不抛；**缺失静默**（不告警）；无 path ⇒ 纯内存（既有调用方零行为变化）（锚点：`tests/test_evolution_gate_data.py::test_registry_persists_across_instances` / `::test_registry_corrupt_file_degrades_with_warning` / `::test_registry_missing_file_is_silent` / `::test_registry_without_path_stays_in_memory`） |
 | TC-EVGD-02 | evolution/spec.md「留出评测」（change `0119`） | 候选 + 绑定基准（含样本）+ 已注册执行器；无绑定基准 / 无样本 / 无该 `task_type` 执行器；执行器抛异常 | 留出分 = 逐样本真实执行与期望对比后的聚合（全对 ⇒ 1.0、部分对 ⇒ 中间分）；**无法评测 ⇒ 打分器返 `None`**（不产出分数）；执行器异常**冒泡**（不吞成 0 分、不吞成通过）（锚点：`::test_scorer_scores_samples_by_real_execution` / `::test_scorer_partial_match_scores_between` / `::test_scorer_returns_none_when_unable_to_evaluate` / `::test_scorer_propagates_runner_errors` / `::test_benchmark_binds_to_plugin`） |
 | TC-EVGD-03 | evolution/spec.md「留出评测」（change `0119`） | `Evaluator.evaluate` 三态：真实打分高于 / 低于已注册基线、无 `score_fn`、有基准+执行器但**未注册基线**；`run_cycle` 在**生产形状**（落盘 registry + 打分器 + 无 runner）与「注册基准 + 基线 + 执行器」两态 | 不退化 ⇒ `publish`、退化 ⇒ `rollback`（生产可达，G5 锚点）；无 `score_fn` / 未注册基线 ⇒ **`freeze`**（不报 publish、不谎报 rollback）；`run_cycle` 相应记 `frozen` / `rollback`（词表 +1 `frozen`，与「已判退化」语义分离）（锚点：`::test_evaluator_publishes_when_not_regressed` / `::test_evaluator_rollback_still_reachable` / `::test_evaluator_freezes_when_score_unavailable` / `::test_evaluator_freezes_without_baseline` / `::test_run_cycle_freezes_in_production_shape` / `::test_run_cycle_rollbacks_with_registered_benchmark`） |
 | TC-EVGD-04 | evolution/spec.md「验证门」（change `0119`） | 旧口径候选（`caliber=0`，模拟落盘旧行）`confirm` 后 `crystallize`；现口径候选正常投放；`PendingQueue(path=…)` 记录候选后重开 + 手工剔除 JSON 中 `caliber` 字段后重读 | 旧口径 ⇒ `GATE_CALIBER_STALE` 结构化拒绝、**不发布**、理由**不含**「退化」；现口径 ⇒ 正常 `published`；`caliber` 随台账落盘读回、**缺字段旧行解析为 0**（不 fail-open）（锚点：`::test_crystallize_rejects_stale_caliber` / `::test_crystallize_allows_current_caliber` / `::test_caliber_persists_with_pending_queue`） |
 | TC-EVGD-05 | evolution/spec.md「留出评测」+「评测基建」（change `0119`，装配级 + 回归改判） | 真 `build_runtime`（未注册任何基准）下 `runtime.evolution.engine.run_cycle`；既有依赖「缺省即 publish」的用例显式注入能通过的打分器 | 生产装配的评估器**不再是「无参裸桩」** ⇒ 未注册基准时判 `frozen`（真门，非恒通过桩）；既有用例改**显式注入**打分器后仍**真实过门**（读数器仍是真门，非绕过评测 —— 改判理由见 ADR-0112）（锚点：`tests/test_evolution_gate_data.py::test_runtime_evaluator_is_a_real_gate` / `tests/test_evolution.py`（46 例）/ `tests/test_evolution_attribution.py` / `tests/test_evolution_pending.py` / `tests/test_phase14.py` / `tests/test_phase15.py`） |
 
+---
+
+## 36. 结晶面门判定面真实化（TC-EVGJ，change `0120`／ADR-0113，账本 Phase 31 切片 2：G1+G2+G5）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
 | TC-EVGJ-01 | evolution/spec.md「验证门」+ ci-cd（change `0120`） | `crystallization_gates()` 与单一真源 `GATE_COMMANDS` 的关系；标记键/值面；标记命中**未注册**门名（monkeypatch 标记） | 子集 = `lint` + `test`、**顺序随真源**、命令字符串仍只有一份；`typecheck` / `build`（交付面）不入子集（子集 ∪ 二者 = 全集）；标记只带**门名**（值非命令字符串）；漂移 ⇒ `CiCdError(GATE_FAILED)`（fail-closed）（锚点：`tests/test_evolution_gate_judgment.py::test_crystallization_gates_derived_from_single_source` / `::test_crystallization_gates_exclude_delivery_face_gates` / `::test_crystallization_marks_unknown_gate_fails_closed` / `::test_crystallization_marks_carry_names_not_commands`） |
 | TC-EVGJ-02 | evolution/spec.md「验证门」（change `0120`） | `build_review_prompt` 的判据面；`parse_review` 词表参数化表（PASS / pass / 通过 / 前导空行；REJECT / 拒绝 / 含糊 / 空）；`review_with` 三态（PASS / 不可解析 / 调用抛异常） | prompt 带 `kind` / `target_plugin` / `delta` 与判定词表；**只认首行以通过词起首**，词表外一律 `False`；调用抛异常 ⇒ `False`（不外抛）（锚点：`::test_review_prompt_carries_candidate_facts` / `::test_parse_review_fail_closed` / `::test_review_with_llm_passes` / `::test_review_with_llm_garbage_denies` / `::test_review_with_llm_failure_denies`） |
 | TC-EVGJ-03 | evolution/spec.md「验证门」（change `0120`） | `run_gate_tests`（只跑标记子集 / 某门未过 / 执行面抛异常）；`Validator` 判据组合：缺省无参、只注入一半、两判据皆过、review 拒、某门禁未过、空测试集 | 逐门执行、结果按门名收集且值**恒 `bool`**；抛异常 ⇒ 该门 `False`；**缺省 `Validator()` ⇒ `passed=False` 且理由含「未注入」**；review 拒 ⇒ 门未过且**不跑**门禁（fail-fast）；空测试集**不得**当通过（`all({})` 为真即 G2 成因）（锚点：`::test_run_gate_tests_runs_only_marked_gates` / `::test_run_gate_tests_marks_failed_gate` / `::test_run_gate_tests_runner_exception_fails_closed` / `::test_default_validator_denies` / `::test_validator_denies_when_only_one_producer_injected` / `::test_validator_passes_when_both_judgments_pass` / `::test_validator_denies_when_review_rejects` / `::test_validator_denies_when_a_gate_fails` / `::test_validator_denies_on_empty_test_set`） |
 | TC-EVGJ-04 | evolution/spec.md「验证门」（change `0120`，G5 锚点） | 装真判据（真 `review_with` + 真 `run_gate_tests`）后 `run_cycle`：未过门 / 过门；`GATE_CALIBER` 读数 | 未过门 ⇒ `status="rejected"`（**生产可达**，不再恒 pending）；门过 ⇒ 进留出评测（无基准 ⇒ `frozen`，非 `rejected`）；`GATE_CALIBER >= 2`（判定面真实化已递增口径）（锚点：`::test_run_cycle_reports_rejected_on_failed_gate` / `::test_run_cycle_reaches_eval_when_gate_passes` / `::test_gate_caliber_bumped_for_judgment_face`） |
 | TC-EVGJ-05 | evolution/spec.md「验证门」（change `0120`，装配级 + 回归改判） | 真 `build_runtime` 下 `run_cycle`（模型提供者与门禁子进程两外部面打桩）：审查者判过 / 模型端点不可用；既有依赖「缺省 `Validator()` 即通过」的测试文件显式注入过门替身 | 生产装配**真的走**真 review + 真门禁子集（实际跑 `["lint", "test"]`）⇒ 全过进留出评测 ⇒ `frozen`；模型不可用 ⇒ `rejected` 且门禁**零调用**（fail-fast）；既有用例改**显式注入**判据后仍**真实过门**（读数器仍是真 `Validator`，汇总逻辑不打折 —— 改判理由见 ADR-0113）（锚点：`tests/test_evolution_gate_judgment.py::test_runtime_runs_real_review_and_marked_gates` / `::test_runtime_denies_when_review_unavailable` / `tests/test_evolution_gate_data.py::test_runtime_evaluator_is_a_real_gate` / `tests/test_evolution.py`（46 例）/ `tests/test_evolution_attribution.py` / `tests/test_evolution_pending.py` / `tests/test_phase14.py` / `tests/test_phase15.py`） |
 
-## 34. 子任务运行态实时回流（TC-OSP，change `0121`／ADR-0114，账本 E51）
+---
+
+## 37. 子任务运行态实时回流（TC-OSP，change `0121`／ADR-0114，账本 E51）
 
 | 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
 |---|---|---|---|
@@ -556,7 +578,7 @@
 
 ---
 
-## 35. 编排任务的 HTTP 面与 Web 任务区（TC-TASKHTTP，change `0122`／ADR-0115，账本 E53）
+## 38. 编排任务的 HTTP 面与 Web 任务区（TC-TASKHTTP，change `0122`／ADR-0115，账本 E53）
 
 | 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
 |---|---|---|---|
@@ -570,7 +592,7 @@
 
 ---
 
-## 36. 难易度感知的同波次调度策略（TC-DIFF，change `0123`／ADR-0116，账本 E50）
+## 39. 难易度感知的同波次调度策略（TC-DIFF，change `0123`／ADR-0116，账本 E50）
 
 | 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
 |---|---|---|---|
@@ -595,7 +617,7 @@
 
 ---
 
-## 37. TUI 子任务运行态与里程碑详情（TC-TUI，change `0124`／ADR-0117，账本 E52）
+## 40. TUI 子任务运行态与里程碑详情（TC-TUI，change `0124`／ADR-0117，账本 E52）
 
 | 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
 |---|---|---|---|
