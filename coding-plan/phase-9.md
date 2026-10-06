@@ -111,7 +111,8 @@
 ## 7. 测试要点
 
 - [x] entry：`-h` 三级帮助与 baseline 30 动词 + 14 flag 逐条 diff 一致；未知命令错误码；`--version` 输出
-- [x] serve：HTTP 端点 CRUD + SSE 流式事件 + 断线重连 + 三模复用同一内核
+- [x] serve：HTTP 端点 CRUD + SSE 流式事件 + 三模复用同一内核（**「断线重连」已移出本行**，见下条）
+- [ ] serve：**断线重连** —— **未实现**（账目校准 change `0141` / 账本 **E86** 假绿订正：前端 `frontend/src/lib/api.js:55-63` 用 `fetch` + `ReadableStream` 读 **POST** SSE，**非** `EventSource` ⇒ **无**浏览器原生自动重连；`frontend/src/` 与 `src/core/ui/` grep `reconnect|retry|Last-Event-ID` **零命中**；TUI 为进程内直调、无此面）
 - [x] repl：多轮上下文保持 + barge-in 打断 + 空输入/EOF 退出 + 运维命令面不并入 REPL
 - [x] pet.md：多宠物隔离加载 + persona 解析（角色/性格/喜好）+ 随机任务开关 + 三入口同源 + pet.* 经 resolve() 链
 - [x] user-guide：文档中每条命令/配置项与实测输出一致（交叉验证，禁止凭记忆写）

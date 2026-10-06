@@ -846,6 +846,21 @@
 
 ---
 
+## 57. 账目校准（TC-LEDGER，change `0141`／**无 ADR**，账本 E86 + E82 + E87 + E71 + E84-b）
+
+> **本 change 无新增测试用例**：零代码、零规格、零测试变更（四门禁与用例基线逐字不动）。
+> 下表只登记**台账订正的证据锚点**——每条注记均以行号 / grep **实测**坐实，便于日后复查。
+
+| 项 | 规格 / 事实锚点 | 证据（实测） | 订正结论 |
+|---|---|---|---|
+| TC-LEDGER-01 | `doc/openspec/specs/ui/spec.md` 全文（**无** pet/beast 专有端点要求） | `grep -rn "reconnect|retry|Last-Event-ID" frontend/src/ src/core/ui/` **零命中**；`frontend/src/lib/api.js:55-63` 用 `fetch` + `ReadableStream`（**非** `EventSource`） | **E86 假绿订正**：`phase-9.md:114`「断线重连」拆为 `[ ]`（真绿三项保持 `[x]`） |
+| TC-LEDGER-02 | `ui/spec.md` + `ui/api.py:231/237`（宠物）、`:263/276`（神兽，change `0137` 接线） | REST 面 12 端点为 `fastapi_serve.py:194-206` 既有全集；Web 面**消息驱动**（复用 `/run`） | **E82 证伪**：规格未要求专有端点 ⇒「Web 面缺失」不成立 |
+| TC-LEDGER-03 | `doc/10-codebase-engine/integration-plan.md:11`、`codebase-engine-evaluation.md:71`（自述「走 MCP 接入 / **不新增** `codebase` capability」） | 文档自述交付形态；`src/` 无对应模块系**设计形态** | **E87 证伪**：「有文档无实现」为形态误读（MCP 接入是否已接线**未核**，留口） |
+| TC-LEDGER-04 | `doc/openspec/specs/memory/spec.md:26-29`（跨层检索）与 `:49-52`（检索失败降级）**并存**；正文 SHALL `:31-37` | `src/core/memory/store.py:110-115` `read()` 恒 `backend.search(query)` + `_hot`（常驻降级态） | **E71 定性订正**：**非**代码违约 ⇒ 性能面优化缺口（§4 取舍） |
+| TC-LEDGER-05 | 规格 `composition/spec.md`（哈希口径 SHALL 在此）vs deployment 侧 | `src/core/entry.py:1014-1016` 退化哈希；deployment 侧**无** bundle 哈希 SHALL | **E84 拆二**：E84-a ⇒ change `0143`；E84-b ⇒ 已知取舍 |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

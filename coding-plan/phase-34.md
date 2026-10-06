@@ -16,6 +16,8 @@
 
 **本账 25 条：✅ 亲验 24 条、○ 转述 1 条**（E85，`core-profile` 题词模板，doc-only 低危）。全账**未跑任何测试 / 命令**（只读走查铁律），判定均为**静态阅读**；测试覆盖仅按文件名 + 少量 grep 判，未逐一核对每条 Scenario↔断言映射。
 
+**事后订正（账目校准 change `0141`，2026-10-07）**：三条判定经**实测复核**后订正 —— **E82 / E87 证伪**（规格未要求专有端点 / 文档自述交付形态为 MCP 接入 ⇒ 均为**形态误读**）、**E71 定性订正**（规格并存「跨层检索」与「检索失败降级」两 Scenario ⇒ 常驻降级态**合法**，属性能面优化缺口而非代码违约，见 §4 第 6 条）；另 **E84 拆二**（a 真口径接线 ⇒ change `0143`；b deployment 退化哈希无 SHALL ⇒ §4 取舍）、**E86 假绿已就地订正**（`phase-9.md:114`）。
+
 ---
 
 ## §1 真缺陷（**生产可达**，严重度降序）
@@ -30,7 +32,7 @@
 | **E68** | 中 | `write_patch` **绕过可逆性**（磁盘 yaml 不可按 trace 回退） | `configuration/manager.py:555-569` `tmp.write_text(_dump_yaml(raw))` + `os.replace`，**无 `EffectTracker.record`**；对照 `apply_change:538-548` 的 undo 只回滚**内存态** ⇒ 按 trace 回滚时**磁盘不回退** ⇒ **已落地（change `0130` / ADR-0123）** | P2 可逆性 | ✅ |
 | **E69** | 低 | `executor.commit` **不校验 `record.gated`**（fail-open 崩溃窗口） | `evolution/models.py:80-81` 明写「`commit` 只认前者（`gated=True`）为真者」；`evolution/executor.py:183` 走 `staged()`（`:215-218` **仅滤 `committed`**），`:178-211` **从不读 `gated`**；全仓 `gated` **只有写**（`:171/:205`）**无读**。窗口：门禁失败回滚后、`clear_implementation` 前**崩溃** ⇒ 重启后 `commit` 可放行**未过门**制品 ⇒ **已落地（change `0127` / ADR-0120）** | fail-open（潜伏） | ✅ |
 | **E70** | 低 | composition `apply_patch` 接受 **bool** 当 generation | `composition/resolver.py:129` `isinstance(override, int)`——**bool ⊂ int**，YAML `true` 生成 `PluginRef(id, True)`（`PluginRef(plugin_id, override)` `:134`） ⇒ **已落地（change `0136` / ADR-0129）：`apply_patch` 判据补 `or isinstance(override, bool)`，布尔按 `PATCH_CONFLICT` 拒绝（不静默落为 1/0）** | 类型边界 | ✅ |
-| **E71** | 中 | **L1 索引是空壳**（`read` 从不查 `_index`，全库扫描） | `memory/store.py:110-115` `read()` 用 `backend.search(query)` **全扫** + `_hot`，**从不碰 `_index`**；`:191-192` `index()` 仅调 `list_index()`。规格 `memory/spec.md:26-29` 要求「命中 L1 索引 → 非全库扫描」 | 规格漂移（性能面） | ✅ |
+| **E71** | 中 | **L1 索引是空壳**（`read` 从不查 `_index`，全库扫描） | `memory/store.py:110-115` `read()` 用 `backend.search(query)` **全扫** + `_hot`，**从不碰 `_index`**；`:191-192` `index()` 仅调 `list_index()`。规格 `memory/spec.md:26-29` 要求「命中 L1 索引 → 非全库扫描」 ⇒ **定性订正（change `0141`，非代码违约）**：规格**并存**两 Scenario ——「跨层检索」（`memory/spec.md:26-29`）与「**检索失败降级**」（检索主路径异常**或返回空结果** ⇒ 降级全库扫描、**不阻断**主流程，`:49-52`），而正文 SHALL（`:31-37`）只要求「热/冷两档检索」（已实现：`_hot` + `_backend` cold）。实现的 `read()` 恒「`backend.search(query)` 全库扫描 + `_hot` 热度加权」＝ **常驻降级态**（降级 Scenario 明文允许，且**未**限定触发条件为异常）⇒ 行为对检索**结果**无语义影响，只是未走索引**快路径** ⇒ 本账改判为「**性能面优化缺口**（一阶索引路由未落）」，登记 §4 取舍，**不计代码违约** | 性能面优化缺口（**非**违约） | ✅ ⇒ **定性订正** |
 | **E72** | 中 | 技能安装后 **`draft` 死胡同**（装完**永不被路由**） | `skillhub/client.py:66` 下载后 `skill.status = "draft"`；`skills/router.py:98` 只放行 `s.status in ("active","gray")`；**无 draft→active 迁移路径** ⇒ **已落地（change `0133` / ADR-0126）：`SkillLibrary.activate(skill_id, *, effect_tracker=None)`（幂等 / 未知 id 抛 `KeyError` / 可选可逆效应）+ CLI `skill activate <name>`；路由**放行集不变**（仍 active/gray），不自动启用** | 设计缺失（链路断裂） | ✅ |
 | **E73** | 低 | `TimeTravel.rollback` **不可达** | 检查点**持久化**在用（`--resume` 依赖，E12 指此路径），但**时间旅行回滚**无任何生产调用方（见 §5 订正） | 设计缺失（死面） | ✅ |
 
@@ -48,12 +50,12 @@
 | **E79** | 规格漂移 | git **「断线重试 / 指数退避」无实现** ＋ **删远程分支 / 历史改写**原语缺失 | `git/subprocess_backend.py:141-154` `pull`/`push`（及 `clone`）单次 `_run`，`_run:158-163` **无 retry/backoff**；`git/client.py:86-101` 仅 force-push 走审批，13 原语**无**「删远程分支 / 历史改写」。spec `git/spec.md:69-91` 有对应 Scenario（C2 的「偏离原记」`phase-20.md:93` 只记「不装配 CLI 入口」，**未记**此二缺口） ⇒ **已落地（change `0138` / ADR-0131）：`_run_remote` 瞬态网络失败按指数退避重试（`attempts=3`/`backoff=0.5`，可注入 `sleep`；认证失败 / 超时 / 冲突 / 非瞬态不重试）；`GitClient` 补 `delete_remote_branch` / `rewrite_history` 原语，复用同型审批门（`_require_approval(op, reason)`，三处 op id 互异），非交互默认拒** | ✅ |
 | **E80** | 规格漂移 | skillhub **「回退官方源」只报错**（**spec 自相矛盾**） | `skillhub/index.py:134-140` `_ensure_healthy` 直接 `raise SOURCE_UNHEALTHY`（文本却写「（回退官方源）」），**无回退动作**；`tests/test_skillhub.py:42` 亦断报错。spec `skillhub/spec.md:34-38` **同句**既写「回退官方源」又写「返回 `SOURCE_UNHEALTHY`」⇒ 实现/测试选了后半句 ⇒ **已落地（change `0134` / ADR-0127）：规格拆句为「不健康 ⇒ 回退官方源**并以其结果响应**（标记该源不健康）；官方源亦不可用 ⇒ `SOURCE_UNHEALTHY`」；`_ensure_healthy` 改返回**可用源名**，`list`/`route` 用其取结果** | ✅ |
 | **E81** | 设计缺失 | deployment `reap` **无心跳刷新 `last_seen`** ⇒ 活跃客户端可能被误回收 | `deployment/host.py:56` `last_seen` **仅 `accept` 赋值**，`reap:78-88` 据其判超时，全类**无 touch / heartbeat** 更新 ⇒ **已落地（change `0139` / ADR-0132）：新增 `HarnessHost.touch(session_id) -> bool`（只认在连会话刷 `last_seen`；未知 / 已断线 / 已回收返 `False` 且**不复活**；成功即持久化）⇒ 「无活动」才计超时；`touch`/`reap` 生产驱动今日仍缺（登记为残留口径）** | ✅ |
-| **E82** | 规格漂移 | **pet / beast Web 面缺失**：12 个 HTTP 端点**无** pet/summon/recall | `ui/fastapi_serve.py:194-206` 共 12 条 `add_api_route`，**无** pet/summon/recall（与 E74 同源：UIAPILayer 有 `activate_pet`/`pet_command` 方法但未暴露为端点，`api.py:223` 仅内部接宠物） | ✅ |
+| **E82** | 规格漂移 | **pet / beast Web 面缺失**：12 个 HTTP 端点**无** pet/summon/recall | `ui/fastapi_serve.py:194-206` 共 12 条 `add_api_route`，**无** pet/summon/recall（与 E74 同源：UIAPILayer 有 `activate_pet`/`pet_command` 方法但未暴露为端点，`api.py:223` 仅内部接宠物） ⇒ **证伪（change `0141`，假阳性）**：`ui/spec.md` 全文**未要求** pet/summon/recall 专有 HTTP 端点 —— Web 面是**消息驱动**（复用 `/run` 消息路径），REST 面为既有 12 端点全集；且入口方法俱在（宠物 `ui/api.py:231/237`、神兽 `:263/276`，后者由 change `0137` 接线，斜杠面 `repl.py:561-583`）⇒ 「Web 面缺失」**不成立**（「未暴露专有端点」≠「面缺失」） | ✅ ⇒ **证伪** |
 | **E83** | 设计缺失 | **Desktop 交付面不完整** | `src-tauri/tauri.conf.json:15` **硬编码** `url: http://127.0.0.1:8000`（`src-tauri/src/main.rs:48-51` 却尊重 `CORE_PORT`）＋ `:22-24` `bundle.active=false` ⇒ **无安装包**（phase-20 C8 只记「壳二进制打包未验证」，未记端口硬编码） ⇒ **已落地（change `0139` / ADR-0132）：`tauri.conf.json` 端口**移出配置**（`app.windows` 清空）、`bundle.active=true` + `targets="all"`；`main.rs` 端口经 `resolve_port()`**单点**（`CORE_PORT`，缺省 8000）**同时**供 sidecar 与 `WebviewWindowBuilder` 开窗 ⇒ 壳与内核同源端口、漂移不可能；**壳编译**与安装包产出**均属手工验收**（`cargo check` 本轮未跑通：缓存依赖树与 `Cargo.lock` 版本不一致 + 联网取包未成功，非门禁）** | ✅ |
-| **E84** | 设计缺失 | composition vs deployment **两套「发布 bundle」哈希口径分歧** | CLI `release` 走 `ReleaseManager`，哈希**退化为版本名哈希**（`entry.py:1014-1016` `sha256(version)[:16]`，自注「CLI 无真实制品内容」）；composition 真内容哈希 `composition/packager.py:18-21 content_hash`（对 `plugin_id@generation` 哈希）**零引用**（composition 零接线）。spec 两 capability 概念重叠但口径不一致 | ✅ |
+| **E84** | 设计缺失 | composition vs deployment **两套「发布 bundle」哈希口径分歧** | CLI `release` 走 `ReleaseManager`，哈希**退化为版本名哈希**（`entry.py:1014-1016` `sha256(version)[:16]`，自注「CLI 无真实制品内容」）；composition 真内容哈希 `composition/packager.py:18-21 content_hash`（对 `plugin_id@generation` 哈希）**零引用**（composition 零接线）。spec 两 capability 概念重叠但口径不一致 ⇒ **E84 拆二（change `0141`）**：**E84-a** ＝ composition 真内容哈希接线（`entry.py` 改用 `packager.content_hash`）⇒ change `0143` / ADR-0135；**E84-b** ＝ deployment 侧 `entry.py:1014-1016` 退化哈希（`sha256(version)[:16]`，自注「CLI 无真实制品内容」）—— **规格未对 deployment 侧 bundle 哈希设 SHALL**（口径 SHALL 属 composition）⇒ 非违约，本条记账为**已知取舍**（§4 第 5 条） | ✅ ⇒ **拆二（a⇒0143 / b⇒取舍）** |
 | **E85** | 规格漂移 | core-profile **「题词规范 / 题词模板」doc-only**，**无骨架文件、无专门测试** | 代理 `find` 未命中模板文件；规格自述无对应产出物 | ○ |
-| **E86** | **账目失真** | `phase-9.md:114` **假绿**：勾选「Web 断线重连」但**前端未实现重连** | `coding-plan/phase-9.md:114` 已 `[x]`：`serve：HTTP 端点 CRUD + SSE 流式事件 + 断线重连 + …` | ✅ |
-| **E87** | 设计缺失 | `doc/10-codebase-engine/` **有文档无实现** | 目录存在，`src/` **无**对应模块（`doc/` 与实现两分） | ✅ |
+| **E86** | **账目失真** | `phase-9.md:114` **假绿**：勾选「Web 断线重连」但**前端未实现重连** | `coding-plan/phase-9.md:114` 已 `[x]`：`serve：HTTP 端点 CRUD + SSE 流式事件 + 断线重连 + …` ⇒ **已落地（change `0141`，2026-10-07）**：`phase-9.md` 该行**拆二** —— 真绿三项（HTTP 端点 CRUD / SSE 流式事件 / 三模复用同一内核）保持 `[x]`，**「断线重连」独立为 `[ ]`** 并注记实测口径（前端 `frontend/src/lib/api.js:55-63` 用 `fetch` + `ReadableStream` 读 **POST** SSE，非 `EventSource` ⇒ 无浏览器原生自动重连；`frontend/src/` 与 `src/core/ui/` grep `reconnect\|retry\|Last-Event-ID` **零命中**） | ✅ ⇒ **已落地** |
+| **E87** | 设计缺失 | `doc/10-codebase-engine/` **有文档无实现** | 目录存在，`src/` **无**对应模块（`doc/` 与实现两分） ⇒ **证伪（change `0141`，假阳性）**：该文档**自述**交付形态 ——「走 **MCP 接入**（复用既有 `mcp` capability），**不新增** `codebase` capability（D4 决策 A）」（`doc/10-codebase-engine/integration-plan.md:11`、`codebase-engine-evaluation.md:71`）⇒ 无 `src/` 模块是**设计形态**，「有文档无实现」为**形态误读**。**真口径留口**：该文档承诺的 MCP 接入**是否已接线**不在本账内，需实测；若未接，应另立「接入未落地」账 | ✅ ⇒ **证伪** |
 
 ---
 
@@ -77,6 +79,8 @@
 2. **distributed 契约层先行** —— 先立协议模型（AgentCard 签名 / 绑定表 / 连接管理）再接真实传输。
 3. **HashEmbedder 为降级基线** —— 语义走 `LLMEmbedder`，不引本地语义模型。
 4. **E62 维持确定性三判据** —— 已销账，非缺口。
+5. **deployment `release` 退化哈希（E84-b）** —— CLI `release` 无真实制品内容 ⇒ `sha256(version)[:16]`（`entry.py:1014-1016`，自注「CLI 无真实制品内容」）；**规格未对 deployment 侧 bundle 哈希设 SHALL**（哈希口径 SHALL 属 composition）⇒ 非违约；真口径接线由 change `0143`（E84-a）承担。
+6. **L1 索引一阶路由未落（E71）** —— 规格「跨层检索」（`memory/spec.md:26-29`）指索引**热路径**；实现为「全库扫描 + 热度加权」的**常驻降级态**（spec「检索失败降级」`:49-52` 明文允许降级全库扫描、不阻断主流程）⇒ 属**性能面待优化**，非行为违约（订正见 §1 E71 / §5）。
 
 ---
 
@@ -85,6 +89,9 @@
 - **证伪（代理的 durability 越界主张）**：有代理称 E12「生产已接线」为**伪**。复核后**订正**：E12（`phase-19.md:420-440`）指**检查点持久化**路径（**在用**，`--resume` 依赖），**不是** `Runtime.recover()`；durability 规格的崩溃恢复 Scenario 允许「重启**或触发恢复**」⇒ **仅 `TimeTravel.rollback` 真不可达**（**E73**），该代理的整体框架**不成立**。
 - **收窄（E84）**：composition 与 deployment 确有两套 bundle 哈希口径，但 **wired 的一方（deployment）是退化哈希** —— 不是「双实现冲突」，而是「**真口径孤置**」。
 - **降级（E80）**：非实现缺陷，实为 **spec 自身一句内自相矛盾**（「回退官方源」+「返回 `SOURCE_UNHEALTHY`」并存），实现 / 测试选后半句。
+- **证伪（E82，2026-10-07，账目校准 change `0141`）**：pet / beast「**Web 面缺失**」主张**不成立** —— `ui/spec.md` 全文**未要求** pet/summon/recall 专有 HTTP 端点；Web 面为**消息驱动**（复用 `/run` 消息路径），REST 面 12 端点为既有全集；入口方法俱在（宠物 `ui/api.py:231/237`、神兽 `:263/276`，change `0137` 接线）⇒ 「未暴露专有端点」≠「面缺失」。**注**：change `0137` 已把 beast 的自然语言入口补齐到**消息路径**，与端点无关。
+- **证伪（E87，同上）**：`doc/10-codebase-engine/`「**有文档无实现**」为**形态误读** —— 文档**自述**交付形态为「走 **MCP 接入**（复用既有 `mcp` capability），**不新增** `codebase` capability（D4 决策 A）」（`integration-plan.md:11` / `codebase-engine-evaluation.md:71`）⇒ 无 `src/` 模块系**设计形态**。**留口**：该承诺的 MCP 接入**是否已接线**未核（需实测；若未接应另立「接入未落地」账）。
+- **订正（E71，同上）**：**非代码违约** —— 规格「跨层检索」与「检索失败降级」**并存**（`memory/spec.md:26-29` / `:49-52`），实现恒「全库扫描 + 热度加权」＝**常驻降级态**（降级侧明文允许）⇒ 改判为**性能面优化缺口**（一阶索引路由未落），登记 §4 第 6 条。
 
 ---
 
@@ -182,7 +189,7 @@
 | `0138` | E79 | ✅ 已落地（2026-10-07） | ADR-0131 |
 | `0139` | E81 + E83 | ✅ 已落地（2026-10-07） | ADR-0132 |
 | `0140` | E77 | ✅ 已落地（2026-10-07） | ADR-0133 |
-| `0141` | E86+E82+E87+E71+E84-b | ⏳ 待实施 | — |
+| `0141` | E86+E82+E87+E71+E84-b | ✅ 已落地（2026-10-07，纯文档） | —（无 ADR） |
 | `0142` | E85 | ⏳ 待实施 | — |
 | `0143` | E84-a | ⏳ 待实施 | — |
 | `0144` | E73 | ⏳ 待实施 | — |
