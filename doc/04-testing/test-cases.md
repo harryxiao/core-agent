@@ -595,6 +595,25 @@
 
 ---
 
+## 37. TUI 子任务运行态与里程碑详情（TC-TUI，change `0124`／ADR-0117，账本 E52）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-TUI-01 | ui/spec.md「TUI 子任务运行态与详情」（里程碑事件展开可见） | 编排桩依序回放 `subtask_started` + 三条 `subtask_progress`（`action_started` / `action_completed` / `step_completed`）+ `subtask_completed`；headless TUI 经 `/task` 驱动 | 展开区依序为「验收 → `⏺ Bash` → `⏺ Bash ✓ (1.5s)` → `· 第 1 轮完成` → 判定 → 结果节选」；工具类经**友好名**（`tools.code_run` ⇒ `Bash`）+ 耗时，轮次级落轮次与成败（锚点：`tests/test_repl.py::test_subtask_milestones_render_in_collapsible_detail`） |
+| TC-TUI-02 | 同上 + `ui-interface.md` §1.1 注（不暴露内部 id 与原始参数） | 同 TC-TUI-01 的载荷（`tool_id="tools.code_run"`、`args={"code": "print(1)"}`、`output="1"`）；真 `TaskScheduler` 端到端（含 `reply_delta` 模型流式原文） | 时间线文本**不含** `tools.code_run`（内部 id）、**不含** `print(1)`（原始参数）、**不含** `reply_delta` 原文（白名单外）；端到端同断（锚点：TC-TUI-01 同用例 + 端到端冒烟；白名单侧由 `tests/test_orchestration_progress.py` 守门） |
+| TC-TUI-03 | 同上（子任务运行中可见状态徽标） | 阻塞式编排器：`subtask_started` 后挂起，`release` 才收尾；运行态中读折叠块标题、收尾后再读 | 运行态标题含 `⟳` 且**不含** `✓`；以 `▸ 子任务 1` 开头（主题与 sid 仍在）；收尾后标题为 `▸ 子任务 1  ✓ 查资料`（**替换**，不并存）（锚点：`::test_subtask_title_shows_running_mark_until_completion`） |
+| TC-TUI-04 | 同上（里程碑先于折叠块到达时静默忽略） | 回放「子任务 1 开工 + 子任务 **9**（无对应折叠块）的里程碑 + 子任务 1 的里程碑」；同时数折叠块个数 | `⏺ Read` 只出现 **1** 次（未知 id 的里程碑被忽略）；折叠块个数 **= 1**（未新建块、不抛裸异常）（锚点：`::test_progress_for_unknown_subtask_is_ignored`） |
+| TC-TUI-05 | 同上（表外事件不呈现） | 回放表外类型（`event="reason_started"`）与**非字典** `data` 的里程碑，再回放一条合法 `action_completed` | 验收后**紧跟**合法里程碑（表外/异常载荷**不留空行与占位**）；文本不含 `reason_started`（锚点：`::test_non_action_progress_renders_no_line`） |
+
+> **端到端（离线，不触网）**：真 `TaskScheduler`（打桩拆解器 + 打桩子 Agent loop，产出
+> `action_started` / `action_completed` / `step_completed` / `reply_delta` / `loop_finished`）经
+> `UIAPILayer.run_task` 驱动 headless TUI ⇒ 时间线含 `⏺ Bash` / `⏺ Bash ✓ (1.5s)` / `· 第 1 轮完成`、
+> 收尾标题 `▸ 子任务 s1  ✓ 查资料`，且**不含** `tools.code_run` / `print(1)` / 流式原文（8 项断言全绿；
+> 已在 change 落地时手工冒烟，未固化为用例）。
+> **非交互 CLI（`core-agent task`）不在本 TC 范围**：其单行输出粒度**有意**不变（ADR-0117 决策⑤）。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

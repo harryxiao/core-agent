@@ -554,6 +554,9 @@ Collapsible > CollapsibleTitle:hover {
             if kind == "subtask_started":
                 self._open_subtask(str(data.get("subtask_id", "")), data)
                 return
+            if kind == "subtask_progress":
+                self._progress_subtask(str(data.get("subtask_id", "")), data)
+                return
             if kind == "subtask_completed":
                 self._complete_subtask(str(data.get("subtask_id", "")), data)
                 return
@@ -601,9 +604,28 @@ Collapsible > CollapsibleTitle:hover {
                 classes="hint",
                 markup=False,
             )
-            box = Collapsible(detail, title=f"▸ 子任务 {sid}  {escape(goal)}", collapsed=True)
+            box = Collapsible(detail, title=f"▸ 子任务 {sid}  ⟳ {escape(goal)}", collapsed=True)
             self._add(box)
             self._open[sid] = (box, detail, goal)
+
+        def _progress_subtask(self, sid: str, data: dict[str, Any]) -> None:
+            """子任务里程碑：追加进展开区（工具类复用动作行口径：友好名 + 耗时，不暴露 id 与参数）。
+
+            载荷已由编排层按内层类型白名单化（`_PROGRESS_FIELDS`）⇒ 表外类型静默丢弃、不落占位。
+            """
+            entry = self._open.get(sid)
+            if entry is None:  # 无对应折叠块（未收到 subtask_started）⇒ 静默忽略
+                return
+            _, detail, _ = entry
+            inner = data.get("data")
+            line = format_action_event(str(data.get("event", "")), inner)
+            if line is None:  # 轮次级里程碑（动作行不覆盖）
+                if data.get("event") != "step_completed" or not isinstance(inner, dict):
+                    return  # 表外/异常载荷不呈现（不落空行与占位）
+                step = cast(dict[str, Any], inner)
+                mark = "失败" if step.get("failed") else "完成"
+                line = f"· 第 {step.get('round')} 轮{mark}"
+            detail.update("\n".join([str(detail.render()), line]))
 
         def _complete_subtask(self, sid: str, data: dict[str, Any]) -> None:
             """子任务收尾：标题落 ✓/✗，展开区 update 补判定与结果节选。"""

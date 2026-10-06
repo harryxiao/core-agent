@@ -405,6 +405,257 @@ def test_tui_action_widget_lifecycle() -> None:
     assert "输出：1" in text  # 展开区：输出节选
 
 
+# ---- TUI 子任务运行态与里程碑详情（change 0124 / 账本 E52） ----
+
+
+def _drive_task(app: object, goal: str, *, pauses: int = 60) -> str:
+    """以 `/task <目标>` 驱动 headless app，返回时间线全量文本。"""
+
+    async def drive() -> str:
+        async with app.run_test() as pilot:  # type: ignore[attr-defined]
+            for ch in f"/task {goal}":
+                await pilot.press(ch)
+            await pilot.press("enter")
+            for _ in range(pauses):
+                await pilot.pause()
+            return _timeline_text(app)
+
+    return asyncio.run(drive())
+
+
+def test_subtask_milestones_render_in_collapsible_detail() -> None:
+    """里程碑事件落子任务展开区：工具类复用动作行友好名（含耗时），轮次级落轮次与成败。"""
+    orch = _TaskOrchestrator(
+        [
+            ("task_started", {"task_id": "t1", "goal": "查答案"}),
+            (
+                "subtask_started",
+                {"task_id": "t1", "subtask_id": "1", "goal": "查资料", "acceptance": "给出来源"},
+            ),
+            (
+                "subtask_progress",
+                {
+                    "task_id": "t1",
+                    "subtask_id": "1",
+                    "event": "action_started",
+                    "data": {"round": 0, "tool_id": "tools.code_run", "args": {"code": "print(1)"}},
+                    "ts": 1.0,
+                },
+            ),
+            (
+                "subtask_progress",
+                {
+                    "task_id": "t1",
+                    "subtask_id": "1",
+                    "event": "action_completed",
+                    "data": {
+                        "round": 0,
+                        "tool_id": "tools.code_run",
+                        "ok": True,
+                        "duration_ms": 1500,
+                        "output": "1",
+                    },
+                    "ts": 2.0,
+                },
+            ),
+            (
+                "subtask_progress",
+                {
+                    "task_id": "t1",
+                    "subtask_id": "1",
+                    "event": "step_completed",
+                    "data": {"round": 1, "failed": False},
+                    "ts": 3.0,
+                },
+            ),
+            (
+                "subtask_completed",
+                {
+                    "task_id": "t1",
+                    "subtask_id": "1",
+                    "ok": True,
+                    "reason": "验收通过",
+                    "reply": "答案 42",
+                },
+            ),
+            ("task_finished", {"outcomes": []}),
+        ]
+    )
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api.set_llm_config(_llm())
+
+    text = _drive_task(build_app(api), "查答案")
+
+    # 依序可见：验收 → 里程碑（开工/完成/轮次级）→ 判定 → 结果节选
+    assert "验收：给出来源\n⏺ Bash\n⏺ Bash ✓ (1.5s)\n· 第 1 轮完成\n判定：验收通过\n答案 42" in text
+    assert "tools.code_run" not in text  # 内部 tool_id 不进用户可见层
+    assert "print(1)" not in text  # 原始参数不进用户可见层
+
+
+def test_subtask_title_shows_running_mark_until_completion() -> None:
+    """运行中徽标：开工后标题含运行中标记，收尾替换为 ✓（不并存）。"""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _BlockingOrchestrator:
+        """阻塞式编排器：subtask_started 后挂起，release 才收尾（运行态窗口确定）。"""
+
+        async def astream(self, task_id: str, goal: str, **kwargs: object):
+            yield LoopEvent(
+                "subtask_started",
+                {"task_id": task_id, "subtask_id": "1", "goal": "查资料", "acceptance": ""},
+            )
+            started.set()
+            await release.wait()
+            yield LoopEvent(
+                "subtask_completed",
+                {"task_id": task_id, "subtask_id": "1", "ok": True, "reason": "ok"},
+            )
+            yield LoopEvent("task_finished", {"outcomes": []})
+
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=_BlockingOrchestrator())
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> tuple[str, str]:
+        from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+        from textual.widgets import Collapsible  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            for ch in "/task 查答案":
+                await pilot.press(ch)
+            await pilot.press("enter")
+            for _ in range(50):
+                await pilot.pause()
+                if started.is_set():
+                    break
+            box = app.query_one("#timeline", Vertical).query_one(Collapsible)
+            running = str(box.title)
+            release.set()
+            for _ in range(20):
+                await pilot.pause()
+            return running, str(box.title)
+
+    running, done = asyncio.run(drive())
+    assert "⟳" in running and "✓" not in running  # 运行中标记（尚未收尾）
+    assert running.startswith("▸ 子任务 1")  # 主题（goal）与 sid 仍在
+    assert done == "▸ 子任务 1  ✓ 查资料"  # 收尾替换为既有 ✓ 口径
+
+
+def test_progress_for_unknown_subtask_is_ignored() -> None:
+    """里程碑无对应折叠块（未知 id）⇒ 静默忽略：不新建块、不影响其它子任务详情。"""
+    orch = _TaskOrchestrator(
+        [
+            (
+                "subtask_started",
+                {"task_id": "t", "subtask_id": "1", "goal": "查资料", "acceptance": "给出来源"},
+            ),
+            (
+                "subtask_progress",
+                {
+                    "task_id": "t",
+                    "subtask_id": "9",
+                    "event": "action_started",
+                    "data": {"round": 0, "tool_id": "tools.file_read", "args": {}},
+                    "ts": 1.0,
+                },
+            ),
+            (
+                "subtask_progress",
+                {
+                    "task_id": "t",
+                    "subtask_id": "1",
+                    "event": "action_completed",
+                    "data": {
+                        "round": 0,
+                        "tool_id": "tools.file_read",
+                        "ok": True,
+                        "duration_ms": 12,
+                    },
+                    "ts": 2.0,
+                },
+            ),
+            ("task_finished", {"outcomes": []}),
+        ]
+    )
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> tuple[str, int]:
+        from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+        from textual.widgets import Collapsible  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            for ch in "/task 查答案":
+                await pilot.press(ch)
+            await pilot.press("enter")
+            for _ in range(60):
+                await pilot.pause()
+            boxes = len(app.query_one("#timeline", Vertical).query(Collapsible))
+            return _timeline_text(app), boxes
+
+    text, boxes = asyncio.run(drive())
+    assert text.count("⏺ Read") == 1  # 未知 id（9）的里程碑被忽略；已知 id（1）的呈现一次
+    assert "⏺ Read ✓ (12ms)" in text
+    assert boxes == 1  # 未因里程碑新建折叠块
+
+
+def test_non_action_progress_renders_no_line() -> None:
+    """表外里程碑类型（非动作行、非轮次级）⇒ 不落任何行（不落空行与占位，不谎报）。"""
+    orch = _TaskOrchestrator(
+        [
+            (
+                "subtask_started",
+                {"task_id": "t", "subtask_id": "1", "goal": "查资料", "acceptance": "给出来源"},
+            ),
+            (
+                "subtask_progress",
+                {
+                    "task_id": "t",
+                    "subtask_id": "1",
+                    "event": "reason_started",
+                    "data": {},
+                    "ts": 1.0,
+                },
+            ),
+            (
+                "subtask_progress",
+                {
+                    "task_id": "t",
+                    "subtask_id": "1",
+                    "event": "action_completed",
+                    "data": "非字典载荷",
+                },
+            ),
+            (
+                "subtask_progress",
+                {
+                    "task_id": "t",
+                    "subtask_id": "1",
+                    "event": "action_completed",
+                    "data": {
+                        "round": 0,
+                        "tool_id": "tools.file_read",
+                        "ok": True,
+                        "duration_ms": 12,
+                    },
+                    "ts": 2.0,
+                },
+            ),
+            ("task_finished", {"outcomes": []}),
+        ]
+    )
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api.set_llm_config(_llm())
+
+    text = _drive_task(build_app(api), "查答案")
+
+    # 表外/异常载荷**不留痕**：验收后紧跟的正是合法里程碑（中间无空行与占位）
+    assert "验收：给出来源\n⏺ Read ✓ (12ms)" in text
+    assert "reason_started" not in text
+
+
 # ---- 会话续聊（`--session <id>`，change 0116） ----
 
 

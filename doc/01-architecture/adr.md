@@ -3129,6 +3129,51 @@
 
 ---
 
+## ADR-0117：TUI 子任务运行态与里程碑详情（change 0124 / phase-29 change D：E52）
+
+- **背景**：`coding-plan/phase-29.md` 的缺口 **E52**（用户需求②「串行/并行都需 CLI + web/app **动态显示子
+  agent 主题 + 运行状态**」的 CLI 半；§0.6 判据「`ui/repl.py:604` 只读折叠块、无会话切换」）。**一手复核**
+  （2026-10-06）把缺口**收窄**为一点：`repl.py:_add_task_widget` 的分支只到 `subtask_completed`，**无**
+  `subtask_progress` 分支（无 `else` 兜底）⇒ 里程碑事件到达即被**静默丢弃**；另一面是 `_open_subtask`
+  的标题在收尾前**无运行态标记**（「在跑」只能靠「还没出现 ✓/✗」推断）。**数据面早已就绪**：编排层
+  `_emit_progress`（change `0121`）已按白名单外发 `subtask_progress`，`api.run_task` 已加 `task.` 前缀
+  透传，Web 侧 `TaskPanel.svelte`（change `0122`）已在消费同一载荷 ⇒ 缺的**只是 TUI 消费面**。
+  §3.3 已把本 change **收窄**为「只读详情 + 实时状态」，「进入子 agent 会话 / 回到主 Agent」明文**不在**
+  本 change（§7 红线②：子 agent 消息流**无数据源**——转录只注入主 loop，change `0115`）。
+- **决策①：消费面接线，不新建旁路、不新建数据源。** 里程碑**只**从既有 `task.subtask_progress` 载荷取，
+  与 Web 侧同一事件面（SHALL NOT 另造事件面）——沿 change `0121` / `0122` 口径。
+- **决策②：里程碑文本复用既有动作行口径（`format_action_event`），不新写一套。** 工具类里程碑显示
+  **友好名 + 耗时**（`tools.code_run` ⇒ `Bash`），与主 loop 的动作行**同一呈现口径**；其实现只取
+  `tool_id / ok / duration_ms`，**从不**输出 `args` / `output` ⇒ 天然满足「用户可见层不暴露内部 id 与
+  原始参数」（既有红线，`_TOOL_NAMES` 注释与 `test_tui_action_widget_lifecycle` 同口径）。轮次级里程碑
+  （`step_completed`，动作行不覆盖）落「第 N 轮完成 / 失败」。
+- **决策③：只追加到**既有**折叠块；无对应块 ⇒ 静默忽略。** 里程碑先于 `subtask_started` 到达（或子任务
+  标识未知）时**不新建块**、不抛裸异常、不影响其它子任务 —— 对齐 `_complete_subtask` 既有的 `entry is None`
+  早退口径。白名单**表外**类型**不落空行与占位**（不谎报里程碑）。
+- **决策④：TUI 不预生成「待执行」条目（与 Web 的**有意**差异）。** Web 任务区是**清单式面板**（`plan_ready`
+  即按 `subtasks` 铺出全部条目，含 `pending`）；TUI 时间线是**对话流**（按事件发生次序追加）⇒ 预生成 N 条
+  空折叠块会把时间线变成半个面板。故 TUI 的子任务条目仍在 `subtask_started` 时创建，运行态由**标题徽标**
+  承载（`⟳` 运行中 ⇒ `✓/✗` 收尾 ⇒ 「已完成（续跑跳过）」）。
+- **决策⑤：不触 `format_task_event` ⇒ 非交互 CLI 输出逐字不变。** 该函数是 `core-agent task`
+  （`entry.py:_stream_task`）与 TUI **共用**的单行格式化器；把里程碑塞进去会**扩大**非交互入口的输出粒度
+  （今天每事件一行、无里程碑行）。本 change 的呈现只落 **TUI 折叠块**，非交互 CLI 口径**不动**。
+- **判据订正（相对 phase-29 §6 表 D 行，2 条）**：① 「可验证性：**低**（Textual 无测试基建）」**不成立**
+  —— 本仓**已有** headless Textual 基建（`app.run_test()` + `pilot.press` 驱动输入、`_timeline_text` 取
+  时间线全量文本、断 `Collapsible.Contents.display` 折叠态），`test_task_subtask_collapsible_lifecycle` /
+  `test_tui_action_widget_lifecycle` / `test_task_command_busy_rejects_concurrent` 即其现成用例；本 change
+  的 4 条验收**全部**由同类用例钉死 ⇒ 实为**高**。② 「依赖 A 的呈现面」表述偏松：A 交付的是**数据面**、
+  本 change 是**消费面**，且 B 已在 **Web** 侧完成等价消费（`milestone(ev)`）⇒ 本 change 的呈现口径可
+  **直接对照 Web 实现**，无需新造判据。
+- **已知局限**：① **不做**「进入子 agent 会话 / 主-子焦点切换」（无数据源，§3.3 登记后续）；② TUI 不预生成
+  待执行条目（决策④）⇒ 未开工的子任务**不出现**在时间线（与 Web 面板不同）；③ 折叠块**默认收起**，里程碑
+  须手动展开 ⇒ 需求②的「**动态显示**」在 TUI 是「按事件实时追加、按需展开」，与 Web 面板「常显」不同；
+  ④ 详情文本**无截断上限**（有界于白名单粒度：每轮至多 3 类事件）；⑤ 非交互 `core-agent task` 入口
+  **不呈现**里程碑（决策⑤，有意）。
+- **规格**：`ui`（**ADDED**「TUI 子任务运行态与详情」+ 4 Scenario：「子任务运行中可见状态徽标」
+  「里程碑事件展开可见」「表外事件不呈现」「里程碑先于折叠块到达时静默忽略」）。**非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3240,3 +3285,4 @@
 | ADR-0114 | 03-interfaces/orchestration-interface.md, 03-interfaces/loop-interface.md, 02-modules/orchestration.md, 04-testing/test-cases.md, coding-plan/phase-29.md |
 | ADR-0115 | 03-interfaces/ui-interface.md, 06-ui-frontend/ui-architecture.md, 04-testing/test-cases.md, coding-plan/phase-29.md |
 | ADR-0116 | 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 02-modules/orchestration.md, 04-testing/test-cases.md, coding-plan/phase-29.md |
+| ADR-0117 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/phase-29.md |

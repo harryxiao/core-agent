@@ -69,7 +69,14 @@ class UIAPILayer:
 | `loop.action_completed` | round, tool_id, ok, duration_ms, output | 工具动作收尾（标题落 ✓/✗+耗时，展开含输出节选） |
 | `loop.result` | turn_id, result | 结果回传 |
 | `loop.error` | turn_id, error | 结构化错误（不中断循环） |
-| `task.*` | 编排事件载荷 | 任务进度（task_started / plan_ready / wave_started / subtask_started / subtask_progress / subtask_completed / task_checkpoint / task_finished / task_failed，type 前缀 `task.`；TUI 时间线呈现：任务/波次浅灰单行，子任务 Collapsible 折叠块，展开含验收/判定/结果节选；Web 任务区呈现见 §1.2 末） |
+| `task.*` | 编排事件载荷 | 任务进度（task_started / plan_ready / wave_started / subtask_started / subtask_progress / subtask_completed / task_checkpoint / task_finished / task_failed，type 前缀 `task.`；TUI 时间线呈现：任务/波次浅灰单行，子任务 Collapsible 折叠块（标题含运行态徽标 `⟳`，收尾落 ✓/✗），展开含验收/**里程碑**（`subtask_progress` 逐条追加，工具类复用动作行**友好名**，见下注）/判定/结果节选；Web 任务区呈现见 §1.2 末） |
+
+> **注（`subtask_progress` 载荷，change `0121` 数据面 / change `0124` 消费面）**：载荷
+> `{task_id, subtask_id, event, data, ts}` —— `event` 为内层事件类型，`data` 为**按类型白名单**取键的
+> 子集（`action_started`：round/tool_id/args；`action_completed`：round/tool_id/ok/duration_ms/output；
+> `step_completed`：round/failed），**表外类型不外发**。TUI 展开区**只**呈现 `tool_id` 的**友好名**与
+> 耗时（轮次级落轮次与成败）——原始 `args` / `output` / 内部 `tool_id` **不进用户可见层**；无对应折叠块
+> 的里程碑**静默忽略**。非交互 `core-agent task` 入口**不呈现**里程碑（既有单行粒度不变）。
 
 ### 1.2 HTTP 端点清单（WebBridge.serve）
 
