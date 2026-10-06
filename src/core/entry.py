@@ -424,6 +424,7 @@ def _build_ui(args: argparse.Namespace, *, interactive: bool = False) -> UIAPILa
         approval=approval,
         orchestrator=runtime.orchestrator,  # /task 命令驱动同一编排器
         pet_activator=runtime.pet_activator,  # WebUI 自然语言宠物激活
+        beast_activator=runtime.beast_activator,  # 神兽三入口（/summon·/recall + NL，change 0137）
         pet_control=(
             PetControl(runtime.pet_manager)  # 前台 `/pet [cmd]` 控制面
             if runtime.pet_manager is not None

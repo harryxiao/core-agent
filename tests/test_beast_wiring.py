@@ -20,6 +20,8 @@ from core.loop import DefaultLoop
 from core.memory import MemoryEntry
 from core.runtime import build_runtime
 from core.skills import Skill, SkillLibrary, SkillRouter
+from core.ui import UiError, UiErrorCode
+from core.ui.api import UIAPILayer
 
 # 青龙的领域职责原文（= 其神通的 task_types[0]）——用作「本该命中」的路由任务
 _QINGLONG_TASK = "架构设计 / 蓝图与骨架生成"
@@ -192,3 +194,36 @@ def test_beast_loop_recalls_own_namespace_only(runtime, monkeypatch) -> None:
     assert not [f for f in main_pack.facts if str(f["source"]).startswith("beast.")], (
         "主 loop 封存语义逐字不动"
     )
+
+
+# ---- 三入口接线（change 0137 / 账本 E74） ----
+
+
+def test_ui_layer_activate_beast_registers_session(runtime, monkeypatch) -> None:
+    """`UIAPILayer.activate_beast`（WebUI 自然语言入口）落到同一 `BeastManager`。"""
+    _patch_llm(monkeypatch, runtime, "青龙已就位")
+    api = UIAPILayer(beast_activator=runtime.beast_activator)
+
+    agent_id = asyncio.run(api.activate_beast("召唤青龙 架构设计"))
+
+    assert runtime.beast_manager is not None
+    assert runtime.beast_manager.get(agent_id) is not None
+
+
+def test_ui_layer_beast_command_summon_and_recall(runtime, monkeypatch) -> None:
+    """斜杠入口（`/summon` `/recall` 的 API 落点）端到端：召唤跑真实 loop、结果经只读查询面呈现。
+
+    生产 manager 带 router ⇒ handoff 完成即自动回归；此后手动 `/recall` 无在岗兽，
+    领域错误在 API 边界归一（不向 UI worker 抛裸 `BeastError`）。
+    """
+    _patch_llm(monkeypatch, runtime, "青龙蓝图已出")
+    api = UIAPILayer(beast_activator=runtime.beast_activator)
+
+    summon = asyncio.run(api.beast_command("summon", "青龙", task="架构设计"))
+
+    assert summon["agent_id"] == "beast.qinglong"
+    assert summon["has_result"] is True and summon["reply"] == "青龙蓝图已出"
+    assert summon["state"] == "recalled"  # 任务完成自动回归
+    with pytest.raises(UiError) as exc_info:
+        asyncio.run(api.beast_command("recall", "青龙"))
+    assert exc_info.value.code is UiErrorCode.UI_BEAST_STATE_INVALID

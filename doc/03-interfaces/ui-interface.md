@@ -55,6 +55,22 @@ class UIAPILayer:
         （与 CLI `pet <verb>` **同一实现**，见 `pet-mode-interface.md` §5.3）；
         未接 ⇒ `UI_PET_UNSET`，未知动词 ⇒ `UI_PET_UNKNOWN_VERB`。
         """
+
+    # 神兽：三入口中的两个（WebUI 自然语言 + TUI 斜杠 `/summon` `/recall`，change `0137`）
+    # 组合根装配（Runtime.beast_activator），None 时报 UI_BEAST_UNSET；与 pet 同型
+    beast_activator: BeastActivator | None
+    async def activate_beast(self, user_input: str) -> str:
+        """WebUI 自然语言激活神兽（返回 agent_id；神兽激活是异步 handoff ⇒ async）。"""
+    async def beast_command(
+        self, verb: str, target: str, *, task: str = ""
+    ) -> dict[str, object]:
+        """前台 `/summon <兽> [任务]` · `/recall <兽>` 控制面（与 CLI 同一激活器）。
+
+        verb → `activate_from_slash` / `recall_from_slash`；返回 `result_summary()`
+        摘要 + 会话 `state` —— 结果正文**只经只读查询面**取用。未接 ⇒ `UI_BEAST_UNSET`，
+        未知动词 ⇒ `UI_BEAST_UNKNOWN_VERB`，领域错误在边界归一
+        （无匹配神兽 ⇒ `UI_BEAST_NOT_FOUND`；状态冲突 ⇒ `UI_BEAST_STATE_INVALID`）。
+        """
 ```
 
 ### 1.1 流式事件（SSE）
@@ -195,6 +211,13 @@ fail-closed，先于进入 TUI 拒绝），缺省 ⇒ 新建（既有行为不�
 且**不进推理**）；未知标识不切换（提示「未找到」）。`task_started` 与**审批挂起**时强制回主视图
 （计划头 / 审批提示写在时间线上，隐藏即不可见）。Web 侧**不做**焦点视图（面板式布局，沿用 `TaskPanel`）。
 
+**TUI 神兽斜杠命令（change 0137 / ADR-0130）**：REPL 命令面补 `/summon <神兽> [任务]` 与
+`/recall <神兽>`，经 `UIAPILayer.beast_command` 落到**与 CLI `summon`/`recall` 同一** `BeastActivator`
+（三入口无第二真源）。解析走纯函数 `_parse_beast_command`（`/recall` **不带**任务位元）；缺目标时
+只提示用法、**不**发起激活。呈现为一行状态（`已召唤/已召回神兽 <agent_id>（状态 <state>）`）+
+**有结果才打印**的一行结果（与 `summon` CLI 同口径；结果正文只经只读查询面，不编造）。领域错误
+（无匹配神兽 / 状态冲突）在 API 边界归一为 `UI_BEAST_*` 并落时间线 fail 行，**不**抛裸领域异常。
+
 **Web Client 与 Host 分离**：Web 前端（SPA）作为纯静态资源独立托管，`WebBridge` 仅暴露统一后端 API；前端经该 API 连接远程 / 本机常驻 Harness Host（见 `deployment-interface.md`），前端升级无需重启 Host 后端。
 
 ---
@@ -233,6 +256,10 @@ LLM API（provider / endpoint / key / base URL）只在后端配置一次：
 | `UI_ORCHESTRATOR_UNSET` | 编排器未注入（run_task 前校验） |
 | `UI_PET_UNSET` | 宠物激活器 / 控制面未注入（`activate_pet` / `pet_command` 前校验） |
 | `UI_PET_UNKNOWN_VERB` | `pet_command` 收到未支持的控制动词（change `0088`） |
+| `UI_BEAST_UNSET` | 神兽激活器未注入（`activate_beast` / `beast_command` 前校验，change `0137`） |
+| `UI_BEAST_UNKNOWN_VERB` | `beast_command` 收到未支持的控制动词（change `0137`） |
+| `UI_BEAST_NOT_FOUND` | 无匹配神兽（领域 `NO_AGENT_MATCH` 在 API 边界归一，change `0137`） |
+| `UI_BEAST_STATE_INVALID` | 神兽状态不允许该操作（`BEAST_ALREADY_MANIFEST` 重复召唤 / `BEAST_NOT_MANIFEST` 无在岗可召回，change `0137`） |
 
 ---
 

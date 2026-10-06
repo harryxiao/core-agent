@@ -3552,6 +3552,42 @@
 
 ---
 
+## ADR-0130：beast 三入口接线收口 + 领域错误分码归一（change 0137 / phase-34 E74）
+
+- **背景**：`coding-plan/phase-34.md` 登记的 **E74**（设计缺失）。`beast-mode/spec.md`
+  「Three-Entry Activation」SHALL 三入口召唤（`/summon` 斜杠 / `summon` CLI / WebUI 自然语言）
+  且「三入口最终落到同一 `BeastSession` 生命周期」，但**生产只有 CLI 一条通**：
+  `BeastActivator` 的 `activate_from_slash` / `activate_from_nl` / `recall_from_slash` /
+  `recall_from_nl` **全仓零调用方**；`entry.py` 构造 `UIAPILayer` 时未注入 `beast_activator`；
+  `repl.py` 斜杠命令只有 `/focus` `/main` ⇒ `/summon` 被当普通对话发给 loop。契约方法层完备、
+  生产接线缺席 —— 本 ADR 把 `phase-17.5.md:45` 的「三入口已实现」订正为**契约层实现**。
+- **决策①：入口接线只落 `UIAPILayer` 面，不新增 HTTP 端点。** 三入口中的两个（TUI 斜杠 / WebUI
+  自然语言）经 `UIAPILayer.beast_command` / `activate_beast` 落到注入的 `runtime.beast_activator`
+  —— 与 pet 的 `activate_pet` / `pet_command`（change `0088`）**同型**：WebUI 侧是**消息驱动**，
+  自身不是端点。这也正是 **E82 判为假阳性**的同一判据（规格未要求 pet/beast HTTP 端点）。
+- **决策②：`activate_beast` 为 `async`（神兽激活 = 异步 handoff）。** `BeastManager.summon` 走
+  `MultiAgentRouter.handoff` 并 `await` 全程，故方法与 `beast_command` 同为协程；`recall` 路径同步，
+  但在同一 facade 内统一为 `async`（调用方不必按 verb 分形）。
+- **决策③：领域错误在 API 边界**分码**归一（不并作一码）。** `BeastError` 与 `OrchestrationError`
+  是**兄弟类型**（无继承关系），召回在岗检查可抛 `BeastError` ⇒ 只捕 `OrchestrationError` 会把裸领域
+  异常漏进 TUI worker（`repl` 只捕 `UiError`）。故按**用户可见语义**分两码：无匹配神兽
+  （`NO_AGENT_MATCH`）⇒ `UI_BEAST_NOT_FOUND`；状态冲突（`BEAST_ALREADY_MANIFEST` 重复召唤 /
+  `BEAST_NOT_MANIFEST` 无在岗可召回）⇒ `UI_BEAST_STATE_INVALID`。**较原计划多一码**（计划写三条）：
+  「无此兽」与「有此兽但不在岗」是两类用户动作纠错，合码会把「换名字重试」与「等它回来」混为一谈。
+- **决策④：斜杠解析为纯函数 `_parse_beast_command`，缺目标不发起激活。** `/recall` **不带**任务位元；
+  `/summon` 无神兽时只提示用法并复位忙态（不吞参数错误、不调 activator）。呈现与 CLI `summon` 同口径：
+  一行状态 + **有结果才打印**一行结果（`result_summary()` 只读查询面，不检索、不落 L2、不编造）。
+- **已知局限**：WebUI 自然语言的**意图解析**仍为骨架启发式（`_resolve_nl` 取首个词元，
+  `activator.py` 自注「Agent 理解意图 deferred」）—— 本 change 只把入口接通，不接 LLM 意图理解
+  （属 phase-17.5 遗留，不在 phase-34 二十五条账内）。生产 `BeastManager` 恒带 router ⇒ `summon`
+  完成即自动回归，此后 `/recall` 报状态冲突（与 pet/TUI 的忙态语义一致；「任务在途时手动召回」
+  是并发入口下的真实用途）。
+- **规格**：**无 delta**（`beast-mode/spec.md`「Three-Entry Activation」/「Manual Recall」两 Scenario
+  早已是硬 SHALL，实现侧纯背离 ⇒ conformance 修复）⇒ `.openspec.yaml` 写
+  `schema: spec-driven` + `skip_specs: true`（先例 `0110` / `0083` / `0135`）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3676,3 +3712,4 @@
 | ADR-0127 | 03-interfaces/skillhub-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0128 | 03-interfaces/permission-interface.md, 02-modules/permission.md, 03-interfaces/git-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0129 | 03-interfaces/composition-interface.md, 02-modules/composition.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0130 | 03-interfaces/beast-mode-interface.md, 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

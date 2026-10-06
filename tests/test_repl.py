@@ -13,6 +13,7 @@ from core.ui import Event, UIAPILayer, UiError, UiErrorCode
 from core.ui.repl import (
     _event_delta,
     _format_event,
+    _parse_beast_command,
     barge_in_event,
     build_app,
     format_task_event,
@@ -1003,3 +1004,18 @@ def test_build_app_default_creates_session() -> None:
     build_app(api)
 
     assert len(api.list_sessions()) == 1
+
+
+# ---- 神兽斜杠命令解析（change 0137 / 账本 E74） ----
+
+
+def test_parse_beast_command_forms() -> None:
+    """`/summon <神兽> [任务]` · `/recall <神兽>` 形态解析（非法形态返回 None）。"""
+    assert _parse_beast_command("/summon qinglong 架构设计") == ("summon", "qinglong", "架构设计")
+    assert _parse_beast_command("/summon qinglong") == ("summon", "qinglong", "")
+    assert _parse_beast_command("/recall 青龙") == ("recall", "青龙", "")
+    assert _parse_beast_command("/summon") is None  # 无目标
+    assert _parse_beast_command("/summon   ") is None
+    assert _parse_beast_command("/recall") is None
+    assert _parse_beast_command("你好") is None
+    assert _parse_beast_command("/focus s1") is None

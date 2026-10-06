@@ -12,11 +12,12 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
+from core.beast import BeastActivator, BeastError
 from core.configuration import ConfigManager, ConfigurationError
 from core.configuration.models import LLMConfig
 from core.loop import DefaultLoop, LimitsConfigurable, LoopEvent, LoopPlugin
 from core.memory import MemoryStore, TranscriptStore
-from core.orchestration import TaskScheduler
+from core.orchestration import OrchestrationError, TaskScheduler
 from core.permission import ApprovalChannel
 from core.pet.core import PetActivator, PetControl
 from core.tools import ToolDef, ToolProvider, ToolResult
@@ -109,6 +110,7 @@ class UIAPILayer:
         orchestrator: TaskScheduler | None = None,
         pet_activator: PetActivator | None = None,
         pet_control: PetControl | None = None,
+        beast_activator: BeastActivator | None = None,
         registry: SessionRegistry | None = None,
         transcript: TranscriptStore | None = None,
     ) -> None:
@@ -123,6 +125,8 @@ class UIAPILayer:
         self._orchestrator = orchestrator
         self._pet_activator = pet_activator
         self._pet_control = pet_control
+        # 神兽三入口（斜杠 / WebUI 自然语言）缺省未接 ⇒ 报 `UI_BEAST_UNSET`（对称 pet）
+        self._beast_activator = beast_activator
         self._registry = registry if registry is not None else SessionRegistry()
         # 对话转录存储（缺省未注入 ⇒ 枚举不做富化、`session_messages` 走空，形状不变）
         self._transcript = transcript
@@ -253,6 +257,52 @@ class UIAPILayer:
         if verb == "stop":
             return self._pet_control.stop(session_id)
         raise UiError(UiErrorCode.UI_PET_UNKNOWN_VERB, f"未知宠物控制动词：{verb}")
+
+    # ---- 神兽（WebUI 自然语言 + 前台 `/summon` `/recall`，change 0137 / 账本 E74） ----
+
+    async def activate_beast(self, user_input: str) -> str:
+        """WebUI 自然语言「召唤 X 兽做 Y」入口（对称 `activate_pet`）；返回神兽 agent_id。
+
+        神兽激活 = 异步 handoff（beast-mode spec「Async Concurrent Execution」）⇒ 本方法为 async。
+        """
+        if self._beast_activator is None:
+            raise UiError(UiErrorCode.UI_BEAST_UNSET, "神兽激活器未接")
+        try:
+            session = await self._beast_activator.activate_from_nl(user_input)
+        except (OrchestrationError, BeastError) as exc:
+            raise self._beast_error(exc) from exc
+        return session.beast.agent_id
+
+    async def beast_command(self, verb: str, target: str, *, task: str = "") -> dict[str, object]:
+        """前台 `/summon <兽> [任务]` · `/recall <兽>` 控制面（与 CLI 同一激活器）。
+
+        返回 `result_summary()` 摘要 + 会话 `state` —— 结果正文**只经只读查询面**取用
+        （beast-mode spec「Task Result Visibility」：不检索、不落 L2、不编造）。
+        """
+        if self._beast_activator is None:
+            raise UiError(UiErrorCode.UI_BEAST_UNSET, "神兽激活器未接")
+        try:
+            if verb == "summon":
+                session = await self._beast_activator.activate_from_slash(target, task)
+            elif verb == "recall":
+                session = self._beast_activator.recall_from_slash(target)
+            else:
+                raise UiError(UiErrorCode.UI_BEAST_UNKNOWN_VERB, f"未知神兽控制动词：{verb}")
+        except (OrchestrationError, BeastError) as exc:
+            raise self._beast_error(exc) from exc
+        return {**session.result_summary(), "state": session.state.value}
+
+    @staticmethod
+    def _beast_error(exc: OrchestrationError | BeastError) -> UiError:
+        """领域错误在 UI 边界归一（不向 UI 抛裸领域异常）。
+
+        无匹配神兽（`NO_AGENT_MATCH`）⇒ `UI_BEAST_NOT_FOUND`；状态冲突
+        （`BEAST_ALREADY_MANIFEST` 重复召唤 / `BEAST_NOT_MANIFEST` 无在岗可召回）⇒
+        `UI_BEAST_STATE_INVALID` —— 两者用户可见语义不同，不并作一码。
+        """
+        if isinstance(exc, OrchestrationError):
+            return UiError(UiErrorCode.UI_BEAST_NOT_FOUND, str(exc))
+        return UiError(UiErrorCode.UI_BEAST_STATE_INVALID, str(exc))
 
     # ---- 工具 ----
 

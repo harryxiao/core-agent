@@ -40,7 +40,7 @@
 
 | # | 类别 | 缺口 | 证据 | 复核 |
 |---|---|---|---|---|
-| **E74** | 规格漂移 | **beast「三入口」仅 CLI 接线**：`/summon` 斜杠与 WebUI 自然语言**生产不可达** | `beast/activator.py:45-55` 声明 `activate_from_slash` / `activate_from_nl`（及其 recall 孪生 `:57-67`），**全仓无调用方**；`ui/api.py:223` 只接**宠物** `activate_from_nl`；`entry.py:417-435` 构造 `UIAPILayer` **未注入 `beast_activator`**；`ui/repl.py` 斜杠命令只有 `/focus` `/main`。spec `beast-mode/spec.md:123-139`「Three-Entry Activation」两个 Scenario 不可达（`phase-17.5.md:45` 标「三入口已实现」实为**契约方法层**；`_resolve_nl:29-36` 自注「Agent 理解意图 deferred」） | ✅ |
+| **E74** | 规格漂移 | **beast「三入口」仅 CLI 接线**：`/summon` 斜杠与 WebUI 自然语言**生产不可达** | `beast/activator.py:45-55` 声明 `activate_from_slash` / `activate_from_nl`（及其 recall 孪生 `:57-67`），**全仓无调用方**；`ui/api.py:223` 只接**宠物** `activate_from_nl`；`entry.py:417-435` 构造 `UIAPILayer` **未注入 `beast_activator`**；`ui/repl.py` 斜杠命令只有 `/focus` `/main`。spec `beast-mode/spec.md:123-139`「Three-Entry Activation」两个 Scenario 不可达（`phase-17.5.md:45` 标「三入口已实现」实为**契约方法层**；`_resolve_nl:29-36` 自注「Agent 理解意图 deferred」） ⇒ **已落地（change `0137` / ADR-0130）：`UIAPILayer` 增 `beast_activator` 注入面 + `activate_beast`（NL，async）/ `beast_command`（斜杠 `/summon` `/recall`）；`repl.py` 补 `_parse_beast_command` + 分发 + `_run_beast_turn`（状态行 + 有结果才打印）；`entry.py` 注入 `runtime.beast_activator`；领域错误在 API 边界分码归一（`OrchestrationError` ⇒ `UI_BEAST_NOT_FOUND`；`BeastError` ⇒ `UI_BEAST_STATE_INVALID`）。无 delta（spec 早已硬 SHALL）⇒ `skip_specs`** | ✅ |
 | **E75** | 设计缺失 | composition **「可逆 / 可回退」无兑现** | `composition/resolver.py:106-108` 覆盖前分层结果被 `apply_patch` 丢弃、override 值只存进 `ResolvedSet.overrides`（`:108`）；全包**无任何 revert/undo API** ⇒ spec `composition/spec.md:51-57`「回退到覆盖前状态」**无路径可达**（`models.py:51` 注释亦仅声明数据形状） ⇒ **已落地（change `0136` / ADR-0129）：`ResolvedSet` 增必填 `layered`（覆盖前分层结果）、`resolve` 原样携带；新增 `ProfileResolver.revert`（纯函数 / 幂等 / 不改实参）并门面透出 `CompositionEngine.revert`；规格「层叠解析」补「保留覆盖前分层结果 + 回退幂等」与 2 Scenario** | ✅ |
 | **E76** | 规格漂移 | permission **子串匹配**（违反「分词 / 完整词元」）＋ `APPROVAL_REQUIRED` **定义无人 `raise`** | `permission/policy.py:53,61,63` 用裸子串 `tok in op_l`；spec `permission/spec.md:9,19,26-29` 要求语义分词且 **namespace-子串 SHALL NOT 判读**；`permission/errors.py:18` 定义 `APPROVAL_REQUIRED`，**`src/` 零 `raise`**（死码） ⇒ **已落地（change `0135` / ADR-0128）：`classify` 改**词元集合**命中（`_tokens` 按 `._:-/` 切词，操作**与目标**两侧；三表转 `frozenset`，顺序逐字不变）—— `tools.target`／`tools.category_sync` 由误判 `read` 收敛为 `HIGH_RISK`（fail-closed 兜底归位）；`APPROVAL_REQUIRED` 的 raise 落点订正为**高危 git 审批门** `GitClient._require_approval`（原误用 `PERMISSION_DENIED`；`authorize` 一侧仍以 `Decision(approval_required=True)` 供审批通道，**不**改抛异常）** | ✅ |
 | **E77** | 设计缺失 | **信息地图不可达**（构造了却从不查） | `context/assembler.py:54-75` `build()` **从不读** `_info_map`（`:32` 只在 ctor 存下）；`fetch_detail():69-75` **零调用**；`context/info_map.py:90-100 _linear_scan` **死码**（`index()` 恒同写 `_docs`+`_maps`） | ✅ |
@@ -178,7 +178,7 @@
 | `0134` | E80 | ✅ 已落地（2026-10-06） | ADR-0127 |
 | `0135` | E76 | ✅ 已落地（2026-10-06） | ADR-0128 |
 | `0136` | E75 + E70 | ✅ 已落地（2026-10-06） | ADR-0129 |
-| `0137` | E74 | ⏳ 待实施 | — |
+| `0137` | E74 | ✅ 已落地（2026-10-06） | ADR-0130 |
 | `0138` | E79 | ⏳ 待实施 | — |
 | `0139` | E81 + E83 | ⏳ 待实施 | — |
 | `0140` | E77 | ⏳ 待实施 | — |

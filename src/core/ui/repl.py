@@ -176,6 +176,24 @@ def _format_event(event: Event) -> str | None:
     return None
 
 
+def _parse_beast_command(text: str) -> tuple[str, str, str] | None:
+    """`/summon <神兽> [任务]` · `/recall <神兽>` 解析为 `(verb, target, task)`。
+
+    形态不合法（非本命令 / 缺目标）返回 None —— 由调用方给用法提示，不静默吞参数错误。
+    """
+    head, _, rest = text.partition(" ")
+    if head not in ("/summon", "/recall"):
+        return None
+    parts = rest.split()
+    if not parts:
+        return None
+    verb = "summon" if head == "/summon" else "recall"
+    return verb, parts[0], " ".join(parts[1:])
+
+
+_BEAST_USAGE = "用法：/summon <神兽> [任务] ｜ /recall <神兽>"
+
+
 def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — 内嵌 ReplApp 类体推高复杂度
     """构建 Textual 应用（懒 import textual），暴露给 headless 冒烟测试驱动。
 
@@ -534,13 +552,54 @@ Collapsible > CollapsibleTitle:hover {
             # （审批 y/n、Ctrl+B 打断等后续输入才能被分发——泵内 await 会死锁）
             if text.startswith("/task "):  # 任务命令：驱动编排器（不进普通对话）
                 goal = text[len("/task ") :].strip()
-                if not goal:
+                if goal:
+                    self.run_worker(self._run_task_turn(goal))
+                else:
                     self._turn_busy = False
                     self._add(Static("用法：/task <目标>", classes="hint"))
-                    return
-                self.run_worker(self._run_task_turn(goal))
+                return
+            if self._handle_beast_command(text):  # 神兽斜杠入口（change 0137）
                 return
             self.run_worker(self._run_turn(text))
+
+        def _handle_beast_command(self, text: str) -> bool:
+            """神兽斜杠入口 `/summon` `/recall`：命中即消费（用法错复位忙态，否则起 worker）。"""
+            if text.split(maxsplit=1)[0] not in ("/summon", "/recall"):
+                return False
+            parsed = _parse_beast_command(text)
+            if parsed is None:
+                self._add(Static(_BEAST_USAGE, classes="hint"))
+                self._turn_busy = False
+            else:
+                self.run_worker(self._run_beast_turn(*parsed))
+            return True
+
+        # ---- 神兽轮（/summon · /recall，change 0137 / 账本 E74）----
+
+        async def _run_beast_turn(self, verb: str, target: str, beast_task: str) -> None:
+            """神兽轮：状态行落时间线；召唤后结果**有才打印**（与 `summon` CLI 同口径）。"""
+            self._spin_start("神兽就位中" if verb == "summon" else "召回中")
+            try:
+                summary = await api.beast_command(verb, target, task=beast_task)
+                verb_cn = "已召唤神兽" if verb == "summon" else "已召回神兽"
+                self._add(
+                    Static(
+                        f"{verb_cn} {summary['agent_id']}（状态 {summary['state']}）",
+                        classes="hint",
+                        markup=False,
+                    )
+                )
+                if summary.get("has_result"):
+                    outcome = "失败" if summary.get("failed") else "成功"
+                    line = f"结果（{outcome}）：{summary.get('reply')}"
+                    self._add(Static(line, classes="hint", markup=False))
+            except UiError as err:
+                line = _format_event(_error_event(err))
+                if line:
+                    self._add(Static(line, classes="fail", markup=False))
+            finally:
+                self._spin_stop()
+                self._turn_busy = False
 
         # ---- 任务轮（/task）----
 

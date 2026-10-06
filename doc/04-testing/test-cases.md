@@ -786,6 +786,23 @@
 
 ---
 
+## 53. beast 三入口接线（TC-BEAST3，change `0137`／ADR-0130，账本 E74）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-BEAST3-01 | beast-mode/spec.md「Three-Entry Activation」（三入口 SHALL 落到同一生命周期）；beast-mode-interface.md §7.1 | 未注入激活器：`UIAPILayer().beast_command(...)` / `activate_beast(...)` | 抛 `UiError` 且 `code is UI_BEAST_UNSET`（fail-explicit，不静默）（锚点：`tests/test_ui.py::test_ui_beast_command_without_activator_raises`、`::test_ui_activate_beast_without_activator_raises`） |
+| TC-BEAST3-02 | ui-interface.md §1（`beast_command` 动词面）/ §5 错误码 | `beast_command("banish", …)` | `code is UI_BEAST_UNKNOWN_VERB`（锚点：`::test_ui_beast_command_unknown_verb_raises`） |
+| TC-BEAST3-03 | 同上（领域错误在 UI 边界归一） | 真实 `BeastActivator()`：`summon "没有这只兽"`；`recall "青龙"`（无在岗） | 无匹配神兽 ⇒ `UI_BEAST_NOT_FOUND`；状态冲突 ⇒ `UI_BEAST_STATE_INVALID`（两码**不并**）（锚点：`::test_ui_beast_command_unknown_beast_reports_ui_error`、`::test_ui_beast_command_dormant_recall_reports_ui_error`） |
+| TC-BEAST3-04 | beast-mode/spec.md「Task Result Visibility」（结果只经只读查询面） | 替身 activator：`summon`（带 task）/ `recall` | verb 落到 `activate_from_slash("青龙","架构设计")` / `recall_from_slash("青龙")`；返回摘要含 `agent_id` / `state` / `result_summary` 字段；**召回不编造结果正文**（`has_result is False`）（锚点：`::test_ui_beast_command_delegates_to_activator`） |
+| TC-BEAST3-05 | beast-mode-interface.md §7.1（NL 入口） | `activate_beast("召唤青龙 架构设计")`（替身） | 落到 `activate_from_nl` 且返回 `agent_id`（锚点：`::test_ui_activate_beast_returns_session_id`） |
+| TC-BEAST3-06 | ui-interface.md「TUI 神兽斜杠命令」 | TUI：`/summon qinglong 架构设计` → `/recall qinglong` | 时间线含状态行（`已召唤神兽 beast.qinglong（状态 recalled）`）+ **有结果才打印**的结果行 + 召回状态行（锚点：`::test_tui_summon_and_recall_slash_commands`） |
+| TC-BEAST3-07 | 同上（缺目标不发起激活） | TUI：`/summon`（无目标） | 只落用法提示，激活器**零调用**（锚点：`::test_tui_summon_usage_hint_on_missing_target`） |
+| TC-BEAST3-08 | `_parse_beast_command` 纯函数面 | `/summon qinglong 架构设计`、`/summon qinglong`、`/recall 青龙`、`/summon`、`/summon   `、`/recall`、`你好`、`/focus s1` | 合法形态 ⇒ `("summon","qinglong","架构设计")` / `("summon","qinglong","")` / `("recall","青龙","")`；缺目标与非本命令 ⇒ `None`（锚点：`tests/test_repl.py::test_parse_beast_command_forms`） |
+| TC-BEAST3-09 | 组合根装配（`entry.py` 注入 `Runtime.beast_activator`，门控同 pet） | 生产 `build_runtime`：`UIAPILayer(beast_activator=runtime.beast_activator)` + `activate_beast` | 会话登记进**同一** `runtime.beast_manager`（锚点：`tests/test_beast_wiring.py::test_ui_layer_activate_beast_registers_session`） |
+| TC-BEAST3-10 | 同上（斜杠端到端） | 同上：`beast_command("summon","青龙",task="架构设计")` 离线桩 LLM | 真实 loop 跑通：`agent_id == "beast.qinglong"`、`reply` 为桩回复、`state == "recalled"`（任务完成自动回归）；此后再 `recall` ⇒ `UI_BEAST_STATE_INVALID`（锚点：`::test_ui_layer_beast_command_summon_and_recall`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

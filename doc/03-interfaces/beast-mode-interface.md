@@ -146,6 +146,20 @@ read 命中；`session.recall()`（自动回归）为封存的召回面。
 
 辅助：`_resolve_nl(user_input: str) -> str`（自然语言解析出目标兽名）。
 
+### §7.1 三入口生产落点（change `0137` / 账本 E74）
+
+契约方法此前**齐备但生产只有 CLI 一条通**；本表钉住三入口各自的**生产落点**（同一 `Runtime.beast_activator`
+实例，无第二真源）：
+
+| 入口 | 生产落点 | 落点方法 |
+| --- | --- | --- |
+| Slash（TUI `/summon` `/recall`） | `ui/repl.py` 分发 → `UIAPILayer.beast_command` | `activate_from_slash` / `recall_from_slash` |
+| CLI（`core-agent summon` / `recall`） | `entry._summon` / `entry._recall` | `activate_from_cli` / `recall_from_cli` |
+| WebUI 自然语言（「召唤 X 兽做 Y」） | `UIAPILayer.activate_beast`（**消息驱动，无 HTTP 端点**） | `activate_from_nl` |
+
+三入口与 pet 同型：门控关闭时 `Runtime.beast_activator is None` ⇒ `UI_BEAST_UNSET` / CLI 报
+「beast 模块已关闭」（fail-explicit）。
+
 ---
 
 ## §8 神通注册（Innate Skills）

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
+from core.beast import BeastActivator
 from core.configuration.models import LLMConfig
 from core.loop import LoopEvent
 from core.memory import MemoryEntry
@@ -648,3 +651,158 @@ def test_list_sessions_reports_created() -> None:
 
     assert [entry["session_id"] for entry in api.list_sessions()] == [session_id]
     assert api.list_sessions()[0]["mode"] == "cli"
+
+
+# ---- 神兽三入口（change 0137 / 账本 E74） ----
+
+
+class _FakeBeastSession:
+    """会话替身：只承载 API 面用到的三处（`beast.agent_id` / `state.value` / `result_summary`）。"""
+
+    def __init__(self, agent_id: str, state: str, *, reply: str | None = None) -> None:
+        self.beast = SimpleNamespace(agent_id=agent_id)
+        self.state = SimpleNamespace(value=state)
+        self._summary: dict[str, object] = {
+            "agent_id": agent_id,
+            "has_result": reply is not None,
+            "reply": reply,
+            "failed": False if reply is not None else None,
+        }
+
+    def result_summary(self) -> dict[str, object]:
+        return dict(self._summary)
+
+
+class _FakeBeastActivator:
+    """记录落点的激活器替身（证明 verb 落到同一 activator 的对应入口）。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def activate_from_slash(self, target: str, task: str = "") -> _FakeBeastSession:
+        self.calls.append(("summon", f"{target}|{task}"))
+        return _FakeBeastSession("beast.qinglong", "recalled", reply="青龙蓝图已出")
+
+    def recall_from_slash(self, target: str) -> _FakeBeastSession:
+        self.calls.append(("recall", target))
+        return _FakeBeastSession("beast.qinglong", "recalled")
+
+    async def activate_from_nl(self, user_input: str) -> _FakeBeastSession:
+        self.calls.append(("nl", user_input))
+        return _FakeBeastSession("beast.qinglong", "recalled", reply="蓝图")
+
+
+def _beast_api(activator: object) -> UIAPILayer:
+    return UIAPILayer(beast_activator=cast(Any, activator))
+
+
+def test_ui_beast_command_without_activator_raises() -> None:
+    """未注入 ⇒ `UI_BEAST_UNSET`（与 pet 同型，fail-explicit 不静默）。"""
+    with pytest.raises(UiError) as exc_info:
+        asyncio.run(UIAPILayer().beast_command("summon", "青龙"))
+    assert exc_info.value.code is UiErrorCode.UI_BEAST_UNSET
+
+
+def test_ui_activate_beast_without_activator_raises() -> None:
+    """WebUI 自然语言入口未接 ⇒ `UI_BEAST_UNSET`。"""
+    with pytest.raises(UiError) as exc_info:
+        asyncio.run(UIAPILayer().activate_beast("召唤青龙 架构设计"))
+    assert exc_info.value.code is UiErrorCode.UI_BEAST_UNSET
+
+
+def test_ui_beast_command_unknown_verb_raises() -> None:
+    with pytest.raises(UiError) as exc_info:
+        asyncio.run(_beast_api(_FakeBeastActivator()).beast_command("banish", "青龙"))
+    assert exc_info.value.code is UiErrorCode.UI_BEAST_UNKNOWN_VERB
+
+
+def test_ui_beast_command_unknown_beast_reports_ui_error() -> None:
+    """无匹配神兽：领域错误在 API 边界归一为 `UI_BEAST_NOT_FOUND`（不向 UI 抛裸异常）。"""
+    with pytest.raises(UiError) as exc_info:
+        asyncio.run(_beast_api(BeastActivator()).beast_command("summon", "没有这只兽"))
+    assert exc_info.value.code is UiErrorCode.UI_BEAST_NOT_FOUND
+
+
+def test_ui_beast_command_dormant_recall_reports_ui_error() -> None:
+    """无在岗可召回（`BEAST_NOT_MANIFEST`）⇒ `UI_BEAST_STATE_INVALID`（与「无此兽」分码）。"""
+    with pytest.raises(UiError) as exc_info:
+        asyncio.run(_beast_api(BeastActivator()).beast_command("recall", "青龙"))
+    assert exc_info.value.code is UiErrorCode.UI_BEAST_STATE_INVALID
+
+
+def test_ui_beast_command_delegates_to_activator() -> None:
+    """`/summon` 落到 `activate_from_slash`（带 task）、`/recall` 落到 `recall_from_slash`。"""
+    activator = _FakeBeastActivator()
+    api = _beast_api(activator)
+
+    summon = asyncio.run(api.beast_command("summon", "青龙", task="架构设计"))
+    recall = asyncio.run(api.beast_command("recall", "青龙"))
+
+    assert activator.calls == [("summon", "青龙|架构设计"), ("recall", "青龙")]
+    assert summon["agent_id"] == "beast.qinglong"
+    assert summon["state"] == "recalled"
+    assert summon["has_result"] is True and summon["reply"] == "青龙蓝图已出"
+    assert recall["has_result"] is False  # 召回不编造结果正文
+
+
+def test_ui_activate_beast_returns_session_id() -> None:
+    """WebUI 自然语言入口返回会话 id（对称 `activate_pet`）。"""
+    activator = _FakeBeastActivator()
+
+    agent_id = asyncio.run(_beast_api(activator).activate_beast("召唤青龙 架构设计"))
+
+    assert agent_id == "beast.qinglong"
+    assert activator.calls == [("nl", "召唤青龙 架构设计")]
+
+
+def test_tui_summon_and_recall_slash_commands() -> None:
+    """TUI `/summon` `/recall`：状态行落时间线，结果**有才打印**（change 0137）。"""
+    pytest.importorskip("textual")
+    from core.ui.repl import build_app  # noqa: PLC0415 — 可选依赖懒 import
+
+    activator = _FakeBeastActivator()
+    app = build_app(_beast_api(activator))
+
+    async def _drive() -> str:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            inp.value = "/summon qinglong 架构设计"
+            await pilot.press("enter")
+            await pilot.pause()
+            inp.value = "/recall qinglong"
+            await pilot.press("enter")
+            await pilot.pause()
+            return _timeline_text(app)
+
+    text = asyncio.run(_drive())
+    assert activator.calls == [("summon", "qinglong|架构设计"), ("recall", "qinglong")]
+    assert "已召唤神兽 beast.qinglong（状态 recalled）" in text
+    assert "结果（成功）：青龙蓝图已出" in text
+    assert "已召回神兽 beast.qinglong（状态 recalled）" in text
+
+
+def test_tui_summon_usage_hint_on_missing_target() -> None:
+    """`/summon` 无目标 ⇒ 用法提示，不发起激活（不吞参数错误）。"""
+    pytest.importorskip("textual")
+    from core.ui.repl import build_app  # noqa: PLC0415 — 可选依赖懒 import
+
+    activator = _FakeBeastActivator()
+    app = build_app(_beast_api(activator))
+
+    async def _drive() -> str:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            inp.value = "/summon"
+            await pilot.press("enter")
+            await pilot.pause()
+            return _timeline_text(app)
+
+    text = asyncio.run(_drive())
+    assert activator.calls == []
+    assert "用法：/summon <神兽> [任务] ｜ /recall <神兽>" in text
