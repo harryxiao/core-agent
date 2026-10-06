@@ -14,9 +14,13 @@ class ContextPack:
     facts: list[dict]           # L2 事实（按需检索）
     constitution: list[str]     # 宪章/约束（必保）
     pending: list[str]          # 未决事项/验收标准（必保）
+    pointers: list[dict]        # 信息地图**目录层**（指针，非全文；缺省空 ⇒ 逐字不变）
     token_used: int             # 实际注入 token
     token_budget: int
 ```
+
+- ``pointers`` 元素为 ``{"doc_id", "section", "summary", "pointer"}``，``pointer`` 即
+  ``doc_id#section``（取详情工具的入参口径）。由装配器读信息地图注入（change 0140 / ADR-0133）。
 
 ---
 
@@ -51,10 +55,18 @@ class DynamicAssembler:
 
         ``session_id`` 为调用方会话标识（缺省空串 = 未归属），透传至 L2 事实检索的会话维度
         （见 change 0114 / ADR-0107）。
+
+        **读信息地图**（change 0140 / ADR-0133）：把各已登记文档的**任务匹配指针**汇成目录层
+        注入 ``pack.pointers``（每文档上界 ``_MAX_POINTERS_PER_DOC``）；未接地图 / 地图为空 ⇒
+        目录层为空，装配行为与既往逐字一致。
         """
 
     def fetch_detail(self, pointer: str) -> str:
-        """按信息地图指针跳转取细节。"""
+        """按信息地图指针跳转取细节（``doc_id#section``）——「模型按需取详情」的消费面。
+
+        经 ``tools.context_read`` 暴露给模型（取数器由组合根注入）；指针无命中返空串**不抛**
+        （任务不因指针失效中断）。返回**指针摘要**（既有语义；原文片段抽取不在本账内）。
+        """
 ```
 
 ---
@@ -67,7 +79,14 @@ class InfoMap:
         """把长文档转为轻量目录索引（章节/要点/位置指针）。"""
 
     def lookup(self, doc_id: str, query: str) -> list[Pointer]:
-        """按查询定位相关位置指针。"""
+        """按查询定位相关位置指针；**地图缺失**时对原文走受控线性扫描兜底。"""
+
+    def register(self, doc_id: str, content: str) -> None:
+        """登记**原文**（不建目录索引）—— `index` = 原文+索引（一阶），本方法 = 仅原文
+        （**索引不可用**态，二阶兜底入口；段数上界 ``_MAX_SCAN_SEGMENTS``）。"""
+
+    def documents(self) -> list[str]:
+        """已登记原文的文档 id（含未建索引者）—— 装配器读地图的入口。"""
 
     def rebuild_if_stale(self, doc_id: str, content_hash: str) -> None:
         """文档变更（hash 不同）时增量重建。"""
@@ -142,3 +161,4 @@ class BudgetManager:
 
 - 模块：`02-modules/context.md`
 - 规格：`openspec/specs/context/spec.md`
+- 变更：`openspec/changes/0140-infomap-wiring/`（信息地图装配接线，change 0140 / ADR-0133）

@@ -832,6 +832,20 @@
 
 ---
 
+## 56. 信息地图装配接线（TC-INFOMAP，change `0140`／ADR-0133，账本 E77）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-INFOMAP-01 | context/spec.md「信息地图」（系统 SHALL 把长文档转为轻量化目录索引） | `InfoMap.index("doc", "# 章节\n内容")` → `DynamicAssembler(info_map=...).build("章节", "reason", budget=2048)` | `pack.pointers == [{"doc_id": "doc", "section": "章节", "summary": "章节", "pointer": "doc#章节"}]`（目录层进装配包）（锚点：`tests/test_context.py::test_assembler_build_injects_pointer_catalog`） |
+| TC-INFOMAP-02 | 同上 Scenario「地图定位与按需取详情」（先用地图定位指针，再 fetch 片段，**而非加载全文**） | `build_runtime`（Core.md 带「## 项目信息」段）；`planner._system_prompt(LoopContext(...))` | 提示词含「文档目录（按需取详情，勿请求全文）：」且含 `- core-profile#项目信息`（锚点：`tests/test_infomap_wiring.py::test_core_profile_indexed_and_pointers_reach_the_prompt`） |
+| TC-INFOMAP-03 | 同上（模型**有通道**取详情 —— `fetch_detail` 不再零生产调用点） | `runtime.tools.invoke("tools.context_read", {"pointer": "core-profile#项目信息"})` | `ok=True` 且 `data == {"pointer": ..., "detail": "项目信息"}`（避开全文加载）（锚点：`::test_context_read_tool_fetches_pointer_payload`） |
+| TC-INFOMAP-04 | 同上（指针失效**不得**中断任务） | `tools.context_read` 传 `absent#nope` | `ok=True` 且 `detail == ""`（空串**非**报错）（锚点：`::test_context_read_unknown_pointer_is_empty_not_error`） |
+| TC-INFOMAP-05 | 同上 Scenario「重建失败二阶兜底」（**受控**分段线性扫描并逐段命中，任务不中断） | `InfoMap.register("doc", 原文)`（仅原文、不建索引）→ `lookup("doc", "目标")`；100 行原文 → `lookup("doc", "line")` | 逐段命中（`seg-1` 携该段原文）；段数**上界** `_MAX_SCAN_SEGMENTS = 20`（锚点：`tests/test_context.py::test_info_map_register_raw_only_falls_back_to_linear_scan` / `::test_info_map_linear_scan_is_bounded`） |
+| TC-INFOMAP-06 | 零回归（未接地图 ⇒ 装配行为逐字不变） | `DynamicAssembler(info_map=InfoMap()).build(...)` | `pack.pointers == []`（缺省空目录层）（锚点：`::test_assembler_build_pointers_empty_without_documents`） |
+| TC-INFOMAP-07 | 生产工具面（context_read 可达，权限分级按完整词元判**只读**放行） | `build_runtime` 后枚举 `runtime.tools.active_tools()` | 含 `tools.context_read`；`invoke` 不落 `APPROVAL_REQUIRED` / `IRREVERSIBLE_BLOCKED`（锚点：`tests/test_infomap_wiring.py::test_context_read_registered_on_main_tool_face`、`tests/test_phase13.py` 工具面清单） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

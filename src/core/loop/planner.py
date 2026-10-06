@@ -145,6 +145,11 @@ class LLMPlanner:
                     "相关事实：\n"
                     + "\n".join(f"- [{f['source']}] {f['content']}" for f in pack.facts)
                 )
+            if pack.pointers:
+                blocks.append(
+                    "文档目录（按需取详情，勿请求全文）：\n"
+                    + "\n".join(f"- {p['pointer']}：{p['summary']}" for p in pack.pointers)
+                )
         if ctx.notes.strip():
             blocks.append("相关笔记：\n" + ctx.notes.strip())
         skills = self._skill_hints(self._task(ctx), ctx.session_id)

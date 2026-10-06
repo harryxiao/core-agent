@@ -16,6 +16,10 @@ from .models import MapEntry, Pointer
 
 _HEADING_PREFIX = "#"
 
+# 二阶兜底的**受控**上界（context spec「重建失败二阶兜底」）：线性扫描逐段命中，
+# 段数设硬上界 ⇒ 索引不可用时不因逐段枚举把窗口撑爆。
+_MAX_SCAN_SEGMENTS = 20
+
 
 def _hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -48,8 +52,21 @@ class InfoMap:
         self._maps[doc_id] = entry
         return entry
 
+    def register(self, doc_id: str, content: str) -> None:
+        """登记**原文**（不建目录索引）⇒ 该文档的 ``lookup`` 走二阶兜底线性扫描。
+
+        与 :meth:`index` 相对：``index`` = 原文 + 目录索引（一阶），``register`` = 仅原文
+        （**索引不可用**态）。见 context spec「重建失败二阶兜底」——索引不可用时任务
+        SHALL NOT 中断，降级为对原始文档的受控分段线性扫描并逐段命中。
+        """
+        self._docs[doc_id] = content
+
+    def documents(self) -> list[str]:
+        """已登记原文的文档 id（含未建目录索引者）——装配器读信息地图的入口。"""
+        return list(self._docs)
+
     def lookup(self, doc_id: str, query: str) -> list[Pointer]:
-        """按查询定位相关指针；地图缺失时对原文做受控线性扫描兜底。"""
+        """按查询定位相关指针；**地图缺失**时对原文做受控线性扫描兜底。"""
         entry = self._maps.get(doc_id)
         if entry is None:
             return self._linear_scan(doc_id, query)
@@ -88,6 +105,7 @@ class InfoMap:
         return pointers
 
     def _linear_scan(self, doc_id: str, query: str) -> list[Pointer]:
+        """二阶兜底：对原文受控分段线性扫描，逐段命中（段数上界 ``_MAX_SCAN_SEGMENTS``）。"""
         raw = self._docs.get(doc_id)
         if raw is None:
             return []
@@ -97,4 +115,6 @@ class InfoMap:
             if terms and not any(t in line.lower() for t in terms):
                 continue
             pointers.append(Pointer(doc_id=doc_id, section=f"seg-{i}", summary=line[:80], offset=i))
+            if len(pointers) >= _MAX_SCAN_SEGMENTS:
+                break
         return pointers

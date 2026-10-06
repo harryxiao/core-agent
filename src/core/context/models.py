@@ -29,13 +29,19 @@ class MapEntry:
 
 @dataclass
 class ContextPack:
-    """动态装配的上下文包（token 有硬上界）。"""
+    """动态装配的上下文包（token 有硬上界）。
+
+    ``pointers`` 为信息地图的**目录层**（章节指针，非全文）：装配器读信息地图后注入，
+    模型据此按需 fetch 片段（context spec「信息地图」/「地图定位与按需取详情」）。
+    缺省空 ⇒ 未接入信息地图时装配行为逐字不变。
+    """
 
     task: str
     stage: str
     facts: list[dict[str, str]] = field(default_factory=list[dict[str, str]])
     constitution: list[str] = field(default_factory=list[str])
     pending: list[str] = field(default_factory=list[str])
+    pointers: list[dict[str, str]] = field(default_factory=list[dict[str, str]])
     token_used: int = 0
     token_budget: int = 0
 

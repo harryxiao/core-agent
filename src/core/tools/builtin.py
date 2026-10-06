@@ -8,6 +8,9 @@ web_fetch 出站抓取，均经确认门（高风险需人工审批）。
 另含 **gate_run**（change 0111）：把交付流水线既有的四道质量门禁暴露为工具面，
 门禁名与命令取自单一真源，**执行器由组合根注入**（本层不依赖 L5）。
 
+另含 **context_read**（change 0140）：信息地图取详情（按指针取片段，不加载全文），
+取数器同样**由组合根注入**（本层不依赖 context 层）。
+
 对应接口：doc/03-interfaces/tool-use-interface.md §3
 """
 
@@ -235,6 +238,33 @@ def web_fetch() -> Tool:
             coeffects=["network:outbound"],
             reversible=True,
             timeout_s=30.0,
+        ),
+        handler=handler,
+    )
+
+
+def context_read(*, fetch_detail: Callable[[str], str]) -> Tool:
+    """按信息地图指针取片段详情（只读，自动放行）——「模型按需跳转获取细节」的消费面。
+
+    取详情**委托注入的取数器**（组合根传入装配器的 ``fetch_detail``）：本层不依赖
+    context 层，与 ``gate_run`` 的执行器注入同理（context spec「信息地图」）。
+    """
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {"pointer": {"type": "string"}},
+        "required": ["pointer"],
+    }
+
+    def handler(pointer: str) -> dict[str, Any]:
+        return {"pointer": pointer, "detail": fetch_detail(pointer)}
+
+    return Tool(
+        definition=ToolDef(
+            tool_id="tools.context_read",
+            description="按信息地图指针（doc_id#section）取文档片段详情，避免加载全文",
+            schema=schema,
+            coeffects=[],
+            reversible=True,
         ),
         handler=handler,
     )

@@ -14,6 +14,9 @@ from .budget import BudgetManager
 from .info_map import InfoMap
 from .models import ContextPack
 
+# 单文档注入的指针上界（目录层须**薄**：全文不进窗口，见 context spec「信息地图」）
+_MAX_POINTERS_PER_DOC = 8
+
 
 class DynamicAssembler:
     """上下文装配器：按需加载 + 预算控制 + 地图取详情。"""
@@ -55,6 +58,7 @@ class DynamicAssembler:
         """按任务装配上下文：宪法 + 项目信息必保，事实按任务检索（query=task），超预算裁剪。
 
         ``session_id`` 为调用方会话标识（缺省空串 = 未归属），透传至 L2 事实检索的会话维度。
+        读**信息地图**注入目录层 ``pointers``（仅指针，全文不进窗口）——地图为空 ⇒ 逐字不变。
         """
         project = [{"source": "project", "content": line} for line in self._project_info]
         pack = ContextPack(
@@ -63,11 +67,16 @@ class DynamicAssembler:
             facts=project + self._gather_facts(task, budget, session_id),
             constitution=list(self._constitution),
             pending=[],
+            pointers=self._gather_pointers(task),
         )
         return BudgetManager().enforce(pack, budget)
 
     def fetch_detail(self, pointer: str) -> str:
-        """按信息地图指针取片段详情（``doc_id#section``）。"""
+        """按信息地图指针跳转取细节（``doc_id#section``）——模型按需取详情的消费面。
+
+        见 context spec「地图定位与按需取详情」：先用地图定位指针，再 fetch 对应片段，
+        **而非加载全文**。指针无命中 ⇒ 空串（不抛，任务不因指针失效中断）。
+        """
         doc_id, _, section = pointer.partition("#")
         pointers = self._info_map.lookup(doc_id, section or doc_id)
         if not pointers:
@@ -75,6 +84,25 @@ class DynamicAssembler:
         return pointers[0].summary
 
     # ---- 内部辅助 ----
+
+    def _gather_pointers(self, task: str) -> list[dict[str, str]]:
+        """读信息地图：把各已登记文档的**任务匹配指针**汇成目录层（每文档上界见常量）。
+
+        未建索引的文档由 ``InfoMap.lookup`` 走受控线性扫描兜底 ⇒ 索引不可用亦逐段命中
+        （context spec「重建失败二阶兜底」）。
+        """
+        out: list[dict[str, str]] = []
+        for doc_id in self._info_map.documents():
+            out.extend(
+                {
+                    "doc_id": pointer.doc_id,
+                    "section": pointer.section,
+                    "summary": pointer.summary,
+                    "pointer": f"{pointer.doc_id}#{pointer.section}",
+                }
+                for pointer in self._info_map.lookup(doc_id, task)[:_MAX_POINTERS_PER_DOC]
+            )
+        return out
 
     def _gather_facts(self, query: str, budget: int, session_id: str = "") -> list[dict[str, str]]:
         """以任务目标为检索 query 召回 L2 事实（stage 不参与检索，架构图 :117）。

@@ -3666,6 +3666,43 @@
 
 ---
 
+---
+
+## ADR-0133：信息地图装配接线（change 0140 / phase-34 E77）
+
+- **背景**：`context/spec.md`「信息地图」SHALL 把长文档转为目录索引、**模型按需跳转取详情**、
+  「不把全文塞入窗口」，并以「地图定位与按需取详情」「地图失效重建」「重建失败二阶兜底」三 Scenario
+  定格实现面。实现侧纯背离：`DynamicAssembler.build()` **从不读** `_info_map`（装配包无目录层）；
+  `fetch_detail()` **零生产调用点**（模型无通道取详情）；`InfoMap._linear_scan()` **死码**
+  （`index()` 恒同写 `_docs` + `_maps` ⇒ `lookup` 的「地图缺失」分支不可达）。账本 E77 判「构造了却从不查」。
+- **决策①：目录层进装配包，且**真进提示词**。** `ContextPack` 增 `pointers`（`{doc_id, section,
+  summary, pointer}`，`pointer = doc_id#section`），由 `build()` 读地图后注入（每文档上界
+  `_MAX_POINTERS_PER_DOC = 8`）；`LLMPlanner._system_prompt` 渲染「文档目录（按需取详情，勿请求全文）」块
+  ⇒ 「先定位指针」这一步在产线**真的发生**。缺省空 ⇒ 未接地图时装配/预算/提示词路径逐字不变。
+- **决策②：消费面用**只读工具**，且取数器注入。** 新增 `tools.context_read`（`coeffects=[]` +
+  `reversible=True` ⇒ 自动放行）承载「模型按需取详情」；`fetch_detail` 作为**取数器由组合根注入**
+  （与 `gate_run` 的执行器注入同理 ⇒ **工具层不依赖 context 层**，L1 不反向依赖 L2 上下文工程）。
+  工具 id 含 `read` 词元 ⇒ 权限分级按**完整词元**判只读放行（若命名不带 read 词元，会被
+  deny-by-default 判高危 —— 实施期实测确认，见「验证」）。
+- **决策③：二阶兜底给一个**显式门**，并把「受控」落成常量。** `InfoMap.register(doc_id, content)`
+  = 仅登记**原文**、不建索引 ⇒ 该文档 `lookup` 走 `_linear_scan`（受控分段线性扫描）。
+  `_linear_scan` 段数设硬上界 `_MAX_SCAN_SEGMENTS = 20` —— spec「**受控**分段线性扫描」的「受控」不再是形容词。
+  与 `index()` 的分工是**一阶/二阶**：`index` = 原文 + 索引；`register` = 仅原文（**索引不可用**态）。
+- **决策④：产线**非空转**。** `build_runtime` 建 `InfoMap` 并把 Core.md「## 项目信息」段索引为
+  文档 `core-profile` 注入装配器 ⇒ 地图在产线非空、`build()` 的读取与工具的取详情都有真实对象
+  （否则只是「接入了一条永远为空的链路」）。工具注册在 `if assembler is None` **之外** ⇒
+  注入装配器的调用方（`build_runtime(assembler=...)`）同样拿到消费面。
+- **已知局限**：① **指针摘要语义** —— `_build_pointers` 的 `summary` = 章节名（既有语义，本 change
+  **不改**）⇒ `context_read` 对索引态文档返回章节名、对原文态（线性扫描）返回该段原文；
+  「用 LLM 提炼要点摘要」不属 E77（另账），本 change 不假装解决。② **指针目录不计入
+  `token_used`** —— `BudgetManager._measure` 口径不变（避免预算回归面），指针规模由
+  `_MAX_POINTERS_PER_DOC` / `_MAX_SCAN_SEGMENTS` 双重上界约束；若将来目录层变厚，须并入预算测量。
+  ③ **`rebuild_if_stale` 语义未改**（条目缺失仍抛 `MAP_STALE`）—— 「重建失败」的二阶兜底由
+  `register` 态表达，不改既有异常契约。
+- **规格**：**无 delta**（`context/spec.md`「信息地图」+ 三 Scenario 早已是硬 SHALL，实现侧纯背离
+  ⇒ conformance 修复）⇒ `.openspec.yaml` 写 `schema: spec-driven` + `skip_specs: true`
+  （先例 `0110` / `0135` / `0137` / `0138` / `0139`）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3793,3 +3830,4 @@
 | ADR-0130 | 03-interfaces/beast-mode-interface.md, 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0131 | 03-interfaces/git-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0132 | 03-interfaces/deployment-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0133 | 03-interfaces/context-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

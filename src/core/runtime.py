@@ -30,7 +30,7 @@ from core.ci_cd import (
 from core.configuration import ConfigManager
 from core.configuration.models import AppConfig
 from core.context import Compactor as ContextCompactor
-from core.context import DynamicAssembler
+from core.context import DynamicAssembler, InfoMap
 from core.core_profile import CoreProfileEngine
 from core.durability import (
     CheckpointManager,
@@ -120,6 +120,7 @@ from core.tools import (
     ToolDef,
     ToolProvider,
     code_run,
+    context_read,
     file_patch,
     file_read,
     file_write,
@@ -285,6 +286,11 @@ def _pet_notification_sink(message: str) -> None:
 
 # 子 Agent 委托运行完整子循环（多次 LLM 往返 + 工具轮），远超 ToolDef 默认 30s
 _DELEGATE_TIMEOUT_S = 600.0
+
+# 信息地图的长文档源（change 0140 / 账本 E77）：Core.md「## 项目信息」段为启动期唯一
+# 长文档，建索引后由装配器注入**目录层**（指针，非全文）、由 `tools.context_read` 取详情。
+_CORE_PROFILE_DOC_ID = "core-profile"
+_CORE_PROFILE_SECTION = "项目信息"
 
 # 委托深度护栏：子 Agent 工具面已不含 delegate，此处为纵深防御
 _DELEGATE_DEPTH: ContextVar[int] = ContextVar("delegate_depth", default=0)
@@ -566,8 +572,17 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             ),
         )
     if assembler is None:
+        # 信息地图接线（change 0140 / 账本 E77）：把 Core.md 项目信息段建成**目录索引**
+        # 注入装配器 ⇒ `build()` 真的读地图（此前只构造、从不查）。
+        info_map = InfoMap()
+        if profile.context:
+            info_map.index(
+                _CORE_PROFILE_DOC_ID,
+                f"# {_CORE_PROFILE_SECTION}\n" + "\n".join(profile.context),
+            )
         assembler = DynamicAssembler(
             memory=memory,
+            info_map=info_map,
             constitution=list(profile.coeffect.get("constitution:v1", [])),
             project_info=list(profile.context),
             # 神兽记忆分区封存（beast-mode spec `:89`）：主 loop 装配不命中 `beast.*`
@@ -576,6 +591,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             # —— `session_id` 为空时（未带会话）会话面不过滤，此处是唯一防线（见 `_pet_loop`）
             exclude_source_prefixes=("beast.", "pet"),
         )
+    # 取详情的消费面（change 0140）：模型经工具面按指针取片段，不由全文顶替。
+    # 注入装配器时同样接线（装配面由调用方给定，消费面不在其管辖内）。
+    tools.register(context_read(fetch_detail=assembler.fetch_detail))
     planner = LLMPlanner(
         llm,
         model=app.llm.model,

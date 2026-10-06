@@ -89,6 +89,29 @@ def test_info_map_rebuild_if_stale_reindexes_on_change() -> None:
     assert len(m.lookup("doc", "")) == 1
 
 
+def test_info_map_register_raw_only_falls_back_to_linear_scan() -> None:
+    """change 0140 / E77：仅登记原文（索引不可用）⇒ 二阶兜底逐段命中，不因索引缺失中断。"""
+    m = InfoMap()
+    m.register("doc", "第一段\n目标段落\n第三段")
+    pointers = m.lookup("doc", "目标")
+    assert [p.section for p in pointers] == ["seg-1"]
+    assert pointers[0].summary == "目标段落"
+
+
+def test_info_map_linear_scan_is_bounded() -> None:
+    """「**受控**分段线性扫描」：段数设硬上界，索引不可用时不把窗口撑爆。"""
+    m = InfoMap()
+    m.register("doc", "\n".join(f"line-{i}" for i in range(100)))
+    assert len(m.lookup("doc", "line")) == 20  # noqa: PLR2004 — 段数上界 _MAX_SCAN_SEGMENTS
+
+
+def test_info_map_documents_lists_registered_ids() -> None:
+    m = InfoMap()
+    m.index("indexed", "# 一")
+    m.register("raw-only", "原文")
+    assert m.documents() == ["indexed", "raw-only"]
+
+
 # ---- 压实 ----
 
 
@@ -163,6 +186,23 @@ def test_assembler_fetch_detail() -> None:
     info_map.index("doc", "# 章节\n内容")
     assembler = DynamicAssembler(info_map=info_map)
     assert assembler.fetch_detail("doc#章节") == "章节"
+
+
+def test_assembler_build_injects_pointer_catalog() -> None:
+    """change 0140 / E77：`build()` 真的读信息地图 ⇒ 目录层进上下文包（全文不进窗口）。"""
+    info_map = InfoMap()
+    info_map.index("doc", "# 章节\n内容")
+    assembler = DynamicAssembler(info_map=info_map)
+    pack = assembler.build("章节", "reason", budget=2048)
+    assert pack.pointers == [
+        {"doc_id": "doc", "section": "章节", "summary": "章节", "pointer": "doc#章节"}
+    ]
+
+
+def test_assembler_build_pointers_empty_without_documents() -> None:
+    """地图为空（未登记任何文档）⇒ 目录层为空，装配行为与既往逐字一致。"""
+    pack = DynamicAssembler(info_map=InfoMap()).build("任务", "reason", budget=2048)
+    assert pack.pointers == []
 
 
 def test_assembler_missing_project_degrades() -> None:

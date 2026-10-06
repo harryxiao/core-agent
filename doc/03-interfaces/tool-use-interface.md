@@ -96,11 +96,15 @@ class ToolError:
 | `tools.uninstall` | `plugin_id` | 卸载插件（deactivate→uninstall 对称回退；写 + 不可逆 ⇒ 走确认门） |
 | `tools.list` | — | 列出已装插件（只读，`coeffects=[]`） |
 | `tools.gate_run` | `gate` | 按名运行质量门禁（`lint`/`typecheck`/`test`/`build`）；门禁名与门禁命令取自 `ci-cd` **单一真源** `GATE_COMMANDS`，**执行器经组合根注入**（工具层不依赖 L5）；`coeffects=["process:spawn","filesystem:write"]` + 不可逆 ⇒ 走确认门；`timeout_s=660` > 执行器内部 600 上界 |
+| `tools.context_read` | `pointer` | 按信息地图指针（`doc_id#section`）取文档片段详情（只读，`coeffects=[]` + 可逆 ⇒ 自动放行）；**取数器经组合根注入**（工具层不依赖 context 层）；指针无命中返空串不报错（context spec「信息地图」；change 0140 / ADR-0133） |
 
 > 上表为示例清单。插件安装三工具（`tools.install` / `tools.uninstall` / `tools.list`）经组合根
 > `build_runtime` 注册进**生产工具面**、与 `Runtime.installer` **同一实例**（change 0108 / 账本 E33）。
 > `tools.gate_run`（change 0111 / phase-27 切片 S1）同样经组合根注册进**生产工具面**，但**只挂主工具面**：
 > 子 Agent / 宠物 loop 的注入点不含它（不扩散越界暴露面）；未知门禁名 fail-closed（不触达执行器）。
+> `tools.context_read`（change 0140 / 账本 E77）同样经组合根注册进**生产工具面**：它是「信息地图按需取详情」
+> 的**模型侧唯一通道**（`DynamicAssembler.fetch_detail` 此前零生产调用点）；工具 id 含 `read` 词元 ⇒
+> 权限分级按**完整词元**判只读放行（不落 deny-by-default）。
 
 ---
 
