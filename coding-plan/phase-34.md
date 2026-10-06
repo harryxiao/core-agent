@@ -25,7 +25,7 @@
 | **E63** | **高** | `scheduler` **丢弃子任务失败态** ⇒ **假成功**并向下游接力失败结果 | `orchestration/scheduler.py:440-443` 只取 `collect_result(...)` 与 `verify(subtask, result.reply)`，**从不读 `result.failed`**；`:462-466` 在 `verify.passed` 时把 `result.reply` 写进 `self._results`（经 `_handoff_goal` 喂下游）。对照正解 `runtime.py:797` `_dispatch` = `{"ok": not result.failed}`。触发链：`default.py:295-297/316-319` 撞限产 `loop_failed` + **非空合成 reply**（`"…本轮终止"`）⇒ `failed=True` 但 reply 非空 ⇒ `decomposer.verify:54-62` 无 verifier 时「非空即通过」⇒ **合成错误串被当成功接力** ⇒ **已落地（change `0126` / ADR-0119）** | P2/P3 判定断裂 | ✅ |
 | **E64** | **高** | `file_write` / `file_patch` **共用一份 `snap`** ⇒ 多写后回滚恢复**错文件** | `tools/builtin.py:102-130`（write）与 `:133-147`（patch）在**工具级**建**一个** `snap`，每次调用覆写 `snap["path"]/["before"]`；`undo()` = `_restore(snap)` 读**同一共享 dict**。`runtime.py:397` 五个内置工具**只构造一次、跨 loop 复用** ⇒ 同 trace 内两次写不同文件，回滚只还原**最后一次**。**P2 崩于最常用工具** ⇒ **已落地（change `0129` / ADR-0122）** | P2 可逆性断裂 | ✅ |
 | **E65** | 中高 | Web 前端 `reply_delta` **渲染破碎**（逐帧打印 JSON） | `ui/api.py:20-37` 把 `reply_delta` 映射到 `loop.result`；`frontend/src/views/Chat.svelte:44-51` 对 `loop.result` 取 `payload.reply ?? message ?? JSON.stringify(payload)` 并**追加新行** ⇒ delta 帧 `{text:…}` 无 `reply` ⇒ 每帧渲染一段 JSON。TUI 正解：`ui/repl.py:69-79 _event_delta` | 前端渲染 | ✅ |
-| **E66** | 中 | `/session/compact` **压实全部会话**（**会话隔离外泄**） | `ui/api.py:211-215` `compact(session_id)` 调 `self._memory.compact(session_id)`；`memory/store.py:200-224` `compact(query, budget)` 只用 `query` 打分，`:222-223` 直接 `self._summarize_sessions()`；`:298-312` 该方法**无 session 形参**，遍历 `self._episodic_groups().items()` **全量** | 会话隔离破坏 | ✅ |
+| **E66** | 中 | `/session/compact` **压实全部会话**（**会话隔离外泄**） | `ui/api.py:211-215` `compact(session_id)` 调 `self._memory.compact(session_id)`；`memory/store.py:200-224` `compact(query, budget)` 只用 `query` 打分，`:222-223` 直接 `self._summarize_sessions()`；`:298-312` 该方法**无 session 形参**，遍历 `self._episodic_groups().items()` **全量** ⇒ **已落地（change `0131` / ADR-0124）：`compact` 增仅关键字形参 `session_id`，非空只聚合该会话、空串保全量；`ui/api.py` 改传 `session_id=session_id`（不再当 `query`）** | 会话隔离破坏 | ✅ |
 | **E67** | 中 | `EffectTracker.rollback` **不清账** ⇒ 重复回滚**二次撤销** + `_effects` **无界增长** | `plugin_registry/effect_tracker.py:61-78` 回滚后既不移除 `_effects` 也不清 `_by_trace`，且**无 clear 方法** | P2 可逆性 + 内存 | ✅ ⇒ **已落地（change `0128` / ADR-0121）** |
 | **E68** | 中 | `write_patch` **绕过可逆性**（磁盘 yaml 不可按 trace 回退） | `configuration/manager.py:555-569` `tmp.write_text(_dump_yaml(raw))` + `os.replace`，**无 `EffectTracker.record`**；对照 `apply_change:538-548` 的 undo 只回滚**内存态** ⇒ 按 trace 回滚时**磁盘不回退** ⇒ **已落地（change `0130` / ADR-0123）** | P2 可逆性 | ✅ |
 | **E69** | 低 | `executor.commit` **不校验 `record.gated`**（fail-open 崩溃窗口） | `evolution/models.py:80-81` 明写「`commit` 只认前者（`gated=True`）为真者」；`evolution/executor.py:183` 走 `staged()`（`:215-218` **仅滤 `committed`**），`:178-211` **从不读 `gated`**；全仓 `gated` **只有写**（`:171/:205`）**无读**。窗口：门禁失败回滚后、`clear_implementation` 前**崩溃** ⇒ 重启后 `commit` 可放行**未过门**制品 ⇒ **已落地（change `0127` / ADR-0120）** | fail-open（潜伏） | ✅ |
@@ -44,7 +44,7 @@
 | **E75** | 设计缺失 | composition **「可逆 / 可回退」无兑现** | `composition/resolver.py:106-108` 覆盖前分层结果被 `apply_patch` 丢弃、override 值只存进 `ResolvedSet.overrides`（`:108`）；全包**无任何 revert/undo API** ⇒ spec `composition/spec.md:51-57`「回退到覆盖前状态」**无路径可达**（`models.py:51` 注释亦仅声明数据形状） | ✅ |
 | **E76** | 规格漂移 | permission **子串匹配**（违反「分词 / 完整词元」）＋ `APPROVAL_REQUIRED` **定义无人 `raise`** | `permission/policy.py:53,61,63` 用裸子串 `tok in op_l`；spec `permission/spec.md:9,19,26-29` 要求语义分词且 **namespace-子串 SHALL NOT 判读**；`permission/errors.py:18` 定义 `APPROVAL_REQUIRED`，**`src/` 零 `raise`**（死码） | ✅ |
 | **E77** | 设计缺失 | **信息地图不可达**（构造了却从不查） | `context/assembler.py:54-75` `build()` **从不读** `_info_map`（`:32` 只在 ctor 存下）；`fetch_detail():69-75` **零调用**；`context/info_map.py:90-100 _linear_scan` **死码**（`index()` 恒同写 `_docs`+`_maps`） | ✅ |
-| **E78** | 规格漂移 | memory **规格三档（热 / 温 / 冷）vs 实现两档（hot + cold）** | 实现无温层载体；spec `memory/spec.md:31-32` 写三档 | ✅ |
+| **E78** | 规格漂移 | memory **规格三档（热 / 温 / 冷）vs 实现两档（hot + cold）** | 实现无温层载体；spec `memory/spec.md:31-32` 写三档 ⇒ **已落地（change `0131` / ADR-0124）：规格改**热/冷两档**，删温层条文** | ✅ |
 | **E79** | 规格漂移 | git **「断线重试 / 指数退避」无实现** ＋ **删远程分支 / 历史改写**原语缺失 | `git/subprocess_backend.py:141-154` `pull`/`push`（及 `clone`）单次 `_run`，`_run:158-163` **无 retry/backoff**；`git/client.py:86-101` 仅 force-push 走审批，13 原语**无**「删远程分支 / 历史改写」。spec `git/spec.md:69-91` 有对应 Scenario（C2 的「偏离原记」`phase-20.md:93` 只记「不装配 CLI 入口」，**未记**此二缺口） | ✅ |
 | **E80** | 规格漂移 | skillhub **「回退官方源」只报错**（**spec 自相矛盾**） | `skillhub/index.py:134-140` `_ensure_healthy` 直接 `raise SOURCE_UNHEALTHY`（文本却写「（回退官方源）」），**无回退动作**；`tests/test_skillhub.py:42` 亦断报错。spec `skillhub/spec.md:34-38` **同句**既写「回退官方源」又写「返回 `SOURCE_UNHEALTHY`」⇒ 实现/测试选了后半句 | ✅ |
 | **E81** | 设计缺失 | deployment `reap` **无心跳刷新 `last_seen`** ⇒ 活跃客户端可能被误回收 | `deployment/host.py:56` `last_seen` **仅 `accept` 赋值**，`reap:78-88` 据其判超时，全类**无 touch / heartbeat** 更新 | ✅ |
@@ -172,7 +172,7 @@
 | `0128` | E67 | ✅ 已落地（2026-10-06） | ADR-0121 |
 | `0129` | E64 | ✅ 已落地（2026-10-06） | ADR-0122 |
 | `0130` | E68 | ✅ 已落地（2026-10-06） | ADR-0123 |
-| `0131` | E66 + E78 | ⏳ 待实施 | — |
+| `0131` | E66 + E78 | ✅ 已落地（2026-10-06） | ADR-0124 |
 | `0132` | E65 | ⏳ 待实施 | — |
 | `0133` | E72 | ⏳ 待实施 | — |
 | `0134` | E80 | ⏳ 待实施 | — |

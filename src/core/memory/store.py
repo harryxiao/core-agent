@@ -197,13 +197,20 @@ class MemoryStore:
             return entries
         return [e for e in entries if e.trace_id == trace_id]
 
-    def compact(self, query: str = "", budget: int = 4096) -> DecisionResult | None:
+    def compact(
+        self, query: str = "", budget: int = 4096, *, session_id: str = ""
+    ) -> DecisionResult | None:
         """压实记忆：score 原语评分决策 + 注入摘要器时的会话摘要提炼（0041）。
 
         未注入 ``summarizer`` 时**只评分不写**（降级：不写摘要、不动原条目）；注入时按
         ``session_id`` 聚合 L2 episodic 条目，提炼为一条 semantic 摘要条目并**归档**原条目
         （迁 L4，不删除），全部效应按 ``trace_id=f"compaction.<session_id>"`` 可撤销。
         摘要提炼异常不吞：向上传播，由触发点记录并重试（原条目保持不变）。
+
+        **聚合范围可收窄**（change `0131` / ADR-0124 / 账本 E66）：``session_id`` **非空**时只聚合
+        **该会话**的条目（供会话级入口 —— 如 Web 的「压缩本会话记忆」—— 使用，SHALL NOT 顺手提炼
+        他会话条目）；**空串**（缺省）保持**全量**语义，逐字与既有行为一致（供循环内节拍压实使用）。
+        ``session_id`` 是**收窄范围**的形参，**不是** ``query`` —— 两者语义无干。
 
         注入 ``compactor`` 时另**逐条目打分写回** ``importance``（0042），并据此对会话做
         **价值门控**：仅有分且最高分低于 ``_CONSOLIDATE_THRESHOLD`` 的会话跳过提炼。
@@ -220,7 +227,7 @@ class MemoryStore:
             except Exception:  # noqa: BLE001 — 决策分值是咨询性返回值（无写入副作用），
                 decision = None  # 其失败不外溢为「固化/遗忘整轮停摆」
         if self._summarizer is not None:
-            self._summarize_sessions()
+            self._summarize_sessions(session_id)
         return decision
 
     def forget(self, *, threshold: float = _FORGET_THRESHOLD) -> list[MemoryId]:
@@ -295,21 +302,24 @@ class MemoryStore:
             used += cost
         return selected
 
-    def _summarize_sessions(self) -> None:
-        """按会话聚合 episodic 条目 → 打分写回 + 价值门控 → 提炼摘要 → 归档原条目。"""
+    def _summarize_sessions(self, session_id: str = "") -> None:
+        """按会话聚合 episodic 条目 → 打分写回 + 价值门控 → 提炼摘要 → 归档原条目。
+
+        ``session_id`` 非空 ⇒ 只聚合该会话（change `0131` / E66）；空串 ⇒ 全量（逐字不变）。
+        """
         summarizer = self._summarizer
         assert summarizer is not None  # noqa: S101 — 调用点已判空
-        groups = self._episodic_groups()
+        groups = self._episodic_groups(session_id)
         scores: dict[str, float] = {}
         if self._compactor is not None:
             scores = self._score_importance([e for group in groups.values() for e in group])
-        for session_id, entries in groups.items():
+        for sid, entries in groups.items():
             if _below_gate(entries, scores):
                 continue
             summary = summarizer(entries)
             if not summary:
                 continue
-            self._commit_summary(session_id, entries, summary)
+            self._commit_summary(sid, entries, summary)
 
     def _score_importance(self, entries: list[MemoryEntry]) -> dict[str, float]:
         """逐条目 importance 打分（judgment ``score`` 原语）并写回（可逆）。
@@ -356,11 +366,16 @@ class MemoryStore:
             )
         )
 
-    def _episodic_groups(self) -> dict[str, list[MemoryEntry]]:
-        """L2 事件条目按 ``session_id`` 分组（空会话归 ``""`` 组），保持写入序。"""
+    def _episodic_groups(self, session_id: str = "") -> dict[str, list[MemoryEntry]]:
+        """L2 事件条目按 ``session_id`` 分组（空会话归 ``""`` 组），保持写入序。
+
+        ``session_id`` 非空 ⇒ 只收该会话的条目（分组后**唯一键**即它本身）；空串 ⇒ 全量。
+        """
         groups: dict[str, list[MemoryEntry]] = {}
         for entry in self._all_entries():
             if entry.kind != "episodic" or entry.layer != "L2":
+                continue
+            if session_id and entry.session_id != session_id:
                 continue
             groups.setdefault(entry.session_id, []).append(entry)
         return groups

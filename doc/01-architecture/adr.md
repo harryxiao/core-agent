@@ -3365,6 +3365,36 @@
 
 ---
 
+## ADR-0124：压实按会话收窄，记忆分档口径改两档（change 0131 / phase-34 E66 + E78）
+
+- **背景**：两条账一并收口。**E66**（高）：Web「压缩本会话记忆」实际压**全库**。`ui/api.py:211-220` 的
+  `compact(session_id)` 把 `session_id` **按位置**传给 `MemoryStore.compact(query="", budget=4096, ...)`
+  ⇒ 该字符串落进 **`query`** 形参（只影响排序相关性），而聚合范围**始终全量**（`_summarize_sessions()`
+  遍历 `_episodic_groups()` 的全部会话）⇒ 用户点「压缩本会话」，系统顺手**提炼并归档他会话条目**，
+  跨会话记忆泄露/破坏，违反会话隔离。**E78**（低，规格漂移）：`memory/spec.md`「温度分层检索」写
+  **热/温/冷三档**，实现与全部文档只有**热/冷两档**（`core/memory/__init__.py:3` 自述「热/冷」）——
+  温层从无语义定义、无任何代码路径。
+- **决策①：`MemoryStore.compact` 增**仅关键字**形参 `session_id: str = ""`，语义为**聚合范围收窄**，
+  与 `query` 语义无关。** 非空 ⇒ `_summarize_sessions(session_id)` → `_episodic_groups(session_id)`
+  只收该会话条目（重要度打分写回随之只覆盖该会话）；空串 ⇒ **全量**（逐字与既有行为一致）。选
+  **可选关键字形参**而非新增方法：调用点二处各取所需 —— `ui/api.py` 传会话（收窄），
+  `loop/default.py:412` 的节拍压实 `memory.compact()` 不传（保持全量节拍语义）。
+- **决策②：`ui/api.py.compact` 改传 `session_id=session_id`**（不再按位置传）。修的是**传参语义**，
+  不是 API 形状 —— `compact(session_id)` 对外签名逐字不变，`compact` 的**用户可见行为**由「压全库」
+  变为「压本会话」，符合入口名与用户预期。
+- **决策③：规格「温度分层检索」**三档删温层、改**热/冷两档**。** 温层无 SHALL 语义承载物（无实现、
+  无文档定义、无测试）⇒ 保留它只会制造「规格说三档、代码只两档」的持续漂移。删除即把规格拉回
+  与实现同构，属**规格追随事实**的口径校正（非降低要求：删的是**从未被满足且无定义**的条文）。
+- **已知局限**：① 收窄只作用于 `_summarize_sessions`/`_episodic_groups` 的**聚合范围**；`compact` 的
+  `query`（相关性打分决策）仍走全库 `read` —— 决策分是**咨询性返回值**（不产生写入副作用），今日
+  无跨会话副作用，故本 change 不动；若将来决策分参与写入须另行收窄。② `_episodic_groups` 的
+  `session_id` 形参**缺省空串**以保「未归属调用者 = 全量」，与 `read(session_id="")` 的既有约定同构。
+- **规格**：`memory`（**MODIFIED**「记忆压实」—— `compact` SHALL 接受可选 `session_id`，非空只聚合该
+  会话、SHALL NOT 跨会话提炼/迁移，空串保持全量 + **1** Scenario「压实按会话收窄，不触他会话」；
+  **MODIFIED**「温度分层检索」—— 三档改**热/冷两档**，删温层条文）。**非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3483,3 +3513,4 @@
 | ADR-0121 | 02-modules/plugin-registry.md, 03-interfaces/plugin-registry-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0122 | 03-interfaces/tool-use-interface.md, 02-modules/tool-use.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0123 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0124 | 03-interfaces/memory-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

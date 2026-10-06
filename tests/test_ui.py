@@ -498,7 +498,7 @@ class _MemorySpy:
 
     def __init__(self, entries: list[MemoryEntry]) -> None:
         self._entries = entries
-        self.compacted: list[str] = []
+        self.compacted: list[tuple[str, str]] = []  # (query, session_id)
         self.reads: list[tuple[str, int]] = []
 
     def read(self, query: str, budget: int = 0) -> list[MemoryEntry]:
@@ -508,8 +508,8 @@ class _MemorySpy:
     def write(self, layer: str, entry: MemoryEntry) -> str:
         return entry.id
 
-    def compact(self, query: str = "", budget: int = 4096) -> None:
-        self.compacted.append(query)
+    def compact(self, query: str = "", budget: int = 4096, *, session_id: str = "") -> None:
+        self.compacted.append((query, session_id))
 
 
 def _entry(entry_id: str, session_id: str, content: str) -> MemoryEntry:
@@ -535,12 +535,13 @@ def test_run_loop_passes_session_id_to_loop() -> None:
 
 
 def test_compact_triggers_store_compaction() -> None:
-    """compact(session_id) 触发存储层真实压实（非 no-op）。"""
+    """compact(session_id) 触发存储层真实压实（非 no-op），且 session_id **走关键字收窄形参**。"""
     spy = _MemorySpy([])
     api = UIAPILayer(memory=spy)  # type: ignore[arg-type]
     session_id = api.create_session("cli")
     api.compact(session_id)
-    assert spy.compacted == [session_id]
+    # 收窄形参（change `0131` / ADR-0124）：session_id 不是 query —— 传成 query 会压实全库
+    assert spy.compacted == [("", session_id)]
 
 
 def test_get_memory_filters_by_session() -> None:

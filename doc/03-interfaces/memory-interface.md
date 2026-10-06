@@ -53,9 +53,15 @@ class MemoryStore(Plugin):
     def index(self) -> IndexEntry:
         """返回 L1 最小索引。"""
 
-    def compact(self, query: str = "", budget: int = 4096) -> "DecisionResult | None":
+    def compact(
+        self, query: str = "", budget: int = 4096, *, session_id: str = ""
+    ) -> "DecisionResult | None":
         """压实记忆：注入 summarizer 时按 ``session_id`` 聚合 L2 episodic 提炼为 semantic 摘要
-        并归档原条目；注入 compactor 时逐条目打分写回 ``importance`` 并做价值门控（全部可撤销）。"""
+        并归档原条目；注入 compactor 时逐条目打分写回 ``importance`` 并做价值门控（全部可撤销）。
+
+        ``session_id`` 为**聚合范围的收窄形参**（change `0131` / ADR-0124 / 账本 E66）：非空 ⇒
+        只聚合**该会话**条目（SHALL NOT 跨会话提炼/迁移）；空串 ⇒ **全量**（循环内节拍压实）。
+        **不是** ``query`` —— 两者语义无干（此前按位置传入被当成 ``query``）。"""
 
     def audit(self, trace_id: str | None = None) -> list[MemoryEntry]:
         """审计写入记录。"""
@@ -170,6 +176,11 @@ def relevance(entry, query, embedder=None) -> float:
 
 未注入 ``summarizer`` 时**只评分不写**：不写摘要条目、不改动原条目层级（降级）。摘要提炼
 异常**不吞**：向上传播给触发点记录重试，原条目保持不变。
+
+**聚合范围按会话收窄**（change `0131` / ADR-0124 / 账本 E66）：``compact`` 的仅关键字形参
+``session_id`` **非空**时**只**聚合该会话条目（打分写回随之只覆盖该会话）——会话级入口（Web
+「压缩本会话记忆」）SHALL NOT 顺手提炼/归档他会话条目；**空串**（缺省）保持**全量**语义，
+供循环内节拍压实使用（``loop/default.py`` 的 ``memory.compact()`` 不传该形参）。
 
 ### 固化打分 + 价值门控（compact，0042）
 

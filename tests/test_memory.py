@@ -307,6 +307,53 @@ def test_compact_is_reversible_by_trace() -> None:
     assert "compaction.summary.s1" not in layers, "回滚 → 摘要条目被移除"
 
 
+# ---- 压实按会话收窄（change `0131` / ADR-0124，账本 E66） ----
+
+
+def test_compact_scoped_to_session_leaves_others_intact() -> None:
+    """`session_id` 非空 ⇒ 只聚合该会话：他会话条目层级、摘要逐字不变。"""
+    store = MemoryStore(summarizer=lambda entries: "摘要：事实")
+    store.write("L2", _session_entry("a0", "甲的零", "A"))
+    store.write("L2", _session_entry("b0", "乙的零", "B"))
+    store.write("L2", _session_entry("b1", "乙的一", "B"))
+
+    store.compact(session_id="A")
+
+    layers = dict(store.index().entries)
+    assert layers["a0"] == "L4", "本会话条目被归档"
+    assert layers["b0"] == "L2" and layers["b1"] == "L2", "他会话条目逐字不变"
+    summaries = {e.id for e in store.audit() if e.kind == "semantic"}
+    assert summaries == {"compaction.summary.A"}, "不跨会话提炼"
+
+
+def test_compact_default_session_id_keeps_full_store_semantics() -> None:
+    """缺省 `session_id=""` ⇒ 全量语义逐字不变（循环内节拍压实依赖）。"""
+    store = MemoryStore(summarizer=lambda entries: "摘要：事实")
+    store.write("L2", _session_entry("a0", "甲的零", "A"))
+    store.write("L2", _session_entry("b0", "乙的零", "B"))
+
+    store.compact()
+
+    layers = dict(store.index().entries)
+    assert layers["a0"] == "L4" and layers["b0"] == "L4"
+    summaries = {e.id for e in store.audit() if e.kind == "semantic"}
+    assert summaries == {"compaction.summary.A", "compaction.summary.B"}
+
+
+def test_compact_scoped_session_scores_only_that_session() -> None:
+    """收窄范围也覆盖重要度打分写回：他会话条目不被打分（value 保持原值）。"""
+    scorer = _ValueScorer({"a0": 0.9, "b0": 0.9})
+    store = MemoryStore(compactor=scorer, summarizer=lambda entries: "摘要：事实")
+    store.write("L2", _session_entry("a0", "甲的零", "A"))
+    store.write("L2", _session_entry("b0", "乙的零", "B"))
+
+    store.compact(session_id="A")
+
+    by_id = {e.id: e for e in store.audit()}
+    assert by_id["a0"].importance == 0.9, "本会话条目被打分"  # noqa: PLR2004 — 假件给定分值
+    assert by_id["b0"].importance == 0.0, "他会话条目保持原重要度（未被本轮触及）"
+
+
 def test_compact_summary_outranks_archived_originals() -> None:
     """归档原文仍可检索，但 L2 摘要优先级更高（L2 0.6 > L4 0.2）。"""
 

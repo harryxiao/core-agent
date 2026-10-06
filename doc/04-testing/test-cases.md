@@ -712,6 +712,18 @@
 
 ---
 
+## 47. 压实按会话收窄 + 分档口径两档（TC-SCOPECMP，change `0131`／ADR-0124，账本 E66 + E78）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-SCOPECMP-01 | memory/spec.md「记忆压实」（压实按会话收窄，不触他会话） | 会话 A、B 各写 L2 episodic，`compact(session_id="A")` | A 的条目迁 L4、产出 `compaction.summary.A`；**B 的条目层级逐字不变**、无 B 的摘要（锚点：`tests/test_memory.py::test_compact_scoped_to_session_leaves_others_intact`） |
+| TC-SCOPECMP-02 | 同上（空串=全量，逐字不变） | 同上两会话，`compact()`（缺省 `session_id=""`） | A、B **都**被提炼归档（节拍压实语义不变）（锚点：`::test_compact_default_session_id_keeps_full_store_semantics`） |
+| TC-SCOPECMP-03 | 同上（收窄覆盖打分写回） | 注入假 scorer（A、B 条目各有分值），`compact(session_id="A")` | A 条目 `importance` 写回 0.9；**B 条目保持 `0.0`**（未被本轮触及）（锚点：`::test_compact_scoped_session_scores_only_that_session`） |
+| TC-SCOPECMP-04 | ui/spec.md「Web 界面访问」（压缩本会话） | 经 UI 层 `compact(session_id)` 触发存储层压实 | 存储层收到**关键字** `session_id`（而非把它当 `query`）（锚点：`tests/test_ui.py::test_compact_triggers_store_compaction`，spy 断言 `compacted == [("", session_id)]`） |
+| TC-SCOPECMP-05 | memory/spec.md「温度分层检索」（两档） | 规格文本核对 | 规格为**热/冷两档**（无「温」层条文），与实现（`core/memory/__init__.py` 自述热/冷）同构（文档项） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

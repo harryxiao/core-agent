@@ -209,10 +209,15 @@ class UIAPILayer:
         return {"entries": [e.content for e in entries if e.session_id == session_id]}
 
     def compact(self, session_id: str) -> None:
-        """压缩会话记忆：触发存储层真实压实（按会话聚合摘要 + 重要度写回，可撤销）。"""
+        """压缩**本会话**记忆：触发存储层真实压实（按会话聚合摘要 + 重要度写回，可撤销）。
+
+        ``session_id`` 经**关键字**传入存储层的**收窄形参**（change `0131` / ADR-0124 / 账本 E66）：
+        此前按位置传入而被当成 ``query`` ⇒ 压实跑遍**全库**所有会话（「压缩本会话」会顺手提炼并
+        归档他会话条目）。
+        """
         self._require_session(session_id)
         if self._memory is not None:
-            self._memory.compact(session_id)
+            self._memory.compact(session_id=session_id)
 
     # ---- 宠物（WebUI 自然语言入口） ----
 
