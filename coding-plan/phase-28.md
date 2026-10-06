@@ -4,6 +4,7 @@
 > 一手核实结论：**机制①＝「抢救 + 强制终止」，非「压缩续聊」**（`ctx.messages` 全程不截断，LLM 每轮收全量历史）；**机制②＝「复用同一条 TCP」并发场景不成立 + 记忆隔离单向**（主不读兽、兽可读主）；**pet/beast 返回内容＝死数据**（无工具查询、不落 L2、状态接口不含正文）。
 > 上述各项均非规格违约（现有 spec 未明文要求「压缩续聊 / 双向隔离 / 结果可查 / 会话隔离」），故本 Phase 为**缺陷账本（登记）**，实施与否须视产品方向裁决。
 > **第四项（E47）＋一条裁决**：承接「开不同 session 对话框时的多流复用」追问 —— 一手核实：复用点＝**共享一个 runtime + 一个 loop 实例**（`ui/api.py:105`；session 只是 `session_id` 标签，非 loop 实例），多流并发在环内**安全**（每轮自建 `ctx`，无 per-call 实例状态），但**检索面不按 session 过滤** ⇒ 会话之间互读记忆（登记 **E47**）。同批裁决：**E45 的 TCP 半条不列为缺陷** —— ADR-0064 的**有意取舍**（线程本地免锁）＋规格未要求「跨线程同一条 TCP」⇒ **不改**，登记为已知局限。
+> **E46 已闭（change 0113 / ADR-0106）**：结果可见性改走**查询面接线** —— beast `BeastSession.result_summary()` + `summon` CLI 呈现；pet `PetControl.result` 独立查询面（`status` 面逐字不变）。**两半原写修法皆判据订正**：beast「落 L2」自败（`runtime.py:564` 排除 `beast.*` + beast spec `:89` 封存 ⇒ 主 Agent 检索不到）、pet「`status` 暴露正文」违 `pet-mode` spec `:249`/`:255`。详见 §1.3 订正表与 §4。
 
 ## 0. 结论总览
 
@@ -11,7 +12,7 @@
 |---|---|---|---|---|
 | E44 | 上下文压缩机制未 ready | `loop/default.py:365` `_should_compact` + `:377-399` `_compact`（persist/compact/forget 三步）全程**不截断 `ctx.messages`**；`loop/planner.py:120-128` `_build_request` 无窗口截断 | 「抢救 + 强制终止」非「压缩续聊」 | 若要求真压缩续聊：`_build_request` 前以摘要替换旧历史 |
 | E45 | 多流复用「同一条 TCP」并发不成立 + 记忆隔离单向 | `llm_provider/http_pool.py:9-11/70-74` 连接池 `threading.local` 线程本地 + `stdlib_provider.py:147/172/186` 全走 `to_thread` 任意工作线程 ⇒ 并发不共享同一条连接；`runtime.py:564` 主 loop 排除 `beast.*` 而 `_beast_loop` 不排除主 loop 记忆 ⇒ 单向 | 复用仅单线程串行成立；隔离＝「主不读兽、兽可读主」 | TCP：**已裁决不改**（ADR-0064 有意取舍，登记已知局限）；隔离：双向排除或登记共享记忆设计 |
-| E46 | pet/beast 任务完成/召回后返回内容死数据 | `beast/manager.py:74-76` result 存 `session.last_result` 但**零读取方**；`pet/core/session.py:146-147` `wake()` 存 `_last_trace_id` 后于 `:153` `return result`，而驱动侧 `driver.py:67` 丢弃返回值；`tools/` 无 beast/pet 工具、不落 L2、CLI 仅 print 状态（`_print_pet_status :1601`） | 主 Agent 无法查看返回内容（beast 真死 / pet 半死） | beast recall 前 `session.remember()` 落 L2 + status/tool 查询 `last_result`；pet 驱动侧接住返回值 + status 暴露最近结果正文 |
+| E46 | pet/beast 任务完成/召回后返回内容死数据 | `beast/manager.py:74-76` result 存 `session.last_result` 但**零读取方**；`pet/core/session.py:146-147` `wake()` 存 `_last_trace_id` 后于 `:153` `return result`，而驱动侧 `driver.py:67` 丢弃返回值；`tools/` 无 beast/pet 工具、不落 L2、CLI 仅 print 状态（`_print_pet_status :1601`） | 主 Agent 无法查看返回内容（beast 真死 / pet 半死） | ✅ **已闭（change 0113 / ADR-0106）**：**两半修法皆订正**，改走**查询面接线**（见 §4） |
 | E47 | **会话之间**记忆检索不隔离（附属：会话注册表丢更新） | `context/assembler.py:66-70` → `memory/store.py:95` `read(query, budget)` **只按 source 前缀过滤、无 session 过滤**（而 `loop/default.py:469-474` `remember()` 落库**是带 `session_id` 的**）；`ui/api.py:174-175` 的会话隔离是**调用方手写后置过滤**（只覆盖展示，未覆盖喂给 LLM 的检索）；`ui/sessions.py:33-40` `create` 读回→合并→写回**无锁** | 会话**不是**隔离边界：A 对话框沉淀的事实可进 B 的 system prompt（`planner._system_prompt` → `assembler.build`） | 复用既有过滤管线给 `read()` 补 session 维度（**不新造机制**）；`SessionRegistry` 加进程内锁（可独立修） |
 
 ## 1. 一手核实（证据）
@@ -56,6 +57,15 @@
 
 **结论**：pet/beast 任务完成/召回后，返回内容（`result.reply`）对主 Agent 不可见（无工具查询、不落 L2、状态接口不含正文）⇒ **死数据**。与 delegate 路径的「reply 回传」形成对照。**两档强度不同**：beast **真死**（`last_result` 零读取方，跨进程亦无入口）；pet **半死**（结果对象本已交还调用方，止步于驱动侧丢弃；且 `surprise()` 路径会把 `result.reply` 拼进通知文本 `session.py:248-251`——但那是推送、不是「可查询」）。
 
+**实施期判据订正（change 0113 / ADR-0106，一手复核）** —— 上述证据全部成立，但**修法两半都撞车**，故 §4 的方向被改判；同时补一条证据：
+
+| 原写修法 | 撞车对象 | 订正后口径 |
+|---|---|---|
+| beast「`recall()` 前 `session.remember()` **落 L2**」 | `runtime.py:564` 主 loop `exclude_source_prefixes=("beast.",)` + `beast-mode/spec.md:89`「记忆分区封存」⇒ 落进去主 Agent **永远检索不到**（**自败**） | 走**查询面**（不落 L2、不改记忆语义） |
+| pet「`status`/`snapshot` **暴露正文**」 | `pet-mode/spec.md:249`/`:255` 明文 `status` **SHALL NOT** 外泄主人偏好与任务正文（**违已有 Requirement**，非实现缺口） | 另设**独立查询面**，`status` 面逐字不变 |
+
+**补充证据（新）**：两半**同型** —— **结果对象已经到手，被上层消费点丢弃**（beast：`manager.py:71` 已拿到 `LoopResult` → `:74` 存 `last_result`，`entry.py:1750` `_summon` 只打印状态；pet：`wake()` 已 `return result`，`driver.py:67` 丢弃）。故最小诚实修法是**读取面接线**，而非新造数据流。另注：`BeastSession.remember()` 全仓**零生产调用方**（写入侧实为 `_beast_loop` 的 `DefaultLoop(source=beast.agent_id)`）—— 与本次结果面无关，留作观察（未登记为独立缺陷）。
+
 ### 1.4 E47 会话之间记忆检索不隔离（多流复用的正确性面）
 
 **复用点先说清**（判据：复用发生在哪一层）：
@@ -98,10 +108,15 @@
 - **TCP**：**已裁决（本次）：不改**。理由 —— ① ADR-0064 的**有意取舍**（线程本地 ⇒ 免锁、无归还竞争）；② 规格「连接复用」场景只要求「复用底层 connection / keep-alive + 失效自动重建」，**未**要求跨线程同一条 TCP；③ 改为「按 origin 单例池」要引入跨线程共享 `http.client` 与归还竞争，收益仅省几次握手。⇒ 登记为**已知局限（每工作线程一条连接）**，不列为缺陷。
 - **隔离**：若要求「相互隔离」，给 `_beast_loop` 也注入 `exclude_source_prefixes=("loop",)`（排除主 loop 记忆）；若维持「共享记忆」设计，登记为设计现状。
 
-## 4. E46 修复方向
+## 4. E46 修复方向 —— ✅ 已闭（change 0113 / ADR-0106）
 
-- **beast**：`recall()` 前把 `last_result.reply` 经 `session.remember()` 落 L2 记忆（`source=beast.<agent_id>`，复用 phase-26 的 source 注入），并提供 status / tool 查询 `last_result`。
-- **pet**：`PetSession.wake()` **已经** `return result`（`session.py:153`），缺口在**驱动侧丢弃**（`driver.py:67`）⇒ 修法为**驱动侧接住返回值**并在会话留一份（或在 `wake` 内自行留存一份），再由 `status` / `snapshot` 暴露最近任务结果正文。**不新造 wake 语义**（`PetControl.wake` 是另一个「恢复让行」动词，勿混）。
+**取向（用户裁决，开工前）**：**A 查询面接线** + **① 独立查询面** —— 不落 L2、不改记忆语义、不碰 `status` 隐私面。
+
+- **beast**：`BeastSession.result_summary()`（只读取用**既有** `last_result` ⇒ `{agent_id, has_result, reply, failed}`）＋ `summon` CLI 呈现结果正文与成败（无结果**不打印**结果行）。**否决**「落 L2」——`runtime.py:564` 主 loop 排除 `beast.*` ＋ beast spec `:89` 封存 ⇒ 落进去检索不到（自败）；「允许神兽产物回流主记忆」是**另一件事**，需单独规格变更 + 裁决。
+- **pet**：`PetSession.wake()` **在会话内**自留一份 `last_result`（**不进 `snapshot`**、不落盘 ⇒ 只本进程/只最近一次）＋ `PetControl.result()` **独立查询动词**（复用既有 `_resolve` 寻址；CLI `pet result` / `/pet result` 与 CLI **同一实现**）。**否决**「`status` 暴露正文」——`pet-mode/spec.md:249`/`:255` 明文 SHALL NOT 外泄主人偏好与任务正文（**违已有 Requirement**）。**不新造 wake 语义**（`PetControl.wake` 是「恢复让行」的另一动词）。
+- **规格**：`beast-mode/spec.md` **ADDED**「Task Result Visibility」（3 场景）；`pet-mode/spec.md` **ADDED**「Task Result Query」（4 场景）。**非** `skip_specs`。
+- **落地**：`beast/session.py` `result_summary` / `pet/core/session.py` `last_result` / `pet/core/control.py` `result` / `entry.py`（`_summon` 呈现 + `_print_beast_result` / `_print_pet_result` + pet verb 面）/ `ui/api.py` `pet_command`。测试 `tests/test_beast_result_visibility.py` + `tests/test_pet_result_query.py`（含两条**守护**：`status` 六键逐字不变、结果查询**零 L2 写入**）。**1392 passed**。
+- **已知局限**（写进 ADR-0106）：结果不落盘（进程重启即失，与 `status` 同界）；`pet result` 是新暴露面（但未放宽 `status`/`snapshot` 任一层，观测面不接入）；beast 侧无 UIAPI 面（仅 CLI + 会话方法）；`PetWakeDriver` 仍不消费返回值（留存责任放在会话内，驱动零改动）。
 
 ## 5. E47 修复方向
 
@@ -119,12 +134,13 @@
 
 - E44/E45/E46 均非规格违约，**不得以缺陷修复名义 `skip_specs` 强推**；若实施，须视产品方向裁决后**规格先行**。
 - E45 若改「双向隔离」会破坏现有「共享记忆」设计（兽读主记忆获取上下文），须先裁决。
-- E46 落 L2 须复用 phase-26 的 `source=beast.<agent_id>` 注入面，**不得新造 seal/recall API**（phase-26 已知局限口径）。
+- E46（**已闭**）：落地走**查询面**，**不落 L2**（落 L2 会被封存条款挡在主 loop 检索之外 —— 自败）；**不得**改 `status`/`snapshot` 的隐私面（改则违 `pet-mode` 已有 Requirement，须先走过规格变更 + 隐私裁决）；**不得**改 `exclude_source_prefixes=("beast.",)`（会破 phase-26 的 E37/E38/E39 隔离语义）。（原文「落 L2 须复用 `source=beast.<agent_id>` 注入面」随本次裁决**作废**。）
 - **E47 同样是「现状非违约」**（规格未把会话定为隔离边界）⇒ 若实施，须先裁决「会话是否作为隔离边界」，再**规格先行**；修法上**复用既有过滤管线**（`read()` 已有 `exclude_source_prefixes` 过滤面，补 session 维度即可），**不得新造第二套记忆检索**。**注册表丢更新除外** —— 它是纯并发缺陷，可独立修、无需先裁决。
 - **已裁决（本次）**：E45 的 TCP 半条**不列为缺陷**（ADR-0064 有意取舍），登记为已知局限。
 
 ## 8. 收口
 
-- **四条**缺陷登记完毕，等待产品方向裁决（E44「压缩续聊 vs 有意行为」、E45「双向隔离 vs 共享记忆」、E46「结果可见性」、E47「会话是否作为隔离边界」）。
-- 建议优先级：**E46 最高**（主 Agent 无法查看子任务结果是编排闭环的真实缺口，与 phase-17 委托语义直接相关）；**E47 并列次高**（多流复用是既定用法 —— 「开不同 session 对话框」即触发，而检索不隔离会把 A 的事实灌进 B 的 system prompt）；E44 次之；E45-隔离 视产品是否要「相互隔离」裁决。
+- **E46 已闭**（change `0113` / ADR-0106）：用户裁决「A 查询面接线 + ① 独立查询面」⇒ 规格先行（两 spec **ADDED**）→ 测试先行（红 17/20）→ 实现 → 四门禁（ruff / ruff format / pyright 0-0-0 / **1392 passed**）→ 手工归档 → `openspec validate --all` **30 passed / 0 failed**。**两半原写修法均判据订正**（beast 落 L2 自败 / pet 改 `status` 违规）。
+- **余三条**等待产品方向裁决（E44「压缩续聊 vs 有意行为」、E45-隔离「双向隔离 vs 共享记忆」、E47「会话是否作为隔离边界」）。
+- 建议优先级（E46 已闭后）：**E47 最高**（多流复用是既定用法 —— 「开不同 session 对话框」即触发，而检索不隔离会把 A 的事实灌进 B 的 system prompt）；E44 次之；E45-隔离 视产品是否要「相互隔离」裁决。
 - E47 附属的 `SessionRegistry` 丢更新可**先行独立修**（不等裁决）。

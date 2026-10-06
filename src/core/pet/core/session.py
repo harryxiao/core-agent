@@ -57,6 +57,9 @@ class PetSession:
         self._wake_count = 0
         self._last_trace_id = ""
         self._preferences: dict[str, str] = {}
+        # 最近一次唤醒结果（change 0113 / E46）：驱动侧丢弃返回值（`WakingSession` 只取副作用），
+        # 故在**会话内**自留一份供控制面 `result` 查询。**不进 snapshot**（只本进程、不落盘）。
+        self.last_result: LoopResult | None = None
 
     # ---- 快照 / 恢复（注册表落盘用） ----
 
@@ -144,6 +147,7 @@ class PetSession:
             raise PetError(PetErrorCode.PET_YIELDING, "无待办任务，宠物入睡")
         task = self._tasks.popleft()
         result = self._loop.run(self._compose_prompt(task.goal))
+        self.last_result = result
         self._last_trace_id = result.trace_id
         self._wake_count += 1
         self._notify_owner()

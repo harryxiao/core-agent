@@ -47,6 +47,26 @@ class PetControl:
         pet.suspend()
         return f"已让宠物 {pet.session_id} 入睡（让行态）"
 
+    # ---- 结果查询（change 0113 / E46） ----
+
+    def result(self, session_id: str | None = None) -> dict[str, Any]:
+        """最近一次任务结果的**只读**查询（会话 id / 是否有结果 / 结果正文 / 成败）。
+
+        与 `status` 的边界：`status` 是**观测面**（不含主人偏好与任务正文，规格明文），本动词是
+        **结果查询面**，**只**暴露最近一次结果的正文与成败 —— 二者互不污染（`status` 面逐字不变）。
+
+        只作用**本进程**已注册会话、只**最近一次**、**不落盘**（不进 `snapshot`/注册表）；
+        寻址复用 `_resolve`（与既有控制动词逐字一致）。
+        """
+        pet = self._resolve(session_id)
+        last = pet.last_result
+        return {
+            "session_id": pet.session_id,
+            "has_result": last is not None,
+            "reply": last.reply if last is not None else None,
+            "failed": last.failed if last is not None else None,
+        }
+
     def wake(self, session_id: str | None = None) -> str:
         """叫醒宠物（清让行态恢复）。
 

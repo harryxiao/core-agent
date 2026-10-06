@@ -369,6 +369,8 @@
 
 | TC-PET-08 | pet-mode「Pet Control Surface」控制面（change `0088`） | 直接驱动 `PetControl`：`status`/`sleep`/`wake`/`assign`/`stop` 五动词、单宠物默认寻址 / 多宠物未指定 / 未知会话 / 无宠物；并跑 CLI（`pet status|sleep|wake|assign`）与 `UIAPILayer.pet_command` 两端 | `status` 返回结构化字段（id/state/sleeping/pending/wake_count/fault）且**不含**偏好与任务正文；`sleep` 置让行态（休眠中 `PetSession.wake()` 被 `PET_YIELDING` 拒）→ `wake` 清让行态恢复；`assign` 入队并清让行态（自动唤醒）；`stop` 终止会话；多宠物未指定 ⇒ `PET_TARGET_AMBIGUOUS` 并列出 id（不猜测）、未知会话 / 无宠物 ⇒ `PET_NOT_FOUND`（CLI 退出码 1，不静默成功）；UI 面落到**同一** `PetControl`（未接 ⇒ `UI_PET_UNSET`，未知动词 ⇒ `UI_PET_UNKNOWN_VERB`）（锚点：`tests/test_pet_control.py::test_status_returns_structured_fields` / `::test_status_does_not_leak_preferences_or_tasks` / `::test_sleep_then_wake_roundtrip` / `::test_assign_enqueues_and_clears_sleeping` / `::test_stop_terminates_session` / `::test_single_pet_default_addressing` / `::test_multiple_pets_without_id_rejected` / `::test_unknown_session_rejected` / `::test_no_pets_rejected`；`tests/test_entry.py::test_pet_status_cli_shows_structured_state` / `::test_pet_sleep_and_wake_cli_roundtrip` / `::test_pet_assign_cli_switches_job` / `::test_pet_control_unknown_session_exits_1`；`tests/test_ui.py::test_ui_pet_command_delegates_to_control` / `::test_ui_pet_command_without_control_raises`） |
 
+| TC-PET-09 | pet-mode「Task Result Query」结果可见性（change `0113`／ADR-0106，账本 E46） | 唤醒一轮后查 `PetControl.result`；未唤醒即查；同一会话下比对 `status` 键集合与 `snapshot` 字段；寻址三分支（单宠物默认 / 多宠物未指定 / 未注册）；CLI `pet result`（真 argv 与 `_pet_control` 两端）；`UIAPILayer.pet_command("result")` | `wake()` 后返回 `{session_id, has_result, reply, failed}`（正文 = loop 返回值）；未唤醒 ⇒ `has_result=False`、`reply=None`（**不编造**）；**`status` 键集合逐字不变**（六键、不含正文与偏好）、`snapshot()` 也不含 `reply`（结果不落盘）；寻址与既有动词一致（`PET_TARGET_AMBIGUOUS` / `PET_NOT_FOUND`）；三面（`PetControl` / CLI / UIAPI）落到**同一实现**（锚点：`tests/test_pet_result_query.py::test_result_after_wake_exposes_loop_reply` / `::test_result_before_wake_reports_no_result` / `::test_status_keys_unchanged_after_result_added` / `::test_status_does_not_leak_reply_even_when_result_exists` / `::test_result_survives_go_idle` / `::test_result_multiple_pets_without_target_rejected` / `::test_result_unknown_session_rejected` / `::test_cli_pet_result_prints_reply` / `::test_cli_pet_result_no_result_is_honest` / `::test_cli_pet_result_unknown_session_exits_one` / `::test_ui_pet_command_result_uses_same_control`） |
+
 ## 26. 插件注册与安装（TC-PLUGIN）
 
 | 用例 | 对应需求 | 步骤 | 期望 |
@@ -428,6 +430,14 @@
 | TC-NS-11 | pet-mode/spec.md `:231-234`（E39 端到端） | 生产入口激活：`activate_from_cli("gather", ["editor: vim"])` | 共享 L2 有 `source="user"` 偏好条目、`prefer("editor") == "vim"`、`surprise()` **非 `None`** 且含 `editor=vim`（走真实 loop；改前恒 `None`）（锚点：`::test_production_pet_activation_observes_owner_and_enables_surprise`） |
 | TC-NS-12 | 同上 换活入口（控制面） | `PetControl.assign("theme: dark", session_id=…)` | 同一观察口径生效（`prefer("theme") == "dark"`）—— 主人行为入口不止激活一处（锚点：`::test_pet_control_assign_observes_owner`） |
 | TC-NS-13 | 同上 R7「**不谎报**」（反例 ×2） | `/pet` 斜杠激活（合成 goal）与 CLI 空 `rest`（合成 goal） | 两者 `_preferences` 均为空、共享记忆**零** `source="user"` 条目（合成文案不观察）（锚点：`::test_slash_activation_does_not_fabricate_preference` / `::test_cli_without_owner_text_does_not_observe`） |
+
+---
+
+## 29. 神兽模式（TC-BEAST）
+
+| 用例 | 对应需求 | 步骤 | 期望 |
+|---|---|---|---|
+| TC-BEAST-01 | beast-mode「Task Result Visibility」结果可见性（change `0113`／ADR-0106，账本 E46） | 未执行会话 / 已执行会话分别调 `BeastSession.result_summary()`；经 `summon` CLI（真 argv，runtime 打桩 + fake router）召唤；无 router 的 manager 再召唤一次；查询与召唤全流程挂 `_SpyMemory` | 未执行 ⇒ `has_result=False`、`reply=None`（**不编造**）；已执行 ⇒ 返回 `{agent_id, has_result, reply, failed}`（数据源 = `last_result`，`failed` 如实）；CLI stdout 含结果正文与成败；**无结果时不打印结果行**（不谎报）；查询与召唤**零 L2 写入** —— 封存语义（`source=beast.*` 不被主 loop read 命中）不受结果面影响（锚点：`tests/test_beast_result_visibility.py::test_result_summary_before_run_reports_no_result` / `::test_result_summary_exposes_reply_and_failure` / `::test_result_summary_reflects_failed_run` / `::test_query_writes_nothing_to_memory` / `::test_summon_does_not_write_result_to_l2` / `::test_cli_summon_prints_result_reply` / `::test_cli_summon_without_router_does_not_fabricate_reply`） |
 
 ---
 

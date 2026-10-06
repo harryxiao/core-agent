@@ -193,13 +193,15 @@ class UIAPILayer:
     ) -> Any:
         """前台 `/pet [cmd]` 控制面（change 0088 / 用户诉求①）：verb → 会话操作。
 
-        `status` / `sleep` / `wake` / `assign` / `stop` 经注入的 `PetControl` 收口
+        `status` / `result` / `sleep` / `wake` / `assign` / `stop` 经注入的 `PetControl` 收口
         （与 CLI 同一实现）。
         """
         if self._pet_control is None:
             raise UiError(UiErrorCode.UI_PET_UNSET, "宠物控制面未接")
         if verb == "status":
             return self._pet_control.status(session_id)
+        if verb == "result":
+            return self._pet_control.result(session_id)
         if verb == "sleep":
             return self._pet_control.sleep(session_id)
         if verb == "wake":

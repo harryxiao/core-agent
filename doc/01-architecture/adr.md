@@ -2621,6 +2621,42 @@
 
 ---
 
+## ADR-0106：任务结果可见性走**查询面**（change 0113 / phase-28 E46）
+
+- **背景**：`coding-plan/phase-28.md` §1.3 登记 E46「结果可见性」。一手复核发现**账本原写修法两半都撞车**，
+  且两半**同型** —— 结果对象**已经到手**，被**上层消费点丢弃**：
+  - beast：`beast/manager.py:71` `await handoff` 已拿到 `LoopResult` → `:74` 存 `session.last_result`
+    （repo-wide **零读者**）；`entry.py:1750-1751` `_summon` 只打印状态。
+  - pet：`pet/core/session.py:153` `wake()` **已** `return result`，`driver.py:67` **丢弃返回值**
+    （`WakingSession` Protocol 注释明写「驱动只取其副作用」）；会话只留 `_last_trace_id`。
+- **决策①：beast 走查询面，**否决**「落 L2」。** 账本原写「`recall()` 前经 `session.remember()` 落 L2」
+  **自败**：`runtime.py:564` 主 loop 装配 `exclude_source_prefixes=("beast.",)`，`beast-mode/spec.md:89`
+  **明文**「记忆分区封存（`source=beast.*` 不再被主 loop read 命中）」⇒ 落进去主 Agent **永远检索不到**，
+  写了等于没写。故**不动记忆语义**（命名空间与封存条款**逐字不变**）——「允许神兽产物回流主记忆」是
+  **另一件事**，需单独规格变更 + 裁决，本 change **不做**。
+- **决策②：pet 走**独立查询面**，**否决**改 `status`。** 账本原写「`status`/`snapshot` 暴露正文」**违已有
+  Requirement**（非实现缺口）：`pet-mode/spec.md:249`/`:255` 明文「`status` SHALL 返回结构化字段…**SHALL NOT
+  外泄主人偏好与任务正文**」。故新面**独立**（`PetControl.result`），`status` 返回面**逐字不变**，
+  并加守护测试钉住六键集合。（`snapshot()` 含 `preferences`/`tasks[].goal` 是**持久化面**的有意设计，
+  隐私过滤**故意**做在控制面这层 —— 两层**均不改**。）
+- **决策③：接出已到手的，不新造数据流。** `BeastSession.result_summary()` **只读取用**既有 `last_result`；
+  `PetSession.wake()` **在会话内**自留一份 `last_result`（**不进 `snapshot`**、不落盘）；查询面**不缓存、
+  不落库、不复制** ⇒ 无第二真源。
+- **决策④：单一门面 + 诚实。** pet 查询进既有 `PetControl`（`pet-mode/spec.md:244-245` SHALL 单一门面），
+  CLI `pet result` 与 `UIAPILayer.pet_command` **复用同一实现**；寻址复用既有 `_resolve`（三分支同口径）。
+  两侧无结果时 SHALL 报「无结果」，**SHALL NOT** 编造正文（phase-19「不谎报」同判据）。
+- **已知局限（照实登记）**：
+  1. 结果**不落盘**：只**本进程**、只**最近一次**；进程重启即失（与 `status` 同界，规格已写明）。
+  2. `pet result` 暴露任务正文 —— 这是**新暴露面**（规格新 Requirement 明写），但**未**放宽 `status` / `snapshot`
+     任何一层；观测面（metrics/log）**不**接入该面。
+  3. beast 侧**无** UIAPI 面（本 change 未新造），呈现仅经 `summon` CLI 与 `result_summary()`。
+  4. `PetWakeDriver` 仍**不消费**返回值（`WakingSession.wake() -> object` 契约不改）—— 留存责任放在会话内，
+     驱动零改动（避免扩 Protocol 面）。
+- **规格**：`beast-mode/spec.md` **ADDED**「Task Result Visibility」；`pet-mode/spec.md` **ADDED**
+  「Task Result Query」。**非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2721,3 +2757,4 @@
 | ADR-0103 | 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 03-interfaces/orchestration-interface.md, 03-interfaces/beast-mode-interface.md, 03-interfaces/pet-mode-interface.md |
 | ADR-0104 | 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/phase-27.md |
 | ADR-0105 | 03-interfaces/evolution-interface.md, 03-interfaces/configuration-interface.md, 02-modules/configuration.md, 04-testing/test-cases.md, coding-plan/phase-27.md |
+| ADR-0106 | 03-interfaces/pet-mode-interface.md, 03-interfaces/beast-mode-interface.md, 04-testing/test-cases.md, coding-plan/phase-28.md |

@@ -319,7 +319,7 @@ def _add_pet_parser(sub: Any) -> None:
     pet.add_argument(
         "verb",
         nargs="?",
-        help="gather|info|explore|walk|list|run|status|sleep|wake|assign|stop",
+        help="gather|info|explore|walk|list|run|status|result|sleep|wake|assign|stop",
     )
     pet.add_argument("rest", nargs=argparse.REMAINDER, help="[--name NAME] 任务描述（自由文本）")
 
@@ -1547,7 +1547,7 @@ def _pet(args: argparse.Namespace) -> int:  # noqa: PLR0911 — CLI 分支各自
     if verb is None:
         print(
             "用法: core-agent pet <verb> [--name NAME] [--session ID] [...]"
-            "（gather|info|explore|walk|list|run|status|sleep|wake|assign|stop）"
+            "（gather|info|explore|walk|list|run|status|result|sleep|wake|assign|stop）"
         )
         return 0
     try:
@@ -1564,7 +1564,7 @@ def _pet(args: argparse.Namespace) -> int:  # noqa: PLR0911 — CLI 分支各自
         return 0
     if verb == "run":
         return _pet_run(manager, rest)
-    if verb in ("status", "sleep", "wake", "assign", "stop"):
+    if verb in ("status", "result", "sleep", "wake", "assign", "stop"):
         return _pet_control(verb, rest, manager)
     session = activator.activate_from_cli(verb, rest, persona=_load_persona(persons_dir, name))
     print(f"已激活宠物会话 {session.session_id}（verb={verb}，状态 {session.state.value}）")
@@ -1583,6 +1583,9 @@ def _pet_control(verb: str, rest: list[str], manager: PetManager) -> int:
     try:
         if verb == "status":
             _print_pet_status(control.status(target))
+            return 0
+        if verb == "result":
+            _print_pet_result(control.result(target))
             return 0
         if verb == "assign":
             print(control.assign(" ".join(task), session_id=session_id))
@@ -1603,6 +1606,15 @@ def _print_pet_status(status: dict[str, Any]) -> None:
         f"宠物 {status['session_id']}：状态 {status['state']}，休眠 {sleeping}，"
         f"待办 {status['pending']}，唤醒计数 {status['wake_count']}，故障 {status['fault'] or '-'}"
     )
+
+
+def _print_pet_result(result: dict[str, Any]) -> None:
+    """结果查询面呈现（change 0113 / E46）：无结果时**明确报无**，不编造正文。"""
+    if not result["has_result"]:
+        print(f"宠物 {result['session_id']}：无最近任务结果")
+        return
+    outcome = "失败" if result["failed"] else "成功"
+    print(f"宠物 {result['session_id']}：最近任务结果（{outcome}）：{result['reply']}")
 
 
 def _split_pet_session(rest: list[str]) -> tuple[str | None, list[str]]:
@@ -1749,7 +1761,16 @@ def _summon(args: argparse.Namespace) -> int:
         return _module_disabled("beast")
     session = asyncio.run(activator.activate_from_cli(args.beast, list(args.task or [])))
     print(f"已召唤神兽 {session.beast.agent_id}（状态 {session.state.value}）")
+    _print_beast_result(session.result_summary())
     return 0
+
+
+def _print_beast_result(summary: dict[str, Any]) -> None:
+    """呈现神兽任务结果（change 0113 / E46）：有结果才打印，**不**编造正文。"""
+    if not summary["has_result"]:
+        return
+    outcome = "失败" if summary["failed"] else "成功"
+    print(f"结果（{outcome}）：{summary['reply']}")
 
 
 def _recall(args: argparse.Namespace) -> int:

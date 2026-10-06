@@ -73,8 +73,13 @@
 | `summon` | `summon() -> None` | 召唤 = 显形 + 激活：`DORMANT/RECALLED → ACTIVE` |
 | `recall` | `recall() -> None` | 召回：`MANIFEST/ACTIVE → RECALLED`；无在岗抛 `BEAST_NOT_MANIFEST` |
 | `remember` | `remember(content: str, trace_id: str = "") -> MemoryEntry` | 神兽产物以 `source=beast.<agent_id>` 落 L2 facts 层，与主记忆隔离 |
+| `result_summary` | `result_summary() -> dict` | **结果可见性**（change `0113`／ADR-0106，账本 E46）：最近一次交接结果的**只读**摘要 `agent_id` / `has_result` / `reply` / `failed`。**只读取用**会话持有的 `last_result` —— 不落 L2、不写记忆（`summon` CLI 据此呈现结果正文） |
 
 属性：`beast`、`state`、`loop`（`LoopPlugin`）、`last_trace_id`、`last_result`。
+
+**结果可见性走查询面**（change `0113`）：`entry._summon` 在状态行后呈现结果（`结果（成功/失败）：…`），
+无结果时**不打印**该行（不编造）。**不落 L2 的理由**：主 loop 装配 `exclude_source_prefixes=("beast.",)`
+（beast spec `:89` 记忆分区封存）⇒ 以 `source=beast.*` 落库的正文主 Agent **检索不到**，写了等于没写。
 
 独立记忆：`MemoryEntry.source = beast.<agent_id>`（区别于主 Agent 的 `source=loop`），
 落 L2 facts 层隔离。**生产接线（change `0110`／ADR-0103）**：

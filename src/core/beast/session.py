@@ -11,7 +11,7 @@ BeastSession 是单只神兽的会话句柄：DORMANT → MANIFEST → ACTIVE �
 from __future__ import annotations
 
 import uuid
-from typing import cast
+from typing import Any, cast
 
 from core.loop import DefaultLoop, LoopPlugin, LoopResult
 from core.memory import MemoryEntry, MemoryStore
@@ -94,3 +94,20 @@ class BeastSession:
                 "神兽记忆写入 L2 facts 层失败",
             )
         return entry
+
+    # ---- 结果可见性（change 0113 / E46） ----
+
+    def result_summary(self) -> dict[str, Any]:
+        """最近一次交接结果的**只读**摘要（神兽 id / 是否有结果 / 结果正文 / 成败）。
+
+        数据源为会话持有的 ``last_result``（`handoff` 返回值）——**只读、不落库、不写 L2**。
+        结果可见性不走主 loop 检索：神兽记忆分区封存（`source=beast.*` 不被主 loop read 命中）
+        语义**不受影响**（beast-mode spec「Task Result Visibility」）。
+        """
+        result = self.last_result
+        return {
+            "agent_id": self.beast.agent_id,
+            "has_result": result is not None,
+            "reply": result.reply if result is not None else None,
+            "failed": result.failed if result is not None else None,
+        }

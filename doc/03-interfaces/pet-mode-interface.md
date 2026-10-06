@@ -18,6 +18,7 @@ class PetSessionState(Enum):
 class PetSession:
     session_id: str
     state: PetSessionState
+    last_result: LoopResult | None  # 最近一次唤醒结果（change 0113；供 `PetControl.result` 查询）
 
     # 生命周期
     def start(self, task: PetTask) -> None: ...
@@ -216,6 +217,7 @@ change `0081` 之前二者只注入不消费，且宠物**跑在主 loop 上**�
 | 动词 | 落到 | 说明 |
 |---|---|---|
 | `status` | `snapshot()` 过滤 | 结构化 `session_id` / `state` / `sleeping`(=yielding) / `pending` / `wake_count` / `fault`；**不含**主人偏好与任务正文 |
+| `result` | `PetSession.last_result` | **结果查询面**（change `0113`／ADR-0106，账本 E46）：最近一次任务结果的只读摘要 `session_id` / `has_result` / `reply` / `failed`。与 `status` **互不污染**（`status` 面逐字不变）；只**本进程**、只**最近一次**、**不落盘**（不进 `snapshot`）。无结果 ⇒ 明确报「无最近任务结果」，**不编造正文** |
 | `sleep` | `PetSession.suspend()` | 置让行态（休眠）；后续 `PetSession.wake()` 以 `PET_YIELDING` 拒绝 |
 | `wake` | `PetSession.resume()` | **清让行态恢复**。**命名陷阱**：与 `PetSession.wake()`（执行一次任务）语义不同，见 ADR-0083 |
 | `assign` | `dispatch()` | 换活：入队新任务并清让行态（自动唤醒，change `0087`） |
