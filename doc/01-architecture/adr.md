@@ -3395,6 +3395,37 @@
 
 ---
 
+## ADR-0125：流式增量以专类型帧推送，与终态分型（change 0132 / phase-34 E65）
+
+- **背景**：`coding-plan/phase-34.md` 登记的 **E65**（中高，用户可见）。`UIAPILayer._map_event` 把
+  `reply_delta`（增量）与 `loop_finished`（终态）**都**映射为 `loop.result`，只靠**载荷形状**区分
+  （增量 = dict `{text}`，终态 = `LoopResult` 对象）。TUI/CLI 认这个隐式约定（`repl.py:69-79` 判
+  「类型 = `loop.result` 且载荷是 dict」；`entry.py:1461-1463` 同判据跳过），**Web 侧没认**：
+  `Chat.svelte:44-51` 对每个 `loop.result` 取 `payload.reply ?? message ?? JSON.stringify(payload)`
+  并**追加新行** ⇒ 增量帧每帧渲染一段 **JSON 字面量**、终态另起一行，回复被埋在 JSON 垃圾里。
+  根因是**一型两形**：靠载荷形状分流，任何新消费者只要不照抄 TUI 判据就会踩坑（Web 即此）。
+- **决策①：拆型 —— `reply_delta` ⇒ `loop.delta`（专类型，载荷恒 `{"text": …}`），
+  `loop_finished` 仍是 `loop.result`（载荷 `LoopResult`）。** 分流**只看类型**，不再看形状；
+  一型一形，消费者的判据从「类型 + 形状」降为「类型」。与既有 `loop.action_started` /
+  `loop.action_completed` 的拆型先例同取向（事件类型表示载荷形状）。
+- **决策②：同 change 对齐**全部消费方**（一条链不可拆，避免半改状态）**：`repl.py::_event_delta`
+  / `_format_event` 改判 `loop.delta`（`loop.result` 的 dict 分支随共型消失 —— 生产上
+  `loop.result` 只由 `loop_finished` 产出，载荷必为 `LoopResult`）；`entry.py::_stream` 增量跳过
+  判据改判类型（**呈现逐字不变**）；`Chat.svelte` 增量**尾部追加**（首帧新建、其后原地拼接、
+  终态帧原位收口），与 TUI `_show_delta` / `_flush_live` 同语义。
+- **决策③：规格钉住「增量帧与终态帧 SHALL NOT 共用一个类型」+「前端 SHALL 以文本追加」** ——
+  把「一型两形」这个**根因**写进规格，而非只描述「前端别渲染 JSON」（后者是症状）。
+- **已知局限**：① 对外 SSE 帧类型是**客户端可见契约**，本 change 是一次**破坏性变更**
+  （`loop.result` 不再承载增量）—— 仓内消费方已全部对齐，仓外未知消费者须同步；规格已把口径钉死。
+  ② 前端 Svelte 无 JS 测试基建 ⇒ 追加逻辑记 `doc/04-testing/test-cases.md` **手工验收项**
+  （Python 侧只覆盖帧类型与载荷形状）。③ 断线重连的**补帧**（重连后重放已丢弃的增量）不在本
+  change 范围（既有 Scenario 语义不变）。
+- **规格**：`ui`（**MODIFIED**「Web 界面访问」—— 正文补「流式增量 SHALL 以专类型帧推送、
+  SHALL 与终态帧区分；前端 SHALL 以文本追加呈现、SHALL NOT 逐帧新建行或序列化 JSON」+ **1**
+  Scenario「增量帧以文本追加（非逐帧 JSON）」）。**非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3514,3 +3545,4 @@
 | ADR-0122 | 03-interfaces/tool-use-interface.md, 02-modules/tool-use.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0123 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0124 | 03-interfaces/memory-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0125 | 03-interfaces/ui-interface.md, 06-ui-frontend/ui-architecture.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

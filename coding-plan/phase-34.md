@@ -24,7 +24,7 @@
 |---|---|---|---|---|---|
 | **E63** | **高** | `scheduler` **丢弃子任务失败态** ⇒ **假成功**并向下游接力失败结果 | `orchestration/scheduler.py:440-443` 只取 `collect_result(...)` 与 `verify(subtask, result.reply)`，**从不读 `result.failed`**；`:462-466` 在 `verify.passed` 时把 `result.reply` 写进 `self._results`（经 `_handoff_goal` 喂下游）。对照正解 `runtime.py:797` `_dispatch` = `{"ok": not result.failed}`。触发链：`default.py:295-297/316-319` 撞限产 `loop_failed` + **非空合成 reply**（`"…本轮终止"`）⇒ `failed=True` 但 reply 非空 ⇒ `decomposer.verify:54-62` 无 verifier 时「非空即通过」⇒ **合成错误串被当成功接力** ⇒ **已落地（change `0126` / ADR-0119）** | P2/P3 判定断裂 | ✅ |
 | **E64** | **高** | `file_write` / `file_patch` **共用一份 `snap`** ⇒ 多写后回滚恢复**错文件** | `tools/builtin.py:102-130`（write）与 `:133-147`（patch）在**工具级**建**一个** `snap`，每次调用覆写 `snap["path"]/["before"]`；`undo()` = `_restore(snap)` 读**同一共享 dict**。`runtime.py:397` 五个内置工具**只构造一次、跨 loop 复用** ⇒ 同 trace 内两次写不同文件，回滚只还原**最后一次**。**P2 崩于最常用工具** ⇒ **已落地（change `0129` / ADR-0122）** | P2 可逆性断裂 | ✅ |
-| **E65** | 中高 | Web 前端 `reply_delta` **渲染破碎**（逐帧打印 JSON） | `ui/api.py:20-37` 把 `reply_delta` 映射到 `loop.result`；`frontend/src/views/Chat.svelte:44-51` 对 `loop.result` 取 `payload.reply ?? message ?? JSON.stringify(payload)` 并**追加新行** ⇒ delta 帧 `{text:…}` 无 `reply` ⇒ 每帧渲染一段 JSON。TUI 正解：`ui/repl.py:69-79 _event_delta` | 前端渲染 | ✅ |
+| **E65** | 中高 | Web 前端 `reply_delta` **渲染破碎**（逐帧打印 JSON） | `ui/api.py:20-37` 把 `reply_delta` 映射到 `loop.result`；`frontend/src/views/Chat.svelte:44-51` 对 `loop.result` 取 `payload.reply ?? message ?? JSON.stringify(payload)` 并**追加新行** ⇒ delta 帧 `{text:…}` 无 `reply` ⇒ 每帧渲染一段 JSON。TUI 正解：`ui/repl.py:69-79 _event_delta` ⇒ **已落地（change `0132` / ADR-0125）：增量帧改**专类型** `loop.delta`（`_EVENT_MAP`），与终态 `loop.result` 分型；`repl.py::_event_delta` / `_format_event` / `entry.py::_stream` 判据随型更新（呈现逐字不变）；`Chat.svelte` 增量**尾部追加**、终态原位收口** | 前端渲染 | ✅ |
 | **E66** | 中 | `/session/compact` **压实全部会话**（**会话隔离外泄**） | `ui/api.py:211-215` `compact(session_id)` 调 `self._memory.compact(session_id)`；`memory/store.py:200-224` `compact(query, budget)` 只用 `query` 打分，`:222-223` 直接 `self._summarize_sessions()`；`:298-312` 该方法**无 session 形参**，遍历 `self._episodic_groups().items()` **全量** ⇒ **已落地（change `0131` / ADR-0124）：`compact` 增仅关键字形参 `session_id`，非空只聚合该会话、空串保全量；`ui/api.py` 改传 `session_id=session_id`（不再当 `query`）** | 会话隔离破坏 | ✅ |
 | **E67** | 中 | `EffectTracker.rollback` **不清账** ⇒ 重复回滚**二次撤销** + `_effects` **无界增长** | `plugin_registry/effect_tracker.py:61-78` 回滚后既不移除 `_effects` 也不清 `_by_trace`，且**无 clear 方法** | P2 可逆性 + 内存 | ✅ ⇒ **已落地（change `0128` / ADR-0121）** |
 | **E68** | 中 | `write_patch` **绕过可逆性**（磁盘 yaml 不可按 trace 回退） | `configuration/manager.py:555-569` `tmp.write_text(_dump_yaml(raw))` + `os.replace`，**无 `EffectTracker.record`**；对照 `apply_change:538-548` 的 undo 只回滚**内存态** ⇒ 按 trace 回滚时**磁盘不回退** ⇒ **已落地（change `0130` / ADR-0123）** | P2 可逆性 | ✅ |
@@ -173,6 +173,7 @@
 | `0129` | E64 | ✅ 已落地（2026-10-06） | ADR-0122 |
 | `0130` | E68 | ✅ 已落地（2026-10-06） | ADR-0123 |
 | `0131` | E66 + E78 | ✅ 已落地（2026-10-06） | ADR-0124 |
+| `0132` | E65 | ✅ 已落地（2026-10-06） | ADR-0125 |
 | `0132` | E65 | ⏳ 待实施 | — |
 | `0133` | E72 | ⏳ 待实施 | — |
 | `0134` | E80 | ⏳ 待实施 | — |

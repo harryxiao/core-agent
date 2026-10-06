@@ -26,12 +26,15 @@ from .models import Event
 from .sessions import SessionRegistry
 
 # LoopEvent 类型 → SSE 事件类型（DefaultLoop 产出七类 LoopEvent，spec：异步流式执行）。
+# 增量与终态**分属两型**（change `0132` / ADR-0125 / 账本 E65）：`reply_delta` ⇒ `loop.delta`
+# （载荷恒为 `{"text": …}`），`loop_finished` ⇒ `loop.result`（载荷 `LoopResult`）。共型曾令
+# Web 前端按「无 reply 即序列化 JSON」处理增量帧 ⇒ 逐帧渲染 JSON。
 _EVENT_MAP = {
     "loop_started": "session.created",
     "step_completed": "loop.action",  # 既有契约（回合推进），不随动作事件新增而改名
     "action_started": "loop.action_started",
     "action_completed": "loop.action_completed",
-    "reply_delta": "loop.result",
+    "reply_delta": "loop.delta",
     "loop_finished": "loop.result",
     "loop_failed": "loop.error",
 }

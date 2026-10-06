@@ -163,12 +163,24 @@ def test_barge_in_501() -> None:
 
 
 def test_run_sse_streams_result() -> None:
-    _, client = _client()
+    api = UIAPILayer(
+        loop=FakeLoop(
+            [
+                LoopEvent("loop_started", {"trace_id": "t1"}),
+                LoopEvent("reply_delta", {"text": "你"}),
+                LoopEvent("loop_finished", {"reply": "你好"}),
+            ]
+        )
+    )
+    api.set_llm_config(_llm())
+    client = TestClient(build_app(api))
     session_id = client.post("/session", json={"mode": "cli"}).json()["session_id"]
     with client.stream("POST", "/run", json={"session_id": session_id, "user_input": "hi"}) as resp:
         assert resp.status_code == status.HTTP_200_OK
         body = "".join(resp.iter_text())
     assert "loop.result" in body
+    # 增量帧为**专类型** `loop.delta`（change `0132` / ADR-0125 / 账本 E65）：不再与终态共型
+    assert "loop.delta" in body
 
 
 def test_run_unknown_session_sse_error() -> None:

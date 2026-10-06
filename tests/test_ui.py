@@ -91,6 +91,40 @@ def test_run_loop_streams_sse_events() -> None:
     assert streamed[0].payload["trace_id"] == "t1"
 
 
+def test_reply_delta_maps_to_dedicated_type() -> None:
+    """流式增量以**专类型** `loop.delta` 推送（change `0132` / ADR-0125 / 账本 E65）。
+
+    增量与终态不再共型：增量帧类型 = `loop.delta`（载荷恒为 `{"text": …}`），终态帧类型 =
+    `loop.result`（载荷 `LoopResult`）。此前二者共用 `loop.result` ⇒ Web 前端按「无 reply
+    即序列化 JSON」处理，每帧渲染一段 JSON。
+    """
+    from core.loop import LoopResult  # noqa: PLC0415 — 流式事件构造
+
+    api = UIAPILayer(
+        loop=FakeLoop(
+            [
+                LoopEvent("loop_started", {"trace_id": "t1"}),
+                LoopEvent("reply_delta", {"text": "你"}),
+                LoopEvent("reply_delta", {"text": "好"}),
+                LoopEvent("loop_finished", LoopResult(reply="你好", trace_id="t1")),
+            ]
+        )
+    )
+    api.set_llm_config(_llm())
+    session_id = api.create_session("cli")
+
+    streamed = _collect(api, session_id, "hi")
+
+    assert [e.type for e in streamed] == [
+        "session.created",
+        "loop.delta",
+        "loop.delta",
+        "loop.result",
+    ]
+    assert [e.payload for e in streamed[1:3]] == [{"text": "你"}, {"text": "好"}]
+    assert not isinstance(streamed[3].payload, dict), "终态载荷为 LoopResult 对象"
+
+
 # ---- 四错误码 ----
 
 

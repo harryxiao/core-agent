@@ -10,7 +10,14 @@ from core.configuration.models import LLMConfig
 from core.loop import LoopEvent, LoopResult
 from core.memory import TranscriptStore
 from core.ui import Event, UIAPILayer, UiError, UiErrorCode
-from core.ui.repl import _format_event, barge_in_event, build_app, format_task_event, repl_loop
+from core.ui.repl import (
+    _event_delta,
+    _format_event,
+    barge_in_event,
+    build_app,
+    format_task_event,
+    repl_loop,
+)
 
 
 class RecordingLoop:
@@ -102,13 +109,25 @@ def test_format_event_strips_scaffolding() -> None:
     """REPL 只回显回复文本与错误，剥离 session/trace/round/LoopResult 脚手架。"""
     assert _format_event(Event("session.created", {"session_id": "s", "trace_id": "t"})) is None
     assert _format_event(Event("loop.action", {"round": 1, "failed": False})) is None
-    assert _format_event(Event("loop.result", {"text": "你好"})) == "你好"
-    assert _format_event(Event("loop.result", {"reply": "echo:hi"})) == "echo:hi"
+    assert _format_event(Event("loop.delta", {"text": "你好"})) == "你好"
     assert _format_event(Event("loop.result", LoopResult(reply="hi", trace_id="t"))) is None
     assert _format_event(Event("loop.error", {"reason": "LOOP_LIMIT_EXCEEDED"})) == (
         "[loop.error] LOOP_LIMIT_EXCEEDED"
     )
     assert _format_event(Event("error", {"code": "X", "message": "m"})) == "[X] m"
+
+
+def test_event_delta_only_accepts_dedicated_type() -> None:
+    """增量分流**只认类型**（change `0132` / ADR-0125 / 账本 E65）。
+
+    增量与终态不再共型：`loop.delta` 的 dict 载荷取 `text`；`loop.result` 一律不是增量
+    （即便载荷恰为 dict —— 该共型正是 Web 渲染破碎的根因）。
+    """
+    assert _event_delta(Event("loop.delta", {"text": "增量"})) == "增量"
+    assert _event_delta(Event("loop.delta", {"text": ""})) is None
+    assert _event_delta(Event("loop.delta", LoopResult(reply="x", trace_id="t"))) is None
+    assert _event_delta(Event("loop.result", {"text": "旧共型"})) is None
+    assert _event_delta(Event("loop.action", {"round": 1})) is None
 
 
 def test_textual_app_headless_smoke() -> None:

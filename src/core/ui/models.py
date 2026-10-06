@@ -14,7 +14,10 @@ from typing import Any
 @dataclass
 class Event:
     """流式事件：type 取 session.created / loop.perception / loop.reasoning /
-    loop.action / loop.result / loop.error 之一。"""
+    loop.action / loop.delta / loop.result / loop.error 之一。
+
+    ``loop.delta`` 为**流式增量**专类型（载荷 ``{"text": …}``），与**终态** ``loop.result``
+    （载荷完整结果）分型（change `0132` / ADR-0125 / 账本 E65）。"""
 
     type: str
     payload: Any = None

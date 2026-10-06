@@ -67,7 +67,8 @@ class UIAPILayer:
 | `loop.action` | turn_id, action | 回合推进（step_completed 映射，既有契约） |
 | `loop.action_started` | round, tool_id, args | 工具动作开工（⏺ 动作行，TUI 折叠块呈现） |
 | `loop.action_completed` | round, tool_id, ok, duration_ms, output | 工具动作收尾（标题落 ✓/✗+耗时，展开含输出节选） |
-| `loop.result` | turn_id, result | 结果回传 |
+| `loop.delta` | text | **流式增量**（`reply_delta` 映射；**专类型**，change `0132`/ADR-0125）—— 消费方按类型分流后以**文本追加**呈现（TUI 落 live 尾部、Web 原地拼接），**不**逐帧新建行 |
+| `loop.result` | turn_id, result | **终态**结果回传（`loop_finished` 映射，载荷 `LoopResult`；**不**承载增量） |
 | `loop.error` | turn_id, error | 结构化错误（不中断循环） |
 | `task.*` | 编排事件载荷 | 任务进度（task_started / plan_ready / wave_started / subtask_started / subtask_progress / subtask_completed / task_checkpoint / task_finished / task_failed，type 前缀 `task.`；TUI 时间线呈现：任务/波次浅灰单行，子任务 Collapsible 折叠块（标题含运行态徽标 `⟳`，收尾落 ✓/✗），展开含验收/**里程碑**（`subtask_progress` 逐条追加，工具类复用动作行**友好名**，见下注）/判定/结果节选；Web 任务区呈现见 §1.2 末） |
 

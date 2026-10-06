@@ -724,6 +724,18 @@
 
 ---
 
+## 48. 流式增量帧专类型（TC-DELTA，change `0132`／ADR-0125，账本 E65）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-DELTA-01 | ui/spec.md「Web 界面访问」（增量帧与终态帧不共型） | loop 产 `reply_delta`×2 + `loop_finished`，经 `UIAPILayer.run_loop` 收集 | 事件类型序 = [`session.created`, **`loop.delta`**, **`loop.delta`**, `loop.result`]；增量载荷恒 `{"text": …}`，终态载荷非 dict（锚点：`tests/test_ui.py::test_reply_delta_maps_to_dedicated_type`） |
+| TC-DELTA-02 | 同上（分流只看类型） | `_event_delta` 喂 `loop.delta` / `loop.result`（dict 载荷）/ 空文本 / 非 dict 载荷 | 仅 `loop.delta` 取 `text`；`loop.result` 即便载荷为 dict 也**不是**增量（旧共型正是 Web 破碎根因）（锚点：`tests/test_repl.py::test_event_delta_only_accepts_dedicated_type`） |
+| TC-DELTA-03 | 同上（REPL 只回显增量与错误） | `_format_event` 喂 `loop.delta` / 终态 `LoopResult` | 增量 → 文本；终态对象 → `None`（脚手架不外显）（锚点：`tests/test_repl.py::test_format_event_strips_scaffolding`） |
+| TC-DELTA-04 | 同上（SSE 线上帧类型） | `POST /run` 走 SSE（loop 产增量 + 终态） | 响应体同时含 `loop.delta` 与 `loop.result` 两类帧（锚点：`tests/test_serve.py::test_run_sse_streams_result`） |
+| TC-DELTA-05 | 同上（**手工验收**，前端无 JS 测试） | 浏览器打开 SPA 发一轮对话（后端流式分片） | 增量**逐段追加在同一条回复**中（不逐帧新建行、不出现 `{"text":…}` 字面量），终态收口为完整回复（`frontend/src/views/Chat.svelte`；无自动化门禁） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

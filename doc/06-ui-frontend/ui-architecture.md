@@ -119,6 +119,10 @@ core-agent 内核（loop / memory / tool-use / mcp / evolution / permission / �
 - 后端：FastAPI 暴露 loop/session/memory/tools 接口 + SSE 流式（复用内核）。
 - 前端：单一 SPA（推荐 Svelte 或 React），chat / 会话管理 / 用量 / 设置（LLM API 配置）页。
 - 参考：Open WebUI 的同栈架构成熟经验。
+- **流式增量帧（change `0132`）**：SSE 把**增量**（`loop.delta`，载荷 `{text}`）与**终态**
+  （`loop.result`，载荷完整结果）**分型**推送 —— chat 页对增量帧**尾部追加**（首帧新建行、其后
+  原地拼接、终态帧原位收口），与 TUI `_show_delta` / `_flush_live` 同语义；**不**逐帧新建行、
+  **不**把载荷序列化展示（旧共型曾令增量帧渲染成 JSON 字面量）。
 - **任务区（change `0122`）**：`POST /task` 以 SSE 外发 `task.*` 进度事件（与 CLI `/task` 同编排器同事件面）；
   SPA 右栏在**会话列表之上**新增**任务区**块 —— 二者**并列不混池**（任务 = **在途**运行态、会话 = **持久**记录），
   子任务行呈现标题 + 状态徽标 + 可展开详情；任务收尾（`task_finished` / `task_failed`）即**移出在途列表**

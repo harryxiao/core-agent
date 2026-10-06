@@ -67,13 +67,14 @@ def _error_event(err: UiError) -> Event:
 
 
 def _event_delta(event: Event) -> str | None:
-    """loop.result 增量载荷（流式 reply_delta）→ 增量文本；其余事件返回 None。
+    """``loop.delta`` 增量帧 → 增量文本；其余事件返回 None。
 
-    Event 层流式增量与终态共用 ``loop.result`` 类型：dict 载荷带 ``text`` 即增量，
-    终态为 LoopResult 对象（非 dict），由 ``_format_event`` / ``_flush_live`` 收口。
+    增量与终态**分属两型**（change `0132` / ADR-0125 / 账本 E65）：``loop.delta`` 载荷恒为
+    ``{"text": …}``，终态 ``loop.result`` 载荷为 LoopResult 对象（非 dict），由
+    ``_format_event`` / ``_flush_live`` 收口 —— 分流**只看类型**，不再靠载荷形状。
     """
     payload = event.payload
-    if event.type != "loop.result" or not isinstance(payload, dict):
+    if event.type != "loop.delta" or not isinstance(payload, dict):
         return None
     data = cast(dict[str, object], payload)
     return str(data.get("text", "")) or None
@@ -156,7 +157,7 @@ def format_action_event(kind: str, payload: object) -> str | None:
 def _format_event(event: Event) -> str | None:
     """Event → 单行文本；None 表示内部脚手架事件（会话/回合/结果对象），不显示。
 
-    只回显交互内容：错误（error/loop.error）与回复文本（loop.result 的 text/reply），
+    只回显交互内容：错误（error/loop.error）与增量文本（loop.delta 的 text），
     剥离 session_id/trace_id/round/LoopResult 等后端事件。
     """
     payload = event.payload
@@ -168,9 +169,9 @@ def _format_event(event: Event) -> str | None:
     if event.type == "loop.error":
         data = cast(dict[str, object], payload) if isinstance(payload, dict) else {}
         return f"[loop.error] {data.get('reason', '')}"
-    if event.type == "loop.result" and isinstance(payload, dict):
+    if event.type == "loop.delta" and isinstance(payload, dict):
         data = cast(dict[str, object], payload)
-        text = data.get("text") or data.get("reply")
+        text = data.get("text")
         return str(text) if text else None
     return None
 

@@ -1458,9 +1458,9 @@ def _run(args: argparse.Namespace) -> int:
 async def _stream(api: UIAPILayer, session_id: str, prompt: str) -> None:
     async for event in api.run_loop(session_id, prompt):
         payload = event.payload if event.payload is not None else ""
-        # 增量 reply_delta（Event 层映射为 dict 载荷的 loop.result）不逐行打印，
-        # 完整回复由终态 LoopResult 事件携带
-        if event.type == "loop.result" and isinstance(payload, dict):
+        # 增量帧（Event 层映射为专类型 loop.delta，change `0132` / ADR-0125）不逐行打印，
+        # 完整回复由终态 LoopResult 事件（loop.result）携带
+        if event.type == "loop.delta":
             continue
         if event.type.startswith("loop.action_"):  # 工具动作行（与 TUI 同构单行）
             line = format_action_event(event.type.removeprefix("loop."), payload)

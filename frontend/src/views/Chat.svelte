@@ -45,9 +45,25 @@
       for await (const ev of runStream(sessionId, text)) {
         if (ev.type === "error") {
           error = `${ev.payload.code}: ${ev.payload.message}`;
+        } else if (ev.type === "loop.delta") {
+          // 流式增量（专类型，载荷 {text}）：追加到**同一条**回复尾部 —— 首帧新建行，
+          // 其后原地拼接（不逐帧新建行、不渲染 JSON 载荷）。与 TUI _show_delta 同语义。
+          const delta = String(ev.payload.text ?? "");
+          const last = lines[lines.length - 1];
+          if (last && last.role === "agent" && last.streaming) {
+            lines = [...lines.slice(0, -1), { ...last, text: last.text + delta }];
+          } else {
+            lines = [...lines, { role: "agent", text: delta, streaming: true }];
+          }
         } else if (ev.type === "loop.result" || ev.type === "loop.error") {
+          // 终态帧：若本轮有流式行则**原位收口**为完整回复（不重复一行），否则新建行。
           const reply = ev.payload.reply ?? ev.payload.message ?? JSON.stringify(ev.payload);
-          lines = [...lines, { role: "agent", text: String(reply) }];
+          const last = lines[lines.length - 1];
+          if (last && last.role === "agent" && last.streaming) {
+            lines = [...lines.slice(0, -1), { role: "agent", text: String(reply) }];
+          } else {
+            lines = [...lines, { role: "agent", text: String(reply) }];
+          }
         }
       }
     } catch (exc) {
