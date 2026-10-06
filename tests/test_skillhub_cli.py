@@ -118,6 +118,30 @@ def test_skill_remove_uses_persisted_library(capsys: pytest.CaptureFixture[str])
         _reopen_library().lookup(_SKILL_ID)
 
 
+def test_skill_activate_makes_draft_routable_across_processes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """draft 死胡同的出口（E72）：安装落 draft → `skill activate` 迁 active 且跨进程可见。"""
+    monkeypatch.setattr("core.entry._build_skillhub_client", _market_client)
+    assert main(["skill", "install", _SKILL_ID]) == 0
+    capsys.readouterr()
+    assert _reopen_library().lookup(_SKILL_ID).status == "draft"
+
+    assert main(["skill", "activate", _SKILL_ID]) == 0
+    assert "active" in capsys.readouterr().out
+    assert _reopen_library().lookup(_SKILL_ID).status == "active"
+
+
+def test_skill_activate_unregistered_skill_reports_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """启用未注册技能：退出码非零，且不因此创建技能。"""
+    assert main(["skill", "activate", _SKILL_ID]) == 1
+    assert "技能未注册" in capsys.readouterr().err
+    with pytest.raises(KeyError):
+        _reopen_library().lookup(_SKILL_ID)
+
+
 # ---- 供给侧接线（change 0105） ----
 
 

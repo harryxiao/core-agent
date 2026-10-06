@@ -42,7 +42,7 @@
 - **THEN** 返回 `SOURCE_NOT_FOUND`，不 fallback 到未知源
 
 ### Requirement: 签名校验与可信下载
-系统 SHALL 在下载技能前校验签名与来源可信度；下载的技能以 draft 状态注册，不自动启用。生产触达点 SHALL 为 CLI `skill install <skill_id> [--source S]`，经 SkillHubClient 下载（先校验后注册）；**CLI 侧技能库 SHALL 与组合根同源**（同一 `$CORE_STATE_DIR/skills.json`），使下载的 draft 技能可被后续会话见到；校验失败 SHALL 拒绝且不落盘。CLI 侧的技能体拉取 SHALL 来自**本地市场制品库**（本地市场发布时入库的制品；离线、零凭据）；远端市场拉取仍为**凭证半**，未接入时 SHALL 如实报错，SHALL NOT 静默成功。
+系统 SHALL 在下载技能前校验签名与来源可信度；下载的技能以 draft 状态注册，不自动启用 —— 下载 SHALL NOT 使技能直接可路由，SHALL 经 skills 规格定义的**显式启用路径**（`draft → active`）方可进入路由匹配。生产触达点 SHALL 为 CLI `skill install <skill_id> [--source S]`，经 SkillHubClient 下载（先校验后注册）；**CLI 侧技能库 SHALL 与组合根同源**（同一 `$CORE_STATE_DIR/skills.json`），使下载的 draft 技能可被后续会话见到；校验失败 SHALL 拒绝且不落盘。CLI 侧的技能体拉取 SHALL 来自**本地市场制品库**（本地市场发布时入库的制品；离线、零凭据）；远端市场拉取仍为**凭证半**，未接入时 SHALL 如实报错，SHALL NOT 静默成功。
 
 #### Scenario: 签名校验失败拒绝
 - **GIVEN** 下载技能的签名不匹配

@@ -220,6 +220,8 @@ def _add_skill_parser(sub: Any) -> None:
     install.add_argument("--source", metavar="S")
     remove = sk_sub.add_parser("remove", help="卸载技能（= plugin uninstall）")
     remove.add_argument("name")
+    activate = sk_sub.add_parser("activate", help="显式启用 draft 技能（draft → active，方可路由）")
+    activate.add_argument("name")
     publish = sk_sub.add_parser("publish", help="发布本地技能到市场（进入 pending 审核）")
     publish.add_argument("name")
     publish.add_argument("--source", metavar="S")
@@ -695,7 +697,7 @@ def _plugin(args: argparse.Namespace) -> int:
     return 0
 
 
-def _skill(args: argparse.Namespace) -> int:
+def _skill(args: argparse.Namespace) -> int:  # noqa: PLR0911 — CLI 分支各自退出码
     """技能市场：search/install 走 SkillHubClient、publish/review 走 SkillPublisher。
 
     市场目录与制品库均落盘于 `$CORE_STATE_DIR`（发布 / 审核 / 搜索 / 安装跨进程可见）；
@@ -709,6 +711,8 @@ def _skill(args: argparse.Namespace) -> int:
         return _skill_install(_build_skillhub_client(library), args.name, source=source)
     if args.skill_cmd == "remove":
         return _skill_remove(library, args.name)
+    if args.skill_cmd == "activate":
+        return _skill_activate(library, args.name)
     if args.skill_cmd == "publish":
         return _skill_publish(_build_publisher(), library, args.name, source=source)
     if args.skill_cmd == "review":
@@ -918,6 +922,17 @@ def _skill_remove(library: SkillLibrary, name: str) -> int:
         print(f"技能未注册: {name}", file=sys.stderr)
         return 1
     print(f"已卸载技能 {name}")
+    return 0
+
+
+def _skill_activate(library: SkillLibrary, name: str) -> int:
+    """显式启用 draft 技能（E72 死胡同的出口）：落 active 后即进路由；未注册退出码非零。"""
+    try:
+        skill = library.activate(name)
+    except KeyError:
+        print(f"技能未注册: {name}", file=sys.stderr)
+        return 1
+    print(f"已启用技能 {skill.skill_id}（active，可参与路由）")
     return 0
 
 

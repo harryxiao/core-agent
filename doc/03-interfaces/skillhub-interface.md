@@ -32,10 +32,12 @@ class SkillHubClient:
         """校验签名 → SkillLibrary.register(status="draft")；签名失败抛 SIGNATURE_INVALID。"""
 ```
 
-下载的初始状态恒为 `draft`，**不自动启用**；需本地显式激活后才进入可用技能集。
+下载的初始状态恒为 `draft`，**不自动启用**；需本地显式激活后才进入可用技能集 —— 该激活路径由
+`SkillLibrary.activate`（CLI `skill activate <name>`）提供（change `0133` / ADR-0126）。
 
 **生产触达点**（`src/core/entry.py`）：`skill search <query> [--source S]` → `SkillHubClient.search`（输出版本化
-元数据，不拉技能体）；`skill install <name> [--source S]` → `SkillHubClient.download`（先签名校验后注册 draft）。
+元数据，不拉技能体）；`skill install <name> [--source S]` → `SkillHubClient.download`（先签名校验后注册 draft）；
+`skill activate <name>` → `SkillLibrary.activate`（draft → active，方进路由）。
 `SkillHubError`（源不可达 / 源不存在 / 签名失败 / 市场未接）归一为 stderr + 退出码 1。
 
 **技能库与组合根同源**：CLI 侧经 `entry._build_skill_library()` 使用 `SkillLibrary(path=$CORE_STATE_DIR/skills.json)`

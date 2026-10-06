@@ -3426,6 +3426,37 @@
 
 ---
 
+## ADR-0126：技能 draft → active 走显式启用路径（change 0133 / phase-34 E72）
+
+- **背景**：`coding-plan/phase-34.md` 登记的 **E72**（中，用户可见）。技能安装链路**只进不出**：
+  `skillhub/client.py:66` 下载校验通过后恒置 `status="draft"`，`skills/router.py:98` 候选集只放行
+  `active` / `gray`，而全仓**没有** `draft → active` 的迁移路径（`SkillLibrary` 只有
+  register / lookup / remove / check_preconditions）。CLI `skill install` 打印「需本地显式激活后
+  可用」，却**没有**任何命令能激活 —— 装完的技能永不被路由，是死胡同。规格侧同此痕迹：
+  `skillhub/spec.md` 的「下载默认 draft」Scenario 与 `skillhub-interface.md:35` 都写「需显式激活
+  后可用」，`SkillHubErrorCode.SKILL_NOT_ACTIVE` 亦指向一扇不存在的门。
+- **决策①：启用是 `SkillLibrary` 的一等 API（`activate(skill_id, *, effect_tracker=None)`），
+  不新造组件。** 状态迁移与落盘本就是技能库的职责（register / remove 都在此）；放别处会绕开
+  `_persist()`，启用跨进程即失效。
+- **决策②：幂等 + 未知 id 抛 `KeyError`（不静默创建）。** 已 `active` 再启用以 no-op 返回，不重复
+  登记效应；未知 id 沿用 `lookup` / `remove` 的 `KeyError` 口径，**不扩错误码表**（`SKILL_NOT_ACTIVE`
+  是审核路径的码，`publisher.py:70` 在用，语义不同，勿混用）。
+- **决策③：路由放行集**逐字不变**（仍 `active` / `gray`）。** 本 change 只补**迁移路径**，不扩大
+  放行集、不自动启用 —— 否则「显式启用」这一步等于取消（安全默认：外来技能须经本地显式动作方可
+  被路由）。SOP 提炼仍走自己的 `status="active"` 直发（维度1 低风险自动发布），不经过本路径。
+- **决策④：可逆性走既有接缝（注入 `effect_tracker` 才登记，未注入不记）。** 与 `SopExtractor` 的
+  `_track` / `_undo` 同型：效应 `op="skills.activate"`，undo 恢复启用前状态；CLI 侧无追踪器 ⇒
+  不登记（零行为变化）。
+- **已知局限**：① 启用**只**做 draft→active；`deprecated` 技能被启用会置回 `active`（undo 记录
+  原状态故可回滚），「降级后能否复活」的语义未在本 change 收敛（无生产调用方，留待需要时立规）。
+  ② 启用**不做**签名/可信度的再校验 —— 校验发生在下载期（`TrustVerifier`），启用作用于**已在本地
+  库中**的技能，重启后无从复验（与 register 的既有口径一致）。
+- **规格**：`skills`（**ADDED**「技能启用（draft → active）」—— 入口 / 放行集不变 / 幂等 / 未知 id
+  拒绝 / 可逆 + **6** Scenario）＋ `skillhub`（**MODIFIED**「签名校验与可信下载」—— 把「需显式
+  激活后可用」的悬空指认接到启用路径上，4 Scenario 逐字保留）。**非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3546,3 +3577,4 @@
 | ADR-0123 | 03-interfaces/configuration-interface.md, 02-modules/configuration.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0124 | 03-interfaces/memory-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0125 | 03-interfaces/ui-interface.md, 06-ui-frontend/ui-architecture.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0126 | 03-interfaces/skills-interface.md, 02-modules/skills.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

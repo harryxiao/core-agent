@@ -736,6 +736,20 @@
 
 ---
 
+## 49. 技能 draft → active 启用路径（TC-SKACT，change `0133`／ADR-0126，账本 E72）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-SKACT-01 | skills/spec.md「技能启用」（draft 不进入路由 / 启用后进入路由） | 注册一条 `draft` 技能（`task_types` 与任务词法命中），先路由再启用后路由 | 启用**前** `match` 返回空（放行集仍 `active`/`gray`）；启用**后**命中该技能（锚点：`tests/test_skills.py::test_draft_not_routed_until_activated`） |
+| TC-SKACT-02 | 同上（重复启用幂等） | 对同一技能连续两次 `activate(effect_tracker=…)` | 状态 `active`；该 trace 账上**只有一条**启用效应（锚点：`::test_activate_is_idempotent_and_tracks_once`） |
+| TC-SKACT-03 | 同上（未知 id 拒绝） | `activate("skills.demo.nope")` | 抛 `KeyError`，且技能库**不**新增技能（锚点：`::test_activate_unknown_skill_raises_key_error`） |
+| TC-SKACT-04 | 同上（启用落盘） | 注入 `path` 启用后以同路径新建技能库 | 新实例读回 `status="active"`（锚点：`::test_activate_persists_across_instances`） |
+| TC-SKACT-05 | 同上（启用效应可回滚） | 注入 tracker 启用 → 回滚该 trace | 状态恢复为 `draft`（重复回滚不报错）（锚点：`::test_activate_effect_rollback_restores_draft`） |
+| TC-SKACT-06 | skillhub/spec.md「签名校验与可信下载」（下载恒 draft，须显式启用方可路由） | CLI `skill install`（落 draft）→ `skill activate`，每步经**重开落盘库**断言 | install 后另一进程见 `draft`；activate 后另一进程见 `active`（锚点：`tests/test_skillhub_cli.py::test_skill_activate_makes_draft_routable_across_processes`） |
+| TC-SKACT-07 | 同上（未注册技能拒绝） | CLI `skill activate <未注册 id>` | 退出码非零、stderr 含「技能未注册」，且未因此创建技能（锚点：`::test_skill_activate_unregistered_skill_reports_error`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

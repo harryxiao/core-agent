@@ -76,6 +76,59 @@ def test_check_preconditions() -> None:
     assert lib.check_preconditions(s, {}) is False
 
 
+# ---- draft 启用（E72 / change 0133）----
+
+# 启用效应的 trace（与 ``skills.library._ACTIVATE_TRACE`` 同值：回滚按此 trace 分组）
+_ACTIVATE_TRACE = "skills.activate"
+
+
+def _draft_skill(skill_id: str = "skills.demo.greet") -> Skill:
+    return Skill(skill_id=skill_id, description="greet 问候", task_types=["greet"], status="draft")
+
+
+def test_draft_not_routed_until_activated() -> None:
+    lib = SkillLibrary()
+    lib.register(_draft_skill())
+    router = SkillRouter(lib)
+    assert router.match("greet") == [], "draft 不进候选集（放行集仍 active/gray）"
+    lib.activate("skills.demo.greet")
+    assert [m.skill.skill_id for m in router.match("greet")] == ["skills.demo.greet"]
+
+
+def test_activate_is_idempotent_and_tracks_once() -> None:
+    lib = SkillLibrary()
+    lib.register(_draft_skill())
+    tracker = EffectTracker()
+    lib.activate("skills.demo.greet", effect_tracker=tracker)
+    lib.activate("skills.demo.greet", effect_tracker=tracker)
+    assert lib.lookup("skills.demo.greet").status == "active"
+    assert len(tracker.audit(_ACTIVATE_TRACE)) == 1, "重复启用不重复登记效应"
+
+
+def test_activate_unknown_skill_raises_key_error() -> None:
+    lib = SkillLibrary()
+    with pytest.raises(KeyError):
+        lib.activate("skills.demo.nope")
+    assert lib.all_skills() == [], "未知 id 不静默创建技能"
+
+
+def test_activate_persists_across_instances(tmp_path: Path) -> None:
+    path = tmp_path / "skills.json"
+    lib = SkillLibrary(path=path)
+    lib.register(_draft_skill())
+    lib.activate("skills.demo.greet")
+    assert SkillLibrary(path=path).lookup("skills.demo.greet").status == "active"
+
+
+def test_activate_effect_rollback_restores_draft() -> None:
+    lib = SkillLibrary()
+    lib.register(_draft_skill())
+    tracker = EffectTracker()
+    lib.activate("skills.demo.greet", effect_tracker=tracker)
+    tracker.rollback(_ACTIVATE_TRACE)
+    assert lib.lookup("skills.demo.greet").status == "draft"
+
+
 # ---- 灰度 / A/B ----
 
 

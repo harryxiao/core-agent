@@ -37,7 +37,16 @@ class SkillLibrary:
 
     def check_preconditions(self, skill: Skill, ctx: dict) -> bool:
         """前置条件不满足返回 False（PRECONDITION_FAILED）。"""
+
+    def activate(self, skill_id: str, *, effect_tracker=None) -> Skill:
+        """显式启用（draft → active，change 0133）；未知 id 抛 KeyError；已 active 幂等 no-op。"""
 ```
+
+| 维度 | 口径 |
+|---|---|
+| **启用放行集** | 路由候选集仍只含 `active` / `gray` —— `activate` **只补迁移路径**，不扩大放行集、不自动启用（下载恒 draft） |
+| **启用可逆** | 注入 `effect_tracker` 时登记 `op="skills.activate"`（undo 恢复启用前状态）；未注入不记（同 `SopExtractor` 接缝口径） |
+| **生产触达点** | CLI `skill activate <name>`（作用于与组合根同源的持久库，故跨进程可见） |
 
 ---
 

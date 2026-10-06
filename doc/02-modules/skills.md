@@ -34,6 +34,10 @@ SkillManager（L3）
 - 技能按领域分类（数据分析、文档生成、代码调试…），支持层级索引。
 - **可落盘**（0050）：注册表可注入 `path` 落盘为单文件 JSON 并在启动恢复（缺省纯内存）；
   同族落盘面还有反馈统计、SOP 样本、灰度·A-B 状态——见 ADR-0053。
+- **显式启用**（`0133`／ADR-0126／账本 E72）：`SkillLibrary.activate(skill_id)` 把 `draft` 迁
+  `active`（CLI `skill activate <name>`）—— 此前市场下载恒落 draft 却**无路可用**（路由放行集
+  只含 `active`/`gray`），是死胡同。启用**幂等**（已 active 为 no-op）、未知 id 抛 `KeyError`、
+  注入追踪器时登记可逆效应；**不自动启用**、**不扩大路由放行集**。
 
 ### 3.2 技能版本管理
 

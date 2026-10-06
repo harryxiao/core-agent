@@ -31,7 +31,7 @@
 | **E69** | 低 | `executor.commit` **不校验 `record.gated`**（fail-open 崩溃窗口） | `evolution/models.py:80-81` 明写「`commit` 只认前者（`gated=True`）为真者」；`evolution/executor.py:183` 走 `staged()`（`:215-218` **仅滤 `committed`**），`:178-211` **从不读 `gated`**；全仓 `gated` **只有写**（`:171/:205`）**无读**。窗口：门禁失败回滚后、`clear_implementation` 前**崩溃** ⇒ 重启后 `commit` 可放行**未过门**制品 ⇒ **已落地（change `0127` / ADR-0120）** | fail-open（潜伏） | ✅ |
 | **E70** | 低 | composition `apply_patch` 接受 **bool** 当 generation | `composition/resolver.py:129` `isinstance(override, int)`——**bool ⊂ int**，YAML `true` 生成 `PluginRef(id, True)`（`PluginRef(plugin_id, override)` `:134`） | 类型边界 | ✅ |
 | **E71** | 中 | **L1 索引是空壳**（`read` 从不查 `_index`，全库扫描） | `memory/store.py:110-115` `read()` 用 `backend.search(query)` **全扫** + `_hot`，**从不碰 `_index`**；`:191-192` `index()` 仅调 `list_index()`。规格 `memory/spec.md:26-29` 要求「命中 L1 索引 → 非全库扫描」 | 规格漂移（性能面） | ✅ |
-| **E72** | 中 | 技能安装后 **`draft` 死胡同**（装完**永不被路由**） | `skillhub/client.py:66` 下载后 `skill.status = "draft"`；`skills/router.py:98` 只放行 `s.status in ("active","gray")`；**无 draft→active 迁移路径** | 设计缺失（链路断裂） | ✅ |
+| **E72** | 中 | 技能安装后 **`draft` 死胡同**（装完**永不被路由**） | `skillhub/client.py:66` 下载后 `skill.status = "draft"`；`skills/router.py:98` 只放行 `s.status in ("active","gray")`；**无 draft→active 迁移路径** ⇒ **已落地（change `0133` / ADR-0126）：`SkillLibrary.activate(skill_id, *, effect_tracker=None)`（幂等 / 未知 id 抛 `KeyError` / 可选可逆效应）+ CLI `skill activate <name>`；路由**放行集不变**（仍 active/gray），不自动启用** | 设计缺失（链路断裂） | ✅ |
 | **E73** | 低 | `TimeTravel.rollback` **不可达** | 检查点**持久化**在用（`--resume` 依赖，E12 指此路径），但**时间旅行回滚**无任何生产调用方（见 §5 订正） | 设计缺失（死面） | ✅ |
 
 ---
@@ -174,8 +174,7 @@
 | `0130` | E68 | ✅ 已落地（2026-10-06） | ADR-0123 |
 | `0131` | E66 + E78 | ✅ 已落地（2026-10-06） | ADR-0124 |
 | `0132` | E65 | ✅ 已落地（2026-10-06） | ADR-0125 |
-| `0132` | E65 | ⏳ 待实施 | — |
-| `0133` | E72 | ⏳ 待实施 | — |
+| `0133` | E72 | ✅ 已落地（2026-10-06） | ADR-0126 |
 | `0134` | E80 | ⏳ 待实施 | — |
 | `0135` | E76 | ⏳ 待实施 | — |
 | `0136` | E75 + E70 | ⏳ 待实施 | — |
