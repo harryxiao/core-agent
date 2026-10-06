@@ -874,6 +874,20 @@
 
 ---
 
+## 59. bundle 内容哈希口径（TC-BUNDLE，change `0143`／ADR-0135，账本 E84-a）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-BUNDLE-01 | composition/spec.md「bundle 分发格式」（哈希 SHALL 由制品内容派生，元信息不参与） | 两份清单**内容相同**、清单名与 `name` 皆不同 ⇒ `load_manifest` | 两者 `hash` 相同，且等于 `pack(同内容)` 的哈希（锚点：`test_composition.py::test_load_manifest_hash_derives_from_content_not_meta`） |
+| TC-BUNDLE-02 | 同上（**内容不同 ⇒ 哈希不同**；规范形为**有序**拼接） | 改任一 `generation`；以及同项换序 | 哈希改变（锚点：`::test_load_manifest_hash_changes_with_content` / `::test_load_manifest_order_is_significant`） |
+| TC-BUNDLE-03 | 同上（清单缺失 / 非法 ⇒ 结构化拒绝，SHALL NOT 退化） | 路径不存在 / 非法 JSON / 顶层非对象 / `plugin_refs` 非列表 / 引用项缺 `plugin_id`·`generation`（6 例参数化） | `CompositionError` 且 `code is BUNDLE_INVALID`（锚点：`::test_load_manifest_invalid_rejected`） |
+| TC-BUNDLE-04 | 同上 + 规格「发布入口」（CLI 读制品清单） | `main(["release","publish", <清单路径>])` | 退出码 0 + 输出「已发布版本 <bundle 名>」（锚点：`test_entry.py::test_release_publish`） |
+| TC-BUNDLE-05 | Scenario「同内容同哈希、异内容异哈希」 | 连发三条清单（两条同内容异名、一条异内容）后读 `releases.json` | 同内容两条 `hash` 相等；异内容 `hash` 不同（锚点：`::test_release_publish_hash_is_content_addressed`） |
+| TC-BUNDLE-06 | Scenario「制品清单缺失不产假账」 | 缺清单发布；以及先成功一条再用坏清单撞 | 退出码 1 + stderr 含「发布失败」；`releases.json` **不存在 / 逐条不变**（锚点：`::test_release_publish_missing_manifest_rejected` / `::test_release_publish_invalid_manifest_keeps_history`） |
+| TC-BUNDLE-07 | 同上（清单可选 `name`；元信息不参与哈希） | 清单不声明 `name` | 取清单文件名的 stem（锚点：`::test_load_manifest_name_defaults_to_file_stem`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

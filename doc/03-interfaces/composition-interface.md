@@ -20,6 +20,8 @@ class BundlePackager(Plugin):
         """把一组插件打包为跨部署可复用的 bundle。"""
     def unpack(self, bundle: Bundle) -> list[PluginRef]:
         """解包 bundle，校验版本 / 哈希后返回插件引用。"""
+    def load_manifest(self, location: str) -> Bundle:
+        """读 bundle 制品清单（JSON：plugin_refs / 可选 name）→ Bundle；哈希走 pack 单一真源。"""
 ```
 
 ---
@@ -84,6 +86,12 @@ class BundleDistributor:
         """按名/版本拉取 bundle，校验哈希。"""
 ```
 
+**发布入口（CLI）**：`core-agent release publish <bundle-manifest>` —— 位置参数是 bundle **制品清单**（JSON）：
+`{"plugin_refs": [{"plugin_id": "...", "generation": 1}, ...], "name": "<可选，缺省取清单文件名的 stem>"}`。
+清单经 `BundlePackager.load_manifest` 读入（内容哈希走 `pack` 单一真源）后交 `ReleaseManager.publish`
+登记为 `ReleaseInfo(version=<bundle 名>, hash=<内容哈希>)`。清单缺失 / 非法 ⇒ `BUNDLE_INVALID`
+（退出码 1）且**发布记录不变** —— 见「约束」下条（change `0143` / 账本 E84-a）。
+
 ---
 
 ## 5. 约束
@@ -92,6 +100,9 @@ class BundleDistributor:
 - 解析顺序确定：bundle 层叠 → patch.yml 覆盖，同名项由 patch.yml 覆盖。
 - profile 引用不存在的插件 → 解析失败并报缺失插件名，不静默跳过。
 - bundle 哈希 / 版本不符 → 拒绝引入，避免脏分发。
+- bundle 哈希**由制品内容派生**（`plugin_id@generation` 有序逐项以 `|` 连接取 SHA-256；实现单源
+  `packager.content_hash`）：**内容相同 ⇒ 哈希相同，内容不同 ⇒ 哈希不同**；版本名 / 清单文件名等
+  **元信息**不参与哈希（元信息异而内容同者，哈希 SHALL 相同）—— change `0143` / 账本 E84-a。
 - 卸载 patch.yml → 回退到覆盖前状态，可逆：`resolve` 的结果携带覆盖前分层结果（`layered`），
   `revert(resolved)` 返回**新**结果（`plugins = layered`、`overrides` 清空）且**幂等**，不改实参（change `0136`）。
 - patch 覆盖值须为整数 generation；**布尔**（YAML `true` / `false`）按 `PATCH_CONFLICT` 拒绝

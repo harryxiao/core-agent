@@ -38,7 +38,7 @@
 | 会话/运行 | session create + run | L1 UIAPILayer | 命令面核心锚点 |
 | 记忆维护 | memory maintain | L2 memory | 补（change `0049`：一次性压实 + 遗忘） |
 | 进化冷路径 | evolve run | L4 evolution | 补（change `0051`：一次性强制跑一轮冷路径） |
-| 分发 | release publish/upgrade/rollback | L5 ReleaseManager | 补 |
+| 分发 | release publish/upgrade/rollback | L5 ReleaseManager | 补（`publish` 入参为 bundle 制品清单，change `0143`） |
 | 宠物 | pet <verb> | 编排层扩展 pet-mode | 补 M6（三入口之一，子动词面见 pet-mode-interface §3） |
 | 神兽 | summon <beast> [task] / recall <beast> | 编排层扩展 beast-mode | 补 M7（前台重大任务，三入口见 beast-mode spec） |
 
@@ -113,7 +113,7 @@
 
 | # | 命令 | 语义 | 对应方法 |
 |---|---|---|---|
-| 27 | `core-agent release publish <bundle>` | 发布 bundle | ReleaseManager.publish() |
+| 27 | `core-agent release publish <bundle-manifest>` | 发布 bundle（读**制品清单**：`ReleaseInfo.hash` 经 composition 真口径由制品内容派生，change `0143` / 账本 E84-a） | ReleaseManager.publish() + BundlePackager.load_manifest() |
 | 28 | `core-agent release upgrade <version>` | 升级 | ReleaseManager.upgrade() |
 | 29 | `core-agent release rollback` | 回滚 | ReleaseManager.rollback() |
 

@@ -482,9 +482,77 @@ def test_sessions_empty(capsys: pytest.CaptureFixture[str]) -> None:
     assert "无活跃会话" in capsys.readouterr().out
 
 
-def test_release_publish(capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["release", "publish", "bundle-v1"]) == 0
+def _write_bundle_manifest(tmp_path, name: str, refs: list[tuple[str, int]]) -> pathlib.Path:
+    path = tmp_path / f"{name}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "name": name,
+                "plugin_refs": [{"plugin_id": pid, "generation": gen} for pid, gen in refs],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _release_hashes() -> dict[str, str]:
+    data = json.loads(_state_path("releases.json").read_text(encoding="utf-8"))
+    return {version: info["hash"] for version, info in data["releases"].items()}
+
+
+def test_release_publish(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`release publish <制品清单>` ⇒ 经 composition 真口径哈希发布（change 0143 / E84-a）。"""
+    manifest = _write_bundle_manifest(tmp_path, "bundle-v1", [("tools.code_run", 1)])
+    assert main(["release", "publish", str(manifest)]) == 0
     assert "已发布版本 bundle-v1" in capsys.readouterr().out
+
+
+def test_release_publish_hash_is_content_addressed(
+    tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """同内容异元信息（清单名 + bundle 名不同）⇒ 两条发布记录哈希**相同**；异内容 ⇒ 不同。"""
+    same_a = _write_bundle_manifest(
+        tmp_path, "release-a", [("tools.code_run", 1), ("tools.web_fetch", 2)]
+    )
+    same_b = _write_bundle_manifest(
+        tmp_path, "release-b", [("tools.code_run", 1), ("tools.web_fetch", 2)]
+    )
+    other = _write_bundle_manifest(
+        tmp_path, "release-c", [("tools.code_run", 2), ("tools.web_fetch", 2)]
+    )
+    for manifest in (same_a, same_b, other):
+        assert main(["release", "publish", str(manifest)]) == 0
+    capsys.readouterr()
+    hashes = _release_hashes()
+    assert hashes["release-a"] == hashes["release-b"], "内容相同 ⇒ 哈希相同（不取版本名）"
+    assert hashes["release-c"] != hashes["release-a"], "内容不同 ⇒ 哈希不同"
+
+
+def test_release_publish_missing_manifest_rejected(
+    tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """清单缺失 ⇒ 退出码 1 + 结构化报错，**不产假账**（SHALL NOT 退化为版本名哈希）。"""
+    assert main(["release", "publish", str(tmp_path / "absent.json")]) == 1
+    assert "发布失败" in capsys.readouterr().err
+    assert not _state_path("releases.json").exists(), "拒绝发布即不落任何发布记录"
+
+
+def test_release_publish_invalid_manifest_keeps_history(
+    tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """非法清单 ⇒ 拒绝且**既有发布记录不变**（先成功一条，再拿坏清单撞）。"""
+    good = _write_bundle_manifest(tmp_path, "good", [("tools.code_run", 1)])
+    broken = tmp_path / "broken.json"
+    broken.write_text(
+        json.dumps({"plugin_refs": [{"plugin_id": "tools.code_run"}]}), encoding="utf-8"
+    )
+    assert main(["release", "publish", str(good)]) == 0
+    before = _release_hashes()
+    capsys.readouterr()
+    assert main(["release", "publish", str(broken)]) == 1
+    assert "发布失败" in capsys.readouterr().err
+    assert _release_hashes() == before
 
 
 def test_release_rollback_no_history(capsys: pytest.CaptureFixture[str]) -> None:

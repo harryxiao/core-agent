@@ -34,6 +34,12 @@ class ReleaseManager:
     def rollback(self) -> None: ...                          # 回滚到上一个可用版本
 ```
 
+**CLI 入口**：`core-agent release publish <bundle-manifest>` —— 位置参数为 bundle **制品清单**（JSON）
+路径；`ReleaseInfo.hash` **不由版本名派生**，而经 `composition.packager` 的真口径（制品内容）算出
+（`BundlePackager.load_manifest`）。清单缺失 / 非法 ⇒ 结构化拒绝（`BUNDLE_INVALID`，退出码 1），
+**SHALL NOT** 退化为「以版本名哈希照常发布」（change `0143` / 账本 E84-a；哈希口径 SHALL 归
+`composition/spec.md`「bundle 分发格式」）。
+
 ## 4. 健康检查与生命周期接口
 
 ```python

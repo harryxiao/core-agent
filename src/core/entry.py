@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import difflib
-import hashlib
 import json
 import os
 import sys
@@ -25,6 +24,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from core.cli_ops import CLICommandDispatcher
+from core.composition import BundlePackager, CompositionError
 from core.configuration import (
     AppConfig,
     ConfigManager,
@@ -312,8 +312,12 @@ def _add_task_parser(sub: Any) -> None:
 def _add_release_parser(sub: Any) -> None:
     release = sub.add_parser("release", help="分发")
     rel_sub = release.add_subparsers(dest="release_cmd", metavar="<release-cmd>")
-    publish = rel_sub.add_parser("publish", help="发布 bundle")
-    publish.add_argument("bundle")
+    publish = rel_sub.add_parser("publish", help="发布 bundle（哈希由制品内容派生）")
+    publish.add_argument(
+        "bundle",
+        metavar="<bundle-manifest>",
+        help="bundle 制品清单（JSON：plugin_refs / 可选 name）",
+    )
     upgrade = rel_sub.add_parser("upgrade", help="升级")
     upgrade.add_argument("version")
     rel_sub.add_parser("rollback", help="回滚")
@@ -727,9 +731,8 @@ def _release(args: argparse.Namespace) -> int:
     manager = ReleaseManager(path=_state_path("releases.json"))
     try:
         if args.release_cmd == "publish":
-            version = manager.publish(
-                ReleaseInfo(version=args.bundle, hash=_content_hash(args.bundle))
-            )
+            bundle = BundlePackager().load_manifest(args.bundle)  # 真口径：哈希由制品内容派生
+            version = manager.publish(ReleaseInfo(version=bundle.name, hash=bundle.hash))
             print(f"已发布版本 {version}")
             return 0
         if args.release_cmd == "upgrade":
@@ -740,7 +743,7 @@ def _release(args: argparse.Namespace) -> int:
             manager.rollback()
             print(f"已回滚到 {manager.current}")
             return 0
-    except DeploymentError as exc:
+    except (CompositionError, DeploymentError) as exc:
         print(f"发布失败: {exc}", file=sys.stderr)
         return 1
     print(f"release {args.release_cmd} 已识别，尚未接线", file=sys.stderr)
@@ -1025,11 +1028,6 @@ def _coerce(value: str) -> Any:
     except ValueError:
         pass
     return value
-
-
-def _content_hash(version: str) -> str:
-    """bundle 内容哈希（CLI 无真实制品内容，退化为版本名哈希）。"""
-    return hashlib.sha256(version.encode("utf-8")).hexdigest()[:16]
 
 
 def _state_path(name: str) -> Path:

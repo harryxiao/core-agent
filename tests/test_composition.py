@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from core.composition import (
@@ -101,6 +103,79 @@ def test_bundle_hash_mismatch_rejected() -> None:
     tampered = Bundle(name="core", version="1.0.0", hash="deadbeef", plugin_refs=bundle.plugin_refs)
     with pytest.raises(CompositionError) as exc_info:
         packager.unpack(tampered)
+    assert exc_info.value.code is CompositionErrorCode.BUNDLE_INVALID
+
+
+# ---- 制品清单 → 内容哈希（change 0143 / 账本 E84-a）----
+
+
+def _manifest(tmp_path, name: str, refs: list[tuple[str, int]]) -> str:
+    path = tmp_path / f"{name}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "name": name,
+                "plugin_refs": [{"plugin_id": pid, "generation": gen} for pid, gen in refs],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+def test_load_manifest_hash_derives_from_content_not_meta(tmp_path) -> None:
+    """同内容异元信息（清单名 + bundle 名皆不同）⇒ **同哈希**（哈希由制品内容派生）。"""
+    packager = BundlePackager()
+    left = packager.load_manifest(_manifest(tmp_path, "release-a", [("a", 1), ("b", 2)]))
+    right = packager.load_manifest(_manifest(tmp_path, "release-b", [("a", 1), ("b", 2)]))
+    assert left.name != right.name, "元信息确实不同"
+    assert left.hash == right.hash, "内容相同 ⇒ 哈希相同"
+    assert left.hash == packager.pack(_refs(("a", 1), ("b", 2))).hash, "与真口径 pack 同源"
+
+
+def test_load_manifest_hash_changes_with_content(tmp_path) -> None:
+    """改动任一 ``generation`` ⇒ 哈希随之改变（异内容 ⇒ 异哈希）。"""
+    packager = BundlePackager()
+    before = packager.load_manifest(_manifest(tmp_path, "same-name", [("a", 1)]))
+    after = packager.load_manifest(_manifest(tmp_path, "same-name", [("a", 2)]))
+    assert before.hash != after.hash
+
+
+def test_load_manifest_order_is_significant(tmp_path) -> None:
+    """规范形为**有序**拼接：内容项相同而次序不同 ⇒ 哈希不同（不静默排序）。"""
+    packager = BundlePackager()
+    left = packager.load_manifest(_manifest(tmp_path, "left", [("a", 1), ("b", 2)]))
+    right = packager.load_manifest(_manifest(tmp_path, "right", [("b", 2), ("a", 1)]))
+    assert left.hash != right.hash
+
+
+def test_load_manifest_name_defaults_to_file_stem(tmp_path) -> None:
+    """清单未声明 ``name`` ⇒ 取清单文件名的 stem（元信息不参与哈希，故不影响口径）。"""
+    path = tmp_path / "fallback-name.json"
+    path.write_text(
+        json.dumps({"plugin_refs": [{"plugin_id": "a", "generation": 1}]}), encoding="utf-8"
+    )
+    assert BundlePackager().load_manifest(str(path)).name == "fallback-name"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,  # 清单缺失（路径不存在）
+        "{ not json",  # 非法 JSON
+        json.dumps([{"plugin_id": "a", "generation": 1}]),  # 顶层非对象
+        json.dumps({"plugin_refs": "a@1"}),  # plugin_refs 非列表
+        json.dumps({"plugin_refs": [{"plugin_id": "a"}]}),  # 引用项缺 generation
+        json.dumps({"plugin_refs": [{"generation": 1}]}),  # 引用项缺 plugin_id
+    ],
+)
+def test_load_manifest_invalid_rejected(tmp_path, payload: str | None) -> None:
+    """清单缺失 / 非法 ⇒ ``BUNDLE_INVALID``（SHALL NOT 退化为元信息哈希）。"""
+    path = tmp_path / "broken.json"
+    if payload is not None:
+        path.write_text(payload, encoding="utf-8")
+    with pytest.raises(CompositionError) as exc_info:
+        BundlePackager().load_manifest(str(path))
     assert exc_info.value.code is CompositionErrorCode.BUNDLE_INVALID
 
 

@@ -3729,6 +3729,40 @@
 
 ---
 
+## ADR-0135：bundle 内容哈希口径归一 —— 发布入参改制品清单（change 0143 / phase-34 E84-a）
+
+- **背景**：同一概念「bundle 发布哈希」在仓内有两套口径，且 **wired 的一方是退化口径** ——
+  composition `packager.py:18-21 content_hash`（由**制品内容** `plugin_id@generation` 派生）全仓
+  **零引用**；CLI `release publish` 走 `entry.py:1034-1036 _content_hash` = `sha256(版本名)[:16]`
+  （哈希取自**元信息**，自注「CLI 无真实制品内容」）。后果是发布记录里的哈希**与「保证跨部署一致」
+  的语义正好相反**：内容不同、名字相同 ⇒ 同哈希；名字不同、内容相同 ⇒ 异哈希。规格侧
+  `composition/spec.md`「bundle 分发格式」只 SHALL「bundle 携带哈希 / 校验失败拒绝引入」，
+  **未**把「哈希由制品内容派生」写成 SHALL ⇒ 退化口径**无据可依却唯一在跑**。
+- **决策①：口径入规格（MODIFIED「bundle 分发格式」）。** 写明：哈希 SHALL 由制品内容（
+  `plugin_id@generation` 有序逐项以 `|` 连接取 SHA-256）派生；**内容相同 ⇒ 哈希相同，内容不同 ⇒
+  哈希不同**；SHALL NOT 以版本名 / 清单文件名等**元信息**充当内容哈希。规范形入规格是为了守住
+  「跨部署一致」 —— 只要算法留白，两处实现就会再次漂移（本账就是这么来的）。
+- **决策②：发布入参由「版本名」改「bundle 制品清单路径」。** 发布必须交出**制品内容**，否则无从
+  派生内容哈希；沿用仓内既有约定 —— `plugin install <asset> --source local` 的 `_resolve_local`
+  即把位置参数当 **manifest JSON 路径**（`plugins/install.py:68-75`）。清单（`plugin_refs` +
+  可选 `name`）是 bundle 内容的载体，**不是新发明的格式**。
+- **决策③：清单读取落在 composition（`BundlePackager.load_manifest`），不内联进 CLI。** CLI 的
+  契约是「解析 + 路由，不内联命令逻辑」（`entry.py` 模块 docstring）⇒ 读清单 + 构造 `PluginRef` +
+  取内容哈希属组合层职责；CLI 只注入 `ReleaseInfo(version=bundle.name, hash=bundle.hash)`。
+  复用既有 `pack()` ⇒ 真口径**单一真源**，不复制哈希算法。
+- **决策④：清单非法一律 `BUNDLE_INVALID`，不新增错误码、不退化。** 缺失 / 非法 JSON / 顶层非对象 /
+  `plugin_refs` 非列表 / 引用项缺字段 ⇒ 结构化拒绝且**既有发布记录不变**（`ReleaseManager` 尚未
+  `publish` 即抛出）—— 这是本账的**核心行为变更**：宁可拒绝，也不产「哈希取自版本名」的假账。
+- **已知局限**：① `ReleaseInfo.hash` 目前**无任何消费方**（deployment 侧 `grep .hash` 零读）⇒
+  本 change 只保证「写进去的是真口径」，**不保证**有谁在验它（那属另账）。② 清单只覆盖
+  `plugin_refs` + 可选 `name`；bundle 的 `deps`（循环依赖检测）与显式版本不在清单面内
+  （`pack()` 版本仍为 `1.0.0`）。③ CLI 位置参数语义变更 ⇒ 已同步 `cli-contract-baseline.md`
+  动词表与 `deployment-interface.md` §3。
+- **规格**：`openspec/specs/composition/spec.md`「bundle 分发格式」（MODIFIED，+2 Scenario）；
+  接口面 `03-interfaces/composition-interface.md` §4/§5、`03-interfaces/deployment-interface.md` §3。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3858,3 +3892,4 @@
 | ADR-0132 | 03-interfaces/deployment-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0133 | 03-interfaces/context-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0134 | 03-interfaces/core-profile-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0135 | 03-interfaces/composition-interface.md, 03-interfaces/deployment-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
