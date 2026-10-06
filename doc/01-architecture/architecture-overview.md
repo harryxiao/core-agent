@@ -46,6 +46,109 @@ CORE-Harness 采用**无特权核心（No Privileged Core）+ 分层插件化**�
    cli-ops CLI 运维（命令集/启动参数映射/进程守护） · judgment 决策（原语路由/JEV 接入/置信度回退/审计）
 ```
 
+### 1.1 架构图（真实模块 · 层间契约）
+
+> 上文是**概念图**；下图是**工程图** —— 每个方框内的名称都是仓库里**真实存在的包与文件**
+> （`src/core/` 一级子包 + 其关键模块），层与层之间的连线标注的是**实际契约**。
+> 与 §2 分层职责、§3 核心组件表、§6 部署视图同源；层映射以 `tests/test_architecture.py`
+> 的 `EXPECTED_PACKAGES` / `BASE_MODULES` 为权威。
+
+```text
+┌─ 宿主 / 接入（进程边界，非 L 层） ─────────────────────────────────────────────────────────────┐
+│ entry.py ─ runtime.py：build_runtime() ＝ 组合根（全仓唯一装配点）                             │
+│ ui/       repl · api · fastapi_serve · sessions · cli_bridge · web_bridge · desktop_bridge     │
+│ cli_ops/  dispatcher · param_mapper        im/  gateway · provider                             │
+└────────────────────────────────────────────────────────────────────────────────────────────────┘
+│
+▼ 装配注入：构造 L0–L5 全部实例并接线（依赖只向下）
+
+┌─ L5  组合分发  Composition & Distribution ─────────────────────────────────────────────────────┐
+│ composition/   engine · resolver · packager · distributor                                      │
+└────────────────────────────────────────────────────────────────────────────────────────────────┘
+│
+▼ PluginRef / ResolvedSet
+
+┌─ L4  进化引擎  Evolution Engine ───────────────────────────────────────────────────────────────┐
+│ evolution/     collector · diagnoser · proposer · validator · evaluator · engine ·             │
+│                worker · executor · author · curriculum · pending · plugin_ids                  │
+└────────────────────────────────────────────────────────────────────────────────────────────────┘
+│
+▼ 只读观测（TraceEvent）· 结晶回写（SkillRegistry / MemoryStore）
+
+┌─ L3.5  任务编排  Orchestration ────────────────────────────────────────────────────────────────┐
+│ orchestration/ decomposer · planner · router · scheduler · state_machine                       │
+│ pet/           core · library · explore · safety · notify · microtask                          │
+│ beast/         session · manager · registry · activator · skills                               │
+└────────────────────────────────────────────────────────────────────────────────────────────────┘
+│
+▼ LoopPlugin（loop/protocol.py）· TaskHandoff（orchestration/models.py）
+
+┌─ L3  智能体循环  Agent Loop (+ 上下文 / 技能 / 市场 / 检索 / 模型适配) ────────────────────────┐
+│ loop/          default · planner · protocol · constraints_adapter                              │
+│ context/       assembler · budget · compactor · info_map                                       │
+│ skills/        library · router · sop · version · crystallizer · feedback · iteration          │
+│ skillhub/      client · index · publisher · trust                                              │
+│ rag/           ingest · retriever · service · vector_store · embedder · generator              │
+│ llm_provider/  provider · registry · stdlib_provider · http_pool                               │
+└────────────────────────────────────────────────────────────────────────────────────────────────┘
+│
+▼ MemoryStore（memory/protocol.py）
+
+┌─ L2  分层记忆  Layered Memory ─────────────────────────────────────────────────────────────────┐
+│ memory/        store · backend · protocol · relevance · summarize · transcript ·               │
+│                crystallizer · embedding                                                        │
+│ notes/         store · backend    （canonical Markdown 真相层，非温度分层）                    │
+└────────────────────────────────────────────────────────────────────────────────────────────────┘
+│
+▼
+
+┌─ L1  原子工具  Atomic Tools ───────────────────────────────────────────────────────────────────┐
+│ tools/         tool · builtin · provider · safety_gate · install_tools                         │
+└────────────────────────────────────────────────────────────────────────────────────────────────┘
+│
+▼ Plugin（plugin_registry/plugin.py）· EffectTracker · CoeffectResolver
+
+┌─ L0  组合基底  Substrate / Plugin Registry ────────────────────────────────────────────────────┐
+│ plugin_registry/  registry · plugin · effect_tracker · coeffect_resolver · installable         │
+│ core_profile/     engine · loader · profile                                                    │
+│ configuration/ · observability/ · persistence.py                                               │
+└────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**层间契约**（均为下层暴露的 Protocol / 模型类；组合根 `runtime.build_runtime()` 在启动时注入实现）：
+
+| 调用方 → 被调用方 | 契约（真实符号） | 定义位置 |
+|---|---|---|
+| 任意层 → L0 | `Plugin` | `src/core/plugin_registry/plugin.py` |
+| L3 → L1 | `ToolProvider` / `Tool` | `src/core/tools/provider.py` · `tools/tool.py` |
+| L3 → L2 | `MemoryStore`（read / write） | `src/core/memory/protocol.py` |
+| L3 → 模型 | `LLMProvider`（completion / stream） | `src/core/llm_provider/provider.py` |
+| L3.5 → L3 | `LoopPlugin`（run / arun / astream） | `src/core/loop/protocol.py` |
+| L3.5 → L3 | `TaskHandoff` | `src/core/orchestration/models.py` |
+| L4 → L3（只读观测） | `TraceEvent` | `src/core/observability/events.py` |
+| L4 → L2 / L3（结晶回写） | `Crystallizer` | `src/core/memory/crystallizer.py` · `skills/crystallizer.py` |
+| 横切注入（全层） | `CoeffectResolver` / `EffectTracker` | `src/core/plugin_registry/` |
+
+**横切能力**（7 项，贯穿 L0–L5，经 L0 的中间件/切面注入，不产生层间硬依赖；
+其中 `configuration/`、`observability/` 同时构成 L0 基底，见上方 L0 框）：
+
+```text
+  permission/     approval · guard · policy · sandbox      constraints/  validator · middleware · compressor
+  observability/  tracer · metrics · events · exporter     durability/   store · manager · retention
+  configuration/  manager · models                         judgment/     router · guardrail · provider · skills
+  cli-ops → cli_ops/  dispatcher · param_mapper
+```
+
+**支撑 / 接入包**（不属 L0–L5 主链）：
+
+```text
+  ui/           repl · api · fastapi_serve · sessions · cli_bridge · web_bridge · desktop_bridge
+  im/           gateway · provider                mcp/          client · server · adapter · transport
+  ci_cd/        pipeline · publisher              git/          client · backend · subprocess_backend
+  deployment/   lifecycle · host · cloud          distributed/  server · client · gateway · connection
+  plugins/      install · sources · installs
+```
+
 ---
 
 ## 2. 分层职责（Layer Responsibilities）
