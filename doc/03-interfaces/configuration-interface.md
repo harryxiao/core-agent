@@ -282,3 +282,34 @@ CLI 面 `--feature <模块>[=<布尔>]` 由 `entry._cli_overrides` 收进覆盖�
 - 口径来源：`doc/openspec/specs/loop/spec.md`「错误与预算控制」（**MODIFIED**）、
   `doc/openspec/specs/configuration/spec.md`「LLM 提供商配置（必选）」（**MODIFIED**）与
   「循环预算配置」（**ADDED**）。
+
+### 2.8 编排调度配置（change `0123` / ADR-0116）
+
+同波次调度策略与并发上限接入配置链（`orchestration` 照 §2.4/§2.6/§2.7 先例驻留 `extra`）：
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `orchestration.difficulty_policy` | `off` | `off` / `difficulty` | 同波次调度策略：`off` 沿用依赖拓扑并发（**逐字一致**）；`difficulty` 时含 `hard` 的波次串行 |
+| `orchestration.max_concurrency` | `4` | **≥1 的整数** | 同波次并发上限（`_fan_out` 的 `Semaphore` 上限） |
+
+- **单一真源**：两键由 `ConfigSpec` 声明（`map_to="orchestration.difficulty_policy"` /
+  `"orchestration.max_concurrency"`，`exposure=ADVANCED`），自动获得 CLI flag
+  （`--orchestration.difficulty-policy` / `--orchestration.max-concurrency`）、env
+  （`CORE_ORCHESTRATION_DIFFICULTY_POLICY` / `CORE_ORCHESTRATION_MAX_CONCURRENCY`）与优先级链
+  （CLI > env > config.yaml > 缺省）；声明段自动进「已声明段」白名单 ⇒ 不触发「未知配置段」告警。
+- **访问器**：`ConfigManager.orchestration_difficulty_policy()` /
+  `orchestration_max_concurrency()` 两个独立标量访问器（**不**并入 `loop_limits()`，同 §2.7 口径）。
+- **校验期拒绝（不静默兜底）**：`max_concurrency` 非 ≥1 整数（`0` / 负数 / 小数 / 非数值 / `bool`）⇒
+  「非法波次并发上限」；`difficulty_policy` 不在词表（含拼写错误、`OFF` 等大小写变体）⇒
+  「非法编排调度策略」；两者均在 `validate()` 判为错误、**阻断启动**。
+  **与 `Subtask.difficulty` 的口径不同**（后者是模型自报弱信号 ⇒ **归一**为 `medium`）：配置是人写的，
+  写错必须暴露（ADR-0116 决策④）。
+- **组合根注入（不得依赖构造缺省）**：`build_runtime` 装配 `TaskScheduler` 时**显式**传两值 ——
+  `TaskScheduler` 的构造缺省 `max_concurrency=4` 与既有行为**同值**，不接线**不会暴露**
+  （上限判据空转，与账本 E15 同型）；已有用例断言接入的是**配置值**而非构造缺省。
+- **CLI 入口**：两键经 ConfigSpec **自动**获得主命令 flag（`--orchestration.difficulty-policy` /
+  `--orchestration.max-concurrency`，`_add_config_flag` 单一真源派生）。`config set` 的键前缀白名单
+  （`entry._key_to_patch`：`llm.` / `features.` / `im.` / `loop.`）**不含** `orchestration.` ⇒
+  该命令会**明确报「暂不支持键」**（不静默成功、不假装生效；如需三面齐备可后续按 §2.7 先例补白名单）。
+- 口径来源：`doc/openspec/specs/configuration/spec.md`「编排调度配置」（**ADDED**）与
+  `doc/openspec/specs/orchestration/spec.md`「难易度感知的调度策略」（**ADDED**）。

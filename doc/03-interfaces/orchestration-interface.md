@@ -62,6 +62,7 @@ class Subtask:
     acceptance: str             # 验收标准（Given/When/Then 或断言）
     depends_on: list[str]       # 依赖子任务 id（DAG 拓扑序）
     priority: int = 0           # 优先级：就绪队列内降序调度，缺省取默认值
+    difficulty: str = "medium"  # 难易度：easy / medium / hard（缺省 medium；change 0123）
 
 @dataclass
 class Plan:
@@ -91,15 +92,19 @@ class LLMVerifier:
     async def __call__(self, subtask: Subtask, result: Any) -> VerifyResult: ...
 ```
 
-- 拆解 prompt 约束输出 `{"subtasks": [{"id","goal","acceptance","depends_on","priority"}]}`；
+- 拆解 prompt 约束输出 `{"subtasks": [{"id","goal","acceptance","depends_on","priority","difficulty"}]}`；
   逐项校验（id/goal 非空、depends_on 引用已声明 id），非法项剔除，全非法则回落单子任务。
+- `difficulty` 是**模型自报的弱信号**：归一为三档（去空白 + 小写），集合外取值回落 `medium`
+  —— **不剔除**子任务、不抛裸异常（与 `priority` 非整数取 0 同口径；与**配置键**非法即阻断启动的
+  口径**有意不同**，见 §4）。
 - 验收 prompt 输出 `{"passed": bool, "reason": str}`；解析失败按不通过处理（fail-closed）。
 
 ### 2.2 编排执行与进度事件
 
 ```python
 class TaskScheduler:
-    def __init__(self, ..., tracer: Tracer | None = None) -> None: ...
+    def __init__(self, ..., max_concurrency: int = 4, difficulty_policy: str = "off",
+                 tracer: Tracer | None = None) -> None: ...
 
     async def run(
         self, task_id: str, goal: str, success_criteria: list[str] | None = None,
@@ -147,6 +152,27 @@ class TaskScheduler:
 - TUI 入口：REPL 会话内输入 `/task <目标>`，经 `UIAPILayer.run_task` 驱动同一编排器，
   进度事件以 `task.*` 前缀映射为 UI Event 流式呈现（与 CLI 同一格式化）。
 
+### 2.3 同波次调度策略（change 0123 / ADR-0116）
+
+```python
+# 策略取值词表：off（缺省） / difficulty
+DISPATCH_POLICIES: frozenset[str] = frozenset({"off", "difficulty"})
+
+def _wave_limit(self, subtasks: list[Subtask]) -> int:
+    """本波次并发上限：off ⇒ max_concurrency；difficulty 且**含 hard** ⇒ 1（串行）。"""
+```
+
+- **只收窄，不放大**：策略只影响 `_fan_out` 的 `Semaphore` 上限；`_build_waves` 的波次划分
+  （依赖拓扑**硬约束**）**逐字不动** ⇒ 有依赖的子任务必分属不同波次，DAG 与断点续跑语义零回归。
+- `off`（缺省）：同波次无依赖子任务并发扇出，上限 `max_concurrency` —— 与引入本策略前**逐字一致**。
+- `difficulty`：同波次**存在** `difficulty == "hard"` 的子任务 ⇒ 该波次**整体**串行（按优先级降序
+  逐个，峰值 1）；否则维持并发。**粒度是波次而非子任务**（部分并发部分串行无拓扑依据）。
+- 构造器取值不在 `DISPATCH_POLICIES` ⇒ `OrchestrationError(INVALID_DISPATCH_POLICY)`（fail-fast）。
+- **`max_concurrency` 必须由组合根注入**：构造缺省 `4` 与既有行为同值，不接线**不会暴露**
+  （上限判据空转，与账本 E15 同型）⇒ `runtime.py` 装配时显式传配置值（`configuration-interface.md`）。
+- 策略与上限均在 **`configuration` 校验期** 拦截非法取值（阻断启动，不静默退化）——与
+  `difficulty` **归一**的口径**有意不同**（前者是人写的配置，后者是模型自报的弱信号）。
+
 ---
 
 ## 3. 多 Agent 协同接口
@@ -189,6 +215,7 @@ class MultiAgentRouter:
 | `DEADLOOP_DETECTED` | 检测到死循环（触发 RECOVERING） |
 | `NO_AGENT_MATCH` | 无匹配子 Agent（抛错，调度器捕获并标记子任务失败） |
 | `WAVE_FANOUT_LIMIT` | 并行度超限（同波次分批执行，受资源上限约束） |
+| `INVALID_DISPATCH_POLICY` | 调度策略取值非法（构造器 fail-fast；change 0123） |
 | `PROGRESS_NOT_MET` | 进度未达目标（触发重试/重规划，衔接 RECOVERING） |
 | `MISSING_SUCCESS_CHECKER` | 提供了成功标准但未注入判定器（配置错误，fail-fast，转 FAILED） |
 

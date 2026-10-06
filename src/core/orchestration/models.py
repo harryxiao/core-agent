@@ -28,15 +28,35 @@ class TaskState(StrEnum):
     DONE = "done"
 
 
+# 难易度三档（change 0123；词表来源：doc/openspec/specs/orchestration/spec.md
+# 「难易度感知的调度策略」）。集合外取值**归一**为 `medium` 而非抛错 —— 难易度是模型自报的
+# **弱信号**，其非法值不该让整次拆解失败（对齐 planner._parse 既有的「非法项剔除 /
+# priority 非整数取 0」口径）；**配置键**取值非法则由 configuration 校验期阻断
+# （信号来源不同的两者口径有意不同）。
+DIFFICULTY_LEVELS: frozenset[str] = frozenset({"easy", "medium", "hard"})
+DEFAULT_DIFFICULTY = "medium"
+
+
+def normalize_difficulty(value: Any) -> str:
+    """难易度归一：合法三档取自身（去空白 + 小写），否则回落 ``medium``。"""
+    level = str(value or "").strip().lower()
+    return level if level in DIFFICULTY_LEVELS else DEFAULT_DIFFICULTY
+
+
 @dataclass
 class Subtask:
-    """分步子任务：目标 + 验收标准 + 依赖 DAG + 优先级。"""
+    """分步子任务：目标 + 验收标准 + 依赖 DAG + 优先级 + 难易度。"""
 
     id: str
     goal: str
     acceptance: str
     depends_on: list[str] = field(default_factory=list[str])
     priority: int = 0
+    difficulty: str = DEFAULT_DIFFICULTY  # 三档 easy/medium/hard（change 0123；调度策略的输入）
+
+    def __post_init__(self) -> None:
+        # 构造即归一（含 plan_from_dict 反序列化与检查点重建路径）⇒ 不变量单点收口
+        self.difficulty = normalize_difficulty(self.difficulty)
 
 
 @dataclass
@@ -90,6 +110,7 @@ def plan_to_dict(plan: Plan) -> dict[str, Any]:
                 "acceptance": s.acceptance,
                 "depends_on": list(s.depends_on),
                 "priority": s.priority,
+                "difficulty": s.difficulty,
             }
             for s in plan.subtasks
         ],
@@ -111,6 +132,8 @@ def plan_from_dict(data: dict[str, Any]) -> Plan:
             acceptance=str(item.get("acceptance", "")),
             depends_on=[str(dep) for dep in item.get("depends_on", [])],
             priority=int(item.get("priority", 0)),
+            # 旧检查点缺该键 ⇒ 回落 medium（`__post_init__` 同口径归一）
+            difficulty=str(item.get("difficulty", DEFAULT_DIFFICULTY)),
         )
         for item in items
     ]

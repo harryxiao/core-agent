@@ -43,6 +43,14 @@ _DEFAULT_TOKEN_BUDGET = 65536
 # 回灌轮数缺省口径来源：doc/openspec/specs/configuration/spec.md「循环预算配置」
 _DEFAULT_HISTORY_TURNS = 20
 
+# 编排调度缺省口径来源：doc/openspec/specs/configuration/spec.md「编排调度配置」
+# （change 0123）。`_DEFAULT_ORCHESTRATION_POLICY = "off"` ⇒ 缺省**不启用**难易度策略，
+# 同波次仍按依赖拓扑并发（与引入前逐字一致）；并发上限默认与 `TaskScheduler` 构造缺省同值。
+_DEFAULT_ORCHESTRATION_POLICY = "off"
+_DEFAULT_ORCHESTRATION_MAX_CONCURRENCY = 4
+# 策略词表（规格 `orchestration`「难易度感知的调度策略」；配置层不 import 能力层，故此处复述）
+_ORCHESTRATION_POLICIES = ("off", "difficulty")
+
 # 配置项单一真源（全量声明）：CLI flag / env / yaml 三面由 ConfigSpec 生成，禁止硬编码第二真源。
 _CONFIG_SPECS: list[ConfigSpec] = [
     ConfigSpec(
@@ -203,6 +211,22 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         map_to="loop.history_turns",
         exposure=ConfigExposure.ADVANCED,
     ),
+    ConfigSpec(
+        "orchestration.difficulty_policy",
+        "--orchestration.difficulty-policy",
+        "CORE_ORCHESTRATION_DIFFICULTY_POLICY",
+        default=_DEFAULT_ORCHESTRATION_POLICY,
+        map_to="orchestration.difficulty_policy",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "orchestration.max_concurrency",
+        "--orchestration.max-concurrency",
+        "CORE_ORCHESTRATION_MAX_CONCURRENCY",
+        default=_DEFAULT_ORCHESTRATION_MAX_CONCURRENCY,
+        map_to="orchestration.max_concurrency",
+        exposure=ConfigExposure.ADVANCED,
+    ),
 ]
 
 _FEATURE_ENV_PREFIX = "CORE_FEATURES_"
@@ -340,6 +364,8 @@ class ConfigManager:
         loop_raw = cast("dict[str, Any]", config.extra.get("loop") or {})
         errors.extend(_loop_errors(loop_raw))
         errors.extend(_window_reserve_errors(config.llm.context_window, loop_raw))
+        orch_raw = cast("dict[str, Any]", config.extra.get("orchestration") or {})
+        errors.extend(_orchestration_errors(orch_raw))
         warnings = self._unknown_section_warnings(config) + self._unknown_feature_warnings(config)
         return ValidationResult(ok=not errors, errors=errors, warnings=warnings)
 
@@ -464,6 +490,26 @@ class ConfigManager:
         raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
         turns = _parse_int(raw.get("history_turns", _DEFAULT_HISTORY_TURNS))
         return _DEFAULT_HISTORY_TURNS if turns is None else turns
+
+    def orchestration_difficulty_policy(self) -> str:
+        """同波次调度策略（缺省 ``off`` = 不启用难易度策略；见规格「难易度感知的调度策略」）。
+
+        **独立访问器**（同 `history_turns()` 先例）：与预算/上限无语义关系，且既有访问器
+        的返回 arity 被解包断言钉死，不合并。
+        """
+        if self._config is None:
+            return _DEFAULT_ORCHESTRATION_POLICY
+        raw = cast("dict[str, Any]", self._config.extra.get("orchestration") or {})
+        policy = str(raw.get("difficulty_policy", _DEFAULT_ORCHESTRATION_POLICY))
+        return policy if policy in _ORCHESTRATION_POLICIES else _DEFAULT_ORCHESTRATION_POLICY
+
+    def orchestration_max_concurrency(self) -> int:
+        """波次并发上限（缺省 ``4``；取值已过校验，此处只做 env/CLI 字符串归一）。"""
+        if self._config is None:
+            return _DEFAULT_ORCHESTRATION_MAX_CONCURRENCY
+        raw = cast("dict[str, Any]", self._config.extra.get("orchestration") or {})
+        limit = _parse_int(raw.get("max_concurrency", _DEFAULT_ORCHESTRATION_MAX_CONCURRENCY))
+        return _DEFAULT_ORCHESTRATION_MAX_CONCURRENCY if limit is None else limit
 
     def sandbox_host_allowlist(self) -> list[str]:
         """出站网络白名单（缺省空 = fail-closed 全拒，安全默认）。
@@ -677,6 +723,29 @@ def _loop_errors(raw: dict[str, Any]) -> list[str]:
     if turns is None or turns < 0:
         errors.append(
             f"非法回灌轮数: loop.history_turns={raw.get('history_turns')}（须为 ≥0 的整数）"
+        )
+    return errors
+
+
+def _orchestration_errors(raw: dict[str, Any]) -> list[str]:
+    """编排调度取值校验（对齐 orchestration「难易度感知的调度策略」，change 0123）。
+
+    并发上限须为 **≥1 的整数**（``bool`` 视作非法 —— ``true`` 不是并发度）、策略须为
+    ``off`` / ``difficulty`` 之一。非法取值**阻断启动**：这里是**人工配置**，与「模型自报的
+    难易度弱信号归一为 medium」口径**有意不同**（来源不同 ⇒ 处置不同）。
+    """
+    errors: list[str] = []
+    limit = _parse_int(raw.get("max_concurrency", _DEFAULT_ORCHESTRATION_MAX_CONCURRENCY))
+    if limit is None or limit < 1:
+        errors.append(
+            f"非法波次并发上限: orchestration.max_concurrency={raw.get('max_concurrency')}"
+            "（须为 ≥1 的整数）"
+        )
+    policy = str(raw.get("difficulty_policy", _DEFAULT_ORCHESTRATION_POLICY))
+    if policy not in _ORCHESTRATION_POLICIES:
+        errors.append(
+            f"非法编排调度策略: orchestration.difficulty_policy={policy}"
+            f"（可选：{'/'.join(_ORCHESTRATION_POLICIES)}）"
         )
     return errors
 

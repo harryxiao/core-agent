@@ -870,6 +870,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         ),
         router=agent_router,
         state_machine=StateMachine(),
+        # 调度策略与并发上限由组合根注入（change 0123）：不接线则上限判据在产线**空转**
+        # （构造缺省 4 恰与既有行为同值，会掩盖未接线）。
+        max_concurrency=config.orchestration_max_concurrency(),
+        difficulty_policy=config.orchestration_difficulty_policy(),
         checkpoint=_checkpoint,
         on_done=_finalize,
         tracer=tracer,

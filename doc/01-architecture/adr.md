@@ -3084,6 +3084,51 @@
 
 ---
 
+## ADR-0116：难易度感知的同波次调度策略（change 0123 / phase-29 change C：E50）
+
+- **背景**：`coding-plan/phase-29.md` 的缺口 **E50**（§0.6 判据「`Subtask` 无 difficulty 字段 + 波次划分只看
+  依赖」）。引入前 `Subtask` 字段仅 `id/goal/acceptance/depends_on/priority`，`_build_waves` 的波次**纯依赖
+  拓扑**（`level[sid] = 1 + max(依赖层号)`），同波次无依赖子任务一律按 `max_concurrency` 并发扇出 ⇒
+  「依据任务难易度动态决策串行 or 并发」（用户需求①）**无载体也无决策点**。契约面：`orchestration` spec
+  只规定「并行扇出」，**无**难易度与策略条款 ⇒ 本 change **规格先行**（`orchestration` **ADDED**「难易度
+  感知的调度策略」= 新能力，先例 change `0028`；`configuration` ADDED「编排调度配置」；**非** `skip_specs`）。
+- **决策①：缺省沿用拓扑并发（用户裁决，2026-10-06）。** phase-29 §4 裁决①/§7① 原写「缺省 = **全串行**」
+  （理由是难度为模型自报弱信号、`max_concurrency` 未接线 ⇒ 不得把不可靠信号直连并发开关）——该缺省与
+  spec「并行扇出」条款及既有并发用例（`test_run_fanout_bounded_concurrency` 等）**字面冲突**，属**能力回归**，
+  故提请裁决。用户选 **「缺省沿用拓扑并发」**：策略 `off`（缺省）时同波次并发**逐字不变**（上限
+  `max_concurrency`），仅 `difficulty` 策略**收窄**。§4① 的**用意保留**（弱信号不得**强制**降级并发），
+  但其**字面**（缺省即串行）**订正**；既有「并行扇出」条款与并发用例**一律不动**。
+- **决策②：粒度 = 波次，不是子任务。** 含 `hard` 的波次**整体**串行（按优先级降序逐个），而非「hard 子任务
+  单独串行、同波次 easy 仍并发」——后者会让同波次部分并发部分串行，**无拓扑依据**且并发峰值不可判定。
+  判据取自 phase-29 §0.5.3 的**三判据先行**（依赖拓扑硬约束 → 难易度 → 并发上限保护）；「模型自主判依赖」
+  延后（§4 裁决②）。
+- **决策③：依赖拓扑仍是硬约束。** 策略只改 `_fan_out` 的 `Semaphore` 上限（`_wave_limit`），**SHALL NOT**
+  触碰 `_build_waves` 的波次划分 ⇒ 有依赖的子任务**必**分属不同波次，DAG 与断点续跑语义零回归。
+- **决策④：难易度**归一**、配置键**校验**——口径有意不同。** 难易度是模型在拆解 JSON 里**自报**的弱信号，
+  其非法值（`"urgent"` / `1` / `null`）**归一**为 `medium` 而非剔除子任务：对齐 `_parse` 既有口径
+  （非法项剔除 / priority 非整数取 0），且**剔除会放大**成整次拆解失败，代价不对等。归一含**去空白 + 小写**
+  （`"HARD"` ⇒ `hard`）——字面不等即降级为 `medium` 会**静默削弱**信号，比归一更差。反之
+  `orchestration.difficulty_policy` / `max_concurrency` 是**人类配置**，写错必须**校验期阻断启动**
+  （不静默退化成缺省）。两处口径不同是**有意**，写入规格与注释。
+- **决策⑤：`max_concurrency` 由组合根注入（不接线即空转）。** `TaskScheduler` 构造缺省 `4` 恰与既有行为
+  **同值** ⇒ 不接线也**不暴露**（上限判据空转，与账本 E15「可注入但唯一调用点不传参」同型）。故
+  `runtime.py` 装配时**显式**传 `max_concurrency=config.orchestration_max_concurrency()` 与
+  `difficulty_policy=config.orchestration_difficulty_policy()`，并以用例钉死**接线**（断言
+  `runtime.orchestrator._max_concurrency` 等于**配置值**，非构造缺省）。
+- **已知局限**：① 策略**只收窄不放大** ⇒ 无法「强制并发」；② 波次级粒度 ⇒ 同波次一个 `hard` 会拖慢其余
+  子任务（保守取舍，代价上界 = 波次内子任务数）；③ 难易度是**模型自报**信号、**无校准**（弱信号，不可
+  确定性验证 ⇒ 用例打桩 planner）；④ 策略**不改**验收 / 重试语义（`hard` 无额外重试）；⑤ 策略**不做**
+  CLI / Web 可视化（仅配置面可见；消费面见 ADR-0114/0115）；⑥ §0.5.3 的「模型自主判依赖」与 phase-29
+  gap①（主 loop 丢弃多余 call，登记为 **E55**）**不在本 change**。
+- **规格**：`orchestration`（**ADDED**「难易度感知的调度策略」+ 7 Scenario：「缺省策略维持既有并发」
+  「难易度策略下含 hard 的波次串行」「难易度策略下无 hard 的波次并发」「难易度缺省与非法值归一」
+  「难易度大小写与空白归一」「难易度随计划持久化往返」「并发上限与策略由配置注入」；**MODIFIED**
+  「子任务拆解」——仅订正 `LLM 拆解产出子任务 DAG` 场景的字段枚举（+`difficulty`），Requirement 正文
+  **逐字保留**）+ `configuration`（**ADDED**「编排调度配置」+ 3 Scenario：「编排键经 ConfigSpec 声明」
+  「缺省取内置默认值」「非法取值校验期拒绝」）。**非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3194,3 +3239,4 @@
 | ADR-0113 | 03-interfaces/evolution-interface.md, 03-interfaces/ci-cd-interface.md, 02-modules/evolution.md, 04-testing/test-cases.md, coding-plan/phase-31.md |
 | ADR-0114 | 03-interfaces/orchestration-interface.md, 03-interfaces/loop-interface.md, 02-modules/orchestration.md, 04-testing/test-cases.md, coding-plan/phase-29.md |
 | ADR-0115 | 03-interfaces/ui-interface.md, 06-ui-frontend/ui-architecture.md, 04-testing/test-cases.md, coding-plan/phase-29.md |
+| ADR-0116 | 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 02-modules/orchestration.md, 04-testing/test-cases.md, coding-plan/phase-29.md |

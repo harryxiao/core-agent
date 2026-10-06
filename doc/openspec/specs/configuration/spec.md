@@ -125,6 +125,24 @@ config.yaml 三面一一对应生成，参与优先级链（CLI flag > env > con
 - **WHEN** 配置校验运行
 - **THEN** 校验失败并阻断启动，错误信息指明上下文窗口不敷输出预留
 
+### Requirement: 编排调度配置
+系统 SHALL 将编排调度策略纳入 ConfigSpec 单一真源：`orchestration.difficulty_policy`（同波次调度策略，默认 `off`，可选 `off` / `difficulty`）与 `orchestration.max_concurrency`（波次并发上限，默认 `4`）。两项 SHALL 经 CLI flag / env / config.yaml 三面一一对应生成，参与优先级链（CLI flag > env > config.yaml > 默认值）。取值 SHALL 在校验期校验：`orchestration.max_concurrency` 须为 ≥1 的整数（布尔非法），`orchestration.difficulty_policy` 须为 `off` / `difficulty` 之一，否则校验失败并阻断启动（不静默强转、不退化成缺省）。
+
+#### Scenario: 编排键经 ConfigSpec 声明
+- **GIVEN** 配置了 orchestration 段的 difficulty_policy / max_concurrency
+- **WHEN** 系统启动加载配置
+- **THEN** 两项经 ConfigSpec 单一真源解析，CLI flag / env / yaml 三面一一对应、无第二真源
+
+#### Scenario: 缺省取内置默认值
+- **GIVEN** orchestration 段未配置
+- **WHEN** 系统启动加载配置
+- **THEN** `orchestration.difficulty_policy` 取 `off`、`orchestration.max_concurrency` 取 `4`，系统正常启动
+
+#### Scenario: 非法取值校验期拒绝
+- **GIVEN** `orchestration.max_concurrency` 取 `0` / 负数 / 布尔 / 非整数，或 `orchestration.difficulty_policy` 取集合外的字符串
+- **WHEN** 配置校验运行
+- **THEN** 校验失败并阻断启动，错误信息指明键名与合法取值，不静默强转、不退化成缺省
+
 ### Requirement: 功能开关（feature flag）
 系统 SHALL 支持模块级 feature flag：关闭的模块不加载、不初始化，实现功能裁剪。feature flag SHALL ONLY 作用于**模块装配** —— 即组合根是否构造该模块的实例、是否注册其随装配产生的副作用（技能注册、状态文件读取）、是否接通其 CLI 与 Web UI 入口；SHALL NOT 改变模块**自身**的二级启用开关（如 `pet.enabled` 决定宠物模式是否启用，其缺省与语义不由 feature flag 改变）。**缺省口径**：白名单内的可选模块**未声明即视为开启**（缺省装配，保持既有行为）；只有显式 `false`（yaml `features.<模块>: false`、env `CORE_FEATURES_<模块>`、CLI `--feature <模块>=false`）SHALL 使该模块**完全不装配**。门控名单（**缺省装配**）与**缺省关名单**（**缺省关**，fail-closed）SHALL 均由组合根以**单一真源**维护（当前分别为 `pet` / `beast` / `evolution` 与 `evolution_executor`），二者之并即**已知模块名集合**（供未知开关名告警）；两个名单之外的模块名 SHALL NOT 触发任何装配裁剪，SHALL NOT 影响核心面。
 **第二条极性（缺省关）**：**缺省关名单**内的可选能力**未声明即视为关闭** —— 其装配判据 SHALL 是「显式开启查询」（`is_enabled`，缺省 `false`），只有显式 `true`（yaml / env / CLI 三面同口径，取值归一与校验规则同上）SHALL 使其装配，关时 SHALL NOT 构造其任何实例、不产生装配期副作用。**两种极性 SHALL 各由一份**独立**名单承载**：SHALL NOT 以同一份名单表达两种缺省语义，亦 SHALL NOT 因新增一种极性而改变既有门控名单的缺省语义。

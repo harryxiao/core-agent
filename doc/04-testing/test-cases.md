@@ -570,6 +570,31 @@
 
 ---
 
+## 36. 难易度感知的同波次调度策略（TC-DIFF，change `0123`／ADR-0116，账本 E50）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-DIFF-01 | orchestration/spec.md「难易度感知的调度策略」（缺省策略维持既有并发） | 真 `TaskScheduler`（`difficulty_policy` 取缺省）+ 4 个无依赖子任务 + 记录入/出时间线的子 Agent loop，`max_concurrency=2` | 并发峰值 **= 2**（= 上限），与引入本策略前逐字一致（锚点：`tests/test_orchestration_difficulty.py::test_default_policy_keeps_topology_concurrency`） |
+| TC-DIFF-02 | 同上（难易度策略下含 hard 的波次串行） | `difficulty_policy="difficulty"` + 同波次混编 `easy` / `medium` / **`hard`**（优先级 0 / 5 / 10） | 并发峰值 **1**，时间线 **严格不重叠**且按优先级降序（`+hard,-hard,+medium,-medium,+easy,-easy`）（锚点：`::test_difficulty_policy_serializes_wave_containing_hard`） |
+| TC-DIFF-03 | 同上（难易度策略下无 hard 的波次并发） | `difficulty_policy="difficulty"` + 同波次全为 `easy` / `medium` | 并发峰值 **= `max_concurrency`**（策略**只收窄不放大**，不把无 hard 波次也降级）（锚点：`::test_difficulty_policy_keeps_concurrency_without_hard`） |
+| TC-DIFF-04 | 同上（粒度 = 波次 + 依赖拓扑硬约束） | `difficulty_policy="difficulty"`，`e1`/`e2`（easy，无依赖）为波次 1、`h1`/`h2`（hard，`depends_on=["e1"]`）为波次 2 | 波次 1 **并发**（两者先入，窗口重叠）；波次 2 **串行不重叠**；依赖拓扑**未变**（hard 与 easy 仍分属不同波次）（锚点：`::test_only_hard_wave_is_serialized_across_waves`） |
+| TC-DIFF-05 | 同上（难易度缺省与非法值归一） | 未声明 / `"urgent"` / `"1"` / `""` / `"very hard"` / `"HARD!"` / `"中"` / 非字符串（`1` / `None` / `1.5` / `["hard"]` / `{"level":"hard"}`） | `difficulty` 全部**归一**为 `medium`（不抛裸异常、不剔除子任务）（锚点：`::test_illegal_difficulty_normalized_to_medium` / `::test_non_string_difficulty_normalized_to_medium`） |
+| TC-DIFF-06 | 同上（大小写与空白归一） | `"HARD"` / `" hard "` / `"Easy"` / `" Medium"` | 归一为对应小写档位（`hard` / `easy` / `medium`）——**不**因字面不等降级为 `medium`（锚点：`::test_difficulty_case_and_whitespace_normalized`） |
+| TC-DIFF-07 | 同上（难易度随计划持久化往返） | `plan_to_dict` → `plan_from_dict` 往返；以及**缺键**的旧检查点 dict | 往返后 `difficulty` 逐字保留；旧检查点缺键回落 `medium`（**不静默丢字段**；`models.py` 两处枚举同改是其前提）（锚点：`::test_plan_roundtrip_preserves_difficulty` / `::test_plan_from_dict_missing_difficulty_falls_back`） |
+| TC-DIFF-08 | 同上（LLM 拆解自报难易度） | 打桩 `LLMProvider`：拆解输出含 `"difficulty": "hard"` | planner 解析后 `Subtask.difficulty == "hard"`（弱信号经 prompt + `_parse` 进入 DAG）（锚点：`::test_planner_parses_difficulty`） |
+| TC-DIFF-09 | 同上（构造器取值校验） | `TaskScheduler(difficulty_policy="fast")` | 抛 `OrchestrationError`，`code == INVALID_DISPATCH_POLICY`（fail-fast）（锚点：`::test_invalid_policy_rejected_at_construction`） |
+| TC-DIFF-10 | configuration/spec.md「编排调度配置」（三面无第二真源） | `config_specs()` 中两键的 `cli_flag` / `env_var` / `map_to` / `default` | 逐字等于 `--orchestration.difficulty-policy` / `CORE_ORCHESTRATION_DIFFICULTY_POLICY` / `orchestration.difficulty_policy` / `off`，与 `--orchestration.max-concurrency` / `CORE_ORCHESTRATION_MAX_CONCURRENCY` / `orchestration.max_concurrency` / `4`（锚点：`tests/test_orchestration_config.py::test_specs_declare_orchestration_keys`） |
+| TC-DIFF-11 | 同上（缺省 / 优先级链 / 段白名单） | 未配置段；yaml 取值；env 覆盖 yaml；CLI 覆盖 env+yaml | 缺省回落 `off` / `4`（与代码缺省一致）；优先级链 CLI > env > yaml 成立；声明段**不**触发「未知配置段」告警（锚点：`::test_defaults_match_code_defaults` / `::test_values_from_yaml` / `::test_env_overrides_yaml` / `::test_cli_overrides_env_and_yaml` / `::test_orchestration_section_is_not_reported_unknown`） |
+| TC-DIFF-12 | 同上（非法取值校验期拒绝） | `max_concurrency` ∈ `0` / `-1` / `2.5` / `abc` / `true`；`difficulty_policy` ∈ `fast` / `parallel` / `OFF` / `1` | `ConfigurationError`，报文分别含「非法波次并发上限」/「非法编排调度策略」——**阻断启动**、不静默退化（与 `difficulty` **归一**口径有意不同）（锚点：`::test_invalid_max_concurrency_blocks_startup` / `::test_invalid_policy_blocks_startup`） |
+| TC-DIFF-13 | 同上（组合根注入，不得依赖构造缺省） | `build_runtime` 读配置 `difficulty` / `2`；以及未配置时 | `runtime.orchestrator` 的 `_difficulty_policy` / `_max_concurrency` 等于**配置值**（`difficulty` / `2`）；未配置时等于代码缺省 `off` / `4` —— **仍走组合根**（构造缺省 `4` 与既有行为同值，不接线不会暴露）（锚点：`::test_build_runtime_injects_policy_and_limit` / `::test_build_runtime_defaults_unchanged`） |
+
+> **端到端（离线，不触网）**：临时 `config.yaml` 置 `orchestration.difficulty_policy=difficulty` 经
+> `build_runtime` 装配真 runtime，打桩拆解器产出「1 hard + 2 easy」同波次子任务 + 记录并发的子 Agent loop
+> ⇒ 时间线 `+hard,-hard,+easy1,-easy1,+easy2,-easy2`、峰值 **1**、三子任务全 `ok`（已在 change 落地时
+> 手工冒烟，未固化为用例）。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

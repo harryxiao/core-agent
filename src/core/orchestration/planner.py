@@ -19,9 +19,11 @@ from .models import Subtask, VerifyResult
 _DECOMPOSE_SYSTEM = (
     "你是任务拆解器。把目标拆成 2-6 个可执行的子任务 DAG，"
     '仅输出 JSON：{"subtasks": [{"id": "1", "goal": "...", '
-    '"acceptance": "...", "depends_on": [], "priority": 0}]}。'
+    '"acceptance": "...", "depends_on": [], "priority": 0, "difficulty": "medium"}]}。'
     "规则：goal 是给执行智能体的单一明确指令；acceptance 是可判定的验收标准；"
-    "depends_on 只引用已声明的 id，无依赖则留空数组；无依赖子任务不要伪造依赖。"
+    "depends_on 只引用已声明的 id，无依赖则留空数组；无依赖子任务不要伪造依赖；"
+    'difficulty 是该子任务的难易度，只能取 "easy" / "medium" / "hard" 三档之一，'
+    "把握不足时取 medium。"
 )
 
 _VERIFY_SYSTEM = (
@@ -107,6 +109,8 @@ class LLMSubtaskPlanner:
                     acceptance=str(item.get("acceptance", "")),
                     depends_on=depends_on,
                     priority=raw_priority if isinstance(raw_priority, int) else 0,
+                    # 弱信号：集合外取值由 `Subtask.__post_init__` 归一为 medium（不剔除子任务）
+                    difficulty=item.get("difficulty", ""),
                 )
             )
         return subtasks

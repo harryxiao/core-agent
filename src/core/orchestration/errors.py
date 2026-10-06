@@ -1,7 +1,8 @@
 """任务编排领域错误码（orchestration）。
 
 结构化错误码与异常分离：非法转移 / 校验失败 / 死循环 / 无匹配 Agent /
-并行度超限 / 进度未达标 / 判定器缺失，以领域异常承载，不向模型抛裸异常。
+并行度超限 / 调度策略非法 / 进度未达标 / 判定器缺失，以领域异常承载，
+不向模型抛裸异常。
 
 对应接口：doc/03-interfaces/orchestration-interface.md §4
 """
@@ -19,6 +20,7 @@ class OrchestrationErrorCode(StrEnum):
     DEADLOOP_DETECTED = "DEADLOOP_DETECTED"
     NO_AGENT_MATCH = "NO_AGENT_MATCH"
     WAVE_FANOUT_LIMIT = "WAVE_FANOUT_LIMIT"
+    INVALID_DISPATCH_POLICY = "INVALID_DISPATCH_POLICY"
     PROGRESS_NOT_MET = "PROGRESS_NOT_MET"
     MISSING_SUCCESS_CHECKER = "MISSING_SUCCESS_CHECKER"
 

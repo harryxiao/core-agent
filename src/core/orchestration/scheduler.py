@@ -38,6 +38,12 @@ Emit = Callable[[LoopEvent | None], None]
 _MAX_HANDOFF_CHARS = 2000  # 依赖结果注入/检查点留存的回复截断（上下文有界）
 _MAX_EVENT_EXCERPT = 600  # 进度事件携带的回复节选（UI 折叠详情用）
 
+# 同波次调度策略取值（change 0123；词表来源：doc/openspec/specs/orchestration/spec.md）：
+#   off（缺省）  —— 同波次按依赖拓扑并发（上限 max_concurrency），与引入策略前逐字一致；
+#   difficulty —— 同波次**含 hard** 时该波次串行，否则维持并发
+#                 （难易度是**降级信号**，不是并发开关）。
+DISPATCH_POLICIES: frozenset[str] = frozenset({"off", "difficulty"})
+
 # 子任务运行态回流白名单：内层循环事件类型 → 允许外发的载荷键。
 # **白名单封闭**：表内没有的类型（含模型流式原文 `reply_delta` 与未来新增类型）一律不外发
 # —— 既不洪泛，也不把未定稿原文/凭据带进事件面（「密钥只引用不读取」）。
@@ -105,6 +111,7 @@ class TaskScheduler:
         state_machine: StateMachine,
         tracker: ProgressTracker | None = None,
         max_concurrency: int = 4,
+        difficulty_policy: str = "off",
         success_checker: Callable[[list[str]], bool] | None = None,
         checkpoint: CheckpointFn | None = None,
         on_done: DoneFn | None = None,
@@ -115,11 +122,17 @@ class TaskScheduler:
                 OrchestrationErrorCode.WAVE_FANOUT_LIMIT,
                 f"并行度上限须 ≥1，当前 {max_concurrency}",
             )
+        if difficulty_policy not in DISPATCH_POLICIES:
+            raise OrchestrationError(
+                OrchestrationErrorCode.INVALID_DISPATCH_POLICY,
+                f"非法调度策略: {difficulty_policy}（可选：{'/'.join(sorted(DISPATCH_POLICIES))}）",
+            )
         self._decomposer = decomposer
         self._router = router
         self._state_machine = state_machine
         self._tracker = tracker if tracker is not None else ProgressTracker()
         self._max_concurrency = max_concurrency
+        self._difficulty_policy = difficulty_policy
         self._success_checker = success_checker
         self._checkpoint = checkpoint
         self._on_done = on_done
@@ -333,7 +346,7 @@ class TaskScheduler:
         """波次内子任务优先级排序 + 真并发扇出（资源上限分批）+ 汇总。"""
         subtasks = [s for s in plan.subtasks if s.id in wave]
         ordered = sorted(subtasks, key=lambda s: s.priority, reverse=True)
-        semaphore = asyncio.Semaphore(self._max_concurrency)
+        semaphore = asyncio.Semaphore(self._wave_limit(ordered))
         try:
             outcomes = await asyncio.gather(
                 *(
@@ -346,6 +359,19 @@ class TaskScheduler:
             return list(outcomes)
         finally:
             emit(None)  # 收尾哨兵：异常路径也必须解除事件排水阻塞
+
+    def _wave_limit(self, subtasks: list[Subtask]) -> int:
+        """本波次并发度（change 0123 难易度感知调度策略）。
+
+        ``off``（缺省）⇒ 资源上限（与引入策略前逐字一致）；``difficulty`` 且本波次**存在**
+        `hard` 子任务 ⇒ ``1``（串行逐个，避免资源争抢/上下文污染）。策略只**收窄**、不放大：
+        无任何一种取值会让并发高于 `max_concurrency`。
+        """
+        if self._difficulty_policy == "difficulty" and any(
+            s.difficulty == "hard" for s in subtasks
+        ):
+            return 1
+        return self._max_concurrency
 
     async def _run_subtask(  # noqa: PLR0911, PLR0913 — 子任务管道多早退分支/注入面
         self,

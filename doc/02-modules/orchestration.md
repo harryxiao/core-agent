@@ -58,6 +58,13 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
 - 子任务 DAG 按依赖拓扑分层为**波次（wave）**：同一波次内子任务无相互依赖，可并行 fan-out 到多个执行单元。
 - 波次内全部子任务完成并经 **fan-in 汇总校验**通过后，才推进下一波次；校验失败触发状态机 RECOVERING。
 - 并行度受**资源上限**约束：超出上限时同波次分批执行。
+- **同波次调度策略**（change `0123`／ADR-0116）：`TaskScheduler._fan_out` 的 `Semaphore` 上限由
+  `_wave_limit(本波次)` 给出 —— 策略 `off`（缺省）取 `max_concurrency`（与引入前**逐字一致**）；
+  策略 `difficulty` 时，本波次**存在** `difficulty = "hard"` 的子任务则上限取 `1`（整波串行，按优先级
+  降序逐个），否则仍取 `max_concurrency`。**粒度是波次而非子任务**；策略**只收窄不放大**并发，
+  且**不改**波次划分（依赖拓扑仍是**硬约束**）。两值经 `configuration` 校验期拦截非法取值
+  （`INVALID_DISPATCH_POLICY` 为构造期 fail-fast），并由**组合根**注入（缺省 `4` 与既有行为同值 ⇒
+  不接线不暴露，故**必须**显式传）。
 
 ### 3.5 目标监控（Goal / SuccessCriteria + ProgressTracker）
 
