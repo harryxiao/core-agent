@@ -3172,6 +3172,55 @@
 - **规格**：`ui`（**ADDED**「TUI 子任务运行态与详情」+ 4 Scenario：「子任务运行中可见状态徽标」
   「里程碑事件展开可见」「表外事件不呈现」「里程碑先于折叠块到达时静默忽略」）。**非** `skip_specs`。
 
+## ADR-0118：TUI 子 Agent 焦点视图（change 0125 / phase-33 切片 B：E61）
+
+- **背景**：`coding-plan/phase-33.md` 立账的 **E61**（用户原始需求①「**进入子 agent 查看状态，查看完成
+  也可以选择回到主 Agent**」）。phase-29 四 change 已交付「**只读详情**」（`0122` Web 任务区 / `0124` TUI
+  折叠块里程碑），但「**主/子来回切换**」被明文列为 non-goal（`0124` proposal §Non-goals）⇒ 落差是
+  **「焦点」本身**：单子任务过滤视图 + 进入 / 返回导航。**一手复核**（2026-10-06）：`compose()` 只有单一
+  内容区 `#timeline`（无「另一视图」可切）；子任务标题/状态/详情**均已在主时间线折叠块内**（`_open`），
+  缺的只是「单独看它」的通道。2026-10-06 用户裁决：**形态 = 焦点视图（presentation-only）**、
+  **交互范围 = CLI 内嵌面板 + main/subagent 来回**、**切换方式 = 命令 + F2**、**Web 沿用 `TaskPanel`**。
+- **决策①：焦点视图 = presentation-only 消费面接线，不新建数据源。** 面板**正文**直接读焦点折叠块详情
+  的**已渲染文本**（`str(detail.render())`）、标题读折叠块 `box.title` ⇒ 与主时间线**同一份**呈现物，
+  零新增事件、零新增载荷、零子 Agent 消息流（**不触** change `0115`「转录只注入主 loop」边界，phase-29
+  §7 红线②）。成功切换**零时间线写入**（呈现层切换不改内容）⇒「返回后主时间线逐字不变」是可断言的硬性质。
+- **决策②：视图切换只改 `display`，绝不 unmount 时间线。** `_add`（`repl.py:358`）与尾段热更新
+  `_touch_tail` / `_freeze_tail` **无条件** `query_one("#timeline")` ⇒ 一旦 `remove()` 掉时间线，流式/
+  里程碑/终态落地的路径会集体崩溃。故 `#panel` 与 `#timeline` **互斥 `display`**（两者都在 DOM 中）。
+  初始隐藏**命令式**置于 `on_mount`（与既有 `#spinner` 同法）—— Textual 的 `display` setter 有
+  「遗忘原始值」的 TODO，用 CSS `display: none` 会在切回时丢失意图。
+- **决策③：焦点**绑定 widget 身份**，不绑定 sid 字符串。** `self._open` **跨任务从不清空**，而子任务
+  标识（`"1"` / `"s1"`）**逐任务复用** ⇒ 若以 sid 判「当前焦点是否即该详情」，会把**上一任务**同 sid 的
+  陈旧条目误认作当前焦点。故存 `_focus_box` / `_focus_detail` **对象引用**，刷新守卫一律用 `is` 比对
+  （`_progress_subtask` 末尾 + `_complete_subtask` **两个出口**：skipped 早退与正常收尾）。
+- **决策④：`task_started` 与审批挂起**强制**回主视图。** 计划头（`◍ 任务 …`）与审批提示（`⚠ 需审批`）
+  都**写进时间线**；若此刻时间线被隐藏，提示不可见 ⇒ **视觉死锁**（尤其审批为模态：不响应就永不收尾）。
+  故 `_ask_approval` 首行与 `_add_task_widget` 的 `task_started` 分支各置 `_set_focus("")`。
+- **决策⑤：焦点命令**先于**忙态拒绝拦截（运行中可用）；成功零时间线写入。** `_handle_focus_command`
+  在 `on_input_submitted` 中位于忙态检查**之前**（裁决明确「任务运行中亦可用」——而 `/task` 正是长时间
+  忙态的唯一来源，若排在忙态之后则该功能在最需要时不可用）。失败的提示（用法 / 未找到）仍落时间线；
+  普通（非焦点）输入在忙态**之后**回主视图（忙态拒绝不改变视图状态）。
+- **决策⑥：Web 不做焦点视图（**有意**不对称）。** 用户裁决「Web 沿用 phase-29 已落地的 `TaskPanel`」：
+  Web 侧是**面板式**布局（右栏任务区逐子任务呈现标题 + 状态 + `<details>` 可展开详情，且可与会话列表
+  并列查看），其「进入子任务」的信息收益低于终端（终端时间线是**单列对话流**，聚焦才能独占视野）。故
+  本 change **零 Web 改动**、零编排层改动、零事件面改动，`format_task_event`（非交互 `core-agent task`
+  共用）**逐字不动** —— 非交互 CLI 输出不变。
+- **判据订正（相对 phase-33 §1 原稿，2 条）**：① 原 (b)「只读详情 + 状态（复用 `subtask_progress` 载荷）」
+  与已落地件（`0124` 折叠块里程碑 / `0122` Web 任务区）**逐字同义** ⇒ 照做即 **0 增量**（以「复用既有
+  载荷」之名**重复登记**＝谎报进度）；**重定义**后的真增量是**「焦点」本身**（单子任务过滤 + 进入/返回
+  导航）。② 焦点须**绑定 widget 身份**而非 sid（决策③）—— 该陷阱在原稿中未被识别。
+- **已知局限**：① 聚焦的子任务**收尾后仍留在焦点视图**（标题转 `✓/✗`、正文补 `判定：`），而**任务级**
+  `✔ 任务完成（…）` 行不在面板内 ⇒ 须 `F2` 回主视图可见（面板标题常驻「/main 或 F2 返回主视图」提示）；
+  ② 焦点是**即时快照**：`/focus 1` 若早于 `subtask_started 1` 到达 ⇒ 按未知拒绝（**无**「延迟聚焦」半开态，
+  避免半开状态机）；③ `Ctrl+B` 打断提示在聚焦时写进被隐藏的时间线（纯视觉，不影响打断语义）；
+  ④ 审批挂起时焦点命令被审批分支先行拦截（**模态语义，正确**）—— 由决策④的强制回主视图兜底。
+- **规格**：`ui`（**ADDED**「TUI 子 Agent 焦点视图」+ **6** Scenario：「聚焦显示子任务框且主时间线不可见」
+  「返回主视图后主时间线内容逐字不变」「聚焦期间随里程碑与收尾实时刷新」「未知子任务标识不切换视图」
+  「焦点命令在任务运行中可用」「焦点面板不泄露内部标识与原始参数」）。**非** `skip_specs`（新需求块，
+  先例 change `0028` / `0124`；`0124` 的「主-子焦点切换 SHALL NOT **在本 Requirement 内**」逐字保留 ——
+  本条是**另立**的后续需求）。
+
 ---
 
 ## 变更追踪
@@ -3286,3 +3335,4 @@
 | ADR-0115 | 03-interfaces/ui-interface.md, 06-ui-frontend/ui-architecture.md, 04-testing/test-cases.md, coding-plan/phase-29.md |
 | ADR-0116 | 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 02-modules/orchestration.md, 04-testing/test-cases.md, coding-plan/phase-29.md |
 | ADR-0117 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/phase-29.md |
+| ADR-0118 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/phase-33.md |

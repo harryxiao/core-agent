@@ -636,6 +636,26 @@
 
 ---
 
+## 41. TUI 子 Agent 焦点视图（TC-FOCUS，change `0125`／ADR-0118，账本 E61）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-FOCUS-01 | ui/spec.md「TUI 子 Agent 焦点视图」（聚焦显示子任务框且主时间线不可见） | 门控编排器：`subtask_started` 后挂起；`/task` 起任务 → `/focus 1` 逐字符输入 + 回车；读 `#panel` / `#timeline` 的 `display` 与面板文本 | `#panel.display is True` / `#timeline.display is False`；面板标题含 `▸ 子任务 1` 与运行态徽标 `⟳`、正文含 `验收：`；**焦点命令不进推理**（`loop.inputs == []`）（锚点：`tests/test_repl.py::test_focus_shows_subtask_panel_and_hides_timeline`） |
+| TC-FOCUS-02 | 同上（聚焦期间随里程碑与收尾实时刷新） | 聚焦态下放行里程碑事件（`action_completed`，`tools.code_run` / 1500ms），再放行 `subtask_completed`（`reason` / `reply`） | 里程碑后正文出现 `⏺ Bash ✓ (1.5s)`（复用动作行**友好名**口径）；收尾后标题含 `✓` 且**不含** `⟳`（替换）、正文含 `判定：验收通过` 与结果节选（锚点：`::test_focus_panel_refreshes_on_milestone_and_completion`） |
+| TC-FOCUS-03 | 同上（返回主视图后主时间线内容逐字不变） | 记录聚焦前 `_timeline_text`；`/focus 1` → `/main`；比对文本 | 时间线重新可见，且文本与聚焦前**逐字一致**（成功切换**零时间线写入** ⇒ presentation-only）（锚点：`::test_returning_to_main_view_leaves_timeline_unchanged`） |
+| TC-FOCUS-04 | 同上（焦点命令在任务运行中可用） | 任务运行中（忙态，普通输入会被拒）按 `F2`（`focus_main` 绑定） | 回主视图（`#timeline.display is True`）且 `_turn_busy` **仍真**（焦点命令不被忙态拒绝、也不复位忙态）（锚点：`::test_focus_command_bypasses_busy_rejection`） |
+| TC-FOCUS-05 | 同上（未知子任务标识不切换视图） | ① 未开工即 `/focus 1`；② 子任务 1 存在时 `/focus 99` | 两种情形 `#panel.display` 均 **False**（主视图仍在）、提示「未找到子任务 99」；无「延迟聚焦」半开态（锚点：`::test_focus_unknown_subtask_keeps_main_view`） |
+| TC-FOCUS-06 | 同上 + `ui-interface.md` §1.1 注（焦点面板不泄露内部标识与原始参数） | 里程碑载荷含 `tool_id="tools.code_run"`、`args={"code": "print(1)"}`；聚焦后读面板文本 | 面板含**友好名** `Bash`，**不含** `tools.code_run`（内部 id）与 `print(1)`（原始参数）（锚点：`::test_focus_panel_does_not_leak_tool_id_or_args`） |
+
+> **端到端（离线，不触网）**：真 `TaskScheduler`（打桩 `planner` 拆解器 + 打桩子 Agent loop，产出
+> `action_started` / `action_completed` / `step_completed` / `loop_finished`）经 `UIAPILayer.run_task`
+> 驱动 headless TUI ⇒ **10/10** 断言全绿（面板可见 / 时间线隐藏 / 标题含 `▸ 子任务 1` 与 `⟳` / 正文含验收 /
+> 里程碑 `⏺ Bash ✓ (1.5s)` / 判定 / 结果节选 / **不含** `tools.code_run` 与 `print(1)` / `F2` 回主视图；
+> 已在 change 落地时手工冒烟，未固化为用例）。
+> **非交互 CLI（`core-agent task`）与 Web 不在本 TC 范围**：前者的单行输出粒度与后者（`TaskPanel`）均**有意**不变（ADR-0118 决策⑥）。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

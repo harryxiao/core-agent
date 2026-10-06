@@ -656,6 +656,280 @@ def test_non_action_progress_renders_no_line() -> None:
     assert "reason_started" not in text
 
 
+# ---- TUI 子 Agent 焦点视图（change 0125 / 账本 E61） ----
+
+
+def _panel_text(app: object) -> str:
+    """焦点面板全量文本：标题（markup 口径）+ 正文（原始口径）渲染文本。"""
+    from textual.widgets import Static  # noqa: PLC0415 — 可选依赖懒 import
+
+    title = app.query_one("#panel-title", Static)  # type: ignore[attr-defined]
+    body = app.query_one("#panel-body", Static)  # type: ignore[attr-defined]
+    return f"{title.render()}{body.render()}"
+
+
+class _GatedOrchestrator:
+    """门控编排器：`subtask_started` 后挂起，按事件门放行里程碑与收尾（运行态窗口确定）。"""
+
+    def __init__(self, *, milestone: asyncio.Event, done: asyncio.Event) -> None:
+        self.started = asyncio.Event()
+        self._milestone = milestone
+        self._done = done
+
+    async def astream(self, task_id: str, goal: str, **kwargs: object):
+        yield LoopEvent("task_started", {"task_id": task_id, "goal": goal})
+        yield LoopEvent(
+            "subtask_started",
+            {"task_id": task_id, "subtask_id": "1", "goal": "查资料", "acceptance": "给出来源"},
+        )
+        self.started.set()
+        await self._milestone.wait()
+        yield LoopEvent(
+            "subtask_progress",
+            {
+                "task_id": task_id,
+                "subtask_id": "1",
+                "event": "action_completed",
+                "data": {
+                    "round": 0,
+                    "tool_id": "tools.code_run",
+                    "ok": True,
+                    "duration_ms": 1500,
+                    "output": "1",
+                },
+                "ts": 1.0,
+            },
+        )
+        await self._done.wait()
+        yield LoopEvent(
+            "subtask_completed",
+            {
+                "task_id": task_id,
+                "subtask_id": "1",
+                "ok": True,
+                "reason": "验收通过",
+                "reply": "答案 42",
+            },
+        )
+        yield LoopEvent("task_finished", {"outcomes": []})
+
+
+async def _type_line(pilot: object, text: str) -> None:
+    """逐字符输入并回车（headless 输入驱动，与既有 /task 用例同法）。"""
+    for ch in text:
+        await pilot.press(ch)  # type: ignore[attr-defined]
+    await pilot.press("enter")  # type: ignore[attr-defined]
+
+
+async def _wait_started(pilot: object, orch: _GatedOrchestrator) -> None:
+    """等门控编排器的 `subtask_started` 事件到位（运行态窗口开启）。"""
+    for _ in range(50):
+        await pilot.pause()  # type: ignore[attr-defined]
+        if orch.started.is_set():
+            break
+
+
+def test_focus_shows_subtask_panel_and_hides_timeline() -> None:
+    """`/focus <sid>`：面板可见、主时间线不可见，且焦点命令**不进推理**。"""
+    milestone, done = asyncio.Event(), asyncio.Event()
+    orch = _GatedOrchestrator(milestone=milestone, done=done)
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop, orchestrator=orch)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> str:
+        from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            await _type_line(pilot, "/task 查答案")
+            await _wait_started(pilot, orch)
+            await _type_line(pilot, "/focus 1")
+            for _ in range(20):
+                await pilot.pause()
+            assert app.query_one("#panel", Vertical).display is True
+            assert app.query_one("#timeline", Vertical).display is False
+            focused = _panel_text(app)
+            milestone.set()
+            done.set()
+            for _ in range(20):
+                await pilot.pause()
+            return focused
+
+    focused = asyncio.run(drive())
+    assert loop.inputs == []  # 焦点命令不进推理
+    assert "▸ 子任务 1" in focused  # 主题（sid + goal）沿用折叠块口径
+    assert "⟳" in focused  # 运行态徽标
+    assert "验收：给出来源" in focused  # 详情：验收标准
+
+
+def test_focus_panel_refreshes_on_milestone_and_completion() -> None:
+    """聚焦期间**实时刷新**：里程碑补入正文，收尾后标题落 ✓ 且正文含判定。"""
+    milestone, done = asyncio.Event(), asyncio.Event()
+    orch = _GatedOrchestrator(milestone=milestone, done=done)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> tuple[str, str]:
+        async with app.run_test() as pilot:  # type: ignore[attr-defined]
+            await _type_line(pilot, "/task 查答案")
+            await _wait_started(pilot, orch)
+            await _type_line(pilot, "/focus 1")
+            for _ in range(10):
+                await pilot.pause()
+            milestone.set()
+            for _ in range(30):
+                await pilot.pause()
+            mid = _panel_text(app)
+            done.set()
+            for _ in range(30):
+                await pilot.pause()
+            return mid, _panel_text(app)
+
+    mid, after = asyncio.run(drive())
+    assert "⏺ Bash ✓ (1.5s)" in mid  # 里程碑：友好名 + 耗时（复用动作行口径）
+    assert "✓" in after and "⟳" not in after  # 收尾替换运行态徽标
+    assert "判定：验收通过" in after
+    assert "答案 42" in after  # 结果节选
+
+
+def test_returning_to_main_view_leaves_timeline_unchanged() -> None:
+    """`/main` 回主视图：时间线重新可见且文本与聚焦前**逐字一致**（呈现层切换不改内容）。"""
+    milestone, done = asyncio.Event(), asyncio.Event()
+    orch = _GatedOrchestrator(milestone=milestone, done=done)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> tuple[str, str, bool]:
+        from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            await _type_line(pilot, "/task 查答案")
+            await _wait_started(pilot, orch)
+            before = _timeline_text(app)
+            await _type_line(pilot, "/focus 1")
+            for _ in range(10):
+                await pilot.pause()
+            assert app.query_one("#timeline", Vertical).display is False
+            await _type_line(pilot, "/main")
+            for _ in range(10):
+                await pilot.pause()
+            visible = app.query_one("#timeline", Vertical).display is True
+            after = _timeline_text(app)
+            milestone.set()
+            done.set()
+            for _ in range(20):
+                await pilot.pause()
+            return before, after, visible
+
+    before, after, visible = asyncio.run(drive())
+    assert visible
+    assert after == before  # 聚焦/返回**零时间线写入**
+
+
+def test_focus_command_bypasses_busy_rejection() -> None:
+    """任务运行中（忙态）：`F2` 仍生效（焦点命令先于忙态拒绝被处理），忙态不复位。"""
+    milestone, done = asyncio.Event(), asyncio.Event()
+    orch = _GatedOrchestrator(milestone=milestone, done=done)
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop, orchestrator=orch)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> bool:
+        from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            await _type_line(pilot, "/task 查答案")
+            await _wait_started(pilot, orch)
+            await _type_line(pilot, "/focus 1")
+            for _ in range(10):
+                await pilot.pause()
+            assert app.query_one("#panel", Vertical).display is True
+            await pilot.press("f2")  # 忙态中直接按键（不回车）
+            for _ in range(10):
+                await pilot.pause()
+            back = app.query_one("#timeline", Vertical).display is True
+            busy = app._turn_busy  # noqa: SLF001 — 断言忙态未被焦点命令复位
+            milestone.set()
+            done.set()
+            for _ in range(20):
+                await pilot.pause()
+            return back and busy
+
+    assert asyncio.run(drive())
+    assert loop.inputs == []  # 焦点命令与 F2 均不进推理
+
+
+def test_focus_unknown_subtask_keeps_main_view() -> None:
+    """未开工即聚焦 / 未知标识：均**不切换**视图（主时间线仍在），并给未找到提示。"""
+    orch = _TaskOrchestrator(
+        [
+            (
+                "subtask_started",
+                {"task_id": "t", "subtask_id": "1", "goal": "查资料", "acceptance": "给出来源"},
+            ),
+            ("task_finished", {"outcomes": []}),
+        ]
+    )
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> tuple[bool, bool, str]:
+        from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            await _type_line(pilot, "/focus 1")  # 未开工即聚焦（尚无对应折叠块）
+            for _ in range(10):
+                await pilot.pause()
+            early = app.query_one("#panel", Vertical).display
+            await _type_line(pilot, "/task 查答案")
+            for _ in range(60):
+                await pilot.pause()
+            await _type_line(pilot, "/focus 99")  # 未知标识
+            for _ in range(10):
+                await pilot.pause()
+            return early, app.query_one("#panel", Vertical).display, _timeline_text(app)
+
+    early, panel, text = asyncio.run(drive())
+    assert early is False  # 未开工即聚焦：不进入焦点视图（无「延迟聚焦」半开态）
+    assert panel is False  # 未知标识：仍为主视图
+    assert "未找到子任务 99" in text
+
+
+def test_focus_panel_does_not_leak_tool_id_or_args() -> None:
+    """焦点面板沿用友好名口径：不含内部 `tool_id` 与工具原始参数。"""
+    milestone, done = asyncio.Event(), asyncio.Event()
+    orch = _GatedOrchestrator(milestone=milestone, done=done)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> str:
+        async with app.run_test() as pilot:  # type: ignore[attr-defined]
+            await _type_line(pilot, "/task 查答案")
+            await _wait_started(pilot, orch)
+            milestone.set()
+            for _ in range(30):
+                await pilot.pause()
+            await _type_line(pilot, "/focus 1")
+            for _ in range(10):
+                await pilot.pause()
+            panel = _panel_text(app)
+            done.set()
+            for _ in range(20):
+                await pilot.pause()
+            return panel
+
+    panel = asyncio.run(drive())
+    assert "Bash" in panel  # 友好名
+    assert "tools.code_run" not in panel  # 内部 tool_id 不进用户可见层
+    assert "print(1)" not in panel  # 原始参数不进用户可见层
+
+
 # ---- 会话续聊（`--session <id>`，change 0116） ----
 
 

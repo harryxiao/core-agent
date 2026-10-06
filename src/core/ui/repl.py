@@ -211,6 +211,15 @@ def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — �
     overflow-y: auto;
     padding: 0 1;
 }
+#panel {  /* 子 Agent 焦点视图：与时间线互斥显示（display 切换，绝不 unmount） */
+    height: 1fr;
+    overflow-y: auto;
+    padding: 0 1;
+}
+#panel-title {
+    color: $accent;
+    text-style: bold;
+}
 #footer {  /* 输入区+提示盒钉底：时间线独占剩余空间（内层容器默认 1fr 会撑满全屏） */
     dock: bottom;
     height: auto;
@@ -292,11 +301,16 @@ Collapsible > CollapsibleTitle:hover {
 """
 
         # 退出走 App 默认 ctrl+q / ctrl+c；空回车不再退出（IME 确认等误触防护）
-        BINDINGS = [("ctrl+b", "barge_in", "打断"), ("f1", "hints", "快捷键")]
+        BINDINGS = [
+            ("ctrl+b", "barge_in", "打断"),
+            ("f1", "hints", "快捷键"),
+            ("f2", "focus_main", "返回主视图"),
+        ]
 
-        _HINTS_SHORT = "F1 快捷键 · Ctrl+B 打断 · Ctrl+Q 退出"
+        _HINTS_SHORT = "F1 快捷键 · Ctrl+B 打断 · Ctrl+Q 退出 · /focus 子任务 聚焦 · F2 返回主视图"
         _HINTS_FULL = (
             "F1 快捷键 · Ctrl+B 打断 · Ctrl+Q 退出 · /task <目标> 启动编排 · "
+            "/focus <子任务> 聚焦 · /main 或 F2 返回主视图 · "
             "审批 y 批准 / n 拒绝 · 点击子任务/动作行展开详情"
         )
 
@@ -309,6 +323,9 @@ Collapsible > CollapsibleTitle:hover {
             self._approval_future: Any | None = None  # 挂起中的审批 Future[bool]
             self._turn_busy = False  # 本轮 worker 是否在跑（忙时新消息提示等待）
             self._open: dict[str, tuple[Collapsible, Static, str]] = {}  # sid→(块, 详情, goal)
+            self._focus_sid: str = ""  # 焦点中的子任务标识（"" = 主视图）
+            self._focus_box: Collapsible | None = None  # 焦点折叠块（身份绑定：sid 跨任务复用）
+            self._focus_detail: Static | None = None  # 焦点折叠块详情（面板正文取此渲染文本）
             self._actions: dict[str, tuple[Collapsible, Static]] = {}  # round:tool→(块, 详情)
             self._spin_timer: Timer | None = None  # 工作状态行驱动
             self._spin_t0 = 0.0
@@ -318,6 +335,9 @@ Collapsible > CollapsibleTitle:hover {
 
         def compose(self) -> ComposeResult:
             yield Vertical(id="timeline")
+            with Vertical(id="panel"):  # 子 Agent 焦点视图（初始隐藏，见 on_mount）
+                yield Static(id="panel-title")
+                yield Static("", id="panel-body", classes="hint", markup=False)
             yield Static(id="spinner")
             with Vertical(id="footer"):  # 输入区+提示盒钉底，时间线独占剩余空间
                 with Horizontal(id="input-box"):
@@ -329,6 +349,7 @@ Collapsible > CollapsibleTitle:hover {
             self.register_theme(core_theme)
             self.theme = "core"
             self.query_one("#spinner", Static).display = False
+            self.query_one("#panel", Vertical).display = False  # 初始主视图（命令式置隐）
             self.query_one("#input", Input).focus()
             self._add(
                 Static(
@@ -390,6 +411,7 @@ Collapsible > CollapsibleTitle:hover {
 
         async def _ask_approval(self, tool_id: str, args: dict[str, Any], reason: str) -> bool:
             """审批提示落时间线，输入 y/n 决断；同刻仅一单（重复请求 fail-closed）。"""
+            self._set_focus("")  # 审批提示须可见（否则挂起提示落进被隐藏的时间线）
             if self._approval_future is not None and not self._approval_future.done():
                 return False
             import asyncio  # noqa: PLC0415 — 与 textual 懒 import 同策略
@@ -497,9 +519,12 @@ Collapsible > CollapsibleTitle:hover {
             message.input.clear()  # 回车即清空输入框，准备下一轮
             if not text:
                 return  # 空回车忽略（IME 确认误触不退出；退出走 Ctrl+Q/Ctrl+C）
+            if self._handle_focus_command(text):  # 焦点命令先于忙态拒绝（运行中亦可用）
+                return
             if self._turn_busy:
                 self._add(Static("处理中，请稍候（Ctrl+B 打断）", classes="hint"))
                 return
+            self._set_focus("")  # 普通输入 ⇒ 回主视图（回复不落进被隐藏的时间线）
             self._add(  # 用户输入回显：❯ 前缀行（Claude CLI 式，无气泡）
                 Static(f"[{_ACCENT}]❯[/] {escape(text)}", classes="echo", markup=True)
             )
@@ -540,6 +565,7 @@ Collapsible > CollapsibleTitle:hover {
             data = cast(dict[str, Any], payload)
             kind = event.type.removeprefix("task.")
             if kind == "task_started":
+                self._set_focus("")  # 新计划回主视图（否则计划头落进被隐藏的时间线）
                 line = f"◍ 任务 {data.get('task_id')}：{data.get('goal', '')}"
                 self._add(Static(line, classes="hint", markup=False))
                 return
@@ -626,6 +652,8 @@ Collapsible > CollapsibleTitle:hover {
                 mark = "失败" if step.get("failed") else "完成"
                 line = f"· 第 {step.get('round')} 轮{mark}"
             detail.update("\n".join([str(detail.render()), line]))
+            if detail is self._focus_detail:  # 聚焦中 ⇒ 面板实时刷新
+                self._render_panel()
 
         def _complete_subtask(self, sid: str, data: dict[str, Any]) -> None:
             """子任务收尾：标题落 ✓/✗，展开区 update 补判定与结果节选。"""
@@ -635,6 +663,8 @@ Collapsible > CollapsibleTitle:hover {
             box, detail, goal = entry
             if data.get("skipped"):
                 box.title = f"▸ 子任务 {sid}  ✓ 已完成（续跑跳过）"
+                if detail is self._focus_detail:
+                    self._render_panel()
                 return
             mark = "✓" if data.get("ok") else "✗"
             box.title = f"▸ 子任务 {sid}  {mark} {escape(goal)}"
@@ -643,6 +673,75 @@ Collapsible > CollapsibleTitle:hover {
             if reply:
                 lines.append(reply)
             detail.update("\n".join(lines))
+            if detail is self._focus_detail:
+                self._render_panel()
+
+        # ---- 子 Agent 焦点视图（presentation-only：复用折叠块已渲染文本） ----
+
+        def _set_focus(self, sid: str) -> bool:
+            """切视图：`sid` 非空 ⇒ 聚焦该子任务，空 ⇒ 回主视图。返回是否命中。
+
+            只切 `display`（时间线上 `_add`/热更新路径**无条件** `query_one("#timeline")`
+            ⇒ 绝不 unmount）；`self._open` 跨任务不清空而 sid 逐任务复用 ⇒ 焦点绑定
+            **widget 身份**（`_focus_box`/`_focus_detail`），非 sid 字符串。
+            """
+            if not sid:
+                if not self._focus_sid:
+                    return True  # 已在主视图 ⇒ 零 widget 抖动
+                self._focus_sid = ""
+                self._focus_box = None
+                self._focus_detail = None
+                self.query_one("#panel", Vertical).display = False
+                self.query_one("#timeline", Vertical).display = True
+                return True
+            entry = self._open.get(sid)
+            if entry is None:
+                return False  # 无对应折叠块（未开工）⇒ 不切换（无「延迟聚焦」半开态）
+            box, detail, _goal = entry
+            self._focus_sid = sid
+            self._focus_box = box
+            self._focus_detail = detail
+            self.query_one("#timeline", Vertical).display = False
+            self.query_one("#panel", Vertical).display = True
+            self._render_panel()
+            return True
+
+        def _render_panel(self) -> None:
+            """面板重渲染：标题取折叠块标题（已转义口径），正文取详情已渲染文本。"""
+            box, detail = self._focus_box, self._focus_detail
+            if box is None or detail is None:
+                return
+            panel = self.query_one("#panel", Vertical)
+            self.query_one("#panel-title", Static).update(
+                f"[{_ACCENT}]◇[/] {box.title}  [dim]（/main 或 F2 返回主视图）[/]"
+            )
+            self.query_one("#panel-body", Static).update(str(detail.render()))
+            panel.call_after_refresh(panel.scroll_end, animate=False)
+
+        def _handle_focus_command(self, text: str) -> bool:
+            """焦点命令（`/focus <sid>` / `/main`）拦截。返回是否已消费。
+
+            成功切换**零时间线写入**（呈现层切换不改内容）；仅失败给提示。
+            """
+            if text == "/main":
+                self._set_focus("")
+                return True
+            if text == "/focus":
+                self._add(Static("用法：/focus <子任务标识>", classes="hint"))
+                return True
+            if text.startswith("/focus "):
+                sid = text[len("/focus ") :].strip()
+                if not sid:
+                    self._add(Static("用法：/focus <子任务标识>", classes="hint"))
+                    return True
+                if not self._set_focus(sid):
+                    self._add(Static(f"未找到子任务 {sid}（仍为主视图）", classes="hint"))
+                return True
+            return False
+
+        def action_focus_main(self) -> None:
+            """F2：返回主视图（无焦点时空操作）。"""
+            self._set_focus("")
 
         # ---- 普通消息轮 ----
 

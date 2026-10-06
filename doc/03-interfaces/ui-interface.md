@@ -77,6 +77,8 @@ class UIAPILayer:
 > `step_completed`：round/failed），**表外类型不外发**。TUI 展开区**只**呈现 `tool_id` 的**友好名**与
 > 耗时（轮次级落轮次与成败）——原始 `args` / `output` / 内部 `tool_id` **不进用户可见层**；无对应折叠块
 > 的里程碑**静默忽略**。非交互 `core-agent task` 入口**不呈现**里程碑（既有单行粒度不变）。
+> TUI 另可经 `/focus <子任务标识>` 进入**单子任务焦点视图**（复用同一折叠块已渲染文本，零新增数据源；
+> change `0125` / ADR-0118，见 §1 末）。
 
 ### 1.2 HTTP 端点清单（WebBridge.serve）
 
@@ -182,6 +184,15 @@ fail-closed，先于进入 TUI 拒绝），缺省 ⇒ 新建（既有行为不�
 **并列不混池**（在途运行态 vs 持久记录）；任务收尾（`task_finished` / `task_failed`）该任务**移出在途列表**
 （回落）并以一次性提示呈现终态，**不**进入会话列表。「进入子 agent 会话 / 主-子焦点切换」不在其内
 （子 Agent 消息流**无数据源**：转录只注入主 loop，见 change `0115`）。
+
+**TUI 子 Agent 焦点视图（change 0125 / ADR-0118）**：REPL 支持**主视图 ⇄ 子任务焦点视图**切换 ——
+`/focus <子任务标识>` 进入该子任务的焦点视图（`#panel`：标题沿用折叠块口径 `▸ 子任务 <sid>  ⟳|✓|✗ <goal>`，
+正文取该折叠块详情的**已渲染文本**：验收 / 里程碑 / 判定 / 结果节选），`/main` 或 **`F2`**（绑定
+`focus_main`）返回主视图。切换**只改 `display`**（`#panel` 与 `#timeline` 互斥，**绝不 unmount** 时间线）；
+焦点**绑定 widget 身份**（`self._open` 跨任务不清空而 sid 逐任务复用）；成功切换**零时间线写入** ⇒
+返回后主时间线内容**逐字不变**。焦点命令在 `on_input_submitted` 中**先于忙态拒绝**处理（任务运行中亦可用，
+且**不进推理**）；未知标识不切换（提示「未找到」）。`task_started` 与**审批挂起**时强制回主视图
+（计划头 / 审批提示写在时间线上，隐藏即不可见）。Web 侧**不做**焦点视图（面板式布局，沿用 `TaskPanel`）。
 
 **Web Client 与 Host 分离**：Web 前端（SPA）作为纯静态资源独立托管，`WebBridge` 仅暴露统一后端 API；前端经该 API 连接远程 / 本机常驻 Harness Host（见 `deployment-interface.md`），前端升级无需重启 Host 后端。
 
