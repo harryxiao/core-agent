@@ -446,20 +446,26 @@ class TaskScheduler:
                 "subtask_verified",
                 {"subtask_id": subtask.id, "passed": verify.passed, "reason": verify.reason},
             )
+            # E63：验收通过**且**执行未失败才算通过（对齐 delegate 正解 `not result.failed`）；
+            # 执行失败态（循环未达成 / 异常终止 / 预算耗尽）fail-closed，不因合成回复非空而假成功。
+            ok = verify.passed and not result.failed
+            reason = verify.reason
+            if ok is False and verify.passed:
+                reason = "子任务执行未达成目标"
             emit(
                 LoopEvent(
                     "subtask_completed",
                     {
                         "task_id": task_id,
                         "subtask_id": subtask.id,
-                        "ok": verify.passed,
-                        "reason": verify.reason,
+                        "ok": ok,
+                        "reason": reason,
                         "trace_id": result.trace_id,
                         "reply": result.reply[:_MAX_EVENT_EXCERPT],
                     },
                 )
             )
-            if verify.passed:
+            if ok:
                 self._tracker.record(task_id, subtask.id)
                 self._results.setdefault(task_id, {})[subtask.id] = result.reply[
                     :_MAX_HANDOFF_CHARS
@@ -470,11 +476,16 @@ class TaskScheduler:
                     trace_id=result.trace_id,
                     reply=result.reply[:_MAX_HANDOFF_CHARS],
                 )
+            error = (
+                OrchestrationErrorCode.SUBTASK_VERIFY_FAILED
+                if not verify.passed
+                else OrchestrationErrorCode.SUBTASK_EXECUTION_FAILED
+            )
             return SubtaskOutcome(
                 subtask.id,
                 ok=False,
-                error=OrchestrationErrorCode.SUBTASK_VERIFY_FAILED,
-                reason=verify.reason,
+                error=error,
+                reason=reason,
                 trace_id=result.trace_id,
             )
 

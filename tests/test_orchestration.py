@@ -16,7 +16,7 @@ from typing import Any, cast
 import pytest
 
 from core.llm_provider import LLMError
-from core.loop import Action, DefaultLoop, LoopEvent
+from core.loop import Action, DefaultLoop, LoopEvent, LoopResult
 from core.orchestration import (
     AgentProfile,
     LLMSubtaskPlanner,
@@ -32,6 +32,7 @@ from core.orchestration import (
     TaskHandoff,
     TaskScheduler,
     TaskState,
+    VerifyResult,
     plan_from_dict,
     plan_to_dict,
 )
@@ -642,3 +643,78 @@ def test_scheduler_resume_rebuilds_dependency_results() -> None:
     assert loop.inputs == [
         "t-two\n\n前置子任务结果（可直接引用）：\n[前置子任务 1] t-one\n结果：上游答复"
     ]
+
+
+# ---- 子任务失败态传播（E63：假成功收口） ----
+
+
+class _FailedReplyLoop(DefaultLoop):
+    """产出非空回复但终态标记失败（模拟循环未达成 / 异常终止 / 预算耗尽）。"""
+
+    def __init__(self, reply: str) -> None:
+        super().__init__(planner=lambda ctx: Action(args={"reply": "unused"}))
+
+    async def astream(self, user_input: str, *, session_id: str = "") -> AsyncIterator[LoopEvent]:
+        yield LoopEvent("loop_started", {"trace_id": "t-failed"})
+        yield LoopEvent(
+            "loop_finished", LoopResult(reply="非空合成回复", trace_id="t-failed", failed=True)
+        )
+
+
+def test_failed_execution_without_acceptance_does_not_pass() -> None:
+    # 无验收标准 ⇒ 离线判定「回复非空即通过」，但执行失败态必须 fail-closed（否则假成功）
+    decomposer = SubtaskDecomposer(planner=lambda goal: [Subtask(id="1", goal="t", acceptance="")])
+    sm = StateMachine()
+    tracker = ProgressTracker()
+    scheduler = TaskScheduler(
+        decomposer=decomposer,
+        router=MultiAgentRouter(
+            [AgentProfile(agent_id="a", capabilities=["t"], loop=_FailedReplyLoop("x"))]
+        ),
+        state_machine=sm,
+        tracker=tracker,
+    )
+    events = _collect(scheduler, "task", "goal")
+    completed = [e for e in events if e.type == "subtask_completed"]
+    assert completed and cast(dict[str, Any], completed[0].payload)["ok"] is False
+    assert events[-1].type == "task_failed"
+    assert tracker.completed("task") == set()
+    assert sm.state("task") == TaskState.RECOVERING
+
+
+def test_failed_execution_with_acceptance_fails_closed() -> None:
+    # 验收门本会判通过，但执行失败态仍须 fail-closed
+    decomposer = SubtaskDecomposer(
+        planner=lambda goal: [Subtask(id="1", goal="t", acceptance="标准")],
+        verifier=lambda subtask, result: VerifyResult(passed=True, reason="验收通过"),
+    )
+    scheduler = TaskScheduler(
+        decomposer=decomposer,
+        router=MultiAgentRouter(
+            [AgentProfile(agent_id="a", capabilities=["t"], loop=_FailedReplyLoop("x"))]
+        ),
+        state_machine=StateMachine(),
+    )
+    events = _collect(scheduler, "task", "goal")
+    completed = [e for e in events if e.type == "subtask_completed"]
+    assert completed and cast(dict[str, Any], completed[0].payload)["ok"] is False
+    assert events[-1].type == "task_failed"
+
+
+def test_successful_execution_still_passes() -> None:
+    # 回归：执行成功路径逐字不变（ok=True 且记录完成）
+    decomposer = SubtaskDecomposer(planner=lambda goal: [Subtask(id="1", goal="t", acceptance="")])
+    sm = StateMachine()
+    tracker = ProgressTracker()
+    scheduler = TaskScheduler(
+        decomposer=decomposer,
+        router=MultiAgentRouter([AgentProfile(agent_id="a", capabilities=["t"], loop=_loop("ok"))]),
+        state_machine=sm,
+        tracker=tracker,
+    )
+    events = _collect(scheduler, "task", "goal")
+    completed = [e for e in events if e.type == "subtask_completed"]
+    assert completed and cast(dict[str, Any], completed[0].payload)["ok"] is True
+    assert events[-1].type == "task_finished"
+    assert tracker.completed("task") == {"1"}
+    assert sm.state("task") == TaskState.DONE

@@ -1,6 +1,6 @@
 """任务编排领域错误码（orchestration）。
 
-结构化错误码与异常分离：非法转移 / 校验失败 / 死循环 / 无匹配 Agent /
+结构化错误码与异常分离：非法转移 / 校验失败 / 执行失败 / 死循环 / 无匹配 Agent /
 并行度超限 / 调度策略非法 / 进度未达标 / 判定器缺失，以领域异常承载，
 不向模型抛裸异常。
 
@@ -17,6 +17,7 @@ class OrchestrationErrorCode(StrEnum):
 
     INVALID_TRANSITION = "INVALID_TRANSITION"
     SUBTASK_VERIFY_FAILED = "SUBTASK_VERIFY_FAILED"
+    SUBTASK_EXECUTION_FAILED = "SUBTASK_EXECUTION_FAILED"
     DEADLOOP_DETECTED = "DEADLOOP_DETECTED"
     NO_AGENT_MATCH = "NO_AGENT_MATCH"
     WAVE_FANOUT_LIMIT = "WAVE_FANOUT_LIMIT"

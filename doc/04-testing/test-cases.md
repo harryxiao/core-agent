@@ -656,6 +656,16 @@
 
 ---
 
+## 42. 子任务失败态传播（TC-SUBFAIL，change `0126`／ADR-0119，账本 E63）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-SUBFAIL-01 | orchestration/spec.md「子任务验收门」（执行失败态不因非空合成回复通过） | 打桩子 Agent loop 产出 `loop_finished`（`reply` 非空、`failed=True`）；子任务**无**验收标准（离线判定本会通过） | `subtask_completed.ok is False`（假成功收口）、`task_failed` 收口、`tracker.completed == set()`、状态机转 `RECOVERING`（锚点：`tests/test_orchestration.py::test_failed_execution_without_acceptance_does_not_pass`） |
+| TC-SUBFAIL-02 | 同上（验收门本会通过仍 fail-closed） | 同上 + 子任务有验收标准且注入 verifier 判通过 | 仍 `ok is False`、`task_failed`（验收通过不豁免执行失败）（锚点：`::test_failed_execution_with_acceptance_fails_closed`） |
+| TC-SUBFAIL-03 | 同上（回归：成功路径逐字不变） | 正常成功 loop（`failed=False`、非空回复、无验收标准） | `ok is True`、`task_finished`、`tracker.completed == {"1"}`、状态机 `DONE`（锚点：`::test_successful_execution_still_passes`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

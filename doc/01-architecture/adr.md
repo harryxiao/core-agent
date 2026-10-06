@@ -3223,6 +3223,35 @@
 
 ---
 
+## ADR-0119：子任务失败态传播（假成功收口）（change 0126 / phase-34 E63）
+
+- **背景**：`coding-plan/phase-34.md`（全系统架构走查缺陷账本）标记的**最高危真缺陷 E63**。编排器
+  `scheduler.py:_run_subtask` 只认**验收门**结论（`verify.passed`），**丢弃**子 Agent 循环的失败态
+  （`result.failed`）—— 而 `LoopResult.failed` 语义即「目标未达成 / 异常终止 / 预算耗尽」（`loop/
+  protocol.py:24`）。无验收标准时验收门退化为「回复非空即通过」⇒ **执行失败 + 非空合成回复 = 假成功**，
+  失败的子任务被登记为完成并推进后继波次。**对照正解**：`delegate` 路径（`runtime.py:797`）早已是
+  `{"ok": not result.failed, "reply": ...}` —— 编排路径**漏了同一条**（同一失败信号，一处消费一处丢弃）。
+- **决策①：执行失败态并入验收门判据（fail-closed），`ok = verify.passed and not result.failed`。**
+  验收门本义（LLM 对照 / 离线非空降级 / 判定器不可用 fail-closed）**逐字不变**；本 change 只是给它加
+  一条**前置收窄**：执行单元返回失败态时，无论验收门是否本会通过，一律判**不通过**。判据合并为单行
+  真值，`subtask_completed.ok` 与 fan-in 推进共用同一真值，**单一判据、无旁路**。
+- **决策②：新增结构化错误码 `SUBTASK_EXECUTION_FAILED`，**不**复用 `SUBTASK_VERIFY_FAILED`。**
+  假成功的**根因**是「执行失败被误读为验收通过」；若失败码仍叫「校验失败」，日志 / trace 会把
+  「循环未达成」读成「验收标准未达」，**掩盖真因**。新增为**纯追加**枚举成员：波级 `task_failed` 收口
+  仍按既有 `SUBTASK_VERIFY_FAILED` 汇总失败子任务列表（与「哪一条执行失败」正交）；`subtask_completed`
+  载荷形状**零变更**（`ok` 仍 `bool`）。
+- **决策③：失败理由不互相覆盖。** 验收本就失败 ⇒ 保留 `verify.reason`（真因是验收）；仅「验收本会过
+  但执行失败」⇒ 理由记为「子任务执行未达成目标」。两条失败因由正交，不掩盖。
+- **已知局限**：① 编排**不做重试**——本 change 只把失败**如实暴露**为 `RECOVERING` 收口 + `task_failed`，
+  有限次重试 / 重规划仍属「子任务校验通过才推进」既有 Scenario 的**未落地**部分（另账，不在本 change）；
+  ② 目标循环若**既失败又回复为空**，失败码取 `SUBTASK_VERIFY_FAILED`（验收先失败）—— 两条因由同真时
+  以验收码呈现，语义等价（均为不推进）。
+- **规格**：`orchestration`（**MODIFIED**「子任务验收门」——补「执行失败态 fail-closed」+「失败态传播
+  `ok = 验收通过 且 执行未失败`」口径 + **1** Scenario「执行失败态不因非空合成回复通过」）。**非**
+  `skip_specs`（规格此前**空白**，非违约口径）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3336,3 +3365,4 @@
 | ADR-0116 | 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 02-modules/orchestration.md, 04-testing/test-cases.md, coding-plan/phase-29.md |
 | ADR-0117 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/phase-29.md |
 | ADR-0118 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/phase-33.md |
+| ADR-0119 | 03-interfaces/orchestration-interface.md, 02-modules/orchestration.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

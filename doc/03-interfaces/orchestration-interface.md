@@ -212,6 +212,7 @@ class MultiAgentRouter:
 |---|---|
 | `INVALID_TRANSITION` | 非法状态转移 |
 | `SUBTASK_VERIFY_FAILED` | 子任务校验失败（触发回退/重规划） |
+| `SUBTASK_EXECUTION_FAILED` | 子任务执行未达成（循环失败态，fail-closed，change 0126） |
 | `DEADLOOP_DETECTED` | 检测到死循环（触发 RECOVERING） |
 | `NO_AGENT_MATCH` | 无匹配子 Agent（抛错，调度器捕获并标记子任务失败） |
 | `WAVE_FANOUT_LIMIT` | 并行度超限（同波次分批执行，受资源上限约束） |
