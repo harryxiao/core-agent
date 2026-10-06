@@ -774,6 +774,18 @@
 
 ---
 
+## 52. composition 覆盖可回退 + 拒布尔覆盖值（TC-COMPREV，change `0136`／ADR-0129，账本 E75 + E70）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-COMPREV-01 | composition/spec.md「层叠解析」（SHALL 保留覆盖前分层结果；SHALL 提供回退恢复至覆盖前 `ResolvedSet`） | profile 层叠 `core`（`a=1,b=1`）且 patch 覆盖 `b=9`；`resolve` 后 `revert` | `resolved.layered` == `{a:1,b:1}`；`revert(resolved).plugins` == `{a:1,b:1}` 且 `overrides == {}`；**原结果不变**（仍 `b=9`，纯函数）（锚点：`tests/test_composition.py::test_revert_restores_pre_patch_layering`） |
+| TC-COMPREV-02 | 同上（回退 SHALL 幂等） | 对 `revert` 结果**再** `revert` | 结果与首次回退**相等**（锚点：`::test_revert_is_idempotent`） |
+| TC-COMPREV-03 | 同上（无覆盖时回退为恒等） | profile 无 patch：`resolve` → `revert` | `revert(resolved).plugins == resolved.plugins` 且 `overrides == {}`（锚点：`::test_revert_without_patch_is_noop`） |
+| TC-COMPREV-04 | composition-interface.md §3（门面透出 revert） | `CompositionEngine.resolve` → `engine.revert` | 回到覆盖前分层值（锚点：`::test_engine_facade_exposes_revert`） |
+| TC-COMPREV-05 | composition/spec.md「层叠解析」（覆盖值 SHALL 为整数 generation；布尔按 `PATCH_CONFLICT` 拒绝）+「patch.yml 用户覆盖」覆盖冲突兜底 | `PatchSpec({"a": True})`（YAML `true`）解析 | 抛 `CompositionError` 且 `code is PATCH_CONFLICT`，SHALL NOT 静默落为 generation `1`（锚点：`::test_patch_override_bool_rejected`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

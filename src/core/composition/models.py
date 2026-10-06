@@ -1,7 +1,7 @@
 """组合与分发层数据模型（composition）。
 
 承载三要素组合数据流：PluginRef（插件轻量引用）→ Profile（命名组合）→
-Bundle（分发格式）→ PatchSpec（用户覆盖）→ ResolvedSet（层叠 + 覆盖结果）。
+Bundle（分发格式）→ PatchSpec（用户覆盖）→ ResolvedSet（层叠 + 覆盖结果，兼携带覆盖前分层结果）。
 
 对应接口：doc/03-interfaces/composition-interface.md §2
 """
@@ -48,8 +48,13 @@ class Bundle:
 
 @dataclass
 class ResolvedSet:
-    """层叠 + 覆盖后的最终插件集（覆盖项可回退到覆盖前状态）。"""
+    """层叠 + 覆盖后的最终插件集（覆盖项可回退到覆盖前状态）。
+
+    `layered` 为**覆盖前**（bundle 层叠后、patch 应用前）的分层结果，即 `revert` 的恢复目标；
+    必填 —— 解析结果必然知道自己被覆盖前的状态（规格「层叠解析」/ change 0136）。
+    """
 
     profile: str
     plugins: list[PluginRef]
+    layered: list[PluginRef]
     overrides: dict[str, object] = field(default_factory=dict[str, object])

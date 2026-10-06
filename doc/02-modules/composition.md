@@ -49,7 +49,9 @@ profile(命名组合) ─► 层叠多个 bundle ─► 叠加 patch.yml ─► 
 ### 3.4 层叠解析（确定顺序、可逆）
 
 - 解析顺序固定：「bundle 层叠 → patch.yml 覆盖」，同名项由 patch.yml 覆盖。
-- 解析结果可逆：卸载 patch.yml 可回退到覆盖前状态，永不丢历史。
+- 解析结果可逆：卸载 patch.yml 可回退到覆盖前状态，永不丢历史。回退由 `ResolvedSet.layered`
+  （覆盖前分层结果）+ `ProfileResolver.revert` 承载（幂等、返回新结果）；覆盖值须为整数 generation，
+  布尔按 `PATCH_CONFLICT` 拒绝（change `0136`）。
 
 ---
 
@@ -68,7 +70,8 @@ profile(命名组合) ─► 层叠多个 bundle ─► 叠加 patch.yml ─► 
 | profile 引用不存在的插件 | 解析失败，报缺失插件名，不静默跳过 |
 | patch.yml 覆盖项与 bundle 同名 | 按确定顺序，同名项由 patch.yml 覆盖 |
 | bundle 哈希 / 版本不符 | 拒绝引入，报不一致，避免脏分发 |
-| 卸载 patch.yml | 回退到覆盖前状态，可逆 |
+| 卸载 patch.yml | 回退到覆盖前状态，可逆（`revert`，change `0136`） |
+| patch.yml 覆盖值为布尔 | 报 `PATCH_CONFLICT`（bool 非 generation，change `0136`） |
 
 ---
 

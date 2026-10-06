@@ -11,6 +11,8 @@ class ProfileResolver(Plugin):
     plugin_id = "composition.resolver"
     def resolve(self, profile: str) -> ResolvedSet:
         """按 profile 名解析出最终插件集（bundle 层叠 → patch.yml 覆盖）。"""
+    def revert(self, resolved: ResolvedSet) -> ResolvedSet:
+        """移除 patch 覆盖，回退至覆盖前分层结果（幂等，返回新结果，不改实参）。"""
 
 class BundlePackager(Plugin):
     plugin_id = "composition.packager"
@@ -47,6 +49,7 @@ class PatchSpec:
 class ResolvedSet:
     profile: str
     plugins: list[PluginRef]  # 层叠 + 覆盖后的最终插件集
+    layered: list[PluginRef]  # 覆盖前（bundle 层叠后）分层结果 = revert 的恢复目标（change 0136）
     overrides: dict           # 生效的覆盖项（可回退）
 ```
 
@@ -63,7 +66,10 @@ class CompositionEngine(Plugin):
         bundles = [self.packager.unpack(b) for b in p.bundles]
         merged = self.layer(bundles)          # bundle 层叠：后层覆盖前层
         final = self.apply_patch(merged, p.patch)   # patch.yml 覆盖
-        return ResolvedSet(profile=profile, plugins=final, overrides=p.patch.overrides)
+        return ResolvedSet(profile=profile, plugins=final, layered=merged, overrides=p.patch.overrides)
+
+    def revert(self, resolved: ResolvedSet) -> ResolvedSet:
+        """移除 patch 覆盖 ⇒ 覆盖前分层结果（门面透出 resolver.revert）。"""
 ```
 
 ---
@@ -86,7 +92,10 @@ class BundleDistributor:
 - 解析顺序确定：bundle 层叠 → patch.yml 覆盖，同名项由 patch.yml 覆盖。
 - profile 引用不存在的插件 → 解析失败并报缺失插件名，不静默跳过。
 - bundle 哈希 / 版本不符 → 拒绝引入，避免脏分发。
-- 卸载 patch.yml → 回退到覆盖前状态，可逆。
+- 卸载 patch.yml → 回退到覆盖前状态，可逆：`resolve` 的结果携带覆盖前分层结果（`layered`），
+  `revert(resolved)` 返回**新**结果（`plugins = layered`、`overrides` 清空）且**幂等**，不改实参（change `0136`）。
+- patch 覆盖值须为整数 generation；**布尔**（YAML `true` / `false`）按 `PATCH_CONFLICT` 拒绝
+  —— `bool` 虽为 `int` 子类，SHALL NOT 静默落为 1 / 0（change `0136` / 账本 E70）。
 
 ---
 

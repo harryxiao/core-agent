@@ -3522,6 +3522,36 @@
 
 ---
 
+## ADR-0129：composition 覆盖可回退 + 覆盖值拒布尔（change 0136 / phase-34 E75 + E70）
+
+- **背景**：`coding-plan/phase-34.md` 登记的 **E75**（设计缺失）+ **E70**（真缺陷）。
+  ① `composition/spec.md`「层叠解析」SHALL「解析结果可逆、可回退」、Scenario「确定顺序解析」THEN
+  写明「卸载时可回退到覆盖前状态」，「patch.yml 用户覆盖」的「覆盖冲突兜底」亦要求「报错并回退到
+  覆盖前状态」—— 但 `resolver.py:106-108` 把覆盖应用到 `merged` 后**丢弃了 `merged` 本身**，
+  `ResolvedSet` 只留覆盖后 `plugins` 与 `overrides`，且全包**无 revert / undo API** ⇒
+  规格的「可回退」是**无路径可达的死条款**。② `apply_patch` 以 `isinstance(override, int)` 判覆盖值，
+  而 `bool` 是 `int` 子类 ⇒ YAML `true` / `false` **静默**落为 generation `1` / `0`，
+  绕过「值类型不支持则报冲突」的兜底。
+- **决策①：`ResolvedSet` 增必填字段 `layered`（覆盖前分层结果）。** `resolve()` 原样携带 `merged`；
+  取**必填**而非默认 `[]`：`ResolvedSet` 的构造点全仓仅 `resolver.py` 两处（grep 实证，无既有调用方受损），
+  而默认值会让手工构造漏传时 `revert` **静默清空全部插件** —— 必填把「解析结果必然知道自己被覆盖前的状态」
+  变成类型层事实。
+- **决策②：`ProfileResolver.revert(resolved) -> ResolvedSet` 为**纯函数**。** 返回**新** `ResolvedSet`
+  （`plugins = layered`、`overrides = {}`、`layered` 原样携带），**不改实参** ⇒ 对回退结果再回退
+  **结果不变**（幂等）。**不**经 `EffectTracker`：`resolve` / `revert` 同属无状态组合代数（L5 唯一静态层），
+  不产生副作用；需跨调用持久的调用方自行持有 `ResolvedSet`。门面 `CompositionEngine.revert` 透出。
+  回退范围**只到 patch 覆盖**（回到 bundle 层叠结果），层叠本身的回退（换 profile / 换 bundle）
+  不在本账，属 `BundleDistributor` 面。
+- **决策③：覆盖值拒布尔，沿用 `PATCH_CONFLICT`。** 判据订正为
+  `not isinstance(override, int) or isinstance(override, bool)` —— 不新增错误码（复用「值类型不支持」既有分支）。
+- **已知局限**：`layered` 是**覆盖前快照**而非可再解析的引用，回退后若要换 patch 需重新 `resolve`；
+  布尔拒绝使「generation = 0/1 的合法场景」不可由 YAML 布尔表达（须写字面量 `0` / `1`）——
+  这是**有意**取舍：布尔语义（开关）与代际编号（版本）本就不是同一件事。
+- **规格**：`composition/spec.md` **MODIFIED「层叠解析」**（保留覆盖前分层结果 + 回退幂等 + 覆盖值须整数
+  generation、布尔按 `PATCH_CONFLICT` 拒绝），原「确定顺序解析」Scenario 逐字保留，新增 2 Scenario。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3645,3 +3675,4 @@
 | ADR-0126 | 03-interfaces/skills-interface.md, 02-modules/skills.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0127 | 03-interfaces/skillhub-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0128 | 03-interfaces/permission-interface.md, 02-modules/permission.md, 03-interfaces/git-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0129 | 03-interfaces/composition-interface.md, 02-modules/composition.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

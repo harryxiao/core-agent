@@ -105,7 +105,26 @@ class ProfileResolver:
             layered.append(self._packager.unpack(bundle))
         merged = self.layer(layered)
         final = self.apply_patch(merged, current.patch)
-        return ResolvedSet(profile=profile, plugins=final, overrides=dict(current.patch.overrides))
+        return ResolvedSet(
+            profile=profile,
+            plugins=final,
+            layered=list(merged),  # 覆盖前分层结果：`revert` 的恢复目标（规格「层叠解析」）
+            overrides=dict(current.patch.overrides),
+        )
+
+    @staticmethod
+    def revert(resolved: ResolvedSet) -> ResolvedSet:
+        """移除 patch 覆盖，回退至**覆盖前**分层结果（规格「层叠解析」可回退）。
+
+        返回**新** `ResolvedSet`（不改实参）：`plugins` 取覆盖前分层结果、`overrides` 清空、
+        `layered` 原样携带 ⇒ 对回退结果再回退**结果不变**（幂等）。
+        """
+        return ResolvedSet(
+            profile=resolved.profile,
+            plugins=list(resolved.layered),
+            layered=list(resolved.layered),
+            overrides={},
+        )
 
     @staticmethod
     def layer(bundle_lists: list[list[PluginRef]]) -> list[PluginRef]:
@@ -126,10 +145,11 @@ class ProfileResolver:
                     CompositionErrorCode.PATCH_CONFLICT,
                     f"patch 覆盖 {plugin_id} 不在层叠结果中",
                 )
-            if not isinstance(override, int):
+            # bool 是 int 子类：YAML `true`/`false` 不得静默落为 generation 1/0（账本 E70）
+            if not isinstance(override, int) or isinstance(override, bool):
                 raise CompositionError(
                     CompositionErrorCode.PATCH_CONFLICT,
-                    f"patch 覆盖 {plugin_id} 值类型不支持（需 generation 整数）",
+                    f"patch 覆盖 {plugin_id} 值类型不支持（需 generation 整数，布尔除外）",
                 )
             by_id[plugin_id] = PluginRef(plugin_id, override)
         return list(by_id.values())

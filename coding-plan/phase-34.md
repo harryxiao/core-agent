@@ -29,7 +29,7 @@
 | **E67** | 中 | `EffectTracker.rollback` **不清账** ⇒ 重复回滚**二次撤销** + `_effects` **无界增长** | `plugin_registry/effect_tracker.py:61-78` 回滚后既不移除 `_effects` 也不清 `_by_trace`，且**无 clear 方法** | P2 可逆性 + 内存 | ✅ ⇒ **已落地（change `0128` / ADR-0121）** |
 | **E68** | 中 | `write_patch` **绕过可逆性**（磁盘 yaml 不可按 trace 回退） | `configuration/manager.py:555-569` `tmp.write_text(_dump_yaml(raw))` + `os.replace`，**无 `EffectTracker.record`**；对照 `apply_change:538-548` 的 undo 只回滚**内存态** ⇒ 按 trace 回滚时**磁盘不回退** ⇒ **已落地（change `0130` / ADR-0123）** | P2 可逆性 | ✅ |
 | **E69** | 低 | `executor.commit` **不校验 `record.gated`**（fail-open 崩溃窗口） | `evolution/models.py:80-81` 明写「`commit` 只认前者（`gated=True`）为真者」；`evolution/executor.py:183` 走 `staged()`（`:215-218` **仅滤 `committed`**），`:178-211` **从不读 `gated`**；全仓 `gated` **只有写**（`:171/:205`）**无读**。窗口：门禁失败回滚后、`clear_implementation` 前**崩溃** ⇒ 重启后 `commit` 可放行**未过门**制品 ⇒ **已落地（change `0127` / ADR-0120）** | fail-open（潜伏） | ✅ |
-| **E70** | 低 | composition `apply_patch` 接受 **bool** 当 generation | `composition/resolver.py:129` `isinstance(override, int)`——**bool ⊂ int**，YAML `true` 生成 `PluginRef(id, True)`（`PluginRef(plugin_id, override)` `:134`） | 类型边界 | ✅ |
+| **E70** | 低 | composition `apply_patch` 接受 **bool** 当 generation | `composition/resolver.py:129` `isinstance(override, int)`——**bool ⊂ int**，YAML `true` 生成 `PluginRef(id, True)`（`PluginRef(plugin_id, override)` `:134`） ⇒ **已落地（change `0136` / ADR-0129）：`apply_patch` 判据补 `or isinstance(override, bool)`，布尔按 `PATCH_CONFLICT` 拒绝（不静默落为 1/0）** | 类型边界 | ✅ |
 | **E71** | 中 | **L1 索引是空壳**（`read` 从不查 `_index`，全库扫描） | `memory/store.py:110-115` `read()` 用 `backend.search(query)` **全扫** + `_hot`，**从不碰 `_index`**；`:191-192` `index()` 仅调 `list_index()`。规格 `memory/spec.md:26-29` 要求「命中 L1 索引 → 非全库扫描」 | 规格漂移（性能面） | ✅ |
 | **E72** | 中 | 技能安装后 **`draft` 死胡同**（装完**永不被路由**） | `skillhub/client.py:66` 下载后 `skill.status = "draft"`；`skills/router.py:98` 只放行 `s.status in ("active","gray")`；**无 draft→active 迁移路径** ⇒ **已落地（change `0133` / ADR-0126）：`SkillLibrary.activate(skill_id, *, effect_tracker=None)`（幂等 / 未知 id 抛 `KeyError` / 可选可逆效应）+ CLI `skill activate <name>`；路由**放行集不变**（仍 active/gray），不自动启用** | 设计缺失（链路断裂） | ✅ |
 | **E73** | 低 | `TimeTravel.rollback` **不可达** | 检查点**持久化**在用（`--resume` 依赖，E12 指此路径），但**时间旅行回滚**无任何生产调用方（见 §5 订正） | 设计缺失（死面） | ✅ |
@@ -41,7 +41,7 @@
 | # | 类别 | 缺口 | 证据 | 复核 |
 |---|---|---|---|---|
 | **E74** | 规格漂移 | **beast「三入口」仅 CLI 接线**：`/summon` 斜杠与 WebUI 自然语言**生产不可达** | `beast/activator.py:45-55` 声明 `activate_from_slash` / `activate_from_nl`（及其 recall 孪生 `:57-67`），**全仓无调用方**；`ui/api.py:223` 只接**宠物** `activate_from_nl`；`entry.py:417-435` 构造 `UIAPILayer` **未注入 `beast_activator`**；`ui/repl.py` 斜杠命令只有 `/focus` `/main`。spec `beast-mode/spec.md:123-139`「Three-Entry Activation」两个 Scenario 不可达（`phase-17.5.md:45` 标「三入口已实现」实为**契约方法层**；`_resolve_nl:29-36` 自注「Agent 理解意图 deferred」） | ✅ |
-| **E75** | 设计缺失 | composition **「可逆 / 可回退」无兑现** | `composition/resolver.py:106-108` 覆盖前分层结果被 `apply_patch` 丢弃、override 值只存进 `ResolvedSet.overrides`（`:108`）；全包**无任何 revert/undo API** ⇒ spec `composition/spec.md:51-57`「回退到覆盖前状态」**无路径可达**（`models.py:51` 注释亦仅声明数据形状） | ✅ |
+| **E75** | 设计缺失 | composition **「可逆 / 可回退」无兑现** | `composition/resolver.py:106-108` 覆盖前分层结果被 `apply_patch` 丢弃、override 值只存进 `ResolvedSet.overrides`（`:108`）；全包**无任何 revert/undo API** ⇒ spec `composition/spec.md:51-57`「回退到覆盖前状态」**无路径可达**（`models.py:51` 注释亦仅声明数据形状） ⇒ **已落地（change `0136` / ADR-0129）：`ResolvedSet` 增必填 `layered`（覆盖前分层结果）、`resolve` 原样携带；新增 `ProfileResolver.revert`（纯函数 / 幂等 / 不改实参）并门面透出 `CompositionEngine.revert`；规格「层叠解析」补「保留覆盖前分层结果 + 回退幂等」与 2 Scenario** | ✅ |
 | **E76** | 规格漂移 | permission **子串匹配**（违反「分词 / 完整词元」）＋ `APPROVAL_REQUIRED` **定义无人 `raise`** | `permission/policy.py:53,61,63` 用裸子串 `tok in op_l`；spec `permission/spec.md:9,19,26-29` 要求语义分词且 **namespace-子串 SHALL NOT 判读**；`permission/errors.py:18` 定义 `APPROVAL_REQUIRED`，**`src/` 零 `raise`**（死码） ⇒ **已落地（change `0135` / ADR-0128）：`classify` 改**词元集合**命中（`_tokens` 按 `._:-/` 切词，操作**与目标**两侧；三表转 `frozenset`，顺序逐字不变）—— `tools.target`／`tools.category_sync` 由误判 `read` 收敛为 `HIGH_RISK`（fail-closed 兜底归位）；`APPROVAL_REQUIRED` 的 raise 落点订正为**高危 git 审批门** `GitClient._require_approval`（原误用 `PERMISSION_DENIED`；`authorize` 一侧仍以 `Decision(approval_required=True)` 供审批通道，**不**改抛异常）** | ✅ |
 | **E77** | 设计缺失 | **信息地图不可达**（构造了却从不查） | `context/assembler.py:54-75` `build()` **从不读** `_info_map`（`:32` 只在 ctor 存下）；`fetch_detail():69-75` **零调用**；`context/info_map.py:90-100 _linear_scan` **死码**（`index()` 恒同写 `_docs`+`_maps`） | ✅ |
 | **E78** | 规格漂移 | memory **规格三档（热 / 温 / 冷）vs 实现两档（hot + cold）** | 实现无温层载体；spec `memory/spec.md:31-32` 写三档 ⇒ **已落地（change `0131` / ADR-0124）：规格改**热/冷两档**，删温层条文** | ✅ |
@@ -177,7 +177,7 @@
 | `0133` | E72 | ✅ 已落地（2026-10-06） | ADR-0126 |
 | `0134` | E80 | ✅ 已落地（2026-10-06） | ADR-0127 |
 | `0135` | E76 | ✅ 已落地（2026-10-06） | ADR-0128 |
-| `0136` | E75 + E70 | ⏳ 待实施 | — |
+| `0136` | E75 + E70 | ✅ 已落地（2026-10-06） | ADR-0129 |
 | `0137` | E74 | ⏳ 待实施 | — |
 | `0138` | E79 | ⏳ 待实施 | — |
 | `0139` | E81 + E83 | ⏳ 待实施 | — |
