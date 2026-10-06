@@ -1,7 +1,8 @@
 """市场索引（MarketIndex）。
 
 按 source 路由到对应市场源、按源列目录、源健康探测与回退。源不存在拒绝
-路由（SOURCE_NOT_FOUND），源不可达标记不健康并回退官方源（SOURCE_UNHEALTHY）。
+路由（SOURCE_NOT_FOUND）；源不健康**回退官方源并以其结果响应**（标记该源
+不健康），官方源**亦**不可用（无可用源）才抛 SOURCE_UNHEALTHY。
 
 目录可落盘（注入 ``path``）：发布 / 审核写入的条目在后续进程可见；缺省
 ``path=None`` 为进程内目录。损坏 / 结构不符降级为空目录（仅告警）。
@@ -23,6 +24,9 @@ from .errors import SkillHubError, SkillHubErrorCode
 from .models import MarketSkill, MarketSource, SourceHealth
 
 HealthProbe = Callable[[str], bool]
+
+# 回退目标：非官方源不健康时回退到它（唯一回退目标，不做多级回退链）
+_OFFICIAL = "official"
 
 
 def _corrupt_warning(path: Path | None) -> None:
@@ -51,14 +55,15 @@ class MarketIndex:
         self._sources.setdefault("official", MarketSource(name="official"))
 
     def list(self, *, source: str = "official") -> list[MarketSkill]:
-        """列出指定源的技能目录元数据。"""
-        self._ensure_healthy(source)
-        return list(self._sources[source].skills.values())
+        """列出指定源的技能目录元数据；源不健康则列出**官方源**目录（回退）。"""
+        return list(self._sources[self._ensure_healthy(source)].skills.values())
 
     def route(self, source: str) -> MarketSource:
-        """按 source 路由到对应市场源；源不存在抛 SOURCE_NOT_FOUND。"""
-        self._ensure_healthy(source)
-        return self._sources[source]
+        """按 source 路由；源不存在抛 SOURCE_NOT_FOUND，不健康则回退官方源。
+
+        返回的源对象**可能是官方源**（回退的语义即落在返回值上）。
+        """
+        return self._sources[self._ensure_healthy(source)]
 
     def health(self, source: str) -> SourceHealth:
         """源健康探测；不可达标记不健康（SOURCE_UNHEALTHY 由 list/route 触发回退）。"""
@@ -131,13 +136,33 @@ class MarketIndex:
 
     # ---- 内部辅助 ----
 
-    def _ensure_healthy(self, source: str) -> None:
+    def _ensure_healthy(self, source: str) -> str:
+        """返回**可用源名**：源健康即原源；不健康则回退官方源（标记该源不健康）。
+
+        源不存在 ⇒ SOURCE_NOT_FOUND（**不**回退到未知源）；官方源自身不健康或回退目标
+        亦不健康 ⇒ SOURCE_UNHEALTHY（无可用源）。回退是**降级成功**而非错误，故有可用
+        回退目标时**不抛错**（skills spec「多源路由与健康回退」、ADR-0127）。
+        """
         if source not in self._sources:
             raise SkillHubError(SkillHubErrorCode.SOURCE_NOT_FOUND, f"source 不存在: {source}")
-        if not self._probe(source):
+        if self._probe(source):
+            return source
+        self._mark_unhealthy(source)
+        if source == _OFFICIAL:
             raise SkillHubError(
-                SkillHubErrorCode.SOURCE_UNHEALTHY, f"来源不可达（回退官方源）: {source}"
+                SkillHubErrorCode.SOURCE_UNHEALTHY, f"来源不可达（无回退目标）: {source}"
             )
+        if not self._probe(_OFFICIAL):
+            self._mark_unhealthy(_OFFICIAL)
+            raise SkillHubError(
+                SkillHubErrorCode.SOURCE_UNHEALTHY,
+                f"来源不可达且官方源亦不可用: {source}",
+            )
+        return _OFFICIAL
+
+    def _mark_unhealthy(self, source: str) -> None:
+        """标记源不健康（回退的**可观测痕迹**：`health` 可见，不静默回退）。"""
+        self._health[source] = SourceHealth(source=source, healthy=False, last_check=_now())
 
     def _probe(self, source: str) -> bool:
         if self._health_probe is None:

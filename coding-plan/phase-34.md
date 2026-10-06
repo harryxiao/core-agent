@@ -46,7 +46,7 @@
 | **E77** | 设计缺失 | **信息地图不可达**（构造了却从不查） | `context/assembler.py:54-75` `build()` **从不读** `_info_map`（`:32` 只在 ctor 存下）；`fetch_detail():69-75` **零调用**；`context/info_map.py:90-100 _linear_scan` **死码**（`index()` 恒同写 `_docs`+`_maps`） | ✅ |
 | **E78** | 规格漂移 | memory **规格三档（热 / 温 / 冷）vs 实现两档（hot + cold）** | 实现无温层载体；spec `memory/spec.md:31-32` 写三档 ⇒ **已落地（change `0131` / ADR-0124）：规格改**热/冷两档**，删温层条文** | ✅ |
 | **E79** | 规格漂移 | git **「断线重试 / 指数退避」无实现** ＋ **删远程分支 / 历史改写**原语缺失 | `git/subprocess_backend.py:141-154` `pull`/`push`（及 `clone`）单次 `_run`，`_run:158-163` **无 retry/backoff**；`git/client.py:86-101` 仅 force-push 走审批，13 原语**无**「删远程分支 / 历史改写」。spec `git/spec.md:69-91` 有对应 Scenario（C2 的「偏离原记」`phase-20.md:93` 只记「不装配 CLI 入口」，**未记**此二缺口） | ✅ |
-| **E80** | 规格漂移 | skillhub **「回退官方源」只报错**（**spec 自相矛盾**） | `skillhub/index.py:134-140` `_ensure_healthy` 直接 `raise SOURCE_UNHEALTHY`（文本却写「（回退官方源）」），**无回退动作**；`tests/test_skillhub.py:42` 亦断报错。spec `skillhub/spec.md:34-38` **同句**既写「回退官方源」又写「返回 `SOURCE_UNHEALTHY`」⇒ 实现/测试选了后半句 | ✅ |
+| **E80** | 规格漂移 | skillhub **「回退官方源」只报错**（**spec 自相矛盾**） | `skillhub/index.py:134-140` `_ensure_healthy` 直接 `raise SOURCE_UNHEALTHY`（文本却写「（回退官方源）」），**无回退动作**；`tests/test_skillhub.py:42` 亦断报错。spec `skillhub/spec.md:34-38` **同句**既写「回退官方源」又写「返回 `SOURCE_UNHEALTHY`」⇒ 实现/测试选了后半句 ⇒ **已落地（change `0134` / ADR-0127）：规格拆句为「不健康 ⇒ 回退官方源**并以其结果响应**（标记该源不健康）；官方源亦不可用 ⇒ `SOURCE_UNHEALTHY`」；`_ensure_healthy` 改返回**可用源名**，`list`/`route` 用其取结果** | ✅ |
 | **E81** | 设计缺失 | deployment `reap` **无心跳刷新 `last_seen`** ⇒ 活跃客户端可能被误回收 | `deployment/host.py:56` `last_seen` **仅 `accept` 赋值**，`reap:78-88` 据其判超时，全类**无 touch / heartbeat** 更新 | ✅ |
 | **E82** | 规格漂移 | **pet / beast Web 面缺失**：12 个 HTTP 端点**无** pet/summon/recall | `ui/fastapi_serve.py:194-206` 共 12 条 `add_api_route`，**无** pet/summon/recall（与 E74 同源：UIAPILayer 有 `activate_pet`/`pet_command` 方法但未暴露为端点，`api.py:223` 仅内部接宠物） | ✅ |
 | **E83** | 设计缺失 | **Desktop 交付面不完整** | `src-tauri/tauri.conf.json:15` **硬编码** `url: http://127.0.0.1:8000`（`src-tauri/src/main.rs:48-51` 却尊重 `CORE_PORT`）＋ `:22-24` `bundle.active=false` ⇒ **无安装包**（phase-20 C8 只记「壳二进制打包未验证」，未记端口硬编码） | ✅ |
@@ -175,7 +175,7 @@
 | `0131` | E66 + E78 | ✅ 已落地（2026-10-06） | ADR-0124 |
 | `0132` | E65 | ✅ 已落地（2026-10-06） | ADR-0125 |
 | `0133` | E72 | ✅ 已落地（2026-10-06） | ADR-0126 |
-| `0134` | E80 | ⏳ 待实施 | — |
+| `0134` | E80 | ✅ 已落地（2026-10-06） | ADR-0127 |
 | `0135` | E76 | ⏳ 待实施 | — |
 | `0136` | E75 + E70 | ⏳ 待实施 | — |
 | `0137` | E74 | ⏳ 待实施 | — |

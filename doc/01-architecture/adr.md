@@ -3457,6 +3457,35 @@
 
 ---
 
+## ADR-0127：skillhub 源不健康以官方源结果回退（change 0134 / phase-34 E80）
+
+- **背景**：`coding-plan/phase-34.md` 登记的 **E80**（规格漂移）。`skillhub/spec.md`
+  「多源路由与健康回退」**一句之内自相矛盾**：正文写「源不健康时**回退官方源**」，紧随的
+  Scenario 又写「THEN 标记源不健康并**回退官方源**，返回 `SOURCE_UNHEALTHY`」。实现
+  （`index.py:134-140`）与测试（`test_skillhub.py:41`）**都只选后半句** —— 探测失败即
+  `raise SOURCE_UNHEALTHY`，**无任何回退动作**（异常文本里的「（回退官方源）」是空头承诺）。
+  后果：「多源路由」在生产上退化为**单源**（任一非官方源抖动 ⇒ `skill search --source S` 直接失败）。
+- **决策①：拆矛盾句 —— 不健康 ⇒ 回退官方源**并以其结果响应**；回退目标亦不可用 ⇒
+  `SOURCE_UNHEALTHY`。** 该口径由用户 2026-10-06 裁决（「回退成功即返回官方源结果」）：回退是
+  **降级成功**而不是错误，只有**无可用源**才是错误。`SOURCE_UNHEALTHY` 的语义因此收窄为
+  「无可用源」（官方源自身不健康，或回退目标亦不健康）。
+- **决策②：回退只发生在**取数面**（`list` / `route`），`health()` 仍如实探测不回退，`download` /
+  `locate` 仍不经健康探测。** 三者职责不同：`health` 是**诊断面**（回退会掩盖它要报告的事实）；
+  `locate` / `download` 是**查找**（审核方无需知道技能发布到哪个源，`locate` docstring 已立此口径）。
+  实现上 `_ensure_healthy` 由「抛错闸门」改为「**返回可用源名**」，`list` / `route` 用该名取结果
+  —— 回退的语义落在返回值上，而非异常。
+- **决策③：回退发生时标记该源不健康（写入 `self._health`）。** 规格 Scenario 明写「标记源不健康」，
+  且这是回退的**可观测痕迹**（否则回退静默发生，运维无从知道 S 源已失效）。
+- **已知局限**：① 回退是**单次**的（不做重试、不做多级回退链）—— 非官方源只回退到官方源一个目标
+  （与规格「回退官方源」的字面一致）；② `SOURCE_UNHEALTHY` 的**对外语义变了**：旧行为下「非官方源
+  不健康」也会返回它，现在只在**无可用源**时返回 —— 仓内消费方仅 `client.search`（异常归一为
+  stderr + 退出码 1，CLI 侧表现不变），无其他契约面。
+- **规格**：`skillhub`（**MODIFIED**「多源路由与健康回退」—— 矛盾句拆解 + 「标记不健康」入正文，
+  + **2** 新 Scenario「回退目标亦不可用」/「官方源自身不可达」，「源不可达回退」Scenario 的 THEN
+  改为「返回官方源结果」，「源不存在」逐字保留）。**非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3578,3 +3607,4 @@
 | ADR-0124 | 03-interfaces/memory-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0125 | 03-interfaces/ui-interface.md, 06-ui-frontend/ui-architecture.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0126 | 03-interfaces/skills-interface.md, 02-modules/skills.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0127 | 03-interfaces/skillhub-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

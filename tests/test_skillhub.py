@@ -32,13 +32,39 @@ def test_index_route_source_not_found() -> None:
     assert exc_info.value.code is SkillHubErrorCode.SOURCE_NOT_FOUND
 
 
-def test_index_source_unhealthy() -> None:
+def test_index_unhealthy_source_falls_back_to_official() -> None:
+    """E80：非官方源不健康 ⇒ **回退官方源取结果**（标记不健康，不抛错）。"""
+    official, bad = MarketSource("official"), MarketSource("bad")
+    official.skills["skills.demo.o"] = MarketSkill(
+        skill_id="skills.demo.o", name="o", description="", version="v1", signature="sig"
+    )
+    bad.skills["skills.demo.b"] = MarketSkill(
+        skill_id="skills.demo.b", name="b", description="", version="v1", signature="sig"
+    )
+    index = MarketIndex(
+        sources={"official": official, "bad": bad}, health_probe=lambda s: s == "official"
+    )
+    assert [m.skill_id for m in index.list(source="bad")] == ["skills.demo.o"]
+    assert index.route("bad").name == "official"
+    assert index.health("bad").healthy is False
+
+
+def test_index_fallback_target_unhealthy_raises() -> None:
+    """回退目标（官方源）亦不可达 ⇒ SOURCE_UNHEALTHY（无可用源）。"""
     index = MarketIndex(
         sources={"official": MarketSource("official"), "bad": MarketSource("bad")},
-        health_probe=lambda s: s == "official",
+        health_probe=lambda _s: False,
     )
     with pytest.raises(SkillHubError) as exc_info:
         index.list(source="bad")
+    assert exc_info.value.code is SkillHubErrorCode.SOURCE_UNHEALTHY
+
+
+def test_index_official_unhealthy_has_no_fallback() -> None:
+    """官方源自身不健康：无回退目标 ⇒ SOURCE_UNHEALTHY。"""
+    index = MarketIndex(health_probe=lambda _s: False)
+    with pytest.raises(SkillHubError) as exc_info:
+        index.route("official")
     assert exc_info.value.code is SkillHubErrorCode.SOURCE_UNHEALTHY
 
 
@@ -111,6 +137,25 @@ def test_download_tampered_signature_rejected() -> None:
     assert exc_info.value.code is SkillHubErrorCode.SIGNATURE_INVALID
     with pytest.raises(KeyError):
         library.lookup("skills.demo.greet")  # 未落盘
+
+
+def test_search_falls_back_to_official_source() -> None:
+    """消费面回退：源 S 不健康 ⇒ `search(source=S)` 取官方源目录（不失败）。"""
+    library, _index, verifier, fetcher, _skill = _client_setup()
+    official = MarketSource("official")
+    official.skills["skills.demo.greet"] = MarketSkill(
+        skill_id="skills.demo.greet",
+        name="greet",
+        description="greet",
+        version="v1",
+        signature="sig",
+    )
+    index = MarketIndex(
+        sources={"official": official, "third": MarketSource("third")},
+        health_probe=lambda s: s == "official",
+    )
+    client = SkillHubClient(library, index=index, verifier=verifier, fetcher=fetcher)
+    assert [m.skill_id for m in client.search("greet", source="third")] == ["skills.demo.greet"]
 
 
 def test_search_scores_by_query() -> None:

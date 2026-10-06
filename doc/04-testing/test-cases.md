@@ -750,6 +750,18 @@
 
 ---
 
+## 50. skillhub 源不健康回退官方源（TC-SHFB，change `0134`／ADR-0127，账本 E80）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-SHFB-01 | skillhub/spec.md「多源路由与健康回退」（源不健康 ⇒ 回退官方源取结果） | 非官方源 `bad` 不健康、官方源健康且有其目录，对 `bad` 调 `list` / `route` | `list(source="bad")` 返回**官方源**目录条目；`route("bad").name == "official"`；`health("bad").healthy is False`（回退被标记，非静默）（锚点：`tests/test_skillhub.py::test_index_unhealthy_source_falls_back_to_official`） |
+| TC-SHFB-02 | 同上（回退目标亦不可用 ⇒ 无可用源） | `bad` 与官方源**均**不可达，对 `bad` 调 `list` | 抛 `SOURCE_UNHEALTHY`（锚点：`::test_index_fallback_target_unhealthy_raises`） |
+| TC-SHFB-03 | 同上（官方源自身不可达：无回退目标） | 官方源不可达，`route("official")` | 抛 `SOURCE_UNHEALTHY`（锚点：`::test_index_official_unhealthy_has_no_fallback`） |
+| TC-SHFB-04 | 同上（消费面回退） | 源 `third` 不健康、官方源含命中技能，`SkillHubClient.search("greet", source="third")` | 返回**官方源**的命中条目（不再「搜索失败」）（锚点：`::test_search_falls_back_to_official_source`） |
+| TC-SHFB-05 | 同上（源不存在不 fallback / 回归） | `route("missing")`；官方源不健康时 CLI `skill search` | 前者 `SOURCE_NOT_FOUND`；后者退出码 1 + stderr「搜索失败」（无可用源仍是错误）（锚点：`::test_index_route_source_not_found`、`tests/test_skillhub_cli.py::test_skill_search_unhealthy_source_reports_error`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

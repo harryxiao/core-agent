@@ -60,13 +60,13 @@ class MarketIndex:
                  health_probe: HealthProbe | None = None, path: Path | None = None) -> None: ...
 
     def list(self, *, source: str = "official") -> list[MarketSkill]:
-        """列出指定源的技能目录元数据。"""
+        """列出目录元数据；源不健康则列出**官方源**目录（回退）。"""
 
     def route(self, source: str) -> MarketSource:
-        """按 source 路由到对应市场源；源不存在抛 SOURCE_NOT_FOUND。"""
+        """按 source 路由；源不存在抛 SOURCE_NOT_FOUND，不健康则回退官方源（返回的可能是官方源）。"""
 
     def health(self, source: str) -> SourceHealth:
-        """源健康探测；不可达标记不健康并回退官方源（SOURCE_UNHEALTHY）。"""
+        """源健康探测（诊断面：**只如实报告，不做回退**）。"""
 
     def put(self, source: str, skill: MarketSkill) -> None:
         """写入目录条目（**唯一写路径**：发布与审核共用）；源不存在抛 SOURCE_NOT_FOUND。"""
@@ -83,6 +83,13 @@ class SourceHealth:
     healthy: bool
     last_check: str             # ISO 时间戳
 ```
+
+**健康回退**（change `0134` / ADR-0127）：`list` / `route` 经 `_ensure_healthy(source)` 取**可用源名**
+—— 源健康即原源；不健康则**标记该源不健康**（写入 `self._health`，`health()` 可查）并回退
+`official`，**以其结果响应**（回退是降级成功，**不抛错**）。`SOURCE_UNHEALTHY` 收窄为「**无可用源**」：
+官方源自身不健康，或回退目标亦不健康。`SOURCE_NOT_FOUND`（源不存在）**不**回退到未知源。回退目标
+恒为 `official` 单一目标（不做多级回退链）。`health()` / `locate()` / `download()` **不做回退**
+（诊断面与查找面，见 ADR-0127 决策②）。
 
 **目录落盘**（注入 `path`）：形状 `{"sources": {<name>: {"skills": {<skill_id>: <MarketSkill dict>}}}}`，
 经 `core.persistence.write_state`（原子 tmp + `os.replace`）在 `put()` 时整体重写；装载时缺失 → 空态、
