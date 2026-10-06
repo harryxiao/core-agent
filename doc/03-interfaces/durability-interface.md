@@ -75,6 +75,13 @@ class TimeTravel:
         """执行态回滚到历史检查点，沿快照差异逆序撤销副作用（复用 tool-use EffectId undo 栈），返回回滚后快照。"""
 ```
 
+**CLI 入口**：`core-agent time-travel <checkpoint-id>` —— 经 `build_runtime(...).time_travel` 取
+**生产真源**（与 `task` / `run` 同一组合根、同一 `$CORE_STATE_DIR/checkpoints.jsonl`、同一共享
+`EffectTracker`），撤销集取该点快照 `state["trace_ids"]`；检查点不存在 ⇒ `CHECKPOINT_NOT_FOUND`
+转 stderr + 退出码 1（不伪造成功）。**已知局限**：`Effect` 的 `undo` 为进程内闭包、不可持久化
+⇒ 一次性 CLI 进程内撤销循环为空转（快照恢复与失败语义仍生效）；撤销协同在**同进程**入口
+（`serve` / REPL / 同一 runtime 内的 `task`）生效（change `0144` / 账本 E73 / ADR-0136）。
+
 ---
 
 ## 5. RetentionPolicy 接口

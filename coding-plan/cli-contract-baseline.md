@@ -25,7 +25,7 @@
 
 ---
 
-## 1. 命令面总览（32 动词 + 14 全局 flag）
+## 1. 命令面总览（33 动词 + 14 全局 flag）
 
 | 子命令族 | 命令动词 | 层 | 缺口归属 |
 |---|---|---|---|
@@ -41,6 +41,7 @@
 | 分发 | release publish/upgrade/rollback | L5 ReleaseManager | 补（`publish` 入参为 bundle 制品清单，change `0143`） |
 | 宠物 | pet <verb> | 编排层扩展 pet-mode | 补 M6（三入口之一，子动词面见 pet-mode-interface §3） |
 | 神兽 | summon <beast> [task] / recall <beast> | 编排层扩展 beast-mode | 补 M7（前台重大任务，三入口见 beast-mode spec） |
+| 时间旅行 | time-travel <checkpoint-id> | 横切 durability | 补 E73（回滚入口，change `0144`） |
 
 ---
 
@@ -145,6 +146,12 @@
 | F10-F12 | `--im-gateway/--im-corp-id/--im-secret` | IM 配置覆盖 | M5，CLI flag 覆盖层 |
 | F13 | `--verbose/--quiet/--log-level LEVEL` | 日志 | observability 段 |
 | F14 | `--version/--help` | 版本/帮助 | 通用 |
+
+### 2.12 时间旅行（横切 durability · 补 E73）
+
+| # | 命令 | 语义 | 对应 | 缺口 |
+|---|---|---|---|---|
+| 33 | `core-agent time-travel <checkpoint-id>` | 回滚执行态到历史检查点（撤销集取该点快照 `state["trace_ids"]`，复用 tool-use EffectId undo 栈），打印回执；检查点不存在 ⇒ 退出码 1 | `TimeTravel.rollback()`（`Runtime.time_travel`，经 `build_runtime` 同一组合根） | **补 E73（此前 `rollback` 无生产调用方，change `0144`）** |
 
 ---
 

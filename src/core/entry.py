@@ -2,11 +2,11 @@
 
 `core-agent` 可安装、可启动的入口：解析 argv，路由到三桥（CLI/Web/Desktop）与
 编排层（pet/beast/session），`-h/--help` 输出三级帮助（顶层 → 命令族 → 参数
-详情），覆盖 32 动词 + 全局 flag；argparse 只做「解析 + 路由」，具体动作进各
+详情），覆盖 33 动词 + 全局 flag；argparse 只做「解析 + 路由」，具体动作进各
 桥/编排层，不内联命令逻辑。
 
 对应接口：doc/03-interfaces/cli-ops-interface.md §2（统一命令入口）
-契约：coding-plan/cli-contract-baseline.md（32 动词 + 14 flag）
+契约：coding-plan/cli-contract-baseline.md（33 动词 + 14 flag）
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ from core.deployment import (
     ReleaseManager,
     ServeStateStore,
 )
+from core.durability import DurabilityError
 from core.evolution import EvolutionError, GenerationCandidate
 from core.evolution.executor import COMMIT_TRACE, IMPLEMENT_OP
 from core.loop import LoopPlugin
@@ -147,6 +148,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_run_parser(sub)
     _add_task_parser(sub)
     _add_release_parser(sub)
+    _add_time_travel_parser(sub)
     _add_pet_parser(sub)
     _add_beast_parser(sub)
 
@@ -321,6 +323,11 @@ def _add_release_parser(sub: Any) -> None:
     upgrade = rel_sub.add_parser("upgrade", help="升级")
     upgrade.add_argument("version")
     rel_sub.add_parser("rollback", help="回滚")
+
+
+def _add_time_travel_parser(sub: Any) -> None:
+    travel = sub.add_parser("time-travel", help="时间旅行：回滚执行态到历史检查点")
+    travel.add_argument("checkpoint_id", metavar="<checkpoint-id>", help="目标检查点 id")
 
 
 def _add_pet_parser(sub: Any) -> None:
@@ -747,6 +754,28 @@ def _release(args: argparse.Namespace) -> int:
         print(f"发布失败: {exc}", file=sys.stderr)
         return 1
     print(f"release {args.release_cmd} 已识别，尚未接线", file=sys.stderr)
+    return 0
+
+
+def _time_travel(args: argparse.Namespace) -> int:
+    """时间旅行回滚：恢复执行态到历史检查点，并撤销该点撤销集内的写类副作用（账本 E73）。
+
+    取**生产真源** `build_runtime(...).time_travel` —— 与 `task` / `run` 同一组合根、
+    同一 `$CORE_STATE_DIR/checkpoints.jsonl`、同一共享 `EffectTracker`（tool-use 的
+    EffectId undo 栈，不新建撤销机制）。撤销集来自快照 `state["trace_ids"]`；undo 闭包
+    不可持久化 ⇒ 跨进程调用时撤销循环为空转，快照恢复与失败语义仍生效（ADR-0136）。
+    """
+    try:
+        runtime = build_runtime(_config_manager(args))
+        snapshot = runtime.time_travel.rollback(args.checkpoint_id)
+    except DurabilityError as exc:
+        print(f"回滚失败: {exc}", file=sys.stderr)
+        return 1
+    trace_ids = cast(list[str], snapshot.state.get("trace_ids") or [])
+    print(
+        f"已回滚到检查点 {snapshot.checkpoint_id}："
+        f"恢复状态键 {len(snapshot.state)} 个，撤销 trace {len(trace_ids)} 条"
+    )
     return 0
 
 
@@ -1845,6 +1874,7 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "evolve": _evolve,
     "run": _run,
     "task": _task,
+    "time-travel": _time_travel,
     "config": _config,
     "mcp": _mcp,
     "plugin": _plugin,

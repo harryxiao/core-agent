@@ -125,6 +125,14 @@ def test_time_travel_rolls_back_effects() -> None:
     assert undone == ["f.txt"]
 
 
+def test_time_travel_missing_checkpoint_raises() -> None:
+    """未知检查点 ⇒ ``CHECKPOINT_NOT_FOUND``（生产入口 `time-travel` 的失败面）。"""
+    time_travel = TimeTravel(CheckpointStore(), effect_tracker=EffectTracker())
+    with pytest.raises(DurabilityError) as exc_info:
+        time_travel.rollback("ghost")
+    assert exc_info.value.code is DurabilityErrorCode.CHECKPOINT_NOT_FOUND
+
+
 # ---- 保留策略 ----
 
 

@@ -3763,6 +3763,42 @@
 
 ---
 
+## ADR-0136：时间旅行回滚补生产入口（CLI `time-travel`）（change 0144 / phase-34 E73）
+
+- **背景**：`durability/spec.md`「时间旅行」是**硬 SHALL**（「将执行态回滚到**任意历史检查点**……
+  与 tool-use 副作用级 EffectId undo 栈协同，不新建撤销机制」），两个 Scenario 明确要求
+  「**上层请求**回滚到某个历史检查点」⇒ 执行态恢复 + 沿历史逆序撤销写类副作用。实现侧
+  `durability/manager.py:132-149 TimeTravel.rollback()` **完整**，`runtime.py:853` 以生产真源
+  构造（`CheckpointStore(_checkpoint_path())` + 与 `tools` / `memory` **共享**的 `EffectTracker`）、
+  `:1033` 注入 `Runtime`，检查点持久化本身也在用（`task --resume` 依赖）——**唯独「上层请求」
+  这一环全仓零生产调用方**（只有 `test_durability` / `test_phase15` 直调）⇒ 能力存在但**用户不可达**
+  （死面）。故本账定性为**设计缺失**而非实现缺陷（E73 行口径）。
+- **决策①：补**一个**顶层 CLI 动词** `core-agent time-travel <checkpoint-id>`（不改 `rollback` 一行）。
+  理由：规格要求的是「上层**请求**」这一环，CLI 是本仓既有的「上层请求」形态；命令面 32 → 33
+  只增不改，既有动词 / flag / 行为逐字不变。
+- **决策②：入口经 `build_runtime(_config_manager(args))` 取 `runtime.time_travel`，不另起存储真源。**
+  与 `task` / `run` 同一组合根 ⇒ 同一 `$CORE_STATE_DIR/checkpoints.jsonl`、同一共享 `EffectTracker`
+  （`test_phase15` 已把 `tools._tracker is time_travel._effect_tracker` 钉住）。**不**在 CLI 内联
+  构造 `CheckpointStore(_checkpoint_path())`：那会把「检查点落哪」复制成两份口径（`entry` 只做
+  「解析 + 路由」）。
+- **决策③：失败 fail-closed、回执不吹。** 未知检查点 ⇒ `DurabilityError(CHECKPOINT_NOT_FOUND)`
+  转 `回滚失败: …` + 退出码 1（不静默、不伪造成功）；成功 ⇒ 打印回滚到的检查点 id、恢复状态键数、
+  撤销集（`state["trace_ids"]`）条数 —— 数字取**快照真值**，不臆造「已撤销 N 条」。
+- **决策④：撤销集语义不动。** `rollback` 的撤销集 = 该点快照 `state["trace_ids"]`（既有设计，
+  `test_phase15` / `test_durability` 锚定），本 change **不**改成「差异集」或按时间戳切分 ——
+  E73 是**接线**账，语义变更属另账（见已知局限①）。
+- **已知局限**：① 「沿快照**差异**逆序」的规格措辞与实现的「按快照 `trace_ids` 集回滚」**未完全
+  对齐**（实现无「检查点之后的 trace」这一信息，`Effect` 只在 `EffectTracker` 内按 trace 聚合）
+  ⇒ 保持既有语义并在接口面记明，改语义须另立账。② `Effect.undo` 是**进程内闭包**、不可持久化
+  ⇒ 一次性 CLI 进程内撤销循环**空转**（快照恢复与失败语义仍生效）；撤销协同在**同进程**入口
+  （`serve` / REPL / 同一 runtime 内的 `task`）生效。③ 命令面计数 32 → 33 ⇒ 已同步
+  `cli-contract-baseline.md`（§1/§2.12）、`user-guide.md`、`entry.py` docstring。
+- **规格**：`openspec/specs/durability/spec.md`「时间旅行」（**无 delta** —— 硬 SHALL 早已在，
+  本 change 为 conformance ⇒ `skip_specs`）；接口面 `03-interfaces/durability-interface.md` §4、
+  `coding-plan/cli-contract-baseline.md` §2.12。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3893,3 +3929,4 @@
 | ADR-0133 | 03-interfaces/context-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0134 | 03-interfaces/core-profile-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0135 | 03-interfaces/composition-interface.md, 03-interfaces/deployment-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0136 | 03-interfaces/durability-interface.md, coding-plan/cli-contract-baseline.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

@@ -13,6 +13,12 @@ import pytest
 
 from core.configuration.models import LLMConfig
 from core.deployment import ServeStateStore
+from core.durability import (
+    CheckpointManager,
+    CheckpointStore,
+    DurabilityError,
+    DurabilityErrorCode,
+)
 from core.entry import _build_installer, _build_parser, _state_path, main
 from core.loop import LoopEvent
 from core.memory import TranscriptStore
@@ -53,6 +59,7 @@ _TOP_LEVEL_COMMANDS = {
     "pet",
     "summon",
     "recall",
+    "time-travel",
 }
 
 # baseline §2.11 全局 flag（F1-F14）+ pet.*（ConfigSpec 单一真源生成）。
@@ -677,9 +684,12 @@ class _StreamOrchestrator:
 
 
 def _patch_runtime(
-    monkeypatch: pytest.MonkeyPatch, orch: _StreamOrchestrator, checkpoints: object
+    monkeypatch: pytest.MonkeyPatch,
+    orch: _StreamOrchestrator,
+    checkpoints: object,
+    time_travel: object = None,
 ) -> None:
-    runtime = SimpleNamespace(orchestrator=orch, checkpoints=checkpoints)
+    runtime = SimpleNamespace(orchestrator=orch, checkpoints=checkpoints, time_travel=time_travel)
     monkeypatch.setattr("core.entry.build_runtime", lambda config: runtime)
 
 
@@ -772,6 +782,72 @@ def test_task_resume_rebuilds_plan_and_completed(
     assert isinstance(orch.calls["plan"], Plan)
     assert orch.calls["completed"] == {"1"}  # 已完成集回填，续跑跳过
     assert orch.calls["results"] == {"1": "上游答复"}  # 依赖交接上下文重建
+
+
+# ---- time-travel：时间旅行回滚入口（change 0144 / 账本 E73）----
+
+
+class _FakeTimeTravel:
+    """时间旅行桩：记录回滚请求（反回归「`rollback` 无生产调用方」）。"""
+
+    def __init__(self, state: dict[str, object] | None = None) -> None:
+        self.calls: list[str] = []
+        self._state = {"trace_ids": ["t1", "t2"], "done": False} if state is None else state
+
+    def rollback(self, checkpoint_id: str) -> SimpleNamespace:
+        self.calls.append(checkpoint_id)
+        return SimpleNamespace(checkpoint_id=checkpoint_id, state=self._state)
+
+
+def test_time_travel_delegates_to_runtime(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`time-travel <cp>` 委派到 `runtime.time_travel.rollback`，回执含检查点 + 撤销集规模。"""
+    travel = _FakeTimeTravel()
+    _patch_runtime(monkeypatch, _StreamOrchestrator([]), checkpoints=None, time_travel=travel)
+
+    rc = main(["time-travel", "cp1"])
+
+    assert rc == 0
+    assert travel.calls == ["cp1"]  # 生产调用方存在（E73 死面销账）
+    out = capsys.readouterr().out
+    assert "cp1" in out
+    assert "撤销 trace 2 条" in out
+
+
+def test_time_travel_unknown_checkpoint_exits_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """未知检查点 ⇒ `CHECKPOINT_NOT_FOUND` 转 stderr + 退出码 1（不伪造成功）。"""
+
+    class _Missing(_FakeTimeTravel):
+        def rollback(self, checkpoint_id: str) -> SimpleNamespace:
+            raise DurabilityError(
+                DurabilityErrorCode.CHECKPOINT_NOT_FOUND, f"检查点不存在: {checkpoint_id}"
+            )
+
+    _patch_runtime(monkeypatch, _StreamOrchestrator([]), checkpoints=None, time_travel=_Missing())
+
+    rc = main(["time-travel", "ghost"])
+
+    assert rc == 1
+    assert "回滚失败" in capsys.readouterr().err
+
+
+def test_time_travel_rolls_back_persisted_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """跨进程：检查点落盘可寻址 ⇒ 真子进程 `time-travel` 回滚成功（生产入口端到端）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    store = CheckpointStore(_state_path("checkpoints.jsonl"))
+    checkpoint = CheckpointManager(store).create_checkpoint(
+        "t1", "default", {"trace_ids": ["t1"], "step": 1}
+    )
+
+    result = _cli("--config", _write_config(tmp_path), "time-travel", checkpoint.checkpoint_id)
+
+    assert result.returncode == 0, result.stderr
+    assert checkpoint.checkpoint_id in result.stdout
 
 
 def test_memory_maintain_runs_maintenance(

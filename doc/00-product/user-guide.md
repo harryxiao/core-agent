@@ -102,7 +102,7 @@ config  mcp  plugin  skill  session  run  release  pet  summon  recall
 
 全局 flag（`core-agent -h` 可见全量）：`--profile` `--cwd` `--config` `--feature` `--verbose` `--quiet` `--log-level` `--llm.provider` `--llm.model` `--llm.endpoint` `--llm.api-key` `--im.gateway` `--im.corp-id` `--im.secret` `--permission-mode` `--pet-enabled` `--pet-dir` `--version` `-h/--help`。
 
-命令面权威基线：`coding-plan/cli-contract-baseline.md`（32 动词 + 14 全局 flag）。
+命令面权威基线：`coding-plan/cli-contract-baseline.md`（33 动词 + 14 全局 flag）。
 
 ---
 

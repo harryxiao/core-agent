@@ -34,7 +34,7 @@
 | **E70** | 低 | composition `apply_patch` 接受 **bool** 当 generation | `composition/resolver.py:129` `isinstance(override, int)`——**bool ⊂ int**，YAML `true` 生成 `PluginRef(id, True)`（`PluginRef(plugin_id, override)` `:134`） ⇒ **已落地（change `0136` / ADR-0129）：`apply_patch` 判据补 `or isinstance(override, bool)`，布尔按 `PATCH_CONFLICT` 拒绝（不静默落为 1/0）** | 类型边界 | ✅ |
 | **E71** | 中 | **L1 索引是空壳**（`read` 从不查 `_index`，全库扫描） | `memory/store.py:110-115` `read()` 用 `backend.search(query)` **全扫** + `_hot`，**从不碰 `_index`**；`:191-192` `index()` 仅调 `list_index()`。规格 `memory/spec.md:26-29` 要求「命中 L1 索引 → 非全库扫描」 ⇒ **定性订正（change `0141`，非代码违约）**：规格**并存**两 Scenario ——「跨层检索」（`memory/spec.md:26-29`）与「**检索失败降级**」（检索主路径异常**或返回空结果** ⇒ 降级全库扫描、**不阻断**主流程，`:49-52`），而正文 SHALL（`:31-37`）只要求「热/冷两档检索」（已实现：`_hot` + `_backend` cold）。实现的 `read()` 恒「`backend.search(query)` 全库扫描 + `_hot` 热度加权」＝ **常驻降级态**（降级 Scenario 明文允许，且**未**限定触发条件为异常）⇒ 行为对检索**结果**无语义影响，只是未走索引**快路径** ⇒ 本账改判为「**性能面优化缺口**（一阶索引路由未落）」，登记 §4 取舍，**不计代码违约** | 性能面优化缺口（**非**违约） | ✅ ⇒ **定性订正** |
 | **E72** | 中 | 技能安装后 **`draft` 死胡同**（装完**永不被路由**） | `skillhub/client.py:66` 下载后 `skill.status = "draft"`；`skills/router.py:98` 只放行 `s.status in ("active","gray")`；**无 draft→active 迁移路径** ⇒ **已落地（change `0133` / ADR-0126）：`SkillLibrary.activate(skill_id, *, effect_tracker=None)`（幂等 / 未知 id 抛 `KeyError` / 可选可逆效应）+ CLI `skill activate <name>`；路由**放行集不变**（仍 active/gray），不自动启用** | 设计缺失（链路断裂） | ✅ |
-| **E73** | 低 | `TimeTravel.rollback` **不可达** | 检查点**持久化**在用（`--resume` 依赖，E12 指此路径），但**时间旅行回滚**无任何生产调用方（见 §5 订正） | 设计缺失（死面） | ✅ |
+| **E73** | 低 | `TimeTravel.rollback` **不可达** | 检查点**持久化**在用（`--resume` 依赖，E12 指此路径），但**时间旅行回滚**无任何生产调用方（见 §5 订正） ⇒ **已落地（change `0144` / ADR-0136）：补顶层 CLI 动词 `core-agent time-travel <checkpoint-id>`（`entry._time_travel` 经 `build_runtime` 取生产真源 `runtime.time_travel`，同一 `$CORE_STATE_DIR/checkpoints.jsonl` + 同一共享 `EffectTracker`）；未知检查点 ⇒ `CHECKPOINT_NOT_FOUND` + 退出码 1；命令面 32 → 33；`rollback` 语义与实现**一行未改**（纯接线）** | 设计缺失（死面） | ✅ ⇒ **已落地** |
 
 ---
 
@@ -92,6 +92,7 @@
 - **证伪（E82，2026-10-07，账目校准 change `0141`）**：pet / beast「**Web 面缺失**」主张**不成立** —— `ui/spec.md` 全文**未要求** pet/summon/recall 专有 HTTP 端点；Web 面为**消息驱动**（复用 `/run` 消息路径），REST 面 12 端点为既有全集；入口方法俱在（宠物 `ui/api.py:231/237`、神兽 `:263/276`，change `0137` 接线）⇒ 「未暴露专有端点」≠「面缺失」。**注**：change `0137` 已把 beast 的自然语言入口补齐到**消息路径**，与端点无关。
 - **证伪（E87，同上）**：`doc/10-codebase-engine/`「**有文档无实现**」为**形态误读** —— 文档**自述**交付形态为「走 **MCP 接入**（复用既有 `mcp` capability），**不新增** `codebase` capability（D4 决策 A）」（`integration-plan.md:11` / `codebase-engine-evaluation.md:71`）⇒ 无 `src/` 模块系**设计形态**。**留口**：该承诺的 MCP 接入**是否已接线**未核（需实测；若未接应另立「接入未落地」账）。
 - **订正（E71，同上）**：**非代码违约** —— 规格「跨层检索」与「检索失败降级」**并存**（`memory/spec.md:26-29` / `:49-52`），实现恒「全库扫描 + 热度加权」＝**常驻降级态**（降级侧明文允许）⇒ 改判为**性能面优化缺口**（一阶索引路由未落），登记 §4 第 6 条。
+- **补注（E73，change `0144`）**：接线落地时发现规格措辞「沿快照**差异**逆序撤销副作用」与实现「按快照 `state["trace_ids"]` 集回滚」**未完全对齐** —— `Effect` 只在 `EffectTracker` 内按 trace 聚合，系统**没有**「检查点之后的 trace」这一判据。本 change 按裁决**只补入口、不动语义**（该语义由 `test_phase15` / `test_durability` 锚定）；措辞落差登记为 ADR-0136 已知局限①，改语义须另立账。
 
 ---
 
@@ -192,7 +193,7 @@
 | `0141` | E86+E82+E87+E71+E84-b | ✅ 已落地（2026-10-07，纯文档） | —（无 ADR） |
 | `0142` | E85 | ✅ 已落地（2026-10-07） | ADR-0134 |
 | `0143` | E84-a | ✅ 已落地（2026-10-07） | ADR-0135 |
-| `0144` | E73 | ⏳ 待实施 | — |
+| `0144` | E73 | ✅ 已落地（2026-10-07） | ADR-0136 |
 | `0145` | E56~E60 | ⏳ 待实施 | — |
 
 **终裁（本轮锁定，2026-10-06）**：范围 = 含 Think 回显（全做）；E73 / E77 死面 = 都补齐接线；E78 = 规格改两档；E80 = 回退成功即返回官方源结果。

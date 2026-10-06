@@ -888,6 +888,22 @@
 
 ---
 
+## 60. 时间旅行回滚生产入口（TC-TIMETRAVEL，change `0144`／ADR-0136，账本 E73）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-TIMETRAVEL-01 | durability/spec.md「时间旅行」Scenario「回滚到历史检查点」（**上层请求**） | `main(["time-travel", "<cp>"])`（runtime 桩） | 退出码 0 且**委派到** `runtime.time_travel.rollback`（记录入参 = cp）；回执含检查点 id 与撤销集条数（锚点：`test_entry.py::test_time_travel_delegates_to_runtime`） |
+| TC-TIMETRAVEL-02 | 同上（检查点不存在 ⇒ 结构化失败，不伪造成功） | 桩 `rollback` 抛 `CHECKPOINT_NOT_FOUND` | 退出码 1 + stderr 含「回滚失败」（锚点：`::test_time_travel_unknown_checkpoint_exits_1`） |
+| TC-TIMETRAVEL-03 | 同上 + Scenario「与副作用级回滚协同」（撤销集取快照 `state["trace_ids"]`） | 真子进程 `python -m core.entry time-travel <cp>`（cp 经生产口径落盘 `$CORE_STATE_DIR/checkpoints.jsonl`） | 退出码 0 + stdout 含该检查点 id（锚点：`::test_time_travel_rolls_back_persisted_checkpoint`） |
+| TC-TIMETRAVEL-04 | durability/spec.md「时间旅行」（回滚未知检查点） | `TimeTravel.rollback("ghost")`（空 store） | `DurabilityError` 且 `code is CHECKPOINT_NOT_FOUND`（锚点：`test_durability.py::test_time_travel_missing_checkpoint_raises`） |
+| TC-TIMETRAVEL-05 | 同上（撤销协同：undo 复用 tool-use 栈，**不新建机制**） | 记可逆效应 `t1` → 建含 `trace_ids=["t1"]` 的检查点 → `rollback` | undo 回调被执行、快照 state 原样返回（锚点：`test_durability.py::test_time_travel_rolls_back_effects`，既有用例） |
+
+> **手工验收项（无自动门禁）**：跨进程撤销协同 —— `Effect.undo` 为进程内闭包、不可持久化，
+> 一次性 CLI 进程内撤销循环**空转**（快照恢复与失败语义仍生效）；同进程入口（`serve` / REPL /
+> 同一 runtime 内的 `task`）的撤销协同由 TC-TIMETRAVEL-05 覆盖（见 ADR-0136 已知局限②）。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`
