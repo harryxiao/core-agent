@@ -28,7 +28,7 @@
 | `evolution/` 14 文件无 `executor.py` | ✅ 14 个 `.py`，确无 | 属实 |
 | `engine.py:153` `crystallize` / `:259` `_crystallize_plugin` | ✅ 行号逐字对上 | 属实 |
 | `_crystallize_plugin` 只回写 `status="accepted"` | ✅ `engine.py:271-272` + 注释「架构级候选只「批准登记」，不产出任何可发布产物 ⇒ 不谎报 published」 | 属实 |
-| `runtime.py` 无 executor 装配 | ✅ `:552` 引擎 / `:564` worker / `:586` 主 loop，无桥接面 | 属实（但见 §2） |
+| `runtime.py` 无 executor 装配 | ✅ `:552` 引擎 / `:564` worker / `:586` 主 loop，无桥接面〔行号系**开工时**基线；`0115`/`0116` 加行后现为 `:586` 引擎 / `:597` worker / `:639` 主 loop〕 | 属实（但见 §2） |
 | `entry.py:1145`「批准已登记，但无产物落地（待人工实施）」 | ✅ 逐字 | 属实 |
 | `code_run`「不可逆高风险需审批」 | ✅ `builtin.py:190` `coeffects=["process:spawn","filesystem:write"]` + `reversible=False` ⇒ `planner._is_irreversible`（`:250-256`）判真 ⇒ `permission/guard.py:61-65` 非 auto-approve 档落 `confirm` | 属实 |
 | proposer delta 仅 `{issue, schema}` | ⚠️ 实为 `delta={"issue": diagnosis.issue}`（`proposer.py:38`），**无 `schema` 键** | **订正** |
@@ -152,7 +152,7 @@ E40 要做的正是搬掉该前提 ⇒ 须同步复核 E31 裁决。
 > S1 的 `tools.gate_run` 是**给 Agent 用的工具面**，与执行器的门禁调用是**两条**互不相干的消费路径（后者不暴露给模型）。
 >
 > **一手发现 2 条（写进 ADR-0105 已知局限，不隐瞒）**：① 生产 `Validator()` / `Evaluator()` 现为**恒通过桩**
-> （`runtime.py:564-574`：`review` 恒真、`tests` 返空 ⇒ `passed` 恒真；无 `score_fn` ⇒ 留出分/基线/margin 恒 0 ⇒
+> （`runtime.py:589-590`〔开工时记作 `:564-574`，`0115`/`0116` 加行后漂移〕：`review` 恒真、`tests` 返空 ⇒ `passed` 恒真；无 `score_fn` ⇒ 留出分/基线/margin 恒 0 ⇒
 > `verdict` 恒 `publish`）⇒ 既有 `confirm`/`crystallize` 的「过门」**不构成真实检验**，本切片的**冻结门是当前唯一真门**；
 > ② `is_enabled` 在**生产代码零调用点**（此前仅测试用），本切片给它**首个生产消费者**。
 
@@ -166,3 +166,17 @@ E40 要做的正是搬掉该前提 ⇒ 须同步复核 E31 裁决。
 - **裁决留痕**：DS1/DS1-a/DS2/DS3/DS4 见 §5.1（DS1-a **落点已订正**：`GATABLE_MODULES` → 新设缺省关名单 `OPT_IN_MODULES`）；形态否决依据 = change `0067` 规格原文（feature flag 只作用于模块装配）。
 - **验收见**：§5.4（S0/S1/S2 判据 + S0 形态订正 3 条与一手发现 2 条）/ §4（红线前置）。
 - **复核留痕**：改判依据见 §1；订正 4 条（E42 判据、E43 判据、delta 无 `schema`、`module_id` 已有）+ 开工时订正 3 条（S0 不接冷路径 / `engine.py` 不改 / S1 不进执行器路径）+ DS1-a 落点订正 1 条。
+
+## 7. 遗留清单（Phase 27 全闭后仍在册项）
+
+> Phase 27 **四条账目（E40–E43）全部关闭**、S0/S1 均落地；下列为**当时的「一手发现」与裁决时如实登记的项**，属**已知局限**（ADR-0105 已载），**非本 Phase 账目**、**未修**。列此以免散落。
+
+| 项 | 证据 | 定性 | 取向 |
+|---|---|---|---|
+| **生产验证门名副其实化**：`Validator()`/`Evaluator()` 恒通过桩 | `runtime.py:589-590`（`review` 恒真 / `tests` 返空 ⇒ `passed` 恒真；无 `score_fn` ⇒ 留出分恒 0、`verdict` 恒 `publish`） | **最实质的一条**：既有 `confirm`/`crystallize` 的「过门」**不构成真实检验**；本切片冻结门是当前**唯一**真门 | ADR-0105 决策⑩ 明示「**另一件事**」（波及既有 `confirm`/`crystallize` 与观察期基线）⇒ **列已知局限，不并入本切片**。**修它须独立规格变更**（新 Requirement：真实 `review`/`tests`/留出评测生产者）。**✅ 已立账**：`coding-plan/phase-31.md`（RSI 能力缺口**提案**，**待裁决**；缺口 G1–G5） |
+| 物理隔离**未落地** | 隔离只到「操作面 + subprocess 门」，**不是**独立工作树 / 容器（R2 仅部分落地） | 已知局限 | ADR-0105 局限② |
+| `commit` 有 undo 记录但**无 CLI 回退入口** | 沿总纲「回滚 = 卸载上一代」的完整形态留后续 | 已知局限 | ADR-0105 局限③ |
+| 门禁副产物**不入** `EffectTracker` | `build` 门的 `dist/`、`pytest` 的 `.pytest_cache`/`__pycache__` | **不谎称「一切副作用可逆」** | ADR-0105 局限④（诚实声明，非缺陷） |
+| 门禁表达力受限 | 门禁跑**全量既有测试**而范围守卫**禁止**改测试 ⇒ 表达力 ≈「行为保持的重构 / 新增模块」 | fail-closed 的诚实结果 | ADR-0105 局限⑤ |
+
+**文档基线提醒**：本 Phase 文中 §1/§2 的**代码行号系 2026-10-06 开工时基线**；其后 change `0115`/`0116` 在 `runtime.py` 增加行 ⇒ 已普遍漂移（关键处已就地订正：§2 表首行 + §5.4 尾注①）。引用前请以当时实码为准。

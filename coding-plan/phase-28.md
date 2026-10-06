@@ -1,13 +1,13 @@
-# Phase 28：上下文压缩 / 多流复用机制 + pet/beast 返回内容——缺陷账本（E44 + E45 + E46 + E47 + E48；E49 已闭 = B1 + B2）
+# Phase 28：上下文压缩 / 多流复用机制 + pet/beast 返回内容——缺陷账本（E44 + E45 + E46 + E47 + E48 + E49；**已全闭**）
 
-> **状态**：E46 已闭（0113/ADR-0106）、**E47 主体已闭（0114/ADR-0107）**、**E49 已闭（B1 `0115`/ADR-0108 ＋ B2 `0116`/ADR-0109）**；E44 / E45-隔离 待裁决；**E48**（新登记）未闭。E47 附属（会话注册表丢更新）已随 `0115` 顺带闭合。
+> **状态**：✅ **全闭（2026-10-06）** —— E46（0113/ADR-0106）、E47 主体 + 附属（0114/ADR-0107，附属随 `0115` 顺带闭合）、E49（B1 `0115`/ADR-0108 ＋ B2 `0116`/ADR-0109）、**E48 / E44 / E45-隔离（Phase 30 收口，`0117`/ADR-0110）**：E48-b **修** / E48-a **销账** / E44 **销账** / E45-隔离(i) **销账**，同批**转正并修复 E54**（神兽读不到自身轨迹）。
 
 > **定性**：本 Phase 承接两条机制 review（「memory 超过 context window 的压缩机制」是否 ready、「多流复用机制」是否完善）与一条新增关注点（pet/beast 任务完成/召回时主 Agent 能否查看返回内容）。
 > 一手核实结论：**机制①＝「抢救 + 强制终止」，非「压缩续聊」**（`ctx.messages` 全程不截断，LLM 每轮收全量历史）；**机制②＝「复用同一条 TCP」并发场景不成立 + 记忆隔离单向**（主不读兽、兽可读主）；**pet/beast 返回内容＝死数据**（无工具查询、不落 L2、状态接口不含正文）。
 > 上述各项均非规格违约（现有 spec 未明文要求「压缩续聊 / 双向隔离 / 结果可查 / 会话隔离」），故本 Phase 为**缺陷账本（登记）**，实施与否须视产品方向裁决。
 > **第四项（E47）＋一条裁决**：承接「开不同 session 对话框时的多流复用」追问 —— 一手核实：复用点＝**共享一个 runtime + 一个 loop 实例**（`ui/api.py:105`；session 只是 `session_id` 标签，非 loop 实例），多流并发在环内**安全**（每轮自建 `ctx`，无 per-call 实例状态），但**检索面不按 session 过滤** ⇒ 会话之间互读记忆（登记 **E47**）。同批裁决：**E45 的 TCP 半条不列为缺陷** —— ADR-0064 的**有意取舍**（线程本地免锁）＋规格未要求「跨线程同一条 TCP」⇒ **不改**，登记为已知局限。
 > **E46 已闭（change 0113 / ADR-0106）**：结果可见性改走**查询面接线** —— beast `BeastSession.result_summary()` + `summon` CLI 呈现；pet `PetControl.result` 独立查询面（`status` 面逐字不变）。**两半原写修法皆判据订正**：beast「落 L2」自败（`runtime.py:566` 排除 `beast.*` + beast spec `:89` 封存 ⇒ 主 Agent 检索不到）、pet「`status` 暴露正文」违 `pet-mode` spec `:249`/`:255`。详见 §1.3 订正表与 §4。
-> **E47 已闭（change 0114 / ADR-0107）**：用户裁决「隔离边界＝**严格隔离 + 保留全局层**」⇒ 规格先行（8 spec / 9 需求块）→ 测试先行（红 18）→ 实现 → 四门禁（ruff / ruff format / pyright 0-0-0 / **1415 passed**）→ 手工归档 → `openspec validate --all` **30 passed / 0 failed**。**判据订正**：原记「读侧不过滤」一项，实为**读侧 1 + 写侧归属 4 + 绕过通道 1 + id 覆盖 2**（详见 §1.4 订正表）。**附属未闭**：`SessionRegistry.create` 丢更新转 Change B（§5）。
+> **E47 已闭（change 0114 / ADR-0107）**：用户裁决「隔离边界＝**严格隔离 + 保留全局层**」⇒ 规格先行（8 spec / 9 需求块）→ 测试先行（红 18）→ 实现 → 四门禁（ruff / ruff format / pyright 0-0-0 / **1415 passed**）→ 手工归档 → `openspec validate --all` **30 passed / 0 failed**。**判据订正**：原记「读侧不过滤」一项，实为**读侧 1 + 写侧归属 4 + 绕过通道 1 + id 覆盖 2**（详见 §1.4 订正表）。**附属已闭**：`SessionRegistry.create` 丢更新随 `0115` 顺带闭合（`create` 加进程内 `RLock`，`ui/sessions.py:35`）；仅**同进程线程间**受保护，跨进程并发仍不被声称受保护（ADR-0108 局限①）。
 > **E49 新登记并已闭（change 0115 / ADR-0108）**：承接本条需求后半（「右边是会话列表管理…可以选不同的会话**查看记录**或者**继续聊天**」）—— 一手核实：`perceive`（`loop/default.py:432`）是 `ctx.messages` 的**唯一**构造点、每轮只装**一条** user 消息，`planner._build_request`（`planner.py:120-129`）**零截断** ⇒ 服务端**不保留对话历史**，页面刷新即失忆、无法「继续聊天」（登记 **E49**：会话历史不落盘 / 不回灌；同时缺「查看记录」读取面）。修法＝**另立转录存储**（非记忆层级）+ 历史经**新字段** `LoopContext.history` 回灌 + `GET /session/{id}/messages` 读取面 + `GET /sessions` 派生 `title`/`updated_at`。**同批顺带订正一条旧账**：canonical `memory/spec.md:9` 把 L4 写作「原始会话」，与同文档 `:119`/`:181` 及实现（遗忘/压实归档层、检索降权 `relevance.py:24`）相悖 —— 见 §1.5 订正表与 §5.2。
 > **E49-B2 已闭（change 0116 / ADR-0109）**：承接本条需求后半的**消费面** —— CLI `session show <id>`（打印转录）+ 顶层 `--session <id>` REPL **续聊** + Web 右栏**会话列表面**（点选查看转录 / 继续对话 / **显式**新建）；**零后端改动**（消费 `0115` 已交付的 `GET /sessions` 与 `GET /session/{id}/messages` 及派生 `title`/`updated_at`）。
 
@@ -18,7 +18,7 @@
 | E44 | 上下文压缩机制未 ready | `loop/default.py:365` `_should_compact` + `:377-399` `_compact`（persist/compact/forget 三步）全程**不截断 `ctx.messages`**；`loop/planner.py:120-128` `_build_request` 无窗口截断 | 「抢救 + 强制终止」非「压缩续聊」 | 若要求真压缩续聊：`_build_request` 前以摘要替换旧历史 |
 | E45 | 多流复用「同一条 TCP」并发不成立 + 记忆隔离单向 | `llm_provider/http_pool.py:9-11/70-74` 连接池 `threading.local` 线程本地 + `stdlib_provider.py:147/172/186` 全走 `to_thread` 任意工作线程 ⇒ 并发不共享同一条连接；`runtime.py:566` 主 loop 排除 `beast.*` 而 `_beast_loop` 不排除主 loop 记忆 ⇒ 单向 | 复用仅单线程串行成立；隔离＝「主不读兽、兽可读主」 | TCP：**已裁决不改**（ADR-0064 有意取舍，登记已知局限）；隔离：双向排除或登记共享记忆设计 |
 | E46 | pet/beast 任务完成/召回后返回内容死数据 | `beast/manager.py:74-76` result 存 `session.last_result` 但**零读取方**；`pet/core/session.py:146-147` `wake()` 存 `_last_trace_id` 后于 `:153` `return result`，而驱动侧 `driver.py:67` 丢弃返回值；`tools/` 无 beast/pet 工具、不落 L2、CLI 仅 print 状态（`_print_pet_status :1601`） | 主 Agent 无法查看返回内容（beast 真死 / pet 半死） | ✅ **已闭（change 0113 / ADR-0106）**：**两半修法皆订正**，改走**查询面接线**（见 §4） |
-| E47 | **会话之间**记忆检索不隔离（附属：会话注册表丢更新） | `context/assembler.py:66-70` → `memory/store.py:95` `read(query, budget)` **只按 source 前缀过滤、无 session 过滤**（而 `loop/default.py:469-474` `remember()` 落库**是带 `session_id` 的**）；`ui/api.py:174-175` 的会话隔离是**调用方手写后置过滤**（只覆盖展示，未覆盖喂给 LLM 的检索）；`ui/sessions.py:33-40` `create` 读回→合并→写回**无锁** | 会话**不是**隔离边界：A 对话框沉淀的事实可进 B 的 system prompt（`planner._system_prompt` → `assembler.build`） | ✅ **主体已闭（change 0114 / ADR-0107）**：**复用既有过滤管线**给 `read()` 补 session 维度（**不新造机制**）+ **四处写侧归属闭合**（见 §5）。**附属（`SessionRegistry` 丢更新）未闭**，转 Change B |
+| E47 | **会话之间**记忆检索不隔离（附属：会话注册表丢更新） | `context/assembler.py:66-70` → `memory/store.py:95` `read(query, budget)` **只按 source 前缀过滤、无 session 过滤**（而 `loop/default.py:469-474` `remember()` 落库**是带 `session_id` 的**）；`ui/api.py:174-175` 的会话隔离是**调用方手写后置过滤**（只覆盖展示，未覆盖喂给 LLM 的检索）；`ui/sessions.py:33-40` `create` 读回→合并→写回**无锁** | 会话**不是**隔离边界：A 对话框沉淀的事实可进 B 的 system prompt（`planner._system_prompt` → `assembler.build`） | ✅ **已闭（change 0114 / ADR-0107）**：**复用既有过滤管线**给 `read()` 补 session 维度（**不新造机制**）+ **四处写侧归属闭合**（见 §5）。**附属（`SessionRegistry` 丢更新）已闭**（随 `0115`） |
 | E49 | **会话历史不落盘 / 不回灌**（刷新即失忆、无「查看记录」读取面） | `loop/default.py:432-443` `perceive` 是 `ctx.messages` 的**唯一**构造点、每轮只装 `[{"role":"user","content":user_input}]` **一条**；`planner.py:120-129` `_build_request` = 一条 system + 全部 `ctx.messages`、**零截断** ⇒ 服务端不保留 per-session 历史，多轮连贯全靠前端回传 + L2 检索；`ui/api.py` 只有 `list_sessions`（`{session_id, mode, created_at}`，无标题无最近活跃），**无取历史端点** | 会话**不可用**：刷新页面即失忆、无法「继续聊天」；32 位 hex 肉眼不可辨，**无法「查看记录」** | ✅ **已闭（change 0115 / ADR-0108）**：**另立转录存储**（`TranscriptStore`，单文件逐行 `O_APPEND`）+ 历史经**新字段** `LoopContext.history` 回灌（不前置进 `ctx.messages`）+ `GET /session/{id}/messages` + `GET /sessions` 派生 `title`/`updated_at`（见 §5.2）。**B2 已闭（`0116`/ADR-0109）**：消费面接线 —— CLI `session show <id>` + 顶层 `--session` 续聊 + Web 右栏会话列表/切换/历史 |
 
 ## 1. 一手核实（证据）
@@ -166,7 +166,8 @@
 - **规格**：8 spec / 9 需求块（`memory` **ADDED**「按会话隔离的检索」5 场景；`context` **MODIFIED** ×2；`loop`/`skills`/`pet-mode`/`orchestration`/`ui`/`notes` **MODIFIED** 各 1）。**非** `skip_specs`。
 - **落地**：`memory/store.py` / `context/assembler.py` / `context/compactor.py` / `loop/{protocol,default,planner}.py` / `skills/router.py` / `runtime.py` / `pet/core/session.py` / `orchestration/scheduler.py` / `ui/api.py`。测试 `tests/test_session_isolation.py`（23 例，含**过滤先于预算**的真红测试与**端到端反向守门**「A 会话事实不进 B 的 system prompt」）。**1415 passed**。
 - **已知局限**（写进 ADR-0107）：① 存量 `memory.jsonl` 未归属历史条目**全部成为全局层**（跨会话可见，不回填）；② `notes` 不隔离（显式裁定）；③ 专属分区在**未归属读**路径上 fail-open；④ 同会话连续压实 / 跨进程重启的 **id 仍复用覆盖**（既有缺陷 → **E48**）。
-- **附属（未闭，转 Change B）**：`SessionRegistry.create` 的读回→合并→写回加进程内锁（或写回前 `exists` 复检）—— **并发缺陷**、非能力缺口，**修它不需要先裁决会话隔离语义**。附带遗留隐患：`write_state` 的临时文件名固定为 `<name>.tmp`，**同一 path 并发写**会交叉写同一 tmp（不同 path 各自独立，当前调用点互不重叠，故仅登记）。
+- **附属（✅ 已闭，change `0115`）**：`SessionRegistry.create` 的读回→合并→写回**已加进程内 `RLock`**（`ui/sessions.py:35`，随 `0115` 顺带闭合）。**注意边界**（ADR-0108 局限①）：该锁只保证**同进程线程间**不丢更新，**跨进程**同刻并发创建仍**不被声称受保护**。
+- **⚠️ 仍开（真·遗留，仅登记未修）**：`write_state` 的临时文件名固定为 `<name>.tmp`，**同一 path 并发写**会交叉写同一 tmp（不同 path 各自独立；当前调用点互不重叠，故**未修**）。它的修法（带 pid/uuid 的唯一 tmp 名）不需要任何裁决，属**待收口项**，见 §7 遗留清单。
 
 ## 5.1 新登记 E48：会话维度产物 id 不唯一（残留面）
 
@@ -174,6 +175,7 @@
 - **定性**：**非规格违约**（规格只要求「按会话归属」与「id 携带会话键」），属既有写入面缺陷；`store.write` 是同 id 覆盖语义（upsert），故不写坏文件、只丢旧事实。
 - **修法方向**：id 改用**内容/时间派生**的唯一键（如 `trace_id` 或单调序号随库落盘），或 `write` 面对同 id 改为「追加不同 id」；须先裁决「同主题压实产物是否应保留历史」。
 - **复用点**：Change B（会话列表 UI + 历史回灌）若把历史落盘，会**显著放大**该面（同一会话多轮压实），故列为 Change B 的前置观察项。
+- **✅ 处置（Phase 30，change `0117` / ADR-0110）—— 已闭**：拆两子面分别处置 —— **E48-b**（`skills.miss` 计数器：id 改 `blake2b` **内容派生** ⇒ 跨进程不互相覆盖、同任务同会话幂等；`misses` 改 `_MISS_WINDOW = 64` **有界诊断窗口**）**已修**；**E48-a**（`compaction.fact.{key}.{i}` 每次压实从 0 重数）**销账** —— 判为**刷新式派生**（facts 由**当前**记忆重派生，新批次取代旧批次为有意行为；反向若保留历史须同时引入有界淘汰，否则 L2 随压实次数线性膨胀）。见 `phase-30.md` §7 账本。
 
 ## 5.2 E49 修复方向 —— ✅ 已闭（B1：change 0115 / ADR-0108；B2：change 0116 / ADR-0109）
 
@@ -188,7 +190,7 @@
 - **落地**：`memory/transcript.py`（新）/ `loop/{protocol,default,planner}.py` / `configuration/manager.py` / `ui/{api,fastapi_serve,sessions}.py` / `runtime.py` / `entry.py`。测试 `tests/test_transcript.py` / `test_history_replay.py` / `test_history_persistence.py` + `test_serve.py` / `test_session_registry.py` / `test_loop_budget_config.py` 增补。**1462 passed**。
 - **已知局限**（写进 ADR-0108）：① 注册表进程内锁对**跨进程**并发创建无效；② 转录单文件随会话数线性增长、读单会话需全扫；③ 超出 N 轮 / 超 token 切片的历史不回灌（有界牺牲）；④ **历史与 reason 阶段 L2 检索重复**（同会话过往轮次**今天就已**进 system prompt，本 change 只是加了时序完整的第二份 ⇒ **不修**，修法备查「reason 阶段排除 `("beast.","loop")`」）；⑤ `conversations.json` 丢失/损坏 ⇒ 注册表空态、转录成孤儿数据但端点按既有 fail-closed 拒绝。
 
-**与 E48 的关系**：本 change **不消解** E48（id 唯一性未动 —— 转录用**追加**（非 upsert），天然无覆盖问题；E48 指 `compaction.*` / `skills.miss.*`，与转录不同面）⇒ **E48 保持挂账**。
+**与 E48 的关系**：本 change **不消解** E48（id 唯一性未动 —— 转录用**追加**（非 upsert），天然无覆盖问题；E48 指 `compaction.*` / `skills.miss.*`，与转录不同面）⇒ 当时保持挂账；**后由 Phase 30（change `0117` / ADR-0110）处置：E48-b 已修、E48-a 销账**。
 
 **B2 消费面接线（change 0116 / ADR-0109）—— 零后端改动**：
 
@@ -217,7 +219,7 @@
 - E44/E45/E46 均非规格违约，**不得以缺陷修复名义 `skip_specs` 强推**；若实施，须视产品方向裁决后**规格先行**。
 - E45 若改「双向隔离」会破坏现有「共享记忆」设计（兽读主记忆获取上下文），须先裁决。
 - E46（**已闭**）：落地走**查询面**，**不落 L2**（落 L2 会被封存条款挡在主 loop 检索之外 —— 自败）；**不得**改 `status`/`snapshot` 的隐私面（改则违 `pet-mode` 已有 Requirement，须先走过规格变更 + 隐私裁决）；**不得**改 `exclude_source_prefixes=("beast.",)`（会破 phase-26 的 E37/E38/E39 隔离语义）。（原文「落 L2 须复用 `source=beast.<agent_id>` 注入面」随本次裁决**作废**。）
-- **E47（主体已闭）**：原判「现状非违约」（规格未把会话定为隔离边界）⇒ 用户裁决后**规格先行**（8 spec），修法上**复用了既有过滤管线**（`read()` 的 session 分支与 `exclude_source_prefixes` 同点同口径），**未新造第二套记忆检索**。**红线仍守**：不给每个会话建独立 `(loop, memory)` 实例（phase-19 E2 / change `0048` 已裁否决）；不破 `exclude_source_prefixes=("beast.",)`（phase-26 的 E37/E38/E39）；`notes` 不接入会话维度（用户裁决＝全局层）。**附属 `SessionRegistry` 丢更新仍开**（转 Change B）。
+- **E47（已闭）**：原判「现状非违约」（规格未把会话定为隔离边界）⇒ 用户裁决后**规格先行**（8 spec），修法上**复用了既有过滤管线**（`read()` 的 session 分支与 `exclude_source_prefixes` 同点同口径），**未新造第二套记忆检索**。**红线仍守**：不给每个会话建独立 `(loop, memory)` 实例（phase-19 E2 / change `0048` 已裁否决）；不破 `exclude_source_prefixes=("beast.",)`（phase-26 的 E37/E38/E39）；`notes` 不接入会话维度（用户裁决＝全局层）。**附属 `SessionRegistry` 丢更新已闭**（随 `0115` 加进程内 `RLock`；跨进程并发仍不受保护，见 ADR-0108 局限①）。
 - **E49（已闭）**：原判「现状非违约」（旧 spec 未要求会话历史落盘 / 转录读取面）⇒ 用户裁决后**规格先行**（4 spec），修法上**另立转录存储**（非记忆层级、单文件 `O_APPEND`），**不复用**记忆检索管线。**红线仍守**：不为每个会话建独立存储实例（phase-19 E2 / change `0048`）；不破 `exclude_source_prefixes=("beast.",)` 与 E47 的会话过滤口径（转录**不是**记忆，`MemoryStore.read` 恒不返回它）；`notes` 不接入会话维度；`session_id == ""` 一律**不落盘、不回灌**（逐字不变）；**不为 title 写注册表**（派生读模型，先例 ADR-0098 拒第二真源）。**B1 + B2 全闭**（`0115` 后端 + `0116` 消费面，两 change 两 commit）—— B2 **零后端改动**，只接消费面（CLI `session show` / 顶层 `--session` 续聊 / Web 右栏列表），**未**放宽任何 fail-closed（未登记 id 仍拒绝）。
 - **已裁决（本次）**：E45 的 TCP 半条**不列为缺陷**（ADR-0064 有意取舍），登记为已知局限。
 - **E48 / E44 / E45-隔离（Phase 30 收口，change `0117` / ADR-0110）**：三条**均非规格违约**，**未以 `skip_specs` 强推** —— E48-b 与 E54 **规格先行**（`skills` / `memory` / `beast-mode` 三份 delta）；E48-a / E44 / E45-隔离(i) 裁「销账」后**只登记不动代码**。**红线仍守**：**不改**主装配器 `exclude_source_prefixes=("beast.",)`（phase-26 E37/E38/E39 隔离语义）；修 E54 走**最小面**（新增排除面的**例外面** `allow_source_prefixes`，放行**仅自身** `agent_id`，他兽仍排除、主侧可见面逐字不变）；**否决**「排除 `loop`」（与 `memory/spec.md`「按会话隔离的检索」保留全局层相悖，且会造成隔离面不一致）。
@@ -228,6 +230,30 @@
 - **E47 主体已闭**（change `0114` / ADR-0107）：用户裁决「严格隔离 + 保留全局层」⇒ 规格先行（8 spec / 9 需求块，`memory` ADDED + 7 处 MODIFIED）→ 测试先行（新 `tests/test_session_isolation.py`，红 **18 failed**）→ 实现（读侧 1 处 + 写侧归属 4 处）→ 四门禁（ruff / ruff format / pyright 0-0-0 / **1415 passed**）→ 手工归档 `archive/2026-10-06-0114-session-scoped-memory/` → `openspec validate --all` **30 passed / 0 failed**。**判据订正**：原记一项，实为「读侧 1 + 写侧归属 4 + 绕过通道 1 + id 覆盖 2」（§1.4）。**新登记 E48**（会话维度产物 id 不唯一，§5.1）。
 - **E49 已闭**（change `0115` / ADR-0108，Change B 前半 = B1 后端）：用户裁决「拆 B1/B2、回灌边界＝新配置键 `loop.history_turns`、转录单文件、标题自动取首条用户消息」⇒ 规格先行（4 spec：`memory` MODIFIED+ADDED、`loop` MODIFIED、`configuration` MODIFIED、`ui` ADDED+MODIFIED）→ 测试先行（新 `test_transcript.py` / `test_history_replay.py` / `test_history_persistence.py`）→ 实现（新 `memory/transcript.py` + `LoopContext.history` + 读取面 + `loop.history_turns`）→ 四门禁（ruff / ruff format / pyright 0-0-0 / **1462 passed**）→ 手工归档 `archive/2026-10-06-0115-session-transcript/` → `openspec validate --all` **30 passed / 0 failed**。**判据订正**：① **L4 措辞背离**（canonical `memory/spec.md:9`「原始会话」与 `:119`/`:181` + 实现相悖 ⇒ 订正为归档层）；② 「回灌进 `ctx.messages`」不可行（四处 accessor ⇒ 走新字段）。**E48 未被本 change 消解**（转录用追加、非 upsert，与 id 覆盖不同面）⇒ 保持挂账。
 - **E49-B2 已闭**（change `0116` / ADR-0109，Change B 后半 = B2 前端 + CLI）：承接本条需求后半的**消费面** —— 规格先行（`cli-ops` **ADDED** + `ui` **ADDED**，两新需求块）→ 测试先行（`test_repl.py` 红：`build_app()` 只收 1 位置参；`test_entry.py` 红：`invalid choice`）→ 实现（CLI `session show` + 顶层 `--session` + `CLIBridge.connect_impl` 签名扩为 `(api, session_id)` + Web 右栏会话列表/切换/历史）→ 四门禁（ruff / ruff format / pyright 0-0-0 / **1470 passed**）→ `npm run build`（117 modules / 47.60 kB）+ 离线端到端冒烟（两会话转录 / 派生 `title` / `/session/nope/messages` 404 / 新 SPA 已挂载）→ 手工归档 `archive/2026-10-06-0116-session-list-cli-resume/` → `openspec validate --all` **30 passed / 0 failed**。**判据订正**：原计划记 `cli-ops` 取 **MODIFIED**，实为**新需求块 ⇒ ADDED**。**零后端改动**（复用 `0115` 已交付端点）。
-- **余两条**等待产品方向裁决（E44「压缩续聊 vs 有意行为」、E45-隔离「双向隔离 vs 共享记忆」）；**未闭附属**仅 **E48**（会话维度产物 id 不唯一）。E47 附属的 `SessionRegistry` 丢更新**已随 `0115` 顺带闭合**（`create` 加进程内 `RLock`，`ui/sessions.py:35`）。**Change B（B1 + B2）已全闭**，无余项。
+- **（历史留痕，收口前状态）** 当时**余两条**等待产品方向裁决（E44「压缩续聊 vs 有意行为」、E45-隔离「双向隔离 vs 共享记忆」），**未闭附属**仅 **E48**（会话维度产物 id 不唯一）—— 这三条**均已由 Phase 30（change `0117` / ADR-0110）处置**（见下条）。E47 附属的 `SessionRegistry` 丢更新**已随 `0115` 顺带闭合**（`create` 加进程内 `RLock`，`ui/sessions.py:35`）。**Change B（B1 + B2）已全闭**，无余项。
 - **Phase 28 账本全闭**（change `0117` / ADR-0110，Phase 30 落地）：余项**三条**分别处置 —— **E48** 拆两子面：**E48-b 已修**（`skills.miss` id 改 `blake2b` 内容派生 + `misses` 有界窗口 `_MISS_WINDOW = 64`）、**E48-a 销账**（压实产物重数＝刷新式派生，有意行为）；**E44 销账**（压实 ≠ 压缩为有意行为，分支 B 不开工）；**E45-隔离(i) 销账**（全局层共享＝用户「保留全局层」裁决的有意结果）。同批**转正并修复 E54**（神兽读不到自身 `beast.<agent_id>` 轨迹 ⇒ 记忆读取面新增排除面的**例外面** `allow_source_prefixes` + `DynamicAssembler.with_allow_source_prefixes` 派生装配器）。**主方向排除 `("beast.",)` 逐字不动**（phase-26 E37/E38/E39 隔离红线守）。**新登记观察项**：宠物 loop 共用主装配器且不传 `source=` ⇒ 宠物轨迹进主命名空间（待裁决，见 `phase-30.md` §7）。
 - **下一步＝Phase 30**（Change B 全闭；本 Phase 剩余 E44 / E45-隔离 两条待产品方向裁决 + E48 一项挂账 ⇒ **转交 `coding-plan/phase-30.md` 统一收口**，见该文 §2 裁决点）—— **✅ 已收口（2026-10-06，change `0117`／ADR-0110，1477 passed）**，见 `phase-30.md` §6/§7。
+
+## 9. 遗留清单（Phase 28 全闭后仍在册项）
+
+> 本 Phase **账目已全闭**（E44–E49 全部处置）；下列为**处置时如实登记、未修**的项，按「真·遗留 / 已知局限」两类列出，供后续 Phase 取用。
+
+**A. 真·遗留（未修，且修它不需要任何裁决）**
+
+| 项 | 证据 | 现状 | 修法 |
+|---|---|---|---|
+| `write_state` 临时文件名固定 | 临时名恒 `<name>.tmp` ⇒ **同一 path 并发写**交叉写同一 tmp | 仅登记（当前调用点互不重叠） | 唯一 tmp 名（pid/uuid）+ `os.replace`；§4 附注 |
+
+**B. 已知局限（有意行为 / 已裁决不改，非缺陷）**
+
+| 项 | 出处 | 内容 |
+|---|---|---|
+| 转录读取**无分页** | ADR-0109 局限① | `GET /session/{id}/messages` 全量返回，长会话体积随轮数线性增长 |
+| 前端**无 JS 测试基建** | ADR-0109 局限② | 靠 `npm run build` + 离线冒烟覆盖 |
+| **未选中会话被拒** | ADR-0109 局限③ | 无「默认会话」回落，属有意行为 |
+| 注册表锁**不管跨进程** | ADR-0108 局限① | 进程内 `RLock`；跨进程同刻并发创建不被声称受保护 |
+| 转录**单文件线性增长** | ADR-0108 局限② | 读单会话需全扫 |
+| 超 N 轮 / 超 token 切片**不回灌** | ADR-0108 局限③ | 有界牺牲 |
+| **历史与 reason 阶段 L2 检索重复** | ADR-0108 局限④ | 同会话过往轮次**今天就已**作为「相关事实」进 system prompt；**不修**，修法备查「reason 阶段排除 `("beast.","loop")`」 |
+| `conversations.json` 损坏 ⇒ 孤儿转录 | ADR-0108 局限⑤ | 注册表空态启动；端点按既有 fail-closed 拒绝（**不放宽**） |
+| **E45-TCP 半条** | ADR-0064 / 本 Phase §7 | 「跨线程同一条 TCP」非规格要求，**已裁决不改** |

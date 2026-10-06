@@ -11,7 +11,7 @@
 | E48-a 压实产物 id 重数 | 同会话连续压实**静默覆盖** | `context/compactor.py:88-92`：`for i, line in enumerate(c.conclusions + c.decisions)` ⇒ `id=f"compaction.fact.{key}.{i}"` —— `i` **每次压实从 0 重数**；`MemoryStore.write` 为同 id **upsert** ⇒ 第二次压实的 fact 覆盖第一次。change `0114` 只补了**会话键** `key = session_id or "default"`（`:87`），**未**消同会话内覆盖 |
 | E48-b `skills.miss` 计数器 | 进程内计数 + 跨会话共享 + 无上界 | `skills/router.py:65` `self.misses: list[str] = []`（**进程内、无上界**）+ `:147` append + `:150-154` `key = session_id or "default"` ⇒ `id=f"skills.miss.{key}.{len(self.misses)}"`。计数器是**全局** list ⇒ 进程重启从 0 重数 ⇒ **同名覆盖**；且 `misses` 随会话数**线性涨内存** |
 | E44 压实 ≠ 压缩 | 单轮内 `ctx.messages` 零截断 | `loop/default.py:298` 触发 `_should_compact`（`:392` 定义）→ `_compact` 三步（persist/compact/forget）**全程不碰 `ctx.messages`**；`planner._build_request` 每轮发**全量** `ctx.messages`、**零截断** ⇒ 撞窗口是 `TOKEN_BUDGET_EXCEEDED` **强制终止本轮**，非「压缩续聊」。预算裁剪**存在于另一面**：`context/budget.py:25` `enforce(pack, budget)` 只裁**装配包**（system / facts），**不作用于对话历史** |
-| E45-隔离 残留（重判后） | 方向性与实际可见面 | 主方向：`runtime.py:566` 主 loop 装配器传 `exclude_source_prefixes=("beast.",)` ⇒ **主不读兽**（phase-26 裁决，不动）。反方向：`_beast_loop`（`runtime.py:700-736`）**共用同一 `assembler`**（`:713`）且**不额外排除** loop。**但** `beast/manager.py:72` `TaskHandoff(task=…, session_id=beast.agent_id)` → `orchestration/router.py:59` `profile.loop.arun(handoff.task, session_id=handoff.session_id)` ⇒ 兽的 `ctx.session_id` = `beast.<agent_id>`（**非空**）⇒ `0114` 的会话过滤生效（`context/assembler.py:69-73` → `memory/store.py:95`）⇒ 兽只能看到 **自身会话条目 + 全局层（`session_id == ""`）**，**看不到**主 loop 的会话级事实 |
+| E45-隔离 残留（重判后） | 方向性与实际可见面 | 主方向：`runtime.py:566` 主 loop 装配器传 `exclude_source_prefixes=("beast.",)` ⇒ **主不读兽**（phase-26 裁决，不动）。反方向：`_beast_loop`（`runtime.py:700-738`）**共用同一 `assembler`**（`:715` 派生）且**不额外排除** loop。**但** `beast/manager.py:72` `TaskHandoff(task=…, session_id=beast.agent_id)` → `orchestration/router.py:59` `profile.loop.arun(handoff.task, session_id=handoff.session_id)` ⇒ 兽的 `ctx.session_id` = `beast.<agent_id>`（**非空**）⇒ `0114` 的会话过滤生效（`context/assembler.py:69-73` → `memory/store.py:95`）⇒ 兽只能看到 **自身会话条目 + 全局层（`session_id == ""`）**，**看不到**主 loop 的会话级事实 |
 | **E54（转正）** 兽读不到自身轨迹 | 前缀排除对 `beast.<agent_id>` 同样命中 | `memory/store.py:111-115`：`entry.source.startswith(exclude_source_prefixes)`（前缀元组匹配）；主装配器的排除前缀 `("beast.",)` **覆盖所有** `beast.<agent_id>` ⇒ 兽**自己**的 `source=beast.<agent_id>` 轨迹被**同一**排除挡掉 ⇒ **神兽无法召回自己的过往经验**（原记 ADR-0103 已知局限①，本次转正立账） |
 
 **已裁决不动、不在本 Phase 范围**：E45-TCP 半条（`llm_provider/http_pool.py` `threading.local` 池）＝ADR-0064 有意取舍，登记已知局限，**不列为缺陷**。
@@ -56,7 +56,7 @@
 
 ### 2.4 E54（本 Phase 转正）—— 神兽无法召回自身过往轨迹
 
-- **缺陷**：主装配器的排除前缀 `("beast.",)` 是**前缀匹配**（`memory/store.py:111-115`），把**所有** `beast.<agent_id>` 一并挡掉；而 `_beast_loop` **共用同一个 assembler**（`runtime.py:713`，装配器在 `:566` 一次性构造）⇒ **兽自己也检索不到自己的轨迹**。
+- **缺陷**：主装配器的排除前缀 `("beast.",)` 是**前缀匹配**（`memory/store.py:111-115`），把**所有** `beast.<agent_id>` 一并挡掉；而 `_beast_loop` **共用同一个 assembler**（`runtime.py:715`，装配器在 `:560-567` 一次性构造）⇒ **兽自己也检索不到自己的轨迹**。
 - **定性**：**非规格违约**（`beast-mode` spec 要求的是「神兽轨迹**不进主 Agent** 检索」，未要求「兽读不到自己」）；属**接线副作用**（ADR-0103 已知局限①，本次立账）。
 - **建议：修**。修法（择一）：① 兽用**独立装配器**（排除集按兽裁剪 —— 排除 `loop` 与**他兽**前缀，放行 `beast.<自身 agent_id>`）；② 排除面从「前缀元组」升为「**谓词**」（`memory/store.py` 的 `exclude_source_prefixes` 语义扩展，须评估对既有调用方的影响）。
 - **红线**：修 E54 **不得**放宽「主不读兽」（`exclude_source_prefixes=("beast.",)` 在主装配器上逐字不动 —— 那会破 phase-26 的 E37/E38/E39 隔离语义）。
@@ -124,4 +124,24 @@
 | **E45-隔离(i)**（全局层共享） | **销账**（用户「保留全局层」裁决的有意结果） | ADR-0110 登记项③ |
 | **E45-TCP 半条** | 不动（ADR-0064 有意取舍） | 见 §0 尾注 |
 | **顺带闭合** | `memory/protocol.py` 的 `read` **协议骨架漂移**（change `0114` 只改实现未同步 Protocol） | change `0117` 实现 |
-| **新登记（观察项，用户裁决前挂账）** | 宠物 loop（`runtime.py:905`）共用主装配器且**不传 `source=`** ⇒ 宠物记忆以默认 `source="loop"` 落库、进主命名空间 | 见 phase-28 §7 指针（待裁决） |
+| **新登记（观察项，用户裁决前挂账）** | 宠物 loop（`_pet_loop`，`runtime.py:890-922`）的 `LLMPlanner`（`:903-909`）**共用主装配器 `assembler`**（`:907`）且 `DefaultLoop`（`:902`）**不传 `source=`** ⇒ 宠物记忆以默认 `source="loop"` 落库、进**主命名空间**（phase-26 为神兽建的命名空间隔离，宠物**未**接） | 见 `phase-28.md` §9「遗留清单」（**待裁决**） |
+
+## 8. 遗留清单（Phase 30 全闭后仍在册项）
+
+**A. 待裁决（唯一未决项）**
+
+| 项 | 内容 | 决策点 |
+|---|---|---|
+| 宠物记忆命名空间 | `_pet_loop`（`runtime.py:890-922`）`DefaultLoop`（`:902`）**不传 `source=`** ⇒ 宠物轨迹以默认 `source="loop"` 落库，**进主命名空间**（主 Agent 检索得到），且无「宠物专属分区」；对照神兽（`source=beast.<agent_id>` + 装配器排除/放行）。**契约面上 `pet-mode` spec 未要求独立命名空间** ⇒ **非违约**，属**接线缺口**。 | ① **立账并修**（宠物接 `source="pet.<pet_id>"` + 与神兽同形的派生装配器；须**规格先行**，且注意 `pet-mode` spec `:249`/`:255` 的隐私条款）；② **销账**（判「宠物记忆**有意**与主人共享」——今天宠物主人偏好走全局层，若共享是设计意图则只须**补一句 ADR 说明**）。**建议**：先裁「宠物记忆**是否应与主人隔离**」，再决定修法 |
+
+**B. 已知局限（有意行为 / 已裁决不改，非缺陷）**
+
+| 项 | 出处 | 内容 |
+|---|---|---|
+| 放行面是**前缀**匹配 | ADR-0110 局限① | 若未来出现「一个 `agent_id` 是另一个的前缀」的命名，放行自身会连带放行他者 ⇒ 须改精确匹配（今天 `beast.<拼音>` 不会） |
+| 内容派生后**丢「未命中次数」频次** | ADR-0110 局限② | 同会话对同一任务只留一条；本来无人消费，如需要须另立计数列（**不复用 id**） |
+| `misses` 窗口裁剪后**全量未命中不可回溯** | ADR-0110 局限③ | 诊断面牺牲；事件面以 L2 条目为准 |
+| 神兽仍读不到**他兽**命名空间 | ADR-0110 局限④ | **有意**（与封存同向） |
+| E45-TCP 半条 | ADR-0064 | 「跨线程同一条 TCP」非规格要求，**已裁决不改** |
+
+> **登记项（本 change 零代码改动）**：E48-a 销账 / E44 销账 / E45-隔离(i) 销账 —— 见 §7 表与 ADR-0110 登记项①②③。

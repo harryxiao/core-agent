@@ -2601,7 +2601,8 @@
     `03-interfaces/configuration-interface.md` + `02-modules/configuration.md`（两谓词用途栏与
     装配裁剪契约补「缺省关名单」）、`04-testing/test-cases.md`。
 - **已知局限（照实登记，不隐瞒）**：
-  1. 生产 `Validator()` / `Evaluator()` **仍是恒通过桩**（`runtime.py:564-574`：缺省 `review` 恒真、
+  1. 生产 `Validator()` / `Evaluator()` **仍是恒通过桩**（`runtime.py:589-590`〔行号随 `0115`/`0116` 加行漂移，
+     `0112` 落地时记作 `:564-574`〕：缺省 `review` 恒真、
      `tests` 返空 dict ⇒ `passed` 恒真；无 `score_fn` ⇒ 留出分/基线/margin 恒 0、`verdict` 恒 `publish`）
      ⇒ 既有 `confirm`/`crystallize` 路径的「过门」**不构成真实检验**，本切片的冻结门是当前**唯一**真门。
      故新 Requirement 只承诺**冻结门**，**不**承诺留出评测参与实施验证。
