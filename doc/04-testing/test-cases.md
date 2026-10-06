@@ -861,6 +861,19 @@
 
 ---
 
+## 58. core-profile 题词模板骨架（TC-PROFILE，change `0142`／ADR-0134，账本 E85）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-PROFILE-01 | core-profile/spec.md「题词模板」（骨架产出物具名：`templates/Core.global.md` / `templates/Core.project.md`） | 检查两文件存在 | 均为文件（锚点：`::test_both_template_skeletons_exist`） |
+| TC-PROFILE-02 | 同上（全局级模板含「宪法与全局规则」「人格」两分区；「项目信息」属项目级） | 读 `templates/Core.global.md` 原文 | 含 `## 宪法与全局规则` 与 `## 人格`，**不含** `## 项目信息`（锚点：`::test_global_skeleton_carries_two_sections_only`） |
+| TC-PROFILE-03 | 同上 Scenario「骨架复制即被解析器接受」（标题逐字、分区非空 ⇒ 零 `SECTION_INVALID`） | `SectionParser().parse(全局骨架原文)` → `Validator().validate` | `["constitution","personality"]` 且 `warnings == []`（锚点：`::test_global_skeleton_round_trips_clean_through_parser`） |
+| TC-PROFILE-04 | 同上 Scenario「项目级模板产出」+「复制即被接受」 | 同上，`templates/Core.project.md` | `["project_info"]` 且零告警（锚点：`::test_project_skeleton_round_trips_clean_through_parser`） |
+| TC-PROFILE-05 | 同上（模板附分区注入说明注释，注明落向的运行时通道） | 读两骨架原文 | 全局含 `constitution:v1` 与 `L0`；项目含 `ContextEngine`（锚点：`::test_skeletons_note_runtime_injection_channels`） |
+| TC-PROFILE-06 | core-profile/spec.md「题词规范」（篇幅受控：建议不超过 50 行） | 读两骨架行数 | 各 ≤ 50 行（锚点：`::test_skeletons_are_bounded_in_length`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

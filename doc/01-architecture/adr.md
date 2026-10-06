@@ -3703,6 +3703,32 @@
   ⇒ conformance 修复）⇒ `.openspec.yaml` 写 `schema: spec-driven` + `skip_specs: true`
   （先例 `0110` / `0135` / `0137` / `0138` / `0139`）。
 
+## ADR-0134：core-profile 题词模板落为骨架产出物（change 0142 / phase-34 E85）
+
+- **背景**：`core-profile/spec.md`「题词模板」SHALL「提供 Core.md 题词模板（骨架）」并给了「全局级模板产出」
+  /「项目级模板产出」两 Scenario，但仓库里**没有任何模板产出物**（`find` 未命中、无专门测试）⇒ 该 SHALL
+  既不可验证也不可使用；用户编写 `Core.md` 的唯一依据是题词规范（纯文字），看不出**分区标题必须逐字写成
+  什么样**。这不是无害的文档欠账：分区标题是**运行时解析器**的判据（`profile.py:16-19` `_SECTION_HEADERS`），
+  未知标题落 `unknown`、空分区一并 ⇒ `SECTION_INVALID` 告警并**跳过该分区**（spec「格式非法告警跳过」
+  允许跳过）⇒ 用户凭直觉写「## 宪法」「## 人格设定」会导致整段预设**被静默跳过**且难以察觉。
+- **决策①：把「提供模板」落为仓库内**具名静态产出物**。** `templates/Core.global.md`（落向
+  `~/.core/Core.md`）与 `templates/Core.project.md`（落向 `<project>/Core.md`）—— 规格 MODIFIED 时
+  写明路径与落向，使这条 SHALL 可被**逐条核对**（此前无对象可核）。
+- **决策②：骨架与解析器**逐字对齐**，并把这一点做成 Scenario。** 新增 Scenario「骨架复制即被解析器
+  接受」：以骨架**原文**（未改写）跑 `SectionParser` + `Validator` ⇒ 分区 kind 正确且**零 `SECTION_INVALID`**。
+  于是「标题逐字」「分区非空」两个易错点在测试里**同时被钉住**，而不是靠文档提醒用户。
+- **决策③：注入说明用 HTML 注释 / 引用行，不用普通文本。** 解析器 `_is_content` 会跳过 `<!--` 与 `>`
+  开头的行 ⇒ 说明与用法**不进**注入内容；否则说明文字会被当成人格/宪法条目注入（自伤）。
+- **决策④：不提供 CLI scaffold（`core-agent profile init`）。** 落盘式 scaffold 引入覆盖语义与可逆副作用，
+  且会触碰 CLI 动词基线（30 动词 + 14 flag 的逐条 diff 断言，`test_phase13`）——本账只要求「提供模板骨架」
+  ⇒ 静态产物即满足（YAGNI）。若将来确需 CLI 落盘，另立账。
+- **已知局限**：① **骨架占位行是「内容行」** —— 解析器要求分区非空，故 `- 必须：<…>` 这类占位行**计入**
+  注入内容，用户复制后须改写或删除（注释已就地说明，题词规范的「建议不超过 50 行」兜底）。
+  ② **发现路径仅仓库目录 + `test-cases.md` §58** —— 未补用户手册章节（不在 E85 账内）。
+  ③ **不做编码校验**：骨架是否为合法 UTF-8 由 pytest 读文件本身覆盖，未另设 schema 校验。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3831,3 +3857,4 @@
 | ADR-0131 | 03-interfaces/git-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0132 | 03-interfaces/deployment-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0133 | 03-interfaces/context-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0134 | 03-interfaces/core-profile-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

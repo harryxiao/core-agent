@@ -107,7 +107,28 @@ class Validator:
 
 ---
 
-## 8. 关联
+## 8. 题词模板（骨架产出物）
+
+规格「题词模板」的产出物为仓库内**可直接复制**的两份骨架文件（change 0142 / 账本 E85）：
+
+| 骨架 | 落向 | 分区（标题**逐字**约定） |
+|---|---|---|
+| `templates/Core.global.md` | `~/.core/Core.md` | `## 宪法与全局规则`、`## 人格` |
+| `templates/Core.project.md` | `<project>/Core.md` | `## 项目信息` |
+
+- **标题即契约**：分区标题取自运行时解析器 `SectionParser` 的 `_SECTION_HEADERS`（`profile.py`）——
+  未知标题落 `unknown`、空分区一并 ⇒ `SECTION_INVALID` 告警并**跳过该分区**（用户难察觉），
+  故骨架标题与解析器**逐字对齐**，且每个分区保留可被接受的**占位内容行**（空分区会被跳过）。
+- **注入说明注释**：各分区以 HTML 注释注明落向的运行时通道（`constitution:v1` coeffect / L0 记忆层 /
+  ContextEngine 上下文）。注释形式是**有意的** —— `_is_content` 会跳过 `<!--` 与 `>` 开头的行，
+  说明因此**不进**注入内容。
+- **门禁**：`tests/test_core_profile_templates.py` 以骨架**原文**跑 `SectionParser` + `Validator`，
+  断言分区 kind 正确且**零告警**（复制即用）。
+
+---
+
+## 9. 关联
 
 - 模块：`02-modules/core-profile.md`
 - 规格：`openspec/specs/core-profile/spec.md`
+- 变更：`openspec/changes/0142-core-profile-template/`
