@@ -93,10 +93,15 @@ class MemoryStore:
         budget: int = 4096,
         *,
         exclude_source_prefixes: tuple[str, ...] = (),
+        allow_source_prefixes: tuple[str, ...] = (),
         session_id: str = "",
     ) -> list[MemoryEntry]:
         """检索相关记忆；``exclude_source_prefixes`` 命中的来源在**排名与预算之前**剔除
         （被排除项不吃预算、不被复用计数强化）。缺省空元组 ⇒ 检索语义与既往逐字一致。
+
+        ``allow_source_prefixes`` 是排除面的**例外面**：同时命中排除前缀与放行前缀的条目**放行**
+        （「排除某类来源，但放行其中指定前缀」——神兽读自身 ``beast.<agent_id>`` 即此用例）。
+        排除面为空时放行面不产生任何效果（无排除即无所放行）。
 
         ``session_id`` 非空时**只**返回归属该会话的条目 + **全局层**（未归属 ``""``）条目；
         会话过滤与来源排除同一位置（排名与预算之前），故被滤项同样不吃预算、不被强化。
@@ -112,7 +117,10 @@ class MemoryStore:
             candidates = {
                 entry_id: entry
                 for entry_id, entry in candidates.items()
-                if not entry.source.startswith(exclude_source_prefixes)
+                if not (
+                    entry.source.startswith(exclude_source_prefixes)
+                    and not entry.source.startswith(allow_source_prefixes)
+                )
             }
         if session_id:
             candidates = {

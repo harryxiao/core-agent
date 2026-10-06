@@ -34,6 +34,9 @@ ContextBuilder（L3 输入侧）
 - 装配结果经 BudgetManager 控制 token 上界（可配置）。
 - 调用方会话标识（`build(session_id=…)`）透传至 L2 事实检索 ⇒ 事实召回同样按会话隔离
   （change `0114`／ADR-0107）；缺省空串 ⇒ 不过滤，语义与既往逐字一致。
+- 构造参数 `exclude_source_prefixes` / `allow_source_prefixes` 透传至同一次检索（排除面 + 其
+  **例外面**，change `0117`／ADR-0110）；`with_allow_source_prefixes(*prefixes)` 派生**新**装配器
+  （排除面逐字继承、放行面替换）—— 主 loop 与神兽共用一份配置，派生而非原地改（封存红线）。
 
 ### 3.2 信息地图机制
 

@@ -700,9 +700,11 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     def _beast_loop(beast: Beast) -> LoopPlugin:
         """按兽装配独立 loop：域内技能路由（专属神通） + 共享记忆/闸门/追踪。
 
-        与 ``_agent_loop`` 同构，两处差异：① ``_loop_hooks(beast.agent_id)`` —— 神兽只在
+        与 ``_agent_loop`` 同构，三处差异：① ``_loop_hooks(beast.agent_id)`` —— 神兽只在
         自身域内看到自己的神通（beast-mode spec R4/R5）；② ``source=beast.<agent_id>`` ——
-        轨迹落**独立记忆命名空间**（spec `:54`），与主 Agent ``source=loop`` 隔离。
+        轨迹落**独立记忆命名空间**（spec `:54`），与主 Agent ``source=loop`` 隔离；
+        ③ **派生装配器**放行**自身**命名空间（``with_allow_source_prefixes``）—— 主侧封存
+        （排除 `beast.*`）不再把兽自己的轨迹一并挡掉，他兽仍被排除（spec「自身轨迹可召回」）。
         """
         beast_hints, beast_turn = _loop_hooks(beast.agent_id)
         provider = _agent_tools()
@@ -710,7 +712,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             llm,
             model=app.llm.model,
             reasoning_effort=app.llm.reasoning_effort,
-            assembler=assembler,
+            assembler=assembler.with_allow_source_prefixes(beast.agent_id),
             skill_router=beast_hints,
             tools=provider,
         )

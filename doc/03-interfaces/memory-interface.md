@@ -16,6 +16,7 @@ class MemoryStore(Plugin):
         budget: int = 4096,
         *,
         exclude_source_prefixes: tuple[str, ...] = (),
+        allow_source_prefixes: tuple[str, ...] = (),
         session_id: str = "",
     ) -> list[MemoryEntry]:
         """检索相关记忆，返回按相关性排序的条目，总 token ≤ budget。
@@ -23,6 +24,11 @@ class MemoryStore(Plugin):
         ``exclude_source_prefixes`` 命中的 ``source`` 前缀在**排名与预算之前**剔除
         （被排除项不吃预算、不被复用计数强化）；缺省空元组 ⇒ 检索语义与既往逐字一致。
         记忆分区隔离（如主 loop 不命中 `beast.*`）的**读取侧**开关，见 beast-mode-interface §4。
+
+        ``allow_source_prefixes`` 是排除面的**例外面**（change 0117 / ADR-0110）：命中**排除**
+        前缀**且未**命中**放行**前缀的条目才剔除 ⇒ 缺省空元组时语义逐字不变，排除面为空时
+        放行面**不产生任何效果**（无排除即无所放行）。神兽用例：封存 ``("beast.",)`` 不变 +
+        放行 ``beast.<agent_id>`` ⇒ 兽可召回**自身**轨迹，他兽仍被排除。
 
         ``session_id`` 非空时**只**返回归属该会话的条目 + **全局层**（``session_id == ""``
         的未归属条目，含 L0 人格与文档化笔记层）；过滤与来源排除**同一位置**（排名与预算
@@ -235,6 +241,8 @@ MVP 实现：`FileBackend`（`memory/*.md` + `memory/*.jsonl`）。
 - `read` 命中即 `reuse_count += 1`（复用即强化；进程内强化，不落盘避免写放大）。
 - `read` 的会话过滤在**排名/预算之前**生效（被滤项不吃预算、不被强化），与来源排除同口径；
   空标识不过滤 ⇒ 存量未归属条目构成全局层（ADR-0107）。
+- 来源排除的**例外面**（`allow_source_prefixes`）与排除**同一位置**生效（排名/预算之前）；
+  封存**不得**以删除或层间迁移实现 —— 排除是**读取面**语义，条目本体照常留存（ADR-0110）。
 
 ---
 

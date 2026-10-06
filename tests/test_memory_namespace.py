@@ -130,6 +130,52 @@ def test_assembler_exclusion_is_opt_in() -> None:
     }
 
 
+# ---- E54：排除面的例外面（放行自身命名空间） ----
+
+
+def test_read_allow_source_prefixes_carves_out_own_namespace() -> None:
+    """放行面是排除面的例外：自身命名空间可召回，他兽仍被排除，余者不受影响。"""
+    store = MemoryStore()
+    store.write("L2", _entry("q1", "蓝图 青龙产物", "beast.qinglong", "t1"))
+    store.write("L2", _entry("h1", "蓝图 白虎产物", "beast.baihu", "t2"))
+    store.write("L2", _entry("m1", "蓝图 主线事实", "loop", "t3"))
+
+    hits = store.read(
+        "蓝图",
+        exclude_source_prefixes=("beast.",),
+        allow_source_prefixes=("beast.qinglong",),
+    )
+    assert {e.id for e in hits} == {"q1", "m1"}
+
+
+def test_allow_source_prefixes_without_exclusion_is_noop() -> None:
+    """无排除面时放行面不产生效果（缺省检索语义逐字不变）。"""
+    store = MemoryStore()
+    store.write("L2", _entry("b1", "蓝图 神兽产物", "beast.qinglong", "t1"))
+    store.write("L2", _entry("m1", "蓝图 主线事实", "loop", "t2"))
+
+    assert {e.id for e in store.read("蓝图")} == {"b1", "m1"}
+    assert {e.id for e in store.read("蓝图", allow_source_prefixes=("beast.qinglong",))} == {
+        "b1",
+        "m1",
+    }
+
+
+def test_assembler_can_be_derived_for_one_namespace() -> None:
+    """派生装配器：排除面继承、放行面替换；**原装配器不被改动**（主 loop 红线）。"""
+    store = MemoryStore()
+    store.write("L2", _entry("q1", "蓝图 青龙产物", "beast.qinglong", "t1"))
+    store.write("L2", _entry("h1", "蓝图 白虎产物", "beast.baihu", "t2"))
+
+    sealed = DynamicAssembler(memory=store, exclude_source_prefixes=("beast.",))
+    beast = sealed.with_allow_source_prefixes("beast.qinglong")
+
+    assert [f["content"] for f in beast.build("蓝图", stage="reason", budget=4096).facts] == [
+        "蓝图 青龙产物"
+    ]
+    assert sealed.build("蓝图", stage="reason", budget=4096).facts == []  # 原装配器逐字不动
+
+
 # ---- E37：handoff 会话归组 ----
 
 

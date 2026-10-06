@@ -35,7 +35,8 @@
 
 ```
 MemoryStore
-├── read(query, budget, *, exclude_source_prefixes, session_id) -> 相关记忆（排序 + token 上界）
+├── read(query, budget, *, exclude_source_prefixes, allow_source_prefixes, session_id)
+│     -> 相关记忆（排序 + token 上界）
 ├── write(layer, entry) -> 写入（带 trace_id、来源、时间戳）
 ├── migrate(src_layer, dst_layer, entry_id) -> 层间迁移（结晶/溶解）
 ├── index() -> L1 索引（最小化）
@@ -56,6 +57,9 @@ MemoryStore
   的未归属条目，含 L0 人格与文档化笔记层）；**空串**（未归属调用者）⇒ 不过滤，与既往逐字一致。
 - 会话过滤在**排名与预算之前**生效（被滤项不吃预算、不被 `reuse_count` 强化），与
   `exclude_source_prefixes` 同点同口径，二者可叠加。
+- **来源排除的例外面**（`allow_source_prefixes`，change `0117`／ADR-0110）：命中排除**且未**
+  命中放行的条目才剔除（同点、同「排名/预算之前」）；缺省空 ⇒ 语义逐字不变，排除面为空时
+  放行面无效果。封存是**读取面**语义 —— 条目本体照常留存，不得以删除/迁移实现。
 - **归属原则**：执行轨迹按**发起会话**归属（主/子/神兽/宠物 loop、压实产物、路由未命中）；
   **刻意知识留全局层**（L0 人格、文档化笔记、`pet.observe` 的主人偏好）。
 

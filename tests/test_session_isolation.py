@@ -227,7 +227,7 @@ def test_router_miss_record_is_session_scoped() -> None:
 
     entries = [e for e in store.audit() if e.source == "skills"]
     assert {e.session_id for e in entries} == {"A"}
-    assert {e.id for e in entries} == {"skills.miss.A.1"}
+    assert all(e.id.startswith("skills.miss.A.") for e in entries)  # 会话键在 id 内（0117）
     assert store.read("无人认领", session_id="B") == []
 
 
@@ -238,7 +238,7 @@ def test_router_miss_defaults_to_default_key() -> None:
     router.match("无人认领的独特任务")
 
     entries = [e for e in store.audit() if e.source == "skills"]
-    assert {e.id for e in entries} == {"skills.miss.default.1"}
+    assert all(e.id.startswith("skills.miss.default.") for e in entries)
     assert {e.session_id for e in entries} == {""}
 
 

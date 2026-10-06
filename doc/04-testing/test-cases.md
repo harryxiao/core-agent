@@ -515,6 +515,21 @@
 
 ---
 
+## 33. 未命中记录 id 唯一化与神兽召回自身轨迹（TC-MISS，change `0117`／ADR-0110，账本 E48-b / E54）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-MISS-01 | skills/spec.md「技能路由」（未命中记录的归属与唯一性） | 同一 `MemoryStore` 上先后构造两个 `SkillRouter`（模拟**进程重启**）各记一次未命中 | 两条 **id 不同**（内容派生 ⇒ 重启后不互相覆盖）（锚点：`tests/test_skills.py::test_miss_id_survives_process_restart`） |
+| TC-MISS-02 | 同上（幂等） | 同会话对**同一任务**连续两次 `match` 未命中 | 只留 **1** 条（同任务幂等刷新，不增长）（锚点：`::test_duplicate_miss_same_task_is_idempotent`） |
+| TC-MISS-03 | 同上（有界） | 同一 router 记 500 条不同任务 | `len(router.misses) < 500` 且末条为**最新**任务（窗口裁剪保留尾部，`_MISS_WINDOW = 64`）（锚点：`::test_miss_diagnostic_window_is_bounded`） |
+| TC-MISS-04 | 同上（会话键口径不回归） | 未命中记录的 id 与会话归属 | id 仍以 `skills.miss.<会话键>.` 开头（change `0114` 契约保留，不再钉计数后缀）（锚点：`tests/test_session_isolation.py::test_router_miss_record_is_session_scoped` / `::test_router_miss_defaults_to_default_key`） |
+| TC-MISS-05 | memory/spec.md「来源前缀排除与放行（读取面）」 | 同店写 `q1(beast.qinglong)` / `h1(beast.baihu)` / `m1(loop)`；`read(exclude=("beast.",), allow=("beast.qinglong",))` | 返回 `{q1, m1}` —— **放行自身**、**他兽仍排除**、主来源不受影响（锚点：`tests/test_memory_namespace.py::test_read_allow_source_prefixes_carves_out_own_namespace`） |
+| TC-MISS-06 | 同上（缺省无副作用） | `allow` 非空但 `exclude` 为空 / 两者皆空 | 与既往**逐字一致**（无排除即无所放行）（锚点：`::test_allow_source_prefixes_without_exclusion_is_noop`） |
+| TC-MISS-07 | context-interface.md §2（派生装配器） | `DynamicAssembler(exclude=("beast.",))` 派生出放行自身的实例 | 派生实例只含自身命名空间条目；**原实例**的检索结果不变（封存不受影响）（锚点：`::test_assembler_can_be_derived_for_one_namespace`） |
+| TC-MISS-08 | beast-mode/spec.md「Independent Sub-Agent with Shared Capability」（自身轨迹可召回） | 真 `Runtime` 神兽会话的 `_planner._assembler.build(…, session_id="beast.qinglong")` | 含 `beast.qinglong`、**不含** `beast.baihu`；**主**装配器 facts 无任何 `beast.` 源（双向守门）（锚点：`tests/test_beast_wiring.py::test_beast_loop_recalls_own_namespace_only`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

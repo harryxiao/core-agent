@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from hashlib import blake2b
 from typing import Any
 
 from core.memory import MemoryEntry, MemoryStore
@@ -34,6 +35,10 @@ _DEDICATED_SEGMENTS = 3
 # 历史成功率因子的下限（有样本时）：零成功仍保留一半排序分，避免「一次失败即永不入选」的
 # 正反馈（失败 → 不入选 → 无新样本 → 永久失败）
 _SUCCESS_FLOOR = 0.5
+
+# 未命中**诊断窗口**的条数上界（只保留最近 N 条）：misses 是观测面、无生产消费方，
+# 有界即不随长跑进程的任务数线性涨内存（沉淀判定不依赖该列表）。
+_MISS_WINDOW = 64
 
 
 def skill_hint(skill_id: str, version: str, instructions: str) -> dict[str, str]:
@@ -141,17 +146,22 @@ class SkillRouter:
     def _record_miss(self, task: str, session_id: str = "") -> None:
         """记录未命中任务；条目按调用方会话归属（缺省空串 = 全局层）。
 
-        id 带会话键（缺省 ``default``）⇒ 不同会话的未命中记录不互相覆盖；``session_id``
-        非空的记录不再成为他会话可见的全局条目（技能沉淀仍按会话归组）。
+        id 由**任务内容**（连同会话键）确定性派生 ⇒ 跨进程重启**不互相覆盖**（计数派生会在
+        重启后重数而覆盖上一进程的条目）；同一会话重复未命中**同一任务** ⇒ 幂等刷新同一条
+        （未命中清单按任务去重，供技能沉淀）。``session_id`` 非空的记录不再成为他会话可见的
+        全局条目（技能沉淀仍按会话归组）。``misses`` 为**有界**诊断窗口（``_MISS_WINDOW``）。
         """
         self.misses.append(task)
+        if len(self.misses) > _MISS_WINDOW:
+            del self.misses[: len(self.misses) - _MISS_WINDOW]
         if self._memory is None:
             return
         key = session_id or "default"
+        digest = blake2b(task.encode("utf-8"), digest_size=8).hexdigest()
         self._memory.write(
             "L2",
             MemoryEntry(
-                id=f"skills.miss.{key}.{len(self.misses)}",
+                id=f"skills.miss.{key}.{digest}",
                 layer="L2",
                 content=f"路由未命中: {task}",
                 tags=["skills", "miss"],

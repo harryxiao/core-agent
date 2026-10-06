@@ -52,10 +52,14 @@ class MemoryStore(Protocol):
         budget: int = 4096,
         *,
         exclude_source_prefixes: tuple[str, ...] = (),
+        allow_source_prefixes: tuple[str, ...] = (),
+        session_id: str = "",
     ) -> list[MemoryEntry]:
         """检索相关记忆，返回按相关性排序的条目，总 token ≤ budget。
 
-        ``exclude_source_prefixes`` 命中的 ``source`` 前缀在排名前剔除（缺省空 ⇒ 语义不变）。
+        ``exclude_source_prefixes`` 命中的 ``source`` 前缀在排名前剔除（缺省空 ⇒ 语义不变）；
+        ``allow_source_prefixes`` 是排除面的**例外面**（同时命中两者 ⇒ 放行）。
+        ``session_id`` 非空 ⇒ 只返回本会话条目 + 全局层（缺省空串 ⇒ 不过滤）。
         """
         ...
 

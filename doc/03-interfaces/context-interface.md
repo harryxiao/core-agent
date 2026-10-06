@@ -27,11 +27,23 @@ class DynamicAssembler:
     def __init__(
         self, *, memory=None, info_map=None, constitution=None, project_info=None,
         exclude_source_prefixes: tuple[str, ...] = (),
+        allow_source_prefixes: tuple[str, ...] = (),
     ) -> None:
         """``exclude_source_prefixes`` 透传记忆检索的**来源排除**（缺省空 ⇒ 不含排除）。
 
         组合根为主 loop 的装配器传 ``("beast.",)`` ⇒ 神兽记忆分区不进主 loop 上下文
         （beast-mode spec「记忆分区封存」；见 beast-mode-interface §4/§10）。
+
+        ``allow_source_prefixes`` 是对应的**例外面**（透传至同一次检索，change 0117 / ADR-0110）：
+        命中排除**且未**命中放行的条目才剔除。缺省空 ⇒ 语义逐字不变。
+        """
+
+    def with_allow_source_prefixes(self, *prefixes: str) -> DynamicAssembler:
+        """**派生**装配器：排除面逐字继承，放行面替换为给定前缀（排除面的例外面）。
+
+        神兽用例：主 Agent 侧的封存不变、放行**自身** ``beast.<agent_id>`` ⇒ 兽可召回自己
+        的过往经验，他兽仍被排除（beast-mode spec「Independent Sub-Agent」）。
+        **派生而非原地改**：主 loop 与神兽共用一份配置，原地改会波及主 loop（封存红线）。
         """
 
     def build(self, task: str, stage: str, *, budget: int, session_id: str = "") -> ContextPack:

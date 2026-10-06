@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -16,6 +16,8 @@ from core.beast import BeastRegistry, register_innate_skills
 from core.beast.models import BeastSessionState
 from core.configuration import ConfigManager
 from core.llm_provider.models import LLMChunk
+from core.loop import DefaultLoop
+from core.memory import MemoryEntry
 from core.runtime import build_runtime
 from core.skills import Skill, SkillLibrary, SkillRouter
 
@@ -156,3 +158,37 @@ def test_end_to_end_summon_runs_real_loop_and_isolates_memory(runtime, monkeypat
     before = len(_beast_entries(runtime.memory))
     asyncio.run(runtime.loop.arun("普通任务"))
     assert len(_beast_entries(runtime.memory)) == before  # 主 Agent 不写神兽命名空间
+
+
+def test_beast_loop_recalls_own_namespace_only(runtime, monkeypatch) -> None:
+    """E54：兽的真实装配器放行**自身**命名空间（改前被主侧封存一并挡掉），他兽仍被排除。"""
+    _patch_llm(monkeypatch, runtime, "青龙已完成蓝图设计")
+    session = asyncio.run(runtime.beast_activator.activate_from_cli("qinglong", ["设计架构"]))
+
+    for entry_id, source in (("q1", "beast.qinglong"), ("h1", "beast.baihu"), ("m1", "loop")):
+        runtime.memory.write(
+            "L2",
+            MemoryEntry(
+                id=entry_id,
+                layer="L2",
+                content=f"蓝图 {source} 产物",
+                tags=[],
+                source=source,
+                trace_id=f"t-{entry_id}",
+            ),
+        )
+
+    beast_loop = cast(DefaultLoop, session.loop)  # noqa: SLF001 — 真实装配器断言
+    pack = beast_loop._planner._assembler.build(
+        "蓝图", stage="reason", budget=4096, session_id="beast.qinglong"
+    )
+    sources = [str(f["source"]) for f in pack.facts]
+    assert "beast.qinglong" in sources, "兽应能召回自身轨迹（改前被同一排除挡掉）"
+    assert "beast.baihu" not in sources, "他兽命名空间不得进入该兽检索面"
+
+    main_pack = runtime.loop._planner._assembler.build(  # noqa: SLF001 — 主侧封存不动
+        "蓝图", stage="reason", budget=4096
+    )
+    assert not [f for f in main_pack.facts if str(f["source"]).startswith("beast.")], (
+        "主 loop 封存语义逐字不动"
+    )

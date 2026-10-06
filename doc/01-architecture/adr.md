@@ -2799,6 +2799,54 @@
 
 ---
 
+## ADR-0110：未命中记录 id **内容派生** + 记忆排除面的**例外面**；神兽放行自身命名空间（change 0117 / phase-30 分支 A）
+
+- **背景**：`coding-plan/phase-30.md` 承接 Phase 28 收口后的三条剩余项（E48 / E44 / E45-隔离），2026-10-06
+  用户裁决「全部按建议」⇒ **分支 A**（**E48-b + E54 同一 change**），另三条（E48-a / E44 / E45-隔离(i)）
+  **登记为有意行为**（零代码，见下「登记项」）。两条代码项同属**派生 / 接线副作用**，非规格违约
+  （未放宽任何既有约束）。
+- **决策①：未命中记录 id 由**任务内容**派生（`blake2b(task, digest_size=8)`），弃用 `len(self.misses)` 计数。**
+  计数是**进程内**状态 ⇒ 重启后重数，新的未命中会 upsert **覆盖**上一进程留下的同会话条目（事件记录真丢
+  数据）。内容派生后：跨进程稳定；同会话重复未命中**同一任务** ⇒ **幂等刷新同一条**（未命中清单本就按任务
+  去重，供技能沉淀，且天然有界）。用 `blake2b` 而非 `hash()` —— 后者对 `str` 有**逐进程随机盐**
+  （`PYTHONHASHSEED`），跨进程不稳定等于没修。先例：同包 `skills/sop.py:_skill_id_for`。
+- **决策②：`misses` 保留 `list` 类型，只做**原地裁剪**（`del` 切片）至 `_MISS_WINDOW = 64`。**
+  换 `deque(maxlen=N)` 会静默打断 6 处既有断言（`deque([...]) == [...]` 为 `False`）；裁剪保持类型与对象
+  身份，断言逐字通过。该列表**无生产消费方**（全仓仅 `router.py` 自身 + 测试断言）⇒ 定为**诊断窗口**，
+  沉淀判定不依赖它。
+- **决策③：记忆排除面（`exclude_source_prefixes`）增**例外面** `allow_source_prefixes`，语义为「命中排除
+  **且**未命中放行 ⇒ 剔除」。** 封存（`source=beast.*`）须保留，但神兽需要读**自己**的轨迹 ⇒ 需要
+  「排除 A 类、放行其中 B」这一维度，而 `startswith(tuple)` 只能整体放行或整体排除。缺省两参数均为空元组
+  ⇒ 检索语义逐字不变；排除面为空时放行面**不产生任何效果**（无排除即无所放行）。
+- **决策④：神兽用**派生装配器**（`DynamicAssembler.with_allow_source_prefixes`），不原地改、不另建。**
+  主 loop 与神兽**共用**一份装配器配置（`runtime.py:559-567` 一次性构造），原地改会波及主 loop（破封存
+  红线）；**派生**保证「同一配置 + 换放行面」，且 `build_runtime(assembler=…)` 注入路径下神兽拿到的是
+  **同一配置**的变体，而非用 `profile` 重建的第二真源。主装配器的 `exclude_source_prefixes=("beast.",)`
+  **逐字不动**。
+- **决策⑤：放行项是**精确的自身 `agent_id`**（如 `beast.qinglong`），他兽仍被排除。** 隔离语义由此从
+  「兽↔主」扩到隐含的「兽↔兽」（今天由 `beast.` 前缀 + 会话过滤并存保证）。
+- **判据订正（相对 phase-30 §2.4 修法①的原文）**：原文含「排除 `loop` 与**他兽**前缀」一项，勘察后**不纳入
+  排除 `loop`**：① 不解决 E54；② 只能摘掉主 loop 一个来源（主 L2 事实还来自 `context` 压实 / `skills` /
+  `orchestration` / `pet`）⇒ **隔离面不一致**；③ 与 `memory/spec.md`「按会话隔离的检索」明文（推理面
+  **必须保留全局层**，否则人格与笔记进不了 prompt）相悖。⇒ 只做最小面：**放行自身、他兽仍排除、主侧
+  可见面逐字不变**。
+- **登记项（本 change 零代码改动，随 ADR 落账）**：① **E48-a** 压实产物 `compaction.fact.{key}.{i}` 同会话
+  覆盖 —— 判为**刷新式派生**（facts 由**当前**记忆重派生，新批次取代旧批次；反向若「保留历史」**须同时**
+  引入有界淘汰，否则 L2 随压实次数线性膨胀）；② **E44** 压实 ≠ 压缩（`_compact` 不裁 `ctx.messages`）——
+  **有意行为**（预算三层可配 + 跨轮历史已由 change `0115` 有界回灌 + 摘要替换违「不谎报」+ 超预算以
+  `TOKEN_BUDGET_EXCEEDED` 显式终止；先例 phase-19 E6）；③ **E45-隔离(i)** 主与兽**同读全局层**
+  （`session_id == ""`，含 L0 人格与 `notes`）—— 用户「严格隔离 + **保留全局层**」裁决的有意结果，
+  不重复裁决。
+- **已知局限**：① 放行面是**前缀**匹配 ⇒ 若未来出现「一个 `agent_id` 是另一个的前缀」的命名（今天
+  `beast.<拼音>` 不会），放行自身会连带放行他者 —— 须改精确匹配；② 内容派生后同一会话对同一任务只留
+  **一条** ⇒ 丢失「未命中**次数**」频次信息（本来无人消费；如需要须另立计数列，不复用 id）；
+  ③ `misses` 窗口裁剪后「全量未命中」不可回溯（诊断面牺牲；事件面以 L2 条目为准）；
+  ④ 神兽仍读不到**他兽**命名空间（**有意**，与封存同向）。
+- **规格**：`skills`（MODIFIED「技能路由」）、`memory`（ADDED「来源前缀排除与放行（读取面）」）、
+  `beast-mode`（MODIFIED「Independent Sub-Agent with Shared Capability」）。**非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2903,3 +2951,4 @@
 | ADR-0107 | 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/pet-mode-interface.md, 03-interfaces/orchestration-interface.md, 02-modules/memory.md, 02-modules/context.md, 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/phase-28.md |
 | ADR-0108 | 03-interfaces/memory-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/ui-interface.md, 03-interfaces/configuration-interface.md, 02-modules/memory.md, 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/phase-28.md |
 | ADR-0109 | 03-interfaces/ui-interface.md, 03-interfaces/cli-ops-interface.md, 02-modules/cli-ops.md, 06-ui-frontend/ui-architecture.md, 04-testing/test-cases.md, coding-plan/phase-28.md |
+| ADR-0110 | 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/beast-mode-interface.md, 02-modules/memory.md, 02-modules/skills.md, 02-modules/context.md, 04-testing/test-cases.md, coding-plan/phase-30.md |

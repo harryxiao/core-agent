@@ -148,6 +148,47 @@ def test_router_no_match_records_miss() -> None:
     assert router.misses == ["totally unrelated task"]
 
 
+# ---- 未命中记录的唯一性与有界（E48-b） ----
+
+
+def test_miss_id_survives_process_restart() -> None:
+    """id 由任务内容派生：新进程（计数归零）不得覆盖既有会话的未命中记录。"""
+    lib = SkillLibrary()
+    memory = MemoryStore()
+
+    first = SkillRouter(lib, memory=memory)
+    first.match("整理会议纪要", session_id="s1")
+
+    restarted = SkillRouter(lib, memory=memory)  # 模拟进程重启：misses 计数从零开始
+    restarted.match("写一份周报", session_id="s1")
+
+    ids = [e.id for e in memory.audit() if e.source == "skills"]
+    assert len(ids) == 2, "同会话两条未命中不得互相覆盖（改前均落 skills.miss.s1.1）"  # noqa: PLR2004
+
+
+def test_duplicate_miss_same_task_is_idempotent() -> None:
+    """同一会话重复未命中**同一任务** ⇒ 幂等刷新同一条（未命中清单按任务去重，供沉淀）。"""
+    memory = MemoryStore()
+    router = SkillRouter(SkillLibrary(), memory=memory)
+
+    router.match("整理会议纪要", session_id="s1")
+    router.match("整理会议纪要", session_id="s1")
+
+    assert len([e for e in memory.audit() if e.source == "skills"]) == 1
+
+
+def test_miss_diagnostic_window_is_bounded() -> None:
+    """未命中诊断窗口有界：长跑进程不得随任务数线性膨胀，且最近一条可查。"""
+    router = SkillRouter(SkillLibrary())
+    count = 500
+
+    for i in range(count):
+        router.match(f"totally unrelated task {i}")
+
+    assert len(router.misses) < count, "诊断窗口应有界"
+    assert router.misses[-1] == f"totally unrelated task {count - 1}"
+
+
 # ---- 结晶 / 溶解 ----
 
 
