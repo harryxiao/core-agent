@@ -25,6 +25,7 @@ from core.tools import (
     ToolProvider,
     ToolUseError,
     code_run,
+    file_patch,
     file_read,
     file_write,
     web_fetch,
@@ -278,7 +279,7 @@ def test_undeclared_write_warning() -> None:
                 reversible=True,
             ),
             handler=lambda text: text,
-            undo=lambda: None,  # 却携带撤销闭包
+            undo=lambda: lambda: None,  # 却携带撤销闭包（工厂形态）
         )
     )
     assert provider.warnings != []
@@ -300,6 +301,73 @@ def test_reversible_write_rollback(tmp_path) -> None:
     assert path.read_text() == "changed"
     report = provider.rollback("t1")
     assert result.effect_id in report.reverted
+    assert path.read_text() == "original"
+
+
+# ---- 同一工具多次写入：按次快照（change 0129 / E64） ----
+
+
+def test_same_tool_keeps_per_call_snapshots(tmp_path) -> None:
+    """同一 file_write 写 A 再写 B ⇒ 逆序回滚**逐次各归各位**（不恢复错文件）。"""
+    a, b = tmp_path / "a.txt", tmp_path / "b.txt"
+    a.write_text("A0")
+    provider = _provider()
+    provider.register(file_write())
+    provider.invoke("tools.file_write", {"path": str(a), "content": "A1"}, trace_id="t")
+    provider.invoke("tools.file_write", {"path": str(b), "content": "B1"}, trace_id="t")
+    assert a.read_text() == "A1" and b.read_text() == "B1"
+
+    provider.rollback("t")
+
+    assert a.read_text() == "A0", "第 1 次写入前的原内容"
+    assert not b.exists(), "B 原本不存在 ⇒ 撤销即删除"
+
+
+def test_interleaved_write_and_patch_restore_in_lifo_order(tmp_path) -> None:
+    """write → patch → write 交错 ⇒ 逆序逐次还原（write 的共享快照曾被最后一次覆写）。"""
+    path = tmp_path / "f.txt"
+    path.write_text("one two three")
+    provider = _provider()
+    provider.register(file_write())
+    provider.register(file_patch())
+    provider.invoke("tools.file_write", {"path": str(path), "content": "alpha"}, trace_id="t")
+    provider.invoke(
+        "tools.file_patch",
+        {"path": str(path), "old_content": "alpha", "new_content": "beta"},
+        trace_id="t",
+    )
+    provider.invoke("tools.file_write", {"path": str(path), "content": "gamma"}, trace_id="t")
+    assert path.read_text() == "gamma"
+
+    provider.rollback("t")
+
+    assert path.read_text() == "one two three"
+
+
+def test_snapshots_do_not_leak_across_traces(tmp_path) -> None:
+    """只回滚 t1 ⇒ t2 的写入**逐字不变**（快照不跨 trace 串用）。"""
+    a, b = tmp_path / "a.txt", tmp_path / "b.txt"
+    a.write_text("A0")
+    b.write_text("B0")
+    provider = _provider()
+    provider.register(file_write())
+    provider.invoke("tools.file_write", {"path": str(a), "content": "A1"}, trace_id="t1")
+    provider.invoke("tools.file_write", {"path": str(b), "content": "B1"}, trace_id="t2")
+
+    provider.rollback("t1")
+
+    assert a.read_text() == "A0", "t1 的写入被还原"
+    assert b.read_text() == "B1", "t2 的写入不被 t1 的回滚触及"
+
+
+def test_undo_without_prior_write_is_noop(tmp_path) -> None:
+    """空栈取撤销闭包 ⇒ no-op（不抛异常、不动文件系统）。"""
+    path = tmp_path / "f.txt"
+    path.write_text("original")
+    tool = file_write()
+    assert tool.undo is not None
+    undo = tool.undo()
+    undo()  # 未写入即撤销：静默 no-op
     assert path.read_text() == "original"
 
 

@@ -102,20 +102,24 @@ def file_read() -> Tool:
 def file_write() -> Tool:
     """写文件（可逆：撤销恢复原内容）。"""
 
-    snap: dict[str, str | None] = {}
+    # 每次调用**各持一份**快照（LIFO）：工具实例跨调用复用，撤销第 N 次须还原该次写入前的
+    # 内容，SHALL NOT 被后续调用覆写（change 0129 / E64）。
+    snaps: list[dict[str, str | None]] = []
 
     def handler(path: str, content: str, mode: str = "w") -> dict[str, Any]:
         # 模型侧语义值归一为 Python open 模式；未知值由 EXECUTION_FAILED 结构化兜底
         normalized = {"write": "w", "overwrite": "w", "append": "a"}.get(mode, mode)
         target = Path(path)
-        snap["path"] = path
-        snap["before"] = target.read_text(encoding="utf-8") if target.exists() else None
+        before = target.read_text(encoding="utf-8") if target.exists() else None
         with target.open(normalized, encoding="utf-8") as fh:
             fh.write(content)
+        snaps.append({"path": path, "before": before})  # 写入**成功后**压栈
         return {"path": path, "bytes_written": len(content)}
 
-    def undo() -> None:
-        _restore(snap)
+    def undo() -> Callable[[], None]:
+        """取**本次**调用的撤销闭包：LIFO 弹出该次快照（空栈 ⇒ no-op）。"""
+        snap: dict[str, str | None] = snaps.pop() if snaps else {"path": None, "before": None}
+        return lambda: _restore(snap)
 
     return Tool(
         definition=ToolDef(
@@ -133,18 +137,20 @@ def file_write() -> Tool:
 def file_patch() -> Tool:
     """精确替换文件片段（可逆：撤销恢复原内容）。"""
 
-    snap: dict[str, str | None] = {}
+    # 同 file_write：每次调用各持一份快照，回滚逐次各归各位（change 0129 / E64）。
+    snaps: list[dict[str, str | None]] = []
 
     def handler(path: str, old_content: str, new_content: str) -> dict[str, Any]:
         target = Path(path)
         original = target.read_text(encoding="utf-8")
-        snap["path"] = path
-        snap["before"] = original
         target.write_text(original.replace(old_content, new_content), encoding="utf-8")
+        snaps.append({"path": path, "before": original})  # 写入**成功后**压栈
         return {"path": path, "replaced": old_content in original}
 
-    def undo() -> None:
-        _restore(snap)
+    def undo() -> Callable[[], None]:
+        """取**本次**调用的撤销闭包：LIFO 弹出该次快照（空栈 ⇒ no-op）。"""
+        snap: dict[str, str | None] = snaps.pop() if snaps else {"path": None, "before": None}
+        return lambda: _restore(snap)
 
     return Tool(
         definition=ToolDef(

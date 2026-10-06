@@ -139,7 +139,7 @@ class ToolProvider:
                 Effect(
                     op=tool_id,
                     target=str(args.get("path") or tool_id),
-                    undo=tool.undo,
+                    undo=tool.undo(),  # 按次取闭包：绑定**本次**调用写入前的快照（change 0129）
                     reversible=tool.definition.reversible,
                     coeffect=coeffects,
                     trace_id=trace_id,

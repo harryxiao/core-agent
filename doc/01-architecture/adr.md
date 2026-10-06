@@ -3312,6 +3312,34 @@
 
 ---
 
+## ADR-0122：写类工具按次快照，撤销闭包自带身份（change 0129 / phase-34 E64）
+
+- **背景**：`coding-plan/phase-34.md` 登记的 **E64**（**高**）。`tools/builtin.py:105-118`（write）与
+  `:136-147`（patch）在**闭包外**声明 `snap: dict`，每次调用**覆写同一份**；`undo()` 读同一共享
+  `snap` ⇒ 两次调用记录的两条 Effect **共用同一个 undo 闭包对象**，逆序撤销两次都在还原**最后一次**
+  的快照。而 `runtime.py:397` 五个内置工具**只构造一次、跨 loop 复用** ⇒ 同一会话两次写不同文件即
+  **恢复错文件**（P2 崩于最常用工具）。跨 trace 更糟：`t1` 写 A、`t2` 写 B 后只回滚 `t1`，会去还原
+  **B**（触及本不该动的 trace）。规格 `tool-use/spec.md`「时间旅行回滚」已 SHALL「沿历史逆序执行各
+  写类工具的撤销函数，**状态恢复到检查点**」—— 现状**违反**该 Scenario。
+- **决策①：撤销闭包**自带身份**（每次调用生成一份绑定自身快照的闭包），而非「每次压栈、undo 弹栈顶」。**
+  三条路可选：① 共享栈 + 弹栈顶 —— **跨 trace 仍错**（栈顶未必是本 trace 那次）；② 让 `EffectTracker`
+  按 trace 分组调用 —— 但 `undo()` **无参**、闭包无法自辨身份；③ **每次调用生成闭包**（取此）。差别在
+  「谁持有身份」：让闭包**自带**（捕获自己的快照）比让调用方**推断**更稳，且不需要 `EffectTracker` 的
+  任何接口变更。
+- **决策②：`Tool.undo` 由闭包改为「工厂」。** 固定闭包读**共享状态**是根因；要「按次」就必须让调用方
+  **每次取一个** ⇒ `Callable[[], Callable[[], None]]`（空栈时返回 no-op 闭包）。`EffectTracker`
+  （change `0128` 的清账/幂等语义）与 `_restore`（`:282-292`）**逐字不动**。
+- **已知局限**：① 快照仍在**进程内**（跨进程时间旅行由 `durability` 的检查点承担，本 change 不扩）。
+  ② 并发**同一**工具实例的调用不在保证范围：`file_write` / `file_patch` 的 handler 为**同步**，
+  `provider._call` 与其后的取闭包之间无 await（`:164-168`）⇒ 「压栈 → 取闭包」在同一事件循环步内完成，
+  不存在交错窗口；若将来有 await 型写工具，须重新评估。③ 撤销闭包若未被取用（handler 成功但调用方
+  未记录），该快照留栈至下次取用——由「写入**成功后**才压栈 + 取闭包紧随返回」将其窗口压到最小。
+- **规格**：`tool-use`（**MODIFIED**「撤销与时间旅行回滚」—— 正文补「撤销函数 SHALL 按次生成 / 同一
+  工具实例跨调用 SHALL 各持独立快照 / 撤销第 N 次 SHALL 恢复该次内容」+ **2** Scenario「同一工具多次
+  写入各自独立回滚」「跨 trace 不串」）。**非** `skip_specs`（按次快照这一构成要件此前未写）。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3428,3 +3456,4 @@
 | ADR-0119 | 03-interfaces/orchestration-interface.md, 02-modules/orchestration.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0120 | 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0121 | 02-modules/plugin-registry.md, 03-interfaces/plugin-registry-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
+| ADR-0122 | 03-interfaces/tool-use-interface.md, 02-modules/tool-use.md, 04-testing/test-cases.md, coding-plan/phase-34.md |

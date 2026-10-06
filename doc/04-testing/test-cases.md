@@ -689,6 +689,18 @@
 
 ---
 
+## 45. 写类工具的按次快照（TC-SNAP，change `0129`／ADR-0122，账本 E64）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-SNAP-01 | tool-use/spec.md「撤销与时间旅行回滚」（同一工具多次写入各自独立回滚） | **同一个** `file_write` 实例先写已存在的 A、再写原先不存在的 B；逆序撤销两次 | 先撤销 B ⇒ B 被删除（原本不存在）；再撤销 A ⇒ A 恢复原内容。第二次撤销**不被** B 的快照覆写（锚点：`tests/test_tool_use.py::test_same_tool_keeps_per_call_snapshots`） |
+| TC-SNAP-02 | 同上 | 同一实例 `file_write("alpha")` → `file_patch(alpha→beta)` → `file_write("gamma")`，再回滚该 trace | 沿 LIFO 逆序各归各位 ⇒ 文件恢复为最初内容（write/patch 交错亦各持独立快照）（锚点：`::test_interleaved_write_and_patch_restore_in_lifo_order`） |
+| TC-SNAP-03 | 同上（跨 trace 不串） | 同一实例在 `t1` 写 A、在 `t2` 写 B；**只**回滚 `t1` | A 恢复为 `t1` 写入前内容，B **逐字不变**（`t2` 的效应不被 `t1` 回滚触及）（锚点：`::test_snapshots_do_not_leak_across_traces`） |
+| TC-SNAP-04 | 同上 | 未执行任何写入即取 `tool.undo()` 并调用所得闭包 | no-op、不抛异常（空栈 ⇒ 工厂返回 no-op 闭包）（锚点：`::test_undo_without_prior_write_is_noop`） |
+| TC-SNAP-05 | 同上（回归：单次写的撤销语义不变） | 单次 `file_write` 覆盖已存在文件后回滚 | 原内容复现（既有 `file_write`/`file_patch` 撤销语义零回归）（锚点：`::test_reversible_write_rollback`） |
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

@@ -4,7 +4,7 @@
 
 ---
 
-## 1. ToolDef（工具契约）
+## 1. ToolDef（工具契约）与 Tool（运行时原子）
 
 ```python
 @dataclass
@@ -16,7 +16,22 @@ class ToolDef:
     reversible: bool
     timeout_s: float = 30.0
     max_output: int = 8192
+
+@dataclass
+class Tool:
+    definition: ToolDef
+    handler: Callable[..., Any]
+    undo: Callable[[], Callable[[], None]] | None = None   # 撤销闭包**工厂**
 ```
+
+`undo` 是**按次生成**的工厂，不是一次性闭包（change `0129` / ADR-0122 / 账本 E64）：
+
+- 写类工具每次成功执行后，`ToolProvider` 取一次 `tool.undo()` 得到**绑定该次写入前快照**的
+  撤销闭包，交 `EffectTracker.record(effect, undo)` 记账；
+- 同一工具实例跨多次调用**各持独立快照**（按 trace 的 LIFO 序）⇒ 撤销第 N 次恢复**该次**写入前
+  的内容，SHALL NOT 被后续调用覆写、SHALL NOT 跨 trace 串写；
+- 快照栈为空时工厂返回 **no-op 闭包**（未写入即撤销不报错）。
+- 纯读工具 `undo=None`。
 
 ---
 

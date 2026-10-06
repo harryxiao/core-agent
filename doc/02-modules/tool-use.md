@@ -50,7 +50,10 @@ class ToolDef:
 
 ### 3.2 可逆效应接入（与 L0 联动）
 
-- 写类工具执行时向 `EffectTracker.record(effect, undo)` 注册撤销闭包。
+- 写类工具执行时向 `EffectTracker.record(effect, undo)` 注册撤销闭包。**撤销闭包按次生成**
+  （change `0129` / ADR-0122 / E64）：每次成功执行后取**一份**绑定**该次**写入前快照的闭包 ⇒ 同一
+  工具实例跨多次调用**各持独立快照**，撤销第 N 次恢复该次内容、跨 trace 不串（`Tool.undo` 为工厂
+  `Callable[[], Callable[[], None]]`）。
 - 纯读工具（`file_read`/`web_scan`）不产生效应，天然可逆。
 - `code_run` 属"灰盒"：其内部文件副作用由沙箱/监控归因，能恢复的恢复，不能恢复的标注 `irreversible`。
 
