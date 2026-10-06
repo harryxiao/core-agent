@@ -9,8 +9,9 @@ from .curriculum import CurriculumPlanner, EvolutionGoal
 from .diagnoser import Diagnoser
 from .engine import EvolutionEngine, EvolutionTrigger
 from .errors import EvolutionError, EvolutionErrorCode
-from .evaluator import BenchmarkRegistry, Evaluator, QualityEvaluator
+from .evaluator import BenchmarkRegistry, BenchmarkScorer, Evaluator, QualityEvaluator
 from .models import (
+    GATE_CALIBER,
     Benchmark,
     DiagnosisReport,
     EvalReport,
@@ -31,6 +32,7 @@ from .worker import EvolutionWorker
 __all__ = [
     "Benchmark",
     "BenchmarkRegistry",
+    "BenchmarkScorer",
     "Collector",
     "CurriculumPlanner",
     "Diagnoser",
@@ -44,6 +46,7 @@ __all__ = [
     "EvolutionOutcome",
     "EvolutionTrigger",
     "EvolutionWorker",
+    "GATE_CALIBER",
     "GateReport",
     "GenerationCandidate",
     "INTERNAL_PLUGIN_IDS",

@@ -130,6 +130,18 @@ def test_benchmark_registry_list() -> None:
 # ---- 真实缺陷全链路 ----
 
 
+class _RegisteredBaselines(BenchmarkRegistry):
+    """测试替身：数据面上任意目标都视为已注册基线 0.5（判定面仍是真 `Evaluator`）。"""
+
+    def baseline_of(self, _plugin_id: str) -> float | None:
+        return 0.5
+
+
+def _passing_evaluator() -> Evaluator:
+    """过门评测器：基线可比（0.5）+ 留出分 0.9 ⇒ 真实地判 publish（0119 起无参裸桩不再恒通过）。"""
+    return Evaluator(registry=_RegisteredBaselines(), score_fn=lambda _c: 0.9)
+
+
 def test_full_chain_real_defect_published() -> None:
     """工具写错路径的缺陷走完 诊断→提案→验证门→留出评测→结晶 → published。"""
     library = SkillLibrary()
@@ -137,7 +149,7 @@ def test_full_chain_real_defect_published() -> None:
         diagnoser=Diagnoser(),
         proposer=Proposer(),
         validator=Validator(),
-        evaluator=Evaluator(),
+        evaluator=_passing_evaluator(),
         library=library,
         memory_crystallizer=Crystallizer(),
     )
@@ -162,7 +174,7 @@ def test_plugin_candidate_crystallizes_accepted() -> None:
         diagnoser=Diagnoser(),
         proposer=_PluginProposer(),
         validator=Validator(),
-        evaluator=Evaluator(),
+        evaluator=_passing_evaluator(),
         memory_crystallizer=crystallizer,
     )
     outcome = engine.run_cycle([_trace("1", success=False, plugin_id="memory.retrieve")])

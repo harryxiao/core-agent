@@ -15,6 +15,7 @@ import pytest
 
 from core.evolution import (
     INTERNAL_PLUGIN_IDS,
+    BenchmarkRegistry,
     Diagnoser,
     DiagnosisReport,
     Evaluator,
@@ -57,6 +58,18 @@ def _tool_trace(trace_id: str, tool: str) -> Trace:
     )
 
 
+class _RegisteredBaselines(BenchmarkRegistry):
+    """测试替身：数据面上任意目标都视为已注册基线 0.5（判定面仍是真 `Evaluator`）。"""
+
+    def baseline_of(self, _plugin_id: str) -> float | None:
+        return 0.5
+
+
+def _passing_evaluator() -> Evaluator:
+    """过门评测器：基线可比（0.5）+ 留出分 0.9 ⇒ 真实地判 publish（0119 起无参裸桩不再恒通过）。"""
+    return Evaluator(registry=_RegisteredBaselines(), score_fn=lambda _c: 0.9)
+
+
 def _engine(
     *,
     library: SkillLibrary | None = None,
@@ -67,7 +80,7 @@ def _engine(
         diagnoser=Diagnoser(),
         proposer=proposer or Proposer(),
         validator=Validator(),
-        evaluator=Evaluator(),
+        evaluator=_passing_evaluator(),
         library=library,
         pending=pending,
     )

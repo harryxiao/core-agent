@@ -47,12 +47,16 @@ def _candidate_to_dict(candidate: GenerationCandidate) -> dict[str, Any]:
         "kind": candidate.kind,
         "status": candidate.status,
         "risk_level": candidate.risk_level,
+        "caliber": candidate.caliber,
     }
 
 
 def _candidate_from_dict(raw: dict[str, Any]) -> GenerationCandidate:
     kind: Literal["skill", "plugin"] = "plugin" if raw.get("kind") == "plugin" else "skill"
     risk: Literal["low", "high"] = "high" if raw.get("risk_level") == "high" else "low"
+    # 口径缺失 ⇒ `0`（**口径字段引入前**的旧行）：不 fail-open 当作现口径 —— 其门禁/评测结论
+    # 产自旧口径（可能正是恒通过桩），故投放时按「旧口径候选」拒绝（见 engine.crystallize）
+    caliber = int(raw["caliber"]) if isinstance(raw.get("caliber"), int) else 0
     return GenerationCandidate(
         candidate_id=str(raw.get("candidate_id") or ""),
         generation=int(raw.get("generation") or 0),
@@ -61,6 +65,7 @@ def _candidate_from_dict(raw: dict[str, Any]) -> GenerationCandidate:
         kind=kind,
         status=str(raw.get("status") or "pending"),
         risk_level=risk,
+        caliber=caliber,
     )
 
 

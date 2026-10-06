@@ -30,8 +30,38 @@ class Validator(Plugin):
 
 class Evaluator(Plugin):
     plugin_id = "evolution.evaluator"
+    def __init__(
+        self,
+        *,
+        registry: BenchmarkRegistry | None = None,
+        quality: QualityEvaluator | None = None,
+        score_fn: Callable[[GenerationCandidate], float | None] | None = None,  # None = 无法评测
+        max_concurrency: int = 4,
+        margin: float = 0.0,        # 缺省 0.0 = 分毫不许退；阈值面是已注册基线（见下）
+    ) -> None: ...
     def evaluate(self, candidate: GenerationCandidate) -> EvalReport:
-        """留出集评测，防过拟合/防退化。"""
+        """留出集评测，防过拟合/防退化（三态：publish / rollback / **freeze**）。
+
+        未注册基线（`registry.baseline_of` 返 `None`）或留出分不可得（`score_fn` 返 `None`）
+        ⇒ `freeze`（**无法评测**，fail-closed）—— 不报 publish、不谎报 rollback。"""
+
+class BenchmarkRegistry:
+    """基准集 + 基线（``path`` 非空 ⇒ 单文件 JSON 落盘、跨进程可读；损坏降级 + 告警）。"""
+    def __init__(self, *, path: Path | None = None) -> None: ...
+    def register(self, benchmark: Benchmark) -> None: ...
+    def benchmark_for_plugin(self, plugin_id: str) -> Benchmark | None: ...  # 绑定选取，无 ⇒ None
+    def set_baseline(self, plugin_id: str, score: float) -> None: ...
+    def baseline_of(self, plugin_id: str) -> float | None: ...   # 未注册 ⇒ None（判定面用）
+    def baseline_score(self, plugin_id: str) -> float: ...        # 未注册 ⇒ 0.0（旧读面，非阈值）
+    def list(self) -> list[Benchmark]: ...
+
+class BenchmarkScorer:
+    """基准执行器面：逐样本**真实执行** → 与期望对比 → 聚合成留出分。
+
+    ``runners``（``task_type`` → 可调用体）由**组合根或运维注入**，**不随数据面落盘**
+    （数据面可人工注册、执行面必须由受信代码提供）。执行器收到一个样本、返回实际结果；
+    **无法评测**（无绑定基准 / 无样本 / 无该 `task_type` 的执行器）⇒ 返 `None`；
+    执行器抛异常 ⇒ **冒泡**（不吞成 0 分、不吞成通过）。"""
 ```
 
 ---
@@ -56,6 +86,7 @@ class GenerationCandidate:
     risk_level: Literal["low", "high"] = "low"
     # 风险域（提案阶段按 kind 固化）：plugin → high（架构级，强制人工审批）；
     # skill → low（技能库级，仍须显式 confirm，只是不要求权限工单）
+    caliber: int = GATE_CALIBER  # 提案时的结晶面门口径版本（随台账落盘；用途见 §5.1）
 
 @dataclass
 class EvolutionGoal:
@@ -73,9 +104,18 @@ class GateReport:
 @dataclass
 class EvalReport:
     passed: bool                # 留出集是否退化
-    held_out_score: float
+    held_out_score: float       # freeze 时记 0.0 且**无意义**（消费者只认 verdict）
     baseline_score: float
     verdict: Literal["publish", "rollback", "freeze"]
+    # freeze = 无法评测（无绑定基准 / 无样本 / 无执行器 / 无基线）⇒ fail-closed，非「退化」
+
+@dataclass
+class Benchmark:
+    benchmark_id: str
+    task_type: str              # 选取执行器的键（runners[task_type]）
+    samples: list[dict]         # 每个 sample 含 input / expected
+    metrics: dict[str, float] = {}
+    plugin_id: str | None = None  # 绑定到候选 target_plugin（不绑定者不参与任何评测）
 ```
 
 ---
@@ -341,12 +381,14 @@ class CurriculumPlanner:
 | `NO_EVIDENCE` | 无结果证据（采集强制模式下无成对证据） |
 | `CANDIDATE_PENDING` | 候选未过人工确认（禁止自动发布） |
 | `GATE_REJECTED` | 验证门拒绝（review / 运行时测试不过） |
-| `EVAL_REGRESSED` | 留出集退化（触发回滚） |
+| `EVAL_REGRESSED` | 候选未过留出评测（触发回滚） |
+| `EVAL_FROZEN` | 候选**无法评测**（无绑定基准 / 无样本 / 无执行器 / 无基线）⇒ 不下发、不发布；**非**「退化」——change `0119` |
+| `GATE_CALIBER_STALE` | 候选口径版本与现口径不符（旧口径候选不得投放，须按现口径重新提案）——change `0119` |
 | `CONFIRM_REQUIRED` | 架构级候选未获人工审批（无审批单 / 未批准 / 目标不符）；原生实施的复核单缺失 / 未批准 / 目标不符 / `op` 非 `evolution.implement` 亦复用之 |
 | `IMPLEMENT_REJECTED` | 原生实施前置不满足（候选非已确认的架构级 / 归因不在白名单 / 范围守卫拒绝 / 未筹备即落地 / 筹备回退失败）——change `0112` |
 | `IMPLEMENT_STALE` | 目标文件自筹备以来已被改动（落地前漂移校验失败）——change `0112` |
 
-`EvolutionOutcome.status` 取值：`published` / `accepted` / `pending` / `manual` / `rejected` / `rollback` / `no_evidence` / `dissolved`（观察期自动溶解）/ `implemented`（制品已复核落地，change `0112`）。
+`EvolutionOutcome.status` 取值：`published` / `accepted` / `pending` / `manual` / `rejected` / `rollback` / `frozen`（无法评测，change `0119`）/ `no_evidence` / `dissolved`（观察期自动溶解）/ `implemented`（制品已复核落地，change `0112`）。
 
 - `published` = **有产物落地**（技能级候选已写入技能库）。
 - `accepted` = **人工已批准、待人工实施**（架构级候选：本仓无「自动生成并装配新一代 `Plugin` 对象」
@@ -355,6 +397,9 @@ class CurriculumPlanner:
 - `implemented` = 架构级候选的**源文件补丁**经人工复核后**已永久落地**（`features.evolution_executor`
   开启时的第二阶段结局）。它与 `published` 的区别在**产物形态**：`published` 是 L3 技能库产物，
   `implemented` 是 `src/core/**` 源码补丁；`accepted` 的「未实施」诚实语义**不回退**为 `published`。
+- `frozen` = 留出评测**无法评测**（无绑定基准 / 无样本 / 无执行器 / 无基线）⇒ **不下发、不发布**；
+  与 `rollback`（**已判退化**）语义分离 —— 「无法评测」SHALL NOT 被谎报为「退化」——change `0119`。
+  组合根**暂未接**执行器映射 ⇒ 生产装配下候选恒 `frozen`（见 ADR-0112 已知局限①）。
 
 ---
 

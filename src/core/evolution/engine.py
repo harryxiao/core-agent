@@ -24,6 +24,7 @@ from .diagnoser import Diagnoser
 from .errors import EvolutionError, EvolutionErrorCode
 from .evaluator import Evaluator
 from .models import (
+    GATE_CALIBER,
     DiagnosisReport,
     EvolutionOutcome,
     GenerationCandidate,
@@ -103,6 +104,10 @@ class EvolutionEngine:
             )
         eval_report = self._evaluator.evaluate(candidate)
         self._pending.record(candidate, gate, eval_report)
+        if eval_report.verdict == "freeze":
+            # 无法评测（无绑定基准 / 无样本 / 无执行器 / 无基线）⇒ 不下发、不发布；
+            # 结局**不得**记为 rollback（那是「已判退化」，无证据不得如此声称）
+            return EvolutionOutcome(status="frozen", candidate=candidate, eval=eval_report)
         if eval_report.verdict != "publish":
             return EvolutionOutcome(status="rollback", candidate=candidate, eval=eval_report)
         return EvolutionOutcome(
@@ -151,7 +156,15 @@ class EvolutionEngine:
         self._pending.flush()
 
     def crystallize(self, candidate: GenerationCandidate) -> EvolutionOutcome:
-        """结晶入库：须已确认、过验证门、留出集不退化。"""
+        """结晶入库：须**现口径**、已确认、过验证门、留出集不退化。"""
+        if candidate.caliber != GATE_CALIBER:
+            # 旧口径候选：其台账结论产自**别的**判定口径（含口径字段引入前的桩口径）⇒
+            # 不得投放（理由**不是**「未过门 / 退化」—— 那些判定在旧口径下并未发生）
+            raise EvolutionError(
+                EvolutionErrorCode.GATE_CALIBER_STALE,
+                f"候选口径 {candidate.caliber} 与现口径 {GATE_CALIBER} 不符"
+                f"（{candidate.target_plugin}）—— 须按现口径重新提案",
+            )
         if candidate.status != "confirmed":
             raise EvolutionError(
                 EvolutionErrorCode.CANDIDATE_PENDING,
@@ -164,10 +177,16 @@ class EvolutionEngine:
                 f"候选未过验证门（{candidate.target_plugin}）",
             )
         eval_report = self._pending.eval_of(candidate.candidate_id)
+        if eval_report is not None and eval_report.verdict == "freeze":
+            # 无法评测 ≠ 退化：拿不到留出分（无基准/无样本/无执行器/无基线）⇒ 不下发，措辞据实
+            raise EvolutionError(
+                EvolutionErrorCode.EVAL_FROZEN,
+                f"候选无法评测、未过留出评测（{candidate.target_plugin}）",
+            )
         if eval_report is None or eval_report.verdict != "publish":
             raise EvolutionError(
                 EvolutionErrorCode.EVAL_REGRESSED,
-                f"候选留出集退化（{candidate.target_plugin}）",
+                f"候选未过留出评测（{candidate.target_plugin}）",
             )
         outcome = (
             self._crystallize_skill(candidate)

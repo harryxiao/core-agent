@@ -13,6 +13,12 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
 
+# 结晶面门的**口径版本**：判定所依据的 review / 运行时测试 / 留出评测口径的版本号。
+# 任何改变结晶面判定口径的变更（新增判据、换打分生产者、换阈值语义）SHALL 递增它；递增即
+# 「新口径只对新增候选生效」——旧候选随台账冻结在旧口径，投放时被拒（须按现口径重新提案），
+# 历史结论 SHALL NOT 被重算（见 evolution spec「验证门」）。`0` = 口径字段引入之前（未知）。
+GATE_CALIBER = 1
+
 
 @dataclass
 class Trace:
@@ -58,6 +64,8 @@ class GenerationCandidate:
     risk_level: Literal["low", "high"] = "low"  # 风险域：架构级(plugin)=high 必审；技能库级=low
     # 稳定身份：构造即固化、不依赖对象标识 —— 待确认队列跨进程可用（见 pending.py）
     candidate_id: str = field(default_factory=lambda: uuid4().hex[:12])
+    # 提案时的结晶面门口径版本（随台账落盘）：与现口径不符者不得投放（见 GATE_CALIBER）
+    caliber: int = GATE_CALIBER
 
 
 @dataclass
@@ -110,10 +118,12 @@ class EvalReport:
 class EvolutionOutcome:
     """一次进化闭环的最终产物。"""
 
-    # published | accepted | pending | manual | rejected | rollback | no_evidence | dissolved
-    # | implemented
+    # published | accepted | pending | manual | rejected | rollback | frozen | no_evidence
+    # | dissolved | implemented
     # accepted = 人工已批准、待人工实施（架构级候选：无自动产物落地）
     # implemented = 架构级候选的制品经人工复核后**已落地**（可选的原生执行器，见 executor.py）
+    # frozen = 留出评测**无法评测**（无绑定基准 / 无样本 / 无执行器 / 无基线）⇒ 不下发、不发布：
+    #   与 rollback（已判退化）语义分离，NOT 谎报为退化（见 evolution spec「留出评测」）
     status: str
     diagnosis: DiagnosisReport | None = None
     candidate: GenerationCandidate | None = None
@@ -124,12 +134,18 @@ class EvolutionOutcome:
 
 @dataclass
 class Benchmark:
-    """评测基准：输入样例 + 期望指标。"""
+    """评测基准：输入样例 + 期望指标。
+
+    ``plugin_id`` 是**候选↔基准的绑定**：留出评测按候选 `target_plugin` 选取基准，
+    未绑定（``None``）的基准不参与任何候选的评测（SHALL NOT 回落「任意基准」，否则评测面
+    与被评对象脱钩）。
+    """
 
     benchmark_id: str
     task_type: str
     samples: list[dict[str, Any]]  # 每个 sample 含 input / expected
     metrics: dict[str, float] = field(default_factory=dict[str, float])
+    plugin_id: str | None = None  # 绑定到该归因目标（候选 target_plugin）
 
 
 @dataclass

@@ -2890,6 +2890,59 @@
 
 ---
 
+## ADR-0112：结晶面门的**数据面** —— 基准集/基线落盘 + 真实留出评分（change 0119 / phase-31 切片 1）
+
+- **背景**：`coding-plan/phase-31.md` 立账的 RSI 能力缺口 G1–G5。用户 2026-10-06 裁决 §4.1 六点：
+  ① **立账为能力缺口**（非「装配选择」）、⑥ **拆两次**（先 G4+G3 数据面，后 G1+G2 判定面）—— 本 ADR
+  记**切片 1**。一手缺口：`evaluator.py` 的 `BenchmarkRegistry` 只建**进程内 dict**（无 `path`）⇒ 基准与
+  基线跨进程蒸发；`_held_out_score` 无 `score_fn` 时**返 `0.0`**；`baseline_score` 未注册 ⇒ **`0.0`**
+  ⇒ `held_out(0.0) < baseline(0.0) - margin(0.0)` **恒假** ⇒ **恒 `publish`**；全仓 `set_baseline` /
+  `score_fn=` **零生产调用点**；`runtime.py` 是 `Validator(), Evaluator()` **无参**（连注入点都没有）。
+  **契约面**：`evolution` spec 三处 Requirement 此前**未写**「留出分由谁产出 / 基准从哪来 / 无法评测
+  怎么办」⇒ 本 change 是**新增条款** ⇒ **规格先行**（`evolution` MODIFIED ×3，**非** `skip_specs`）。
+- **决策①：数据面与执行面**分离**。** 基准集与基线是**数据**（人工/运维注册、落 `$CORE_STATE_DIR` 单文件、
+  跨进程可读）；基准样本的**执行器**（`task_type` → 可调用体）是**受信代码**，由**组合根或运维注入**、
+  **不随数据面落盘**。理由：落盘的数据可被任何写文件者改动 —— 若执行器也随之落盘，「注册基准」就等同
+  「注入代码」，数据面沦为代码注入面（破 phase-31 §6 自我弱化防线）。分离后注册只改**评测口径**、
+  改不了**执行语义**。
+- **决策②：口径版本随**候选台账**落盘，投放（`crystallize`）时校验（`GATE_CALIBER = 1`）。**
+  此为裁决 ⑤ 的落地形态，**判据订正两点**（见下方 (a)）：载体是 `GenerationCandidate.caliber`（提案时
+  盖现口径、随 `PendingQueue` JSON 落盘），判定点是 `crystallize`；缺该字段的**落盘旧行解析为 `0`**
+  （＝口径字段引入前）⇒ 一律拒绝（**不** fail-open）。拒绝走结构化错误 `GATE_CALIBER_STALE`，措辞
+  **SHALL NOT** 记为「未过门 / 退化」（那些判定在旧口径下并未发生）。
+- **决策③：无法评测 ⇒ `freeze`（第三态），与 `rollback` 语义分离。** 留出分**不可得**（候选无绑定基准 /
+  基准无样本 / 执行器未注册 / 未注册基线）时判 `EvalReport.verdict="freeze"`；`run_cycle` 记
+  `EvolutionOutcome.status="frozen"`（**词表 +1**，先例 ADR-0100 `accepted`）；`crystallize` 遇 freeze
+  报告 ⇒ `EVAL_FROZEN`「候选无法评测、未过留出评测」。**SHALL NOT** 把「无法评测」记成 `rollback`
+  （那是「已判退化」，无证据不得如此声称）。同批把 `EVAL_REGRESSED` 的措辞由「候选留出集退化」改为
+  「候选未过留出评测」（原措辞把「未过」与「退化」混同）。
+- **决策④：阈值口径 = 已注册基线即**绝对阈值**；未注册基线归入「无法评测」。** 判定面只用
+  `baseline_of() -> float | None`（未注册 ⇒ `None`）；`baseline_score()`（缺省 `0.0`）**保留**供旧
+  调用方读，但**不再**充当判定阈值 —— 未注册基线**不再**被静默当作 `0.0` 的「宽松阈值」放行。
+  `margin` 构造参数**逐字不动**（缺省 `0.0` = 分毫不许退）。
+- **决策⑤：组合根暂**不接执行器**，产线恒 `frozen`（据实，不含糊）。** `runtime.build_runtime` 注入
+  落盘 `BenchmarkRegistry` + `BenchmarkScorer(registry)`（`runners` 空）；生产无通用任务执行器面 ⇒
+  每个候选判 `frozen`（**不再凭空 publish**）。这是裁决 ① 的**有意结果**：fail-closed 优先于「看得出
+  在动」；接真实执行器是**另一 change**（reopen 条件见已知局限①）。
+- **判据订正 3 条**：**(a)** 裁决 ⑤ 原文「门加口径版本字段 / 历史候选集体未过门」—— 一手核实后订正：
+  ① `crystallize` 读的是台账里**已记录**的结论、**不重算** ⇒ 「历史候选在新口径下集体未过门」结构上
+  **不会发生**；② 真实危害方向**相反** —— 是「历史候选带着**旧口径（桩）产出的假通过**结论被投放」
+  （候选过了人工 `confirm` 即进 `crystallize`，其 gate/eval 是桩给的 `passed=True` / `verdict="publish"`）。
+  故守卫设在**「记录 → 投放」之间**（台账盖章 + 投放校验），**同一机制闭合两个方向**，仅订正载体与
+  判定点。**(b)** 「绝对阈值起步」= `margin` 保持缺省 `0.0`、**注册的基线分就是阈值**（不给 `margin`
+  换默认值 —— 换默认值会同时改观察期容差语义面）。**(c)** 结局词表 +1 `frozen` 是**诚实化**（非新增
+  能力）：不改它则「无法评测」被 `run_cycle` 的「非 publish 一律 rollback」**谎报为退化**。
+- **已知局限**：① **生产未接执行器 ⇒ 所有候选恒 `frozen`**（**reopen 条件**：接入真实任务执行器面并
+  把 `runners` 注入组合根）；② **无 CLI 注册面**（运维注册 = 落盘状态文件 + 库函数 `register` /
+  `set_baseline`）；③ 落盘走 `write_state` 原子写，但**无跨进程锁**（注册/设基线只发生在启动期与运维期，
+  照实登记、不假称安全）；④ `freeze` 报告的 `held_out_score` 记 `0.0` **无意义**（消费者 SHALL 只认
+  `verdict`）；⑤ `_held_out_score` 无打分器由原返 `0.0` 改为返 `None` —— 既有依赖「无 `score_fn` ⇒
+  0.0」的调用方须改（全仓无生产调用方，仅测试）。
+- **规格**：`evolution`（MODIFIED「验证门」+2 Scenario、「留出评测」+2 Scenario、「评测基建」+3
+  Scenario）。**非** `skip_specs`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -2996,3 +3049,4 @@
 | ADR-0109 | 03-interfaces/ui-interface.md, 03-interfaces/cli-ops-interface.md, 02-modules/cli-ops.md, 06-ui-frontend/ui-architecture.md, 04-testing/test-cases.md, coding-plan/phase-28.md |
 | ADR-0110 | 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/beast-mode-interface.md, 02-modules/memory.md, 02-modules/skills.md, 02-modules/context.md, 04-testing/test-cases.md, coding-plan/phase-30.md |
 | ADR-0111 | 03-interfaces/pet-mode-interface.md, 02-modules/pet.md, 04-testing/test-cases.md, coding-plan/phase-30.md |
+| ADR-0112 | 03-interfaces/evolution-interface.md, 02-modules/evolution.md, 04-testing/test-cases.md, coding-plan/phase-31.md |

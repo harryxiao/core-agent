@@ -35,6 +35,8 @@ from core.durability import (
     TimeTravel,
 )
 from core.evolution import (
+    BenchmarkRegistry,
+    BenchmarkScorer,
     Diagnoser,
     Evaluator,
     EvolutionEngine,
@@ -585,11 +587,18 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         # 候选台账在此显式构造并注入（0112）：实施制品与候选**同一条记录**，故执行器必须与
         # 引擎共用同一实例（各持一份 ⇒ 制品落在对方看不见的库里，跨进程复核不成立）。
         pending_queue = PendingQueue(path=_skill_state_path("evolution-pending.json"))
+        # 结晶面门的**数据面**（0119）：基准集与基线落盘（跨进程可读，运维/人工注册），
+        # 与评测器共用**同一**实例（各持一份 ⇒ 注册的基准对评测不可见）。
+        benchmarks = BenchmarkRegistry(path=_skill_state_path("evolution-benchmarks.json"))
         evolution_engine = EvolutionEngine(
             diagnoser=Diagnoser(),
             proposer=Proposer(),
             validator=Validator(),
-            evaluator=Evaluator(),
+            # 留出评测接**真实打分器**（0119）：留出分由绑定基准的样本经执行器真实执行产出。
+            # 执行器映射（`task_type` → 可调用体）由组合根/运维注入，本装配**暂未接**
+            # （生产无通用任务执行器面）⇒ 产线判 `frozen`（无法评测 ⇒ 不下发、不发布），
+            # 而非旧口径的「恒 publish」。接真实执行器 = 另一 change（见 ADR-0112 已知局限①）。
+            evaluator=Evaluator(registry=benchmarks, score_fn=BenchmarkScorer(benchmarks)),
             library=skill_library,
             memory=backend,
             memory_crystallizer=Crystallizer(),

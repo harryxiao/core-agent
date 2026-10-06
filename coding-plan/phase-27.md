@@ -173,7 +173,7 @@ E40 要做的正是搬掉该前提 ⇒ 须同步复核 E31 裁决。
 
 | 项 | 证据 | 定性 | 取向 |
 |---|---|---|---|
-| **生产验证门名副其实化**：`Validator()`/`Evaluator()` 恒通过桩 | `runtime.py:589-590`（`review` 恒真 / `tests` 返空 ⇒ `passed` 恒真；无 `score_fn` ⇒ 留出分恒 0、`verdict` 恒 `publish`） | **最实质的一条**：既有 `confirm`/`crystallize` 的「过门」**不构成真实检验**；本切片冻结门是当前**唯一**真门 | ADR-0105 决策⑩ 明示「**另一件事**」（波及既有 `confirm`/`crystallize` 与观察期基线）⇒ **列已知局限，不并入本切片**。**修它须独立规格变更**（新 Requirement：真实 `review`/`tests`/留出评测生产者）。**✅ 已立账**：`coding-plan/phase-31.md`（RSI 能力缺口**提案**，**待裁决**；缺口 G1–G5） |
+| **生产验证门名副其实化**：`Validator()`/`Evaluator()` 恒通过桩 | `runtime.py:589-590`（`review` 恒真 / `tests` 返空 ⇒ `passed` 恒真；无 `score_fn` ⇒ 留出分恒 0、`verdict` 恒 `publish`） | **最实质的一条**：既有 `confirm`/`crystallize` 的「过门」**不构成真实检验**；本切片冻结门是当前**唯一**真门 | ADR-0105 决策⑩ 明示「**另一件事**」（波及既有 `confirm`/`crystallize` 与观察期基线）⇒ **列已知局限，不并入本切片**。**修它须独立规格变更**（新 Requirement：真实 `review`/`tests`/留出评测生产者）。**✅ 已立账**：`coding-plan/phase-31.md`（RSI 能力缺口**提案**，**待裁决**；缺口 G1–G5）。**已裁决**（2026-10-06：立账为能力缺口 + 拆两次）⇒ **切片 1（G4+G3 数据面）已闭**＝change `0119` / ADR-0112（基准集/基线落盘 + 真实留出评分 + 口径版本；产线未接执行器 ⇒ 候选恒 `frozen`）；**切片 2（G1+G2 判定面）待开工** |
 | 物理隔离**未落地** | 隔离只到「操作面 + subprocess 门」，**不是**独立工作树 / 容器（R2 仅部分落地） | 已知局限 | ADR-0105 局限② |
 | `commit` 有 undo 记录但**无 CLI 回退入口** | 沿总纲「回滚 = 卸载上一代」的完整形态留后续 | 已知局限 | ADR-0105 局限③ |
 | 门禁副产物**不入** `EffectTracker` | `build` 门的 `dist/`、`pytest` 的 `.pytest_cache`/`__pycache__` | **不谎称「一切副作用可逆」** | ADR-0105 局限④（诚实声明，非缺陷） |

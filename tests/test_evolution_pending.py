@@ -14,6 +14,7 @@ import pytest
 from core.configuration import ConfigManager
 from core.entry import main
 from core.evolution import (
+    BenchmarkRegistry,
     Diagnoser,
     Evaluator,
     EvolutionEngine,
@@ -41,12 +42,24 @@ def _trace(trace_id: str, *, success: bool, plugin_id: str | None = None) -> Tra
     )
 
 
+class _RegisteredBaselines(BenchmarkRegistry):
+    """测试替身：数据面上任意目标都视为已注册基线 0.5（判定面仍是真 `Evaluator`）。"""
+
+    def baseline_of(self, _plugin_id: str) -> float | None:
+        return 0.5
+
+
+def _passing_evaluator() -> Evaluator:
+    """过门评测器：基线可比（0.5）+ 留出分 0.9 ⇒ 真实地判 publish（0119 起无参裸桩不再恒通过）。"""
+    return Evaluator(registry=_RegisteredBaselines(), score_fn=lambda _c: 0.9)
+
+
 def _engine(**kw: object) -> EvolutionEngine:
     return EvolutionEngine(
         diagnoser=Diagnoser(),
         proposer=kw.get("proposer", Proposer()),  # type: ignore[arg-type]
         validator=Validator(),
-        evaluator=Evaluator(),
+        evaluator=_passing_evaluator(),
         library=kw.get("library"),  # type: ignore[arg-type]
         pending=kw.get("pending"),  # type: ignore[arg-type]
     )
@@ -225,7 +238,7 @@ def _seed(*, kind: str = "skill") -> str:
         diagnoser=Diagnoser(),
         proposer=Proposer(kind=proposer_kind),  # type: ignore[arg-type]
         validator=Validator(),
-        evaluator=Evaluator(),
+        evaluator=_passing_evaluator(),
         pending=PendingQueue(path=_skill_state_path("evolution-pending.json")),
     )
     return _pending(engine).candidate_id

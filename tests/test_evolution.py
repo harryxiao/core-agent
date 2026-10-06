@@ -54,6 +54,22 @@ def _trace(
     )
 
 
+class _RegisteredBaselines(BenchmarkRegistry):
+    """测试替身：**数据面**上任意目标都视为已注册基线（0.5）。
+
+    判定面仍是**真** `Evaluator`（change 0119 起「无参裸桩」不再恒 publish —— 无基线可比
+    即判 `frozen`），故测试须给出可比基线，而非绕过评测。
+    """
+
+    def baseline_of(self, _plugin_id: str) -> float | None:
+        return 0.5
+
+
+def _passing_evaluator() -> Evaluator:
+    """过门评测器：有基线可比、留出分（0.9）高于基线（0.5）⇒ 真实地判 publish。"""
+    return Evaluator(registry=_RegisteredBaselines(), score_fn=lambda _c: 0.9)
+
+
 def _engine(  # noqa: PLR0913 — 测试构造辅助
     *,
     library: SkillLibrary | None = None,
@@ -68,7 +84,7 @@ def _engine(  # noqa: PLR0913 — 测试构造辅助
         diagnoser=diagnoser or Diagnoser(),
         proposer=proposer or Proposer(),
         validator=validator or Validator(),
-        evaluator=evaluator or Evaluator(),
+        evaluator=evaluator or _passing_evaluator(),
         library=library,
         memory=memory,  # type: ignore[arg-type]
         observations=observations,
@@ -442,11 +458,11 @@ def test_observation_freeze_blocks_then_expires() -> None:
 
 
 def test_crystallize_opens_observation_window() -> None:
-    """结晶发布后开窗（基线 = 该候选评测分）。"""
+    """结晶发布后开窗（基线 = 该候选的**留出评测分**；0119 起评测分是真打分器给的 0.9）。"""
     engine = _engine(library=SkillLibrary())
     target = _published(engine)
     window = engine.observations.window(target)
-    assert window is not None and window.baseline == 0.0
+    assert window is not None and window.baseline == pytest.approx(0.9)
 
 
 def test_observe_regression_auto_dissolves_with_lesson() -> None:
@@ -456,7 +472,7 @@ def test_observe_regression_auto_dissolves_with_lesson() -> None:
     target = _published(engine)
     window = engine.observations.window(target)
     assert window is not None
-    window.baseline = 1.0  # 直接给个有意义的基线（默认评测分 0.0）
+    window.baseline = 1.0  # 另置基线以构造回归（开窗基线本是评测分 0.9）
 
     assert engine.observe(target, 0.9) is None
     assert engine.observe(target, 0.5) is None
@@ -558,7 +574,7 @@ def test_worker_sampling_drives_auto_dissolve() -> None:
     target = _published(engine)
     window = registry.window(target)
     assert window is not None
-    window.baseline = 1.0  # 直接给个有意义的基线（默认评测分 0.0）
+    window.baseline = 1.0  # 另置基线以构造回归（开窗基线本是评测分 0.9）
 
     tracer = Tracer()
     worker = EvolutionWorker(tracer=tracer, engine=engine)
