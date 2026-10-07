@@ -58,7 +58,10 @@ class MemoryStore(Plugin):
 
         ``session_id`` 为**聚合范围的收窄形参**（change `0131` / ADR-0124 / 账本 E66）：非空 ⇒
         只聚合**该会话**条目（SHALL NOT 跨会话提炼/迁移）；空串 ⇒ **全量**（循环内节拍压实）。
-        **不是** ``query`` —— 两者语义无干（此前按位置传入被当成 ``query``）。"""
+        **不是** ``query`` —— 两者语义无干（此前按位置传入被当成 ``query``）。
+
+        注入 ``summary_promoter`` 时，某会话摘要**首次越过** ``MAX_SUMMARY_CHARS`` 即把该摘要
+        条目交付钩子**一次**（change `0153` / ADR-0145 / 路线图 G3）；缺省 UNWIRED ⇒ 行为不变。"""
 
     def audit(self, trace_id: str | None = None) -> list[MemoryEntry]:
         """审计写入记录。"""
@@ -80,6 +83,8 @@ MemoryStore(
     embedder=None,         # 批量向量化契约，见 §3（缺省词法降级）
     compactor=None,        # judgment.Compactor：压实决策评分 + 逐条目 importance 打分（见 §3）
     summarizer=None,       # Summarizer：压实时的 LLM 摘要提炼，见 §3（缺省只评分不写）
+    summary_promoter=None, # SummaryPromoter：摘要首次越过 MAX_SUMMARY_CHARS 时交付 (session_id, 条目)
+                           # 一次（change 0153；缺省 UNWIRED ⇒ 不交付）
 )
 ```
 
@@ -191,6 +196,14 @@ def relevance(entry, query, embedder=None) -> float:
 ``compact`` SHALL 把**既有摘要内容**与本轮新增 episodic 条目**一并**投喂摘要器，产出**融合既有
 结论与新增事实**的更新摘要——既有结论**不被静默丢弃**。滚动的是**内容**，`id` 与「每会话至多
 一条、不增长」口径**不变**；既有摘要**只被吸收进新摘要**（**不**入 L4 迁移列表）。
+
+**上界可见性与提升钩子**（change `0153` / ADR-0145 / 路线图 G3）：滚动合并上界
+``MAX_SUMMARY_CHARS``（公开常量，缺省 2000）是既有摘要**投喂时的节选上限** ⇒ **越界即下一轮滚合并
+开始截断既有内容**。注入 ``summary_promoter``（契约 ``SummaryPromoter = Callable[[str, MemoryEntry],
+object]``）时，某会话摘要**首次越过**上界（既有摘要长度 ≤ 上界「或尚无摘要」而本次产出 > 上界）
+即把**本次产出的**摘要条目交付钩子**一次**；**已越界**的会话 SHALL NOT 重复交付；``session_id``
+空串 ⇒ 不交付。钩子 UNWIRED（缺省）⇒ 不交付、行为逐字不变；钩子抛错 ⇒ 降级（``warnings.warn``
+留痕，不牵连压实的写回与迁移）。memory **只报边界**、**不** import notes（落盘由组合根注入的闭包完成）。
 
 ### 固化打分 + 价值门控（compact，0042）
 

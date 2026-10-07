@@ -192,8 +192,9 @@ CLI SHALL 提供 `notes pin <note_id>` 与 `notes unpin <note_id>`；缺失 id �
 ### Requirement: 会话摘要提升（promotion）
 
 系统 SHALL 提供**确定性**「会话摘要 → canonical note」提升路径：由**调用方（CLI / 上层）显式触发**，
-SHALL NOT 由 loop 压实**自动**触发、SHALL NOT 依赖模型自觉（对比既有仅靠技能纪律
-`skills.notes.consult_build_update` 的路径）。该路径 SHALL NOT 引入任何 LLM 调用。
+或由 **memory 压实侧在会话摘要首次越过滚动上界时**（见下「半自动触发」）**半自动**触发；SHALL NOT 依赖
+模型自觉（对比既有仅靠技能纪律 `skills.notes.consult_build_update` 的路径）。该路径 SHALL NOT 引入任何
+LLM 调用。
 
 提升的 `note_id` SHALL 由 `session_id` **确定性派生**（前缀 + `slug_topic(session_id)`）；SHALL 允许调用方以
 **显式 `note_id`** 覆盖派生结果。提升 SHALL 为**幂等覆盖**：同一会话重复提升 SHALL 命中**同一** note、
@@ -206,9 +207,17 @@ SHALL NOT 产生第二条；SHALL 复用**既有唯一写路径** `NoteStore.upd
 报错（与「无摘要 / 空 slug」**同口径**，SHALL NOT 新增 `notes` 错误码）。调用方**显式**给出
 `--as <note_id>` ⇒ 视为**显式授权**，SHALL 照常覆写（**不**受来源守护约束）。
 
-提升产出的 note SHALL **置 `pinned=True`**（每轮无条件注入；承 Requirement「常驻（pinned）笔记」）。
+提升产出的 note SHALL 置 `pinned=True`（每轮无条件注入；承 Requirement「常驻（pinned）笔记」）——
+该**自动置常驻**语义 SHALL **仅**适用于**显式路径**；**半自动路径** SHALL 以 `pin=False` 提升、SHALL NOT
+自动置常驻（半自动产出是**普通** canonical 笔记：只经 Consult 命中面与 digest 注入，**不**占常驻预算）。
 提升的 note SHALL 属**全局文档层**，SHALL NOT 参与会话隔离——`session_id` 仅是 **`note_id` 的派生输入**与
 来源标注，**不是**隔离维度。提升写入 SHALL **不接** `EffectTracker`（承 canonical 文档层既有取舍）。
+
+**半自动触发的判据与频次** SHALL 严格限定：仅当 **memory 压实**发现该会话摘要**首次越过**滚动上界
+（既有摘要长度 ≤ 上界而本次产出摘要长度 > 上界；见 `memory`「记忆压实」）时，由 memory 侧**注入的提升
+钩子**交付**一次**；**已越过**上界的会话 SHALL NOT 重复交付（避免以**已稀释**的后继摘要覆写上一层已保存
+的完整内容）。钩子 UNWIRED（缺省）⇒ SHALL NOT 交付、行为与变更前逐字一致。半自动路径 SHALL 复用本
+Requirement 的**全部**既有约束（幂等覆盖 / 唯一写路径 / 确定性派生 / 来源守护 / 不引 LLM）。
 
 CLI SHALL 暴露 `notes promote <session-id> [--as <note_id>] [--title <title>]`；会话无摘要或派生 id 为空
 ⇒ SHALL 报错且退出码非零。
@@ -241,8 +250,20 @@ CLI SHALL 暴露 `notes promote <session-id> [--as <note_id>] [--title <title>]`
 - **THEN** 命中集相同（非会话私有；承「刻意知识不参与隔离」）
 
 #### Scenario: 不自动触发（设计裁决护栏）
-- **GIVEN** 跑一轮触发压实的 loop
-- **THEN** canonical 目录**不出现**任何由提升自动产生的 note（提升仅由显式调用触发）
+- **GIVEN** 跑一轮触发压实的 loop，其会话摘要**未越过**滚动上界
+- **THEN** canonical 目录**不出现**任何由提升自动产生的 note（半自动提升**仅**由「首次越过」滚动上界
+  触发、且每会话**至多一次**，**不**由「跑了一轮压实」触发）
+
+#### Scenario: 首次越界 ⇒ 半自动提升且不自动 pin
+- **GIVEN** 某会话既有摘要长度不超过滚动上界，且 memory 侧已注入提升钩子
+- **WHEN** 本次压实产出的摘要**首次越过**上界
+- **THEN** canonical 目录新增**一篇**该会话 note（`source == "notes.promote"`、正文含摘要内容），
+  且其 `pinned is False`（**不**占常驻预算，**不**每轮无条件注入）
+
+#### Scenario: 已越界不再重复交付（一次语义）
+- **GIVEN** 某会话摘要已越过上界（半自动提升已交付过）
+- **WHEN** 该会话再次压实
+- **THEN** canonical 目录仍**只有一篇**该会话 note，且其正文**不被**本次（已稀释的）后继摘要覆写
 
 #### Scenario: 撞非 promotion 来源 ⇒ 拒绝且不写盘（来源守护）
 - **GIVEN** canonical 目录已有一篇来源**非** `notes.promote` 的笔记（如人工撰写），

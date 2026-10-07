@@ -140,14 +140,18 @@ def promote_session_summary(
     *, session_id: str,
     as_note_id: str | None = None,
     title: str = "",
+    pin: bool = True,           # 显式路径缺省 True；半自动路径传 False（不自动置常驻）
 ) -> NoteEntry | None: ...      # None ⇒ 派生 id 为空且未给显式 id，或撞非 promotion 来源（不写盘）
 ```
 
-- 触发形态 = **显式**（CLI `notes promote` / 上层调用）；SHALL NOT 由 loop 压实自动触发、零 LLM 调用。
+- 触发形态 = **显式**（CLI `notes promote` / 上层调用）**或**由 memory 压实侧「摘要首次越过滚动上界」
+  半自动（经注入的提升钩子交付一次；change 0153 / ADR-0145 / 路线图 G3）；**零 LLM 调用**。
 - `note_id` = `as_note_id or f"session-{slug_topic(session_id)}"`；**幂等覆盖**（同会话重复提升命中同一
   note、不增长），复用**唯一**写路径 `NoteStore.update()`。
-- 产出 `source == "notes.promote"`、`pinned=True`（每轮无条件注入）、`tags` 含 `session:<sid>` 与 `summary`；
-  属**全局文档层**（`session_id` 仅是 id 派生输入与来源标注，**不是**隔离维度）。
+- 产出 `source == "notes.promote"`、`tags` 含 `session:<sid>` 与 `summary`；属**全局文档层**
+  （`session_id` 仅是 id 派生输入与来源标注，**不是**隔离维度）。**置常驻分路径**：显式路径 `pin=True`
+  ⇒ `pinned=True`（每轮无条件注入）；半自动路径 `pin=False` ⇒ **普通** canonical 笔记（不占常驻预算、
+  不以硬约束身份逐轮进场；承 ADR-0142 局限①）。
 - **来源守护**（change 0151 / ADR-0143）：目标 `note_id` 撞来源**非** `notes.promote` 的既有笔记且未给
   显式 `as_note_id` ⇒ 返回 `None`、**不写盘**、CLI 非零退出；显式 `as_note_id` ⇒ 视为**显式授权**、照常覆写。
 - 写入**不接** `EffectTracker`（承 canonical 文档层既有取舍，与 `pin/unpin`/`observe_turn` 一致）。

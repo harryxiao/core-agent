@@ -1067,6 +1067,27 @@
 
 ---
 
+## 69. 会话摘要「首次越界」半自动提升（TC-SEMIAUTO，change `0153`／ADR-0145／路线图 G3）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-SEMIAUTO-01 | memory/spec.md「记忆压实」Scenario「摘要首次越过上界交付提升钩子一次」 | 会话 `s1` 注摘要器（产出 > `MAX_SUMMARY_CHARS`）+ 提升钩子替身；首次 `compact(session_id="s1")`；再添条目、二次压实 | 首次**恰一次**交付、收到 `(s1, 该摘要条目)`；**已越界**二次压实**不再**交付（锚点：`test_memory_summary_promotion.py::test_summary_crossing_bound_delivers_promotion_once`） |
+| TC-SEMIAUTO-02 | 同 Requirement Scenario「未越界或未注入钩子 ⇒ 不交付」 | 摘要器产出 ≤ 上界（`"结论：短"`）；注入钩子 | 钩子**从不**被调用（边界护栏）（锚点：`::test_summary_below_bound_never_delivers`） |
+| TC-SEMIAUTO-03 | 同 Requirement（**零回归护栏**） | 注摘要器（产出越界）、**不**注提升钩子 | 不交付、**不抛**；摘要照写（``summary_for`` 非空）——缺省 UNWIRED 逐字不变（锚点：`::test_promoter_unwired_is_noop`） |
+| TC-SEMIAUTO-04 | 同 Requirement Scenario「提升钩子抛错降级不牵连压实」 | 钩子**抛错**；摘要越界 | `warnings.warn`（`RuntimeWarning`）留痕；摘要**仍**写回、原条目**仍**迁 L4（压实不中断）（锚点：`::test_promoter_exception_degrades_without_aborting_compaction`） |
+| TC-SEMIAUTO-05 | 同 Requirement（`session_id` 空串不交付） | 条目会话为空串、摘要越界、`compact()`（全量） | 钩子**不**被调用；摘要照写（key 归 `default`）（锚点：`::test_empty_session_id_not_delivered`） |
+| TC-SEMIAUTO-06 | notes/spec.md Scenario「首次越界 ⇒ 半自动提升且不自动 pin」+「已越界不再重复交付」 | 端到端：`MemoryStore` + `NoteStore` + 真实闭包（`pin=False`）；越界后二次压实 | canonical 落**一篇** `session-s1`（`source=notes.promote`、正文含摘要、`pinned is False`）；二次压实仍**单条**且 `pinned` 仍 `False`（幂等）（锚点：`::test_end_to_end_semi_auto_promotion_lands_canonical_not_pinned`） |
+| TC-SEMIAUTO-07 | notes/spec.md Scenario「不自动触发（设计裁决护栏）」 | 跑一轮触发压实的 loop，其会话摘要**未越界**（短摘要）+ 注入钩子替身 | 钩子 `delivered == []`；canonical 目录**无** `session-*.md` —— 半自动提升**仅**由「首次越过」触发（锚点：`test_notes_loop.py::test_loop_compaction_below_bound_does_not_promote`） |
+| TC-SEMIAUTO-08 | notes/spec.md「会话摘要提升」置常驻分路径 | `promote_session_summary(..., pin=False)`（半自动）；对照缺省 `pin=True`（显式） | `pin=False` ⇒ 产出 `pinned is False`（落盘真源亦然）；缺省仍 `True`（显式路径逐字不变）（锚点：`test_notes_promote.py::test_promote_pin_false_leaves_note_not_pinned`） |
+| TC-SEMIAUTO-09 | 全 Requirement（**零回归护栏**） | 既有 `tests/test_notes.py` / `test_notes_loop.py`（其余用例）/ `test_notes_promote.py`（其余用例）/ `test_memory.py` / `test_session_isolation.py` 全量 | 逐字不动全绿 —— 缺省 UNWIRED ⇒ 约 60 处 `MemoryStore(...)` 调用点与既有提升行为**逐字不变**（锚点：全量 `pytest -q`） |
+
+> **无手工验收项**：纯库内行为（memory 交付钩子 + notes 落 canonical），全自动门禁（pytest）覆盖；
+> 无前端 / Rust / 真端点面。语义：**越界即滚合并开始截断既有内容**（信息不可逆销毁）⇒ 首次越界时
+> 止损落 canonical；**一次语义**杜绝以已稀释的后继摘要覆写完整内容；半自动产出**不自动 pin**（承
+> ADR-0142 局限①，不以硬约束身份逐轮占据常驻预算）。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

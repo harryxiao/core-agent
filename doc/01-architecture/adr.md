@@ -4143,6 +4143,49 @@
 
 ---
 
+## ADR-0145：会话摘要「首次越界」半自动提升（change 0153 / 记忆三面路线图 G3）
+
+- **背景**：0150（ADR-0142 / E94）已给出**显式**提升路径（`notes promote <session-id>`），并把
+  「由 loop 压实**自动**触发」**明文判为不做**（`notes` 规格 Scenario「不自动触发（设计裁决护栏）」）。
+  ADR-0142 **局限①** 同时预登记了自动提升的**唯一可辩护形态**：只提升**跨过**滚动上界
+  （`MAX_SUMMARY_CHARS`）的会话 + 幂等覆盖 + **不自动 pin**。本条即兑现该形态。
+- **可辩护理由（信息论而非偏好）**：滚动合并投喂摘要器时**按 `MAX_SUMMARY_CHARS = 2000` 取前 2000
+  字**（`summarize.build_prompt`）⇒ 摘要**一旦越过该上界**，下一轮滚合并即**丢弃**上界之外的既有
+  结论 —— **信息正在被不可逆销毁**。此刻把**刚好完整的**摘要（首次越界那一版，尚未被稀释）交付上层
+  落 canonical 真相层，是**止损**（canonical 层无自动清理、沉淀后只读、可回溯）。
+- **决策①：触发面由「仅显式」扩为「显式 **或** 首次越界半自动」，判据与频次严格限定。** 仅当
+  `MemoryStore._summarize_sessions` 发现某会话摘要**首次越过**上界（既有摘要长度 ≤ 上界「或该会话
+  尚无既有摘要」而本次产出摘要长度 > 上界）时，于 `_commit_summary` **之后**把**本次产出的**摘要条目
+  交付注入的提升钩子**一次**；**已越界**的会话**不再**交付（避免以已稀释的后继摘要覆写完整内容）。
+  取舍：对比「跑一轮压实就自动写盘」，后者会放大覆写面积（0150 否决的正是它）；本方案把自动写盘
+  面收窄到「信息正在被销毁」的**唯一时刻**。
+- **决策②：`notes` 侧新增 `pin: bool = True` 形参，半自动路径传 `pin=False`。** 显式路径（CLI）
+  缺省 `True` **逐字不变**；半自动产出是**普通** canonical 笔记（只经 Consult 命中面与 digest 注入），
+  **不**自动置常驻、**不**占常驻预算、**不**以硬约束身份逐轮进场（承 ADR-0142 局限① 明文）。
+- **决策③：memory 只报边界、notes 才落盘（零反向依赖）。** `MemoryStore` 新增可选注入
+  `summary_promoter`（契约 `SummaryPromoter = Callable[[str, MemoryEntry], object]`，缺省 UNWIRED），
+  **不 import** notes；组合根（`runtime`）构造闭包 `promote_session_summary(note_store, ..., pin=False)`
+  注入。⇒ 依赖方向 `notes → core.memory` 维持（0150 既有）。上界常量由模块私有的
+  `_MAX_SUMMARY_CHARS` **公开为 `MAX_SUMMARY_CHARS`**（现为 memory 与交付判据的**跨模块契约**）。
+  钩子 UNWIRED（缺省）⇒ 不交付、行为**逐字不变**（既有约 60 处 `MemoryStore(...)` 调用点零改动）；
+  钩子抛错 ⇒ **降级**（`warnings.warn` 留痕，不牵连压实的写回与迁移）；`session_id` 为空串 ⇒ 不交付。
+- **不改**上界**数值**（2000）与节选**取前**方向（ADR-0140 的面）；**不**新增 `notes` 错误码、**不**接
+  `EffectTracker`（承 ADR-0099 canonical 层取舍）；**不**引三方库 / LLM 调用。
+- **已知局限**：① **判据依赖「既有摘要条目」的可见性** —— 若上层以别处（非 `compaction.summary.<sid>`）
+  保存过摘要，越界判据可能错判；本仓摘要唯一写路径为 `_commit_summary`，故暂无该面。② **半自动产出
+  不自动 pin** ⇒ 它**不**保证每轮在场，只作 canonical 沉淀与 Consult/digest 命中面（**有意**：见
+  ADR-0142 局限①，避免自动提升的笔记以硬约束身份逐轮占据常驻预算）。③ **一次语义**意味着若首次越界
+  的那版摘要**本身**已不完整（LLM 产出质量所致），canonical 层拿到的是那一版；后续更完整的摘要
+  **不会**回填（避免以稀释版覆写）—— 返工需**显式** `notes promote`（人工判断）。
+- **规格**：`memory`「记忆压实」（**MODIFIED**，追加上界可见性 + 提升钩子条款 ＋ 3 Scenario）、
+  `notes`「会话摘要提升（promotion）」（**MODIFIED**，触发面扩 + `pin` 分路径 +
+  Scenario「不自动触发（设计裁决护栏）」判据细化 + 2 新 Scenario）；接口面
+  `03-interfaces/memory-interface.md` / `03-interfaces/notes-interface.md`、模块面
+  `02-modules/memory.md` / `02-modules/notes.md`、测试面 `04-testing/test-cases.md` §69、
+  台账 `coding-plan/known-risk.md`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4282,3 +4325,4 @@
 | ADR-0142 | 03-interfaces/memory-interface.md, 03-interfaces/notes-interface.md, 02-modules/memory.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0143 | 03-interfaces/notes-interface.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0144 | 03-interfaces/loop-interface.md, 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0145 | 03-interfaces/memory-interface.md, 03-interfaces/notes-interface.md, 02-modules/memory.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

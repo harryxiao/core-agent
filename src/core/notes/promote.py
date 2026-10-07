@@ -21,19 +21,25 @@ _PROMOTE_PREFIX = "session-"
 _PROMOTE_SOURCE = "notes.promote"
 
 
-def promote_session_summary(
+def promote_session_summary(  # noqa: PLR0913 — 注入面皆可选（as_note_id/title/pin）
     store: NoteStore,
     summary: MemoryEntry,
     *,
     session_id: str,
     as_note_id: str | None = None,
     title: str = "",
+    pin: bool = True,
 ) -> NoteEntry | None:
     """把一条会话摘要提升为 canonical 常驻笔记（幂等覆盖）。
 
     ``note_id`` 由 ``session_id`` 确定性派生（``session-<slug>``），可由 ``as_note_id`` 覆盖；
     派生结果为空且未给显式 id ⇒ 返回 ``None``（**不写盘**，与 ``observe_turn`` 同口径守卫）。
-    产出置 ``pinned=True``（每轮无条件注入）。写入**不**接 ``EffectTracker``（承文档层既有取舍）。
+    产出置 ``pinned=pin``（缺省 ``True``：每轮无条件注入）。写入**不**接 ``EffectTracker``
+    （承文档层既有取舍）。
+
+    ``pin=False`` 供**半自动路径**（memory 压实侧首次越界时经提升钩子交付；change 0153 /
+    路线图 G3）：产出为**普通** canonical 笔记（只经 Consult 命中面与 digest 注入），**不**自动置
+    常驻、**不**占常驻预算。显式路径（CLI）用缺省 ``True``，逐字不变。
 
     **来源守护**（change 0151）：目标 ``note_id`` 撞上来源**非** ``notes.promote`` 的既有笔记、
     且调用方**未**显式给出 ``as_note_id`` ⇒ 返回 ``None``（**不写盘**，绝不覆写外来源正文）。
@@ -67,6 +73,6 @@ def promote_session_summary(
             content=body,
             tags=tags,
             source=_PROMOTE_SOURCE,
-            pinned=True,
+            pinned=pin,
         )
     )

@@ -75,7 +75,7 @@ from core.memory import (
     batch_embed,
     summarize_with,
 )
-from core.notes import NoteStore
+from core.notes import NoteStore, promote_session_summary
 from core.observability import BufferedExporter, JSONLExporter, Tracer
 from core.orchestration import (
     AgentProfile,
@@ -373,6 +373,16 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         )
         return response.content
 
+    # 文档化记忆（0106）：canonical Markdown 真相层 + Consult→Build→Update 循环。
+    # NoteStore 经 `MarkdownBackend` 落盘（实现既有 `MemoryBackend` Protocol，不改契约）。
+    # **先于** MemoryStore 构造：半自动提升钩子（0153 / G3）需引用之
+    # （memory 只报越界、notes 才落盘，零反向依赖）。
+    note_store = NoteStore(path=_notes_path())
+
+    def _promote_summary(session_id: str, summary: MemoryEntry) -> object:
+        """半自动提升（0153 / G3）：会话摘要首次越过滚动上界 ⇒ 落 canonical（不自动 pin）。"""
+        return promote_session_summary(note_store, summary, session_id=session_id, pin=False)
+
     summarizer = summarize_with(_llm_text)
     memory = MemoryStore(
         backend=backend,
@@ -380,6 +390,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         compactor=Compactor(router) if jev is not None else None,
         embedder=embedder,
         summarizer=summarizer,
+        summary_promoter=_promote_summary,
     )
     # 上下文压实接线（0041）：多轮历史 → persist 落 L2；此前 context.Compactor 与
     # memory.compact 都无生产调用方（死路径），现由 loop 的轮数/预算阈值触发。
@@ -460,10 +471,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         beast_registry = BeastRegistry()
         register_innate_skills(skill_library, beast_registry)
 
-    # 文档化记忆（0106）：canonical Markdown 真相层 + Consult→Build→Update 循环。NoteStore 经
-    # 可插拔 `MarkdownBackend` 落盘（实现既有 `MemoryBackend` Protocol，**不改契约**）；内置循环
-    # 技能由组合根构造并注册（notes 包不向上依赖 L3 skills）。与 RAG 语义召回层并列、互不交叉。
-    note_store = NoteStore(path=_notes_path())
+    # 文档化记忆（0106）：NoteStore 已**先于** MemoryStore 构造（供半自动提升钩子 G3 引用）；内置
+    # 循环技能由组合根构造并注册（notes 包不向上依赖 L3 skills）。与 RAG 语义召回层并列、互不交叉。
     skill_library.register(_notes_workflow_skill())
 
     def _consult_notes(task: str) -> str:

@@ -311,15 +311,21 @@ def test_planner_omits_pinned_block_when_empty() -> None:
     assert "常驻笔记" not in llm.requests[0].messages[0].content  # type: ignore[attr-defined]
 
 
-# ---- 设计裁决护栏：loop 压实不自动提升（change 0150 / ADR-0142 / 账本 E94） ----
+# ---- 设计裁决护栏：loop 压实不自动提升（change 0150 / ADR-0142 / 账本 E94；
+#      0153 收窄为「仅首次越界半自动」/ ADR-0145 / 路线图 G3） ----
 
 
-def test_loop_compaction_does_not_auto_promote(tmp_path) -> None:
-    """跑一轮触发压实的 loop ⇒ canonical 目录**不出现**任何由提升自动产生的 note。
+def test_loop_compaction_below_bound_does_not_promote(tmp_path) -> None:
+    """跑一轮触发压实的 loop，其会话摘要**未越过**滚动上界 ⇒ 半自动提升不触发。
 
-    提升只由**显式**调用（CLI / 上层）触发，绝不挂在循环压实路径上。
+    半自动提升**仅**由「摘要**首次越过**滚动上界」触发（change 0153 / ADR-0145），
+    **不**由「跑了一轮压实」触发 —— 摘要未越界时甚至**不交付**注入的提升钩子。
     """
-    memory = MemoryStore(summarizer=lambda entries: "会话结论：必须 HTTPS")
+    delivered: list[tuple[str, MemoryEntry]] = []
+    memory = MemoryStore(
+        summarizer=lambda entries: "会话结论：必须 HTTPS",
+        summary_promoter=lambda sid, entry: delivered.append((sid, entry)),
+    )
     memory.write(
         "L2",
         MemoryEntry(
@@ -350,4 +356,5 @@ def test_loop_compaction_does_not_auto_promote(tmp_path) -> None:
     loop.run("会话结论 任务", session_id="s1")
 
     assert memory.summary_for("s1") is not None, "压实确已产摘要（非空转）"
+    assert delivered == [], "摘要未越界 ⇒ 不交付提升钩子"
     assert list(notes_dir.glob("session-*.md")) == [], "提升不被自动触发"

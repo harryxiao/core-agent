@@ -13,7 +13,7 @@ from .embedding import batch_embed
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
 from .relevance import rank, recency_decay, relevance
 from .store import MemoryStore
-from .summarize import Summarizer, build_prompt, summarize_with
+from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter, build_prompt, summarize_with
 from .transcript import TranscriptStore
 
 __all__ = [
@@ -21,12 +21,14 @@ __all__ = [
     "FileBackend",
     "IndexEntry",
     "Layer",
+    "MAX_SUMMARY_CHARS",
     "MemoryBackend",
     "MemoryEntry",
     "MemoryId",
     "MemoryStore",
     "PluginCandidate",
     "Summarizer",
+    "SummaryPromoter",
     "TranscriptStore",
     "batch_embed",
     "build_prompt",

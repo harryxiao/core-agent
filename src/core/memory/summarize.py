@@ -17,11 +17,15 @@ from .protocol import MemoryEntry
 # 摘要器契约：同一会话的 episodic 条目 → 一段可复用的提炼事实
 Summarizer = Callable[[list[MemoryEntry]], str]
 
+# 提升钩子契约：会话**首次越过**滚动上界时交付 `(session_id, 该摘要条目)`（返回值丢弃）
+SummaryPromoter = Callable[[str, MemoryEntry], object]
+
 # 单条入 prompt 的节选上界（token 有界）
 _MAX_ENTRY_CHARS = 400
 
-# 既有摘要的节选上界——独立于单条事件上界：摘要若同受 400 字截断，「滚动合并」即失效
-_MAX_SUMMARY_CHARS = 2000
+# 既有摘要的节选上界——独立于单条事件上界：摘要若同受 400 字截断，「滚动合并」即失效。
+# 公开常量：**越界即滚合并开始截断既有内容**，该边界是交付提升钩子的判据（change 0153）。
+MAX_SUMMARY_CHARS = 2000
 
 # 既有摘要条目的判据（store 落库时 `tags` 含 `summary`，见 `_commit_summary`）
 _SUMMARY_TAG = "summary"
@@ -41,7 +45,7 @@ def build_prompt(entries: Sequence[MemoryEntry]) -> str:
     prior = next((entry for entry in entries if _SUMMARY_TAG in entry.tags), None)
     heads = [_PROMPT_HEAD, ""]
     if prior is not None:
-        heads += ["现有摘要：", prior.content[:_MAX_SUMMARY_CHARS], ""]
+        heads += ["现有摘要：", prior.content[:MAX_SUMMARY_CHARS], ""]
     heads.append("会话事件：")
     lines = [f"- {entry.content[:_MAX_ENTRY_CHARS]}" for entry in entries if entry is not prior]
     return "\n".join([*heads, *lines])

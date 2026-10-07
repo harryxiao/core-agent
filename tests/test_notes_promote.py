@@ -74,6 +74,16 @@ def test_promote_as_overrides_note_id(tmp_path) -> None:
     assert NoteStore(path=tmp_path).get("my-topic").title == "我的主题"
 
 
+def test_promote_pin_false_leaves_note_not_pinned(tmp_path) -> None:
+    """半自动路径（`pin=False`）⇒ 产出**不**置常驻（change 0153 / ADR-0145 / 路线图 G3）。"""
+    store = NoteStore(path=tmp_path)
+
+    note = promote_session_summary(store, _summary("s1", "摘要"), session_id="s1", pin=False)
+
+    assert note is not None and note.pinned is False, "半自动 ⇒ 不自动 pin"
+    assert NoteStore(path=tmp_path).get(note.note_id).pinned is False, "落盘真源亦不常驻"
+
+
 def test_promote_tags_carry_session_provenance(tmp_path) -> None:
     store = NoteStore(path=tmp_path)
 

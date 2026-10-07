@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import math
 import time
+import warnings
 from collections.abc import Callable
 from dataclasses import asdict
 
@@ -20,7 +21,7 @@ from core.plugin_registry import Effect, EffectTracker
 from .backend import FileBackend
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
 from .relevance import rank, recency_decay
-from .summarize import Summarizer
+from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter
 
 # 粗略 token 估算：约 4 字符 ≈ 1 token（read 预算截断用）
 _TOKEN_DIVISOR = 4
@@ -61,19 +62,21 @@ class MemoryStore:
     schema: dict[str, object] = {"type": "object"}
     coeffects: list[str] = []
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0917 — 注入面均为可选依赖注入
         self,
         backend: MemoryBackend | None = None,
         effect_tracker: EffectTracker | None = None,
         embedder: Callable[[list[str]], list[list[float]]] | None = None,
         compactor: Compactor | None = None,
         summarizer: Summarizer | None = None,
+        summary_promoter: SummaryPromoter | None = None,
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
         self._tracker = effect_tracker if effect_tracker is not None else EffectTracker()
         self._embedder = embedder
         self._compactor = compactor
         self._summarizer = summarizer
+        self._summary_promoter = summary_promoter
         self._hot: dict[str, MemoryEntry] = {}
         self._vectors: dict[str, list[float]] = {}
         self._embed_failed = False
@@ -223,6 +226,10 @@ class MemoryStore:
         注入 ``compactor`` 时另**逐条目打分写回** ``importance``（0042），并据此对会话做
         **价值门控**：仅有分且最高分低于 ``_CONSOLIDATE_THRESHOLD`` 的会话跳过提炼。
         决策打分本身失败只降级为无决策（不做价值门控），**不**连带阻断固化与遗忘。
+
+        注入 ``summary_promoter``（提升钩子）时，某会话摘要**首次越过**滚动上界
+        （``MAX_SUMMARY_CHARS``）即把该摘要条目交付钩子**一次**（供上层落 canonical 真相层；
+        change 0153 / 路线图 G3）。缺省 UNWIRED ⇒ 不交付、行为逐字不变。
         """
         decision: DecisionResult | None = None
         if self._compactor is not None:
@@ -330,6 +337,7 @@ class MemoryStore:
             if not summary:
                 continue
             self._commit_summary(sid, entries, summary)
+            self._deliver_promotion(sid, prior, summary)
 
     def _score_importance(self, entries: list[MemoryEntry]) -> dict[str, float]:
         """逐条目 importance 打分（judgment ``score`` 原语）并写回（可逆）。
@@ -419,6 +427,34 @@ class MemoryStore:
         )
         for entry in entries:
             self.migrate(entry.id, "L2", "L4", trace_id=trace_id)
+
+    def _deliver_promotion(self, session_id: str, prior: MemoryEntry | None, summary: str) -> None:
+        """半自动提升交付（change 0153 / 路线图 G3）：摘要**首次越过**滚动上界 ⇒ 交付钩子一次。
+
+        判据：既有摘要长度 ≤ ``MAX_SUMMARY_CHARS``（**或该会话尚无既有摘要**）而本次产出摘要长度
+        > 上界 ⇒ 越界即滚合并开始截断既有内容（信息正在被销毁），此刻把**刚好完整的**摘要交付
+        上层落 canonical 真相层；**已越界**的会话**不再**交付（避免以已稀释的后继摘要覆写）。
+        钩子 UNWIRED（缺省）或 ``session_id`` 为空串 ⇒ 不交付；钩子抛错 ⇒ **降级**（`warnings.warn`
+        留痕，不牵连压实本身的写回与迁移，不静默吞异常）。
+        """
+        promoter = self._summary_promoter
+        if promoter is None or not session_id:
+            return
+        if prior is not None and len(prior.content) > MAX_SUMMARY_CHARS:
+            return  # 已越界：不再重复交付
+        if len(summary) <= MAX_SUMMARY_CHARS:
+            return  # 未越界
+        entry = self._existing_summary(session_id)
+        if entry is None:
+            return
+        try:
+            promoter(session_id, entry)
+        except Exception:  # noqa: BLE001 — 钩子失败降级，不牵连压实已完成的写回 / 迁移
+            warnings.warn(
+                f"summary promotion hook failed for session {session_id!r}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     def _all_entries(self) -> list[MemoryEntry]:
         """全量条目（冷区 + 热区）：冷区读取失败降级为热区，不抛。"""

@@ -134,6 +134,16 @@ SHALL 只聚合**该会话**的 L2 episodic 条目（含其重要度打分写回
 无则返回 `None`。该访问器 SHALL NOT 产生任何写入或效应记录，SHALL NOT 变更条目的
 `reuse_count` / `importance` / `updated_at`。
 
+滚动合并 SHALL 有一**上界** `MAX_SUMMARY_CHARS`：该上界是既有摘要**投喂摘要器时的节选上限**，
+故摘要一旦越过它，下一轮滚动合并即**丢弃**上界之外的既有内容（不可逆稀释）。为把该边界**可见地**
+交付上层，`MemoryStore` SHALL 支持注入**提升钩子** `summary_promoter`（契约
+`(session_id, MemoryEntry) -> object`，返回值丢弃；缺省 UNWIRED）—— 当某会话摘要**首次越过**该上界
+（**既有摘要长度不超过上界**「或该会话尚无既有摘要」而**本次产出摘要长度超过上界**）时，系统 SHALL
+把**本次产出的摘要条目**交付钩子**一次**；**已越过**上界的会话 SHALL NOT 重复交付（避免以**已稀释**的
+后继摘要覆写上一层已保存的完整内容）。会话标识为空串 SHALL NOT 交付。钩子 UNWIRED（缺省）⇒
+SHALL NOT 交付，压实行为**逐字不变**。钩子抛错 SHALL **降级**（不牵连压实本身的写回与迁移，且经
+`warnings.warn` 留痕，不静默吞异常）。
+
 #### Scenario: 索引最小化
 - **GIVEN** L1 索引膨胀
 - **WHEN** 记忆清理 SOP 运行
@@ -161,6 +171,23 @@ SHALL 只聚合**该会话**的 L2 episodic 条目（含其重要度打分写回
 - **WHEN** `summary_for(<该会话>)`
 - **THEN** 返回该会话的摘要条目；`summary_for(<他会话>)` ⇒ `None`；且调用前后
   `audit()` 快照与效应追踪面**逐字不变**（只读，无写入、无效应、不动 `reuse_count` / `importance` / `updated_at`）
+
+#### Scenario: 摘要首次越过上界交付提升钩子一次
+- **GIVEN** 某会话既有摘要长度不超过 `MAX_SUMMARY_CHARS`（或该会话尚无既有摘要），
+  且 `MemoryStore` 已注入提升钩子
+- **WHEN** 本次压实产出的摘要长度超过 `MAX_SUMMARY_CHARS`
+- **THEN** 钩子被调用**恰一次**、收到 `(session_id, 该摘要条目)`；**AND WHEN** 该会话再次压实
+  （此时既有摘要已越过上界）**THEN** 钩子**不再**被调用
+
+#### Scenario: 未越界或未注入钩子 ⇒ 不交付
+- **GIVEN** 压实产出的摘要长度不超过上界；**或** `MemoryStore` 未注入提升钩子
+- **WHEN** 压实运行
+- **THEN** 无任何钩子调用，摘要写回与条目迁移与变更前**逐字一致**
+
+#### Scenario: 提升钩子抛错降级不牵连压实
+- **GIVEN** 注入的提升钩子在调用时抛错
+- **WHEN** 「摘要首次越过上界」的压实运行
+- **THEN** 摘要条目**仍**写回、原条目**仍**迁 L4（压实不中断），且经 `warnings.warn` 留痕
 
 #### Scenario: 未注入摘要器时降级
 - **GIVEN** 记忆存储未注入摘要器

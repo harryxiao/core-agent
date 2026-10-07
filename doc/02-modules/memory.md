@@ -71,6 +71,13 @@ MemoryStore
 - **摘要只读访问器**（change `0150`／ADR-0142／账本 E94）：`MemoryStore.summary_for(session_id)`
   按会话取回既有摘要条目（口径同压实写入），**只读** —— 零写入、零效应、不动
   `reuse_count` / `importance` / `updated_at`。供上层（CLI `notes promote`）取数做提升。
+- **摘要越界的提升钩子**（change `0153`／ADR-0145／路线图 G3）：滚动合并上界 `MAX_SUMMARY_CHARS`
+  是既有摘要**投喂时的节选上限** ⇒ **越界即下一轮滚合并开始截断既有内容**（信息不可逆销毁）。
+  `MemoryStore` 支持注入 `summary_promoter`（契约 `(session_id, MemoryEntry) -> object`，缺省 UNWIRED）；
+  某会话摘要**首次越过**上界时把**本次产出的**摘要条目交付钩子**一次**（供上层落 canonical），
+  **已越界**不再交付（免以已稀释的后继摘要覆写）。memory **只报边界**、**不** import notes（钩子注入，
+  零反向依赖）⇒ 落盘由组合根注入的闭包完成（§ 组合根）。钩子 UNWIRED ⇒ 不交付（零回归）；
+  抛错 ⇒ 降级（`warnings.warn` 留痕，不牵连压实的写回与迁移）；`session_id` 空串 ⇒ 不交付。
 
 ### 3.2.2 对话转录（**非**记忆层级，change `0115`／ADR-0108）
 
