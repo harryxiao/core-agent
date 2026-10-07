@@ -1209,6 +1209,31 @@
 
 ---
 
+## 76. 只读诊断源（TC-DIAG，change `0162`／ADR-0153，账本 E100）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-DIAG-01 | cli-ops/spec.md「自检诊断（`doctor`）与运行状态（`status`）」Scenario「自检全绿」 | 纯函数 `collect_doctor(deps)`（配置有效 + 引用可解析 + 状态目录可写 + 注册表可读） | 无 `fail` 项；`配置`/`密钥`/`状态目录`/`工具`/`笔记`/`MCP`/`资产`/`技能` 逐项在场（锚点：`tests/test_diagnostics.py::test_doctor_all_green`） |
+| TC-DIAG-02 | 同上 Scenario「存在失败项时非零退出」的纯函数面 | `collect_doctor`（`environ={}` ⇒ `${CORE_DIAG_KEY}` 不可解析） | `ok=False`；**不抛**；该项 `detail` 写明**配置键名**（`llm.api_key`）而非取值；其余项未被吞掉（锚点：`..._unresolvable_ref_fails_without_raising`） |
+| TC-DIAG-03 | 同上（诊断的职责是**报告**不可用） | `collect_doctor`（config 缺 `api_key` 段） | 落成一条 `fail` 项、`detail` 非空，**不向上抛**（锚点：`..._missing_config_is_a_fail_not_a_crash`） |
+| TC-DIAG-04 | 同上（能力面缺失 ≠ 系统不可用） | `collect_doctor(Deps(config=...))`（句柄全缺） | 无 `fail`、**有** `warn`（锚点：`..._warns_on_missing_handles`） |
+| TC-DIAG-05 | 同上（零副作用） | `collect_doctor(state_dir=<0o500 目录>)` | 「状态目录」`fail`；探测**不新建目录**（锚点：`..._unwritable_state_dir_fails`；root 下跳过） |
+| TC-DIAG-06 | 同上 Scenario「诊断输出不含密钥值」（**红线**） | 注入哨兵值 `sk-DIAG-CANARY-9f3a` 为 `${CORE_DIAG_KEY}` 的解析结果，跑 `doctor` / `status` / 五张列表视图 | 输出含**引用名** `${CORE_DIAG_KEY}`、**逐字不含**哨兵值（锚点：`..._reports_secret_ref_name_only`、`..._never_leaks_secret`、`..._render_config_masks_secret_value`） |
+| TC-DIAG-07 | 同上 Scenario「运行状态概览」 | `collect_status(deps)` | 六项字段齐备（`会话数`/`内置工具`/`已安装资产`/`MCP 端点`/`模型`/`循环预算`）+ 模型名在场；配置坏时**照常出**（锚点：`..._overview_fields`、`..._survives_broken_config`） |
+| TC-DIAG-08 | 同上 Scenario「存在失败项时非零退出」（**端到端**） | CLI `doctor`：全绿配置 ⇒ `0`；`${VAR}` 不可解析 ⇒ `1` | 退出码与输出同源：非零时含 `✗ 配置` 与 `llm.api_key`、不含密钥值（锚点：`tests/test_entry.py::test_doctor_exits_zero_when_all_green`、`..._exits_nonzero_on_unresolvable_secret`） |
+| TC-DIAG-09 | 同上（`status` 是信息面） | CLI `status`：正常 / 配置不可读 | 两种情况**均恒 0**、六项字段在场（锚点：`tests/test_entry.py::test_status_overview_exits_zero`、`..._with_unreadable_config_still_exits_zero`） |
+| TC-DIAG-10 | 同上 Scenario「诊断输出不含密钥值」（列表视图侧） | `render_mcp`（端点 `args=["--token", <哨兵>]`） | 出 `name`、**不出** `--token` 与哨兵值（锚点：`..._render_mcp_omits_args`） |
+| TC-DIAG-11 | 同上（包边界，**硬红线**） | AST 扫 `src/core/diagnostics/**` 的 import 节点 | **零** `core.runtime` / `core.ui` 引用（锚点：`..._never_imports_runtime_or_ui`；红态由临时植入 probe 验证） |
+| TC-DIAG-12 | 同上（句柄缺失的呈现面） | 五张列表视图各喂 `Deps()`（空） | 各出**用法提示**而非崩（TUI 里点开空表的体验）（锚点：`..._views_degrade_without_handles`） |
+
+> **无手工验收项**：退出码、逐项状态、密钥零泄漏、视图降级、包边界全部以纯函数 + CLI 端到端覆盖；
+> 唯一需**目视**的是真实 `config.yaml` 下的 `/config` 与 `doctor` 输出（自动测试只覆盖注入样本）。
+> 语义：**实现追上规格**（`cli-ops` spec「状态查询命令」早已承诺健康诊断，此前 `dispatcher` 恒返回 `"ok"`）；
+> **只读源与呈现面分离**（`collect_*` 产 `Report`、`render` 产行 ⇒ TUI 复用同一份，不各写一份检查逻辑）。
+> **已知局限**：只判「可读 / 存在」**不探活性**（不建 MCP 连接、不真调 LLM）；资产 / 端点数取自各自落盘账本；
+> 本 change 只接 **CLI**（TUI 浮层命令属 change `0163`）；`doctor` 退出码语义**有意**由「恒 0」改为「有 fail 项非零」；
+> `cli_ops/dispatcher.py` 的 `status()` 分支自此不可达（不改不删）；其余运维动词仍未注册（台账 E100）。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

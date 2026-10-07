@@ -409,6 +409,14 @@ class ConfigManager:
 
     # ---- 密钥与开关 ----
 
+    def is_resolvable(self, ref: str) -> bool:
+        """密钥引用能否经 env/keychain 解析（**只回布尔，不返回、不落明文**）。
+
+        只读消费面（诊断 / 概览）走此公开口，而非 ``resolve_secret``（后者返回明文）——
+        与 ``_resolvable`` 同一实现，单一判据。
+        """
+        return self._resolvable(ref)
+
     def resolve_secret(self, ref: str) -> str:
         """从 env/keychain 解析 ${VAR} 引用，返回明文（仅调用方使用，不落日志）。"""
         name = _parse_ref(ref)

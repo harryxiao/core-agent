@@ -41,6 +41,12 @@ from core.deployment import (
     ReleaseManager,
     ServeStateStore,
 )
+from core.diagnostics import (
+    Deps,
+    collect_doctor,
+    collect_status,
+    render,
+)
 from core.durability import DurabilityError
 from core.evolution import EvolutionError, GenerationCandidate
 from core.evolution.executor import COMMIT_TRACE, IMPLEMENT_OP
@@ -88,7 +94,7 @@ from core.skillhub import (
     TrustVerifier,
 )
 from core.skills import Skill, SkillLibrary, VersionManager
-from core.tools import StubPlugin, ToolProvider
+from core.tools import StubPlugin, ToolProvider, builtin_tools
 from core.ui import CLIBridge, DesktopBridge, SessionRegistry, UIAPILayer, UiError, WebBridge
 from core.ui.repl import format_action_event, format_task_event
 
@@ -496,11 +502,48 @@ def _app(args: argparse.Namespace) -> int:
 
 
 def _ops(args: argparse.Namespace) -> int:
-    dispatcher = CLICommandDispatcher()
-    if args.command in ("status", "doctor"):
-        print(dispatcher.status(args.command))
-    else:
-        dispatcher.dispatch([args.command])
+    """生命周期动词（start / stop / restart）：进程守护，非只读面。
+
+    `status` / `doctor` 自 change `0162` 起改由**只读诊断源**承载（见 `_status` / `_doctor`）——
+    此处不再分派它们（`cli_ops/dispatcher.status` 的 `"ok"` 分支自此不经 CLI 触达，见 ADR-0153 ⑥）。
+    """
+    CLICommandDispatcher().dispatch([args.command])
+    return 0
+
+
+def _diag_deps(args: argparse.Namespace) -> Deps:
+    """构造只读诊断句柄集：经**既有**路径助手取裸 store（不建连接、**不装配 runtime**）。
+
+    不装配 runtime 是刻意的：装配需要**有效**配置，而「配置坏了」恰是最该跑诊断的场景
+    （见 ADR-0153 决策①）。工具面因此只装**零注入**的内置五件（`builtin_tools`），
+    会话枚举走会话注册表的只读口（不带转录 ⇒ 无标题列）。
+    """
+    tools = ToolProvider()
+    for tool in builtin_tools():
+        tools.register(tool)
+    return Deps(
+        config=_config_manager(args),
+        tools=tools,
+        sessions=SessionRegistry(path=_state_path("conversations.json")).list,
+        notes=_notes_store(),
+        mcp=MCPEndpointRegistry(mcp_endpoints_path()),
+        library=_build_skill_library(),
+        market=_build_market_index(),
+        installer=_build_installer(),
+        state_dir=_state_dir(),
+    )
+
+
+def _doctor(args: argparse.Namespace) -> int:
+    """`doctor`：逐项自检并逐条呈现；**存在 `fail` 项 ⇒ 退出码 1**（诊断的价值在判据）。"""
+    report = collect_doctor(_diag_deps(args))
+    print("\n".join(render(report)))
+    return 0 if report.ok else 1
+
+
+def _status(args: argparse.Namespace) -> int:
+    """`status`：打印运行概览并**恒以 0 结束**（概览是信息面，不是判据）。"""
+    print("\n".join(render(collect_status(_diag_deps(args)))))
     return 0
 
 
@@ -1071,14 +1114,18 @@ def _coerce(value: str) -> Any:
     return value
 
 
-def _state_path(name: str) -> Path:
-    """全局状态文件路径：$CORE_STATE_DIR（缺省 ~/.core/state）/<name>。
+def _state_dir() -> Path:
+    """全局状态目录：$CORE_STATE_DIR（缺省 ~/.core/state）。
 
     env 覆盖便于测试隔离（对齐 config 的 env 覆盖惯例）；缺省对齐 ~/.core/Core.md
     全局约定。
     """
-    base = os.environ.get("CORE_STATE_DIR") or str(Path.home() / ".core" / "state")
-    return Path(base) / name
+    return Path(os.environ.get("CORE_STATE_DIR") or str(Path.home() / ".core" / "state"))
+
+
+def _state_path(name: str) -> Path:
+    """全局状态文件路径：全局状态目录（见 `_state_dir`）/<name>。"""
+    return _state_dir() / name
 
 
 def _session(args: argparse.Namespace) -> int:
@@ -1971,8 +2018,8 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "start": _ops,
     "stop": _ops,
     "restart": _ops,
-    "status": _ops,
-    "doctor": _ops,
+    "status": _status,
+    "doctor": _doctor,
 }
 
 

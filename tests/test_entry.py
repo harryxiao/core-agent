@@ -1305,3 +1305,55 @@ def test_notes_promote_refuses_foreign_source_note(
     assert capsys.readouterr().err.strip(), "撞车须有明确报错"
     assert target.read_text(encoding="utf-8") == before, "人工笔记逐字不变"
     assert len(list(notes_dir.glob("session-*.md"))) == 1, "不产生第二条"
+
+
+# ---- 只读诊断面（change 0162：doctor / status 真诊断） ----
+
+
+def test_doctor_exits_zero_when_all_green(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """场景「自检全绿」：配置有效 + 密钥引用可解析 ⇒ 逐项列出且退出码 0。"""
+    monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-ENTRY-CANARY")
+    assert main(["--config", _write_config(tmp_path), "doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "自检诊断" in out
+    assert "✓" in out
+    assert "sk-ENTRY-CANARY" not in out, "密钥值不得出现在诊断输出"
+
+
+def test_doctor_exits_nonzero_on_unresolvable_secret(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """场景「存在失败项时非零退出」：引用不可解析 ⇒ 非零退出，且写明是哪一项（不出取值）。"""
+    monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert main(["--config", _write_config(tmp_path), "doctor"]) == 1
+    out = capsys.readouterr().out
+    assert "✗ 配置" in out
+    assert "llm.api_key" in out
+    assert "sk-test" not in out
+
+
+def test_status_overview_exits_zero(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """场景「运行状态概览」：六项字段打印且恒 0；输出不含密钥值。"""
+    monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-ENTRY-CANARY")
+    assert main(["--config", _write_config(tmp_path), "status"]) == 0
+    out = capsys.readouterr().out
+    for label in ("会话数", "内置工具", "已安装资产", "MCP 端点", "模型", "循环预算"):
+        assert label in out
+    assert "sk-ENTRY-CANARY" not in out
+
+
+def test_status_with_unreadable_config_still_exits_zero(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`status` 是信息面不是判据：配置不可用时如实标注，仍恒 0（与 doctor 的分工）。"""
+    monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert main(["--config", _write_config(tmp_path), "status"]) == 0
+    assert "会话数" in capsys.readouterr().out

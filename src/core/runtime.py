@@ -120,16 +120,12 @@ from core.tools import (
     Tool,
     ToolDef,
     ToolProvider,
-    code_run,
+    builtin_tools,
     context_read,
-    file_patch,
-    file_read,
-    file_write,
     gate_run,
     install_tool,
     list_tool,
     uninstall_tool,
-    web_fetch,
 )
 
 # 门控名单（change 0067 / 账本 E10）：组合根装配的**可选**模块 —— 本元组是单一真源，
@@ -414,8 +410,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     tools = ToolProvider(
         coeffect_resolver=resolver, effect_tracker=effect_tracker, gate=guard, approver=approver
     )
-    builtin_tools = (file_read(), file_write(), file_patch(), code_run(), web_fetch())
-    for tool in builtin_tools:
+    for tool in builtin_tools():  # 零注入五件（单一真源：`core.tools.builtin_tools`）
         tools.register(tool)
 
     # 门禁工具面（0111 / phase-27 切片 S1）：把 ci-cd 既有门禁执行器暴露为原子工具，
@@ -728,7 +723,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         provider = ToolProvider(
             coeffect_resolver=resolver, effect_tracker=effect_tracker, gate=guard, approver=approver
         )
-        for tool in builtin_tools:
+        for tool in builtin_tools():
             provider.register(tool)
         return provider
 
@@ -953,7 +948,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 gate=guard,
                 approver=approver,
             )
-            for tool in builtin_tools:
+            for tool in builtin_tools():
                 if tool.definition.tool_id in pet_allowed:
                     provider.register(tool)
             return provider

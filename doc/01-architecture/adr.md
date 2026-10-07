@@ -4430,6 +4430,45 @@
   未登记 fail-closed / 无参数只提示 / 忙碌拒绝）；文档面 `03-interfaces/ui-interface.md` §2、
   测试面 `04-testing/test-cases.md` §75（TC-RESUME）、台账 `coding-plan/known-risk.md` §3。
 
+## ADR-0153：只读诊断源 —— `doctor` / `status` 实现追上规格（change 0162）
+
+- **背景**：`cli-ops` 规格的「状态查询命令」Scenario 早已承诺 `status` / `doctor` **返回运行状态 /
+  健康诊断**（`doc/openspec/specs/cli-ops/spec.md:20`），实现却是桩 —— `cli_ops/dispatcher.py:87-93`
+  对二者一律 `return "ok"`。今天 `core-agent doctor` 对**任何**环境都打印 `ok`：既无诊断价值，也不能
+  当退出码判据用。用户 2026-10-07 诉求「TUI `/` 浮层要能执行 doctor / status 等只读命令」**以本
+  change 为数据底座**（浮层命令要落真东西，先得有只读诊断源）。
+- **决策①：单独立只读诊断包 `core/diagnostics`，一切句柄**依赖注入**。** 包内**不猜路径**、**不 import
+  `core.runtime`**（`test_architecture.py::test_runtime_is_sole_composition_root` 是硬红线）、**不 import
+  `core.ui`**（`ui` 将反向引用它，避免环）。`Deps` 是**纯数据**（全部可选句柄），由调用方装配：
+  CLI 经 `entry._diag_deps`，TUI 后续经 `UIAPILayer`（0163）。理由：诊断若自建 runtime 就会成为**第二个
+  组合根**，与 P1「无特权核心」和既有组合根单一性直接冲突。
+- **决策②：配置检查复用既有 `ValidationResult`，不自建第二套。** `ConfigManager.validate_schema`
+  已产出 `ValidationResult(ok, errors, warnings)`（`configuration/models.py:87-93`）—— 诊断把它**映射**成
+  `Check` 项。理由：校验口径只能有一处；自建会立刻漂移（与 ADR-0149「同格式只有一处实现」同源纪律）。
+- **决策③：单一产出、多消费面。** `collect_doctor` / `collect_status` 产 `Report`，`render` 产行；
+  CLI 今天打印，TUI（0163）复用同一份 —— SHALL NOT 各写一份检查逻辑（写进规格）。
+- **决策④：`doctor` 退出码由「恒 0」改为「有 `fail` 项即非零」。** 诊断命令的价值就在**判据**；
+  恒 0 等于没有诊断。**代价**：若有外部脚本依赖 `core-agent doctor` 恒 0，需适配 —— 此为**有意**变更，
+  规格已写明「存在 fail 项 ⇒ 退出码非零」。`status` 仍恒 0（概览是信息面，不是判据）。
+- **决策⑤：密钥面只出「引用名 + 布尔结论」。** 诊断项**只**经 `ConfigManager._resolvable(ref) -> bool`
+  （`manager.py:402`，**只返回 bool、不返回明文**）与 `${VAR}` 引用名呈现；**SHALL NOT** 打印解析结果。
+  列表视图同理收紧：MCP 端点**不打印 `EndpointRecord.args`**（`mcp/endpoints.py:53-65`，其 `args` 可能是
+  `--token <value>` 形态）—— 只出 name / transport / source。理由：红线「密钥只引用不读取、绝不进日志/记忆」
+  在诊断面上同样成立，而「把配置打印出来看看」是最容易破线的一种实现。
+- **决策⑥：不动 `cli_ops/dispatcher.py`。** 其 `status()` 的 `"ok"` 分支自此不再被 CLI 触达，但它与
+  `cli-ops-interface.md`、`tests/test_cli_ops.py` 仍是既有面 —— 删改属越界；改由 `entry._HANDLERS`
+  把这两个动词路由到真实现，`_ops` 只留 `start/stop/restart`。
+- **已知局限**：① **只判「可读 / 存在」，不探活性** —— 不建 MCP 连接、不真调 LLM ⇒ 「配置有效」**不等于**
+  「端点可达」（活性探针是另一件事，见既有 `probe`）；② `status` 的资产 / 端点数取自各自落盘账本
+  （跨进程一致，但账本陈旧时数字陈旧）；③ **本 change 只接 CLI**，TUI 浮层命令属 0163；
+  ④ `doctor` 退出码语义变更（见决策④，**有意**）；⑤ `CLICommandDispatcher.status("status")` 自此不可达
+  （不改不删，见决策⑥）；⑥ **其余运维动词仍未注册**（`kill` / `logs` / `version` / `help` / `install` /
+  `uninstall` / `list` / `info` / `auth` / `permission-mode` / `gateway` —— 台账 E100 挂账）；
+  ⑦ **未覆盖 Web / Desktop**（只读诊断面属 CLI / TUI，跨端一致属另一端）。
+- **规格**：`cli-ops` **ADDED** Requirement「自检诊断（`doctor`）与运行状态（`status`）」+ 4 Scenario；
+  文档面 `03-interfaces/cli-ops-interface.md`、测试面 `04-testing/test-cases.md` §76（TC-DIAG）、
+  台账 `coding-plan/known-risk.md` §1 E100 / §3。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4577,3 +4616,4 @@
 | ADR-0150 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0151 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0152 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0153 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

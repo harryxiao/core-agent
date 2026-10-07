@@ -105,6 +105,11 @@ class ToolError:
 > `tools.context_read`（change 0140 / 账本 E77）同样经组合根注册进**生产工具面**：它是「信息地图按需取详情」
 > 的**模型侧唯一通道**（`DynamicAssembler.fetch_detail` 此前零生产调用点）；工具 id 含 `read` 词元 ⇒
 > 权限分级按**完整词元**判只读放行（不落 deny-by-default）。
+>
+> **零注入内置集有单一真源**：`core.tools.builtin_tools() -> tuple[Tool, ...]`（change `0162` / ADR-0153）
+> 给出**不需注入执行器**的五件（`file_read` / `file_write` / `file_patch` / `code_run` / `web_fetch`）；
+> 组合根 `build_runtime` 的注册与只读诊断面（`doctor` / `status` 的「内置工具数」）**共用同一份** ——
+> 计数面不另抄一张表（`gate_run` / `context_read` 的执行器由组合根注入，故不在其中，另装配）。
 
 ---
 

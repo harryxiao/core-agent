@@ -74,3 +74,56 @@ class ParamMapper:
 |---|---|
 | UNKNOWN_COMMAND | 未识别的 CLI 命令 |
 | INVALID_MAP_TO | ConfigSpec 中 map_to 非法（目标不存在或冲突），阻断启动 |
+
+---
+
+## 5. 只读诊断面（change `0162` / ADR-0153）
+
+`status` / `doctor` 两个动词**不再**经 `CLICommandDispatcher`（§2）分发，改由 `src/core/diagnostics/`
+（**只读诊断源**）承载 —— `cli-ops` 规格「状态查询命令」Scenario 承诺的「返回运行状态 / 健康诊断」
+自此**为真**（此前 `dispatcher.py` 对二者一律 `return "ok"`，是桩）。
+
+```python
+class CheckStatus(StrEnum):
+    OK = "ok"; WARN = "warn"; FAIL = "fail"
+
+@dataclass(frozen=True)
+class Check:
+    name: str; status: CheckStatus; detail: str = ""
+
+@dataclass(frozen=True)
+class Report:
+    title: str; checks: tuple[Check, ...] = (); lines: tuple[str, ...] = ()
+    @property
+    def ok(self) -> bool: ...   # 无 `fail` 项即真（`warn` 不阻断）
+
+@dataclass(frozen=True)
+class Deps:   # 全部可选句柄，**由调用方装配**（包内不猜路径）
+    config: ConfigManager | None; tools: ToolProvider | None; sessions: SessionsHandle | None
+    notes: NoteStore | None; mcp: MCPEndpointRegistry | None; library: SkillLibrary | None
+    market: MarketIndex | None; installer: PluginInstaller | None; state_dir: Path | None
+
+def collect_doctor(deps: Deps) -> Report: ...   # 逐项：配置 / 密钥引用 / 状态目录 / 工具 / 笔记 / MCP / 资产 / 技能
+def collect_status(deps: Deps) -> Report: ...   # 概览行：模型 / 循环预算 / 会话数 / 内置工具 / 资产 / MCP / 技能 / 笔记
+def render(report: Report) -> list[str]: ...    # 标题 + `✓` / `!` / `✗` 逐项 + 自由行
+
+def render_sessions / render_config / render_mcp / render_skills / render_notes(deps: Deps) -> Report: ...
+```
+
+| 面 | 命令 | 退出码 | 产出 |
+|---|---|---|---|
+| 自检诊断 | `core-agent doctor` | **有 `fail` 项 ⇒ 1**，否则 `0` | `collect_doctor` + `render` |
+| 运行状态 | `core-agent status` | 恒 `0`（信息面，不是判据） | `collect_status` + `render` |
+
+契约要点：
+
+- **单一产出、多消费面**：`collect_*` 产 `Report`、`render` 产行；CLI 今天打印，TUI（change `0163`）
+  复用同一份 —— SHALL NOT 各写一份检查逻辑。
+- **密钥只出「引用名 + 布尔结论」**：`SHALL NOT` 打印任何解析结果；诊断项经 `ConfigManager.is_resolvable(ref)`
+  （见 `configuration-interface.md` §2）取**布尔**，呈现用 `${VAR}` **引用名**。MCP 端点视图
+  `SHALL NOT` 打印 `EndpointRecord.args`（可能是 `--token <value>` 形态），只出 name / transport / source。
+- **零副作用**：全部诊断项**只读** —— 「状态目录可写」走**既有祖先目录**的 `os.access` 探测，**不建目录**。
+- **不引组合根**：包内**不** `import core.runtime`（`test_runtime_is_sole_composition_root` 硬红线）、
+  **不** `import core.ui`（后者反向引用诊断源）⇒ 句柄全经 `Deps` 注入，`_diag_deps` 在 `entry.py` 装配。
+- **未注册动词**（`kill` / `logs` / `version` / `help` / `install` / `uninstall` / `list` / `info` / `auth` /
+  `permission-mode` / `gateway`）仍**不在** argparse 子命令面 —— 台账 `coding-plan/known-risk.md` §1 **E100** 挂账。

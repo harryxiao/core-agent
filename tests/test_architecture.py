@@ -44,6 +44,7 @@ EXPECTED_PACKAGES = {
     "permission",  # 横切：权限/审批/沙箱
     "mcp",  # 横切：MCP 协议
     "cli_ops",  # 横切：CLI 运维命令面
+    "diagnostics",  # 横切：只读诊断源（doctor / status，change 0162）
     "ci_cd",  # 交付：CI/CD 流水线
     "ui",  # 接入：三模统一入口
     "im",  # 接入：IM 网关
@@ -74,6 +75,7 @@ CAPABILITY_MODULES = {
     "permission",
     "mcp",
     "cli_ops",
+    "diagnostics",
     "ci_cd",
     "ui",
     "im",

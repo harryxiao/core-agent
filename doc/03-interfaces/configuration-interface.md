@@ -78,6 +78,10 @@ class ConfigManager:
     def resolve_secret(self, ref: str) -> str:
         """从 env/keychain 解析敏感密钥引用（${VAR}），不落明文。"""
 
+    def is_resolvable(self, ref: str) -> bool:
+        """密钥引用**能否**经 env/keychain 解析（change 0162）：**只回布尔**，不返回、不打印明文
+        （供只读诊断面 `core.diagnostics` 判「已设置 / 未设置」，见 `cli-ops-interface.md` §5）。"""
+
     def is_enabled(self, module: str) -> bool:
         """feature flag 查询：显式开启才为真（缺省 false；供缺省关的模块自查二级开关）。"""
 

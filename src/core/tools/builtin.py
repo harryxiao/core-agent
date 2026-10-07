@@ -315,6 +315,15 @@ def gate_run(*, gates: tuple[str, ...], run_gate: Callable[[str], GateOutcome]) 
     )
 
 
+def builtin_tools() -> tuple[Tool, ...]:
+    """零注入的内置原子工具集（**单一真源**）：组合根注册与只读诊断面计数共用一份。
+
+    只含**无需注入**的五件（`file_read` / `file_write` / `file_patch` / `code_run` / `web_fetch`）；
+    `gate_run` / `context_read` 的执行器由组合根注入，故由 `runtime` 另行装配。
+    """
+    return (file_read(), file_write(), file_patch(), code_run(), web_fetch())
+
+
 def _restore(snap: dict[str, str | None]) -> None:
     """撤销：恢复写入前的原内容（原不存在则删除）。"""
     path = snap["path"]
