@@ -4070,6 +4070,41 @@
 
 ---
 
+## ADR-0143：笔记写入来源守护（change 0151 / 账本 E95）
+
+- **背景**：`notes` 是**刻意文档化的权威真相层**（canonical Markdown，覆盖式「最新即权威」，ADR-0099）。
+  但两条写路径**无条件覆写**目标主题、**不看主题由谁产生**：① **逐轮写回 `observe_turn`**（`store.py:191`）
+  每成功轮把「`## 解决过程` + 步骤列表」覆盖式写回 `slug_topic(task)`，覆写时**只保留 `tags` / `pinned`**，
+  `content` 与 `title` **全量替换** ⇒ 人工撰写 / promotion 产出的笔记只要 `note_id` 撞上任务 slug，正文即被
+  **静默替换**；若该笔记 `pinned`，**标记保留、内容被换** ⇒ 此后每轮「任务级硬约束」块注入的就是步骤列表
+  （E93 常驻语义被静默污染）。② **提升 `promote_session_summary`**（`promote.py:24`）无条件覆写派生
+  `session-<slug>`、强制 `pinned=True`、改写 `source`，撞同 id 人工笔记**无守护、无提示**。这是**一条缺失的
+  写入安全契约**，而非理论风险（①为真缺陷）。
+- **决策①：来源守护 —— 一条主题只由产生它的那条写路径覆写。** 这是 `observe_turn` 既有「保留 `tags` /
+  `pinned`」意图的**完成**（同一件事的延伸），**不是**新增语义。
+- **决策②：`observe_turn` 撞外来源 ⇒ 改道派生主题，而非丢弃本轮沉淀。** 覆写前读既有笔记；若
+  `existing.source != "notes.turn"` ⇒ **不改写该主题**，本轮沉淀落到首个**不冲突**的派生主题
+  `<topic>-<n>`（`n` 为 2 起、取首个「不存在或来源为 `notes.turn`」者）。取舍：对比「返回 `None` 并留痕」，
+  改道**既不覆写外来源正文、也不丢本轮沉淀**，且**有界**（同一派生主题后续轮次复用、覆盖式写回，不无谓
+  增长）。来源为 `notes.turn`（或主题不存在）的既有行为**逐字不变**。
+- **决策③：`promote` 撞非 `notes.promote` 来源 ⇒ 拒绝（除非显式 `--as`）。** 派生 id 撞车且未给 `--as`
+  ⇒ **不写盘**、返回 `None`、CLI **非零退出**（复用既有「空 slug ⇒ `None` + 非零」口径，**不新增错误码**）。
+  显式 `--as <note_id>` ⇒ 视为**显式授权**，照常覆写（不受守护约束）。取舍：对比「总是覆写」（原行为，
+  静默毁人工笔记）与「总是拒绝」（`--as` 逃生口失效），**区分显式与派生**最贴合「误覆写要可见」。
+- **已知局限**：① **仍无历史版本 / CAS / 三路合并** —— 来源守护堵住**跨来源**误覆写主因，但**同来源**
+  自覆写仍是无历史的「最新即权威」（承 ADR-0099 局限③；回溯交给 git）。② **最小可回溯
+  （`notes/.history/<id>/<ts>.md`）不做** —— 引入新目录 / 新生命周期面，留待另立账。③ `promote` 的撞车
+  拒绝与「空 slug」**共用 `None` 返回** ⇒ 上层靠文案区分，未拆独立错误码（承「不新增错误码」）。
+- **不推翻**「覆盖式（最新即权威）」契约 —— 只约束**跨来源**覆写；**不删除**任何笔记（承 memory 层
+  「降权/归档而非删除」取向）；**不接** `EffectTracker`（承 ADR-0099）。
+- **规格**：`notes`「Consult → Build → Update 循环纪律」（**MODIFIED**，追加来源守护条款 ＋ Scenario
+  「逐轮写回不覆写外来源笔记（来源守护）」）；`notes`「会话摘要提升（promotion）」（**MODIFIED**，追加
+  撞车拒绝条款 ＋ Scenario「撞非 promotion 来源 ⇒ 拒绝且不写盘（来源守护）」）；接口面
+  `03-interfaces/notes-interface.md`、模块面 `02-modules/notes.md`、测试面 `04-testing/test-cases.md` §67、
+  台账 `coding-plan/known-risk.md`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4207,3 +4242,4 @@
 | ADR-0140 | 03-interfaces/memory-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0141 | 03-interfaces/notes-interface.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0142 | 03-interfaces/memory-interface.md, 03-interfaces/notes-interface.md, 02-modules/memory.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0143 | 03-interfaces/notes-interface.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

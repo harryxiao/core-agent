@@ -119,6 +119,8 @@ class NoteStore(Plugin):
   总长有界（供 loop 直接注入，不自动全量注入正文）。
 - `observe_turn`：成功轮把「解决过程」覆盖式写回 `slug_topic(task)` 主题的 canonical 文件；`ok=False`
   或 slug 为空 ⇒ `None`（不写盘）。写回**原样携带**既有 `pinned` 标记（逐轮写回不抹除常驻）。
+  **来源守护**（change 0151 / ADR-0143）：撞上来源**非** `notes.turn` 的既有笔记 ⇒ **不覆写**该主题，
+  沉淀改写入派生主题 `<topic>-<n>`（`n` 为 2 起、取首个「不存在或来源为 `notes.turn`」者）。
 - `pinned_digest()`：常驻笔记**完整正文**（非节选）、无 query 入参（每轮无条件）、按 `note_id` 升序拼接，
   总长有界于 `_MAX_PINNED_CHARS`(4000)；空正文的常驻笔记不占块；块内不含 `updated_at`（跨轮字节稳定）。
 - `set_pinned(note_id, *, pinned=True)`：缺失 ⇒ `NOTE_NOT_FOUND`；**幂等**（同值 ⇒ 不写盘、不 bump
@@ -138,7 +140,7 @@ def promote_session_summary(
     *, session_id: str,
     as_note_id: str | None = None,
     title: str = "",
-) -> NoteEntry | None: ...      # None ⇒ 派生 id 为空且未给显式 id（不写盘）
+) -> NoteEntry | None: ...      # None ⇒ 派生 id 为空且未给显式 id，或撞非 promotion 来源（不写盘）
 ```
 
 - 触发形态 = **显式**（CLI `notes promote` / 上层调用）；SHALL NOT 由 loop 压实自动触发、零 LLM 调用。
@@ -146,6 +148,8 @@ def promote_session_summary(
   note、不增长），复用**唯一**写路径 `NoteStore.update()`。
 - 产出 `source == "notes.promote"`、`pinned=True`（每轮无条件注入）、`tags` 含 `session:<sid>` 与 `summary`；
   属**全局文档层**（`session_id` 仅是 id 派生输入与来源标注，**不是**隔离维度）。
+- **来源守护**（change 0151 / ADR-0143）：目标 `note_id` 撞来源**非** `notes.promote` 的既有笔记且未给
+  显式 `as_note_id` ⇒ 返回 `None`、**不写盘**、CLI 非零退出；显式 `as_note_id` ⇒ 视为**显式授权**、照常覆写。
 - 写入**不接** `EffectTracker`（承 canonical 文档层既有取舍，与 `pin/unpin`/`observe_turn` 一致）。
 
 ---
@@ -198,6 +202,6 @@ PinnedNotesConsult = Callable[[], str]   # **零参** → 常驻注入块（签�
 | `notes search <query>` | 词法检索（标题 / tags / Search Queries），打印命中 note 摘要 |
 | `notes pin <note_id>` | 置常驻标记（正文每轮无条件注入；幂等；缺失 ⇒ `NOTE_NOT_FOUND` 非零退出） |
 | `notes unpin <note_id>` | 清常驻标记 |
-| `notes promote <session-id> [--as NOTE_ID] [--title TITLE]` | 会话摘要 → canonical 常驻笔记（显式提升；幂等覆盖；会话无摘要 / 派生 id 为空 ⇒ 非零退出、不写盘） |
+| `notes promote <session-id> [--as NOTE_ID] [--title TITLE]` | 会话摘要 → canonical 常驻笔记（显式提升；幂等覆盖；会话无摘要 / 派生 id 为空 / 撞非 promotion 来源且未给 `--as` ⇒ 非零退出、不写盘） |
 
 一次 `notes` 命令 = 一次性进程；canonical 目录是**落盘真源** ⇒ 一次写入在后续进程可见。

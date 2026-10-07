@@ -34,6 +34,10 @@ def promote_session_summary(
     ``note_id`` 由 ``session_id`` 确定性派生（``session-<slug>``），可由 ``as_note_id`` 覆盖；
     派生结果为空且未给显式 id ⇒ 返回 ``None``（**不写盘**，与 ``observe_turn`` 同口径守卫）。
     产出置 ``pinned=True``（每轮无条件注入）。写入**不**接 ``EffectTracker``（承文档层既有取舍）。
+
+    **来源守护**（change 0151）：目标 ``note_id`` 撞上来源**非** ``notes.promote`` 的既有笔记、
+    且调用方**未**显式给出 ``as_note_id`` ⇒ 返回 ``None``（**不写盘**，绝不覆写外来源正文）。
+    显式 ``as_note_id`` ⇒ 视为**显式授权**，照常覆写（不受守护约束）。
     """
     derived = slug_topic(session_id)
     if as_note_id is None and not derived:
@@ -44,6 +48,9 @@ def promote_session_summary(
         existing: NoteEntry | None = store.get(note_id)
     except NoteError:
         existing = None
+
+    if existing is not None and existing.source != _PROMOTE_SOURCE and as_note_id is None:
+        return None
 
     body = f"## 会话摘要（提升自会话 {session_id}）\n\n{summary.content.strip()}"
     resolved_title = (

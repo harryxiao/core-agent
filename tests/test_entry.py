@@ -1258,3 +1258,23 @@ def test_notes_promote_marks_pinned(capsys: pytest.CaptureFixture[str]) -> None:
 def test_notes_usage_lists_promote_verb(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["notes"]) == 1
     assert "promote <session-id>" in capsys.readouterr().err
+
+
+def test_notes_promote_refuses_foreign_source_note(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """派生 id 撞人工笔记（未给 `--as`）⇒ 非零退出、canonical 文件**逐字不变**（来源守护）。"""
+    _seed_summary("s1", "结论：X")
+    notes_dir = _state_path("notes")
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    target = notes_dir / "session-s1.md"
+    target.write_text(
+        "# 人工主题\n\n- id: session-s1\n- source: notes\n\n## Notes\n\n人工正文\n",
+        encoding="utf-8",
+    )
+    before = target.read_text(encoding="utf-8")
+
+    assert main(["notes", "promote", "s1"]) == 1
+    assert capsys.readouterr().err.strip(), "撞车须有明确报错"
+    assert target.read_text(encoding="utf-8") == before, "人工笔记逐字不变"
+    assert len(list(notes_dir.glob("session-*.md"))) == 1, "不产生第二条"

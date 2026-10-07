@@ -1518,7 +1518,12 @@ def _notes_promote(store: NoteStore, args: argparse.Namespace) -> int:
         title=args.title,
     )
     if note is None:
-        print(f"notes 错误: 无法派生 note_id: {args.session_id}", file=sys.stderr)
+        # 来源守护（change 0151）：撞非 promotion 来源且未给 --as ⇒ 拒绝；或派生 id 为空。
+        print(
+            f"notes 错误: 无法提升（无摘要派生 id，或目标主题来源冲突；如系有意覆写请用 --as）: "
+            f"{args.session_id}",
+            file=sys.stderr,
+        )
         return 1
     print(f"已提升: {note.note_id}\t[pinned]")
     return 0

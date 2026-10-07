@@ -23,6 +23,7 @@ from .errors import NoteError, NoteErrorCode
 from .models import NoteEntry, parse_note, render_note, slug_topic
 
 _NOTE_LAYER: Layer = "L2"
+_TURN_SOURCE = "notes.turn"  # 逐轮写回（observe_turn）产出的来源标记（来源守护判据）
 _MAX_EXCERPT_CHARS = 200
 _MAX_DIGEST_CHARS = 1200
 _MAX_PINNED_CHARS = 4000  # 常驻注入总量上界（独立于 digest 的 1200；有界 ⇒ token 有界）
@@ -189,7 +190,14 @@ class NoteStore(Plugin):
         return self.update(note)
 
     def observe_turn(self, task: str, steps: list[str], *, ok: bool) -> NoteEntry | None:
-        """任务后 Update：成功轮把「解决过程」覆盖式写回任务主题；不适用则返回 ``None``。"""
+        """任务后 Update：成功轮把「解决过程」覆盖式写回任务主题；不适用则返回 ``None``。
+
+        **来源守护**（change 0151）：一条主题只应由**产生它的那条写路径**覆写。若任务主题
+        （``slug_topic(task)``）撞上来源**非** ``notes.turn`` 的既有笔记（人工撰写 / promotion
+        产出 / 其他路径），则**不改写**该主题 —— 本轮沉淀改写入首个不冲突的派生主题
+        ``"<topic>-<n>"``（既保外来源正文逐字不变，也不丢本轮沉淀）。来源为 ``notes.turn``
+        （或主题不存在）时保持既有覆盖式写回，**逐字不变**。
+        """
         if not ok:
             return None
         topic = slug_topic(task)
@@ -197,7 +205,11 @@ class NoteStore(Plugin):
             return None
         body = "## 解决过程\n" + "\n".join(f"- {step}" for step in steps)
         title = task.strip().splitlines()[0] if task.strip() else topic
+
         existing = self._load(topic)
+        if existing is not None and existing.source != _TURN_SOURCE:
+            topic = self._derived_turn_topic(topic)
+            existing = self._load(topic)
         return self.update(
             NoteEntry(
                 note_id=topic,
@@ -206,9 +218,23 @@ class NoteStore(Plugin):
                 tags=list(existing.tags) if existing is not None else [],
                 # 逐轮写回不得抹除常驻标记
                 pinned=existing.pinned if existing is not None else False,
-                source="notes.turn",
+                source=_TURN_SOURCE,
             )
         )
+
+    def _derived_turn_topic(self, base: str) -> str:
+        """来源守护下的派生主题：首个「不存在、或来源为 ``notes.turn``」的 ``"<base>-<n>"``（n≥2）。
+
+        外来源笔记占据 ``base`` 时，逐轮沉淀改道 ``base-2``…；同一派生主题后续轮次**复用**（覆盖式
+        写回），故不无谓增长。
+        """
+        n = 2
+        while True:
+            candidate = f"{base}-{n}"
+            entry = self._load(candidate)
+            if entry is None or entry.source == _TURN_SOURCE:
+                return candidate
+            n += 1
 
     # ---- 内部辅助 ----
 

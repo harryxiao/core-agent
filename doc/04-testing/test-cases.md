@@ -1032,6 +1032,23 @@
 
 ---
 
+## 67. 笔记写入来源守护（TC-WRITESAFE，change `0151`／ADR-0143，账本 E95）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-WRITESAFE-01 | notes/spec.md「Consult → Build → Update 循环纪律」Scenario「逐轮写回不覆写外来源笔记」 | 先落一篇 `source="notes"` 的人工笔记（`note_id == slug_topic(task)`），再跑成功轮 `observe_turn(task, …)` | 人工笔记正文与标题**逐字不变**；返回 note 落**派生主题** `<topic>-2` 且含本轮步骤（锚点：`test_notes.py::test_observe_turn_does_not_clobber_foreign_source_note`） |
+| TC-WRITESAFE-02 | 同 Requirement（同来源覆盖式，**零回归**） | 连续两轮 `observe_turn` 同一 task（既有笔记来源 `notes.turn`） | 仍覆盖**同一** `note_id`；文件为第二次内容、不含第一次（锚点：`::test_observe_turn_overwrites_own_source_same_topic`） |
+| TC-WRITESAFE-03 | 同 Requirement（派生主题**复用**、不增长） | 外来源占据主题下连续两轮 `observe_turn` | 两轮落**同一**派生主题 `k-2`；目录仅 `k.md` + `k-2.md`（锚点：`::test_observe_turn_derived_topic_reuses_own_across_rounds`） |
+| TC-WRITESAFE-04 | 同 Requirement（**常驻**外来源不被污染） | 外来源 **常驻**笔记（`source="notes"`、`pinned=True`）撞 task slug，跑 `observe_turn` | 常驻笔记正文/标题逐字不变、`pinned` 保留；沉淀落 `<topic>-2`（锚点：`::test_observe_turn_does_not_clobber_pinned_foreign_note`） |
+| TC-WRITESAFE-05 | notes/spec.md「会话摘要提升（promotion）」Scenario「撞非 promotion 来源 ⇒ 拒绝且不写盘」 | 先落人工笔记 `note_id == "session-<slug>"`，再 `promote_session_summary(store, 摘要, session_id=…)`（不给 `--as`） | 函数返回 `None`、人工笔记**逐字不变**（锚点：`test_notes_promote.py::test_promote_refuses_to_clobber_foreign_source_note`） |
+| TC-WRITESAFE-06 | 同 Requirement（显式 `--as` = 授权覆写） | `promote_session_summary(..., as_note_id="manual")`（撞人工笔记） | 照常覆写：`source == "notes.promote"`、`pinned`、正文含摘要（锚点：`::test_promote_explicit_as_is_authorized_to_overwrite`） |
+| TC-WRITESAFE-07 | 同 Requirement CLI 面（撞车非零退出） | 播种摘要 + 手写 canonical 人工笔记 `session-s1.md`；跨进程 `notes promote s1` | 退出码非零 + stderr 非空；文件**逐字不变**、`session-*.md` 仅一条（锚点：`test_entry.py::test_notes_promote_refuses_foreign_source_note`） |
+
+> **无手工验收项**：纯库内行为（`observe_turn` 来源守护 + `promote` 撞车拒绝 + CLI），全自动门禁（pytest）覆盖。
+> 语义：**一条主题只由产生它的写路径覆写**（provenance guard）；不推翻「覆盖式（最新即权威）」，只约束**跨来源**覆写；**不删除**任何笔记。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

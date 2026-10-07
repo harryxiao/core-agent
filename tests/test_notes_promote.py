@@ -7,7 +7,7 @@ change 0150 / ADR-0142 / 账本 E94。
 from __future__ import annotations
 
 from core.memory import MemoryEntry
-from core.notes import NoteStore, promote_session_summary
+from core.notes import NoteEntry, NoteStore, promote_session_summary
 
 
 def _summary(session_id: str, content: str) -> MemoryEntry:
@@ -90,3 +90,34 @@ def test_promote_empty_slug_returns_none_and_writes_nothing(tmp_path) -> None:
 
     assert result is None, "session_id 无可派生 slug 且未给显式 id ⇒ 不写盘"
     assert list(tmp_path.glob("*.md")) == [], "不产生任何 canonical 文件"
+
+
+# ---- 来源守护（change 0151 / ADR-0143 / 账本 E95） ----
+
+
+def test_promote_refuses_to_clobber_foreign_source_note(tmp_path) -> None:
+    """派生 id 撞来源**非** `notes.promote` 的既有笔记且未给 `--as` ⇒ 返回 `None` + 不写盘。"""
+    store = NoteStore(path=tmp_path)
+    store.update(
+        NoteEntry(note_id="session-s1", title="人工主题", content="人工正文", source="notes")
+    )
+    before = (tmp_path / "session-s1.md").read_text(encoding="utf-8")
+
+    result = promote_session_summary(store, _summary("s1", "摘要"), session_id="s1")
+
+    assert result is None, "撞非 promotion 来源 ⇒ 拒绝（不写盘）"
+    assert (tmp_path / "session-s1.md").read_text(encoding="utf-8") == before, "人工正文逐字不变"
+
+
+def test_promote_explicit_as_is_authorized_to_overwrite(tmp_path) -> None:
+    """显式 `--as` ⇒ 视为显式授权，照常覆写（**不**受来源守护约束）。"""
+    store = NoteStore(path=tmp_path)
+    store.update(NoteEntry(note_id="manual", title="人工", content="人工正文", source="notes"))
+
+    note = promote_session_summary(
+        store, _summary("s1", "摘要"), session_id="s1", as_note_id="manual"
+    )
+
+    assert note is not None and note.note_id == "manual"
+    reloaded = NoteStore(path=tmp_path).get("manual")
+    assert reloaded.source == "notes.promote" and "摘要" in reloaded.content and reloaded.pinned

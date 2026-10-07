@@ -352,3 +352,64 @@ def test_store_observe_turn_preserves_pinned(tmp_path) -> None:
     raw = (tmp_path / "部署流程.md").read_text(encoding="utf-8")
     assert "- pinned: true" in raw
     assert store.get("部署流程").pinned is True
+
+
+# ---- 写入来源守护（change 0151 / ADR-0143 / 账本 E95） ----
+
+
+def test_observe_turn_does_not_clobber_foreign_source_note(tmp_path) -> None:
+    """撞上来源**非** `notes.turn` 的既有笔记 ⇒ 正文/标题逐字不变，本轮沉淀改道派生主题。"""
+    store = NoteStore(path=tmp_path)
+    store.update(
+        NoteEntry(note_id="部署流程", title="部署流程", content="人工写的权威流程", source="notes")
+    )
+    before = (tmp_path / "部署流程.md").read_text(encoding="utf-8")
+
+    note = store.observe_turn("部署流程", ["滚动更新"], ok=True)
+
+    assert note is not None
+    assert note.note_id == "部署流程-2", "外来源占据主题 ⇒ 沉淀改道派生主题"
+    assert "滚动更新" in note.content, "本轮沉淀不丢"
+    assert (tmp_path / "部署流程.md").read_text(encoding="utf-8") == before, "外来源正文逐字不变"
+
+
+def test_observe_turn_overwrites_own_source_same_topic(tmp_path) -> None:
+    """撞上**自己**来源（`notes.turn`）⇒ 仍覆盖同一主题（既有行为逐字不变，防回归）。"""
+    store = NoteStore(path=tmp_path)
+    first = store.observe_turn("修复 登录 超时", ["定位"], ok=True)
+    assert first is not None
+    second = store.observe_turn("修复 登录 超时", ["刷新 token"], ok=True)
+
+    assert second is not None and second.note_id == first.note_id == "修复-登录-超时"
+    raw = (tmp_path / f"{first.note_id}.md").read_text(encoding="utf-8")
+    assert "刷新 token" in raw and "定位" not in raw, "同来源覆盖式写回"
+
+
+def test_observe_turn_derived_topic_reuses_own_across_rounds(tmp_path) -> None:
+    """外来源占据主题时，后续轮次复用**同一派生主题**（覆盖式，不无谓增长）。"""
+    store = NoteStore(path=tmp_path)
+    store.update(NoteEntry(note_id="k", title="K", content="人工正文", source="notes"))
+
+    first = store.observe_turn("k", ["一"], ok=True)
+    second = store.observe_turn("k", ["二"], ok=True)
+
+    assert first is not None and second is not None
+    assert first.note_id == second.note_id == "k-2"
+    assert sorted(p.name for p in tmp_path.glob("k*.md")) == ["k-2.md", "k.md"], "派生不增长"
+
+
+def test_observe_turn_does_not_clobber_pinned_foreign_note(tmp_path) -> None:
+    """撞上外来源的**常驻**笔记 ⇒ 常驻笔记正文/标题逐字不变、`pinned` 保留，沉淀落派生主题。"""
+    store = NoteStore(path=tmp_path)
+    store.update(
+        NoteEntry(
+            note_id="硬约束", title="硬约束", content="接口必须 HTTPS", source="notes", pinned=True
+        )
+    )
+    before = (tmp_path / "硬约束.md").read_text(encoding="utf-8")
+
+    note = store.observe_turn("硬约束", ["步骤"], ok=True)
+
+    assert note is not None and note.note_id == "硬约束-2"
+    assert (tmp_path / "硬约束.md").read_text(encoding="utf-8") == before
+    assert store.get("硬约束").pinned is True
