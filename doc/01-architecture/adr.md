@@ -4557,6 +4557,54 @@
   `doc/openspec/changes/archive/2026-10-07-0164-hooks-architecture/design.md`、模块文档
   `doc/02-modules/hooks.md`、台账 `coding-plan/known-risk.md` §1（E101）+ §3（本 ADR 局限行）。
 
+## ADR-0156：推理输出协议的容错与失败可见（change 0166）
+
+- **背景**：用户 2026-10-08 实测「跑着跑着后面执行都突然无法正常执行」。trace
+  `14683edf49554534a414f7695dfa3797` 给出**反例**：模型回的内容是**完全正确**的动作 JSON
+  （`tools.code_run`、参数合法），只是形态为「解释文字 + 换行 + JSON」；`planner._parse` 只按
+  **首字符是否 `{`** 做布尔判定 ⇒ 整段当**最终答复** ⇒ **零执行**、**零报错**，本轮还记成成功
+  （`step_completed.failed=false`、`_notify_turn(ok=True)`），且 trace 里**没有** `tool_call` 痕迹。
+  更糟的是**反馈污染**：下一轮模型看到自己的「动作」被接受而无配对工具结果 ⇒ 编造提交号与测试数。
+  两个独立缺陷缺一不可：**① 识别面太窄**、**② 失败面被抹平**（终止动作恒 `failed=False`，
+  「没执行」与「正常收尾」无从区分）。载荷本身**从不畸变**（26 轮抽样里无一处参数形态错），
+  ⇒ 不是「模型回得烂」，而是**容错为零 + 静默吞掉**。
+- **决策①：只认**尾部**动作 JSON，不全文扫描。** 新增纯函数 `_trailing_json_object`
+  （`json.JSONDecoder().raw_decode` 自每个 `{` 起试解、**要求其后仅剩空白与 Markdown 围栏符**）。
+  判据**必须收在文末**：模型解释协议时会**引用**动作 JSON 作示例（trace 已有此形态），
+  全篇扫描会把「解释」当「执行」——**宁可漏检，不可误判**。真实事故的形态（解释在前、动作在后）
+  正是模型自然而然的行文次序，尾部覆盖已足。围栏包裹的尾部 JSON **同等识别**（模型爱加 ```` ```json ````）。
+- **决策②：命中即复用既有动作协议，**解析层不写第二份校验**。** 尾部对象**只要求含非空 `tool_id`**
+  即交 `_from_dict` ⇒ 走与纯 JSON 路径**同一套**语义。参数校验的单一真源在工具调用链
+  （`ToolProvider` → `constraints.Validator`）—— 解析层再写一遍 required / enum 检查就是第二份副本
+  （本仓明令避免，参见 `gate_run` 在处理器内补偿 `enum` 的两处既有注释）。未注册 / 参数不合法的工具
+  由链上回结构化错误（**可见**失败），不由解析层猜。
+- **决策③：`Action.failed` 仅对终止动作有意义。** 新增 `failed: bool = False` 字段，语义**限定**为
+  「**推理产出不可用**」（解析失败 / 模型调用失败）。非终止动作（工具调用）**不用**本字段 ——
+  工具失败属 ReAct 多轮自愈的正常面，**不改**其既有口径（`ActionResult.failed` 语义逐字不动）。
+  消费点三处、**不新造状态**：`act()` 终止分支透出 ⇒ `observe()` 的 `trajectory.ok` /
+  `step_completed.failed`；`arun` 收尾并入 `_notify_turn(ok=…)` 与 `loop_finished.failed`。
+- **决策④：失败标记**不改变终止语义**。** 解析失败**照旧**以回复收尾（`loop_failed` 仍**只**由
+  `limit_reason` 触发），变的只是**成败核算**。⇒ 与既有规格「合成终止不写入转录」「循环自身失败
+  带模块归因」两条**互不干扰**：合成文案仍进转录（下一轮模型可见，既有口径），转录追加逻辑**零改动**。
+  **不置位**的同族终止动作（审批拒绝 `decline()` / `pet/safety` 阻断）本次**明确不动** ——
+  属**审批**语义，与「推理产出不可用」不同源。
+- **决策⑤：系统提示**加严**（辅助，非兜底）。** `_SYSTEM_PROMPT` 补一句：工具调用 JSON SHALL
+  单独成块、SHALL NOT 与正文混写、SHALL NOT 用代码块包裹。这是**降低触发频率**的辅助手段
+  （`_parse` 的容错才是兜底），对既有「输出格式二选一」表述是**加严**而非替换，不改任何解析语义。
+- **零回归边界**：纯 JSON 路径、原生 `tool_calls` 优先序、普通文本答复末行、流式 `reply_stream`
+  首字符判定、`limit_reason` 语义、转录追加 —— **逐字不改**（逐条在 `tests/test_loop_output_protocol.py`
+  有对应断言）。
+- **已知局限**：① **非尾部**动作 JSON 仍按答复处理（漏检为已知取舍，见决策①）；
+  ② 尾部 JSON 若**确为**「示例引用」则会被执行 —— 缓解面是既有的授权/审批链 + 事件面可见 + 工具可逆，
+  解析层不做语义猜测；③ 解析失败的**合成文案仍进转录**（既有口径，下一轮模型可见），本次不动；
+  ④ **仅 `loop` 面** —— 子任务 / 编排层的输出解析不在本 change 范围。
+- **规格**：`doc/openspec/specs/loop/spec.md` **ADDED** Requirement「推理动作解析与失败可见」
+  （5 Scenario：混写正文的动作 JSON 被识别 / 围栏包裹的尾部动作 JSON 被识别 /
+  非动作 JSON 的自然语言回复不被误判 / 解析失败使本轮失败 / 纯 JSON 与原生工具调用路径零回归）——
+  ADDED 只追加 canonical 末尾，**既有 Requirement 逐字不改**；文档面
+  `doc/02-modules/loop.md`、`doc/03-interfaces/loop-interface.md` §3、测试面
+  `doc/04-testing/test-cases.md` §78（TC-PARSE）、台账 `coding-plan/known-risk.md` §3。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4707,3 +4755,4 @@
 | ADR-0153 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0154 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0155 | 02-modules/hooks.md, coding-plan/known-risk.md |
+| ADR-0156 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

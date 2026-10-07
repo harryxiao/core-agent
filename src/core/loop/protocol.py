@@ -75,11 +75,17 @@ class Thinking:
 
 @dataclass
 class Action:
-    """模型决策的下一步动作；tool_id 为空串表示本轮结束（终止动作）。"""
+    """模型决策的下一步动作；tool_id 为空串表示本轮结束（终止动作）。
+
+    ``failed`` **仅对终止动作有意义**：推理产出**不可用**（解析失败 / 模型调用失败）时置位，
+    供循环把本轮记为失败。缺此标记时，这类终止动作与正常回复无从区分 ⇒「没执行」会被
+    静默记成成功（见 change 0166 / ADR-0156）。非终止动作（工具调用）不用本字段。
+    """
 
     tool_id: str = ""
     args: dict[str, Any] = field(default_factory=dict[str, Any])
     is_irreversible: bool = False
+    failed: bool = False
 
     @property
     def is_terminal(self) -> bool:

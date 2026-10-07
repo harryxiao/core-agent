@@ -1255,6 +1255,29 @@
 > **只读**（写操作命令不在其内）；TUI 的工具面计数按**全量** `runtime.tools`（与 CLI 的 builtin-only 面**有意不同**）；
 > 未接线诊断源 ⇒ 落一行提示（不崩）；命令清单仍是**内存真源**（配置驱动 / 插件注册命令面另立 change）。
 
+## 78. 推理输出协议容错与失败可见（TC-PARSE，change `0166`／ADR-0156）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-PARSE-01 | loop/spec.md「推理动作解析与失败可见」形态 3 Scenario「混写正文的动作 JSON 被识别」 | `_parse("执行提交…：\n\n" + '{"tool_id": "tools.echo", "args": {"text": "hi"}}')` | `tool_id == "tools.echo"`、`args == {"text": "hi"}`、非终止动作；**不进回复**（锚点：`tests/test_loop_output_protocol.py::test_trailing_action_json_after_prose_is_tool_call`） |
+| TC-PARSE-02 | 同上 Scenario「围栏包裹的尾部动作 JSON 被识别」 | `_parse(正文 + "```json\n" + 动作 JSON + "\n```")` | 同样得到工具动作（`tool_id`/`args` 正确）（锚点：`..._fenced_trailing_action_json_is_tool_call`） |
+| TC-PARSE-03 | 同上 Scenario「非动作 JSON 的自然语言回复不被误判」（正文**中间**夹带） | `_parse("输出格式二选一：… " + 动作 JSON + " —— 就这样。")` | 终止动作、`reply` 为原文整段、`failed is False`（锚点：`..._action_json_mid_text_stays_reply`） |
+| TC-PARSE-04 | 同上 Scenario「非动作 JSON 的自然语言回复不被误判」（文末示例**无** `tool_id`） | `_parse('建议把上限调成这样：\n\n{"max_rounds": 3, "token_budget": 8000}')` | 终止动作、`reply` 为原文、`failed is False`（锚点：`..._trailing_json_without_tool_id_stays_reply`） |
+| TC-PARSE-05 | 同上 Scenario「纯 JSON 与原生工具调用路径零回归」（纯文本 / 纯 JSON） | `_parse("直接回复文本")`；`_parse(动作 JSON)` | 文本 ⇒ `{"reply": …}` 且 `failed is False`；纯 JSON ⇒ 工具动作、`failed is False`（锚点：`..._plain_text_reply_unchanged`、`..._pure_json_action_path_unchanged`） |
+| TC-PARSE-06 | 同上（失败面各分支，**逐条**置位） | `_parse` 截断 JSON / 空响应 / 无 `tool_id` 与 `reply` 的对象；`LLMPlanner(_BoomLLM())` 调用抛 `LLMError` | 四者均含 `LLM_PLAN_PARSE_FAILED`（或 `LLM 调用失败`）且 `action.failed is True`（锚点：`..._truncated_json_marks_action_failed`、`..._empty_content_marks_action_failed`、`..._object_without_tool_id_or_reply_marks_action_failed`、`..._llm_error_marks_action_failed`） |
+| TC-PARSE-07 | 同上 Scenario「解析失败使本轮失败」（**端到端**） | `DefaultLoop(planner=LLMPlanner(_FakeLLM(截断 JSON)), tools=…)`，挂 `turn_observer` | `LoopResult.failed is True`、`reply` 含 `LLM_PLAN_PARSE_FAILED`、观察者收到 `[False]`（锚点：`..._test_parse_failure_marks_turn_failed`） |
+| TC-PARSE-08 | 同上（正常轮零回归） | 同上但内容为普通文本 | `LoopResult.failed is False`、`reply` 逐字、观察者收到 `[True]`（锚点：`..._test_normal_turn_not_marked_failed`） |
+| TC-PARSE-09 | 同上形态 3（**事故复刻的端到端**：真的执行） | 内容序列 `[正文 + 动作 JSON, "完成"]`，echo 工具记录入参 | 工具**确实被调用**（`calls == ["hi"]`，旧实现此处为空）、`result.reply == "完成"`、`failed is False`（锚点：`..._test_trailing_action_json_executes_in_loop`） |
+
+> **无手工验收项**：三形态识别、误判边界、失败态置位与端到端成败核算全部以纯函数 + `DefaultLoop` 无头驱动覆盖。
+> 语义：**只认尾部、不全文扫描**（模型解释协议时会引用动作 JSON 作示例，全篇扫描会把「解释」当「执行」
+> ⇒ **宁可漏检，不可误判**）；**命中即复用既有动作协议**（参数校验的单一真源在工具调用链，解析层不写第二份）；
+> **失败态只属终止动作**（工具动作失败走既有 ReAct 多轮自愈口径，本次**不动**）；**不改终止语义**
+> （解析失败仍以回复收尾，`loop_failed` 仍只认 `limit_reason`，转录追加零改动）。
+> **已知局限**：非尾部动作 JSON 仍按答复（漏检为已知取舍）；尾部 JSON 若**确为**「示例引用」会被执行
+> （缓解面是既有授权/审批链 + 事件面可见 + 工具可逆）；解析失败的**合成文案仍进转录**（既有口径）；
+> 审批拒绝 `decline()` 与 `pet/safety` 阻断**不置** `failed`（属审批语义，非「推理产出不可用」）。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

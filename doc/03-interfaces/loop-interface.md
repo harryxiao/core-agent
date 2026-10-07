@@ -113,6 +113,9 @@ class LoopContext:
 @dataclass
 class Action:
     is_irreversible: bool       # True → 触发确认门
+    failed: bool = False        # **仅对终止动作有意义**：推理产出不可用（解析失败/模型调用失败）
+                                # ⇒ 本轮记为失败，不再与「正常收尾」无从区分（change 0166 / ADR-0156）
+                                # 非终止动作（工具调用）**不用**本字段：工具失败属 ReAct 自愈面
 ```
 
 ### 2.1 思考回显通道（`Thinking` / `loop.reasoning`，change `0145` / ADR-0137 / 账本 E57~E58）
@@ -164,6 +167,27 @@ def remember(self, trace_id: str, trajectory: list[Step]) -> None
 | Reason | `reason` | 调用模型决策下一步动作 | 非法动作回传结构化错误，不中断 |
 | Act | `act` | 执行动作，经 EffectTracker 记录 | 可回滚；不可逆操作过确认门 |
 | Remember | `remember` | 写本轮轨迹/教训入 L2/L3 | **每轮必做**（无行动不记忆） |
+
+### 3.1 推理输出的三形态与失败可见（planner，change `0166` / ADR-0156）
+
+`LLMPlanner` 把模型输出解析为 `Action`，**形态三选**（判据一律只到「含非空 `tool_id`」，
+参数校验的单一真源仍在工具调用链，解析层不写第二份）：
+
+| 输入形态 | 解析结果 | 失败态 |
+|---|---|---|
+| 纯 JSON 对象（首字符 `{`） | `_from_dict` ⇒ 动作 / 回复 | 解析失败 ⇒ `failed=True` |
+| 原生 `tool_calls` | `_from_tool_calls`（**优先于** content 协议） | 缺 `function.name` / 参数非对象 ⇒ `failed=True` |
+| 自然语言回复（**含尾部动作 JSON**） | 正文 + **收在文末**的 JSON 对象（其后仅剩空白与 Markdown 围栏符）且含非空 `tool_id` ⇒ 转动作；否则整段为回复 | 解析失败 ⇒ `failed=True` |
+
+- **只认尾部**：模型解释协议时会**引用**动作 JSON 作示例，全文扫描会把「解释」当「执行」
+  ⇒ **宁可漏检，不可误判**（非尾部形态仍按回复，属已知局限）。
+- **失败可见**：`_parse` 各 `LLM_PLAN_PARSE_FAILED` 分支与两处 `LLM 调用失败: {exc}` 均置
+  `Action.failed=True` ⇒ `act()` 终止分支透出 ⇒ `trajectory.ok` / `step_completed.failed` /
+  `_notify_turn(ok=…)` / `LoopResult.failed` 四处同口径。
+- **不改终止语义**：解析失败**照旧以回复收尾**（`loop_failed` 仍**只**由 `limit_reason` 触发），
+  变的只是**成败核算**；合成文案仍进转录（既有口径），转录追加逻辑零改动。
+- **同族但不动**：审批拒绝 `decline()` 与 `pet/safety` 阻断属**审批**语义，不置 `failed`
+  （不是「推理产出不可用」）。
 
 ---
 

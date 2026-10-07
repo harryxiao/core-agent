@@ -261,6 +261,10 @@ class DefaultLoop(Plugin):
         self._consult_notes(ctx, trace_id)
         self._load_pinned_notes(ctx, trace_id)
         limit_reason = ""
+        # 推理产出不可用（解析失败 / 模型调用失败）的失败态终止动作 ⇒ 本轮失败（0166 / ADR-0156）。
+        # 与 `limit_reason` **并列**：后者管**终止语义**（`loop_failed` 事件、合成文案、转录门控），
+        # 本标记只管**成败记账**（收尾钩子 + `LoopResult.failed`），不改终止语义。
+        turn_failed = False
         # 本轮循环是否已流式外发**回复**增量（避免终态重复全文）。判据**只认** `reply_delta`：
         # 思考回显事件（`loop.reasoning`）与回复增量同形相异类，计入会吞掉终态补发。
         streamed = False
@@ -289,6 +293,8 @@ class DefaultLoop(Plugin):
                 )
             act_t0 = time.monotonic()
             result = await self.act(action, trace_id, approved=approved)
+            if action.is_terminal and result.failed:
+                turn_failed = True  # 终止动作的失败态（工具动作失败不入此列：ReAct 多轮自愈）
             if not action.is_terminal:
                 duration_ms = int((time.monotonic() - act_t0) * 1000)
                 output = _output_excerpt(result.error if result.failed else result.data)
@@ -317,7 +323,7 @@ class DefaultLoop(Plugin):
                 limit_reason = "TOKEN_BUDGET_EXCEEDED"
                 break
         # 收尾钩子：成功/失败都提交（失败信号供技能迭代判据；SOP 提炼仍只吸收成功）
-        self._notify_turn(ctx, trace_id, ok=not limit_reason)
+        self._notify_turn(ctx, trace_id, ok=not limit_reason and not turn_failed)
         if limit_reason:
             ctx.reply = f"{limit_reason}: 本轮终止"
             yield LoopEvent("loop_failed", {"reason": limit_reason, "trace_id": trace_id})
@@ -330,7 +336,7 @@ class DefaultLoop(Plugin):
         self._trace(
             trace_id,
             "loop_finished",
-            {"reply": ctx.reply, "failed": bool(limit_reason)},
+            {"reply": ctx.reply, "failed": bool(limit_reason) or turn_failed},
             module_id="loop.default" if limit_reason else None,
         )
         # 本轮遥测已齐：交给 trace 完成回调（登记一条已完成 trace；缺省不启用）
@@ -341,7 +347,9 @@ class DefaultLoop(Plugin):
             yield LoopEvent("reply_delta", {"text": ctx.reply})
         yield LoopEvent(
             "loop_finished",
-            LoopResult(reply=ctx.reply, trace_id=trace_id, failed=bool(limit_reason)),
+            LoopResult(
+                reply=ctx.reply, trace_id=trace_id, failed=bool(limit_reason) or turn_failed
+            ),
         )
 
     def _consult_notes(self, ctx: LoopContext, trace_id: str) -> None:
@@ -493,7 +501,8 @@ class DefaultLoop(Plugin):
 
     async def act(self, action: Action, trace_id: str, *, approved: bool = False) -> ActionResult:
         if action.is_terminal:
-            return ActionResult(failed=False, data=action.args)
+            # 终止动作的失败态（推理产出不可用）透出：本轮据此记为失败（change 0166 / ADR-0156）。
+            return ActionResult(failed=action.failed, data=action.args)
         if self._tools is None:
             return ActionResult(failed=True, error="NO_TOOL_PROVIDER")
         result = await self._tools.ainvoke(
