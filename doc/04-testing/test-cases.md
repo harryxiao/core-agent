@@ -1130,6 +1130,20 @@
 
 ---
 
+## 72. TUI 续聊转录按 Markdown 渲染（TC-RESUMEMD，change `0157`／ADR-0149，账本 E98）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-RESUMEMD-01 | ui/spec.md「CLI 友好交互」Scenario「续聊转录按同格式渲染（回复不退化为明文）」 | 真 `TranscriptStore` 会话，一轮 `user="给我个 demo"` / `assistant="示例：\n\n```python\nprint('hi')\n```\n"`；`build_app(api, session_id)` 挂载后驱动 `run_test` | 时间线内出现 **`MarkdownFence`**（≥1）且 `Markdown` 源含 ` ```python ` —— 即 agent 回复按 Markdown 渲染、围栏成代码块（锚点：`tests/test_repl.py::test_resumed_agent_reply_renders_as_markdown`） |
+| TC-RESUMEMD-02 | 同 Requirement（**零回归护栏**：内容仍在时间线、`❯` 回显不变、复用不新建） | 同会话含 `user="早前的问题"` / `assistant="早前的回答"`；`create_session` 被 `monkeypatch` 为 `pytest.fail` | 时间线文本同时含「早前的问题」与「早前的回答」（回复改落 `Markdown.source`，内容**仍在**）；**不**新建会话（锚点：`::test_build_app_resumes_existing_session`，取文本助手 `_timeline_texts` 已下沉为同收 `Static` + `Markdown`） |
+
+> **无手工验收项**：纯库内行为（TUI 回放渲染格式），全自动门禁（pytest headless `run_test`）覆盖。
+> 语义：**单一渲染口径** ——「agent 回复」无论从实时流式还是续聊铺入进入时间线，都以**同一** Markdown
+> 格式呈现（围栏成代码块、表格成表格）；用户消息仍为 `❯` 逐字转义行；既有转录**内容**不被改写。
+> **已知局限**：Web/Desktop SPA 仍无 Markdown 渲染（另一端，承 E88 局限②）。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

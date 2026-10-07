@@ -393,11 +393,13 @@ Collapsible > CollapsibleTitle:hover {
                     Static(f"↻ 续接会话 {session_id}（{len(history)} 条历史已载入）", classes="ok")
                 )
                 for item in history:
-                    content = escape(str(item.get("content", "")))
                     if item.get("role") == "user":
+                        content = escape(str(item.get("content", "")))
                         self._add(Static(f"[{_ACCENT}]❯[/] {content}", classes="echo", markup=True))
                     else:
-                        self._add(Static(content, classes="hint", markup=False))
+                        # agent 回复按 **Markdown** 铺入（与实时流式路径**同一**格式 ⇒ 代码围栏
+                        # 成代码块、表格成表格），SHALL NOT 退化为逐行明文（change 0157 / ADR-0149）
+                        self._add(Markdown(str(item.get("content", ""))))
 
         # ---- 时间线 ----
 

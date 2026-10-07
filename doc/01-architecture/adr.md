@@ -4303,6 +4303,32 @@
   `02-modules/rag.md` §1.1、`03-interfaces/rag-interface.md` §0、测试面 `04-testing/test-cases.md`
   §19（TC-RAG-14）、守护 `tests/test_architecture.py`、台账 `coding-plan/known-risk.md`（§3）。
 
+## ADR-0149：TUI 续聊转录按 Markdown 渲染（change 0157 / 账本 E98）
+
+- **背景**：用户 2026-10-07 实测 —— TUI（`core-agent` 直接跑）里 agent 输出带代码围栏的 demo，
+  「回显依然是正常明文逐行输出」。根因：`src/core/ui/repl.py` 有**两条**渲染 agent 回复的路径，
+  **只有实时流式**那条以 Markdown 呈现 —— ① 实时（`_show_delta` → `_flush_tail` → `_freeze_tail`，
+  尾段**始终** `Markdown` widget ⇒ 围栏成代码块、表格成表格，E88/E89 已修）；② 续聊载入既有转录
+  （`on_mount`，`repl.py:391-400`）把 agent 回复喂给 `Static(..., markup=False)` ⇒ **纯文本逐行**，
+  围栏退化为字面 ` ``` `。**同一回复换个入口进来就变样**。
+- **决策①：单一渲染口径 —— 「agent 回复」以 Markdown 渲染，与入口无关。** 续聊铺入分支的 agent 回复
+  改挂 `Markdown(...)`（与实时路径**同一** widget 类、同一格式），SHALL NOT 降级为 `Static` 明文。
+  规范面：`ui` spec「CLI 友好交互」由「渲染格式（仅流式）」扩为「**流式 ∨ 续聊载入**同格式」
+  （MODIFIED + 1 Scenario）。这是**同一 Requirement 的漏面**补齐，非新特性。
+- **决策②：用户消息回显**保持既有 `❯` 前缀行（`Static` + `markup=True` 逐字转义）—— 单行前缀非
+  Markdown 面，不改。**既有转录内容** SHALL NOT 被改写，仅**呈现格式**与实时路径对齐；加载语义
+  （复用既有会话 / 未登记 fail-closed）**不动**。
+- **决策③：不动实时流式路径。** `_show_delta` / `_flush_tail` / `_in_open_fence` / `_in_open_table` /
+  合帧节流**零触碰** —— 它已正确；本 change 只修**第二条入口**。
+- **已知局限**：① **Web / Desktop SPA 仍无 Markdown 渲染**（`frontend/src/views/Chat.svelte` 纯文本，
+  `<li>` + `white-space: pre-wrap`）—— 属**另一端**（承 E88 局限②），若要做须另开 change（牵动前端
+  依赖面）；② **续聊回放按「每条历史回复一个 `Markdown` widget」挂载** —— 长会话挂载数随历史条数线性
+  增长（与实时路径「每固化段一块」**同量级**，**未新增**渲染机制）；若未来有体量问题，属续聊**加载面**
+  另议；③ **无跨端一致性门禁** —— 本 change 只护 TUI 一侧，「续聊回放的格式与实时一致」由**同 widget
+  类**的**构造**保证，无自动断言跨端比对。
+- **规格**：`ui`「CLI 友好交互」**MODIFIED**（+ 1 Scenario）；文档面 `03-interfaces/ui-interface.md` §2、
+  测试面 `04-testing/test-cases.md` §72（TC-RESUMEMD）、台账 `coding-plan/known-risk.md`（§1 E98 / §3）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4446,3 +4472,4 @@
 | ADR-0146 | 03-interfaces/notes-interface.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0147 | 03-interfaces/memory-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0148 | 11-rag/rag-architecture.md, 02-modules/rag.md, 03-interfaces/rag-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0149 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

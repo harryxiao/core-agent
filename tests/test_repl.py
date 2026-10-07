@@ -1179,10 +1179,32 @@ def _api_with_history(turns: list[tuple[str, str]]) -> tuple[UIAPILayer, str]:
 
 
 def _timeline_texts(app: object) -> list[str]:
+    """时间线内全部可见文本：`Static` 取 `render()`，`Markdown`（agent 回复）取源文本。"""
+
     async def drive() -> list[str]:
         async with app.run_test() as pilot:  # type: ignore[attr-defined]
-            await pilot.pause()
-            return [str(w.render()) for w in app.query("#timeline Static")]  # type: ignore[attr-defined]
+            for _ in range(5):
+                await pilot.pause()
+            static = [str(w.render()) for w in app.query("#timeline Static")]  # type: ignore[attr-defined]
+            markdown = [str(w.source) for w in app.query("#timeline Markdown")]  # type: ignore[attr-defined]
+            return static + markdown
+
+    return asyncio.run(drive())
+
+
+def _timeline_markdown(app: object) -> tuple[int, list[str]]:
+    """时间线内（`MarkdownFence` 数，各 `Markdown` 块源文本）——续聊回放的格式面。"""
+
+    async def drive() -> tuple[int, list[str]]:
+        async with app.run_test() as pilot:  # type: ignore[attr-defined]
+            from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+            from textual.widgets import Markdown  # noqa: PLC0415 — 可选依赖懒 import
+
+            for _ in range(5):
+                await pilot.pause()
+            blocks = list(app.query_one("#timeline", Vertical).query(Markdown))  # type: ignore[attr-defined]
+            kinds = [type(k).__name__ for b in blocks for k in b.query("*")]
+            return kinds.count("MarkdownFence"), [str(b.source) for b in blocks]
 
     return asyncio.run(drive())
 
@@ -1196,6 +1218,18 @@ def test_build_app_resumes_existing_session(monkeypatch) -> None:
 
     assert any("早前的问题" in text for text in texts)
     assert any("早前的回答" in text for text in texts)
+
+
+def test_resumed_agent_reply_renders_as_markdown() -> None:
+    """续聊铺入既有转录：**agent 回复**按 Markdown 渲染（围栏成代码块），与实时路径同格式；
+    用户回显仍为 `❯` 行。（change 0157 / ADR-0149 —— 修复前该回复落 `Static` 明文。）"""
+    reply = "示例：\n\n```python\nprint('hi')\n```\n"
+    api, session_id = _api_with_history([("给我个 demo", reply)])
+
+    fences, sources = _timeline_markdown(build_app(api, session_id))
+
+    assert fences >= 1, "续聊转录里的代码围栏应渲染为代码块（非明文逐行）"
+    assert any("```python" in src for src in sources)
 
 
 def test_build_app_rejects_unknown_session() -> None:
