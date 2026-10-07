@@ -4395,6 +4395,41 @@
   文档面 `03-interfaces/ui-interface.md` §2、测试面 `04-testing/test-cases.md` §74（TC-CMDPAL）、
   台账 `coding-plan/known-risk.md` §3。
 
+## ADR-0152：TUI 会话切换 —— 运行中切会话 + 与启动续聊同一铺入路径（change 0160）
+
+- **背景**：承 0159（用户同一诉求「`/resume` 选会话 → 还原内容」；0159 只做浮层，`/resume` 刻意未进真源
+  —— 登记而不接线会被 0159 的**单一真源可执行守护**判红）。今日 TUI 的会话**只能由启动旗标
+  `--session <id>` 选定**：运行中无从切换，操作者事先也无从得知有哪些标识可用
+  （`UIAPILayer.list_sessions()` 数据已就绪，TUI 未消费）。
+- **决策①：`session_id` 由闭包变量改为实例字段。** 原为 `build_app(api, session_id)` 的闭包变量，
+  在 `_run_turn` / `_run_task_turn` **两处按轮**读取。构造时经 `ReplApp(session_id, history)` 注入，
+  切换即改 `self._session_id`。**代价**：`__init__` 不再无形参（既有测试只经 `build_app` 构造，零影响）。
+- **决策②：切换与启动续聊**共用**同一条铺入路径**（`_replay_history`，自 `on_mount` 提出）。
+  理由：0157/ADR-0149 刚把「回复从哪条入口进来都得同格式」立成硬约束 —— 若切换另写一份铺入循环，
+  该约束立刻出现**第二个**可能漂移的实现点。用户消息 `❯` 回显、agent 回复走 `Markdown` 的口径因此
+  只有一处。
+- **决策③：先验证、后落地（fail-closed 的关键形态）。** 若「先清时间线、后读转录」，读取失败就会留下
+  **空时间线 + 旧会话**的半切换态 —— 用户以为切过去了，实际没有。故 `api.session_messages(sid)`
+  （未登记即 `UiError`）**先于任何状态改动**调用；失败则时间线 / 标识 / 呈现态**逐字不变**，仅落一行错误。
+- **决策④：切换排在忙态检查**之后**、回主视图与回显**之前**。** 前者：切换与在途轮次并发会改写
+  `self._session_id` 与时间线（在途轮的回复将落进被清空的时间线）⇒ 与既有「忙态拒绝新消息」同口径。
+  后者：切换不产生 `❯ /resume <id>` 回显（回显会落进**刚被清空**的时间线，语义混乱）；切换的落痕是
+  `↻ 续接会话 <id>（N 条历史已载入）`（与启动续聊同一行文）。
+- **决策⑤：会话候选取既有 `list_sessions()`，且只在**需要它**时取。** `_Command.arg_source`（真源字段）
+  分派二级候选来源：`subtask` ⇒ `self._open` 键；`session` ⇒ `list_sessions()`（显示行 = 标题 · 标识 ·
+  更新时间）。`_candidates` **按真源字段**而非命令名字面量判定是否读会话面 ⇒ 键入 `/ta` 之类的每一击
+  都不会去读会话面。会话候选按**显示行前缀**（大小写不敏感）或**标识前缀**（逐字）收窄 —— 标题可读、
+  标识可粘。
+- **已知局限**：① **只切既有会话**（不新建 / 不删除 / 不重命名）；② **切换即清时间线**（含启动欢迎行，
+  历史滚动位置不保留，`Ctrl+Q` 式回看须再切回）；③ **不做每会话视图隔离**（`_open` / `_actions` 等
+  呈现态是**全局单份**，切走即清 —— 切回原会话不恢复其折叠块展开状态，只按转录重铺）；
+  ④ **会话无上限裁剪**（`list_sessions()` 全量列出，长清单靠前缀收窄）；⑤ **未改 Web / Desktop**
+  （承 ADR-0151 局限⑥，跨端一致属另一端）；⑥ **更新时间为本地时区分钟粒度**（`%m-%d %H:%M`，
+  跨时区阅读有歧义）；⑦ **不做「切换即续跑」**（切到有在途任务的会话不会恢复其编排视图）。
+- **规格**：`ui` **ADDED** Requirement「TUI 会话切换（`/resume`）」+ 4 Scenario（切换并还原 /
+  未登记 fail-closed / 无参数只提示 / 忙碌拒绝）；文档面 `03-interfaces/ui-interface.md` §2、
+  测试面 `04-testing/test-cases.md` §75（TC-RESUME）、台账 `coding-plan/known-risk.md` §3。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4541,3 +4576,4 @@
 | ADR-0149 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0150 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0151 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0152 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

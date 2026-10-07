@@ -258,6 +258,18 @@ fail-closed，先于进入 TUI 拒绝），缺省 ⇒ 新建（既有行为不�
 `→` 由 `Input` 原生采纳（`use_cache=False` + `case_sensitive=True`：语料随上下文变化、且避免 casefold 错位）。
 **审批挂起期间**不呈现浮层（`_refresh_palette` 早退 + `_ask_approval` 主动收起）⇒ y/n 决断输入不被遮蔽。
 
+**TUI 会话切换（change 0160 / ADR-0152）**：`/resume` 进真源（`arg_source="session"`），其二级候选取
+**既有** `UIAPILayer.list_sessions()`（显示行 = 标题 · 标识 · 更新时间；按显示行前缀〔大小写不敏感〕或
+标识前缀〔逐字〕收窄），采纳后仍只**改写输入框**为 `/resume <标识>`（承 0159：采纳不提交）。
+`/resume <标识>` 提交 ⇒ `_switch_session`：**先验证后落地** —— 先 `api.session_messages(sid)`
+（未登记 ⇒ `UiError`）再动任何状态，失败则时间线 / 会话标识 / 呈现态**逐字不变**、仅落一行错误
+（不留「空时间线 + 旧会话」半切换态）；成功则清空时间线 → 复用**与启动续聊同一**的 `_replay_history`
+铺入目标转录（agent 回复走 `Markdown`、用户消息 `❯` 回显，格式与实时路径一致）→ 复位跨会话无意义的
+呈现态（`_open` / `_actions` / `_reasoning` / 流式缓冲；旧 widget 已随时间线销毁 ⇒ 句柄不得悬挂）→
+`self._session_id = sid`（原闭包变量改**实例字段**，`run_loop` / `run_task` 随之落新会话）。
+分支位置：**忙态检查之后**（与在途轮次互斥）、回主视图与回显**之前**（切换不产生 `❯ /resume` 回显；
+落痕为 `↻ 续接会话 <标识>（N 条历史已载入）`）。`/resume` 无参数 ⇒ 只提示用法、不切换。
+
 **Web Client 与 Host 分离**：Web 前端（SPA）作为纯静态资源独立托管，`WebBridge` 仅暴露统一后端 API；前端经该 API 连接远程 / 本机常驻 Harness Host（见 `deployment-interface.md`），前端升级无需重启 Host 后端。
 
 ---

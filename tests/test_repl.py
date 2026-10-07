@@ -27,9 +27,11 @@ class RecordingLoop:
 
     def __init__(self) -> None:
         self.inputs: list[str] = []
+        self.sessions: list[str] = []  # 每轮收到的会话标识（会话切换的断言面）
 
     async def astream(self, user_input: str, *, session_id: str = ""):
         self.inputs.append(user_input)
+        self.sessions.append(session_id)
         yield LoopEvent("loop_finished", {"reply": f"echo:{user_input}"})
 
 
@@ -1343,13 +1345,14 @@ def test_palette_options_lists_all_commands_on_slash() -> None:
         "/main",
         "/summon",
         "/recall",
+        "/resume",
     ]
 
 
 def test_palette_options_filters_by_command_prefix() -> None:
     """候选按前缀收窄（只认命令名前缀）。"""
     assert [c.fill for c in _palette_options("/ta")] == ["/task"]
-    assert [c.fill for c in _palette_options("/re")] == ["/recall"]
+    assert [c.fill for c in _palette_options("/re")] == ["/recall", "/resume"]
 
 
 def test_palette_options_closed_for_unknown_or_plain_input() -> None:
@@ -1386,7 +1389,28 @@ def test_palette_options_arg_next_marks_commands_taking_arg() -> None:
     by_fill = {c.fill: c for c in _palette_options("/")}
     assert by_fill["/task"].arg_next is True
     assert by_fill["/focus"].arg_next is True
+    assert by_fill["/resume"].arg_next is True
     assert by_fill["/main"].arg_next is False
+
+
+def test_palette_options_second_level_lists_sessions() -> None:
+    """`/resume` 的二级候选取**既有会话面**（显示行 + 标识），且**只**吃会话面。"""
+    sessions = (("s-alpha", "部署脚本 · s-alpha"), ("s-beta", "重构计划 · s-beta"))
+    cands = _palette_options("/resume ", subtask_ids=["1"], sessions=sessions)
+    assert [c.fill for c in cands] == ["/resume s-alpha", "/resume s-beta"]
+    assert [c.label for c in cands] == ["部署脚本 · s-alpha", "重构计划 · s-beta"]
+
+
+def test_palette_options_session_narrows_by_label_or_id() -> None:
+    """会话候选按**显示行前缀**（大小写不敏感）或**标识前缀**（逐字）收窄（标题可读、标识可粘）。"""
+    sessions = (("s-alpha", "部署脚本 · s-alpha"), ("s-beta", "重构计划 · s-beta"))
+    assert [c.fill for c in _palette_options("/resume 重构", sessions=sessions)] == [
+        "/resume s-beta"
+    ]
+    assert [c.fill for c in _palette_options("/resume s-a", sessions=sessions)] == [
+        "/resume s-alpha"
+    ]
+    assert [c.fill for c in _palette_options("/resume zzz", sessions=sessions)] == []
 
 
 def _palette_api(*, orchestrator: object | None = None) -> tuple[UIAPILayer, RecordingLoop]:
@@ -1413,7 +1437,7 @@ def _palette_option_ids(app: object) -> list[str | None]:
 
 
 def test_palette_opens_on_slash_and_lists_registered_commands() -> None:
-    """输入 `/` ⇒ 浮层可见并列出单一真源内的既有 5 命令（`/resume` 属 0160，此处不登记）。"""
+    """输入 `/` ⇒ 浮层可见并列出单一真源内的全部命令（顺序即真源顺序）。"""
     api, _ = _palette_api()
     app = build_app(api)
 
@@ -1433,6 +1457,7 @@ def test_palette_opens_on_slash_and_lists_registered_commands() -> None:
         "cmd:/main",
         "cmd:/summon",
         "cmd:/recall",
+        "cmd:/resume",
     ]
 
 
@@ -1697,10 +1722,12 @@ def test_ghost_completion_shows_and_accepts_remainder() -> None:
 def test_registry_commands_are_all_dispatchable() -> None:
     """**单一真源的可执行守护**：真源内每条命令都被分发链**消费**（不落普通对话）。
 
-    任一条只登记、未接线（如尚未进表的 `/resume`），本用例即红。
+    任一条只登记、未接线（如登记后忘了接分发）本用例即红 —— 故 0159 刻意不把 `/resume`
+    放进真源，直到 0160 把「会话切换」接上。
     """
     orch = _TaskOrchestrator([("task_finished", {"outcomes": []})])
     api, loop = _palette_api(orchestrator=orch)
+    sid = api.create_session("cli")  # `/resume` 需一个已登记会话
     app = build_app(api)
 
     async def drive() -> None:
@@ -1709,7 +1736,14 @@ def test_registry_commands_are_all_dispatchable() -> None:
         async with app.run_test() as pilot:
             inp = app.query_one("#input", Input)
             inp.focus()
-            for line in ("/task 目标", "/focus 1", "/main", "/summon qinglong", "/recall qinglong"):
+            for line in (
+                "/task 目标",
+                "/focus 1",
+                "/main",
+                "/summon qinglong",
+                "/recall qinglong",
+                f"/resume {sid}",
+            ):
                 inp.value = line
                 await pilot.press("enter")
                 for _ in range(30):
@@ -1717,3 +1751,203 @@ def test_registry_commands_are_all_dispatchable() -> None:
 
     asyncio.run(drive())
     assert loop.inputs == []  # 全部被分发链消费（无一落进普通对话）
+
+
+# ---- 会话切换（`/resume`，change 0160 / ADR-0152） ----
+
+
+def _switch_api(
+    *, orchestrator: object | None = None
+) -> tuple[UIAPILayer, RecordingLoop, str, str]:
+    """两个已登记会话的 api：A（当前，空转录）与 B（含用户消息 + 带围栏的 agent 回复）。"""
+    transcript = TranscriptStore()
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop, transcript=transcript, orchestrator=orchestrator)
+    api.set_llm_config(_llm())
+    a = api.create_session("cli")
+    b = api.create_session("cli")
+    transcript.append(b, "user", "B 的提问")
+    transcript.append(b, "assistant", "B 的回答：\n\n```python\nprint(1)\n```\n")
+    return api, loop, a, b
+
+
+async def _timeline_view(app: object) -> tuple[list[str], list[str], int]:
+    """`run_test` **内**的时间线快照：(Static 渲染文本, Markdown 源文本, MarkdownFence 数)。"""
+    from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+    from textual.widgets import Markdown  # noqa: PLC0415 — 可选依赖懒 import
+
+    static = [str(w.render()) for w in app.query("#timeline Static")]  # type: ignore[attr-defined]
+    blocks = list(app.query_one("#timeline", Vertical).query(Markdown))  # type: ignore[attr-defined]
+    fences = [type(k).__name__ for block in blocks for k in block.query("*")].count("MarkdownFence")
+    return static, [str(block.source) for block in blocks], fences
+
+
+def test_resume_switches_session_and_replays_markdown() -> None:
+    """`/resume <B>`：时间线清空并铺入 B 的转录（agent 回复成 Markdown），后续轮次落 B。"""
+    api, loop, a, b = _switch_api()
+    app = build_app(api, a)
+
+    async def drive() -> tuple[list[str], list[str], int, list[str]]:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            await pilot.pause()
+            inp.value = f"/resume {b}"
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+            static, markdown, fences = await _timeline_view(app)
+            inp.value = "切换后的一轮"
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+            return static, markdown, fences, loop.sessions
+
+    static, markdown, fences, sessions = asyncio.run(drive())
+    assert any("续接会话" in line and b in line for line in static)  # 切换落痕
+    assert any("B 的提问" in line for line in static)  # 用户消息按 ❯ 回显行
+    assert markdown == ["B 的回答：\n\n```python\nprint(1)\n```\n"]  # agent 回复成 Markdown
+    assert fences == 1  # 围栏成代码块（SHALL NOT 退化为明文）
+    assert sessions[-1] == b  # 后续轮次落新会话
+
+
+def test_resume_unknown_session_fails_closed_without_touching_state() -> None:
+    """`/resume <未登记>`：不切换（时间线只多一行错误），后续轮次仍在原会话。"""
+    api, loop, a, _b = _switch_api()
+    app = build_app(api, a)
+
+    async def drive() -> tuple[list[str], list[str], list[str]]:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            await pilot.pause()
+            before = (await _timeline_view(app))[0]
+            inp.value = "/resume nope"
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+            after = (await _timeline_view(app))[0]
+            inp.value = "仍然在 A"
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+            return before, after, loop.sessions
+
+    before, after, sessions = asyncio.run(drive())
+    assert after[: len(before)] == before  # 既有内容逐字不变
+    assert len(after) == len(before) + 1  # 仅多一行错误
+    assert after[-1].startswith("[UI_SESSION_NOT_FOUND]")  # fail-closed 的结构化错误
+    assert sessions[-1] == a  # 未切换
+
+
+def test_resume_without_arg_prints_usage_only() -> None:
+    """`/resume` 无参数：只提示用法、不切换、不改动时间线（仅多一行提示）。"""
+    api, loop, a, _b = _switch_api()
+    app = build_app(api, a)
+
+    async def drive() -> tuple[list[str], list[str]]:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            await pilot.pause()
+            before = (await _timeline_view(app))[0]
+            inp.value = "/resume"
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+            after = (await _timeline_view(app))[0]
+            inp.value = "仍在 A"
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+            return before, after
+
+    before, after = asyncio.run(drive())
+    assert after[: len(before)] == before
+    assert after[-1] == "用法：/resume <会话标识>"
+    assert loop.sessions[-1] == a  # 未切换
+
+
+def test_resume_rejected_while_busy() -> None:
+    """本轮执行未结束 ⇒ 拒绝切换（与既有忙态互斥同口径），当前会话不变。"""
+    milestone, done = asyncio.Event(), asyncio.Event()
+    orch = _GatedOrchestrator(milestone=milestone, done=done)
+    api, _loop, a, b = _switch_api(orchestrator=orch)
+    app = build_app(api, a)
+
+    async def drive() -> list[str]:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            await _type_line(pilot, "/task 查答案")
+            await _wait_started(pilot, orch)
+            inp.value = f"/resume {b}"
+            await pilot.press("enter")
+            for _ in range(5):
+                await pilot.pause()
+            after = (await _timeline_view(app))[0]
+            milestone.set()
+            done.set()
+            for _ in range(20):
+                await pilot.pause()
+            return after
+
+    after = asyncio.run(drive())
+    assert any("处理中" in line for line in after)  # 忙碌拒绝
+    assert not any("续接会话" in line for line in after)  # 未切换
+
+
+def test_resume_resets_previous_session_view_state() -> None:
+    """切换后复位呈现态：子任务折叠块句柄清空、焦点视图回主视图（无悬挂 widget）。"""
+    orch = _TaskOrchestrator(
+        [
+            ("task_started", {"task_id": "t1", "goal": "复合目标"}),
+            (
+                "subtask_started",
+                {"task_id": "t1", "subtask_id": "1", "goal": "查资料", "acceptance": "给出来源"},
+            ),
+            ("subtask_completed", {"task_id": "t1", "subtask_id": "1", "ok": True}),
+            ("task_finished", {"outcomes": []}),
+        ]
+    )
+    api, _loop, a, b = _switch_api(orchestrator=orch)
+    app = build_app(api, a)
+
+    async def drive() -> tuple[bool, dict[str, object], bool, bool]:
+        from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            await _type_line(pilot, "/task 查答案")
+            for _ in range(30):
+                await pilot.pause()
+            inp.value = "/focus 1"
+            await pilot.press("enter")
+            await pilot.pause()
+            focused = bool(app.query_one("#panel", Vertical).display)
+            inp.value = f"/resume {b}"
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+            return (
+                focused,
+                dict(app._open),  # noqa: SLF001 — 断言跨会话句柄已清
+                bool(app.query_one("#panel", Vertical).display),
+                bool(app.query_one("#timeline", Vertical).display),
+            )
+
+    focused, opened, panel_visible, timeline_visible = asyncio.run(drive())
+    assert focused is True  # 前置：切换前确实在焦点视图
+    assert opened == {}  # 子任务句柄已清（旧 widget 已随时间线销毁）
+    assert panel_visible is False
+    assert timeline_visible is True

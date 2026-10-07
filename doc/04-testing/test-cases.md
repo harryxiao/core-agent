@@ -1183,6 +1183,32 @@
 
 ---
 
+## 75. TUI 会话切换（TC-RESUME，change `0160`／ADR-0152）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-RESUME-01 | ui/spec.md「TUI 会话切换（`/resume`）」Scenario「切换会话并还原其内容」 | 纯函数 `_palette_options("/resume ", subtask_ids=["1"], sessions=(("s-alpha","部署脚本 · s-alpha"),…))` | 二级候选**只**取会话面（不吃子任务面）：`/resume s-alpha`、`/resume s-beta`，显示行取会话标题（锚点：`tests/test_repl.py::test_palette_options_second_level_lists_sessions`） |
+| TC-RESUME-02 | 同上 Scenario | 纯函数 `/resume 重构`（显示行前缀）、`/resume s-a`（标识前缀）、`/resume zzz`（无匹配） | 前缀收窄：命中对应会话 / 无候选（锚点：`..._session_narrows_by_label_or_id`） |
+| TC-RESUME-03 | 同上 Scenario | 真 TUI（会话 A，目标 B 含用户消息 + 带围栏的 agent 回复）：提交 `/resume <B>` | 时间线清空并铺入 B：出现 `↻ 续接会话 <B>（2 条历史已载入）`、用户消息按 `❯` 回显行、agent 回复为 **Markdown** 源文本、**`MarkdownFence` == 1**（锚点：`test_resume_switches_session_and_replays_markdown`） |
+| TC-RESUME-04 | 同上 Scenario（「后续轮次落目标会话」） | 同上，切换后再发一条普通消息 | `RecordingLoop.sessions[-1] == B`（`run_loop` 收到新标识）（锚点：同上） |
+| TC-RESUME-05 | 同上 Scenario「未登记会话 fail-closed（当前会话逐字不变）」 | 真 TUI：提交 `/resume nope`，随后发一条消息 | 时间线**只多一行**（`[UI_SESSION_NOT_FOUND] …`）、既有内容逐字不变；`RecordingLoop.sessions[-1] == A`（未切换）（锚点：`test_resume_unknown_session_fails_closed_without_touching_state`） |
+| TC-RESUME-06 | 同上 Scenario「`/resume` 无参数只提示用法」 | 真 TUI：提交 `/resume` | 仅多一行 `用法：/resume <会话标识>`、不切换（锚点：`test_resume_without_arg_prints_usage_only`） |
+| TC-RESUME-07 | 同上 Scenario「本轮执行期间拒绝切换」 | 真 TUI（门控编排器挂起在途任务）：提交 `/resume <B>` | 落「处理中」提示、**无**「续接会话」落痕（未切换）（锚点：`test_resume_rejected_while_busy`） |
+| TC-RESUME-08 | 同上（「切换 SHALL 复位跨会话无意义的呈现态」） | 真 TUI：跑一轮任务 → `/focus 1`（进焦点视图）→ `/resume <B>` | 切换前焦点视图可见（前置）；切换后 `_open == {}`、`#panel` 隐藏、`#timeline` 可见（锚点：`test_resume_resets_previous_session_view_state`） |
+| TC-RESUME-09 | ui/spec.md「CLI 友好交互」（**单一真源**可执行守护，承 0159） | 真 TUI：逐条驱动真源内命令的规范形态，含 `/resume <已登记标识>` | 每条均落既有分发链（`RecordingLoop.inputs` 不增长）；`/resume` **登记即接线**（锚点：`tests/test_repl.py::test_registry_commands_are_all_dispatchable`） |
+
+> **无手工验收项**：候选面（纯函数）、切换面（时间线快照 + `MarkdownFence` 计数）、fail-closed 面
+> （既有内容逐字比对 + 错误行）、会话标识落点（loop 收到的 `session_id`）、忙态拒绝与呈现态复位
+> 全部以 headless `run_test` 驱动覆盖。
+> 语义：**先验证后落地**（fail-closed 的关键形态 —— 不留「空时间线 + 旧会话」半切换态）；
+> **切换与启动续聊共用同一铺入路径**（`_replay_history`），使「回复入口无关、格式同一」只有一处实现；
+> 切换排在**忙态检查之后**（与在途轮次互斥）、**回显之前**（不产生 `/resume` 回显行）。
+> **已知局限**：只切既有会话（不新建 / 删除 / 重命名）；切换即清时间线（含欢迎行，滚动位置不保留）；
+> 呈现态**全局单份**、切走即清（切回不恢复展开状态）；会话清单无裁剪；未改 Web / Desktop；
+> 更新时间为本地时区分钟粒度；不做「切换即续跑」（不恢复目标会话的在途编排视图）。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

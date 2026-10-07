@@ -206,7 +206,9 @@ class _Command:
     name: str  # 触发词（含前导斜杠）
     summary: str  # 浮层一行说明
     arg: str = ""  # 参数名（"" ⇒ 无参数；采纳后补出参数位）
-    arg_source: str = ""  # 参数候选来源键（"" ⇒ 不可枚举；"subtask" ⇒ 既有在途子任务）
+    arg_source: str = (
+        ""  # 参数候选来源键（"" ⇒ 不可枚举；"subtask" ⇒ 在途子任务；"session" ⇒ 会话）
+    )
 
 
 _COMMANDS: tuple[_Command, ...] = (
@@ -215,6 +217,7 @@ _COMMANDS: tuple[_Command, ...] = (
     _Command("/main", "返回主视图"),
     _Command("/summon", "召唤神兽执行任务", "神兽"),
     _Command("/recall", "召回神兽并取结果", "神兽"),
+    _Command("/resume", "切换会话并还原其内容", "会话标识", "session"),
 )
 
 
@@ -233,11 +236,17 @@ class _Candidate:
     arg_next: bool = False  # 采纳后补一个空格进入二级（仅带参数命令）
 
 
-def _palette_options(value: str, *, subtask_ids: Sequence[str] = ()) -> list[_Candidate]:
+def _palette_options(
+    value: str,
+    *,
+    subtask_ids: Sequence[str] = (),
+    sessions: Sequence[tuple[str, str]] = (),
+) -> list[_Candidate]:
     """当前输入下的浮层候选（空列表 ⇒ 不呈现浮层）。
 
     一级：`/` 起始且**尚未出现空格** ⇒ 按前缀筛真源命令；
-    二级：`<命令> <参数>`（参数内无空格 + 该命令参数**可枚举**）⇒ 列既有候选；
+    二级：`<命令> <参数>`（参数内无空格 + 该命令参数**可枚举**）⇒ 列该命令 `arg_source`
+    对应的既有候选（`subtask` ⇒ 在途子任务标识；`session` ⇒ 已登记会话）；
     其余（非 `/` 起始、未知命令、带参命令已进参数位、参数含空格）⇒ 不呈现。
     """
     if not value.startswith("/"):
@@ -259,11 +268,16 @@ def _palette_options(value: str, *, subtask_ids: Sequence[str] = ()) -> list[_Ca
     cmd = _lookup(head)
     if cmd is None or not cmd.arg_source or " " in arg:
         return []
-    return [
-        _Candidate(key=f"arg:{sid}", label=sid, fill=f"{head} {sid}")
-        for sid in subtask_ids
-        if sid.startswith(arg)
-    ]
+    if cmd.arg_source == "session":
+        # 会话候选按**显示行前缀**（大小写不敏感）或**标识前缀**收窄（标题可读、标识可粘）
+        pool = [
+            (sid, label)
+            for sid, label in sessions
+            if not arg or label.lower().startswith(arg.lower()) or sid.startswith(arg)
+        ]
+    else:  # "subtask"：既有在途子任务标识（参数源与命令一一对应，见真源 `arg_source`）
+        pool = [(sid, sid) for sid in subtask_ids if sid.startswith(arg)]
+    return [_Candidate(key=f"arg:{sid}", label=label, fill=f"{head} {sid}") for sid, label in pool]
 
 
 def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — 内嵌 ReplApp 类体推高复杂度
@@ -425,8 +439,10 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             "审批 y 批准 / n 拒绝 · 点击子任务/动作行展开详情"
         )
 
-        def __init__(self) -> None:
+        def __init__(self, session_id: str, history: list[dict[str, Any]]) -> None:
             super().__init__()
+            self._session_id = session_id  # 当前会话（`/resume` 运行中可切；原为闭包变量）
+            self._history = history  # 启动续聊的既有转录（on_mount 铺入后不再用）
             self._live_buf: list[str] = []  # 流式全文缓冲（终态取 _last_reply）
             self._tail_buf: list[str] = []  # 进行中尾段增量（每 delta 热更新）
             self._tail_widget: Markdown | None = None  # 尾段渲染块
@@ -484,17 +500,19 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             if approval is not None:
                 approval.handler = self._ask_approval  # 审批通道接终端 y/n
             if history:  # 续聊：把既有转录铺进时间线（否则界面空白、看不出已接上）
-                self._add(
-                    Static(f"↻ 续接会话 {session_id}（{len(history)} 条历史已载入）", classes="ok")
-                )
-                for item in history:
-                    if item.get("role") == "user":
-                        content = escape(str(item.get("content", "")))
-                        self._add(Static(f"[{_ACCENT}]❯[/] {content}", classes="echo", markup=True))
-                    else:
-                        # agent 回复按 **Markdown** 铺入（与实时流式路径**同一**格式 ⇒ 代码围栏
-                        # 成代码块、表格成表格），SHALL NOT 退化为逐行明文（change 0157 / ADR-0149）
-                        self._add(Markdown(str(item.get("content", ""))))
+                self._replay_history(self._session_id, history)
+
+        def _replay_history(self, sid: str, items: list[dict[str, Any]]) -> None:
+            """把某会话的既有转录铺入时间线（启动续聊与 `/resume` 切换**同一**路径 ⇒ 格式一致）。"""
+            self._add(Static(f"↻ 续接会话 {sid}（{len(items)} 条历史已载入）", classes="ok"))
+            for item in items:
+                if item.get("role") == "user":
+                    content = escape(str(item.get("content", "")))
+                    self._add(Static(f"[{_ACCENT}]❯[/] {content}", classes="echo", markup=True))
+                else:
+                    # agent 回复按 **Markdown** 铺入（与实时流式路径**同一**格式 ⇒ 代码围栏
+                    # 成代码块、表格成表格），SHALL NOT 退化为逐行明文（change 0157 / ADR-0149）
+                    self._add(Markdown(str(item.get("content", ""))))
 
         # ---- 时间线 ----
 
@@ -673,7 +691,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
 
         # ---- 输入分发 ----
 
-        def on_input_submitted(self, message: Input.Submitted) -> None:  # noqa: PLR0911 — 一分支一返回
+        def on_input_submitted(self, message: Input.Submitted) -> None:  # noqa: C901, PLR0911 — 一分支一返回
             """输入分发：审批决断优先；消息经 worker 执行（消息泵不被阻塞）。"""
             pending = self._approval_future
             if pending is not None and not pending.done():
@@ -699,6 +717,8 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             if self._turn_busy:
                 self._add(Static("处理中，请稍候（Ctrl+B 打断）", classes="hint"))
                 return
+            if self._handle_resume_command(text):  # 会话切换（忙态后：与在途轮次互斥）
+                return
             self._set_focus("")  # 普通输入 ⇒ 回主视图（回复不落进被隐藏的时间线）
             self._add(  # 用户输入回显：❯ 前缀行（Claude CLI 式，无气泡）
                 Static(f"[{_ACCENT}]❯[/] {escape(text)}", classes="echo", markup=True)
@@ -721,8 +741,32 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
         # ---- 斜杠命令浮层与补全（change 0159 / ADR-0151） ----
 
         def _candidates(self, value: str) -> list[_Candidate]:
-            """当前输入的浮层候选：参数候选取**既有**在途子任务标识（零新增数据源）。"""
-            return _palette_options(value, subtask_ids=tuple(self._open))
+            """当前输入的浮层候选：参数候选取**既有**面（子任务标识 / 会话清单），零新增数据源。
+
+            会话面只在输入确实落到**需要它**的命令的参数位时才取（按真源登记项的
+            `arg_source` 判 —— 不按命令名字面量），避免每次按键都读会话面。
+            """
+            head, sep, _arg = value.partition(" ")
+            cmd = _lookup(head) if sep else None
+            sessions: Sequence[tuple[str, str]] = (
+                self._session_candidates()
+                if cmd is not None and cmd.arg_source == "session"
+                else ()
+            )
+            return _palette_options(value, subtask_ids=tuple(self._open), sessions=sessions)
+
+        def _session_candidates(self) -> tuple[tuple[str, str], ...]:
+            """会话候选 `(标识, 显示行)`：取自**既有** `UIAPILayer.list_sessions()`。"""
+            out: list[tuple[str, str]] = []
+            for entry in api.list_sessions():
+                sid = str(entry.get("session_id", ""))
+                if not sid:
+                    continue
+                title = str(entry.get("title") or "")
+                stamp = float(cast(float, entry.get("updated_at", 0.0)) or 0.0)
+                when = time.strftime("%m-%d %H:%M", time.localtime(stamp)) if stamp else "—"
+                out.append((sid, f"{title or '(无标题)'} · {sid} · {when}"))
+            return tuple(out)
 
         def _refresh_palette(self, value: str) -> None:
             """按当前输入开合浮层：有候选且**无待决审批** ⇒ 呈现，否则收起。"""
@@ -842,7 +886,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             """任务轮：经 /task 驱动编排器，进度事件落时间线（单行提示+折叠块）。"""
             self._spin_start("任务执行中")
             try:
-                async for event in api.run_task(session_id, goal):
+                async for event in api.run_task(self._session_id, goal):
                     self._add_task_widget(event)
             except UiError as err:
                 line = _format_event(_error_event(err))
@@ -1060,6 +1104,50 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             """F2：返回主视图（无焦点时空操作）。"""
             self._set_focus("")
 
+        # ---- 会话切换（`/resume`，change 0160 / ADR-0152） ----
+
+        def _handle_resume_command(self, text: str) -> bool:
+            """`/resume [<会话标识>]` 拦截（承「忙态后」调用 ⇒ 与在途轮次互斥）。"""
+            if text == "/resume" or text.startswith("/resume "):
+                sid = text[len("/resume") :].strip()
+                if not sid:
+                    self._add(Static("用法：/resume <会话标识>", classes="hint"))
+                else:
+                    self._switch_session(sid)
+                return True
+            return False
+
+        def _switch_session(self, sid: str) -> bool:
+            """切换到既有会话：清时间线 → 铺入目标转录 → 复位呈现态与会话标识。
+
+            **先验证、后落地**（fail-closed）：`session_messages` 对未登记标识拒绝 ⇒ 当前会话的
+            时间线 / 标识 / 呈现态**逐字不变**，仅落一行错误（不留下「空时间线 + 旧会话」态）。
+            """
+            try:
+                items = api.session_messages(sid)  # 未登记 ⇒ UiError（先于任何状态改动）
+            except UiError as err:
+                line = _format_event(_error_event(err))
+                if line:
+                    self._add(Static(line, classes="fail", markup=False))
+                return False
+            self._close_palette()
+            self.query_one("#timeline", Vertical).remove_children()
+            self._set_focus("")  # 焦点块已随时间线销毁 ⇒ 先回主视图再清句柄
+            self._reset_turn_state()
+            self._session_id = sid
+            self._replay_history(sid, list(items))
+            return True
+
+        def _reset_turn_state(self) -> None:
+            """清空**跨会话无意义**的呈现态（旧内容已随时间线销毁 ⇒ 句柄不得悬挂）。"""
+            self._open.clear()
+            self._actions.clear()
+            self._reasoning = None
+            self._live_buf = []
+            self._tail_buf = []
+            self._tail_widget = None
+            self._last_reply = ""
+
         # ---- 普通消息轮 ----
 
         async def _run_turn(self, text: str) -> None:
@@ -1067,7 +1155,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             self._spin_start("思考中")
             self._reasoning = None  # 思考块按**轮**归并（跨轮不复用同一折叠块）
             try:
-                async for event in api.run_loop(session_id, text):
+                async for event in api.run_loop(self._session_id, text):
                     delta = _event_delta(event)
                     if delta is not None:
                         self._show_delta(delta)
@@ -1107,7 +1195,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                     return cand.fill
             return None
 
-    return ReplApp()
+    return ReplApp(session_id, history)
 
 
 def run_repl(api: UIAPILayer, session_id: str = "") -> None:
