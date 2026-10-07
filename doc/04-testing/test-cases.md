@@ -939,6 +939,22 @@
 
 ---
 
+## 62. TUI 流式 Markdown 表格整块解析（TC-TABLE，change `0146`／ADR-0138，账本 E88）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-TABLE-01 | ui/spec.md「CLI 友好交互」Scenario「流式结构化块整体解析」（判据纯函数） | 尾段为 `"| 水果 | 产地 |\n"`（表头后半开）/ 完整三行表格 / 表格后接**空行** / 表格后**紧接散文行** / 散文行仅含**单个** `|`（`"见 foo|bar\n"`）/ **代码围栏内含 `|`** | 表头后与完整表格 ⇒ `True`；空行闭合 / 散文尾随 / 单竖线散文 ⇒ `False`；围栏先判 ⇒ 表格判据**不误判**（锚点：`test_repl.py::test_in_open_table_predicate`） |
+| TC-TABLE-02 | 同上 Scenario「流式结构化块整体解析」（整块落入同一渲染块） | 桩 loop 逐行 emit `LoopEvent("loop.delta", {"text": row})`（表头 / 分隔行 / 3 数据行）后收尾 | `#timeline` 内该回复为**单个** `Markdown` 块（**修复前为 3+ 块 ⇒ 红**），子块含 `MarkdownTable`，`.source` 含完整表头 + 分隔 + 数据行（锚点：`test_repl.py::test_streamed_table_renders_in_single_block`） |
+
+> **手工验收项（无自动门禁）**：
+> 1. **真 TUI 目视表格渲染** —— 在真终端跑一次流式产出 Markdown 表格的对话（或桩 provider 逐行
+>    流式一张表格），目视确认 `#timeline` 出现**一个**表格块（**非**逐行竖线原文）；并回归确认
+>    **代码围栏**流式仍渲染为代码块（分支优先序：围栏先判）。
+> 2. **Web 端（非本 change 面）** —— `Chat.svelte` 无 Markdown 渲染器，表格恒显竖线原文；
+>    若后续要 Web 表格渲染，须另立 change（ADR-0138 已知局限②）。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

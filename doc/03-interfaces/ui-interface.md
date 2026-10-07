@@ -88,6 +88,14 @@ class UIAPILayer:
 | `loop.error` | turn_id, error | 结构化错误（不中断循环） |
 | `task.*` | 编排事件载荷 | 任务进度（task_started / plan_ready / wave_started / subtask_started / subtask_progress / subtask_completed / task_checkpoint / task_finished / task_failed，type 前缀 `task.`；TUI 时间线呈现：任务/波次浅灰单行，子任务 Collapsible 折叠块（标题含运行态徽标 `⟳`，收尾落 ✓/✗），展开含验收/**里程碑**（`subtask_progress` 逐条追加，工具类复用动作行**友好名**，见下注）/判定/结果节选；Web 任务区呈现见 §1.2 末） |
 
+> **注（TUI 流式结构化块整体解析，change `0146` / ADR-0138）**：TUI 流式增量固化以**结构化块为
+> 单位** —— 当尾段处于**未闭合的结构化块**内（Markdown 表格：表头行 / `|---|` 分隔行 / 数据行；或
+> 代码围栏）时，**延后**按行边界或字符阈值的固化，使该块作为**整体**落入**同一**渲染块（表格渲染
+> 为表格、围栏渲染为代码块），**不**依行边界拆成多个块；块**闭合**（出现空行或块外内容开始）后方
+> 恢复常规固化。未闭合块的缓冲**有界**（超硬上限兜底，约束内存）。围栏判定优先于表格（围栏内 `|`
+> 不作表格）。**注**：Web 端 `Chat.svelte` 以纯文本呈现（无 Markdown 渲染器），表格在 Web 恒显
+> 竖线原文，属**另一端**（见 ADR-0138 已知局限②）。
+
 > **注（`subtask_progress` 载荷，change `0121` 数据面 / change `0124` 消费面）**：载荷
 > `{task_id, subtask_id, event, data, ts}` —— `event` 为内层事件类型，`data` 为**按类型白名单**取键的
 > 子集（`action_started`：round/tool_id/args；`action_completed`：round/tool_id/ok/duration_ms/output；

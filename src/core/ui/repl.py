@@ -31,6 +31,8 @@ _SPIN_GLYPHS = ["✻", "·", "•", "∘", "○"]  # 工作状态行轮换符号
 _MS_PER_SECOND = 1000  # 耗时人类可读换算
 _TAIL_SPLIT = 2000  # 流式尾段字符阈值：超过/行边界即固化（每 delta 重 wrap 有界）
 _TAIL_FENCE_CAP = 8000  # 未闭合围栏内尾段硬上限：超此值强固化兜底，约束内存
+_TAIL_TABLE_CAP = 8000  # 未闭合表格块内尾段硬上限：同围栏口径，约束内存
+_TABLE_MIN_PIPES = 2  # 表格行最少竖线数（表格每行含分隔竖线；散文罕见）
 
 
 async def repl_loop(
@@ -461,7 +463,7 @@ Collapsible > CollapsibleTitle:hover {
         def _show_delta(self, delta: str) -> None:
             """流式增量落时间线同一滚动流：尾段热更新（有界 wrap），
             行边界/超阈值时固化为 append-only 块，超长输出不卡顿不抖动；
-            代码围栏未闭合时延后固化，避免大代码块被拆断。"""
+            代码围栏或表格未闭合时延后固化，避免结构化块被拆断。"""
             self._live_buf.append(delta)
             self._tail_buf.append(delta)
             text = "".join(self._tail_buf)
@@ -469,6 +471,14 @@ Collapsible > CollapsibleTitle:hover {
                 # 围栏未闭合：不按行/常规阈值固化（避免大代码块被拦腰截断），
                 # 仅超硬上限时兜底固化，约束内存与重 wrap 代价
                 if len(text) >= _TAIL_FENCE_CAP:
+                    self._freeze_tail(text)
+                    return
+                self._touch_tail(text)
+                return
+            if self._in_open_table(text):
+                # 表格未闭合：表格须整块（表头 + 分隔行 + 数据行）方能解析 ⇒
+                # 与围栏同理延后固化，否则逐行固化成孤立块、表格退化为竖线原文
+                if len(text) >= _TAIL_TABLE_CAP:
                     self._freeze_tail(text)
                     return
                 self._touch_tail(text)
@@ -483,6 +493,21 @@ Collapsible > CollapsibleTitle:hover {
             """尾段是否处于未闭合代码围栏内（行首 ``` / ~~~ 数量为奇数）。"""
             fences = sum(1 for line in text.split("\n") if line.lstrip().startswith(("```", "~~~")))
             return fences % 2 == 1
+
+        @staticmethod
+        def _in_open_table(text: str) -> bool:
+            """尾段是否处于未闭合 Markdown 表格块内（表格须整块解析：表头行 + 分隔行 +
+            数据行，中间无空行）⇒ 与围栏同理延后固化。判据：当前块（自尾向前的连续非空行，
+            行终止用的单个尾 `\\n` 不算空行）**每行都含 ≥ `_TABLE_MIN_PIPES` 个 `|`**
+            （表格每行含分隔竖线，散文罕见）。围栏由 `_in_open_fence` 先判，故围栏内
+            `|` 不会走到此。"""
+            body = text[:-1] if text.endswith("\n") else text
+            block: list[str] = []
+            for line in reversed(body.split("\n")):
+                if not line.strip():
+                    break
+                block.append(line)
+            return bool(block) and all(ln.count("|") >= _TABLE_MIN_PIPES for ln in block)
 
         def _touch_tail(self, text: str) -> None:
             """尾段热更新：Markdown 增量渲染（与终态同格式，无替换跳变），

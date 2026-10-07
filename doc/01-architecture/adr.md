@@ -3848,6 +3848,45 @@
 
 ---
 
+## ADR-0138：TUI 流式 Markdown 表格整块解析（change 0146 / 账本 E88）
+
+- **背景**：TUI 流式回复中的 **Markdown 表格**渲染为**竖线原文**（`E88`）。根因**不在** `Markdown`
+  控件（`repl.py:214-219` 用 Textual `Markdown`，v8.2.8 **内建**表格渲染），而在 `_show_delta`
+  （`repl.py:461-479`）的**按行固化**策略：`len(text) >= _TAIL_SPLIT` 或 `text.endswith("\n")`
+  时立即 `_freeze_tail`，把尾段固化成**独立**块（append-only、之后不再重渲染）。而 Markdown 表格
+  **必须整块**（表头行 + `|---|` 分隔行 + 数据行，**中间无空行**）方能被解析 ⇒ 逐行流式时**表头行
+  一到达即被固化**为「只有表头、无分隔行」的孤立块（解析器判为普通段落），后续分隔行 / 数据行各自
+  固化为新块 ⇒ 表格**永拼不齐**。代码**已**对**代码围栏**做了同类保护（`_in_open_fence`，
+  `repl.py:481-485`，`_TAIL_FENCE_CAP` 兜底），**唯独没覆盖表格** —— 属**机制疏漏**：表格与围栏
+  同属「**须跨行整体解析**」的结构，保护机制同源，本 change 即补齐。
+- **决策①：判据收在新静态方法 `_in_open_table`，与 `_in_open_fence` **同型**。** 两处
+  「是否处于未闭合结构块内」的判定并置、同签名（`text -> bool`），新读者可一眼看清「围栏 / 表格」
+  是一类东西的两种实例。理由：本 change 的**最小正确**修法是补一个平行判据，而非重构分段器。
+- **决策②：表格判据 =「当前块**每行**含 ≥2 个 `|`」。** 自尾向前取**当前块**（连续**非空**行，
+  遇空行即止；行终止用的**单个尾 `\n`** 不算空行），当且仅当**每行**都含 ≥2 竖线时判为「未闭合
+  表格块」。理由：Markdown 表格行（含 `|---|` 分隔行）**恒**含 ≥2 竖线，而普通散文**罕见**；
+  「单竖线散文」（如 `见 foo|bar`）不误判。
+- **决策③：**围栏判定优先于表格**。** `_in_open_fence` **先判**，围栏**内**的 `|` **不作**表格
+  （代码块里写 Markdown 表格语法是合法内容，不应触发表格延后逻辑）。这与既有围栏分支的**优先序**
+  一致，围栏路径**逐字不动**。
+- **决策④：未闭合表格块**延后固化**，仅超硬上限兜底。** 新增常量 `_TAIL_TABLE_CAP = 8000`（与
+  `_TAIL_FENCE_CAP` 同口径）；`_show_delta` 在**围栏分支之后、常规分支之前**插入**表格分支**
+  （与围栏**同型**）：未闭合 ⇒ `_touch_tail` 延后；`len(text) >= _TAIL_TABLE_CAP` ⇒ `_freeze_tail`
+  兜底。理由：块**闭合**（出现空行或块外内容开始）后方恢复常规固化，未闭合缓冲**有界**。
+- **决策⑤：**只加表格分支，常规路径逐字不动**（零回归）。** `_TAIL_SPLIT` 常规路径与
+  `_freeze_tail` / `_touch_tail` / `_flush_live` 语义**不变**；表格分支只在「当前块每行 ≥2 个 `|`」
+  时生效，普通回复（无竖线）走既有路径，行为与缺省**逐字一致**。
+- **已知局限**：① **判据近似** —— 散文行含 ≥2 个 `|`（如 `a | b | c`）会**过度延后**固化
+  （**有界**：超 `_TAIL_TABLE_CAP` 兜底）；极罕见，本 change 接受。② **Web 端不渲染 Markdown**
+  —— `frontend/src/views/Chat.svelte` 以**纯文本** `{line.text}` 呈现（**无** markdown 渲染器），
+  表格在 Web 恒显竖线原文；那是「**无渲染器**」而非**分段 bug**，属**另一端、更大特性**，
+  **不在本 change 面**。③ **其它跨行结构**（列表 / 引用块）**未**纳入本 change —— 本次只对齐
+  用户点名且与围栏**机制同源**的**表格**。
+- **规格**：`ui`「CLI 友好交互」（MODIFIED，新增 Scenario「流式结构化块整体解析」）；接口面
+  `03-interfaces/ui-interface.md`、测试面 `04-testing/test-cases.md`、台账 `coding-plan/known-risk.md`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -3980,3 +4019,4 @@
 | ADR-0135 | 03-interfaces/composition-interface.md, 03-interfaces/deployment-interface.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0136 | 03-interfaces/durability-interface.md, coding-plan/cli-contract-baseline.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0137 | 03-interfaces/llm-provider-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/ui-interface.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/phase-32.md |
+| ADR-0138 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

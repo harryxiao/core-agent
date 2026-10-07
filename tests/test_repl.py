@@ -475,6 +475,75 @@ def test_tui_thinking_renders_in_single_collapsed_block() -> None:
     assert reply == "好了"  # 主回复呈现不受影响（终态收口原文）
 
 
+# ---- TUI 流式结构化块整体解析（change 0146 / 账本 E88）----
+
+
+def test_in_open_table_predicate() -> None:
+    """`_in_open_table` 判据：当前块每行 ≥2 个 `|` ⇒ 未闭合表格；空行或块外内容即闭合。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+
+    from core.ui.repl import build_app  # noqa: PLC0415 — 可选依赖懒 import
+
+    app = build_app(api)
+    in_open_table = app._in_open_table  # noqa: SLF001 — 判据为应用内静态方法（同 _in_open_fence）
+
+    assert in_open_table("| 水果 | 产地 |\n") is True  # 表头落定、分隔行未到 ⇒ 仍开
+    assert in_open_table("| 水果 | 产地 |\n|---|---|\n| 苹果 | 烟台 |\n") is True
+    assert in_open_table("| 水果 | 产地 |\n\n") is False  # 空行 ⇒ 表格块闭合
+    assert in_open_table("| 水果 | 产地 |\n接下来是散文\n") is False  # 块外内容 ⇒ 闭合
+    assert in_open_table("见 foo|bar\n") is False  # 单竖线散文 ⇒ 不误判
+    assert in_open_table("```\n| 水果 | 产地 |\n") is False  # 围栏块（含 ``` 行）不判为表格
+
+
+def test_streamed_table_renders_in_single_block() -> None:
+    """流式 Markdown 表格按行到达 ⇒ 整体落入**单个** Markdown 块（不逐行拆成多块）。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+
+    from core.ui.repl import build_app  # noqa: PLC0415 — 可选依赖懒 import
+
+    app = build_app(api)
+
+    rows = ["| 水果 | 产地 |\n", "|---|---|\n", "| 苹果 | 烟台 |\n", "| 橙子 | 赣南 |\n"]
+
+    class _TableLoop:
+        """逐行回放表格分片的 loop 替身（行间让出控制权 ⇒ 尾块挂载与增量更新交错）。"""
+
+        async def astream(self, user_input: str, *, session_id: str = ""):
+            from core.loop import LoopEvent  # noqa: PLC0415 — 事件构造
+
+            yield LoopEvent("loop_started", {"trace_id": "t1"})
+            for row in rows:
+                await asyncio.sleep(0.01)  # 真实流式分片节拍（挂载先于后续增量落定）
+                yield LoopEvent("reply_delta", {"text": row})
+            yield LoopEvent("loop_finished", {"reply": "<table>", "trace_id": "t1"})
+
+    api._loop = _TableLoop()  # noqa: SLF001 — 注入替身驱动事件面
+
+    async def drive() -> tuple[int, str, list[str]]:
+        async with app.run_test() as pilot:
+            from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+            from textual.widgets import Input, Markdown  # noqa: PLC0415 — 可选依赖懒 import
+
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            inp.value = "列个表"
+            await pilot.press("enter")
+            for _ in range(30):
+                await pilot.pause()
+            blocks = list(app.query_one("#timeline", Vertical).query(Markdown))
+            kinds = [type(k).__name__ for b in blocks for k in b.query("*")]
+            return len(blocks), "".join(str(b.source) for b in blocks), kinds
+
+    count, source, kinds = asyncio.run(drive())
+    assert count == 1, "表格整体落入单一 Markdown 块（不逐行固化拆块）"
+    assert "MarkdownTable" in kinds, "整块被解析为表格（非逐行竖线段落）"
+    assert "| 苹果 | 烟台 |" in source and "| 橙子 | 赣南 |" in source
+
+
 # ---- TUI 子任务运行态与里程碑详情（change 0124 / 账本 E52） ----
 
 
