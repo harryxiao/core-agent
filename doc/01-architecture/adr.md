@@ -4228,6 +4228,50 @@
   `03-interfaces/notes-interface.md`、模块面 `02-modules/notes.md`、测试面
   `04-testing/test-cases.md` §70、台账 `coding-plan/known-risk.md`。
 
+## ADR-0147：结构化关键事实抽取 —— 密钥引用式 + fail-closed 脱敏（change 0155 / 记忆三面路线图 G4）
+
+- **背景**：账本 **E92** —— 外部参考件 `Agent-Memory.md` 的 M4「结构化信息并行抽取」提出四类实体
+  Schema（`user_preferences` / `project_constraints` / `completed_tasks` / `key_facts`），本仓只有
+  `MemoryEntry.kind ∈ {episodic, semantic}` + `tags`。**落地红线**：参考示例把**密钥明文**写进长期记忆
+  （`Agent-Memory.md:35` `"value": "sk-xxxxxxxxx"`），与本仓红线「**密钥只引用不读取、绝不进日志/记忆**」
+  **直接冲突** ⇒ 本 change 的中心不是覆盖面，而是**把该红线做成真代码**。
+- **决策①：实体归属 —— 四类里只取 `key_facts`（用户拍板）。** 其余三类**各有既有归属**，不重复建面：
+  `project_constraints` → `notes` 常驻笔记（**操作者显式**置的任务级硬约束锚，ADR-0146）；
+  `completed_tasks` → `notes.observe_turn`（任务后写回主题文档，ADR-0143）；`user_preferences` →
+  L0 Core Profile（用户**自述**人格）。⇒ 本能力只补「**自动抽取的、可检索的关键事实**」这一维。
+- **决策②：注入面与既有接缝同构。** `MemoryStore(key_fact_extractor=...)`，契约
+  `KeyFactExtractor = Callable[[list[MemoryEntry]], list[KeyFact]]`（缺省 UNWIRED）；新增
+  `core/memory/extract.py`（`KeyFact` 数据类 + `build_extract_prompt` / `parse_key_facts` /
+  `extract_with(llm)`），照 `summarize.summarize_with` 先例 —— **memory 不 import 任何 LLM / rag 抽象**，
+  模型调用由 L5 组合根注入（`runtime` 复用同一 `_llm_text` 接缝）。**抽取与摘要各自独立**：`compact`
+  的会话循环在「摘要器**或**抽取器」注入时运行，两者互不依赖。
+- **决策③：信任边界在 store，不在注入方。** 脱敏由 memory 侧在**落库前**对抽取器的**每一条**结果
+  **无条件**执行（`_plan_key_facts`：先**整批**归一化，任一失败 ⇒ **整批不写**、不留半批）。
+  组合根注入的抽取器**不构成**信任边界 —— 「靠 prompt 让模型别写密钥」是**不可审计**的保证。
+- **决策④：脱敏方向恒为 over-redact，fail-closed。** `value` 命中密钥形态（已知令牌前缀族 / 私钥块 /
+  JWT / `key[:=]value` 赋值式 / 长随机串兜底）⇒ **强制** `<redacted>`；给出 `ref`（形如
+  `coeffect:<名称>`）⇒ `value` **一律** `<redacted>`（有引用即不留明文，即便原值看似正常）；
+  **裸密钥无可用引用 ⇒ 整条丢弃**（「记不住引用就不记」）并 `warnings.warn` 留痕（**含实体名、
+  不含取值**）。**先脱敏后截断**（截断不得使明文逃逸）；单次条数有界
+  `MAX_KEY_FACTS_PER_COMPACT`(8)，`entity` / `value` 长度有界 `_MAX_FACT_CHARS`(200)。
+- **决策⑤：落库形态与可撤销。** `id="keyfact.<实体 slug>"`（**同实体至多一条**、覆盖式更新、条目不增长）、
+  `kind="semantic"`、`source="extraction"`、`trace_id="compaction.<sid>"`（**与压实同 trace** ⇒ 按该
+  trace 回滚即与摘要、迁移**一并**逆转）、`tags=["key_fact","entity:<slug>",("ref:…")?,("session:<sid>")?]`。
+  **条目属全局层**（`session_id` 置空、**不**参与会话隔离 —— 实体事实是**跨会话**长期知识），产生它的
+  会话只作 `tags` 溯源标注（承 notes「刻意知识不参与会话隔离」取向）。
+- **不改** `read` / 排名 / 预算 / 压缩口径；**不加** CLI（关键事实是普通 semantic 条目，经既有 `read` /
+  `audit` 可见，`memory maintain` 即触发面）；**不做**输入侧（episodic 事件文本）的密钥过滤 —— 该面承
+  既有摘要路径同口径，**不在本 change 扩面**；**不引**三方库（仅 `re` / `json`）。
+- **已知局限**：① **脱敏是启发式**（前缀族 + 长随机串 + 赋值式），**不能保证**穷尽未知密钥格式 ⇒ 方向取
+  over-redact 缓解，但**非**形式化保证；② **误伤**：正常长标识符（长哈希 id、长 base64 片段）可能被
+  脱敏 ⇒ 可接受（安全侧）；③ **抽取质量**取决于注入的模型与 prompt，`parse_key_facts` **不可解析即不抽取**
+  （宁缺勿滥）；④ **输入侧仍会把事件文本送给模型**（摘要 / 抽取共用）⇒ 若对话里出现密钥，其**明文仍进入
+  LLM 请求**（既有面，本 change **未**扩面也**未**收口）；⑤ 关键事实**跨会话可见**是**有意**语义
+  （长期知识），但**不**参与遗忘的 `session_id` 归组 ⇒ 其生命周期由 L4 层与手工维护承担。
+- **规格**：`memory` **ADDED**「结构化实体抽取（关键事实）」；接口面
+  `03-interfaces/memory-interface.md` §3、模块面 `02-modules/memory.md`、测试面
+  `04-testing/test-cases.md` §71、台账 `coding-plan/known-risk.md`（**E92 已修**）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4369,3 +4413,4 @@
 | ADR-0144 | 03-interfaces/loop-interface.md, 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0145 | 03-interfaces/memory-interface.md, 03-interfaces/notes-interface.md, 02-modules/memory.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0146 | 03-interfaces/notes-interface.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0147 | 03-interfaces/memory-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -73,6 +73,7 @@ from core.memory import (
     MemoryStore,
     TranscriptStore,
     batch_embed,
+    extract_with,
     summarize_with,
 )
 from core.notes import NoteStore, promote_session_summary
@@ -391,6 +392,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         embedder=embedder,
         summarizer=summarizer,
         summary_promoter=_promote_summary,
+        # 结构化关键事实抽取（0155 / 路线图 G4）：同一 `_llm_text` 接缝；脱敏在 store 侧无条件执行。
+        key_fact_extractor=extract_with(_llm_text),
     )
     # 上下文压实接线（0041）：多轮历史 → persist 落 L2；此前 context.Compactor 与
     # memory.compact 都无生产调用方（死路径），现由 loop 的轮数/预算阈值触发。

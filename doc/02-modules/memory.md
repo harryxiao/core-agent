@@ -97,7 +97,34 @@ MemoryStore
 - 溶解由 L4 诊断触发：插件失败归因后 `MemoryStore.dissolve`，把插件语义 + 教训回写为 L3 技能。
 - 二者都走**可逆效应**：结晶可回滚（卸载插件恢复技能），溶解可回滚（重装插件）。
 
-### 3.4 后端可插拔
+### 3.4 结构化关键事实抽取（key_facts，change `0155`／ADR-0147／路线图 G4）
+
+- **动机（账本 E92）**：既有记忆只有 `kind ∈ {episodic, semantic}` + `tags`，无结构化实体面。
+  外部参考件 M4 提四类（偏好 / 工程约束 / 完成任务 / 关键事实），**本仓只取 `key_facts`** —— 其余三类
+  **各有既有归属**（分别归 `notes` 常驻笔记 / `notes.observe_turn` / L0 Core Profile），不重复建面。
+- **接缝**：`MemoryStore(key_fact_extractor=...)`，契约
+  `KeyFactExtractor = Callable[[list[MemoryEntry]], list[KeyFact]]`（缺省 UNWIRED）；新增
+  `core/memory/extract.py`（`KeyFact` / `build_extract_prompt` / `parse_key_facts` / `extract_with(llm)`）
+  —— 照 `summarize.summarize_with` 先例，**memory 不 import LLM / rag 抽象**，模型调用由组合根注入。
+  触发点在 `compact` 的会话循环内（与摘要**同材料、同门控、同 trace**），但**与摘要互不依赖**
+  （循环在「摘要器**或**抽取器」注入时运行）。
+- **落库形态**：`id="keyfact.<实体 slug>"`（**同实体至多一条**、覆盖式更新、条目不增长）、
+  `kind="semantic"`、`source="extraction"`、`trace_id="compaction.<sid>"`（**与压实同 trace** ⇒
+  一并可撤销）、`tags=["key_fact","entity:<slug>",("ref:…")?,("session:<sid>")?]`。
+  **属全局层**（`session_id` 置空、不参与会话隔离 —— 实体事实是**跨会话**长期知识）；产生它的会话
+  只作 `tags` 溯源标注。
+- **密钥红线（本能力的核心）**：**密钥只引用不读取、绝不进记忆**。脱敏由 memory 侧在**落库前**对
+  抽取器返回的**每一条**结果**无条件**执行 —— 注入的抽取器**不构成信任边界**（「靠 prompt 让模型
+  别写密钥」不可审计）。规则：① `value` 呈密钥形态（前缀族 / 私钥块 / JWT / `key[:=]value` /
+  长随机串兜底）⇒ **强制** `<redacted>`；② 给出 `ref`（`coeffect:<名称>`）⇒ `value` **一律**
+  `<redacted>`；③ **裸密钥无可用引用 ⇒ 整条丢弃** + `warnings.warn` 留痕（含实体名、**不含**取值）。
+  ⇒ 方向恒为 **over-redact**（拿不准即多脱敏）。**先脱敏后截断**（截断不得使明文逃逸）。
+- **有界**：单次条数 `MAX_KEY_FACTS_PER_COMPACT`(8)；`entity` / `value` 长度 `_MAX_FACT_CHARS`(200)。
+  **整批归一化后再落库**（归一化失败 ⇒ 整批不写，不留半批）；抽取器抛错 / 返回不可解析 ⇒ **降级为
+  不抽取**（不牵连摘要写回与条目迁移）。
+- 落库走既有唯一写路径 `MemoryStore.write()`（记可撤销效应），不另开第二写路径。
+
+### 3.5 后端可插拔
 
 - MVP：文件后端（`memory/*.md` 与 `memory/*.jsonl`），可审计、无外部依赖。
 - 未来：向量库后端（同一 `MemoryStore` 接口，`read` 换检索实现）。

@@ -19,6 +19,13 @@ from core.judgment import Compactor, DecisionResult
 from core.plugin_registry import Effect, EffectTracker
 
 from .backend import FileBackend
+from .extract import (
+    MAX_KEY_FACTS_PER_COMPACT,
+    KeyFact,
+    KeyFactExtractor,
+    scrub_key_fact,
+    slug_entity,
+)
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
 from .relevance import rank, recency_decay
 from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter
@@ -38,6 +45,9 @@ _FORGET_THRESHOLD = 0.05
 # 单次压实的逐条目打分调用上界（score 原语一次只给一条目的分）
 _MAX_SCORED_PER_COMPACT = 20
 
+# 关键事实条目标签前缀（`MAX_KEY_FACTS_PER_COMPACT` 见 extract 模块）
+_KEY_FACT_TAG = "key_fact"
+
 
 def _decay_score(entry: MemoryEntry) -> float:
     """遗忘评分：新鲜度 × 复用频次 × 重要度（三者皆低才归档）。"""
@@ -52,6 +62,25 @@ def _below_gate(entries: list[MemoryEntry], scores: dict[str, float]) -> bool:
     """
     got = [scores[entry.id] for entry in entries if entry.id in scores]
     return bool(got) and max(got) < _CONSOLIDATE_THRESHOLD
+
+
+def _plan_key_facts(raw: list[KeyFact]) -> tuple[list[KeyFact], list[str]]:
+    """整批归一化关键事实：**脱敏 + 有界**，返回（可落库事实, 被丢弃的实体名）。
+
+    脱敏由 ``scrub_key_fact`` 无条件执行（注入方不构成信任边界）；无实体 slug 者不计入落库。
+    """
+    plan: list[KeyFact] = []
+    dropped: list[str] = []
+    for fact in raw:
+        cleaned = scrub_key_fact(fact)
+        if cleaned is None:
+            dropped.append(fact.entity.strip() or "<?>")
+            continue
+        if slug_entity(cleaned.entity):
+            plan.append(cleaned)
+        if len(plan) >= MAX_KEY_FACTS_PER_COMPACT:
+            break
+    return plan, dropped
 
 
 class MemoryStore:
@@ -70,6 +99,7 @@ class MemoryStore:
         compactor: Compactor | None = None,
         summarizer: Summarizer | None = None,
         summary_promoter: SummaryPromoter | None = None,
+        key_fact_extractor: KeyFactExtractor | None = None,
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
         self._tracker = effect_tracker if effect_tracker is not None else EffectTracker()
@@ -77,6 +107,7 @@ class MemoryStore:
         self._compactor = compactor
         self._summarizer = summarizer
         self._summary_promoter = summary_promoter
+        self._key_fact_extractor = key_fact_extractor
         self._hot: dict[str, MemoryEntry] = {}
         self._vectors: dict[str, list[float]] = {}
         self._embed_failed = False
@@ -230,6 +261,10 @@ class MemoryStore:
         注入 ``summary_promoter``（提升钩子）时，某会话摘要**首次越过**滚动上界
         （``MAX_SUMMARY_CHARS``）即把该摘要条目交付钩子**一次**（供上层落 canonical 真相层；
         change 0153 / 路线图 G3）。缺省 UNWIRED ⇒ 不交付、行为逐字不变。
+
+        注入 ``key_fact_extractor``（结构化抽取器，change 0155 / 路线图 G4）时，对**同一批**被聚合的
+        episodic 条目抽取「实体 → 取值」关键事实，落为 ``semantic`` 条目（脱敏后）。缺省 UNWIRED ⇒
+        不抽取、行为逐字不变。**抽取不依赖摘要器**：两者独立注入、独立生效。
         """
         decision: DecisionResult | None = None
         if self._compactor is not None:
@@ -241,7 +276,7 @@ class MemoryStore:
                 )
             except Exception:  # noqa: BLE001 — 决策分值是咨询性返回值（无写入副作用），
                 decision = None  # 其失败不外溢为「固化/遗忘整轮停摆」
-        if self._summarizer is not None:
+        if self._summarizer is not None or self._key_fact_extractor is not None:
             self._summarize_sessions(session_id)
         return decision
 
@@ -320,10 +355,10 @@ class MemoryStore:
     def _summarize_sessions(self, session_id: str = "") -> None:
         """按会话聚合 episodic 条目 → 打分写回 + 价值门控 → 提炼摘要 → 归档原条目。
 
+        同一循环内亦承载**结构化关键事实抽取**（change 0155）—— 与摘要同材料、同门控、同 trace。
         ``session_id`` 非空 ⇒ 只聚合该会话（change `0131` / E66）；空串 ⇒ 全量（逐字不变）。
         """
         summarizer = self._summarizer
-        assert summarizer is not None  # noqa: S101 — 调用点已判空
         groups = self._episodic_groups(session_id)
         scores: dict[str, float] = {}
         if self._compactor is not None:
@@ -331,13 +366,14 @@ class MemoryStore:
         for sid, entries in groups.items():
             if _below_gate(entries, scores):
                 continue
-            prior = self._existing_summary(sid)
-            material = [prior, *entries] if prior is not None else entries
-            summary = summarizer(material)
-            if not summary:
-                continue
-            self._commit_summary(sid, entries, summary)
-            self._deliver_promotion(sid, prior, summary)
+            if summarizer is not None:
+                prior = self._existing_summary(sid)
+                material = [prior, *entries] if prior is not None else entries
+                summary = summarizer(material)
+                if summary:
+                    self._commit_summary(sid, entries, summary)
+                    self._deliver_promotion(sid, prior, summary)
+            self._extract_key_facts(sid, entries)
 
     def _score_importance(self, entries: list[MemoryEntry]) -> dict[str, float]:
         """逐条目 importance 打分（judgment ``score`` 原语）并写回（可逆）。
@@ -455,6 +491,59 @@ class MemoryStore:
                 RuntimeWarning,
                 stacklevel=2,
             )
+
+    def _extract_key_facts(self, session_id: str, entries: list[MemoryEntry]) -> None:
+        """结构化关键事实抽取（change 0155 / ADR-0147 / 路线图 G4）。
+
+        先**整批**归一化（脱敏 + 有界），再落库 —— 归一化阶段任何失败 ⇒ **整批不写**（不留半批）。
+        **脱敏在 store 侧无条件执行**：组合根注入的抽取器**不构成信任边界**。裸密钥无可用引用 ⇒
+        整条丢弃并留痕（留痕含实体名、**不含**取值）。条目属**全局层**（`session_id` 置空 ⇒ 跨会话
+        可见），产生它的会话经 `tags` 的 `session:<sid>` 标注溯源。
+        """
+        extractor = self._key_fact_extractor
+        if extractor is None or not entries:
+            return
+        key = session_id or "default"
+        try:
+            plan, dropped = _plan_key_facts(extractor(entries))
+        except Exception:  # noqa: BLE001 — 抽取失败降级：整批不写，不牵连压实
+            warnings.warn(
+                f"key-fact extraction failed for session {key!r}; no key facts were written",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return
+        for fact in plan:
+            self._write_key_fact(fact, key=key, session_id=session_id)
+        if dropped:
+            warnings.warn(
+                "key facts dropped (secret-shaped value without a usable reference): "
+                f"{', '.join(dropped)}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+    def _write_key_fact(self, fact: KeyFact, *, key: str, session_id: str) -> None:
+        """落一条关键事实（同实体同一 `id` ⇒ 覆盖式更新、条目不增长）。"""
+        slug = slug_entity(fact.entity)
+        tags = [_KEY_FACT_TAG, f"entity:{slug}"]
+        if fact.ref:
+            tags.append(f"ref:{fact.ref}")
+        if session_id:
+            tags.append(f"session:{key}")
+        self.write(
+            "L2",
+            MemoryEntry(
+                id=f"keyfact.{slug}",
+                layer="L2",
+                content=f"{fact.entity}: {fact.value}",
+                tags=tags,
+                source="extraction",
+                trace_id=f"compaction.{key}",
+                session_id="",
+                kind="semantic",
+            ),
+        )
 
     def _all_entries(self) -> list[MemoryEntry]:
         """全量条目（冷区 + 热区）：冷区读取失败降级为热区，不抛。"""

@@ -10,6 +10,17 @@ L0-L4 分层记忆、热/冷温度检索、无行动不记忆、结晶/溶解、
 from .backend import FileBackend
 from .crystallizer import Crystallizer, PluginCandidate
 from .embedding import batch_embed
+from .extract import (
+    MAX_KEY_FACTS_PER_COMPACT,
+    REDACTED,
+    KeyFact,
+    KeyFactExtractor,
+    build_extract_prompt,
+    extract_with,
+    parse_key_facts,
+    scrub_key_fact,
+    slug_entity,
+)
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
 from .relevance import rank, recency_decay, relevance
 from .store import MemoryStore
@@ -20,20 +31,29 @@ __all__ = [
     "Crystallizer",
     "FileBackend",
     "IndexEntry",
+    "KeyFact",
+    "KeyFactExtractor",
     "Layer",
+    "MAX_KEY_FACTS_PER_COMPACT",
     "MAX_SUMMARY_CHARS",
     "MemoryBackend",
     "MemoryEntry",
     "MemoryId",
     "MemoryStore",
     "PluginCandidate",
+    "REDACTED",
     "Summarizer",
     "SummaryPromoter",
     "TranscriptStore",
     "batch_embed",
+    "build_extract_prompt",
     "build_prompt",
+    "extract_with",
+    "parse_key_facts",
     "rank",
     "recency_decay",
     "relevance",
+    "scrub_key_fact",
+    "slug_entity",
     "summarize_with",
 ]

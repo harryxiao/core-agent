@@ -1108,6 +1108,27 @@
 
 ---
 
+## 71. 结构化实体抽取（关键事实）：密钥引用式 + fail-closed 脱敏（TC-KEYFACT，change `0155`／ADR-0147／路线图 G4）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-KEYFACT-01 | memory/spec.md「结构化实体抽取（关键事实）」密钥红线条款 | `scrub_key_fact`：`value` 为已知前缀族（`sk-` / `sk-ant-` / `ghp_` / `AKIA` / `xoxb-`）、PEM 私钥块、`password: …` 赋值式；以及 38 字符长随机串；均带 `ref` | 一律 **强制** `<redacted>`（`ref` 原样保留）（锚点：`test_memory_key_facts.py::test_scrub_redacts_secret_shaped_values` / `::test_scrub_redacts_long_random_string`） |
+| TC-KEYFACT-02 | 同 Requirement（引用式取值一律脱敏） | `value="生产集群 A"`（看似正常）+ `ref="coeffect:env"` | `value` **一律** `<redacted>`（有引用即不留明文）；`ref` 进 `tags`（锚点：`::test_scrub_forces_redacted_when_ref_present`） |
+| TC-KEYFACT-03 | 同 Requirement Scenario「fail-closed —— 裸密钥无引用则整条丢弃」 | `value` 为密钥形态、`ref` 为空；同批另一条合规事实 | 该条 `scrub_key_fact` ⇒ `None`、**不落库**；`warnings.warn` 留痕**含实体名、不含取值**；同批合规条照常落库（锚点：`::test_scrub_drops_bare_secret_without_ref` / `::test_secret_without_ref_is_dropped_with_warning` / `::test_mixed_batch_keeps_compliant_facts`） |
+| TC-KEYFACT-04 | 同 Requirement Scenario「抽取落库 + 同实体幂等覆盖」 | 抽取器返回「部署环境 → 生产集群 A」 | `id="keyfact.部署环境"`、`kind="semantic"`、`source="extraction"`、`trace_id="compaction.s1"`、`tags` 含 `key_fact`/`entity:部署环境`/`session:s1`、`session_id=""`（全局层）；再次同实体不同取值 ⇒ 仍**单条**（覆盖式不增长）（锚点：`::test_extracted_key_fact_lands_with_expected_shape` / `::test_same_entity_is_idempotent_overwrite`） |
+| TC-KEYFACT-05 | 同 Requirement（属全局层 ⇒ 跨会话可见） | 会话 `s1` 抽出的关键事实；以 `session_id="s2"` 检索 | 仍可召回（关键事实不参与会话隔离）（锚点：`::test_key_fact_is_global_so_visible_across_sessions`） |
+| TC-KEYFACT-06 | 同 Requirement Scenario「未注入抽取器 ⇒ 零抽取、逐字不变」 | `MemoryStore` 未注入 `key_fact_extractor`；对照仅注入抽取器（未注入摘要器） | 未注入 ⇒ 无 `key_fact` 条目、摘要与迁移逐字不变；仅抽取器 ⇒ 抽取生效、不写摘要条目（两者**互不依赖**）（锚点：`::test_unwired_extractor_changes_nothing` / `::test_extraction_runs_without_summarizer`） |
+| TC-KEYFACT-07 | 同 Requirement Scenario「抽取器抛错或返回不可解析 ⇒ 降级不抽取」 | 抽取器抛错 | 不落库、`warnings.warn` 留痕；摘要**仍**写回、原条目**仍**迁 L4（压实不中断）（锚点：`::test_extractor_exception_degrades_without_aborting_compaction`） |
+| TC-KEYFACT-08 | 同 Requirement Scenario「关键事实条目随压实一并可撤销」 | 触发带抽取的压实后按 `compaction.s1` 回滚 | 关键事实条目与摘要一并移除、原条目迁回原层（锚点：`::test_key_facts_are_reverted_with_compaction`） |
+| TC-KEYFACT-09 | 同 Requirement（条数与长度有界，先脱敏后截断） | 一次返回 `MAX_KEY_FACTS_PER_COMPACT+4` 条；`entity`/`value` 各 400 字；超长密钥 | 落库恰 `MAX_KEY_FACTS_PER_COMPACT` 条；长度 ≤ `_MAX_FACT_CHARS`；先脱敏后截断（不残留明文片段）（锚点：`::test_fact_count_is_bounded` / `::test_fact_length_is_bounded` / `::test_scrub_redacts_before_truncating`） |
+| TC-KEYFACT-10 | 同 Requirement（解析容错）+「无行动不记忆」 | `parse_key_facts`：代码围栏 / 非 JSON / 非数组 / 元素非对象 / 缺字段；无 episodic 条目时压实 | 围栏可解析；不可解析 ⇒ `[]`；畸形元素跳过；**无 episodic 条目 ⇒ 不抽取**（锚点：`::test_parse_tolerates_code_fence_and_surrounding_text` / `::test_parse_returns_empty_on_unparseable` / `::test_parse_skips_malformed_items` / `::test_no_episodic_entries_no_extraction`） |
+
+> **无手工验收项**：纯库内行为（抽取接缝 + 脱敏原语 + 落库形态），全自动门禁（pytest）覆盖。
+> 语义：**信任边界在 store**（注入的抽取器不构成信任边界，脱敏无条件执行）；**over-redact**（拿不准
+> 即多脱敏，落在安全侧）；**fail-closed**（记不住引用就不记）；**与摘要互不依赖**、**与压实同 trace 可撤销**。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

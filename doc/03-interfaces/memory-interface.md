@@ -205,6 +205,35 @@ object]``）时，某会话摘要**首次越过**上界（既有摘要长度 ≤
 空串 ⇒ 不交付。钩子 UNWIRED（缺省）⇒ 不交付、行为逐字不变；钩子抛错 ⇒ 降级（``warnings.warn``
 留痕，不牵连压实的写回与迁移）。memory **只报边界**、**不** import notes（落盘由组合根注入的闭包完成）。
 
+### 结构化关键事实抽取（compact，change `0155` / ADR-0147 / 路线图 G4）
+
+注入 ``key_fact_extractor``（契约 ``KeyFactExtractor = Callable[[list[MemoryEntry]], list[KeyFact]]``，
+缺省 UNWIRED）时，``compact`` 对**同一批**被聚合的 episodic 条目抽取「实体 → 取值」关键事实：
+
+| 字段 | 取值 |
+|---|---|
+| `id` | `keyfact.<实体 slug>`（**同实体至多一条**；重复抽取**覆盖式更新**、条目不增长） |
+| `kind` | `semantic`（提炼事实，不再被下次聚合选中） |
+| `source` | `extraction`（短标签） |
+| `trace_id` | `compaction.<session_id>`（**与压实同 trace**：`rollback(trace_id)` 与摘要、迁移**一并**逆转） |
+| `tags` | `["key_fact", "entity:<slug>", ("ref:<ref>")?, ("session:<sid>")?]` |
+| `session_id` | **空串**（全局层、**不**参与会话隔离 —— 跨会话长期知识；会话只作 `tags` 溯源标注） |
+
+``KeyFact``（``core.memory.extract``）：``entity`` / ``value`` / ``ref``（``ref`` 非空 ⇒ **引用式**，
+形如 ``coeffect:<名称>``，真值经 ``CoeffectResolver`` 在使用时注入 ⇒ ``value`` 恒为 ``"<redacted>"``）。
+
+**密钥红线**（本能力的核心）：脱敏在 **memory 侧**对抽取器返回的**每一条**结果**无条件**执行 ——
+注入的抽取器**不构成信任边界**。规则 ① ``value`` 呈密钥形态（令牌前缀族 / 私钥块 / JWT /
+``key[:=]value`` / 长随机串兜底）⇒ **强制** ``"<redacted>"``；② 有 ``ref`` ⇒ ``value`` **一律**
+``"<redacted>"``；③ **裸密钥无可用引用 ⇒ 整条丢弃** + ``warnings.warn`` 留痕（含实体名、**不含**取值）。
+方向恒为 **over-redact**。**先脱敏后截断**（``_MAX_FACT_CHARS``=200；条数上界
+``MAX_KEY_FACTS_PER_COMPACT``=8）。
+
+**降级**：抽取器抛错 / 返回不可解析 ⇒ **不抽取**（``warnings.warn`` 留痕），**不**牵连压实的摘要
+写回与条目迁移；未注入抽取器（缺省）⇒ 零抽取、压实行为**逐字不变**。抽取器与摘要器**互不依赖**：
+``compact`` 的会话循环在「摘要器**或**抽取器」注入时运行。模型调用经 ``extract_with(llm)`` 适配
+（prompt 与解析器属 memory 域；memory **不** import LLM 抽象）。
+
 ### 固化打分 + 价值门控（compact，0042）
 
 注入 ``compactor`` 时，``compact`` 在提炼前先**逐条目打分**并写回 ``importance``：
