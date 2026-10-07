@@ -13,6 +13,7 @@ from core.ui import Event, UIAPILayer, UiError, UiErrorCode
 from core.ui.repl import (
     _event_delta,
     _format_event,
+    _palette_options,
     _parse_beast_command,
     barge_in_event,
     build_app,
@@ -1329,3 +1330,390 @@ def test_parse_beast_command_forms() -> None:
     assert _parse_beast_command("/recall") is None
     assert _parse_beast_command("你好") is None
     assert _parse_beast_command("/focus s1") is None
+
+
+# ---- 斜杠命令浮层与补全（change 0159 / ADR-0151） ----
+
+
+def test_palette_options_lists_all_commands_on_slash() -> None:
+    """输入 `/` ⇒ 列出单一真源内的全部命令（顺序即真源顺序）。"""
+    assert [c.fill for c in _palette_options("/")] == [
+        "/task",
+        "/focus",
+        "/main",
+        "/summon",
+        "/recall",
+    ]
+
+
+def test_palette_options_filters_by_command_prefix() -> None:
+    """候选按前缀收窄（只认命令名前缀）。"""
+    assert [c.fill for c in _palette_options("/ta")] == ["/task"]
+    assert [c.fill for c in _palette_options("/re")] == ["/recall"]
+
+
+def test_palette_options_closed_for_unknown_or_plain_input() -> None:
+    """未知前缀 / 普通消息 / 空输入 / 带参命令已进参数位 ⇒ 均不呈现。"""
+    assert _palette_options("/zzz") == []
+    assert _palette_options("hi") == []
+    assert _palette_options("") == []
+    assert _palette_options("/task ") == []  # 参数不可枚举 ⇒ 无二级
+
+
+def test_palette_options_second_level_lists_and_narrows_subtasks() -> None:
+    """二级候选取既有子任务标识，并同样按前缀收窄。"""
+    assert [c.fill for c in _palette_options("/focus ", subtask_ids=["1", "2"])] == [
+        "/focus 1",
+        "/focus 2",
+    ]
+    assert [c.fill for c in _palette_options("/focus 2", subtask_ids=["1", "2"])] == ["/focus 2"]
+
+
+def test_palette_options_closed_when_arg_has_space() -> None:
+    """参数位内出现空格（自由文本参数）⇒ 不呈现（不与普通对话抢键）。"""
+    assert _palette_options("/focus 1 x", subtask_ids=["1"]) == []
+    assert _palette_options("/summon qinglong 架构设计") == []
+
+
+def test_palette_options_no_second_level_for_non_enum_arg() -> None:
+    """参数**不可枚举**的命令（`/summon` `/task`）不进二级。"""
+    assert _palette_options("/summon qinglong") == []
+    assert _palette_options("/task build") == []
+
+
+def test_palette_options_arg_next_marks_commands_taking_arg() -> None:
+    """带参数命令采纳后补出参数位（`arg_next`），无参命令不补。"""
+    by_fill = {c.fill: c for c in _palette_options("/")}
+    assert by_fill["/task"].arg_next is True
+    assert by_fill["/focus"].arg_next is True
+    assert by_fill["/main"].arg_next is False
+
+
+def _palette_api(*, orchestrator: object | None = None) -> tuple[UIAPILayer, RecordingLoop]:
+    """浮层用例的 api：真 `RecordingLoop` + 可选编排器桩（LLM 已配置）。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop, orchestrator=orchestrator)
+    api.set_llm_config(_llm())
+    return api, loop
+
+
+def _palette_display(app: object) -> bool:
+    """浮层是否可见（`display` 翻转即开合）。"""
+    from textual.widgets import OptionList  # noqa: PLC0415 — 可选依赖懒 import
+
+    return bool(app.query_one("#palette", OptionList).display)  # type: ignore[attr-defined]
+
+
+def _palette_option_ids(app: object) -> list[str | None]:
+    """浮层当前候选的 id 列表（`cmd:<名>` / `arg:<标识>`）。"""
+    from textual.widgets import OptionList  # noqa: PLC0415 — 可选依赖懒 import
+
+    opts = app.query_one("#palette", OptionList).options  # type: ignore[attr-defined]
+    return [o.id for o in opts]
+
+
+def test_palette_opens_on_slash_and_lists_registered_commands() -> None:
+    """输入 `/` ⇒ 浮层可见并列出单一真源内的既有 5 命令（`/resume` 属 0160，此处不登记）。"""
+    api, _ = _palette_api()
+    app = build_app(api)
+
+    async def drive() -> list[str | None]:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            app.query_one("#input", Input).focus()
+            await pilot.press("/")
+            await pilot.pause()
+            assert _palette_display(app) is True
+            return _palette_option_ids(app)
+
+    assert asyncio.run(drive()) == [
+        "cmd:/task",
+        "cmd:/focus",
+        "cmd:/main",
+        "cmd:/summon",
+        "cmd:/recall",
+    ]
+
+
+def test_palette_closes_when_input_cleared() -> None:
+    """清空输入 ⇒ 浮层收起。"""
+    api, _ = _palette_api()
+    app = build_app(api)
+
+    async def drive() -> tuple[bool, bool]:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            app.query_one("#input", Input).focus()
+            await pilot.press("/")
+            await pilot.pause()
+            opened = _palette_display(app)
+            await pilot.press("backspace")
+            await pilot.pause()
+            return opened, _palette_display(app)
+
+    assert asyncio.run(drive()) == (True, False)
+
+
+def test_palette_arrows_move_highlight_keeping_focus_in_input() -> None:
+    """`↑`/`↓` 移动高亮，**焦点仍留在输入框**（浮层不可聚焦）。"""
+    api, _ = _palette_api()
+    app = build_app(api)
+
+    async def drive() -> tuple[object, object, object]:
+        from textual.widgets import Input, OptionList  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            app.query_one("#input", Input).focus()
+            await pilot.press("/")
+            await pilot.pause()
+            palette = app.query_one("#palette", OptionList)
+            palette.highlighted = None  # 起点复位（避免依赖初始高亮策略）
+            await pilot.press("down")
+            await pilot.pause()
+            first = palette.highlighted
+            await pilot.press("down")
+            await pilot.pause()
+            return first, palette.highlighted, getattr(app.focused, "id", None)
+
+    first, second, focused = asyncio.run(drive())
+    assert first == 0
+    assert isinstance(second, int) and second != first
+    assert focused == "input"
+
+
+def test_palette_tab_accepts_highlighted_command_without_submitting() -> None:
+    """`Tab` 采纳高亮项：补出参数位、**不提交**，且不把焦点带走（App 默认 Tab 焦点后移被扣下）。"""
+    api, loop = _palette_api()
+    app = build_app(api)
+
+    async def drive() -> tuple[str, object]:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            app.query_one("#input", Input).focus()
+            for ch in "/fo":
+                await pilot.press(ch)
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+            return app.query_one("#input", Input).value, getattr(app.focused, "id", None)
+
+    value, focused = asyncio.run(drive())
+    assert value == "/focus "  # 采纳：命令 + 参数位（不提交）
+    assert focused == "input"
+    assert loop.inputs == []
+
+
+def test_palette_enter_completes_prefix_without_submitting() -> None:
+    """浮层打开且输入为高亮项**前缀**时，`Enter` 只补全、不提交（避免与 `Submitted` 双执行）。"""
+    api, loop = _palette_api()
+    app = build_app(api)
+
+    async def drive() -> str:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            app.query_one("#input", Input).focus()
+            for ch in "/ta":
+                await pilot.press(ch)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            return app.query_one("#input", Input).value
+
+    assert asyncio.run(drive()) == "/task "
+    assert loop.inputs == []
+
+
+def test_palette_escape_closes_without_touching_input() -> None:
+    """`Esc` 收起浮层，输入框文本不变。"""
+    api, _ = _palette_api()
+    app = build_app(api)
+
+    async def drive() -> tuple[str, bool]:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            app.query_one("#input", Input).focus()
+            await pilot.press("/")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            return app.query_one("#input", Input).value, _palette_display(app)
+
+    assert asyncio.run(drive()) == ("/", False)
+
+
+def test_palette_does_not_hijack_unknown_slash_input() -> None:
+    """**零回归**：未知前缀（`/zzz`）浮层不呈现，`Enter` 走既有路径（进普通对话）。"""
+    api, loop = _palette_api()
+    app = build_app(api)
+
+    async def drive() -> bool:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            app.query_one("#input", Input).focus()
+            for ch in "/zzz":
+                await pilot.press(ch)
+            await pilot.pause()
+            assert _palette_display(app) is False
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+            return _palette_display(app)
+
+    closed = asyncio.run(drive())
+    assert closed is False
+    assert loop.inputs == ["/zzz"]  # 未知前缀仍是普通消息（分发命运不变）
+
+
+def test_palette_absent_keeps_arrows_and_escape_inert() -> None:
+    """浮层未呈现时 `↑`/`↓`/`Esc` **零影响**（`Input` 本就不绑定这三键）。"""
+    api, _ = _palette_api()
+    app = build_app(api)
+
+    async def drive() -> tuple[str, object]:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            app.query_one("#input", Input).focus()
+            await pilot.press("h", "i")
+            await pilot.pause()
+            await pilot.press("up", "down", "escape")
+            await pilot.pause()
+            return app.query_one("#input", Input).value, getattr(app.focused, "id", None)
+
+    value, focused = asyncio.run(drive())
+    assert value == "hi"
+    assert focused == "input"
+
+
+def test_palette_suppressed_while_approval_pending() -> None:
+    """**审批挂起**期间不呈现浮层（y/n 决断输入不被遮蔽或改写）。"""
+    api, _ = _palette_api()
+    app = build_app(api)
+
+    async def drive() -> tuple[bool, str]:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            app._approval_future = asyncio.get_running_loop().create_future()  # noqa: SLF001
+            inp.value = "/"
+            await pilot.pause()
+            shown = _palette_display(app)
+            app._approval_future = None  # noqa: SLF001
+            return shown, inp.value
+
+    shown, value = asyncio.run(drive())
+    assert shown is False
+    assert value == "/"  # 输入未被魔改
+
+
+def test_palette_second_level_lists_live_subtask_ids() -> None:
+    """二级候选取自**既有**在途子任务面（`self._open` 的键），零新增数据源。"""
+    milestone, done = asyncio.Event(), asyncio.Event()
+    orch = _GatedOrchestrator(milestone=milestone, done=done)
+    api, _ = _palette_api(orchestrator=orch)
+    app = build_app(api)
+
+    async def drive() -> list[str | None]:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            await _type_line(pilot, "/task 查答案")
+            await _wait_started(pilot, orch)
+            inp.value = "/focus "  # 命令 + 空格 ⇒ 进二级
+            await pilot.pause()
+            ids = _palette_option_ids(app)
+            milestone.set()
+            done.set()
+            for _ in range(20):
+                await pilot.pause()
+            return ids
+
+    assert asyncio.run(drive()) == ["arg:1"]
+
+
+def test_palette_second_level_fill_targets_subtask() -> None:
+    """二级采纳后写入 `/focus <标识>`（可直接回车执行既有焦点命令）。"""
+    milestone, done = asyncio.Event(), asyncio.Event()
+    orch = _GatedOrchestrator(milestone=milestone, done=done)
+    api, _ = _palette_api(orchestrator=orch)
+    app = build_app(api)
+
+    async def drive() -> str:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            await _type_line(pilot, "/task 查答案")
+            await _wait_started(pilot, orch)
+            inp.value = "/focus "
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+            value = inp.value
+            milestone.set()
+            done.set()
+            for _ in range(20):
+                await pilot.pause()
+            return value
+
+    assert asyncio.run(drive()) == "/focus 1"
+
+
+def test_ghost_completion_shows_and_accepts_remainder() -> None:
+    """内联幽灵补全：命令名前缀 ⇒ 补出剩余字符，`→` 采纳（与浮层候选同源）。"""
+    api, _ = _palette_api()
+    app = build_app(api)
+
+    async def drive() -> tuple[str | None, str]:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            for ch in "/re":
+                await pilot.press(ch)
+            await pilot.pause()
+            suggestion = inp._suggestion  # noqa: SLF001 — 断言补全建议（原生私有属性）
+            await pilot.press("right")
+            await pilot.pause()
+            return suggestion, inp.value
+
+    suggestion, value = asyncio.run(drive())
+    assert suggestion == "/recall"
+    assert value == "/recall"
+
+
+def test_registry_commands_are_all_dispatchable() -> None:
+    """**单一真源的可执行守护**：真源内每条命令都被分发链**消费**（不落普通对话）。
+
+    任一条只登记、未接线（如尚未进表的 `/resume`），本用例即红。
+    """
+    orch = _TaskOrchestrator([("task_finished", {"outcomes": []})])
+    api, loop = _palette_api(orchestrator=orch)
+    app = build_app(api)
+
+    async def drive() -> None:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            for line in ("/task 目标", "/focus 1", "/main", "/summon qinglong", "/recall qinglong"):
+                inp.value = line
+                await pilot.press("enter")
+                for _ in range(30):
+                    await pilot.pause()
+
+    asyncio.run(drive())
+    assert loop.inputs == []  # 全部被分发链消费（无一落进普通对话）

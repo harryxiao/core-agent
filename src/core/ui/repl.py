@@ -20,7 +20,8 @@ CLIBridge.connect() 落地为 Textual 交互会话循环；textual 仅此文件�
 from __future__ import annotations
 
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, cast
 
 from .api import UIAPILayer
@@ -198,6 +199,73 @@ def _parse_beast_command(text: str) -> tuple[str, str, str] | None:
 _BEAST_USAGE = "用法：/summon <神兽> [任务] ｜ /recall <神兽>"
 
 
+@dataclass(frozen=True)
+class _Command:
+    """斜杠命令的**登记项**（单一真源）：浮层据此呈现，SHALL NOT 与分发各记一份。"""
+
+    name: str  # 触发词（含前导斜杠）
+    summary: str  # 浮层一行说明
+    arg: str = ""  # 参数名（"" ⇒ 无参数；采纳后补出参数位）
+    arg_source: str = ""  # 参数候选来源键（"" ⇒ 不可枚举；"subtask" ⇒ 既有在途子任务）
+
+
+_COMMANDS: tuple[_Command, ...] = (
+    _Command("/task", "启动编排任务", "目标"),
+    _Command("/focus", "聚焦子任务视图", "子任务标识", "subtask"),
+    _Command("/main", "返回主视图"),
+    _Command("/summon", "召唤神兽执行任务", "神兽"),
+    _Command("/recall", "召回神兽并取结果", "神兽"),
+)
+
+
+def _lookup(name: str) -> _Command | None:
+    """按命令名精确查真源（不在其中 ⇒ None）。"""
+    return next((cmd for cmd in _COMMANDS if cmd.name == name), None)
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """浮层候选项：`fill` 为采纳后写入输入框的整串（**不含**补位空格）。"""
+
+    key: str  # OptionList 选项 id（唯一）
+    label: str  # 浮层显示行
+    fill: str  # 采纳后填入输入框的文本
+    arg_next: bool = False  # 采纳后补一个空格进入二级（仅带参数命令）
+
+
+def _palette_options(value: str, *, subtask_ids: Sequence[str] = ()) -> list[_Candidate]:
+    """当前输入下的浮层候选（空列表 ⇒ 不呈现浮层）。
+
+    一级：`/` 起始且**尚未出现空格** ⇒ 按前缀筛真源命令；
+    二级：`<命令> <参数>`（参数内无空格 + 该命令参数**可枚举**）⇒ 列既有候选；
+    其余（非 `/` 起始、未知命令、带参命令已进参数位、参数含空格）⇒ 不呈现。
+    """
+    if not value.startswith("/"):
+        return []
+    head, sep, arg = value.partition(" ")
+    if not sep:  # 一级：命令名（尚未出现空格）
+        return [
+            _Candidate(
+                key=f"cmd:{cmd.name}",
+                label=f"{cmd.name} <{cmd.arg}> {cmd.summary}"
+                if cmd.arg
+                else f"{cmd.name} {cmd.summary}",
+                fill=cmd.name,
+                arg_next=bool(cmd.arg),
+            )
+            for cmd in _COMMANDS
+            if cmd.name.startswith(value)
+        ]
+    cmd = _lookup(head)
+    if cmd is None or not cmd.arg_source or " " in arg:
+        return []
+    return [
+        _Candidate(key=f"arg:{sid}", label=sid, fill=f"{head} {sid}")
+        for sid in subtask_ids
+        if sid.startswith(arg)
+    ]
+
+
 def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — 内嵌 ReplApp 类体推高复杂度
     """构建 Textual 应用（懒 import textual），暴露给 headless 冒烟测试驱动。
 
@@ -210,8 +278,10 @@ def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — �
     else:
         session_id = api.create_session("cli")
     from rich.markup import escape  # noqa: PLC0415 — MAL 懒 import
+    from textual import events  # noqa: PLC0415 — MAL 懒 import
     from textual.app import App, ComposeResult  # noqa: PLC0415 — MAL 懒 import
     from textual.containers import Horizontal, Vertical  # noqa: PLC0415 — MAL 懒 import
+    from textual.suggester import Suggester  # noqa: PLC0415 — MAL 懒 import
     from textual.theme import Theme  # noqa: PLC0415 — MAL 懒 import
     from textual.timer import Timer  # noqa: PLC0415 — MAL 懒 import
     from textual.widget import Widget  # noqa: PLC0415 — MAL 懒 import
@@ -219,11 +289,16 @@ def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — �
         Collapsible,
         Input,
         Markdown,
+        OptionList,
         Static,
     )
+    from textual.widgets.option_list import Option  # noqa: PLC0415 — MAL 懒 import
 
     approval = api.approval  # 审批通道（None 表示非交互入口，confirm 门 fail-closed）
     core_theme = Theme(name="core", primary=_ACCENT, accent=_ACCENT, secondary=_ACCENT, dark=True)
+
+    class _PaletteList(OptionList, can_focus=False):
+        """命令浮层：**不可聚焦**（`Tab` 不得把焦点从输入框抢走），仅由代码驱动高亮。"""
 
     class ReplApp(App[None]):
         """core-agent 交互会话 TUI：时间线（❯ 行/Markdown/折叠块）+ 工作状态行。"""
@@ -326,6 +401,14 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                     （change 0158 / ADR-0150） */
     background: $surface-lighten-3;
 }
+#palette {  /* 斜杠命令浮层：默认隐藏，输入 `/` 时经 `display` 翻转呈现（沿 #panel 惯用法）
+               —— 不引入 Screen/layer；不可聚焦（见 _PaletteList）（change 0159 / ADR-0151） */
+    display: none;
+    height: auto;
+    max-height: 8;
+    border: round $panel;
+    margin: 0 1;
+}
 """
 
         # 退出走 App 默认 ctrl+q / ctrl+c；空回车不再退出（IME 确认等误触防护）
@@ -364,6 +447,8 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             self._spin_idx = 0
             self._spin_label = ""
             self._hints_on = False
+            self._palette_open = False  # 浮层呈现中（按键接管与采纳的闸）
+            self._palette_cands: list[_Candidate] = []  # 当前候选（采纳时按高亮项取）
 
         def compose(self) -> ComposeResult:
             yield Vertical(id="timeline")
@@ -371,10 +456,15 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 yield Static(id="panel-title")
                 yield Static("", id="panel-body", classes="hint", markup=False)
             yield Static(id="spinner")
+            yield _PaletteList(id="palette")  # 斜杠命令浮层（CSS 初始 display:none）
             with Vertical(id="footer"):  # 输入区+提示盒钉底，时间线独占剩余空间
                 with Horizontal(id="input-box"):
                     yield Static("❯ ", id="prompt")
-                    yield Input(placeholder="发送消息，或 /task <目标> 启动编排任务", id="input")
+                    yield Input(
+                        placeholder="发送消息，或 /task <目标> 启动编排任务",
+                        id="input",
+                        suggester=_PaletteSuggester(self._candidates),  # 幽灵补全（与浮层同源）
+                    )
                 yield Static(self._HINTS_SHORT, id="hints")
 
         def on_mount(self) -> None:
@@ -452,6 +542,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
         async def _ask_approval(self, tool_id: str, args: dict[str, Any], reason: str) -> bool:
             """审批提示落时间线，输入 y/n 决断；同刻仅一单（重复请求 fail-closed）。"""
             self._set_focus("")  # 审批提示须可见（否则挂起提示落进被隐藏的时间线）
+            self._close_palette()  # 审批期不呈现浮层（y/n 决断输入不被遮蔽）
             if self._approval_future is not None and not self._approval_future.done():
                 return False
             import asyncio  # noqa: PLC0415 — 与 textual 懒 import 同策略
@@ -582,7 +673,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
 
         # ---- 输入分发 ----
 
-        def on_input_submitted(self, message: Input.Submitted) -> None:
+        def on_input_submitted(self, message: Input.Submitted) -> None:  # noqa: PLR0911 — 一分支一返回
             """输入分发：审批决断优先；消息经 worker 执行（消息泵不被阻塞）。"""
             pending = self._approval_future
             if pending is not None and not pending.done():
@@ -597,6 +688,8 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 else:
                     self._add(Static("请输入 y（批准）或 n（拒绝）", classes="hint"))
                 return
+            if self._palette_open and self._accept_palette_selection():
+                return  # 浮层采纳：只补全输入框，不提交（下次回车才走既有分发链）
             text = message.value.strip()
             message.input.clear()  # 回车即清空输入框，准备下一轮
             if not text:
@@ -624,6 +717,85 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             if self._handle_beast_command(text):  # 神兽斜杠入口（change 0137）
                 return
             self.run_worker(self._run_turn(text))
+
+        # ---- 斜杠命令浮层与补全（change 0159 / ADR-0151） ----
+
+        def _candidates(self, value: str) -> list[_Candidate]:
+            """当前输入的浮层候选：参数候选取**既有**在途子任务标识（零新增数据源）。"""
+            return _palette_options(value, subtask_ids=tuple(self._open))
+
+        def _refresh_palette(self, value: str) -> None:
+            """按当前输入开合浮层：有候选且**无待决审批** ⇒ 呈现，否则收起。"""
+            pending = self._approval_future
+            if pending is not None and not pending.done():
+                self._close_palette()  # 审批期不呈现（y/n 决断输入不被遮蔽）
+                return
+            cands = self._candidates(value)
+            if not cands:
+                self._close_palette()
+                return
+            palette = self.query_one("#palette", OptionList)
+            palette.set_options([Option(c.label, id=c.key) for c in cands])
+            palette.highlighted = 0
+            palette.display = True
+            self._palette_open = True
+            self._palette_cands = cands
+
+        def _close_palette(self) -> None:
+            """收起浮层（幂等）。"""
+            self._palette_open = False
+            self._palette_cands = []
+            self.query_one("#palette", OptionList).display = False
+
+        def _accept_palette_selection(self) -> bool:
+            """采纳浮层高亮项：把候选文本写回输入框并返回 True（**不提交**）。
+
+            高亮项**不构成对当前输入的前缀延伸**时返回 False（无高亮 / 文本相同 / 非前缀）
+            ⇒ 回车按**既有**分发链继续 —— 完整命令输入（如 `/main`）因此**逐字不变**地走原路径。
+            """
+            if not self._palette_open:
+                return False
+            option = self.query_one("#palette", OptionList).highlighted_option
+            if option is None or option.id is None:
+                return False
+            cand = next((c for c in self._palette_cands if c.key == option.id), None)
+            if cand is None:
+                return False
+            inp = self.query_one("#input", Input)
+            if cand.fill == inp.value or not cand.fill.startswith(inp.value):
+                return False
+            inp.value = cand.fill + (" " if cand.arg_next else "")
+            return True
+
+        def on_input_changed(self, message: Input.Changed) -> None:
+            """输入变化 ⇒ 重筛浮层（`Input.Changed` 冒泡至 App）。"""
+            self._refresh_palette(message.value)
+
+        def on_key(self, event: events.Key) -> None:
+            """浮层呈现时接管 `↑`/`↓`/`Tab`/`Esc`；未呈现 ⇒ 一律放行（既有按键逐字不变）。
+
+            实测（承重，勿凭直觉）：`Tab` **不是空键** —— App 默认「焦点后移」会把它从输入框
+            带走，且声明 `BINDINGS` **无效**（默认焦点后移仍胜出），只有 `on_key` +
+            `prevent_default` 才扣得下；故浮层另以 `can_focus=False`（`_PaletteList`）作双保险。
+            `Enter` **不在此处理**（与 `Input.Submitted` 同触，两处都写会重复执行），采纳落在
+            `on_input_submitted`。
+            """
+            if not self._palette_open:
+                return
+            if event.key in ("up", "down"):
+                palette = self.query_one("#palette", OptionList)
+                if event.key == "up":
+                    palette.action_cursor_up()
+                else:
+                    palette.action_cursor_down()
+            elif event.key == "tab":
+                self._accept_palette_selection()
+            elif event.key == "escape":
+                self._close_palette()
+            else:
+                return  # Enter 等交回既有路径（采纳见 on_input_submitted）
+            event.stop()
+            event.prevent_default()
 
         def _handle_beast_command(self, text: str) -> bool:
             """神兽斜杠入口 `/summon` `/recall`：命中即消费（用法错复位忙态，否则起 worker）。"""
@@ -917,6 +1089,23 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 self._flush_live()
                 self._spin_stop()
                 self._turn_busy = False
+
+    class _PaletteSuggester(Suggester):
+        """内联幽灵补全：与浮层候选**同源**（复用同一候选取口），`→` 由 `Input` 原生采纳。
+
+        语料随上下文变化（子任务标识会增长）⇒ 关缓存；候选区分大小写（命令名为小写，
+        默认的 casefold 会与 `Input` 按长度切取的幽灵文本错位）。
+        """
+
+        def __init__(self, candidates: Callable[[str], list[_Candidate]]) -> None:
+            super().__init__(use_cache=False, case_sensitive=True)
+            self._candidates_of = candidates
+
+        async def get_suggestion(self, value: str) -> str | None:
+            for cand in self._candidates_of(value):
+                if cand.fill != value and cand.fill.startswith(value):
+                    return cand.fill
+            return None
 
     return ReplApp()
 

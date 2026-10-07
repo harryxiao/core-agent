@@ -1159,6 +1159,30 @@
 
 ---
 
+## 74. TUI 斜杠命令浮层与补全（TC-CMDPAL，change `0159`／ADR-0151）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-CMDPAL-01 | ui/spec.md「CLI 友好交互」Scenario「斜杠唤起命令浮层并按前缀收窄」 | 纯函数 `_palette_options("/")` / `("/ta")` | 一级候选＝**全部**登记命令；`"/ta"` 收窄为 `/task`（锚点：`tests/test_repl.py::test_palette_options_lists_all_commands_on_slash`、`..._filters_by_command_prefix`） |
+| TC-CMDPAL-02 | 同上 Scenario | 纯函数 `_palette_options` 未知前缀 `/zzz`、普通文本 `hello`、注册命令加空格后参数含空格 `/focus a b`；非枚举参数命令 `/task ` | 一律返回 `[]`（不呈现浮层）（锚点：`..._closed_for_unknown_or_plain_input`、`..._closed_when_arg_has_space`、`..._no_second_level_for_non_enum_arg`） |
+| TC-CMDPAL-03 | ui/spec.md「CLI 友好交互」Scenario「二级参数候选取自既有面」 | 纯函数 `_palette_options("/focus ", subtask_ids=("1","12","2"))` | 二级候选**取自传入的在途子任务**，按已输入前缀收窄（锚点：`..._second_level_lists_and_narrows_subtasks`） |
+| TC-CMDPAL-04 | ui/spec.md「CLI 友好交互」Scenario「斜杠唤起命令浮层并按前缀收窄」 | 真 TUI：`#input` 值置 `"/"` 后驱动 `run_test` | `#palette` **`display` 为真**（可见）且选项 id 含既有 5 命令；清空输入后 **`display` 为假**（锚点：`tests/test_repl.py::test_palette_opens_on_slash_and_lists_registered_commands`、`..._closes_when_input_cleared`） |
+| TC-CMDPAL-05 | ui/spec.md「CLI 友好交互」Scenario「键盘移动高亮并采纳（只改写输入框、不提交）」 | 真 TUI：浮层开，按 `down`/`up`；再按 `tab` | 高亮随 `↓`/`↑` 移动且**焦点仍在 `#input`**；`tab` 把候选写回 `#input` 且 `RecordingLoop.inputs` **不增长**（锚点：`..._arrows_move_highlight_keeping_focus_in_input`、`..._tab_accepts_highlighted_command_without_submitting`） |
+| TC-CMDPAL-06 | ui/spec.md「CLI 友好交互」Scenario「采纳不改变既有命令的语义与分发次序」 | 真 TUI：浮层开且输入为**完整命令**（如 `/main`）时回车；未知前缀 `/zzz` 回车；`escape` 关浮层 | 前缀被补全但**不提交**（`loop.inputs` 不增）；`/zzz` **不被浮层劫持**、按既有路径当普通消息；`escape` 收起且**输入值不变**（锚点：`..._enter_completes_prefix_without_submitting`、`..._does_not_hijack_unknown_slash_input`、`..._escape_closes_without_touching_input`） |
+| TC-CMDPAL-07 | ui/spec.md「CLI 友好交互」Scenario「审批挂起期间不呈现浮层」 | 真 TUI：审批挂起中把 `#input` 置 `"/"` | `#palette` **不呈现**（`display` 为假）（锚点：`..._suppressed_while_approval_pending`） |
+| TC-CMDPAL-08 | ui/spec.md「CLI 友好交互」Scenario「命令幽灵补全与 `→` 采纳」 | 真 TUI：`#input` 值置 `"/re"`；再按 `→` | `Input` 原生补全位给出 `/recall`（幽灵补全与浮层**同源**）；`→` 采纳后值变为 `/recall`（锚点：`..._ghost_completion_shows_and_accepts_remainder`） |
+| TC-CMDPAL-09 | ui/spec.md「CLI 友好交互」（**单一真源**：真源内每条命令 SHALL 可由分发链实际执行） | 真 TUI：逐条驱动真源内命令的**规范形态**（`/task 目标` / `/focus 1` / `/main` / `/summon qinglong` / `/recall qinglong`） | 每条均落**既有分发链**（`RecordingLoop.inputs` **不增长**）；「只登记、未接线」⇒ 本用例**必红**（锚点：`tests/test_repl.py::test_registry_commands_are_all_dispatchable`） |
+| TC-CMDPAL-10 | —（**零回归**） | 真 TUI：浮层**关闭**时按 `↑`/`↓`/`escape` | 三键**一律放行**、不改变输入框与时间线（浮层关闭时既有按键逐字不变）（锚点：`..._palette_absent_keeps_arrows_and_escape_inert`） |
+
+> **无手工验收项**：键盘面、呈现面、采纳面与**单一真源守护**全部以 headless `run_test` 驱动 + 纯函数直测覆盖；
+> 浮层「存在/可见」以 `#palette` 的**运行时 `display`** 断言（非 `visible` 链，避免父级不可见干扰）。
+> 语义：命令清单**单一真源**（`_COMMANDS`）由**可执行守护**绑定到分发链 —— 登记后未接线即红；
+> **采纳是纯呈现层**（只改写输入框、不提交），完整命令 / 未知前缀 / 审批 y / n 的既有分发次序**逐字不变**。
+> **已知局限**：命令浮层的二级参数目前仅 `/focus`（`self._open` 键）可枚举，`/resume` 待 0160 进表（避免「登记即无反应」）；
+> 浮层沿 `#panel` 的 `display` 翻转惯用法（不引 `Screen`/`layers`）；`OptionList` 高亮在**未聚焦**时的可见性依赖主题样式（本 change 未另加覆盖规则）。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

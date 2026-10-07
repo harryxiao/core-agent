@@ -243,6 +243,21 @@ fail-closed，先于进入 TUI 拒绝），缺省 ⇒ 新建（既有行为不�
 **有结果才打印**的一行结果（与 `summon` CLI 同口径；结果正文只经只读查询面，不编造）。领域错误
 （无匹配神兽 / 状态冲突）在 API 边界归一为 `UI_BEAST_*` 并落时间线 fail 行，**不**抛裸领域异常。
 
+**TUI 斜杠命令浮层与补全（change 0159 / ADR-0151）**：命令清单收敛为**单一真源**
+（模块级 `_COMMANDS` / `_Command`：命令名 + 参数 + 说明），浮层据此呈现；真源与分发链的**绑定**
+由可执行守护测试担保（真源内每条命令驱动规范形态时**无一落进普通对话** ⇒ 「只登记、未接线」即红）。
+输入以 `/` 起始（**尚未出现空格**）⇒ `#palette`（`OptionList` 子类，**`can_focus=False`**）经
+`display` 翻转呈现候选，按前缀收窄；形如 `<命令> <参数>`（参数内无空格 + 该命令参数**可枚举**，
+如 `/focus`）⇒ 呈现**二级**候选，其数据取自**既有** `self._open` 的键（在途子任务标识，**零新增 api**）。
+`↑`/`↓` 移动高亮、`Tab` 采纳高亮项、`Esc` 收起 —— 三键**仅在浮层呈现时**由 `on_key` 接管
+（`event.stop()` + `prevent_default()`），浮层关闭时**一律放行**（既有按键逐字不变）。
+**采纳是纯呈现层**：`_accept_palette_selection` 仅在高亮项为当前输入的**严格前缀延伸**时把候选文本
+写回输入框并**不提交**；否则返回 False ⇒ 回车走**既有**分发链（完整命令 `/main`、未知前缀 `/zzz`、
+审批 y/n 语义、`/focus` 忙态豁免**全部不变**）。`Enter` **只在一处处理**（`on_key` 与 `Input.Submitted`
+**同触**，两处都写会重复执行）。`Input(suggester=_PaletteSuggester)` 提供与浮层**同源**的**幽灵补全**，
+`→` 由 `Input` 原生采纳（`use_cache=False` + `case_sensitive=True`：语料随上下文变化、且避免 casefold 错位）。
+**审批挂起期间**不呈现浮层（`_refresh_palette` 早退 + `_ask_approval` 主动收起）⇒ y/n 决断输入不被遮蔽。
+
 **Web Client 与 Host 分离**：Web 前端（SPA）作为纯静态资源独立托管，`WebBridge` 仅暴露统一后端 API；前端经该 API 连接远程 / 本机常驻 Harness Host（见 `deployment-interface.md`），前端升级无需重启 Host 后端。
 
 ---

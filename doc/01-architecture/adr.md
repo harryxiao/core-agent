@@ -4359,6 +4359,42 @@
 - **规格**：`ui`「CLI 友好交互」**MODIFIED**（+ 1 Scenario）；文档面 `03-interfaces/ui-interface.md` §2、
   测试面 `04-testing/test-cases.md` §73（TC-CODEBG）、台账 `coding-plan/known-risk.md`（§1 E98 / §3）。
 
+## ADR-0151：TUI 斜杠命令浮层与补全 —— 单一真源 + 呈现层只管补全（change 0159）
+
+- **背景**：用户 2026-10-07 报「TUI 启动后输入 `/` **没有任何提示**」—— 命令全靠记忆，无发现性。
+  期望对齐 Claude Code：`/` 弹命令清单、键盘选择；带参数的命令再弹**二级**清单（如 `/focus` 列子任务标识）；
+  并要**内联幽灵补全**。根因：TUI 斜杠命令**全部硬编码**在 `ReplApp.on_input_submitted` 的分支链里
+  （`/task` `/focus` `/main` `/summon` `/recall`），**无命令注册表** ⇒ 既无可枚举清单，也无「单一真源」可言。
+- **决策①：命令清单收敛为**单一真源**（模块级 `_COMMANDS` + `_Command`），浮层据此呈现。**
+  真源与分发的**绑定靠可执行守护**：`test_registry_commands_are_all_dispatchable` 逐条驱动规范形态，
+  断言**无一落进普通对话** ⇒ 任一条「只登记、未接线」（如尚未进表的 `/resume`）即红。
+  **不改**分发链的结构与提示串（那会改到多处以断言逐字为准的行）—— 真源管**清单**，分发管**行为**，各司其职。
+- **决策②：浮层是**纯呈现层** —— 采纳只改写输入框，SHALL NOT 提交、SHALL NOT 改语义。**
+  `_accept_palette_selection` 的采纳判据是「高亮项是当前输入的**严格前缀延伸**」（`fill != value and
+  fill.startswith(value)`）；不满足（无高亮 / 文本相同 / 非前缀）即返回 False，回车按**既有**分发链继续
+  ⇒ 完整命令（`/main`）、未知前缀（`/zzz`）、普通消息、`/focus` 的**忙态豁免**、审批 y/n 语义**逐字不变**。
+  **唯一的**有意行为变更：输入是命令的**严格前缀**（如 `/ta`）且按 Enter ⇒ 补全为 `/task `（不提交）；
+  这是本需求的**目标面**，已在规格写明。
+- **决策③：`on_key` 接管 `↑`/`↓`/`Tab`/`Esc`，且**仅在浮层呈现时**。** 实测（承重，勿凭直觉）：
+  `Tab` **不是空键** —— App 默认「焦点后移」会把它从输入框带走，且声明 `BINDINGS` **无效**
+  （默认焦点后移仍胜出），只有 `on_key` + `event.prevent_default()` 才扣得下；故浮层另以
+  `class _PaletteList(OptionList, can_focus=False)` 作**双保险**（即便漏掉某分支，`Tab` 也进不去浮层）。
+  `Enter` **只在一处处理**（`on_key` 与 `Input.Submitted` **同触**，两处都写会**重复执行**）⇒ 采纳落在
+  `on_input_submitted`，`on_key` 对 `Enter` 显式放行。浮层关闭时**一律放行** ⇒ 既有按键行为逐字不变。
+- **决策④：不引 `Screen`/`ModalScreen`/`layers`/`push_screen`，沿仓库既有 `display` 翻转惯用法**
+  （`_set_focus` 对 `#panel`/`#timeline` 的做法）；`#palette` 默认 `display: none`，候选非空时翻转。
+  **零新增 api**：二级清单的参数候选取**既有** `self._open` 的键（在途子任务标识），SHALL NOT 新建第二数据源。
+- **决策⑤：幽灵补全与浮层候选**同源**（复用同一 `_candidates` 取口）。** 语料随上下文变化
+  （子任务标识会增长）⇒ `use_cache=False`；候选区分大小写（默认 casefold 会与 `Input` 按长度切取的
+  幽灵文本**错位**）⇒ `case_sensitive=True`。`→` 由 `Input` **原生**采纳，无需另接。
+- **已知局限**：① **仅前缀匹配**（无子串/模糊）；② **无鼠标选择**（键盘驱动，`action_select` 未用）；
+  ③ **`/summon` `/recall` 无二级**（参数在 TUI 无可枚举且零新增 API 的来源）；④ **无「无匹配」占位**
+  （无候选即收起浮层）；⑤ **`Tab` 在浮层**关闭**时仍走 App 默认焦点后移**（既有行为，本 change 未改）；
+  ⑥ **未覆盖 Web / Desktop**（斜杠命令浮层属 TUI 端）；⑦ **不做命令历史**（`↑` 调上一条输入，另议）。
+- **规格**：`ui`「CLI 友好交互」**MODIFIED**（+ 6 Scenario，既有 7 Scenario 措辞逐字不改）；
+  文档面 `03-interfaces/ui-interface.md` §2、测试面 `04-testing/test-cases.md` §74（TC-CMDPAL）、
+  台账 `coding-plan/known-risk.md` §3。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4504,3 +4540,4 @@
 | ADR-0148 | 11-rag/rag-architecture.md, 02-modules/rag.md, 03-interfaces/rag-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0149 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0150 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0151 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
