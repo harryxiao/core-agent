@@ -4513,6 +4513,50 @@
   canonical 末尾，**既有 Requirement 逐字不改**；文档面 `03-interfaces/ui-interface.md` §2、测试面
   `04-testing/test-cases.md` §77（TC-READONLY）、台账 `coding-plan/known-risk.md` §3。
 
+## ADR-0155：hooks（钩子）架构 —— 复用接缝的事件扩展点（change 0164）
+
+- **背景**：全仓**没有**钩子能力，也**没有任何规格**承诺它。`architecture-overview.md:181` 在
+  「关键约束」里点了「事件总线」这个词，实现与规格**双双缺席**；已有的横切接缝**只有两个**写进规格
+  （`loop` 规格「横切中间件插入」：`middlewares` 可否决 / `action_observers` 仅观察），另三个口子
+  （`turn_observer` / `trace_observer` / `cold_path`）只在 `runtime.py` **代码注入**、无声明面；
+  **缺**轮前（`turn.before`）、会话起止（`session.*`）、记忆写入（`memory.write`）三个口子。
+  用户 2026-10-07 诉求「hook 架构设计缺失-需要归一个 openspec」，口径是**只出规格 + ADR**。
+- **决策①：**不建事件总线**，复用既有接缝。** 7 个事件里 3 个（`tool.before` / `tool.after` /
+  `turn.after`）**已有**规格收口的接缝可挂；总线的收益（多播 / 解耦）在**单一消费者**（钩子执行器）
+  场景下是**净开销**（多一层间接与生命周期），且会成为「第二个分发中心」，与 P1 无特权核心相悖。
+  ⇒ 规格**明写**「SHALL NOT 引入通用事件总线」；将来出现**多**独立消费者再改本 ADR。
+- **决策②：缺的三个口子以「新增注入形参」落地，不在既有机制里硬插分支。** `turn.before` 需一个与
+  `turn_observer` **对称**的 loop 注入形参（**不**挪 `middlewares` —— 它是**动作**面、不是轮面）；
+  `session.*` 落**组合根**（会话生命周期是组合根职责，UI 层不持钩子）；`memory.write` 在
+  `MemoryStore` 增**观察者** DI 形参（与既有 `summarizer` / `key_fact_extractor` **同构**）。
+  ⇒ 设计稿把每个事件逐条标「既有 / 待新增」，防实现者在 loop / store 里硬插分支破坏分层。
+- **决策③：两形态同一失败语义（外部命令 + 内置回调）。** 外部命令 **argv 列表、不经 shell**
+  （承 ADR-0093 ④ sidecar 口径）、**单事件 JSON 投递 stdin 后即 EOF**（无需长驻与握手）；
+  内置回调为组合根注入的 `Callable`。**退出码**：`before` 类 `0`=放行、**非 0=阻断**；
+  `after` 类**仅留痕**（与既有观察者链同语义：观察者抛错降级为遥测、不改结局）。
+- **决策④：fail-closed 默认。** `before` 类钩子**超时 / 无法执行 / 回调抛错** ⇒ 按该项 `on_error`
+  处置，**缺省 `block`**（与 permission 的 fail-closed 同一姿态；`allow` / `warn` 是操作者的**显式**选择）。
+  `timeout_s` 缺省 5s、**硬上限 60s**（超上限按上限截断并告警 —— 不接受无界超时）。
+- **决策⑤：不可逆性是**显式例外**。** 钩子副作用**不纳入** `EffectTracker`（外部命令不可撤销）——
+  这是本系统对 P2「一切副作用可逆」的**唯一显式例外**，不写在别处、只写在规格与 ADR 里；
+  规格**建议**钩子默认只读，写操作型钩子由操作者自担。审计面：每次调用落 trace（`kind="hook"`，
+  `event` / 命令 **basename** / 退出码 / 时长 / `blocked_by`），**不留**完整 argv 与输出正文。
+- **决策⑥：声明面「标量三面、清单只落 yaml」。** `hooks.enabled` / `hooks.timeout_s` /
+  `hooks.on_error` 三个标量经 **`ConfigSpec` 单一真源** ⇒ 自动获得 CLI flag 与环境变量形态，
+  优先级链 **CLI flag > env > `config.yaml` > 默认值**；**钩子清单** `hooks.entries`（列表）
+  **只从 `config.yaml` 结构化段读** —— `ConfigSpec` 是**键 → 标量**的映射、**列表不入**
+  （与 `permission.sandbox.host_allowlist` 用逗号串、mcp 端点另存 `mcp.json` **同源**的既有取舍）。
+  `hooks.enabled` 缺省**关闭**（未显式开启不加载、不执行）。
+- **已知局限**：① **未实现** —— 本 change 只出契约（台账 **E101** 挂账，实现另立 change）；
+  ② **清单不入三面**（ConfigSpec 是标量映射的既有取舍）；③ **无优先级 / 无多播语义** —— 同事件多钩子
+  按**声明序**执行、**任一** before 钩子阻断即终局（不设权重、不做「否决覆盖」）；
+  ④ **载荷脱敏 ⇒ 钩子看不到密钥原始值**（需检查密钥本体的策略属 permission 面，不是钩子面）；
+  ⑤ **不可逆**（唯一显式例外，见决策⑤）；⑥ **不覆盖 Web / Desktop**（声明面属配置面，跨端一致另议）。
+- **规格**：新建 capability **`hooks`**（`## ADDED Requirements` 四条：钩子事件面与载荷 / 钩子形态与接缝 /
+  钩子失败处置与安全边界 / 钩子声明面，共 10 Scenario）；设计稿
+  `doc/openspec/changes/archive/2026-10-07-0164-hooks-architecture/design.md`、模块文档
+  `doc/02-modules/hooks.md`、台账 `coding-plan/known-risk.md` §1（E101）+ §3（本 ADR 局限行）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4662,3 +4706,4 @@
 | ADR-0152 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0153 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0154 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0155 | 02-modules/hooks.md, coding-plan/known-risk.md |
