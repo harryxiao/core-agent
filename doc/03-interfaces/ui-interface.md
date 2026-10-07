@@ -199,7 +199,7 @@ class DesktopBridge:  # ③ Desktop：Tauri 壳 + sidecar
 （同解释器）；固定 `--host 127.0.0.1 --port <port>`（端口取自 `DesktopBridge(port=…)`，CLI 面为 `app --port`）。
 失败（`OSError`）⇒ `UI_SIDECAR_FAILED`，**不静默成功**。离线验证经 `start_impl` 注入缝（不真起 uvicorn）。
 
-**CLIBridge 交互会话循环（REPL）**：`connect()` 进入 Textual 交互循环（而非仅返回 `UIAPILayer`）——无子命令时进 REPL，多轮上下文保持，`barge_in()` 支持打断语音播报；运维命令面（status/doctor/logs/install/mcp/auth/gateway）复用 cli-ops，不并入 REPL。
+**CLIBridge 交互会话循环（REPL）**：`connect()` 进入 Textual 交互循环（而非仅返回 `UIAPILayer`）——无子命令时进 REPL，多轮上下文保持，`barge_in()` 支持打断语音播报；**写操作**运维命令面（logs/install/auth/gateway 等）复用 cli-ops，不并入 REPL（**只读**诊断族已进 REPL，见下「TUI 只读命令族」）。
 
 **会话续聊（change 0116 / ADR-0109；渲染格式 change 0157 / ADR-0149）**：`CLIBridge(api=…, session_id=…)` 的会话标识透传至
 `run_repl` → `build_app`；非空 ⇒ **复用**该会话（载入其转录铺进时间线；未登记 ⇒ `UiError`，
@@ -269,6 +269,24 @@ fail-closed，先于进入 TUI 拒绝），缺省 ⇒ 新建（既有行为不�
 `self._session_id = sid`（原闭包变量改**实例字段**，`run_loop` / `run_task` 随之落新会话）。
 分支位置：**忙态检查之后**（与在途轮次互斥）、回主视图与回显**之前**（切换不产生 `❯ /resume` 回显；
 落痕为 `↻ 续接会话 <标识>（N 条历史已载入）`）。`/resume` 无参数 ⇒ 只提示用法、不切换。
+
+**TUI 只读命令族（change 0163 / ADR-0154）**：真源 `_COMMANDS` 增 `handler` 字段（处理器**方法名**，
+`""` ⇒ 走既有专用分支，既有 6 条命令**逐字不变**）并追加 7 条**只读**命令 —— `/doctor`（自检诊断）、
+`/status`（状态概览）、`/sessions`（会话清单）、`/config`（配置视图）、`/mcp`（MCP 端点）、`/skill`
+（技能目录）、`/notes`（笔记与常驻项），均**无参数面**（`arg=""`）。分发在 `on_input_submitted` 的
+**忙态检查之后**（与 `/resume` 同侧 ⇒ 本轮执行中提交被拒绝），`_dispatch_registered` 命中 `handler`
+非空者即 `getattr(self, handler)()`（**登记即接线**，由 `test_registry_handlers_resolve` 与
+`test_registry_commands_are_all_dispatchable` 双重守护）；带参数 ⇒ 只提示不执行。结果**就地**落时间线
+**一条**结果块（`Report` → `render` 逐行文本，`markup=False`），**不进对话**（`run_loop` / `run_task`
+不被调用）、**无 `❯` 回显**、**零副作用**（会话标识 / 转录 / 记忆 / 笔记 / 呈现态逐字不变）。
+取数与 CLI `doctor` / `status` **同一**只读诊断源（`core.diagnostics`）—— `UIAPILayer` 增
+`diagnostics: Deps | None` 形参与 `diagnostics()` 访问器（**单一接缝**），唯一构造点 `entry._build_ui`
+注入 `_diag_deps(args, tools=runtime.tools, config=runtime.config)`（复用已装配 `runtime` ⇒ TUI 的
+「内置工具数」按**全量**工具面计数，与 CLI 的 builtin-only 面**有意不同**）；未接线 ⇒ 落一行提示，
+**不崩**。**密钥红线不变**：`/config` / `/doctor` 只出 `${VAR}` 引用名与布尔结论，`/mcp` **不出**
+`args`（可能含 `--token`）。**同名异义**：TUI `/sessions` 列**会话注册表**（与 `/resume` 二级候选同源），
+CLI `sessions` 列 Harness Host 连接记录。本族**只读**：写操作命令（`config set` / `mcp add|remove` /
+`skill install|remove` / `plugin install`）**不在**其内。
 
 **Web Client 与 Host 分离**：Web 前端（SPA）作为纯静态资源独立托管，`WebBridge` 仅暴露统一后端 API；前端经该 API 连接远程 / 本机常驻 Harness Host（见 `deployment-interface.md`），前端升级无需重启 Host 后端。
 

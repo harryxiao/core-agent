@@ -4469,6 +4469,50 @@
   文档面 `03-interfaces/cli-ops-interface.md`、测试面 `04-testing/test-cases.md` §76（TC-DIAG）、
   台账 `coding-plan/known-risk.md` §1 E100 / §3。
 
+## ADR-0154：TUI 只读命令族 —— 真源驱动分发 + 诊断源单接缝（change 0163）
+
+- **背景**：TUI 斜杠命令浮层（change `0159` / ADR-0151 立的**单一真源** `_COMMANDS`）只有 6 条命令，
+  **运维 / 诊断类一条都没有** —— 而 CLI 侧的实现早已齐备（`config` / `mcp` / `skill` / `notes` /
+  `sessions` 等 handler）。用户 2026-10-07 诉求「`doctor`/`status`/`sessions`/`config`/`mcp`/`skill`
+  等也能在浮层里选到并执行」，口径是**只读 / 诊断优先**。change `0162` 已建好只读诊断源
+  （`core/diagnostics` / ADR-0153）—— 本 change 是它的**第二个消费面**。
+- **决策①：把「命令名 → 处理器」写进真源（`_Command.handler: str = ""`）。** 0159 立真源的初衷是
+  「登记与分发**只有一份**」，但当时处理器仍旧**硬编码**在 `on_input_submitted` 的分支链里：
+  新增命令要**改两处**（真源 + 分支链），忘一处即「浮层可选、回车无声」。⇒ 真源增 `handler` 字段
+  （**处理器方法名**），`_dispatch_registered(text)` 在忙态检查后**按真源分发**；`handler` 为空者
+  （`/task` `/focus` `/main` `/summon` `/recall` `/resume`）**仍走既有分支链**，其语义 / 提示串 /
+  次序**逐字不变**。守护：`test_registry_commands_are_all_dispatchable` **扩到 13 条**（真源每条命令的
+  规范形态都必须被分发链**消费** ⇒ 只登记未接线即红）+ 新增 `test_registry_handlers_resolve`
+  （每条 `handler` 在 app 上**解析得到** ⇒ 登记名笔误即红）。
+- **决策②：只读命令**不豁免忙态**。** `/focus` 有忙态豁免（呈现层切换，运行中亦可用），只读命令**没有** ——
+  与 `/resume` 同侧（排在忙态检查**之后**）。理由：只读命令要**往时间线插块**，而忙碌中时间线正被流式
+  尾段渲染器（`_show_delta` / `_touch_tail`）占用 ⇒ 并发插入与合帧节流互踩（承 ADR-0139 的时序闸语义）。
+- **决策③：只读命令不进对话、不回显。** 提交后**不**落 `❯` 回显行、**不**调 `run_loop` / `run_task`，
+  只落**一条结果块**（`Report` → 逐行文本、`markup=False`）—— 与 `/focus` / `/main` / `/resume` 同侧。
+  理由：这些是**查看**动作，不是对话轮次；进转录会污染会话语义与 token 预算。
+- **决策④：`Deps` 经 `UIAPILayer` **单一接缝**注入，装配仍在组合根。** `UIAPILayer.__init__` 增
+  `diagnostics: Deps | None`（**一个**形参，不是 9 个新句柄）+ `diagnostics()` 访问器；`entry._build_ui`
+  （**唯一**构造点，repl / serve / app / run 四入口共用）注入。`repl.py` 因此**只**取 `Deps` 与纯函数
+  （`collect_*` / `render` / 五张视图），**不装配任何句柄**、**不猜路径**。`/status` 的「内置工具数」
+  在 TUI 面对**真实** `runtime.tools` 计数（CLI 面为 builtin-only，**有意不同**：CLI 不装配 runtime，
+  装配需要有效配置，恰是诊断要绕开的）。
+- **决策⑤：`/sessions` 与 CLI `sessions` **同名异义**（明写）。** CLI 的 `sessions` 列 Harness Host
+  的**连接记录**，TUI 的 `/sessions` 列**会话注册表**（与 `/resume` 二级候选**同源**：`_diag_deps`
+  的 `sessions` 句柄 = `SessionRegistry.list`）。两者**都**保留原语义，各自服务自己的面 —— 在规格、
+  `03-interfaces/ui-interface.md` 与本 ADR 局限中明写，避免同名误读（**不**改名以迁就对方）。
+- **决策⑥：只读命令**无参数面**。** 真源中其 `arg=""`；带参数提交 ⇒ 只提示、**不执行**（只读命令
+  不需要参数，猜参数是投机）。未登记前缀（`/zzz`）**分发命运不变**（普通消息进对话）。
+- **已知局限**：① **只读** —— 不做 `config set` / `mcp add|remove` / `skill install|remove` /
+  `plugin install`（写操作命令面另立账）；② **命令清单仍是内存真源**（非配置驱动、无插件注册命令面）
+  ⇒ 第三方扩展命令需改代码；③ `/sessions` **只列不切** —— 切换走 `/resume`，两命令并存（清单与切换
+  分离，`/sessions` 不提供二级候选）；④ **诊断源未接线时命令只给提示**（不崩，但也不降级为简版诊断）；
+  ⑤ **未覆盖 Web / Desktop**（斜杠命令面仍只属 TUI，承 ADR-0151 局限⑥同源缺口）；
+  ⑥ **`_dispatch_registered` 只认无参形态** —— 带空格即提示，故「命令 + 参数」的只读扩展需先改本决策。
+- **规格**：`ui` **ADDED** Requirement「TUI 只读诊断命令」+ 6 Scenario（浮层列出并可采纳 / 执行落结果块
+  且不进对话 / 零副作用 / 忙碌中拒绝 / 输出不含密钥值 / 带参数与未登记前缀走既有路径）—— ADDED 只追加
+  canonical 末尾，**既有 Requirement 逐字不改**；文档面 `03-interfaces/ui-interface.md` §2、测试面
+  `04-testing/test-cases.md` §77（TC-READONLY）、台账 `coding-plan/known-risk.md` §3。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4617,3 +4661,4 @@
 | ADR-0151 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0152 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0153 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0154 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

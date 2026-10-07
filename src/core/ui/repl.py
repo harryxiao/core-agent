@@ -24,6 +24,19 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
+from core.diagnostics import (
+    Deps,
+    Report,
+    collect_doctor,
+    collect_status,
+    render,
+    render_config,
+    render_mcp,
+    render_notes,
+    render_sessions,
+    render_skills,
+)
+
 from .api import UIAPILayer
 from .errors import UiError
 from .models import Event
@@ -209,6 +222,7 @@ class _Command:
     arg_source: str = (
         ""  # 参数候选来源键（"" ⇒ 不可枚举；"subtask" ⇒ 在途子任务；"session" ⇒ 会话）
     )
+    handler: str = ""  # 处理器**方法名**（"" ⇒ 走既有专用分支；非空 ⇒ 只读命令直分发）
 
 
 _COMMANDS: tuple[_Command, ...] = (
@@ -218,6 +232,14 @@ _COMMANDS: tuple[_Command, ...] = (
     _Command("/summon", "召唤神兽执行任务", "神兽"),
     _Command("/recall", "召回神兽并取结果", "神兽"),
     _Command("/resume", "切换会话并还原其内容", "会话标识", "session"),
+    # 只读命令族（change 0163 / ADR-0154）：真源即接线（`handler` 直分发，无参数面）
+    _Command("/doctor", "自检诊断", handler="_show_doctor"),
+    _Command("/status", "运行状态概览", handler="_show_status"),
+    _Command("/sessions", "列出会话", handler="_show_sessions"),
+    _Command("/config", "查看配置（密钥遮蔽）", handler="_show_config"),
+    _Command("/mcp", "MCP 端点", handler="_show_mcp"),
+    _Command("/skill", "技能目录", handler="_show_skill"),
+    _Command("/notes", "笔记与常驻项", handler="_show_notes"),
 )
 
 
@@ -691,7 +713,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
 
         # ---- 输入分发 ----
 
-        def on_input_submitted(self, message: Input.Submitted) -> None:  # noqa: C901, PLR0911 — 一分支一返回
+        def on_input_submitted(self, message: Input.Submitted) -> None:  # noqa: C901, PLR0911, PLR0912 — 一分支一返回
             """输入分发：审批决断优先；消息经 worker 执行（消息泵不被阻塞）。"""
             pending = self._approval_future
             if pending is not None and not pending.done():
@@ -718,6 +740,8 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 self._add(Static("处理中，请稍候（Ctrl+B 打断）", classes="hint"))
                 return
             if self._handle_resume_command(text):  # 会话切换（忙态后：与在途轮次互斥）
+                return
+            if self._dispatch_registered(text):  # 真源登记的只读命令（忙态后：同 /resume 一侧）
                 return
             self._set_focus("")  # 普通输入 ⇒ 回主视图（回复不落进被隐藏的时间线）
             self._add(  # 用户输入回显：❯ 前缀行（Claude CLI 式，无气泡）
@@ -1147,6 +1171,63 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             self._tail_buf = []
             self._tail_widget = None
             self._last_reply = ""
+
+        # ---- 只读命令族（`/doctor` `/status` `/sessions` `/config` `/mcp` `/skill` `/notes`） ----
+        #
+        # change 0163 / ADR-0154：命令名 → 处理器的对应关系取自真源（`_Command.handler`），
+        # 本段**只做取数与呈现**；检查逻辑全部在 CLI 侧**同一**只读诊断源（`core.diagnostics`）里。
+
+        def _dispatch_registered(self, text: str) -> bool:
+            """真源登记的**只读**命令分发（`handler` 非空者）。返回是否已消费。
+
+            未登记 / 无 `handler` ⇒ 返回 False（既有分支链与次序**逐字不动**）；只读命令**无参数面**
+            ⇒ 带参数只提示、不执行。
+            """
+            head, _, arg = text.partition(" ")
+            cmd = _lookup(head)
+            if cmd is None or not cmd.handler:
+                return False
+            if arg.strip():
+                self._add(Static(f"{cmd.name} 不接受参数", classes="hint"))
+                return True
+            getattr(self, cmd.handler)()
+            return True
+
+        def _readonly_report(self, build: Callable[[Deps], Report]) -> None:
+            """取数 + 落结果块；诊断源未接线 ⇒ 一行提示（不崩、不进对话）。"""
+            deps = api.diagnostics()
+            if deps is None:
+                self._add(Static("诊断源未接线（该只读命令不可用）", classes="hint"))
+                return
+            self._add(Static("\n".join(render(build(deps))), classes="hint", markup=False))
+
+        def _show_doctor(self) -> None:
+            """`/doctor`：逐项自检（与 CLI `doctor` 同源）。"""
+            self._readonly_report(collect_doctor)
+
+        def _show_status(self) -> None:
+            """`/status`：运行状态概览（与 CLI `status` 同源）。"""
+            self._readonly_report(collect_status)
+
+        def _show_sessions(self) -> None:
+            """`/sessions`：会话注册表清单（与 `/resume` 二级候选**同源**；只列不切）。"""
+            self._readonly_report(render_sessions)
+
+        def _show_config(self) -> None:
+            """`/config`：配置视图（密钥**只出引用名 + 布尔结论**）。"""
+            self._readonly_report(render_config)
+
+        def _show_mcp(self) -> None:
+            """`/mcp`：MCP 端点（**不出** `args` —— 可能含 `--token`）。"""
+            self._readonly_report(render_mcp)
+
+        def _show_skill(self) -> None:
+            """`/skill`：技能目录（市场 + 技能库）。"""
+            self._readonly_report(render_skills)
+
+        def _show_notes(self) -> None:
+            """`/notes`：笔记与常驻项。"""
+            self._readonly_report(render_notes)
 
         # ---- 普通消息轮 ----
 

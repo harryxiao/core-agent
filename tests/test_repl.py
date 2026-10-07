@@ -6,11 +6,14 @@ import asyncio
 
 import pytest
 
+from core.configuration import ConfigManager
 from core.configuration.models import LLMConfig
+from core.diagnostics import Deps
 from core.loop import LoopEvent, LoopResult
 from core.memory import TranscriptStore
 from core.ui import Event, UIAPILayer, UiError, UiErrorCode
 from core.ui.repl import (
+    _COMMANDS,
     _event_delta,
     _format_event,
     _palette_options,
@@ -1346,6 +1349,13 @@ def test_palette_options_lists_all_commands_on_slash() -> None:
         "/summon",
         "/recall",
         "/resume",
+        "/doctor",
+        "/status",
+        "/sessions",
+        "/config",
+        "/mcp",
+        "/skill",
+        "/notes",
     ]
 
 
@@ -1413,10 +1423,12 @@ def test_palette_options_session_narrows_by_label_or_id() -> None:
     assert [c.fill for c in _palette_options("/resume zzz", sessions=sessions)] == []
 
 
-def _palette_api(*, orchestrator: object | None = None) -> tuple[UIAPILayer, RecordingLoop]:
-    """浮层用例的 api：真 `RecordingLoop` + 可选编排器桩（LLM 已配置）。"""
+def _palette_api(
+    *, orchestrator: object | None = None, diagnostics: Deps | None = None
+) -> tuple[UIAPILayer, RecordingLoop]:
+    """浮层用例的 api：真 `RecordingLoop` + 可选编排器桩 / 只读诊断源（LLM 已配置）。"""
     loop = RecordingLoop()
-    api = UIAPILayer(loop=loop, orchestrator=orchestrator)
+    api = UIAPILayer(loop=loop, orchestrator=orchestrator, diagnostics=diagnostics)
     api.set_llm_config(_llm())
     return api, loop
 
@@ -1458,6 +1470,13 @@ def test_palette_opens_on_slash_and_lists_registered_commands() -> None:
         "cmd:/summon",
         "cmd:/recall",
         "cmd:/resume",
+        "cmd:/doctor",
+        "cmd:/status",
+        "cmd:/sessions",
+        "cmd:/config",
+        "cmd:/mcp",
+        "cmd:/skill",
+        "cmd:/notes",
     ]
 
 
@@ -1723,7 +1742,7 @@ def test_registry_commands_are_all_dispatchable() -> None:
     """**单一真源的可执行守护**：真源内每条命令都被分发链**消费**（不落普通对话）。
 
     任一条只登记、未接线（如登记后忘了接分发）本用例即红 —— 故 0159 刻意不把 `/resume`
-    放进真源，直到 0160 把「会话切换」接上。
+    放进真源，直到 0160 把「会话切换」接上；0163 新增的 7 条只读命令同受此守护。
     """
     orch = _TaskOrchestrator([("task_finished", {"outcomes": []})])
     api, loop = _palette_api(orchestrator=orch)
@@ -1743,6 +1762,13 @@ def test_registry_commands_are_all_dispatchable() -> None:
                 "/summon qinglong",
                 "/recall qinglong",
                 f"/resume {sid}",
+                "/doctor",
+                "/status",
+                "/sessions",
+                "/config",
+                "/mcp",
+                "/skill",
+                "/notes",
             ):
                 inp.value = line
                 await pilot.press("enter")
@@ -1951,3 +1977,202 @@ def test_resume_resets_previous_session_view_state() -> None:
     assert opened == {}  # 子任务句柄已清（旧 widget 已随时间线销毁）
     assert panel_visible is False
     assert timeline_visible is True
+
+
+def test_registry_handlers_resolve() -> None:
+    """每条真源登记项的 `handler` 都能在 app 上**解析得到**（登记名笔误即红）。"""
+    api, _ = _palette_api()
+    app = build_app(api)
+
+    async def drive() -> list[str]:
+        async with app.run_test():
+            return [
+                cmd.handler
+                for cmd in _COMMANDS
+                if cmd.handler and not callable(getattr(app, cmd.handler, None))
+            ]
+
+    assert asyncio.run(drive()) == []
+
+
+# ---- TUI 只读命令族（change 0163 / ADR-0154） ----
+
+_READONLY_KINDS = ("/doctor", "/status", "/sessions", "/config", "/mcp", "/skill", "/notes")
+_READONLY_CANARY = "sk-READONLY-CANARY-7c21"
+_READONLY_YAML = """\
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  endpoint: https://api.deepseek.com/v1
+  api_key: ${CORE_READONLY_KEY}
+"""
+
+
+def _readonly_deps(tmp_path: object) -> Deps:
+    """只读诊断源：密钥引用**可解析**，其值为哨兵（泄漏断言的靶子）。"""
+    from pathlib import Path  # noqa: PLC0415 — 路径拼接随用例落 tmp_path
+
+    root = Path(str(tmp_path))
+    yaml_path = root / "config.yaml"
+    yaml_path.write_text(_READONLY_YAML, encoding="utf-8")
+    config = ConfigManager(yaml_path, environ={"CORE_READONLY_KEY": _READONLY_CANARY})
+    return Deps(config=config, state_dir=root)
+
+
+async def _submit(app: object, line: str) -> list[str]:
+    """`run_test` 内提交一行，返回该行**新增**的时间线文本行。"""
+    from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+    inp = app.query_one("#input", Input)  # type: ignore[attr-defined]
+    inp.focus()
+    before, _, _ = await _timeline_view(app)
+    inp.value = line
+    await app._pilot.press("enter")  # type: ignore[attr-defined]  # noqa: SLF001
+    for _ in range(10):
+        await app._pilot.pause()  # type: ignore[attr-defined]  # noqa: SLF001
+    after, _, _ = await _timeline_view(app)
+    return after[len(before) :]
+
+
+def test_readonly_commands_render_result_block_without_touching_conversation(tmp_path) -> None:
+    """7 条只读命令：各落结果块、**无** `❯` 回显、**零**对话轮次（承规格三 Scenario）。"""
+    api, loop = _palette_api(diagnostics=_readonly_deps(tmp_path))
+    app = build_app(api)
+
+    async def drive() -> list[list[str]]:
+        async with app.run_test() as pilot:
+            app._pilot = pilot  # noqa: SLF001 — 供 `_submit` 取 pilot
+            return [await _submit(app, kind) for kind in _READONLY_KINDS]
+
+    blocks = asyncio.run(drive())
+    for kind, block in zip(_READONLY_KINDS, blocks, strict=True):
+        assert block, f"{kind} 未落结果块"
+        assert not any("❯" in line for line in block), f"{kind} 落了用户输入回显"
+    assert loop.inputs == []  # 无一进普通对话
+    assert loop.sessions == []
+
+
+def test_readonly_commands_leak_no_secret(tmp_path) -> None:
+    """`/config` 与 `/doctor`：只出现引用名，**逐字不含**密钥值（承规格 Scenario）。"""
+    api, _ = _palette_api(diagnostics=_readonly_deps(tmp_path))
+    app = build_app(api)
+
+    async def drive() -> str:
+        async with app.run_test() as pilot:
+            app._pilot = pilot  # noqa: SLF001
+            for kind in ("/config", "/doctor"):
+                await _submit(app, kind)
+            statics, _, _ = await _timeline_view(app)
+            return "\n".join(statics)
+
+    text = asyncio.run(drive())
+    assert "${CORE_READONLY_KEY}" in text  # 引用名在场（正面证据）
+    assert _READONLY_CANARY not in text  # 值不在场（红线）
+
+
+def test_readonly_command_with_arg_prints_hint_only(tmp_path) -> None:
+    """带参数 ⇒ 只提示、不执行（无结果块、不进对话）。"""
+    api, loop = _palette_api(diagnostics=_readonly_deps(tmp_path))
+    app = build_app(api)
+
+    async def drive() -> list[str]:
+        async with app.run_test() as pilot:
+            app._pilot = pilot  # noqa: SLF001
+            return await _submit(app, "/doctor 额外参数")
+
+    extra = asyncio.run(drive())
+    assert any("不接受参数" in line for line in extra)
+    assert not any("自检诊断" in line for line in extra)  # 未执行
+    assert loop.inputs == []
+
+
+def test_readonly_command_rejected_while_busy(tmp_path) -> None:
+    """忙碌中提交 `/doctor`：拒绝（提示处理中）、**零**结果块、**零**对话轮次。"""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _BlockingOrchestrator:
+        """阻塞式编排器：`started` 后挂起，`release` 才收尾（忙态窗口确定）。"""
+
+        async def astream(self, task_id: str, goal: str, **kwargs: object):
+            started.set()
+            await release.wait()
+            yield LoopEvent("task_finished", {"outcomes": []})
+
+    loop = RecordingLoop()
+    api = UIAPILayer(
+        loop=loop, orchestrator=_BlockingOrchestrator(), diagnostics=_readonly_deps(tmp_path)
+    )
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> list[str]:
+        from textual.widgets import Input  # noqa: PLC0415
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            for ch in "/task slow":
+                await pilot.press(ch)
+            await pilot.press("enter")
+            for _ in range(50):
+                await pilot.pause()
+                if started.is_set():
+                    break
+            before, _, _ = await _timeline_view(app)
+            inp.value = "/doctor"
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+            after, _, _ = await _timeline_view(app)
+            release.set()  # 放行收尾
+            for _ in range(20):
+                await pilot.pause()
+            return after[len(before) :]
+
+    extra = asyncio.run(drive())
+    assert any("处理中" in line for line in extra)  # 拒绝提示
+    assert not any("自检诊断" in line for line in extra)  # 未落结果块
+    assert loop.inputs == []
+
+
+def test_readonly_commands_have_zero_side_effects(tmp_path) -> None:
+    """零副作用：会话标识 / 会话数 / 转录条数**逐字不变**，时间线除新增块外**逐字不变**。"""
+    root = tmp_path
+    transcript = TranscriptStore(root / "messages.jsonl")
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop, transcript=transcript, diagnostics=_readonly_deps(tmp_path))
+    api.set_llm_config(_llm())
+    sid = api.create_session("cli")
+    seeded = (("user", "早前的问题"), ("assistant", "早前的回答"))
+    for role, body in seeded:
+        transcript.append(sid, role, body)
+    app = build_app(api, sid)
+
+    async def drive() -> tuple[object, ...]:
+        async with app.run_test() as pilot:
+            app._pilot = pilot  # noqa: SLF001 — 供 `_submit` 取 pilot
+            await _submit(app, "普通问题")  # 先攒出既有内容（含一轮对话）
+            before = await _timeline_view(app)
+            messages_before = len(transcript.read(sid))
+            await _submit(app, "/status")
+            after = await _timeline_view(app)
+            return (
+                before,
+                after,
+                messages_before,
+                len(transcript.read(sid)),
+                app._session_id,  # noqa: SLF001 — 呈现态真值即实例字段
+                len(api.list_sessions()),
+            )
+
+    before, after, messages_before, messages, sid_after, sessions = asyncio.run(drive())
+    before_static, before_md, before_fences = before
+    after_static, after_md, after_fences = after
+    assert after_static[: len(before_static)] == before_static, "既有时间线文本被改写"
+    assert after_md[: len(before_md)] == before_md, "既有 Markdown 块被改写"
+    assert after_fences == before_fences  # 围栏数（呈现态）不变
+    assert len(after_static) == len(before_static) + 1  # 恰好**多一条**结果块
+    assert sid_after == sid
+    assert sessions == 1
+    assert messages == messages_before == len(seeded)  # 仅预置的几条；只读命令**不**写转录

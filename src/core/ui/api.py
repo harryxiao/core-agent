@@ -15,6 +15,7 @@ from typing import Any, cast
 from core.beast import BeastActivator, BeastError
 from core.configuration import ConfigManager, ConfigurationError
 from core.configuration.models import LLMConfig
+from core.diagnostics import Deps
 from core.loop import DefaultLoop, LimitsConfigurable, LoopEvent, LoopPlugin
 from core.memory import MemoryStore, TranscriptStore
 from core.orchestration import OrchestrationError, TaskScheduler
@@ -117,6 +118,7 @@ class UIAPILayer:
         beast_activator: BeastActivator | None = None,
         registry: SessionRegistry | None = None,
         transcript: TranscriptStore | None = None,
+        diagnostics: Deps | None = None,
     ) -> None:
         self._loop = loop if loop is not None else DefaultLoop()
         self._memory = memory
@@ -134,12 +136,22 @@ class UIAPILayer:
         self._registry = registry if registry is not None else SessionRegistry()
         # 对话转录存储（缺省未注入 ⇒ 枚举不做富化、`session_messages` 走空，形状不变）
         self._transcript = transcript
+        # 只读诊断源（change 0163 / ADR-0154）：**单一接缝** —— 句柄由组合根装配后整体注入，
+        # 本层不拆句柄（缺省未接线 ⇒ TUI 只读命令给提示而非崩）
+        self._diagnostics = diagnostics
         self._llm_config: LLMConfig | None = None
 
     @property
     def approval(self) -> ApprovalChannel | None:
         """交互审批通道（高风险工具 confirm 门的终端 y/n）；非交互入口为 None。"""
         return self._approval
+
+    def diagnostics(self) -> Deps | None:
+        """只读诊断源（`/doctor` `/status` 等只读命令的取数面）；未接线为 None。
+
+        与 CLI 侧**同一**源（`core.diagnostics`）—— TUI 不另写检查逻辑；本层只做**取数接缝**。
+        """
+        return self._diagnostics
 
     # ---- 会话与循环 ----
 

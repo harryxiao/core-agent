@@ -1234,6 +1234,27 @@
 > 本 change 只接 **CLI**（TUI 浮层命令属 change `0163`）；`doctor` 退出码语义**有意**由「恒 0」改为「有 fail 项非零」；
 > `cli_ops/dispatcher.py` 的 `status()` 分支自此不可达（不改不删）；其余运维动词仍未注册（台账 E100）。
 
+## 77. TUI 只读命令族（TC-READONLY，change `0163`／ADR-0154）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-READONLY-01 | ui/spec.md「TUI 只读诊断命令」Scenario「浮层列出只读命令并可采纳」 | `_palette_options("/")`；`_COMMANDS` 全量 | 一级候选 **13 条**（顺序即真源顺序，含 7 条只读），采纳**只改写输入框不提交**（锚点：`tests/test_repl.py::test_palette_options_lists_all_commands_on_slash`、`..._palette_opens_on_slash_and_lists_registered_commands`、`..._palette_tab_accepts_highlighted_command_without_submitting`） |
+| TC-READONLY-02 | 同上 Scenario「执行命令落结果块且不进对话」 | 7 条命令各提交一次（诊断源已接线） | 各**新增一条**结果块、**无** `❯` 回显；`loop.inputs == []` 且 `loop.sessions == []`（**零**对话轮次）（锚点：`..._readonly_commands_render_result_block_without_touching_conversation`） |
+| TC-READONLY-03 | 同上 Scenario「只读命令零副作用」 | 同一会话先跑一轮普通消息（攒既有内容）再提交 `/status` | 会话标识**不变**、会话数**不变**、转录条数**不变**；时间线既有三面（Static 文本 / Markdown 源 / 围栏数）**逐字不变**、恰好**多一条**（锚点：`..._readonly_commands_have_zero_side_effects`） |
+| TC-READONLY-04 | 同上 Scenario「本轮执行期间拒绝只读命令」 | `/task slow`（阻塞编排器，忙态窗口确定）后提交 `/doctor` | 落「处理中」拒绝提示、**无**结果块、`loop.inputs == []`（锚点：`..._readonly_command_rejected_while_busy`） |
+| TC-READONLY-05 | 同上 Scenario「只读输出不含密钥值」（**红线**） | 注入哨兵 `sk-READONLY-CANARY-7c21` 为 `${CORE_READONLY_KEY}` 的解析结果，提交 `/config` 与 `/doctor` | 时间线含**引用名** `${CORE_READONLY_KEY}`、**逐字不含**哨兵值（锚点：`..._readonly_commands_leak_no_secret`） |
+| TC-READONLY-06 | 同上 Scenario「带参数与未登记前缀走既有路径」 | 提交 `/doctor 额外参数` | 只落用法提示、**不执行**（无结果块）、`loop.inputs == []`（锚点：`..._readonly_command_with_arg_prints_hint_only`；未登记前缀 `/zzz` 的零回归由 `..._palette_does_not_hijack_unknown_slash_input` 与 `..._registry_commands_are_all_dispatchable` 分担） |
+| TC-READONLY-07 | 同上（**接线守护**，防「只登记、未接线」） | `_COMMANDS` 每条命令的**规范形态**分别驱动一次；每条 `handler` 在 app 上解析 | 无一落进普通对话（`loop.inputs` 不增长）；`getattr(app, handler)` 全部可调用（锚点：`..._registry_commands_are_all_dispatchable`、`..._registry_handlers_resolve`） |
+
+> **无手工验收项**：浮层候选、结果块、零副作用、忙态拒绝、密钥零泄漏、接线守护全部以 `run_test` 无头驱动覆盖；
+> 唯一需**目视**的是真实 `config.yaml` 下的 `/config` 与 `/doctor` 输出（自动测试只覆盖注入样本）。
+> 语义：**与 CLI 同源**（`/doctor` `/status` 经 `UIAPILayer.diagnostics()` 取 `core.diagnostics` 的同一份
+> `collect_*` / `render_*`，**不**另写检查逻辑）；**结果不进对话**（只读 ⇒ 无轮次、无回显、零副作用）；
+> **忙态不豁免**（排在 `on_input_submitted` 的忙态检查之后，与 `/resume` 同侧 ⇒ 不在流式写时间线时插块）。
+> **已知局限**：`/sessions` 与 CLI `sessions` **同名异义**（前者列会话注册表，后者列 Harness Host 连接记录）；
+> **只读**（写操作命令不在其内）；TUI 的工具面计数按**全量** `runtime.tools`（与 CLI 的 builtin-only 面**有意不同**）；
+> 未接线诊断源 ⇒ 落一行提示（不崩）；命令清单仍是**内存真源**（配置驱动 / 插件注册命令面另立 change）。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

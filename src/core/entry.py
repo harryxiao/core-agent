@@ -463,6 +463,9 @@ def _build_ui(args: argparse.Namespace, *, interactive: bool = False) -> UIAPILa
         registry=SessionRegistry(path=_state_path("conversations.json")),
         # 转录与主 loop **同源同文件**（`$CORE_STATE_DIR/messages.jsonl`）⇒ 读取面与回灌一致
         transcript=runtime.transcript,
+        # 只读诊断源（change 0163）：与 CLI `doctor`/`status` **同一**源；句柄复用已装配的
+        # `runtime`（不重复装配），故 TUI 的工具面计数为**全量**（见 ADR-0154 决策④）
+        diagnostics=_diag_deps(args, tools=runtime.tools, config=runtime.config),
     )
     api.set_llm_config(runtime.app.llm)
     return api
@@ -511,18 +514,28 @@ def _ops(args: argparse.Namespace) -> int:
     return 0
 
 
-def _diag_deps(args: argparse.Namespace) -> Deps:
+def _diag_deps(
+    args: argparse.Namespace,
+    *,
+    tools: ToolProvider | None = None,
+    config: ConfigManager | None = None,
+) -> Deps:
     """构造只读诊断句柄集：经**既有**路径助手取裸 store（不建连接、**不装配 runtime**）。
 
     不装配 runtime 是刻意的：装配需要**有效**配置，而「配置坏了」恰是最该跑诊断的场景
     （见 ADR-0153 决策①）。工具面因此只装**零注入**的内置五件（`builtin_tools`），
     会话枚举走会话注册表的只读口（不带转录 ⇒ 无标题列）。
+
+    `tools` / `config` 可选覆盖（change 0163）：TUI 侧由 `_build_ui` 传入**已在手**的
+    `runtime.tools` / `runtime.config`（不重复装配），故 TUI 的「内置工具数」按**真实**工具面计数
+    —— 与 CLI 的 builtin-only 面**有意不同**（见 ADR-0154 决策④）。
     """
-    tools = ToolProvider()
-    for tool in builtin_tools():
-        tools.register(tool)
+    if tools is None:
+        tools = ToolProvider()
+        for tool in builtin_tools():
+            tools.register(tool)
     return Deps(
-        config=_config_manager(args),
+        config=config if config is not None else _config_manager(args),
         tools=tools,
         sessions=SessionRegistry(path=_state_path("conversations.json")).list,
         notes=_notes_store(),
