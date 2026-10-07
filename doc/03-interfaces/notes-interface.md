@@ -124,6 +124,30 @@ class NoteStore(Plugin):
 - `set_pinned(note_id, *, pinned=True)`：缺失 ⇒ `NOTE_NOT_FOUND`；**幂等**（同值 ⇒ 不写盘、不 bump
   `updated_at`），真变更走同一 `update()` 原子覆盖写路径（不另开第二写路径）。
 
+### 3.1 会话摘要提升（`core.notes.promote`，change 0150 / ADR-0142 / 账本 E94）
+
+**独立工作流函数**（**非** `NoteStore` 方法 —— `NoteStore` 是存储门面，提升是工作流；独立便于不碰
+存储 / CLI 即可单测）：
+
+```python
+from core.notes import promote_session_summary
+
+def promote_session_summary(
+    store: NoteStore,
+    summary: MemoryEntry,       # 由调用方用 MemoryStore.summary_for(session_id) 取回
+    *, session_id: str,
+    as_note_id: str | None = None,
+    title: str = "",
+) -> NoteEntry | None: ...      # None ⇒ 派生 id 为空且未给显式 id（不写盘）
+```
+
+- 触发形态 = **显式**（CLI `notes promote` / 上层调用）；SHALL NOT 由 loop 压实自动触发、零 LLM 调用。
+- `note_id` = `as_note_id or f"session-{slug_topic(session_id)}"`；**幂等覆盖**（同会话重复提升命中同一
+  note、不增长），复用**唯一**写路径 `NoteStore.update()`。
+- 产出 `source == "notes.promote"`、`pinned=True`（每轮无条件注入）、`tags` 含 `session:<sid>` 与 `summary`；
+  属**全局文档层**（`session_id` 仅是 id 派生输入与来源标注，**不是**隔离维度）。
+- 写入**不接** `EffectTracker`（承 canonical 文档层既有取舍，与 `pin/unpin`/`observe_turn` 一致）。
+
 ---
 
 ## 4. 错误码（`core.notes.errors`）
@@ -174,5 +198,6 @@ PinnedNotesConsult = Callable[[], str]   # **零参** → 常驻注入块（签�
 | `notes search <query>` | 词法检索（标题 / tags / Search Queries），打印命中 note 摘要 |
 | `notes pin <note_id>` | 置常驻标记（正文每轮无条件注入；幂等；缺失 ⇒ `NOTE_NOT_FOUND` 非零退出） |
 | `notes unpin <note_id>` | 清常驻标记 |
+| `notes promote <session-id> [--as NOTE_ID] [--title TITLE]` | 会话摘要 → canonical 常驻笔记（显式提升；幂等覆盖；会话无摘要 / 派生 id 为空 ⇒ 非零退出、不写盘） |
 
 一次 `notes` 命令 = 一次性进程；canonical 目录是**落盘真源** ⇒ 一次写入在后续进程可见。

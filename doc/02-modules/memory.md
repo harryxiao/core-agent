@@ -68,6 +68,9 @@ MemoryStore
 - **摘要为滚动合并**（change `0148`／ADR-0140／账本 E90）：该会话已有摘要时，`compact` 把
   **既有摘要 + 新增 episodic 条目**一并投喂摘要器 ⇒ 更新摘要**融合既有结论与新增事实**，早期结论
   **不被静默丢弃**。滚动的是**内容**，摘要条目 `id` 与「每会话至多一条、不增长」口径**不变**。
+- **摘要只读访问器**（change `0150`／ADR-0142／账本 E94）：`MemoryStore.summary_for(session_id)`
+  按会话取回既有摘要条目（口径同压实写入），**只读** —— 零写入、零效应、不动
+  `reuse_count` / `importance` / `updated_at`。供上层（CLI `notes promote`）取数做提升。
 
 ### 3.2.2 对话转录（**非**记忆层级，change `0115`／ADR-0108）
 

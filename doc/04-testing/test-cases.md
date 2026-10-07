@@ -1008,6 +1008,30 @@
 
 ---
 
+## 66. 会话摘要提升（TC-PROMOTE，change `0150`／ADR-0142，账本 E94）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-PROMOTE-01 | memory/spec.md「记忆压实」只读访问器 | 注入 summarizer 压实某会话后 `summary_for(<该会话>)`；`summary_for(<他会话>)`；`summary_for("")` | 命中条目 `id == "compaction.summary.<sid>"`、`kind=="semantic"`、`tags` 含 `summary`；他会话 ⇒ `None`；空串命中 `compaction.summary.default`（锚点：`test_memory.py::test_summary_for_returns_session_summary_entry` / `::test_summary_for_default_session_key`） |
+| TC-PROMOTE-02 | 同 Requirement（只读：零写入 / 零效应） | 压实后连续两次 `summary_for(sid)`；比对前后 `audit()` 快照与 `EffectTracker.audit("compaction.<sid>")` 条数 | 条目 `(id, layer, reuse_count, importance)` **逐字不变**、效应面**不增**（锚点：`::test_summary_for_is_read_only`） |
+| TC-PROMOTE-03 | 同 Requirement（未注入摘要器 ⇒ 无摘要） | 裸 `MemoryStore()` 压实后 `summary_for(sid)` | `None`（未写摘要）（锚点：`::test_summary_for_none_without_summarizer`） |
+| TC-PROMOTE-04 | notes/spec.md「会话摘要提升（promotion）」Scenario「提升落 canonical 且可读回」 | `promote_session_summary(store, 摘要, session_id=…)`；**新实例**读回 | 正文含摘要内容、`source == "notes.promote"`、`pinned is True`（锚点：`test_notes_promote.py::test_promote_writes_canonical_from_summary`） |
+| TC-PROMOTE-05 | 同 Requirement Scenario「幂等：重复提升单条覆盖」 | 同会话提升两次（第二次摘要内容不同） | 命中**同一** `note_id`；canonical 仅**一条** `session-*`；内容为第二次（覆盖式）（锚点：`::test_promote_is_idempotent_single_note_per_session`） |
+| TC-PROMOTE-06 | 同 Requirement Scenario「note_id 确定性派生」+ CLI | 同 `session_id` 两次提升；跨进程两次 `core-agent notes promote <sid>` | 落同一 `note_id == "session-<slug>"`；跨进程仍**单条**、内容为第二次（锚点：`::test_promote_note_id_derived_deterministically` ＋ `test_entry.py::test_notes_promote_idempotent_across_processes`） |
+| TC-PROMOTE-07 | 同 Requirement（显式 `--as` 覆盖 + 标题） | `promote_session_summary(..., as_note_id="my-topic", title="我的主题")` | 落 `my-topic` 且 `title == "我的主题"`（锚点：`::test_promote_as_overrides_note_id`） |
+| TC-PROMOTE-08 | 同 Requirement（来源标注） | 提升后读 `note.tags` | 含 `session:<sid>` 与 `summary`（锚点：`::test_promote_tags_carry_session_provenance`） |
+| TC-PROMOTE-09 | 同 Requirement Scenario「无摘要 / 空 slug ⇒ 不写盘 + 非零退出」 | `session_id="..."`（不可 slug）且无显式 id；CLI `notes promote <无摘要会话>` | 函数 ⇒ `None` 且目录无 `.md`；CLI ⇒ 退出码 1 + stderr 非空、**不写任何文件**、**不新增**错误码（锚点：`::test_promote_empty_slug_returns_none_and_writes_nothing` ＋ `test_entry.py::test_notes_promote_missing_summary_returns_nonzero`） |
+| TC-PROMOTE-10 | 同 Requirement CLI 面 | 跨进程：播种摘要 → `notes promote` → `notes show` / `notes list`；`notes`（无子命令） | `show` 含摘要正文、`source == "notes.promote"`、`- pinned: true`；`list` 该行尾 `\t[pinned]`；usage 列出 `promote <session-id>`（锚点：`test_entry.py::test_notes_promote_writes_note_and_show_reads_it` / `::test_notes_promote_marks_pinned` / `::test_notes_usage_lists_promote_verb`） |
+| TC-PROMOTE-11 | 同 Requirement Scenario「提升后对任意会话可见（全局层护栏）」 | 提升后在**不同** `session_id` 上下文 `_consult_notes` | 两会话命中集**相同**（非会话私有）（锚点：`test_session_isolation.py::test_notes_promoted_note_is_global_layer`） |
+| TC-PROMOTE-12 | 同 Requirement Scenario「不自动触发（设计裁决护栏）」 | 跑一轮触发压实的 loop（注入 memory+summarizer+notes 钩子） | 压实确已产摘要；canonical 目录**无**任何 `session-*` note（锚点：`test_notes_loop.py::test_loop_compaction_does_not_auto_promote`） |
+| TC-PROMOTE-13 | 同 Requirement（**零回归护栏**） | 既有 `tests/test_notes.py` / `test_memory.py` / `test_notes_loop.py` / `test_entry.py` / `test_session_isolation.py` 全量 | 逐字不动全绿 —— `notes` 既有 4 条 Requirement 的 Scenario**逐字不变**（本 change 对 notes **纯 ADDED**；memory 仅追加只读条款） |
+
+> **无手工验收项**：纯库内行为（`notes` 提升 + `memory` 只读访问器 + CLI），全自动门禁（pytest）覆盖；无前端 / Rust / 真端点面。
+> ⚠️ **使用红线（入 proposal 风险节与 ADR-0142 局限）**：提升产出**自动置常驻** ⇒ 摘要正文**每轮进模型上下文**，
+> 操作者须在提升前 **review 摘要**，**绝不**提升含密钥 / 凭据的摘要。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

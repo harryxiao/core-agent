@@ -4025,6 +4025,51 @@
 
 ---
 
+## ADR-0142：会话摘要提升为 canonical 常驻笔记（change 0150 / 账本 E94）
+
+- **背景**：`coding-plan/known-risk.md` `E94` —— change `0148`（滚动摘要）后，回喂既有摘要按
+  `_MAX_SUMMARY_CHARS = 2000` 取**前** 2000 字（旧端）⇒ 长时程下**早期硬约束缓慢稀释**（ADR-0140 局限②）。
+  缓解物已有（`notes` 不参与压实 + L0 宪法 + 信息地图 pointers），但「硬约束提升进 notes」**只靠技能纪律
+  `skills.notes.consult_build_update` 自觉，无强制、无触发点**。与 `E90`（change `0148` 已修）**同源不同层**：
+  E90 修**摘要内**稀释，E94 补**摘要 → canonical 提升**。**依赖** change `0149` / ADR-0141（常驻 pinned 笔记；
+  其背景已预留 E94 = change `0150` / ADR-0142）。
+- **两处源码订正（否决「自动触发」判据的实证）**：① **`MemoryEntry.importance` 对摘要条目恒为 `0.0`** ——
+  `_score_importance`（`store.py:326`）只对 `_episodic_groups`（只收 `kind=="episodic"`，`store.py:371`）打分，
+  摘要在其后由 `_commit_summary`（`store.py:394`）以 `MemoryEntry(...)` **默认参数**创建 ⇒
+  「摘要 `importance ≥ 阈值`」是**死判据**（永不触发）；下轮 `_episodic_groups` 仍排除它（`kind=="semantic"`）。
+  ② **循环内压实是「全量」而非会话级** —— `default.py:447` 调 `self._memory.compact()`（**无 `session_id`**）⇒
+  一次压实为**所有**有 L2 episodic 的会话写摘要 ⇒ 「压实后钩子按 `ctx.session_id` 提升刚写的摘要」**范围错配**。
+- **决策①：触发 = 显式（CLI 动词），不做自动压实后钩子。** 新增 `core-agent notes promote <session-id>
+  [--as <note_id>] [--title <title>]`。理由：(i) `notes` 规格身份是「**被有意文档化**的刻意知识，**不是某一轮
+  对话的残留**」（`notes/spec.md:62-63`）⇒ 自动把 LLM 生成的会话摘要灌进全局 canonical 层，等于把「对话残留」
+  自动升格为「刻意知识」，**须 MODIFY 哲学条文**；显式动词下「谁运行 `notes promote`」本身即「有意」的证据 ⇒
+  **天然符合**该哲学、规格**纯 ADDED**。(ii) 自动触发**无可行判据**（见上两处订正）。(iii) E94 的缺口字面是
+  「**无触发点**」，显式动词**正是**一个确定性、零 LLM 调用、零噪音的触发点。弱点：无人在场的长任务不自动提升 ——
+  本仓对该场景的既定答案是「操作者 / 上层一次性配置」（E93 同模式）。
+- **决策②：表征 = 每会话一条，`note_id` 确定性派生，覆盖式幂等。** `note_id = --as 或 f"session-{slug_topic(session_id)}"`
+  ⇒ 同会话重复提升**必然命中同一条**、走**唯一写路径** `NoteStore.update()`（`store.py:104`）覆盖 ⇒ 不产生第二条、
+  无界增长不可能；`--as` 为可选逃生口（**不**引入主题合并判据 —— 与既有「主题分裂优于错合并」取舍一致）。
+- **决策③：提升即自动置常驻（`pinned=True`）。** 达成 E94 的原始目标「长任务硬约束**每轮在场**」（常驻 = 每轮
+  无条件注入，承 ADR-0141）；受 `_MAX_PINNED_CHARS = 4000` 有界（token 有界，P5）。**⚠️ 密钥红线告示**：常驻正文
+  每轮进模型上下文 ⇒ 因触发**显式**，操作者**须在提升前 review 摘要内容**，**绝不**提升含密钥 / 凭据的摘要。
+- **决策④：提升写操作不接 `EffectTracker`。** 承 ADR-0099 / ADR-0141 —— notes 写面即**不入可逆效应面**；提升复用
+  同一 `update()` 路径 ⇒ 与 `pin/unpin` / `observe_turn` **一致**；可逆性由 canonical 文件本身（重提升 / 编辑 /
+  删除 + git）体现。
+- **决策⑤：新增只读访问器 `MemoryStore.summary_for(session_id)` 而非复用 `audit(trace_id=...)` 的 id 约定。**
+  委托私有 `_existing_summary`（`store.py:385`）⇒ 摘要 id 约定**单一真源**；零新状态、零写入、零效应；对比
+  `audit` 后按 id 过滤会把 id 约定**复制到第二处**（`entry.py`），违单一真源；对比「新增通用 `get(entry_id)`」更窄（YAGNI）。
+- **已知局限**：① **显式触发 ⇒ 无人在场的长任务仍不自动落 canonical** —— 与「刻意知识」哲学一致；**自动触发
+  另立账**（若做，唯一可辩护形态是「只提升跨过 `_MAX_SUMMARY_CHARS` 截断边界的会话」+ 幂等覆盖 + 不自动 pin，
+  但需 MODIFY 哲学条文 + 新增 loop 钩子）。② **自动置常驻** ⇒ 提升正文每轮进上下文；与既有常驻笔记**共享**
+  `_MAX_PINNED_CHARS = 4000` 预算，多篇互相挤占、末篇可能截断（承 ADR-0141 局限②）；操作者须 review（红线）。
+  ③ 提升写操作**不接** `EffectTracker`（承 ADR-0099）⇒ 无 `undo`。
+- **规格**：`notes`（**ADDED** Requirement「会话摘要提升（promotion）」＋ 6 Scenario）；`memory`「记忆压实」
+  （**MODIFIED**，新增只读访问器 `summary_for` 条款 ＋ Scenario「按会话读取既有摘要（只读）」）；接口面
+  `03-interfaces/{memory,notes}-interface.md`、模块面 `02-modules/{memory,notes}.md`、测试面
+  `04-testing/test-cases.md` §66、台账 `coding-plan/known-risk.md`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4161,3 +4206,4 @@
 | ADR-0139 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0140 | 03-interfaces/memory-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0141 | 03-interfaces/notes-interface.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0142 | 03-interfaces/memory-interface.md, 03-interfaces/notes-interface.md, 02-modules/memory.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

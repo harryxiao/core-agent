@@ -21,7 +21,7 @@ from core.durability import (
 )
 from core.entry import _build_installer, _build_parser, _state_path, main
 from core.loop import LoopEvent
-from core.memory import TranscriptStore
+from core.memory import FileBackend, MemoryEntry, MemoryStore, TranscriptStore
 from core.notes import NoteEntry, NoteStore
 from core.orchestration import Plan, Subtask, plan_to_dict
 from core.pet.core import (
@@ -1186,3 +1186,75 @@ def test_notes_usage_lists_pin_verbs(capsys: pytest.CaptureFixture[str]) -> None
     assert main(["notes"]) == 1
     err = capsys.readouterr().err
     assert "pin <note_id>" in err and "unpin <note_id>" in err
+
+
+# ---- notes：会话摘要提升（change 0150 / ADR-0142 / 账本 E94） ----
+
+
+def _seed_summary(session_id: str, content: str) -> None:
+    """以组合根同源路径播种一条会话压实摘要（`CORE_STATE_DIR` 由 conftest 隔离）。"""
+    key = session_id or "default"
+    MemoryStore(backend=FileBackend(_state_path("memory.jsonl"))).write(
+        "L2",
+        MemoryEntry(
+            id=f"compaction.summary.{key}",
+            layer="L2",
+            content=content,
+            tags=["compaction", "summary"],
+            source="compaction",
+            trace_id=f"compaction.{key}",
+            session_id=session_id,
+            kind="semantic",
+        ),
+    )
+
+
+def test_notes_promote_writes_note_and_show_reads_it(capsys: pytest.CaptureFixture[str]) -> None:
+    """提升落盘 ⇒ 跨进程（新 CLI 调用）读回：正文含摘要、常驻标记可见。"""
+    _seed_summary("sess-7", "结论：对外接口必须 HTTPS")
+
+    assert main(["notes", "promote", "sess-7"]) == 0
+    assert capsys.readouterr().out.strip(), "提升须有回执"
+
+    assert main(["notes", "show", "session-sess-7"]) == 0
+    out = capsys.readouterr().out
+    assert "对外接口必须 HTTPS" in out
+    assert "- pinned: true" in out
+    assert "notes.promote" in out
+
+
+def test_notes_promote_missing_summary_returns_nonzero(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["notes", "promote", "无摘要会话"]) == 1
+    assert capsys.readouterr().err.strip(), "缺失摘要须有明确报错"
+    assert list(_state_path("notes").glob("*.md")) == [], "不写任何文件"
+
+
+def test_notes_promote_idempotent_across_processes(capsys: pytest.CaptureFixture[str]) -> None:
+    """同会话重复提升 ⇒ 仍单条（覆盖式），内容为第二次。"""
+    _seed_summary("s1", "第一次结论")
+    assert main(["notes", "promote", "s1"]) == 0
+
+    _seed_summary("s1", "第二次结论")
+    assert main(["notes", "promote", "s1"]) == 0
+    capsys.readouterr()
+
+    notes_dir = _state_path("notes")
+    assert len(list(notes_dir.glob("session-*.md"))) == 1, "不增长"
+    assert main(["notes", "show", "session-s1"]) == 0
+    out = capsys.readouterr().out
+    assert "第二次结论" in out and "第一次结论" not in out
+
+
+def test_notes_promote_marks_pinned(capsys: pytest.CaptureFixture[str]) -> None:
+    _seed_summary("s1", "结论：X")
+    assert main(["notes", "promote", "s1"]) == 0
+    capsys.readouterr()
+
+    assert main(["notes", "list"]) == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if line]
+    assert any(line.startswith("session-s1") and line.endswith("\t[pinned]") for line in lines)
+
+
+def test_notes_usage_lists_promote_verb(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["notes"]) == 1
+    assert "promote <session-id>" in capsys.readouterr().err

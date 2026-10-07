@@ -597,3 +597,57 @@ def test_forget_is_reversible_by_trace() -> None:
 
     assert report.undo_failed == []
     assert dict(store.index().entries)["stale"] == "L2", "按 trace 回滚 → 迁回原层"
+
+
+# ---- summary_for：按会话读取既有摘要（只读；change 0150 / ADR-0142 / 账本 E94）----
+
+
+def test_summary_for_returns_session_summary_entry() -> None:
+    store = MemoryStore(summarizer=lambda entries: "摘要：事实")
+    store.write("L2", _session_entry("e0", "事实零", "s1"))
+    store.write("L2", _session_entry("e1", "事实一", "s1"))
+    store.compact()
+
+    found = store.summary_for("s1")
+
+    assert found is not None
+    assert found.id == "compaction.summary.s1"
+    assert found.kind == "semantic" and found.source == "compaction"
+    assert "summary" in found.tags
+    assert store.summary_for("other") is None, "无该会话摘要 ⇒ None"
+
+
+def test_summary_for_default_session_key() -> None:
+    store = MemoryStore(summarizer=lambda entries: "摘要：事实")
+    store.write("L2", _session_entry("e0", "无归属事实", ""))
+
+    store.compact()
+
+    found = store.summary_for("")
+    assert found is not None and found.id == "compaction.summary.default"
+
+
+def test_summary_for_is_read_only() -> None:
+    tracker = EffectTracker()
+    store = MemoryStore(effect_tracker=tracker, summarizer=lambda entries: "摘要：事实")
+    store.write("L2", _session_entry("e0", "事实零", "s1"))
+    store.compact()
+
+    before = [(e.id, e.layer, e.reuse_count, e.importance) for e in store.audit()]
+    effects_before = len(tracker.audit("compaction.s1"))
+
+    first = store.summary_for("s1")
+    second = store.summary_for("s1")
+
+    after = [(e.id, e.layer, e.reuse_count, e.importance) for e in store.audit()]
+    assert before == after, "读取不改条目（无写入、不动 reuse_count/importance/层）"
+    assert len(tracker.audit("compaction.s1")) == effects_before, "读取不记效应"
+    assert first is not None and second is not None and first.id == second.id
+
+
+def test_summary_for_none_without_summarizer() -> None:
+    store = MemoryStore()
+    store.write("L2", _session_entry("e0", "事实零", "s1"))
+    store.compact()
+
+    assert store.summary_for("s1") is None, "未注入摘要器 ⇒ 未写摘要 ⇒ None"

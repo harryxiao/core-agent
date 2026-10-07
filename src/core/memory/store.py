@@ -197,6 +197,14 @@ class MemoryStore:
             return entries
         return [e for e in entries if e.trace_id == trace_id]
 
+    def summary_for(self, session_id: str) -> MemoryEntry | None:
+        """按会话取回既有摘要条目（**只读**；口径同 `_commit_summary`；无则 ``None``）。
+
+        复用私有 `_existing_summary` ⇒ id 约定单一真源、零写入 / 零效应、
+        不变更 `reuse_count` / `importance` / `updated_at`。供上层（如 CLI 提升）取数。
+        """
+        return self._existing_summary(session_id)
+
     def compact(
         self, query: str = "", budget: int = 4096, *, session_id: str = ""
     ) -> DecisionResult | None:

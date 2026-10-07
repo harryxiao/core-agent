@@ -23,7 +23,7 @@ from core.llm_provider import LLMProvider
 from core.loop import Action, DefaultLoop, LoopContext, LoopEvent, LoopPlugin, LoopResult
 from core.loop.planner import LLMPlanner
 from core.memory import MemoryEntry, MemoryStore
-from core.notes import NoteEntry, NoteStore
+from core.notes import NoteEntry, NoteStore, promote_session_summary
 from core.orchestration import (
     AgentProfile,
     MultiAgentRouter,
@@ -401,3 +401,32 @@ def test_notes_pinned_is_not_session_scoped(tmp_path: Path) -> None:
 
     assert ctx_a.pinned_notes != ""
     assert ctx_a.pinned_notes == ctx_b.pinned_notes
+
+
+def test_notes_promoted_note_is_global_layer(tmp_path: Path) -> None:
+    """提升产出的 note 属全局文档层：不同会话上下文 Consult 命中集相同（change 0150 / ADR-0142）。
+
+    `session_id` 仅是 `note_id` 的派生输入与来源标注，**不是**隔离维度。
+    """
+    store = NoteStore(path=tmp_path)
+    summary = MemoryEntry(
+        id="compaction.summary.A",
+        layer="L2",
+        content="结论：对外接口必须 HTTPS",
+        tags=["compaction", "summary"],
+        source="compaction",
+        trace_id="compaction.A",
+        session_id="A",
+        kind="semantic",
+    )
+    note = promote_session_summary(store, summary, session_id="A")
+    assert note is not None
+
+    loop = DefaultLoop(notes_consult=store.digest)
+    ctx_a = loop.perceive("对外接口", session_id="A")
+    ctx_b = loop.perceive("对外接口", session_id="B")
+    loop._consult_notes(ctx_a, "t")  # noqa: SLF001
+    loop._consult_notes(ctx_b, "t")  # noqa: SLF001
+
+    assert ctx_a.notes != ""
+    assert ctx_a.notes == ctx_b.notes

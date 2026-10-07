@@ -62,6 +62,13 @@ class MemoryStore(Plugin):
 
     def audit(self, trace_id: str | None = None) -> list[MemoryEntry]:
         """审计写入记录。"""
+
+    def summary_for(self, session_id: str) -> MemoryEntry | None:
+        """按会话取回既有摘要条目（**只读**；change `0150` / ADR-0142 / 账本 E94）。
+
+        id 口径与压实写入**同一**（``compaction.summary.<session_id or 'default'>``）；无则 ``None``。
+        SHALL NOT 产生任何写入 / 效应记录，SHALL NOT 变更条目的 ``reuse_count`` / ``importance`` /
+        ``updated_at`` —— 供上层（如 CLI ``notes promote``）取数。"""
 ```
 
 **构造注入点**（均为可选依赖注入，缺省不启用）：

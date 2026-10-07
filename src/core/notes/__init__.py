@@ -12,6 +12,7 @@
 from .backend import MarkdownBackend
 from .errors import NoteError, NoteErrorCode
 from .models import NoteEntry, parse_note, render_note, slug_topic
+from .promote import promote_session_summary
 from .store import NoteStore
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "NoteErrorCode",
     "NoteStore",
     "parse_note",
+    "promote_session_summary",
     "render_note",
     "slug_topic",
 ]

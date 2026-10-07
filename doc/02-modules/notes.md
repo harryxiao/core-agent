@@ -119,6 +119,21 @@ canonical 目录缺省 `$CORE_STATE_DIR/notes`（未设则 `~/.core/state/notes`
   `slug_topic(task)` 为空则跳过；否则把「解决过程」**覆盖式**写回该主题，`source="notes.turn"`。
 - 主题 = 任务首行 slug ⇒ 措辞不同的同一任务会**另起主题**（主题分裂优于错合并）。
 
+### 3.5.1 会话摘要提升（promotion，change 0150／ADR-0142／账本 E94）
+
+- **触发形态 = 显式**：`core.notes.promote.promote_session_summary(...)`，由 CLI
+  `notes promote <session-id>` 或上层调用触发。**不是** loop 压实后的自动钩子，**不**依赖模型自觉
+  （对比仅靠技能纪律 `skills.notes.consult_build_update` 的路径）—— 与 §1「笔记是被有意文档化的**刻意知识**，
+  不是某一轮对话的残留」哲学一致。该路径**零 LLM 调用**。
+- **幂等覆盖**：`note_id = --as 或 f"session-{slug_topic(session_id)}"` ⇒ 同会话重复提升命中**同一** note、
+  **不增长**；写回复用**唯一**写路径 `NoteStore.update()`（不另开第二写路径）。
+- **自动置常驻**：产出 `pinned=True`（承 §3.4.1）⇒ 摘要正文**每轮无条件注入**（受 `_MAX_PINNED_CHARS`
+  与既有常驻笔记共享的预算约束）。⚠️ **红线**：正文每轮进模型上下文 ⇒ 操作者须在提升前 **review 摘要**，
+  **绝不**提升含密钥 / 凭据的摘要。
+- `session_id` 仅是 `note_id` 的**派生输入**与来源标注（`tags` 含 `session:<sid>`），**不是**隔离维度 ——
+  产出属**全局文档层**（承「刻意知识不参与会话隔离」）。空 slug 且未给显式 id ⇒ 返回 `None`、不写盘。
+- 写入**不接** `EffectTracker`（承 §1 文档层既有取舍，与 `pin/unpin`/`observe_turn` 同一条路径一致）。
+
 ### 3.6 循环技能由组合根构造
 
 内置技能 `skills.notes.consult_build_update`（`instructions` 含 Consult / Build / Update 三段纪律）
@@ -141,7 +156,7 @@ canonical 目录缺省 `$CORE_STATE_DIR/notes`（未设则 `~/.core/state/notes`
 |---|---|---|---|
 | 对象 | **主题**（一篇一文件） | 条目/切片（按层归档） | 知识文档块 |
 | 读法 | 按主题读全篇（人可读、可 diff） | 按分数取片段 | 向量相似度 top-k |
-| 写回 | 覆盖式（最新即权威） | 追加 + 固化/遗忘 | 摄取重建 |
+| 写回 | 覆盖式（最新即权威）；**可选**由会话摘要**显式提升**（§3.5.1） | 追加 + 固化/遗忘 | 摄取重建 |
 | 检索 | 纯词法（CJK 2-gram） | 词法/打分 | embedding 语义 |
 
 三者在写入端**互不调用**：`notes` 不落 `MemoryStore`，`memory` 不读 canonical 目录。
@@ -156,6 +171,7 @@ canonical 目录缺省 `$CORE_STATE_DIR/notes`（未设则 `~/.core/state/notes`
 | 显式创建已存在主题（`create`） | `TOPIC_EXISTS`，**不覆盖**既有内容（`ensure` 幂等，不报错） |
 | Consult 钩子抛错 | 置空摘要 + `notes_consult_failed` 留痕，**不改本轮结局** |
 | 任务文本无可保留字符（slug 为空） | `observe_turn` 返回 `None`，不写盘、不报错 |
+| 提升时会话无摘要 / 派生 `note_id` 为空（且未给 `--as`） | **不写盘**，CLI 退出码非零（**不新增** `notes` 错误码） |
 | canonical 目录不存在 | 视为空清单（`list` 返回 `[]`），不自动建目录（首次写入才建） |
 
 ---

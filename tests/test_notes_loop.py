@@ -10,9 +10,11 @@ from __future__ import annotations
 import asyncio
 
 from core.configuration import ConfigManager
+from core.context import Compactor
 from core.llm_provider import LLMResponse, TokenUsage
 from core.loop import Action, DefaultLoop, LoopContext
 from core.loop.planner import LLMPlanner
+from core.memory import MemoryEntry, MemoryStore
 from core.notes import NoteEntry, NoteStore
 from core.observability import TraceEvent
 from core.runtime import build_runtime
@@ -307,3 +309,45 @@ def test_planner_omits_pinned_block_when_empty() -> None:
     asyncio.run(planner(LoopContext(messages=[{"role": "user", "content": "任务"}])))
 
     assert "常驻笔记" not in llm.requests[0].messages[0].content  # type: ignore[attr-defined]
+
+
+# ---- 设计裁决护栏：loop 压实不自动提升（change 0150 / ADR-0142 / 账本 E94） ----
+
+
+def test_loop_compaction_does_not_auto_promote(tmp_path) -> None:
+    """跑一轮触发压实的 loop ⇒ canonical 目录**不出现**任何由提升自动产生的 note。
+
+    提升只由**显式**调用（CLI / 上层）触发，绝不挂在循环压实路径上。
+    """
+    memory = MemoryStore(summarizer=lambda entries: "会话结论：必须 HTTPS")
+    memory.write(
+        "L2",
+        MemoryEntry(
+            id="e0",
+            layer="L2",
+            content="事实零",
+            tags=["loop"],
+            source="loop",
+            session_id="s1",
+            kind="episodic",
+            trace_id="t",
+        ),
+    )
+    provider = ToolProvider()
+    provider.register(_echo_tool())
+    notes_dir = tmp_path / "notes"
+    store = NoteStore(path=notes_dir)
+    loop = DefaultLoop(
+        planner=_tool_then_reply(reply="done"),
+        tools=provider,
+        memory=memory,
+        compactor=Compactor(memory=memory, round_threshold=0),
+        max_rounds=3,
+        notes_consult=store.digest,
+        turn_observer=lambda task, steps, ok: store.observe_turn(task, steps, ok=ok),
+    )
+
+    loop.run("会话结论 任务", session_id="s1")
+
+    assert memory.summary_for("s1") is not None, "压实确已产摘要（非空转）"
+    assert list(notes_dir.glob("session-*.md")) == [], "提升不被自动触发"

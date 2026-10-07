@@ -129,6 +129,11 @@ SHALL 只聚合**该会话**的 L2 episodic 条目（含其重要度打分写回
 丢弃既有摘要中未被新摘要显式合并的内容。摘要条目的 `id` 与「每会话至多一条、不增长」口径 SHALL
 保持不变（滚动的是**内容**，不是条目数）。
 
+`MemoryStore` SHALL 提供**只读**访问器 `summary_for(session_id) -> MemoryEntry | None`：按 `session_id`
+取回该会话既有摘要条目（`id == f"compaction.summary.{session_id or 'default'}"`，口径与摘要写入**同一**）；
+无则返回 `None`。该访问器 SHALL NOT 产生任何写入或效应记录，SHALL NOT 变更条目的
+`reuse_count` / `importance` / `updated_at`。
+
 #### Scenario: 索引最小化
 - **GIVEN** L1 索引膨胀
 - **WHEN** 记忆清理 SOP 运行
@@ -150,6 +155,12 @@ SHALL 只聚合**该会话**的 L2 episodic 条目（含其重要度打分写回
 - **GIVEN** 会话 A 与会话 B 各有若干 L2 episodic 条目，且记忆存储注入了摘要器
 - **WHEN** 以 `session_id="A"` 触发压实
 - **THEN** 只产出 A 的摘要条目、只迁移 A 的原始条目（B 的条目**逐字不变**、层级与重要度都不动）
+
+#### Scenario: 按会话读取既有摘要（只读）
+- **GIVEN** 某会话已完成摘要压实
+- **WHEN** `summary_for(<该会话>)`
+- **THEN** 返回该会话的摘要条目；`summary_for(<他会话>)` ⇒ `None`；且调用前后
+  `audit()` 快照与效应追踪面**逐字不变**（只读，无写入、无效应、不动 `reuse_count` / `importance` / `updated_at`）
 
 #### Scenario: 未注入摘要器时降级
 - **GIVEN** 记忆存储未注入摘要器

@@ -55,8 +55,8 @@ from core.mcp import (
     default_endpoint_name,
     mcp_endpoints_path,
 )
-from core.memory import TranscriptStore
-from core.notes import NoteError, NoteStore, render_note
+from core.memory import FileBackend, MemoryEntry, MemoryStore, TranscriptStore
+from core.notes import NoteError, NoteStore, promote_session_summary, render_note
 from core.orchestration import Plan, TaskScheduler, plan_from_dict
 from core.permission import (
     ApprovalChannel,
@@ -274,6 +274,10 @@ def _add_notes_parser(sub: Any) -> None:
     pin.add_argument("note_id", help="笔记（主题）id")
     unpin = notes_sub.add_parser("unpin", help="清常驻标记（正文不再无条件注入）")
     unpin.add_argument("note_id", help="笔记（主题）id")
+    promote = notes_sub.add_parser("promote", help="把会话摘要提升为 canonical 常驻笔记")
+    promote.add_argument("session_id", metavar="<session-id>", help="会话 id（派生 note_id）")
+    promote.add_argument("--as", dest="as_note_id", metavar="NOTE_ID", help="显式覆盖 note_id")
+    promote.add_argument("--title", default="", metavar="TITLE", help="笔记标题")
 
 
 def _add_evolve_parser(sub: Any) -> None:
@@ -1435,7 +1439,8 @@ def _rag_ask(runtime: Any, args: argparse.Namespace) -> int:
 
 
 _NOTES_USAGE = (
-    "用法: core-agent notes {list|show <note_id>|search <query>|pin <note_id>|unpin <note_id>}"
+    "用法: core-agent notes {list|show <note_id>|search <query>|pin <note_id>|unpin <note_id>|"
+    "promote <session-id> [--as ID] [--title T]}"
 )
 
 
@@ -1452,6 +1457,7 @@ def _notes(args: argparse.Namespace) -> int:
         "search": _notes_search,
         "pin": _notes_pin,
         "unpin": _notes_unpin,
+        "promote": _notes_promote,
     }
     handler = handlers.get(args.notes_cmd or "")
     if handler is None:
@@ -1487,6 +1493,34 @@ def _notes_unpin(store: NoteStore, args: argparse.Namespace) -> int:
     """`notes unpin <note_id>`：清常驻标记（不存在 ⇒ ``NOTE_NOT_FOUND`` 非零退出）。"""
     store.set_pinned(args.note_id, pinned=False)
     print(f"已取消常驻: {args.note_id}")
+    return 0
+
+
+def _memory_summary(session_id: str) -> MemoryEntry | None:
+    """按会话取回既有压实摘要（**只读**裸实例：全参可选 ⇒ 零凭据、零 LLM、不触发压实）。
+
+    与组合根同源：`_state_path("memory.jsonl")` 即 `Runtime._memory_path()`。
+    """
+    return MemoryStore(backend=FileBackend(_state_path("memory.jsonl"))).summary_for(session_id)
+
+
+def _notes_promote(store: NoteStore, args: argparse.Namespace) -> int:
+    """`notes promote <session-id>`：会话摘要 → canonical 常驻笔记（**显式**触发，change 0150）。"""
+    summary = _memory_summary(args.session_id)
+    if summary is None:
+        print(f"notes 错误: 会话无摘要: {args.session_id}", file=sys.stderr)
+        return 1
+    note = promote_session_summary(
+        store,
+        summary,
+        session_id=args.session_id,
+        as_note_id=args.as_note_id,
+        title=args.title,
+    )
+    if note is None:
+        print(f"notes 错误: 无法派生 note_id: {args.session_id}", file=sys.stderr)
+        return 1
+    print(f"已提升: {note.note_id}\t[pinned]")
     return 0
 
 
