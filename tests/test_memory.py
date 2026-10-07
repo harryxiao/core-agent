@@ -20,6 +20,7 @@ from core.memory import (
     MemoryStore,
 )
 from core.memory.embedding import batch_embed
+from core.memory.summarize import build_prompt
 from core.plugin_registry import EffectTracker
 
 
@@ -368,6 +369,82 @@ def test_compact_summary_outranks_archived_originals() -> None:
     ids = [e.id for e in store.read("事实", budget=100)]
     assert ids[0] == "compaction.summary.s1"
     assert "e0" in ids
+
+
+# ---- 增量滚动摘要（change 0148 / ADR-0140，账本 E90） ----
+
+
+def _summary_entry(entry_id: str, content: str, session_id: str) -> MemoryEntry:
+    """构造一条既有摘要条目（`tags` 带 `summary`，与 store 落库形态一致）。"""
+    entry = _session_entry(entry_id, content, session_id, kind="semantic")
+    entry.tags = ["compaction", "summary"]
+    entry.source = "compaction"
+    return entry
+
+
+def test_build_prompt_renders_existing_summary_slot() -> None:
+    """既有摘要条目渲染为「现有摘要」槽；无则不含该槽。"""
+    prior = _summary_entry("compaction.summary.s1", "早期结论：X 已决", "s1")
+    fresh = _session_entry("e1", "新增事实 Y", "s1")
+
+    prompt = build_prompt([prior, fresh])
+    assert "现有摘要" in prompt, "既有摘要须渲染为显式槽位"
+    assert "早期结论：X 已决" in prompt, "既有摘要原文进入槽位"
+    assert "新增事实 Y" in prompt, "新条目照常逐条渲染"
+
+    without = build_prompt([fresh])
+    assert "现有摘要" not in without, "无既有摘要 ⇒ 不渲染该槽"
+
+
+def test_compact_feeds_existing_summary_back_to_summarizer() -> None:
+    """同会话二次压实：第二次投喂材料**首元素**为该会话既有摘要条目。"""
+    seen: list[list[str]] = []
+
+    def summarizer(entries: list[MemoryEntry]) -> str:
+        seen.append([e.id for e in entries])
+        return "摘要：" + "；".join(e.content for e in entries)
+
+    store = MemoryStore(summarizer=summarizer)
+    store.write("L2", _session_entry("e0", "事实零", "s1"))
+    store.compact()
+    assert seen == [["e0"]], "首次压实无既有摘要，材料逐字为原始条目"
+
+    store.write("L2", _session_entry("e1", "事实一", "s1"))
+    store.compact()
+
+    assert seen[1][0] == "compaction.summary.s1", "第二次投喂首元素为既有摘要条目"
+    assert "e1" in seen[1], "本轮新增条目一并投喂"
+
+
+def test_compact_rolling_merge_preserves_prior_conclusions() -> None:
+    """轮 1 摘要结论在轮 2 压实后仍在（滚动合并，不丢早期结论）。"""
+    store = MemoryStore(summarizer=lambda entries: "；".join(e.content for e in entries))
+    store.write("L2", _session_entry("e0", "事实零", "s1"))
+    store.compact()
+
+    first = {e.id: e for e in store.audit()}["compaction.summary.s1"]
+    assert "事实零" in first.content
+
+    store.write("L2", _session_entry("e1", "事实一", "s1"))
+    store.compact()
+
+    merged = {e.id: e for e in store.audit()}["compaction.summary.s1"]
+    assert "事实零" in merged.content, "早期结论不被静默丢弃"
+    assert "事实一" in merged.content, "新增事实并入同一摘要"
+
+
+def test_compact_keeps_single_summary_entry_per_session() -> None:
+    """同会话连续压实：摘要条目**恰一条**、`id` 不变（滚动内容不滚动条目数）。"""
+    store = MemoryStore(summarizer=lambda entries: "；".join(e.content for e in entries))
+    store.write("L2", _session_entry("e0", "事实零", "s1"))
+    store.compact()
+    store.write("L2", _session_entry("e1", "事实一", "s1"))
+    store.compact()
+
+    summaries = [e for e in store.audit() if e.kind == "semantic" and e.session_id == "s1"]
+    assert len(summaries) == 1, "每会话至多一条摘要条目"  # noqa: PLR2004 — 单一性口径
+    assert summaries[0].id == "compaction.summary.s1", "摘要 id 不变"
+    assert {"from:e1"} <= set(summaries[0].tags), "tags 携带本轮原条目出处"
 
 
 # ---- 固化与遗忘（0042） ----

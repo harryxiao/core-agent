@@ -32,6 +32,10 @@
 | **E88** | UI / TUI | **TUI 流式 Markdown 表格按行拆断**（渲染为竖线原文，非表格） | **已修（change `0146` / ADR-0138）**。根因：`src/core/ui/repl.py` `_show_delta` 按行固化（`repl.py:485`：`len(text) >= _TAIL_SPLIT` 或 `endswith("\n")` 即 `_freeze_tail`），把表头行拆成孤立块 ⇒ 表格永拼不齐；围栏已有同类保护（`_in_open_fence`，`repl.py:491`）**唯独没覆盖表格**。修：新增 `_in_open_table`（`repl.py:497`）+ `_TAIL_TABLE_CAP`（`repl.py:34`）+ 表格分支（`repl.py:478-484`）。**已知局限**：① 散文行含 ≥2 个 `|` 会**过度延后**固化（有界）；② **Web 端不渲染 Markdown**（`Chat.svelte` 纯文本）属**另一端、不在本 change 面** |
 | **E89** | UI / TUI | **流式回显「阶梯式」+ 表格逐行绘制（不够丝滑）** | **已修（change `0147` / ADR-0139）**。根因：① `src/core/ui/repl.py` `_show_delta` **逐 delta** 走 `_touch_tail` → `Markdown.update()`（Textual **整篇 re-parse + 全量 re-layout** 且被 `Markdown.lock` 串行化）⇒ 尾段 O(n²)、渲染队列积压；② 未闭合表格每拍重绘 + 表格**列宽按内容自适应** ⇒ 逐行抽动。修：**合帧节流**（delta 只入缓冲，`_TAIL_FLUSH_S = 0.04` 懒启动 timer 合并渲染一次）+ **表格整块延后渲染**（未闭合不渲染，闭合/超 `_TAIL_TABLE_CAP` 后一次成型）+ `_add` **时序闸**（挂非尾 widget 前先提交挂起尾段）。**已知局限**：① 未闭合长表格有「无可见进度」窗口（>8000 或流尽才显形）；② 40ms 节拍为**常量非配置项**；③ Web/APP 端**不适用** |
 
+| **E90** | memory / 上下文 | **增量滚动摘要缺失**（**已修（change `0148` / ADR-0140）**）。根因：摘要为「**批式重提炼 + 固定 id 覆盖**」，非「现有摘要 + 新片段 → 合并」——`src/core/memory/store.py:369` `_episodic_groups()` 只收 `kind=="episodic"`（旧摘要为 `semantic`，**不进 prompt**）、摘要 id 写死 `compaction.summary.<key>`（**覆盖式**）、`src/core/memory/summarize.py` 旧 `_PROMPT_HEAD` 无既有摘要槽；被覆盖原摘要所引条目已迁 L4（`store.py:401-402`）⇒ 长会话**早期结论逐轮稀释直至丢失**。修：`_summarize_sessions` 投喂前取该会话既有摘要（新 `store.py::_existing_summary`）作为**首元素**并入材料 `material = [prior, *entries]`；`summarize.py::build_prompt` 把既有摘要（`tags` 含 `summary`）渲染为「现有摘要」槽、专设 `_MAX_SUMMARY_CHARS = 2000`；`_commit_summary` 第二参**仍只传本轮 `entries`** ⇒ 既有摘要**只被吸收、不被迁 L4** | **已修**（change `0148` / ADR-0140）；规格已由 `memory`「记忆压实」MODIFIED（新增 Scenario「滚动合并既有摘要（不丢失）」）承接。**已知局限**：① 覆盖写不支持单轮回滚（效应共用 `trace_id=compaction.<key>`，回滚为该会话全量）；② 既有摘要超 2000 字即截断。来源：`Agent-Memory.md` M3（2026-10-07 审查） |
+| **E91** | loop / 工具注入 | **工具说明全量注入，无按需筛选** —— `src/core/loop/planner.py:175-177` `_tool_schemas()` 注入**全部** `active_tools()` 的 schema，**无** Query 意图匹配；工具数增长 ⇒ 常驻 token 线性膨胀 | **对照先例可复用**：context 面已有同类机制（change `0140`/ADR-0133 信息地图「目录层 + `tools.context_read` 按需取详情」）。属**优化**，非违约。来源：`Agent-Memory.md` M5 |
+| **E92** | memory / 结构化抽取 | **结构化实体抽取缺失** —— 当前只有 `MemoryEntry.kind ∈ {episodic, semantic}` + `tags`（`src/core/memory/protocol.py`），**无** `user_preferences / project_constraints / completed_tasks / key_facts` 四字段 Schema。最近似物为 `notes`（canonical Markdown 真相层，**主题文档**非实体抽取，且纯词法无向量）。**⚠️ 落地红线**：参考方案 Schema 示例把**密钥明文**写入长期记忆（`Agent-Memory.md:35` `"value": "sk-xxxxxxxxx"`），与本仓库红线「**密钥只引用不读取、绝不进日志/记忆**」**直接冲突** ⇒ 若落地，`key_facts` **必须**改**引用式**（`{"entity":…, "ref":"coeffect:…", "value":"<redacted>"}`） | **须先改规格**；属**新能力**，非缺陷修复。来源：`Agent-Memory.md` M4 |
+
 ---
 
 ## §2 有意取舍（**不算缺陷**）
@@ -61,6 +65,7 @@
 | **change `0142`**（E85 core-profile 题词模板） | **未取 CLI scaffold**（落盘语义 + 会触碰 30 动词 CLI 基线 ⇒ YAGNI）。来源：ADR-0134 |
 | **change `0145`**（同上 ADR-0137） | Web (Svelte) / APP 面**无自动门禁** ⇒ 手工验收（见上） |
 | **ADR-0139**（change `0147` TUI 合帧节流 + 表格延后渲染） | ① **未闭合长表格有「无可见进度」窗口**（自表头到达至闭合、或超 `_TAIL_TABLE_CAP`=8000 之间屏幕上不出现该表；出路是加占位 `Static`，**不**回退 `_touch_tail`）；② **40ms 节拍为常量非配置项**（无 CLI/env 面，YAGNI）；③ **Web / APP 端不适用**（`Chat.svelte` 纯文本）。来源：`doc/01-architecture/adr.md` ADR-0139「已知局限」 |
+| **ADR-0140**（change `0148` 记忆压实增量滚动摘要） | ① **覆盖写不支持单轮回滚** —— 压实效应**共用** `trace_id = f"compaction.<key>"`，回滚为**该会话全量**（既有口径，非本次引入）；② **既有摘要超 `_MAX_SUMMARY_CHARS`（2000）即被截断**（有界优先）；③ 摘要质量取决于注入模型（未注入则降级不写，既有行为）。来源：`doc/01-architecture/adr.md` ADR-0140「已知局限」 |
 
 ---
 
@@ -83,3 +88,4 @@
 - 架构取舍：`doc/01-architecture/adr.md`（各 ADR「已知局限」）
 - 测试索引：`doc/04-testing/test-cases.md`
 - 未闭账复述源：`phase-34.md` §3、`phase-19.md:104`、`phase-20.md:40-45`
+- 外部参考审查：`Agent-Memory.md`（本地 Agent 长对话记忆压缩方案；2026-10-07 审查 ⇒ 取精华弃糟粕，立 `E90`~`E92`）

@@ -43,9 +43,6 @@ class MemoryStore(Plugin):
         """层间迁移（可撤销）：记 Effect，按 trace_id 回滚即迁回原层；
         trace_id 缺省取条目自身来源 trace，压实等批量操作传统一 trace 一起撤销。"""
 
-    def compact(self, query: str = "", budget: int = 4096) -> DecisionResult | None:
-        """压实记忆：score 原语评分决策 + 注入摘要器时的会话摘要提炼（见 §3）。"""
-
     def forget(self, *, threshold: float = 0.05) -> list[MemoryId]:
         """遗忘（见 §3）：衰减评分低于 threshold 的 L2 episodic 条目迁 L4 归档，
         返回被归档条目 id（撤销句柄 forgetting.<id>）；不物理删除。"""
@@ -159,7 +156,8 @@ def relevance(entry, query, embedder=None) -> float:
 - **摘要契约（Summarizer）**：``Summarizer = Callable[[list[MemoryEntry]], str]`` —— 同一会话的
   episodic 条目 → 一段提炼事实。prompt 文本属 memory 域（``memory/summarize.py::build_prompt``），
   模型调用经 ``summarize_with(llm)`` 适配；memory **不 import LLM/rag 抽象**（同 ``batch_embed``
-  的依赖方向），由 L5 组合根注入。
+  的依赖方向），由 L5 组合根注入。**材料 SHALL 含既有摘要条目**（若该会话已有摘要，它以
+  ``MemoryEntry`` 形态作为**首元素**并入投喂）——摘要为**滚动合并**（change `0148` / ADR-0140）。
 
 ### 摘要式压实（compact）
 
@@ -168,7 +166,7 @@ def relevance(entry, query, embedder=None) -> float:
 
 | 字段 | 取值 |
 |---|---|
-| `id` | `compaction.summary.<session_id>`（空会话用 `default`；同会话重复压实为覆盖，不增长） |
+| `id` | `compaction.summary.<session_id>`（空会话用 `default`；同会话重复压实为**滚动合并**——内容融合、条目不增长） |
 | `kind` | `semantic`（提炼事实，不再被下次聚合选中） |
 | `source` | `compaction`（短标签；**不塞 trace 列表**——`source` 会作为出处标签进 prompt） |
 | `trace_id` | `compaction.<session_id>`（摘要写入与全部迁移共用，`rollback(trace_id)` 整体逆转） |
@@ -181,6 +179,11 @@ def relevance(entry, query, embedder=None) -> float:
 ``session_id`` **非空**时**只**聚合该会话条目（打分写回随之只覆盖该会话）——会话级入口（Web
 「压缩本会话记忆」）SHALL NOT 顺手提炼/归档他会话条目；**空串**（缺省）保持**全量**语义，
 供循环内节拍压实使用（``loop/default.py`` 的 ``memory.compact()`` 不传该形参）。
+
+**增量滚动摘要**（change `0148` / ADR-0140 / 账本 E90）：若该会话已存在摘要条目，
+``compact`` SHALL 把**既有摘要内容**与本轮新增 episodic 条目**一并**投喂摘要器，产出**融合既有
+结论与新增事实**的更新摘要——既有结论**不被静默丢弃**。滚动的是**内容**，`id` 与「每会话至多
+一条、不增长」口径**不变**；既有摘要**只被吸收进新摘要**（**不**入 L4 迁移列表）。
 
 ### 固化打分 + 价值门控（compact，0042）
 

@@ -316,7 +316,9 @@ class MemoryStore:
         for sid, entries in groups.items():
             if _below_gate(entries, scores):
                 continue
-            summary = summarizer(entries)
+            prior = self._existing_summary(sid)
+            material = [prior, *entries] if prior is not None else entries
+            summary = summarizer(material)
             if not summary:
                 continue
             self._commit_summary(sid, entries, summary)
@@ -379,6 +381,15 @@ class MemoryStore:
                 continue
             groups.setdefault(entry.session_id, []).append(entry)
         return groups
+
+    def _existing_summary(self, session_id: str) -> MemoryEntry | None:
+        """该会话既有摘要条目（无则 ``None``）——滚动合并的「现有摘要」输入。
+
+        id 口径与 ``_commit_summary`` **同一**（``compaction.summary.<key>``，
+        ``key = session_id or "default"``）。既有摘要**只被吸收进新摘要**，**不**入迁移列表。
+        """
+        target = f"compaction.summary.{session_id or 'default'}"
+        return next((entry for entry in self._all_entries() if entry.id == target), None)
 
     def _commit_summary(self, session_id: str, entries: list[MemoryEntry], summary: str) -> None:
         """写摘要条目（tags 带原条目 id 出处）并把原条目迁 L4，同一 trace 可回滚。"""

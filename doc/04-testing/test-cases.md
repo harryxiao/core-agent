@@ -973,6 +973,20 @@
 
 ---
 
+## 64. 记忆压实增量滚动摘要（TC-ROLLSUM，change `0148`／ADR-0140，账本 E90）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-ROLLSUM-01 | memory/spec.md「记忆压实」Scenario「滚动合并既有摘要（不丢失）」（槽位渲染） | `build_prompt([既有摘要条目, 新增条目])`；对照 `build_prompt([新增条目])` | 有既有摘要 ⇒ prompt 含「现有摘要」槽**与既有摘要原文**（**旧实现一律逐条渲染 ⇒ 无槽、红**）；无既有摘要 ⇒ **不含**该槽（锚点：`test_memory.py::test_build_prompt_renders_existing_summary_slot`） |
+| TC-ROLLSUM-02 | 同 Scenario（材料含既有摘要） | 假摘要器记录输入；写 e0(s1)→`compact()`→写 e1(s1)→`compact()` | 首次材料 `[["e0"]]`（无既有摘要）；第二次材料**首元素为** `compaction.summary.s1` 且含 `e1`（**旧实现第二次仅 `["e1"]` ⇒ 红**）（锚点：`test_memory.py::test_compact_feeds_existing_summary_back_to_summarizer`） |
+| TC-ROLLSUM-03 | 同 Scenario（**早期结论不丢**，核心） | 摘要器 `"="; join(contents)`：轮 1 压实得摘要；再写 e1 后二次压实 | 二次摘要内容**仍含**轮 1 结论「事实零」且含「事实一」（**旧实现被覆盖为 `事实一` ⇒ 红**）（锚点：`test_memory.py::test_compact_rolling_merge_preserves_prior_conclusions`） |
+| TC-ROLLSUM-04 | 同 Scenario（**条目不增长**） | 同会话连续两次 `compact()` | 该会话摘要条目**恰 1 条**、`id` 不变（`compaction.summary.s1`）、`tags` 携带本轮原条目出处（锚点：`test_memory.py::test_compact_keeps_single_summary_entry_per_session`） |
+| TC-ROLLSUM-05 | memory/spec.md「记忆压实」Scenario「压实可撤销」／「摘要提炼并归档」（**回归护栏**） | 既有 `tests/test_memory.py` 压实/固化/遗忘全量用例 | 逐字不动全绿——尤其三条 `seen ==` 断言（首次压实无既有摘要 ⇒ 材料逐字等于原始条目）、`test_compact_is_reversible_by_trace`（回滚 ⇒ 原条目迁回 L2、摘要移除、`undo_failed == []`） |
+
+> **无手工验收项**：纯库内行为（`memory` 层），全自动门禁（pytest）覆盖；无前端 / Rust / 真端点面。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

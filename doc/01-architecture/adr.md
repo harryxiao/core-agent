@@ -3935,6 +3935,51 @@
 
 ---
 
+## ADR-0140：记忆压实「增量滚动摘要」（change 0148 / 账本 E90）
+
+- **背景**：审查外部参考件 `Agent-Memory.md`（本地 Agent 长对话记忆压缩方案）后**取精华弃糟粕**，
+  立账 `E90`/`E91`/`E92`。**`E90` 是唯一会真实损害长会话质量**的项：当前记忆摘要为「**批式重提炼 +
+  固定 id 原地覆盖**」，**不是**参考方案的「现有摘要 + 新片段 → 合并」。**根因（三处，均在
+  `src/core/memory/`）**：① `store.py:369` `_episodic_groups()` **只收 `kind=="episodic"`** ⇒ 旧摘要
+  （`kind=="semantic"`）**不进 prompt**；② `store.py:391` 摘要 **id 写死** `compaction.summary.<key>`
+  ⇒ 新一轮摘要**原地覆盖**上一轮；③ 被覆盖的原摘要所引条目**已迁 L4**（`store.py:401-402`）⇒
+  **长会话早期结论逐轮稀释直至丢失**。且该行为已被**接口文档写成明文契约**
+  （`03-interfaces/memory-interface.md` §3「摘要式压实」表：`id` = `compaction.summary.<session_id>`
+  「同会话重复压实为**覆盖**，不增长」）⇒ 本 change 是**规格 + 接口双重口径**变更。
+- **决策①：滚动合并 —— 既有摘要**以 `MemoryEntry` 形态**并入投喂材料。** `_summarize_sessions`
+  投喂前取该会话既有摘要条目（`id == f"compaction.summary.{key}"`，`key = sid or "default"`，自
+  `_all_entries()` 取），组成 `material = [prior, *entries] if prior is not None else entries` ⇒
+  `summarizer(material)`；`build_prompt` 把既有摘要条目（判据 `"summary" in entry.tags`）渲染为显式
+  「现有摘要」槽位。理由：既有摘要本就是 store 里的 `kind=="semantic"` 条目 ⇒ **不需为摘要单开参数**，
+  **`Summarizer = Callable[[list[MemoryEntry]], str]` 契约不变**、`MemoryStore.__init__` 与组合根
+  `summarize_with(_llm_text)` 装配**零改动**。
+- **决策②：保持固定 id —— 滚动的是**内容**，不是**条目数**。** 摘要条目 `id` 仍为
+  `compaction.summary.<key>`、每会话**至多一条**。新条文与接口「不增长」的**条目数**口径**相容**
+  （改的是内容语义，非 id 形态）；亦**不新增** `MemoryEntry` 字段、**不引入**版本化 id ⇒ 不违背既有
+  接口合同。
+- **决策③：既有摘要**只入摘要器、不入迁移列表**（不得被迁 L4）。** `_commit_summary(sid, entries,
+  summary)` 的第二参**仍只传本轮 `entries`** ⇒ 既有摘要条目被**吸收**进新摘要，**不**被归档。
+  理由：既有摘要若同时被迁 L4，则会**从 L2 消失**，下一轮 `_all_entries()` 取回不到它 ⇒ 滚动**断裂**。
+- **决策④：专设 `_MAX_SUMMARY_CHARS = 2000`。** 既有摘要的节选上界**独立于** `_MAX_ENTRY_CHARS = 400`
+  （后者只管**单条新事件**）。理由：既有摘要若同受 400 字截断，滚动**依然丢结论** ⇒ 专设上界是**修复
+  生效的前提**；仍为常量 ⇒ token **有界**（不引入配置面，YAGNI）。
+- **决策⑤：**不改** `write()` 的 undo 语义。** 压实效应**共用** `trace_id = f"compaction.<key>"` ⇒
+  回滚恒为**该会话全量压实一并逆转**（摘要移除 + 原条目迁回 L2），与规格「压实可撤销」Scenario
+  **一致** ⇒ **非本次引入、非缺陷**（`_undo_write` 删条目不恢复旧值一事，在本共用 trace 口径下无实际
+  危害；改语义另立账）。同理**不动** `_below_gate` 价值门控、`_score_importance` 打分写回、
+  `_commit_summary` 的 id/tags/trace、`_episodic_groups`、`read`/`write`/`migrate`/`forget`、
+  `Summarizer` 别名、`MemoryEntry` 字段、`context/compactor.py`。
+- **已知局限**：① **覆盖写不支持单轮回滚** —— 压实效应**共用** `trace_id = f"compaction.<key>"`，回滚为
+  **该会话全量**（既有口径，非本次引入）；若将来需**单轮**回滚摘要，须先改「共用 trace」口径。
+  ② **摘要质量取决于注入模型** —— 未注入摘要器则**降级不写**（既有行为，非本次引入）。③ **既有摘要超
+  `_MAX_SUMMARY_CHARS`（2000）即被截断** —— 有界优先（token 有界）；超长会话的极早期结论仍可能被
+  截断，属**有界性代价**。
+- **规格**：`memory`「记忆压实」（MODIFIED，新增 Scenario「滚动合并既有摘要（不丢失）」＋滚动合并条文）；
+  接口面 `03-interfaces/memory-interface.md`、模块面 `02-modules/memory.md`、测试面
+  `04-testing/test-cases.md`、台账 `coding-plan/known-risk.md`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4069,3 +4114,4 @@
 | ADR-0137 | 03-interfaces/llm-provider-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/ui-interface.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/phase-32.md |
 | ADR-0138 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0139 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0140 | 03-interfaces/memory-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
