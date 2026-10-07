@@ -18,6 +18,7 @@ _TAG_SEP = ", "
 _META_SEP = ": "
 _PINNED_KEY = "pinned"
 _PINNED_TRUE = "true"  # 渲染面唯一真值拼写（解析面宽容读取，见 _TRUTHY）
+_PIN_PRIORITY_KEY = "pin_priority"  # 常驻优先级（0 省略；高者优先在场，见 change 0154）
 _TRUTHY = frozenset({"true", "yes", "1", "on"})
 
 
@@ -33,6 +34,7 @@ class NoteEntry:
     updated_at: float = 0.0  # 秒级时间戳（覆盖式更新的「最新」判据）
     search_queries: list[str] = field(default_factory=list[str])  # 头部检索关键词（词法匹配）
     pinned: bool = False  # 常驻标记：True ⇒ 正文每轮无条件注入推理上下文（见 change 0149）
+    pin_priority: int = 0  # 常驻优先级（高者优先在场；见 change 0154）——0 时 canonical 省略该行
 
     @property
     def path(self) -> str:
@@ -69,6 +71,7 @@ def render_note(note: NoteEntry) -> str:
         f"- source{_META_SEP}{note.source}",
         f"- updated_at{_META_SEP}{note.updated_at}",
         *([f"- {_PINNED_KEY}{_META_SEP}{_PINNED_TRUE}"] if note.pinned else []),
+        *([f"- {_PIN_PRIORITY_KEY}{_META_SEP}{note.pin_priority}"] if note.pin_priority else []),
         "",
         _SEARCH_HEADER,
         "",
@@ -118,6 +121,7 @@ def parse_note(text: str, *, note_id: str | None = None, source: str = "notes") 
         updated_at=_to_float(meta.get("updated_at", "")),
         search_queries=queries,
         pinned=_to_bool(meta.get(_PINNED_KEY, "")),
+        pin_priority=_to_int(meta.get(_PIN_PRIORITY_KEY, "")),
     )
 
 
@@ -143,3 +147,15 @@ def _to_bool(value: str) -> bool:
     意外把一个主题变成常驻）。
     """
     return value.strip().lower() in _TRUTHY
+
+
+def _to_int(value: str) -> int:
+    """canonical 元数据整数解析（``render_note`` 只写十进制整数）。
+
+    **无法识别者一律 0**（fail-closed：手误**绝不**意外把一个主题抬到高优先级 —— 0 是最低优先级，
+    既在既有排序中排到同优先级组的末尾，也不改变「无优先级」的既有语义）。
+    """
+    try:
+        return int(value.strip())
+    except ValueError:
+        return 0

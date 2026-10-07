@@ -1188,6 +1188,33 @@ def test_notes_usage_lists_pin_verbs(capsys: pytest.CaptureFixture[str]) -> None
     assert "pin <note_id>" in err and "unpin <note_id>" in err
 
 
+def test_notes_pin_with_priority_persists(capsys: pytest.CaptureFixture[str]) -> None:
+    """`notes pin --priority` 落盘；`unpin` 归零（change 0154 / 路线图 G1）。"""
+    _seed_note("约束", title="硬约束", content="接口必须 HTTPS")
+
+    assert main(["notes", "pin", "约束", "--priority", "5"]) == 0
+    assert NoteStore(path=_state_path("notes")).get("约束").pin_priority == 5, "落盘真源"  # noqa: PLR2004
+    raw = (_state_path("notes") / "约束.md").read_text(encoding="utf-8")
+    assert "- pin_priority: 5" in raw
+
+    assert main(["notes", "unpin", "约束"]) == 0
+    assert NoteStore(path=_state_path("notes")).get("约束").pin_priority == 0
+
+
+def test_notes_pinned_reports_in_context_and_overflow(capsys: pytest.CaptureFixture[str]) -> None:
+    """`notes pinned` 报出「在场 / 未进场」（超常驻预算篇目不再静默）。"""
+    _seed_note("keep", title="K", content="x" * 100, pinned=True)
+    _seed_note("drop", title="D", content="y" * 4000, pinned=True)
+    NoteStore(path=_state_path("notes")).set_pinned("keep", pinned=True, priority=5)
+
+    assert main(["notes", "pinned"]) == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if line]
+    keep = next(line for line in lines if line.startswith("keep"))
+    drop = next(line for line in lines if line.startswith("drop"))
+    assert "[在场]" in keep, "高优先级整篇在场"
+    assert "[未进场]" in drop, "超预算篇整篇排除且可见"
+
+
 # ---- notes：会话摘要提升（change 0150 / ADR-0142 / 账本 E94） ----
 
 

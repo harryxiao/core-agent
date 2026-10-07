@@ -272,8 +272,12 @@ def _add_notes_parser(sub: Any) -> None:
     search.add_argument("--top-k", type=int, default=5, metavar="N", help="返回条数")
     pin = notes_sub.add_parser("pin", help="置常驻标记（正文每轮无条件注入推理上下文）")
     pin.add_argument("note_id", help="笔记（主题）id")
-    unpin = notes_sub.add_parser("unpin", help="清常驻标记（正文不再无条件注入）")
+    pin.add_argument(
+        "--priority", type=int, default=0, metavar="N", help="常驻优先级（高者优先在场；缺省 0）"
+    )
+    unpin = notes_sub.add_parser("unpin", help="清常驻标记（正文不再无条件注入；优先级一并归零）")
     unpin.add_argument("note_id", help="笔记（主题）id")
+    notes_sub.add_parser("pinned", help="列出常驻笔记及其是否进场（超预算篇目报为未进场）")
     promote = notes_sub.add_parser("promote", help="把会话摘要提升为 canonical 常驻笔记")
     promote.add_argument("session_id", metavar="<session-id>", help="会话 id（派生 note_id）")
     promote.add_argument("--as", dest="as_note_id", metavar="NOTE_ID", help="显式覆盖 note_id")
@@ -1439,7 +1443,8 @@ def _rag_ask(runtime: Any, args: argparse.Namespace) -> int:
 
 
 _NOTES_USAGE = (
-    "用法: core-agent notes {list|show <note_id>|search <query>|pin <note_id>|unpin <note_id>|"
+    "用法: core-agent notes {list|show <note_id>|search <query>|"
+    "pin <note_id> [--priority N]|unpin <note_id>|pinned|"
     "promote <session-id> [--as ID] [--title T]}"
 )
 
@@ -1457,6 +1462,7 @@ def _notes(args: argparse.Namespace) -> int:
         "search": _notes_search,
         "pin": _notes_pin,
         "unpin": _notes_unpin,
+        "pinned": _notes_pinned,
         "promote": _notes_promote,
     }
     handler = handlers.get(args.notes_cmd or "")
@@ -1483,16 +1489,29 @@ def _notes_list(store: NoteStore, _args: argparse.Namespace) -> int:
 
 
 def _notes_pin(store: NoteStore, args: argparse.Namespace) -> int:
-    """`notes pin <note_id>`：置常驻标记（正文每轮无条件注入；**幂等**，已标记不写盘）。"""
-    store.set_pinned(args.note_id, pinned=True)
-    print(f"已常驻: {args.note_id}")
+    """`notes pin <note_id> [--priority N]`：置常驻并设优先级（**幂等**，同值不写盘）。"""
+    store.set_pinned(args.note_id, pinned=True, priority=args.priority)
+    print(f"已常驻: {args.note_id}\t优先级 {args.priority}")
     return 0
 
 
 def _notes_unpin(store: NoteStore, args: argparse.Namespace) -> int:
-    """`notes unpin <note_id>`：清常驻标记（不存在 ⇒ ``NOTE_NOT_FOUND`` 非零退出）。"""
+    """`notes unpin <note_id>`：清常驻标记并归零优先级（缺失 ⇒ ``NOTE_NOT_FOUND`` 非零退出）。"""
     store.set_pinned(args.note_id, pinned=False)
     print(f"已取消常驻: {args.note_id}")
+    return 0
+
+
+def _notes_pinned(store: NoteStore, _args: argparse.Namespace) -> int:
+    """`notes pinned`：列出常驻笔记 + 优先级 + **是否进场**（超预算篇目报未进场，change 0154）。"""
+    notes = store.pinned()
+    if not notes:
+        print("（无常驻笔记）")
+        return 0
+    excluded = set(store.pinned_overflow())
+    for note in notes:
+        status = "[未进场]" if note.note_id in excluded else "[在场]"
+        print(f"{note.note_id}\t{note.title or note.note_id}\t优先 {note.pin_priority}\t{status}")
     return 0
 
 

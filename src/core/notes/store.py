@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import time
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 
@@ -159,8 +160,14 @@ class NoteStore(Plugin):
         return "\n\n".join(sections)[:_MAX_DIGEST_CHARS]
 
     def pinned(self) -> list[NoteEntry]:
-        """常驻（pinned）笔记清单：按 ``note_id`` 升序 —— **确定性**，使注入块逐轮稳定。"""
-        return sorted((note for note in self.list() if note.pinned), key=lambda note: note.note_id)
+        """常驻（pinned）笔记清单：**优先级降序**、同优先级按 ``note_id`` 升序 —— **确定性**。
+
+        「谁在场」由**显式优先级**（操作者的决定，change 0154）而非 ``note_id`` 字典序决定。
+        """
+        return sorted(
+            (note for note in self.list() if note.pinned),
+            key=lambda note: (-note.pin_priority, note.note_id),
+        )
 
     def pinned_digest(self) -> str:
         """常驻注入块：常驻笔记**完整正文**（每轮无条件注入；与 ``digest`` 的命中面**互不交叉**）。
@@ -168,25 +175,45 @@ class NoteStore(Plugin):
         无 query 入参（无条件），故与 Consult 是两条独立通道；空正文的常驻笔记**不占块**
         （避免每轮出现一个只说标题、不说约束的空块）；总长有界 ⇒ token 有界（P5）。
         块内**不含** ``updated_at``：块字节只随正文变，跨轮稳定。
+
+        **整篇纳入**（change 0154）：一篇要么**整篇**在场、要么**整篇**不在场，**绝不半篇**
+        （半截硬约束可能语义反转，比缺席更危险）。超预算篇**整篇排除**且其后各篇不挤入
+        （在场集合是优先级次序的**前缀**）；唯一例外是次序**首篇**自身超限时仍整篇纳入
+        （块不因单篇超限而空 —— 硬约束全灭更糟）。超预算时经 ``warnings.warn`` 留痕。
         """
-        sections = [
-            f"## {note.title or note.note_id}（{note.note_id}）\n{note.content.strip()}"
-            for note in self.pinned()
-            if note.content.strip()
-        ]
-        return "\n\n".join(sections)[:_MAX_PINNED_CHARS]
+        block, excluded = self._assemble_pinned()
+        if excluded or len(block) > _MAX_PINNED_CHARS:
+            warnings.warn(
+                f"pinned notes exceed the injection budget ({_MAX_PINNED_CHARS} chars); "
+                f"block={len(block)}; not injected: {', '.join(excluded) or '<none: single note>'}"
+                " — set notes with `notes pin --priority` to choose who stays in context",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return block
 
-    def set_pinned(self, note_id: str, *, pinned: bool = True) -> NoteEntry:
-        """置 / 清常驻标记；缺失 ⇒ ``NOTE_NOT_FOUND``。
+    def pinned_overflow(self) -> list[str]:
+        """因常驻预算超限而**未进场**的常驻笔记 ``note_id``（次序同 ``pinned()``）。
 
-        **幂等**：标记值未变化 ⇒ 直接返回、**不写盘、不 bump** ``updated_at`` —— 反复 ``pin``
-        不得搅动 canonical 文件的时间戳（否则「最新即权威」判据被无意义写入污染）。
-        真变更走 ``update()``（**唯一**写回路径：渲染 + 原子落盘 + 时间戳），不另开第二写路径。
+        只读、无副作用；单篇超限的**首篇**不在其列（它整篇在场）。
+        """
+        return self._assemble_pinned()[1]
+
+    def set_pinned(self, note_id: str, *, pinned: bool = True, priority: int = 0) -> NoteEntry:
+        """置 / 清常驻标记并设定优先级；缺失 ⇒ ``NOTE_NOT_FOUND``。
+
+        **幂等**：``pinned`` 与 ``priority`` **皆未变化** ⇒ 直接返回、**不写盘、不 bump**
+        ``updated_at`` —— 反复 ``pin`` 不得搅动 canonical 文件的时间戳（否则「最新即权威」判据
+        被无意义写入污染）。真变更走 ``update()``（**唯一**写回路径），不另开第二写路径。
+
+        **清常驻**（``pinned=False``）同时把 ``priority`` 归零 —— 退出常驻面即不再有优先级。
         """
         note = self.get(note_id)
-        if note.pinned == pinned:
+        new_priority = priority if pinned else 0
+        if note.pinned == pinned and note.pin_priority == new_priority:
             return note
         note.pinned = pinned
+        note.pin_priority = new_priority
         return self.update(note)
 
     def observe_turn(self, task: str, steps: list[str], *, ok: bool) -> NoteEntry | None:
@@ -216,8 +243,9 @@ class NoteStore(Plugin):
                 title=title,
                 content=body,
                 tags=list(existing.tags) if existing is not None else [],
-                # 逐轮写回不得抹除常驻标记
+                # 逐轮写回不得抹除常驻标记与优先级
                 pinned=existing.pinned if existing is not None else False,
+                pin_priority=existing.pin_priority if existing is not None else 0,
                 source=_TURN_SOURCE,
             )
         )
@@ -237,6 +265,29 @@ class NoteStore(Plugin):
             n += 1
 
     # ---- 内部辅助 ----
+
+    def _assemble_pinned(self) -> tuple[str, list[str]]:
+        """按 ``pinned()`` 次序**整篇纳入**，返回 ``(注入块, 未进场 note_id 列表)``。
+
+        次序首篇**无条件**纳入（即便自身超预算 —— 块不因单篇超限而空）；此后任一篇整篇放不下即
+        **整篇排除**，且其后各篇一律不再尝试（在场集合是优先级次序的**前缀**，低优先级不得越过
+        被排除者挤入）。空正文的常驻笔记**预先滤除**：既不占块、也不计未进场。
+        """
+        included: list[str] = []
+        excluded: list[str] = []
+        total = 0
+        for note in self.pinned():
+            if not note.content.strip():
+                continue
+            section = f"## {note.title or note.note_id}（{note.note_id}）\n{note.content.strip()}"
+            addition = len(section) + (2 if included else 0)  # 篇间 "\n\n" 分隔
+            # 一旦有篇被排除，其后各篇一律不再尝试（低优先级不越位挤入 —— 前缀语义）
+            if excluded or (included and total + addition > _MAX_PINNED_CHARS):
+                excluded.append(note.note_id)
+                continue
+            included.append(section)
+            total += addition
+        return "\n\n".join(included), excluded
 
     def _load(self, note_id: str, *, layer: Layer = _NOTE_LAYER) -> NoteEntry | None:
         entry = self._backend.get(layer, note_id)

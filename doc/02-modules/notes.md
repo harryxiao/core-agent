@@ -103,12 +103,20 @@ canonical 目录缺省 `$CORE_STATE_DIR/notes`（未设则 `~/.core/state/notes`
   （**全局、非任务级**）。常驻语义补上「**任务级、每轮无条件**」这一维。
 - 标记面：`NoteEntry.pinned` ＋ canonical 元数据行 `- pinned: true`（未置位**不输出** ⇒ 既有文件逐字不变）
   ＋ CLI `notes pin/unpin`。解析**宽容**（`true/yes/1/on`，大小写不敏感；其余一律 False，fail-closed）。
+- **在场判据＝显式优先级**（change `0154`／ADR-0146／路线图 G1）：`NoteEntry.pin_priority`（缺省 0）
+  ＋ canonical 行 `- pin_priority: <n>`（**仅非 0 输出** ⇒ 既有文件逐字不变；解析失败 ⇒ 0，fail-closed）
+  ＋ CLI `notes pin <id> --priority N`。`pinned()` 次序＝**优先级降序、同优先级 `note_id` 升序**
+  （确定性）。清常驻（`unpin`）同时归零优先级；逐轮写回**保留** `pinned` 与 `pin_priority`。
 - 注入面：`PinnedNotesConsult = Callable[[], str]`（**零参** ⇒ 与当轮任务无关，签名即契约）
   → `LoopContext.pinned_notes` → planner **独立块**「常驻笔记」，紧随宪法规则、**先于**相关事实/文档目录/
   相关笔记。**正文全文**（非节选）、无 query 判据、总量有界于 `_MAX_PINNED_CHARS`(4000)。
+- **整篇纳入，绝不半篇**（change `0154`）：一篇要么整篇在场、要么整篇不在场（半截硬约束可能语义反转）；
+  超预算篇整篇排除、其后各篇不挤入（在场集合＝优先级次序的**前缀**）；**唯一例外**是次序首篇自身超限时
+  仍整篇纳入（块不因单篇超限而空）。超预算**可见**：`pinned_digest()` 经 `warnings.warn` 留痕、
+  `pinned_overflow()` 报未进场 id、CLI `notes pinned` 报「在场 / 未进场」。
 - **与 Consult 的边界**：常驻走**另一条**显式路径，**不改变**「Consult → Build → Update 循环纪律」对
   **未标记**笔记的「不自动全量注入」口径（该口径只管 Consult 命中路径）。
-- 全局层：`pinned()/pinned_digest()/set_pinned()` **不接受**会话维度（承 §4 的「刻意知识不参与隔离」）。
+- 全局层：`pinned()/pinned_digest()/pinned_overflow()/set_pinned()` **不接受**会话维度（承 §4 的「刻意知识不参与隔离」）。
 - 三 loop 同注入（主 / 子任务 / 神兽）—— 子任务与神兽同须遵守任务级硬约束。
 
 ### 3.5 Update：任务后写回（复用既有收尾观察者）

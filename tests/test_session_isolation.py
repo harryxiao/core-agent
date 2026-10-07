@@ -365,7 +365,16 @@ def test_scheduler_default_keeps_sub_loop_call_unchanged() -> None:
 
 
 @pytest.mark.parametrize(
-    "method", ["digest", "consult", "observe_turn", "pinned", "pinned_digest", "set_pinned"]
+    "method",
+    [
+        "digest",
+        "consult",
+        "observe_turn",
+        "pinned",
+        "pinned_digest",
+        "pinned_overflow",
+        "set_pinned",
+    ],
 )
 def test_notes_api_has_no_session_dimension(method: str) -> None:
     """可执行的全局层钉住：笔记层的 Consult / 写入面**不接受**会话维度。"""

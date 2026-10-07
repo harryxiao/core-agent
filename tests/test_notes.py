@@ -333,14 +333,20 @@ def test_store_pinned_digest_empty_without_pins(tmp_path) -> None:
 
 
 def test_store_pinned_digest_is_deterministic_and_capped(tmp_path) -> None:
+    """确定性次序 + 总长有界；**超预算篇整篇排除**（change 0154：绝不半篇，未进场可见）。"""
     store = NoteStore(path=tmp_path)
     store.update(NoteEntry(note_id="b", title="B", content="b-body", pinned=True))
     store.update(NoteEntry(note_id="a", title="A", content="a-body", pinned=True))
     block = store.pinned_digest()
-    assert block.index("a-body") < block.index("b-body"), "按 note_id 升序（确定性）"
+    assert block.index("a-body") < block.index("b-body"), "同优先级按 note_id 升序（确定性）"
 
     store.update(NoteEntry(note_id="huge", title="Huge", content="x" * 10000, pinned=True))
-    assert len(store.pinned_digest()) == _MAX_PINNED_CHARS, "总长有界（token 有界）"
+    with pytest.warns(RuntimeWarning):
+        block = store.pinned_digest()
+    assert "a-body" in block and "b-body" in block
+    assert "x" not in block, "超限篇**整篇**排除（绝不半篇）"
+    assert store.pinned_overflow() == ["huge"]
+    assert len(block) <= _MAX_PINNED_CHARS, "总长不超上界（token 有界）"
 
 
 def test_store_observe_turn_preserves_pinned(tmp_path) -> None:

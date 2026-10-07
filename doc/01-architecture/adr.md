@@ -4186,6 +4186,48 @@
 
 ---
 
+## ADR-0146：常驻笔记预算 —— 显式优先级 + 整篇纳入 + 超限可见（change 0154 / 记忆三面路线图 G1）
+
+- **背景**：0149（ADR-0141 / E93）给了**常驻（pinned）笔记**（任务级硬约束锚，每轮无条件注入），
+  但其**局限②** 自认「总量有界于 `_MAX_PINNED_CHARS`(4000) 但**无 per-note 上限** —— 多篇各自很长时
+  **末篇可能被截断**」。现状 `pinned_digest()` 是「按 `note_id` 升序拼接后 `[:4000]` **字符切片**」，
+  两个缺陷都落在**硬约束**语义上放大：① **半篇** —— 切片可把某篇**从中间切断**，半截硬约束可能
+  **语义反转**（「必须 A，除非 B」被切成「必须 A」），比缺席更危险；且被切的是**哪一篇**由
+  `note_id` 字典序决定（`zzz-*` 被系统性饿死、`aaa-*` 恒在场）。② **静默** —— 谁没进场、谁被切半，
+  无留痕、无 CLI 可见面 ⇒ 操作者以为约束在生效。
+- **决策①：在场判据改为**显式优先级**（操作者的决定，不踩 `note_id` 字典序）。** `NoteEntry` 新增
+  `pin_priority: int = 0`；canonical 行 `- pin_priority: <n>` **仅非 0 时输出**（仿 0149 的 `pinned`
+  行先例 ⇒ 既有文件渲染输出**逐字不变**，`render_note`/`parse_note` 仍互为逆）；`parse_note`
+  **解析失败 ⇒ 0**（fail-closed：手误**绝不**意外抬到高优先级）。`pinned()` 次序由 `note_id` 升序
+  改为 **`pin_priority` 降序、同优先级 `note_id` 升序**（仍**确定性**）。
+- **决策②：装配改为**整篇纳入**，绝不半篇。** `_assemble_pinned()` 按次序整篇纳入，任一篇整篇放不下
+  即**整篇排除**且其后各篇**不再尝试**（在场集合 = 优先级次序的**前缀**；低优先级不得越过被排除者
+  挤入 —— 否则「优先级决定在场」被破坏）。**唯一例外**：次序**首篇**即便自身超预算**仍整篇纳入**
+  —— 常驻块 SHALL NOT 因单篇超限而**整体为空**（硬约束全灭比超预算更糟）。空正文常驻笔记**预先滤除**：
+  既不占块、也**不计**未进场。
+- **决策③：超限**可见**（不静默）。** `pinned_digest()` 在**注入块超预算**时（发生排除，或单篇超限
+  致块超上界）经 `warnings.warn` 留痕（列出未进场 id；无整篇可排除时明示单篇超限）；新增**只读**
+  访问器 `pinned_overflow() -> list[str]`（次序同 `pinned()`；首篇超限者**不在其列**，它在场）；
+  CLI 新增 `notes pinned` 报出「在场 / 未进场」，`notes pin <id> [--priority N]` 设优先级。
+  `notes list` 输出**逐字不变**（未进场篇目的报出面是 `notes pinned`）。
+- **`set_pinned(note_id, *, pinned=True, priority=0)`**：幂等判据由「`pinned` 未变」扩为「`pinned` 与
+  `priority` **皆**未变」（同值 ⇒ 不写盘、不 bump `updated_at`）；**清常驻同时归零优先级**（退出常驻面
+  即不再有优先级）；逐轮写回（`observe_turn`）SHALL NOT 抹除 `pinned` 与 `pin_priority`。
+- **不改** `_MAX_PINNED_CHARS` 数值（4000）；**不**在 pin 时**拒绝**超预算置位（超限是**告警 + 可见**，
+  非硬失败）；**不**新增 `notes` 错误码、**不**接 `EffectTracker`（承 ADR-0099 canonical 层取舍）；
+  **不**引三方库。
+- **已知局限**：① **单篇自身超上界时块可超上界**（首篇例外，**有意**：保硬约束不空）—— 该情形**有
+  留痕**但**仍超预算**，缓解靠操作者拆小常驻笔记。② **`pin_priority` 与 `pinned` 正交** ⇒ 手工把
+  `- pin_priority: N` 写进一篇**未**常驻的笔记不产生任何效果（`pinned()` 先滤 `pinned`），但该行会被
+  原样保留、`notes pinned` 不显示（它只列常驻）。③ **无 per-note 上限**：一篇很长的常驻笔记（未自超
+  上界但很大）会吃掉大半预算、把后续低优先级篇整批挤出 —— 这是**优先级语义的正确后果**，且**有留痕**。
+  ④ **同优先级仍回落到 `note_id` 字典序**打破平局 —— 仅是**平局**的确定性 tie-break，不再决定
+  「谁在场」（差异化由显式优先级承担）。
+- **规格**：`notes`「常驻（pinned）笔记（任务级硬约束锚）」（**MODIFIED**，追加 `pin_priority` /
+  优先级次序 / 整篇纳入 / 超限可见条款 ＋ 4 新 Scenario，**保留**全部 5 个既有场景名）；接口面
+  `03-interfaces/notes-interface.md`、模块面 `02-modules/notes.md`、测试面
+  `04-testing/test-cases.md` §70、台账 `coding-plan/known-risk.md`。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4326,3 +4368,4 @@
 | ADR-0143 | 03-interfaces/notes-interface.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0144 | 03-interfaces/loop-interface.md, 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0145 | 03-interfaces/memory-interface.md, 03-interfaces/notes-interface.md, 02-modules/memory.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0146 | 03-interfaces/notes-interface.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

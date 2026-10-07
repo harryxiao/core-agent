@@ -1088,6 +1088,26 @@
 
 ---
 
+## 70. 常驻笔记预算：显式优先级 + 整篇纳入 + 超限可见（TC-PINBUDGET，change `0154`／ADR-0146／路线图 G1）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-PINBUDGET-01 | notes/spec.md「常驻（pinned）笔记」Scenario「优先级往返 + 幂等 + 逐轮写回不抹除」 | `render_note` / `parse_note`：`pin_priority=5`；缺省 0；`- pin_priority: abc` | 往返得 5；缺省**不含**该行（既有渲染逐字不变）；`abc` ⇒ **0**（fail-closed）（锚点：`test_notes_pinned_budget.py::test_render_parse_pin_priority_roundtrip` / `::test_render_omits_pin_priority_at_zero` / `::test_parse_pin_priority_unparseable_is_zero`） |
+| TC-PINBUDGET-02 | 同 Requirement Scenario「优先级决定在场（预算紧张时高优先级优先）」 | 三篇常驻：`c`/`a` 优先级 5、`b` 优先级 1 | `pinned()` 次序 `[a, c, b]`（优先级降序、同优先级 `note_id` 升序）（锚点：`::test_pinned_orders_by_priority_desc_then_note_id`） |
+| TC-PINBUDGET-03 | 同 Requirement Scenario「整篇纳入，绝不半篇」 | `a` 短、`b` 4000 字（整篇即超）、`c` 短（次序在 `b` 后） | 块含**整篇** `a`；`b` 一段都**不在**（绝不半篇）；`c` **不**越位挤入（在场集合＝优先级次序前缀）（锚点：`::test_digest_includes_whole_notes_and_excludes_overflow_whole`） |
+| TC-PINBUDGET-04 | 同 Requirement Scenario「超限可见（留痕 + 未进场篇目可查）」 | 如上发生排除；对照合计未超预算 | 排除 ⇒ `warnings.warn`（`RuntimeWarning`）+ `pinned_overflow() == ["b","c"]`；未超 ⇒ **不**告警（`simplefilter("error")`）+ 空列表（锚点：`::test_digest_without_overflow_neither_warns_nor_reports`） |
+| TC-PINBUDGET-05 | 同 Requirement Scenario「单篇超限仍整篇纳入（不空块）」 | 唯一常驻篇自身 > `_MAX_PINNED_CHARS` | 该篇**整篇**在场（块非空）、留痕；`pinned_overflow()` **不含**它（锚点：`::test_digest_single_oversized_note_is_included_whole`） |
+| TC-PINBUDGET-06 | 同 Requirement（空正文不占块、不计未进场） | 一篇空正文常驻 + 一篇正常常驻 | 块只含正常篇；不告警；`pinned_overflow() == []`（锚点：`::test_digest_empty_body_notes_neither_occupy_nor_overflow`） |
+| TC-PINBUDGET-07 | 同 Requirement Scenario「优先级往返 + 幂等 + 逐轮写回不抹除」 | `set_pinned(priority=5)` 落盘 / 同值再置 / `unpin` / 逐轮写回（同来源） | 落盘含 `- pin_priority: 5`、新实例读回 5；同值不写盘不 bump；`unpin` 归零且行消失；`observe_turn` 保留优先级（锚点：`::test_set_pinned_priority_roundtrip_and_idempotent` / `::test_unpin_zeroes_priority` / `::test_observe_turn_preserves_pin_priority`） |
+| TC-PINBUDGET-08 | CLI 面（`notes pin --priority` / `notes pinned`） | `notes pin 约束 --priority 5`；两篇常驻（高优先级短篇 + 超预算长篇）后 `notes pinned` | 落盘含 `- pin_priority: 5`、`unpin` 归零；`notes pinned` 报「`[在场]` / `[未进场]`」并含两篇 id（锚点：`test_entry.py::test_notes_pin_with_priority_persists` / `::test_notes_pinned_reports_in_context_and_overflow`） |
+| TC-PINBUDGET-09 | 同 Requirement（**零回归护栏**） | 既有 `test_notes.py::test_store_pinned_digest_is_deterministic_and_capped`（按新契约改写：整篇排除替代字符切片）/ `test_session_isolation.py`（`pinned_overflow` 纳入全局层钉住）/ 其余 `test_notes*.py` / `test_entry.py` 全量 | 逐字不动全绿 —— `pin_priority` 缺省 0 且排序回落到 `note_id` ⇒ 未设优先级的既有常驻笔记行为**逐字不变**（锚点：全量 `pytest -q`） |
+
+> **无手工验收项**：纯库内行为（canonical 追加可选行 + 整篇装配 + CLI 报出），全自动门禁（pytest）覆盖。
+> 语义：**在场判据＝显式优先级**（操作者的决定，不踩 `note_id` 字典序）；**整篇纳入**杜绝半截硬约束
+> （可能语义反转）；**超限可见**（warn + `pinned_overflow` + `notes pinned`）杜绝静默缺席。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

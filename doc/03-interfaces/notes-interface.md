@@ -20,6 +20,7 @@ class NoteEntry:
     updated_at: float = 0.0           # 秒级时间戳（覆盖式更新的「最新」判据）
     search_queries: list[str] = field(default_factory=list)  # 头部 `## Search Queries` 关键词（词法检索用）
     pinned: bool = False              # 常驻标记：True ⇒ 正文每轮无条件注入推理上下文（独立块，change 0149）
+    pin_priority: int = 0             # 常驻优先级（高者优先在场；0 ⇒ canonical 省略该行，change 0154）
 
     @property
     def path(self) -> str:            # canonical 相对路径（派生）
@@ -107,10 +108,12 @@ class NoteStore(Plugin):
     def digest(self, query: str) -> str: ...                      # 确定性：命中笔记摘要 + 笔记清单
     def observe_turn(self, task: str, steps: list[str], *, ok: bool) -> NoteEntry | None: ...
 
-    # 常驻（pinned）面（change 0149）
-    def pinned(self) -> list[NoteEntry]: ...                      # 常驻清单（note_id 升序，确定性）
-    def pinned_digest(self) -> str: ...                           # 常驻注入块（正文**全文**、无 query、有界）
-    def set_pinned(self, note_id: str, *, pinned: bool = True) -> NoteEntry: ...  # 置/清标记（幂等）
+    # 常驻（pinned）面（change 0149；优先级 / 整篇纳入 / 超限可见 change 0154）
+    def pinned(self) -> list[NoteEntry]: ...                      # 常驻清单（优先级降序、同优先级 id 升序）
+    def pinned_digest(self) -> str: ...                           # 常驻注入块（整篇纳入、无 query、有界）
+    def pinned_overflow(self) -> list[str]: ...                   # 因超预算未进场的 note_id（只读）
+    def set_pinned(self, note_id: str, *, pinned: bool = True, priority: int = 0) -> NoteEntry: ...
+        # 置/清常驻并设优先级（幂等；清常驻同时归零优先级）
 
 ```
 
@@ -121,10 +124,17 @@ class NoteStore(Plugin):
   或 slug 为空 ⇒ `None`（不写盘）。写回**原样携带**既有 `pinned` 标记（逐轮写回不抹除常驻）。
   **来源守护**（change 0151 / ADR-0143）：撞上来源**非** `notes.turn` 的既有笔记 ⇒ **不覆写**该主题，
   沉淀改写入派生主题 `<topic>-<n>`（`n` 为 2 起、取首个「不存在或来源为 `notes.turn`」者）。
-- `pinned_digest()`：常驻笔记**完整正文**（非节选）、无 query 入参（每轮无条件）、按 `note_id` 升序拼接，
-  总长有界于 `_MAX_PINNED_CHARS`(4000)；空正文的常驻笔记不占块；块内不含 `updated_at`（跨轮字节稳定）。
-- `set_pinned(note_id, *, pinned=True)`：缺失 ⇒ `NOTE_NOT_FOUND`；**幂等**（同值 ⇒ 不写盘、不 bump
-  `updated_at`），真变更走同一 `update()` 原子覆盖写路径（不另开第二写路径）。
+- `pinned()`：次序 = **`pin_priority` 降序、同优先级 `note_id` 升序**（确定性）—— 在场判据是**显式
+  优先级**，不是 `note_id` 字典序（change 0154）。
+- `pinned_digest()`：常驻笔记**完整正文**（非节选）、无 query 入参（每轮无条件）、按 `pinned()` 次序拼接，
+  **整篇纳入**（超预算篇**整篇**排除、其后各篇不挤入 —— 在场集合＝优先级次序前缀；**首篇**自身超限时仍
+  整篇纳入，块不为空），总长有界于 `_MAX_PINNED_CHARS`(4000)（首篇例外除外）；空正文的常驻笔记不占块、
+  不计未进场；块内不含 `updated_at`（跨轮字节稳定）。注入块**超预算**（发生排除，或单篇超限）⇒ 经
+  `warnings.warn` 留痕。
+- `pinned_overflow()`：**只读**返回因超预算**未进场**的 `note_id`（次序同 `pinned()`；首篇超限者不在其列）。
+- `set_pinned(note_id, *, pinned=True, priority=0)`：缺失 ⇒ `NOTE_NOT_FOUND`；**幂等**（`pinned` 与
+  `priority` **皆**未变 ⇒ 不写盘、不 bump `updated_at`）；**清常驻同时归零优先级**；真变更走同一
+  `update()` 原子覆盖写路径（不另开第二写路径）。
 
 ### 3.1 会话摘要提升（`core.notes.promote`，change 0150 / ADR-0142 / 账本 E94）
 
@@ -204,8 +214,9 @@ PinnedNotesConsult = Callable[[], str]   # **零参** → 常驻注入块（签�
 | `notes list` | 列出 canonical 笔记清单（id / 标题 / 更新时间；常驻条目行尾追加 `\t[pinned]`） |
 | `notes show <note_id>` | 打印一篇 canonical 笔记（`NOTE_NOT_FOUND` ⇒ 退出码非零） |
 | `notes search <query>` | 词法检索（标题 / tags / Search Queries），打印命中 note 摘要 |
-| `notes pin <note_id>` | 置常驻标记（正文每轮无条件注入；幂等；缺失 ⇒ `NOTE_NOT_FOUND` 非零退出） |
-| `notes unpin <note_id>` | 清常驻标记 |
+| `notes pin <note_id> [--priority N]` | 置常驻并设优先级（高者优先在场；幂等；缺失 ⇒ `NOTE_NOT_FOUND` 非零退出） |
+| `notes unpin <note_id>` | 清常驻标记（优先级一并归零） |
+| `notes pinned` | 列出常驻笔记：`note_id` / 标题 / 优先级 / **是否进场**（超预算篇目报为未进场，change 0154） |
 | `notes promote <session-id> [--as NOTE_ID] [--title TITLE]` | 会话摘要 → canonical 常驻笔记（显式提升；幂等覆盖；会话无摘要 / 派生 id 为空 / 撞非 promotion 来源且未给 `--as` ⇒ 非零退出、不写盘） |
 
 一次 `notes` 命令 = 一次性进程；canonical 目录是**落盘真源** ⇒ 一次写入在后续进程可见。
