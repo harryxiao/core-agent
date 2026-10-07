@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from core.configuration import AppConfig, ConfigManager
+from core.diagnostics.align import align_pairs
 from core.diagnostics.deps import Deps
 from core.diagnostics.models import Check, CheckStatus, Report
 
@@ -157,17 +158,17 @@ def collect_status(deps: Deps) -> Report:
     各字段**独立降级**：某项不可读只令该行如实标注，不影响其余行。
     """
     app, failure = _loaded_config(deps)
-    lines = (
-        f"模型\t{_model(app, failure)}",
-        f"循环预算\t{_budget(app, failure, deps)}",
-        f"会话数\t{_field(deps.sessions, lambda handle: str(len(handle())))}",
-        f"内置工具\t{_field(deps.tools, lambda provider: str(len(provider.active_tools())))}",
-        f"已安装资产\t{_field(deps.installer, lambda inst: str(len(inst.installed())))}",
-        f"MCP 端点\t{_field(deps.mcp, lambda reg: str(len(reg.list())))}",
-        f"技能库\t{_field(deps.library, lambda lib: str(len(lib.all_skills())))}",
-        f"笔记\t{_field(deps.notes, lambda store: str(len(store.list())))}",
-    )
-    return Report(title="运行状态（status）", lines=lines)
+    entries = [
+        ("模型", _model(app, failure)),
+        ("循环预算", _budget(app, failure, deps)),
+        ("会话数", _field(deps.sessions, lambda handle: str(len(handle())))),
+        ("内置工具", _field(deps.tools, lambda provider: str(len(provider.active_tools())))),
+        ("已安装资产", _field(deps.installer, lambda inst: str(len(inst.installed())))),
+        ("MCP 端点", _field(deps.mcp, lambda reg: str(len(reg.list())))),
+        ("技能库", _field(deps.library, lambda lib: str(len(lib.all_skills())))),
+        ("笔记", _field(deps.notes, lambda store: str(len(store.list())))),
+    ]
+    return Report(title="运行状态（status）", lines=tuple(align_pairs(entries)))
 
 
 def _loaded_config(deps: Deps) -> tuple[AppConfig | None, str]:

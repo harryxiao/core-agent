@@ -3,18 +3,21 @@
 红线（写进规格与测试）：**输出不含密钥值** —— 配置视图只出 `${VAR}` 引用名与「可解析」结论；
 MCP 视图**不出** `EndpointRecord.args`（其可能是 `--token <值>` 形态）。
 
-对应规格：doc/openspec/specs/cli-ops/spec.md「自检诊断（doctor）与运行状态（status）」
+列对齐一律经 `core.diagnostics.align`（**单一实现**）：表格型 `align_rows` / 键值型 `align_pairs`。
+
+对应规格：doc/openspec/specs/cli-ops/spec.md「自检诊断（doctor）与运行状态（status）」「诊断视图列对齐」
 对应接口：doc/03-interfaces/cli-ops-interface.md §5
 """
 
 from __future__ import annotations
 
-import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
+from core.diagnostics.align import align_pairs, align_rows
 from core.diagnostics.deps import Deps
 from core.diagnostics.models import Report
-from core.skillhub import MarketIndex, SkillHubError
+from core.skillhub import MarketIndex, MarketSkill, SkillHubError
+from core.skills import Skill
 
 _NOT_WIRED = "未接线（句柄未注入）"
 _EMPTY = "（空）"
@@ -27,11 +30,16 @@ def render_sessions(deps: Deps) -> Report:
         return Report(title="会话", lines=(_NOT_WIRED,))
 
     def rows() -> list[str]:
-        return [
-            f"{entry.get('session_id', '')}\t{entry.get('title') or '（无标题）'}"
-            f"\t{_as_int(entry.get('updated_at'))}"
-            for entry in handle()
-        ]
+        return align_rows(
+            [
+                [
+                    str(entry.get("session_id", "")),
+                    str(entry.get("title") or "（无标题）"),
+                    str(_as_int(entry.get("updated_at"))),
+                ]
+                for entry in handle()
+            ]
+        )
 
     return _sealed("会话", rows)
 
@@ -47,20 +55,20 @@ def render_config(deps: Deps) -> Report:
         return Report(title="配置", lines=(f"配置不可用：{type(exc).__name__}: {exc}",))
     rounds, tokens = manager.loop_limits()
     resolvable = "可解析" if manager.is_resolvable(app.llm.api_key_ref) else "不可解析"
-    lines = [
-        f"provider\t{app.llm.provider}",
-        f"model\t{app.llm.model}",
-        f"endpoint\t{app.llm.endpoint}",
-        f"密钥引用\t{app.llm.api_key_ref}\t{resolvable}",
-        f"权限模式\t{manager.permission_mode()}",
-        f"循环预算\tmax_rounds={rounds}, token_budget={tokens}",
+    entries: list[tuple[str, str] | str] = [
+        ("provider", app.llm.provider),
+        ("model", app.llm.model),
+        ("endpoint", app.llm.endpoint),
+        ("密钥引用", f"{app.llm.api_key_ref}{'  '}{resolvable}"),
+        ("权限模式", manager.permission_mode()),
+        ("循环预算", f"max_rounds={rounds}, token_budget={tokens}"),
     ]
     if app.features:
         flags = ", ".join(
             f"{name}={'on' if on else 'off'}" for name, on in sorted(app.features.items())
         )
-        lines.append(f"功能开关\t{flags}")
-    return Report(title="配置", lines=tuple(lines))
+        entries.append(("功能开关", flags))
+    return Report(title="配置", lines=tuple(align_pairs(entries)))
 
 
 def render_mcp(deps: Deps) -> Report:
@@ -70,36 +78,42 @@ def render_mcp(deps: Deps) -> Report:
         return Report(title="MCP 端点", lines=(_NOT_WIRED,))
     return _sealed(
         "MCP 端点",
-        lambda: [
-            f"{record.name}\t{record.transport or '自动'}\t{record.source}"
-            for record in registry.list()
-        ],
+        lambda: align_rows(
+            [[record.name, record.transport or "自动", record.source] for record in registry.list()]
+        ),
     )
 
 
 def render_skills(deps: Deps) -> Report:
-    """技能清单：**已装**（技能库）+ **目录**（市场落盘态）。"""
-    lines: list[str] = []
+    """技能清单：**已装**（技能库）+ **目录**（市场落盘态）。键值行标签对齐、明细行原样。"""
+    entries: list[tuple[str, str] | str] = []
     library = deps.library
     if library is not None:
         skills = sorted(library.all_skills(), key=lambda skill: skill.skill_id)
-        lines.append(f"已装技能库\t{len(skills)}")
-        lines.extend(f"· {skill.skill_id}（{skill.status}, {skill.version}）" for skill in skills)
+        entries.append(("已装技能库", str(len(skills))))
+        entries.extend(_detail_lines(skills))
     market = deps.market
     if market is not None:
-        lines.extend(_catalog_lines(market))
-    return Report(title="技能", lines=tuple(lines) if lines else (_NOT_WIRED,))
+        entries.extend(_catalog_entries(market))
+    return Report(title="技能", lines=tuple(align_pairs(entries)) if entries else (_NOT_WIRED,))
 
 
-def _catalog_lines(market: MarketIndex) -> list[str]:
-    """市场目录行：源未建立（空目录）或不可用 ⇒ 只省掉目录段（不阻断已装技能呈现）。"""
+def _catalog_entries(market: MarketIndex) -> list[tuple[str, str] | str]:
+    """市场目录条目：源未建立（空目录）或不可用 ⇒ 只省掉目录段（不阻断已装技能呈现）。"""
     try:
         catalog = market.list()
     except SkillHubError:
         return []
-    rows = [f"市场目录\t{len(catalog)}"] if catalog else []
-    rows.extend(f"· {item.skill_id}（{item.status}, {item.version}）" for item in catalog)
+    rows: list[tuple[str, str] | str] = []
+    if catalog:
+        rows.append(("市场目录", str(len(catalog))))
+    rows.extend(_detail_lines(catalog))
     return rows
+
+
+def _detail_lines(items: Iterable[Skill | MarketSkill]) -> list[str]:
+    """逐条明细行（不参与补齐）：`· <标识>（<状态>, <版本>）`。"""
+    return [f"· {item.skill_id}（{item.status}, {item.version}）" for item in items]
 
 
 def render_notes(deps: Deps) -> Report:
@@ -110,31 +124,18 @@ def render_notes(deps: Deps) -> Report:
 
     def rows() -> list[str]:
         notes = store.list()
-        if not notes:
-            return []
-        w_id = max(_display_width(n.note_id) for n in notes)
-        w_title = max(_display_width(n.title or n.note_id) for n in notes)
-        return [
-            f"{_pad(n.note_id, w_id)}  {_pad(n.title or n.note_id, w_title)}  {int(n.updated_at)}"
-            f"{f' [常驻 优先 {n.pin_priority}]' if n.pinned else ''}"
-            for n in notes
-        ]
+        return align_rows(
+            [
+                [
+                    n.note_id,
+                    n.title or n.note_id,
+                    f"{int(n.updated_at)}{f' [常驻 优先 {n.pin_priority}]' if n.pinned else ''}",
+                ]
+                for n in notes
+            ]
+        )
 
     return _sealed("笔记", rows)
-
-
-def _display_width(text: str) -> int:
-    """文本的**显示列宽**：东亚宽 / 全角字符按 2 列计，其余按 1 列。
-
-    `len()` 是**字符数**，与终端等宽字体下的列数不等 —— 含中日韩字符的清单若按字符数补齐，
-    列起点仍随内容错位（一条中文标题会把后列整体推右）。
-    """
-    return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
-
-
-def _pad(text: str, width: int) -> str:
-    """按**显示宽度**左对齐补齐到 `width` 列（`f"{text:<{width}}"` 只数字符数）。"""
-    return text + " " * max(0, width - _display_width(text))
 
 
 def _as_int(value: object) -> int:

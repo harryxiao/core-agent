@@ -119,6 +119,12 @@ def render_sessions / render_config / render_mcp / render_skills / render_notes(
 
 - **单一产出、多消费面**：`collect_*` 产 `Report`、`render` 产行；CLI 今天打印，TUI（change `0163`）
   复用同一份 —— SHALL NOT 各写一份检查逻辑。
+- **列对齐的单一实现**（change `0168` / ADR-0159）：列表型视图的列补齐一律经
+  `core/diagnostics/align.py` —— `display_width`（东亚宽 / 全角 ⇒ 2 列）/ `pad` /
+  `align_rows`（**表格型**：每列按列内最长显示宽度补齐，行末不补）/ `align_pairs`
+  （**键值型**：标签列补齐，`str` 明细行原样透出）。列间分隔符**恒为两个空格**，
+  `SHALL NOT` 用 `\t`（宽度由终端自定，`Static(markup=False)` 与 `print` 两个消费面都不解释它）。
+  `views.py` / `checks.py` SHALL NOT 各存一份列宽算法。
 - **密钥只出「引用名 + 布尔结论」**：`SHALL NOT` 打印任何解析结果；诊断项经 `ConfigManager.is_resolvable(ref)`
   （见 `configuration-interface.md` §2）取**布尔**，呈现用 `${VAR}` **引用名**。MCP 端点视图
   `SHALL NOT` 打印 `EndpointRecord.args`（可能是 `--token <value>` 形态），只出 name / transport / source。

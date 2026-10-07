@@ -1307,7 +1307,24 @@
 > **无手工验收项**：列对齐以**显示宽度**为判据（`east_asian_width` 的 `WF` 类按 2 列），
 > 时间戳列起点一致即通过 —— 该判据在按字符数补齐的旧实现下必红（实测同字符长度 36 而显示宽 37/43/36）。
 > **已知局限**：歧义宽（`A`）字符按 1 列（与多数终端默认一致）；超长 title 拉长整行（无截断）；
-> 只覆盖 `render_notes`（`render_sessions` / `render_mcp` 仍用 `\t`，另立）；未做 TUI 端列宽自适应。
+> 覆盖 `render_notes`（**其余列表型视图已由 §81 覆盖**）；未做 TUI 端列宽自适应。
+
+## 81. 诊断视图列对齐：全部列表型视图（TC-ALIGN-ALL，change `0168`／ADR-0159）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-ALIGN-ALL-01 | cli-ops/spec.md「诊断视图列对齐」Scenario「会话与 MCP 端点清单等宽列」 | 会话两条（`s1`/`日常`、`sess-2-longer`/`a much longer title`） | 各行**更新时间列**起点的**显示列**相等，且逐行不含 `\t`（锚点：`tests/test_diagnostics.py::test_render_sessions_columns_aligned`） |
+| TC-ALIGN-ALL-02 | 同上 Scenario | MCP 端点两条（`remote`/`sse`、`local-mcp`/空传输 ⇒ `自动`） | 各行**来源列**起点的显示列相等，且不含 `\t`（锚点：`...::test_render_mcp_columns_aligned`） |
+| TC-ALIGN-ALL-03 | 同上 Scenario「键值型视图标签列对齐」 | 有效配置（`_VALID_YAML`）⇒ `render_config` | 各**值的起始显示列**相等、不含 `\t`；键值行数 ≥ 6（锚点：`...::test_render_config_labels_aligned`） |
+| TC-ALIGN-ALL-04 | 同上 Scenario（**明细行豁免**） | 已装 1 条 + 市场目录 1 条 ⇒ `render_skills` | 两条**键值行**（非 `·` 开头）的值起点显示列相等；`· …` 明细行**原样透出**、不参与补齐（锚点：`...::test_render_skills_labels_aligned`） |
+| TC-ALIGN-ALL-05 | 同上 Scenario | 全绿依赖 ⇒ `collect_status` | 8 行键值**值的起始显示列**相等、不含 `\t`（锚点：`...::test_collect_status_labels_aligned`） |
+| TC-ALIGN-ALL-06 | 同上 Scenario「笔记清单等宽列」（回归） | 同 §80 的两条笔记 | 时间戳列起点相等（改用共用助手 `_assert_aligned`，判据不变；锚点：`...::test_render_notes_columns_aligned`） |
+
+> **判据同 §80**：按**显示宽度**（非字符数）断言列起点一致；断言助手的显示宽度在**测试内独立实现**
+> （不复用被测 `align.display_width`，以免自证）。**红态证据**：把 `src/core/diagnostics` 暂存回滚
+> ⇒ 上述 5 条新增用例**全红**（`\t` 断言先命中），`render_notes` 用例仍绿（`0165` 已修）。
+> **已知局限**：歧义宽（`A`）字符按 1 列（承 §80，ADR-0159 局限①）；超长字段拉长整行（无截断）；
+> 值内含 2+ 空格时「2 空格分列」解析会拆格（值为单空格形态，无实例）。
 
 ## 关联
 

@@ -4678,17 +4678,59 @@
   现代终端默认一致；若终端按双宽渲染歧义字符，含此类字符的行会有 1 列偏移（已知局限，见下）。
 - **范围**：本 change **只改 `render_notes`**。`render_sessions`（`\t`）、`render_mcp`（`\t`）与
   `render_config` 的 `\t` 形态**同缺陷但在范围外**（proposal 明写「各自独立提案」）—— 记 §3 局限。
+  **（后续）已由 change `0168` / ADR-0159 覆盖**：全部列表型视图改走模块级 `align.py`，
+  两把助手自此**非** `views.py` 私有。
 - **兼容性**：`Report` 接口与 `render_notes` 签名零变更；既有断言
   （`test_render_notes_marks_pinned` 的 `"alpha" in out` / `"常驻" in out`）在新格式下逐字仍成立；
   空清单（`（空）`）与句柄缺失（`未接线`）两条早退路径不受影响。
 - **已知局限**：① **歧义宽字符按 1 列**（上文决策④）；② **超长 title 会拉长整行**（列宽取清单内
   最长显示宽度，无截断 / 无换行 —— 笔记清单规模有限，暂可接受）；③ **只覆盖 `render_notes`** ——
-  `render_sessions` / `render_mcp` 仍 `\t` 参差（另立）；④ **未做 TUI 端列宽自适应 / 截断**
-  （终端宽度感知属呈现层，本 change 不做）。
+  `render_sessions` / `render_mcp` 仍 `\t` 参差（**已由 change `0168` / ADR-0159 闭合**）；
+  ④ **未做 TUI 端列宽自适应 / 截断**（终端宽度感知属呈现层，本 change 不做）。
 - **规格**：`doc/openspec/specs/cli-ops/spec.md` **ADDED** Requirement「诊断视图列对齐」
   （3 Scenario：笔记清单等宽列 / **含中日韩字符的清单仍对齐** / title 回退对齐）—— ADDED 只追加
   canonical 末尾，**既有 Requirement 逐字不改**；测试面 `doc/04-testing/test-cases.md` §80
   （TC-NOTES-ALIGN）、台账 `coding-plan/known-risk.md` §1（E104）+ §3。
+
+## ADR-0159：诊断视图对齐 —— 上提为模块级**单一实现** + 两形态入口（change 0168）
+
+- **背景**：ADR-0158（change 0165）修好了 `render_notes`，但把两把助手（`_display_width` / `_pad`）
+  留在 `views.py` **私有**，且**只改了这一个视图**。诊断源里其余 5 处列表型视图仍以 `\t` 拼列
+  （`render_sessions` ×2 / `render_config` ×7 / `render_mcp` ×2 / `render_skills` ×2 /
+  `collect_status` ×8）—— 消费面（TUI `Static(markup=False)`、CLI `print`）**都不解释制表符**，
+  根因与 0165 逐字相同；用户复查 0165 时据此追问。
+- **决策①：对齐上提为**模块级**公开助手（新 `core/diagnostics/align.py`），做**单一实现**。**
+  `0165` 的私有助手位置有一处**结构性后果**：`checks.py` 的 `collect_status` **够不着** ⇒ 若各处
+  自修，必然出现第二份「列宽怎么算」的实现。本仓反复消掉的正是这种双份真源（同 0159 的
+  `_COMMANDS`、0162 的 `builtin_tools()`），故上提而非复制。模块只依赖标准库
+  `unicodedata` —— **不引 `wcwidth` / `rich`**（本仓「尽量不依赖三方库」）。
+- **决策②：两形态两个入口（`align_rows` / `align_pairs`），**不**合成一个带模式参数的函数。**
+  两形态的**不变量不同**：表格型要求**每列**对齐（多列独立求宽），键值型只要求**值的起始列**对齐
+  （标签列求宽、值不补）。合一就得加「哪些列参与求宽」的开关 —— 正是被消掉的复杂度；两个入口各
+  5~8 行，各自可读。`align_rows` **行末不补**（`i == len(row) - 1` 原样出）⇒ 无尾随空白。
+- **决策③：`align_pairs` 接受 `str` 条目并原样透出** —— 技能视图的 `· <标识>（<状态>, <版本>）`
+  明细行夹在键值行之间、不参与补齐。**这是刻意的混合形态**：使 `render_skills` 只维护**一个有序
+  条目列表**（已装段 + 目录段拼起后**一次**对齐）。若按段各自对齐，「标签列宽」会被算成两段各自的
+  最大值 ⇒ 同一视图里 `已装技能库` 与 `市场目录` 起始列错开，正是要修的观感。
+- **决策④：`render_notes` 回填共用助手，常驻标记**并入时间戳格**（不是第四列）。** 列数恒为 3：
+  第四列若为空串，`_SEP` 之后会留下**尾随两空格**；并入末格则「一条笔记一行、列数不随常驻与否变化」，
+  且与 `0165` 的行文本**逐字一致**（`<ts> [常驻 优先 N]`，标记前一个空格）。
+- **决策⑤：范围＝诊断源**全部**列表型视图（`0168` 一次做干净）。** 分两轮各改几个视图会让同源缺陷
+  在中间态并存（用户复查时看到的正是这个中间态）。`doctor` 的 `Check` 明细**不在范围**——它是
+  **单行项**（`✓/!/✗ <名>：<明细>`），不是列表。TUI / CLI 的消费点**零改动**（它们只吃 `Report`）。
+- **兼容性**：`Report` / `Deps` / 六个视图**签名零变更**，`render` 的「标题 + 2 空格缩进」不变；
+  既有松散断言（`"s1" in out` 等）与三条降级路径（`（空）` / `未接线（句柄未注入）` / 配置不可用单行）
+  逐字不变。**密钥红线不变**：`render_config` 的「密钥引用」行由三列变二列（`${VAR}` 与结论以两个
+  空格相连），仍**只出引用名 + 结论**、不含任何取值。
+- **已知局限**：① **歧义宽字符按 1 列**（`"WF"` 不含 `A`：`±` / `→` 一类）—— 承 ADR-0158 局限③，
+  本 change **不裁决**；② **超长字段拉长整行**（无截断 / 换行 —— 列表规模有限，同 0165 取舍）；
+  ③ **测试助手的「2+ 空格分列」解析**：若某**值**内含 2+ 空格会被拆成多格 —— 值均为单空格形态
+  （`max_rounds=N, token_budget=M` / `a=on, b=off`），无实例，且与「列间 2 空格」的视图约定同源。
+- **规格**：`doc/openspec/specs/cli-ops/spec.md`「诊断视图列对齐」**MODIFIED** —— 作用域由
+  「`render_notes`」扩为「诊断源**全部**列表型视图」，明写两形态与各自口径；既有 3 Scenario
+  **逐字保留** + 新增 2（会话与 MCP 端点清单等宽列 / 键值型视图标签列对齐）。测试面
+  `doc/04-testing/test-cases.md` §81（TC-ALIGN-ALL）、台账 `coding-plan/known-risk.md` §1（E105；
+  并回填 E104 与 ADR-0158 局限③ 的闭合）。
 
 ## 变更追踪
 
@@ -4843,3 +4885,4 @@
 | ADR-0156 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0157 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0158 | 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0159 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import os
 import pathlib
+import re
 import unicodedata
 from typing import Any
 
@@ -34,14 +35,19 @@ from core.diagnostics import (
 )
 from core.mcp import EndpointRecord, MCPEndpointRegistry
 from core.notes import NoteStore
+from core.skillhub import MarketIndex, MarketSkill
 from core.skills import Skill, SkillLibrary
 from core.tools import ToolProvider, builtin_tools
 
 # 独特标记值：任何输出命中它即判定「密钥泄漏」（可 grep 的哨兵）。
 _CANARY = "sk-DIAG-CANARY-9f3a"
 
-_STAMP_LEN = 10  # 时间戳（epoch 秒）的十进制位数
 _ALIGN_NOTES = (("a", "短"), ("longer-id", "一个较长的标题"))  # 对齐用例：一条 ASCII、一条中日韩
+
+# 各视图键值行数（对齐用例的断言基线：先钉住行数，防断言在空输出上恒真）
+_CONFIG_LABELS = 6  # provider / model / endpoint / 密钥引用 / 权限模式 / 循环预算
+_SKILL_LABELS = 2  # 已装技能库 / 市场目录（明细行 `· …` 不计）
+_STATUS_LABELS = 8  # 模型 / 循环预算 / 会话数 / 内置工具 / 资产 / MCP / 技能库 / 笔记
 
 _VALID_YAML = """\
 llm:
@@ -260,11 +266,33 @@ def _display_width(text: str) -> int:
     return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
 
 
-def _timestamp_column(line: str) -> int:
-    """行内时间戳（末尾 10 位数字）起始的**显示列**（其后的常驻标记不参与）。"""
-    body = line.split(" [常驻", 1)[0].rstrip()
-    assert body[-_STAMP_LEN:].isdigit(), body
-    return _display_width(body[: len(body) - _STAMP_LEN])
+def _cell_columns(line: str) -> list[int]:
+    """行内各单元格起始的**显示列**（单元格以 2+ 空格分隔；行首缩进计入）。
+
+    用单元格内容而非分隔符数回推位置 —— 补齐产生的空白与分隔符会连成一片，按分隔符数会算错。
+    """
+    columns: list[int] = []
+    cursor = 0
+    for cell in re.split(r"\s{2,}", line.strip()):
+        start = line.index(cell, cursor)
+        columns.append(_display_width(line[:start]))
+        cursor = start + len(cell)
+    return columns
+
+
+def _body(text: str, count: int | None = None) -> list[str]:
+    """去掉 `Report` 标题行后的数据行；`count` 非空时断言行数（防用例自身写空）。"""
+    body = [ln for ln in text.splitlines() if ln.strip()][1:]
+    if count is not None:
+        assert len(body) == count, body
+    return body
+
+
+def _assert_aligned(body: list[str], index: int) -> None:
+    """断言各行**不含 `\\t`**，且第 `index` 个单元格的起始显示列一致。"""
+    assert all("\t" not in ln for ln in body), body
+    columns = [_cell_columns(ln)[index] for ln in body]
+    assert len(set(columns)) == 1, (columns, body)
 
 
 def test_render_notes_columns_aligned(tmp_path) -> None:
@@ -272,13 +300,67 @@ def test_render_notes_columns_aligned(tmp_path) -> None:
     store = NoteStore(path=tmp_path / "notes")
     for note_id, title in _ALIGN_NOTES:
         store.create(note_id, title=title)
-    lines = _lines(render_notes(_deps(tmp_path, notes=store))).splitlines()
-    body = [ln for ln in lines if ln.strip()][1:]  # 首行是 Report 标题
-    assert len(body) == len(_ALIGN_NOTES), body
-    assert all("\t" not in ln for ln in body), body
+    body = _body(_lines(render_notes(_deps(tmp_path, notes=store))), len(_ALIGN_NOTES))
     # 中文标题按字符数补齐会把这行后列整体推右 ⇒ 按**显示列**断言时间戳起点一致
-    columns = [_timestamp_column(ln) for ln in body]
-    assert len(set(columns)) == 1, (columns, body)
+    _assert_aligned(body, 2)
+
+
+def test_render_sessions_columns_aligned(tmp_path) -> None:
+    """会话清单等宽列：每列按列内最长**显示宽度**补齐（含中日韩标题）。（ADR-0159）"""
+    sessions = [
+        {"session_id": "s1", "title": "日常", "updated_at": 1_791_416_745},
+        {
+            "session_id": "sess-2-longer",
+            "title": "a much longer title",
+            "updated_at": 1_791_416_800,
+        },
+    ]
+    body = _body(_lines(render_sessions(_deps(tmp_path, sessions=lambda: sessions))), len(sessions))
+    _assert_aligned(body, 2)  # 第 3 列（更新时间）起点
+
+
+def test_render_mcp_columns_aligned(tmp_path) -> None:
+    """MCP 端点表等宽列：每列按列内最长**显示宽度**补齐。（ADR-0159）"""
+    registry = MCPEndpointRegistry(tmp_path / "mcp.json")
+    registry.add(EndpointRecord(name="remote", source="https://mcp.example/sse", transport="sse"))
+    registry.add(EndpointRecord(name="local-mcp", source="stdio://demo", transport=""))
+    body = _body(_lines(render_mcp(_deps(tmp_path, mcp=registry))), 2)
+    _assert_aligned(body, 2)  # 第 3 列（来源）起点
+
+
+def test_render_config_labels_aligned(tmp_path) -> None:
+    """配置视图键值行：标签列按最长**显示宽度**补齐，禁 \\t。（ADR-0159）"""
+    body = _body(_lines(render_config(_deps(tmp_path))))
+    assert len(body) >= _CONFIG_LABELS, body
+    _assert_aligned(body, 1)  # 第 2 列（值）起点
+
+
+def test_render_skills_labels_aligned(tmp_path) -> None:
+    """技能视图：键值行标签对齐，逐条明细行（`· …`）原样透出。（ADR-0159）"""
+    index = MarketIndex(path=tmp_path / "index.json")
+    index.put(
+        "official",
+        MarketSkill(
+            skill_id="skills.demo.greet",
+            name="greet",
+            description="greet",
+            version="v1",
+            signature="sig",
+        ),
+    )
+    library = SkillLibrary(tmp_path / "skills.json")
+    library.register(Skill(skill_id="skills.demo.one", description="演示"))
+    body = _body(_lines(render_skills(_deps(tmp_path, library=library, market=index))))
+    pairs = [ln for ln in body if not ln.strip().startswith("·")]
+    assert len(pairs) == _SKILL_LABELS, body
+    _assert_aligned(pairs, 1)
+
+
+def test_collect_status_labels_aligned(tmp_path) -> None:
+    """运行状态概览：键值行标签列按最长**显示宽度**补齐，禁 \\t。（ADR-0159）"""
+    body = _body(_lines(collect_status(_deps(tmp_path))))
+    assert len(body) >= _STATUS_LABELS, body
+    _assert_aligned(body, 1)  # 第 2 列（值）起点
 
 
 def test_render_skills_lists_catalog_and_library(tmp_path) -> None:
