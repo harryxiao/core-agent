@@ -1049,6 +1049,24 @@
 
 ---
 
+## 68. loop token 记账口径（TC-TOKACC，change `0152`／ADR-0144，账本 E96）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-TOKACC-01 | loop/spec.md「错误与预算控制」记账口径 + Scenario「provider 实报为记账下界」 | planner 探针报出 10000 提示 token；本轮 user 仅 `"hi"`；`token_budget=100` | 本轮**终止**且 `TOKEN_BUDGET_EXCEEDED`、`failed` 为真 —— 旧口径只记 0～3 token ⇒ 闸门看不见真实提示词大小（锚点：`test_loop_token_accounting.py::test_gate_uses_planner_reported_prompt_tokens`） |
+| TC-TOKACC-02 | 同 Requirement（**零回归**：无探针 ⇒ 退化估算） | 既有形态 planner 替身（无 `last_prompt_tokens`）；`token_budget=100` | 本轮照常完成（`reply == "ok"`、`failed` 假）—— 探针缺失不改变既有 planner 行为（锚点：`::test_no_probe_degrades_to_estimate`） |
+| TC-TOKACC-03 | 同 Requirement（探针降级不阻断） | planner 暴露的探针**抛错** | 当作「无观测」降级：本轮照常完成、**不抛裸异常**（锚点：`::test_broken_probe_degrades_without_raising`） |
+| TC-TOKACC-04 | 同 Requirement Scenario「记账计入系统提示与工具 schema」 | `LLMPlanner.last_prompt_tokens()`：provider **未报用量**（0）；对照上下文含 / 不含 `pinned_notes` 前缀 | 两者均 > 0 且**含前缀者更大** —— 装配全量估算（含系统提示块）计入（锚点：`::test_planner_probe_estimates_full_assembly_without_usage`） |
+| TC-TOKACC-05 | 同 Requirement Scenario「provider 实报为记账下界」 | 同一上下文：provider 报 999 vs 报 0 | 报 999 时探针值 **≥ 999**，且 **≥** 报 0 时的纯估算值（实测抬升下界）（锚点：`::test_planner_probe_takes_reported_usage_as_lower_bound`） |
+| TC-TOKACC-06 | 同 Requirement（工具 schema 计入） | 同上下文：注入 `tools.echo` 工具提供者 vs 不注入 | 有工具 ⇒ 探针值**更大**（工具 schema 序列化计入装配估算）（锚点：`::test_planner_probe_counts_tool_schemas`） |
+| TC-TOKACC-07 | 同 Requirement（**零回归护栏**） | 既有 `tests/test_loop.py` / `test_history_replay.py` / `test_context_compaction.py` / `test_loop_budget_config.py` 全量 | 逐字不动全绿 —— 阈值数字（`token_budget`）与窗口派生规则**不变**，仅记账口径覆盖全量（`test_history_replay.py::test_history_tokens_counted_into_budget` 断言值 210 不变）（锚点：`::test_history_tokens_counted_into_budget`） |
+
+> **无手工验收项**：纯库内行为（loop 记账 + planner 探针），全自动门禁（pytest）覆盖；无前端 / Rust / 真端点面。
+> 语义：记账口径**只改记账**，不改阈值与派生规则；口径缺陷的**真实后果**是预算闸门偏晚 ⇒ 撞厂商
+> `context_length_exceeded` 400，而非优雅的 `TOKEN_BUDGET_EXCEEDED`。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

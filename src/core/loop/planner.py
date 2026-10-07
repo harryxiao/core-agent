@@ -14,7 +14,7 @@ import json
 from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 
-from core.context import DynamicAssembler
+from core.context import DynamicAssembler, estimate_tokens
 from core.llm_provider import LLMError, LLMProvider, LLMRequest, Message, ToolCall
 from core.tools import ToolProvider
 
@@ -62,6 +62,9 @@ class LLMPlanner:
         self._assembler = assembler
         self._skill_router = skill_router
         self._tools = tools
+        # 最近一次装配的提示 token 观测（记账下界）：由 `last_prompt_tokens()` 对外暴露，
+        # 供 loop 侧以 duck-typing 探针消费（见 change 0152 / 账本 E96）。
+        self._last_prompt_tokens = 0
 
     async def __call__(self, ctx: LoopContext) -> Action:
         action, _ = await self._complete(ctx)
@@ -70,10 +73,13 @@ class LLMPlanner:
     async def _complete(self, ctx: LoopContext) -> tuple[Action, str]:
         """非流式一次补全 →（终态动作, 推理原文）。``__call__`` 与降级分支共用。"""
         request = self._build_request(ctx)
+        self._last_prompt_tokens = self._estimate_prompt(request)
         try:
             response = await self._llm.acompletion(request)
         except LLMError as exc:
             return Action(args={"reply": f"LLM 调用失败: {exc}"}), ""
+        # provider 实报为**下界**：可用时抬升（实测权威；不因估算偏差而低估提示词占用）
+        self._last_prompt_tokens = max(self._last_prompt_tokens, response.usage.prompt_tokens)
         if response.tool_calls:  # 原生 function call 优先于 content 协议
             return self._from_tool_calls(response.tool_calls), response.thinking
         return self._parse(response.content), response.thinking
@@ -98,6 +104,7 @@ class LLMPlanner:
             yield action
             return
         request = self._build_request(ctx)
+        self._last_prompt_tokens = self._estimate_prompt(request)
         chunks: list[str] = []
         reply_stream = False  # 已判定为自然语言回复才外发
         native_tool = False  # 出现原生 tool_calls 片段
@@ -134,6 +141,27 @@ class LLMPlanner:
             yield self._from_tool_calls(calls)
             return
         yield self._parse("".join(chunks))
+
+    def last_prompt_tokens(self) -> int:
+        """最近一次装配的提示 token 观测（记账**下界**；尚未推理过时为 0）。
+
+        取「装配全量估算」与「provider 实报 ``usage.prompt_tokens``」的较大者：估算覆盖
+        **装配进提示词的全部内容**（全部消息 + 工具 schema），实报为权威数字、只会抬升。
+        loop 侧经 ``getattr(planner, "last_prompt_tokens", None)`` 探针消费（与 ``astream``
+        同型 duck-typing），使预算闸门看得见系统提示与工具 schema。
+        """
+        return self._last_prompt_tokens
+
+    @staticmethod
+    def _estimate_prompt(request: LLMRequest) -> int:
+        """装配全量估算：全部消息内容 + 工具 schema 序列化。
+
+        口径同共享估计器 ``context.estimate_tokens``（``len // 4``，每条至少 1）。
+        """
+        total = sum(estimate_tokens(message.content) for message in request.messages)
+        if request.tools:
+            total += estimate_tokens(json.dumps(request.tools, ensure_ascii=False))
+        return total
 
     def _build_request(self, ctx: LoopContext) -> LLMRequest:
         # 次序：系统提示 → 本会话历史 → 本轮消息（历史走**独立字段**，不掺进 ctx.messages）

@@ -186,6 +186,14 @@
 阻断启动，SHALL NOT 静默兜底为缺省或非正预算（`token_budget` ≤ 0 的语义是**关闭** token 维度，
 静默兜底会把配置错误变成「预算维度失效」）。
 
+本轮记账值 `token_used` 的**口径** SHALL 覆盖**装配进本轮提示词的全部内容** —— 本轮消息（含动作与
+观察回灌）＋ 回灌历史 ＋ planner 装配的**系统提示与工具 schema**；SHALL NOT 只计其中一部分
+（只计「本轮输入 + 历史 + 每步工具输出」不足以界定提示词大小）。记账值 SHALL 以**最近一次模型调用
+实测的提示 token 数**（provider 报告的 `usage.prompt_tokens`）为**下界**：该实测值可用时记账值
+SHALL NOT 低于它；不可用（如流式响应不携带用量、或 planner 未暴露观测）时 SHALL 退化为**按装配
+全量估算**。该口径 SHALL NOT 改变阈值语义（预算终止与压实同取 `token_budget`）、SHALL NOT 改变
+窗口派生规则、SHALL NOT 引入任何第三方 tokenizer 依赖。
+
 #### Scenario: 循环次数超限
 - **GIVEN** 循环次数达到上限
 - **WHEN** loop 尝试继续
@@ -215,6 +223,17 @@
 - **GIVEN** `llm.context_window` = 4096 且 `loop.output_reserve` = 8192（派生结果非正）
 - **WHEN** 配置校验运行
 - **THEN** 校验失败并阻断启动，错误信息指明上下文窗口不敷输出预留
+
+#### Scenario: 记账计入系统提示与工具 schema
+- **GIVEN** planner 装配出的提示词含非空系统提示（宪法规则 / 常驻笔记 / 相关事实 / 技能 / 工具 schema）
+- **WHEN** 一轮工具步执行完毕
+- **THEN** 本轮记账值**包含**系统提示与工具 schema 的占用（不再只计本轮消息与回灌历史），使预算终止
+  与压实**看得见**固定前缀
+
+#### Scenario: provider 实报为记账下界
+- **GIVEN** 某次模型调用返回 provider 报告的提示 token 数（`usage.prompt_tokens`）
+- **WHEN** 该步执行完毕后判定预算
+- **THEN** 记账值**不低于**该实测值（估算偏低时以实测值抬升），预算终止与压实据此判定
 
 ### Requirement: 异步流式执行
 系统 SHALL 提供异步执行入口 arun 与流式入口 astream，与同步 run 共用同一执行循环语义；astream 返回 AsyncIterator[LoopEvent]，以 loop_started / action_started / action_completed / step_completed / reply_delta / loop_finished / loop_failed 七类事件流式产出执行生命周期，支持事件循环内非阻塞调用与流式编排；run 保留为薄壳（thin wrapper），内部经事件循环桥接调用对应异步实现，调用方无需感知事件循环、零改动。工具动作事件仅对非终止动作（tool_id 非空）产出：action_started 于工具执行前携带 round/tool_id/args 节选，action_completed 于执行后携带 round/tool_id/ok/duration_ms/output 节选；节选有界（≤400 字符），既有五类事件的节奏与语义不变。除上述**事件流**外，循环 SHALL 在**非终止动作**完成后**另行产出工具调用遥测**（`kind="tool_call"`，载荷含工具 id / 参数 / 成败与耗时，且**有界**），使「按工具 id 归因」的证据在**生产**链路可得（见 evolution「经验采集」①工具调用类）；该产出 SHALL NOT 改变上述 `LoopEvent` 的外发路径、事件序与既有消费语义，未注入 tracer 时 SHALL 不产出（行为与既有缺省一致）。

@@ -204,12 +204,19 @@ def remember(self, trace_id: str, trajectory: list[Step]) -> None
 - 模块归因：循环**自身失败**（轮数/token 预算耗尽）时其 `loop_finished` 遥测事件带
   `module_id="loop.default"`；正常收尾缺省为空（不产虚假缺陷证据）。见 ADR-0094。
 - 会话历史回灌与转录（change 0115 / ADR-0108，`session_id` 非空时）：`perceive` 先按**双重上界**
-  `min(history_turns, token_budget // 2)` 从会话转录取既往轮次装入 `ctx.history`（历史 token 按
-  `len // 4` 计入 `token_used`），**再**落本轮 user 行；请求组装次序 SHALL 为
+  `min(history_turns, token_budget // 2)` 从会话转录取既往轮次装入 `ctx.history`（记账口径见下条），
+  **再**落本轮 user 行；请求组装次序 SHALL 为
   「系统提示 → `history` → 本轮 `messages`」；收尾在 `remember` **之前**追加本轮
   (user 原话, 最终回复)——**终止轮（`limit_reason` 非空）不落 reply**（此时 `ctx.reply` 是合成串，
   落盘即谎报模型原话）。转录读写各自 `try/except` 降级（`warnings.warn`），不阻断主流程。
   `session_id == ""`、未注入转录、`history_turns == 0` ⇒ 零写入零回灌（逐字向后兼容）。
+- token 记账口径（change 0152 / ADR-0144）：`token_used` SHALL **覆盖装配进本轮提示词的全部内容**
+  —— 回灌历史 + 本轮消息（含动作 / 观察回灌）+ planner 装配的系统提示与工具 schema（后者经
+  `LLMPlanner.last_prompt_tokens()` 探针以 **duck-typing** 消费，与 `astream` 同型；planner 未暴露
+  该探针 / 探针异常 ⇒ 退化为纯估算，不阻断本轮）；记账值 SHALL NOT 低于 provider 实报的
+  `usage.prompt_tokens`（实测权威作**下界**；不可用 —— 如流式响应不携带用量 —— 时按装配全量估算）。
+  口径 SHALL NOT 改变阈值语义（预算终止与压实同取 `token_budget`）与窗口派生规则，且不引入
+  第三方 tokenizer。见 ADR-0144。
 
 ---
 

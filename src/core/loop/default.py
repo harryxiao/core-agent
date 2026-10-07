@@ -19,7 +19,7 @@ import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, cast
 
-from core.context import Compactor, ContextError
+from core.context import Compactor, ContextError, estimate_tokens
 from core.judgment import DecisionResult, DecisionRouter
 from core.memory import MemoryEntry, MemoryStore, TranscriptStore
 from core.observability import TraceEvent, TraceLogger, Tracer
@@ -117,12 +117,17 @@ def _output_excerpt(value: Any) -> str:
     return str(value or "")[:_MAX_ACTION_EXCERPT]
 
 
-def _history_tokens(history: list[Any]) -> int:
-    """历史占用的 token 记账（与 ``token_used`` 同口径），使预算终止与压实看得见它。"""
+def _context_tokens(ctx: LoopContext) -> int:
+    """记账口径：**装配进本轮提示词的全量内容**（回灌历史 + 本轮消息）。
+
+    口径同共享估计器 ``context.estimate_tokens``（跨条累计、每条至少 1）。planner 另行装配的
+    系统提示与工具 schema 不在 ``ctx`` 内，由 :meth:`DefaultLoop._reported_prompt_tokens` 以
+    **下界**补足（见 change 0152 / 账本 E96）。
+    """
     return sum(
-        len(str(cast("dict[str, Any]", entry).get("content", ""))) // 4
-        for entry in history
-        if isinstance(entry, dict)
+        estimate_tokens(str(cast("dict[str, Any]", message).get("content", "")))
+        for message in (*ctx.history, *ctx.messages)
+        if isinstance(message, dict)
     )
 
 
@@ -463,10 +468,10 @@ class DefaultLoop(Plugin):
         ctx = LoopContext(
             messages=[{"role": "user", "content": user_input}],
             tools=tools,
-            token_used=len(user_input) // 4 + _history_tokens(history),
             session_id=session_id,
             history=history,
         )
+        ctx.token_used = _context_tokens(ctx)
         self._append_transcript(session_id, "user", user_input)
         return ctx
 
@@ -524,8 +529,25 @@ class DefaultLoop(Plugin):
         if isinstance(data, dict) and "reply" in data:
             ctx.reply = str(cast(dict[str, Any], data)["reply"])
             ctx.finish()
-        ctx.token_used += len(str(result.data)) // 4
+        # 记账 = max(全量装配估算, planner 探针观测)：系统提示与工具 schema 经探针计入，
+        # provider 实报（可用时）抬升下界；无探针则退化为纯估算（同 change 0152 前口径的修正版）。
+        ctx.token_used = max(_context_tokens(ctx), self._reported_prompt_tokens())
         return ctx
+
+    def _reported_prompt_tokens(self) -> int:
+        """planner 的提示 token 观测（记账**下界**；不可用 ⇒ 0）。
+
+        duck-typing 消费（与 :meth:`_reason_events` 探 ``astream`` 同型）：planner 未暴露
+        ``last_prompt_tokens`` / 探针抛错 / 返回非正值 ⇒ 0，退化为纯估算，不阻断本轮。
+        """
+        probe = getattr(self._planner, "last_prompt_tokens", None)
+        if probe is None:
+            return 0
+        try:
+            value = probe()
+        except Exception:  # noqa: BLE001 — 探针异常降级为「无观测」，本轮继续
+            return 0
+        return value if isinstance(value, int) and value > 0 else 0
 
     def remember(self, trace_id: str, trajectory: list[Any], *, session_id: str = "") -> None:
         """把本轮轨迹沉淀为 L2 记忆（无行动不记忆）。

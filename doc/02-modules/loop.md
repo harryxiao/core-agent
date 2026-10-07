@@ -42,7 +42,9 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
   user 消息开始 ⇒ 刷新即失忆」。二者互补，缺一不可。
 - **载入点**：`perceive` 按**双重上界** `min(history_turns, token_budget // 2)` 从会话转录取既往轮次
   装入 `LoopContext.history`（**新字段**，不前置进 `messages` —— 后者首位被四处 accessor 当本轮任务）；
-  历史 token 按 `len // 4` 计入 `token_used`。请求组装次序：系统提示 → `history` → 本轮 `messages`。
+  记账 `token_used` **覆盖全量装配**（回灌历史 + 本轮消息 + planner 装配的系统提示与工具 schema），
+  并以 provider 实报 `usage.prompt_tokens` 为**下界**（change `0152`／ADR-0144）。
+  请求组装次序：系统提示 → `history` → 本轮 `messages`。
 - **落盘点**：`perceive` 落本轮 user 行；收尾在 `remember` **之前**落 (user, 最终 reply) ——
   且**终止轮不落 reply**（此时 `ctx.reply` 是合成串，落盘即谎报模型原话）。
 - **不变量**：`session_id == ""` / 未注入转录 / `history_turns == 0` ⇒ 零写入零回灌（逐字向后兼容）。

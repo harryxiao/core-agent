@@ -4105,6 +4105,44 @@
 
 ---
 
+## ADR-0144：loop token 记账覆盖全量装配（change 0152 / 账本 E96）
+
+- **背景**：`DefaultLoop` 的预算闸门（`token_budget` → `TOKEN_BUDGET_EXCEEDED`，`default.py:311`）比的
+  左值是**猜测值** `ctx.token_used`，而该值**只累加三样**：① 本轮 user 输入 `len // 4`（`perceive`）；
+  ② 回灌历史 `_history_tokens`（逐条 `content` 取 `len // 4`）；③ 每步工具输出 `len(str(data)) // 4`
+  （`observe`）。**完全不计** planner 装配的 **system prompt 全块**（宪法 / 常驻笔记 / 相关事实 /
+  笔记 digest / 技能 / **工具 schema**，`planner.py:_system_prompt`）、助手 action JSON、observation
+  JSON 包装。⇒ 记账的是**远小于真实提示词**的子集：固定前缀越大漏得越多；又 `len // 4` 对 **CJK
+  约 4× 低估**（1 汉字 ≈ 1+ token 被算作 0.25）。合成后果 —— **闸门偏晚、甚至不触发**，真实风险是
+  撞厂商 `context_length_exceeded` 400，而非优雅的 `TOKEN_BUDGET_EXCEEDED`。这是**记账口径缺陷**，
+  非行为违约：规格只写「累计 token 消耗超过预算即终止」，**未**规定口径（故先改规格再改代码）。
+- **决策①：记账 SHALL 覆盖装配进本轮提示词的全部内容** —— 回灌历史 + 本轮消息（含动作 / 观察
+  回灌）+ planner 装配的系统提示与工具 schema。`perceive` / `observe` 统一经 `_context_tokens(ctx)`
+  （口径同共享估计器 `context.estimate_tokens`，跨条累计、每条至少 1），**取代**原「本轮输入 + 历史
+  + 每步 data」三处各算各的写法（`_history_tokens` 随之删除）。
+- **决策②：provider 实报为下界、探针经 duck-typing 消费。** `LLMPlanner` 记录最近一次装配的观测并
+  暴露 `last_prompt_tokens()`：取 `max(装配全量估算, usage.prompt_tokens)`（实测权威，只会抬升）；
+  loop 侧经 `getattr(planner, "last_prompt_tokens", None)` 探针（与既有 `astream` 探针**同型**），
+  最终记账 `max(_context_tokens, 探针值)`。取舍：对比「只估算」，实报数字**零成本可得**
+  （`LLMResponse.usage` 本就已解析、此前**零消费**）且天然纠正 CJK 偏差；对比「引入三方 tokenizer」，
+  本方案**零新依赖**（承「核心零三方运行时依赖」）。
+- **决策③：探针缺失 / 异常 ⇒ 退化为纯估算，不阻断本轮。** 既有替身、`lambda` planner、缺省回显
+  planner **零改动**（鸭子类型：探针不存在即视为无观测）。取舍：对比「要求 planner 必须实现探针」，
+  后者会破坏全部既有 planner 注入面与测试替身。
+- **不改**阈值语义（预算终止与压实同取 `token_budget`）与窗口派生规则（`context_window -
+  output_reserve`，**ADR-0091 维持**）；**不改**共享估算器 `context.budget.estimate_tokens`（波及
+  context 打包与转录切片，另议）；**不引**三方 tokenizer。
+- **已知局限**：① **估算器仍是 `len // 4` 的粗略模型** —— provider 实报可纠正（有 usage 时），但
+  流式响应 `LLMChunk` **不携带 usage** ⇒ 流式路径只能靠估算（另见 **E97**：窗口来源与动态获取）。
+  ② **不改** `_should_compact` 的触发条件 —— 其轮数维度比的是 `ctx.rounds`（**工具步数**，上限
+  `max_rounds`）而非对话轮数 ⇒ 「按轮触发压实」实践上基本不触发，唯一真触发仍是 token 阀（另议）。
+  ③ **不改**「模型真实窗口的动态获取」（`llm.provider` 仍是死标签；E97 另立账）。
+- **规格**：`loop`「错误与预算控制」（**MODIFIED**，追加记账口径条款 ＋ 2 Scenario「记账计入系统提示
+  与工具 schema」/「provider 实报为记账下界」）；接口面 `03-interfaces/loop-interface.md`、模块面
+  `02-modules/loop.md`、测试面 `04-testing/test-cases.md` §68、台账 `coding-plan/known-risk.md`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4243,3 +4281,4 @@
 | ADR-0141 | 03-interfaces/notes-interface.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0142 | 03-interfaces/memory-interface.md, 03-interfaces/notes-interface.md, 02-modules/memory.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0143 | 03-interfaces/notes-interface.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0144 | 03-interfaces/loop-interface.md, 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
