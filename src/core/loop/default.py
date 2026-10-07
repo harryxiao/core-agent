@@ -318,12 +318,19 @@ class DefaultLoop(Plugin):
             yield LoopEvent("step_completed", {"round": ctx.rounds, "failed": result.failed})
             self._trace(trace_id, "step_completed", {"round": ctx.rounds, "failed": result.failed})
             if self._should_compact(ctx):
-                self._compact(ctx, trace_id)
+                # 卸载到工作线程：压实含**同步**模型调用（摘要 / 关键事实抽取）——`completion()`
+                # 是 `asyncio.run` 薄壳，在事件循环线程上必抛；且其耗时为模型网络往返，
+                # 在循环线程上执行会阻塞其余任务（change 0167 / ADR-0157）。
+                await asyncio.to_thread(self._compact, ctx, trace_id)
             if self._token_budget > 0 and ctx.token_used >= self._token_budget:
                 limit_reason = "TOKEN_BUDGET_EXCEEDED"
                 break
         # 收尾钩子：成功/失败都提交（失败信号供技能迭代判据；SOP 提炼仍只吸收成功）
-        self._notify_turn(ctx, trace_id, ok=not limit_reason and not turn_failed)
+        # 收尾钩子同样卸载：注入的 `turn_observer` 内含同步模型调用（SOP 提炼 / 技能迭代），
+        # 语义与降级链不变，只换执行线程（change 0167 / ADR-0157）。
+        await asyncio.to_thread(
+            self._notify_turn, ctx, trace_id, ok=not limit_reason and not turn_failed
+        )
         if limit_reason:
             ctx.reply = f"{limit_reason}: 本轮终止"
             yield LoopEvent("loop_failed", {"reason": limit_reason, "trace_id": trace_id})
@@ -332,7 +339,9 @@ class DefaultLoop(Plugin):
         if not limit_reason:
             self._append_transcript(session_id, "assistant", ctx.reply)
         self.remember(trace_id, [*ctx.trajectory, {"reply": ctx.reply}], session_id=session_id)
-        self._maintain(trace_id)
+        # 维护节拍同样卸载：冷路径（进化 review / patch author）内含同步模型调用
+        # （change 0167 / ADR-0157）。
+        await asyncio.to_thread(self._maintain, trace_id)
         self._trace(
             trace_id,
             "loop_finished",

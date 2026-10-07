@@ -1278,6 +1278,24 @@
 > （缓解面是既有授权/审批链 + 事件面可见 + 工具可逆）；解析失败的**合成文案仍进转录**（既有口径）；
 > 审批拒绝 `decline()` 与 `pet/safety` 阻断**不置** `failed`（属审批语义，非「推理产出不可用」）。
 
+## 79. 收尾与维护在工作线程上执行（TC-OFFLOAD，change `0167`／ADR-0157）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-OFFLOAD-01 | loop/spec.md「收尾与维护工作的执行线程」Scenario「收尾钩子在工作线程上执行」 | `DefaultLoop(turn_observer=…)` 跑一轮，钩子内探 `asyncio.get_running_loop()` 是否成功 | 钩子在**无运行中循环**的线程上被调用（观测值 `[False]`；旧实现为 `True`）（锚点：`tests/test_loop_offload_threads.py::test_turn_observer_runs_off_loop_thread`） |
+| TC-OFFLOAD-02 | 同上 Scenario「冷路径回调在工作线程上执行」 | 时钟推进越过 `maintenance_interval`，`cold_path` 内探循环 | 冷路径在**无运行中循环**的线程上被调用（`[False]`）（锚点：`..._test_cold_path_runs_off_loop_thread`） |
+| TC-OFFLOAD-03 | 同上 Scenario「轮内压实不阻塞事件循环」 | 压实替身以 `time.sleep(0.3)` 真阻塞；事件循环内并发 ticker 任务 | 压实落在工作线程（`on_loop is False`）且阻塞期间事件循环持续推进（`ticks >= 5`；旧实现下 `ticks ≈ 0`）（锚点：`..._test_event_loop_not_blocked_during_compaction`） |
+| TC-OFFLOAD-04 | 同上 Scenario「含同步模型调用的压实产出真的落库」（**端到端**） | 会话摘要接缝以**同步模型桥接**（只实现异步入口 ⇒ 继承的 `completion()` = `asyncio.run`）注入，跑一轮触发压实 | `compaction.summary.*` **真的落库**且含桥接产出（旧实现：`RuntimeError` 被降级链吞掉、摘要恒缺）；同步桥接调用点观测为 `False`（工作线程）（锚点：`..._test_summary_written_with_sync_llm_bridge`） |
+| TC-OFFLOAD-05 | 同上 Scenario「降级语义零回归」 | `turn_observer` 抛错 + 假 tracer | 仅降级留痕（`turn_observer_failed`）；`result.reply == "done"`、`result.failed is False`（锚点：`..._test_turn_observer_failure_still_degrades`） |
+
+> **无手工验收项**：三处边界的执行线程以「工作线程上 `asyncio.get_running_loop()` 抛 `RuntimeError`」
+> 为可执行判据钉住；端到端用例用**事故现场原样**的同步桥接（`completion()` = `asyncio.run`）复现旧缺陷。
+> 语义：卸载的是**执行线程**，不变的是**接口与语义** —— 三段私有方法签名与内部降级链逐字不动，
+> 四个注入接缝（`turn_observer` / `cold_path` / `summarizer` / `key_fact_extractor`）仍为同步 callable。
+> **已知局限**：交叉会话并发写未加锁（竞态先于本 change 存在，不引入也不消除）；`to_thread` 无超时/取消
+> （卡住时本轮收尾会等它，缓解面是既有 `timeout_s` 与失败降级链）；只覆盖三处已确认边界（无自动门禁）；
+> 线程跳一次成本非零；不改 `completion()` 薄壳（从事件循环内直接调用仍是错误用法，未加防呆断言）。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

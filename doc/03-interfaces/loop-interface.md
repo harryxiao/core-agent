@@ -202,6 +202,14 @@ def remember(self, trace_id: str, trajectory: list[Step]) -> None
   → 记忆固化（`memory.compact`：打分写回 + 价值门控 + 会话摘要归档）→ 遗忘（`memory.forget`：
   低分条目迁 L4 归档）；任一步失败降级不中断本轮（记 `maintenance_failed`），**终止语义不变**
   （仍按既有预算/轮数条件终止，不因压实而续跑）。
+- 收尾/维护的执行线程（change 0167 / ADR-0157）：**轮内压实**、**收尾钩子**（`turn_observer`）、
+  **维护节拍**（含 `cold_path`）三段工作 SHALL 在**事件循环之外**执行（循环以 `asyncio.to_thread`
+  卸载并 `await` 其完成），SHALL NOT 在事件循环线程上同步执行 —— 这三段可能含**同步模型调用**
+  （组合根注入的 `_llm_text` 接缝；同步形态 `LLMProvider.completion()` 以 `asyncio.run` 桥接、
+  在运行中循环上必抛 `RuntimeError`），且其耗时为模型网络往返（秒级，会阻塞其余任务）。
+  卸载 SHALL NOT 改变：三段各自的失败降级语义、触发条件、产物与终态、各注入接缝的**同步契约**
+  （`turn_observer` / `cold_path` / `summarizer` / `key_fact_extractor` 仍为同步 callable）——
+  换的是执行线程，不变的是接口与语义。
 - 技能注入：`LLMPlanner` 每轮推理前调注入的 `skill_router(task) -> list[SkillHint]`，把命中技能
   渲染进 system prompt 的技能块——`- <skill_id>（<版本>）：<instructions 节选>`（步骤为空只留
   `id（版本）`）。`SkillHint` 是**纯 dict**（`skill_id` / `version` / `instructions`），loop 不

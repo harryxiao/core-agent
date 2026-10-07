@@ -4605,6 +4605,59 @@
   `doc/02-modules/loop.md`、`doc/03-interfaces/loop-interface.md` §3、测试面
   `doc/04-testing/test-cases.md` §78（TC-PARSE）、台账 `coding-plan/known-risk.md` §3。
 
+## ADR-0157：收尾与维护中的同步模型调用 —— 在循环边界卸载（change 0167）
+
+- **背景**：`~/.core/state/traces.jsonl` 里 `maintenance_failed` 遥测共 26 条，分布在 6 轮中为
+  `1/1/8/2/3/11` —— 恰为 `max(0, rounds − 9)`（`_ROUND_THRESHOLD = 10`）。根因：组合根注入的
+  `_llm_text` 是**同步**接缝（内部 `LLMProvider.completion()` = `asyncio.run(acompletion)`，见
+  `provider.py`），却被 loop 在**事件循环线程内同步调用**（轮内压实 / 收尾钩子 `turn_observer` /
+  维护节拍含冷路径）：CPython 的 `asyncio.run` 检测到运行中的循环即抛 `RuntimeError`，被三段各自的
+  `except Exception` 降级链吞成一条遥测。后果是**静默的**：会话摘要（G3 `0153` 的输入）与结构化
+  关键事实抽取（G4 `0155`）**在生产路径上从未成功落库**，SOP 提炼 / 技能迭代 / 进化 review 同理。
+- **决策①：在 loop 边界把**整段**工作卸载到工作线程（取 A，弃 B、C）。** 三处调用点改为
+  `await asyncio.to_thread(self._compact, …)` / `await asyncio.to_thread(self._notify_turn, …)` /
+  `await asyncio.to_thread(self._maintain, …)`（`astream` 是 async generator，`await` 合法）。
+  - **弃 B**（改 `_llm_text` / `completion` 令其在有循环时另起线程跑并**同步等待**）：调用方仍在
+    事件循环线程上同步阻塞等**数秒**网络往返 ⇒ 把「必抛」换成「卡死」（UI 冻结），且对全部五处
+    接缝统一改，而其中三处（SOP / 迭代 / 进化）从 CLI 一次性进程调用时**现状即正确** ⇒ 属投机改面。
+  - **弃 C**（把 `summarizer` / `turn_observer` / `cold_path` 全 async 化）：触及 4 个 Protocol 与
+    全部调用方（含 skills / evolution / memory 三包）⇒ 为**一个线程边界**付重构级代价；若将来确需
+    async 化，应先立 ADR。
+- **决策②：A 是**回到设计前提**，不是「把线程当补丁」。** `http_pool.py` 声明空闲连接存于
+  `threading.local()`、不跨线程共享；**ADR-0064 决策②** 明文「provider 的同步传输本就在工作线程上跑
+  （`asyncio.to_thread` / `run_in_executor`），同一线程的连续调用即复用」。⇒ 同步接缝在工作线程上执行
+  是本仓 LLM 传输层的**设计意图**（`stdlib_provider` 与 `builtin` 工具已是 `asyncio.to_thread` 惯例）。
+- **决策③：三个私有方法**保持同步**，DI 契约零变更。** `_compact` / `_notify_turn` / `_maintain`
+  的签名与内部 `try/except` 降级链**逐字不动**（只有调用点变）⇒ 直接调用它们的测试与既有代码**零影响**，
+  遥测事件名（`maintenance_failed` / `turn_observer_failed` / `cold_path_failed`）与文案零回归；
+  四个注入接缝（`turn_observer` / `cold_path` / `summarizer` / `key_fact_extractor`）仍为同步 callable。
+  卸载的是**执行线程**，不变的是**接口与语义**。
+- **决策④：整段卸载，不拆更细。** 「只卸载含模型调用的那一半」需把组合根的 `on_turn` 闭包或
+  `_maintain` 的两件事**从内部切开** —— 收益（省一次线程跳，~ms）远小于代价（面变大、语义变复杂）。
+  取「整段卸载」：边界清晰、语义零变化；「不含模型调用」的收尾段（如 `memory.forget`）被一并卸载，
+  代价可忽略（相对其内模型的秒级往返）。
+- **零回归清单**：终止语义、`step_completed` / `loop_finished` / `loop_failed` 的**顺序与载荷**、
+  三段降级链、转录追加（`remember` / `_append_transcript` 不在卸载面内）、维护节拍状态
+  `_last_maintenance` 语义（单写者：同一循环实例，无并发）—— 逐条不变（`tests/test_loop_offload_threads.py`
+  有对应断言）。
+- **顺带收益**：原本被吞掉的失败**仍会被吞**（降级链不变），但**不再发生** —— 压实摘要与关键事实、
+  SOP 提炼、技能迭代、进化 review / patch 会**真的产出** ⇒ G3（`0153`）与 G4（`0155`）两条已收口
+  能力**首次在生产路径上生效**。
+- **已知局限**：① **交叉会话并发写未加锁** —— 卸载期间事件循环可推进其他会话的 loop 任务，而
+  `MemoryStore` / `EffectTracker` 等共享状态**无锁**；该竞态**先于本 change 存在**（既有同步路径同样
+  无锁，只是窗口更小），本 change **不引入也不消除**，消除需给 store 加锁或按会话分片（另议）；
+  ② **无超时 / 无取消** —— `to_thread` 不提供取消，工作线程里的模型调用卡住时本轮收尾会**等它**，
+  缓解面是 `LLMProvider` 既有 `timeout_s` 与失败降级链（另议）；③ **只覆盖三处已确认边界** ——
+  若将来新增「循环内同步模型调用」站点（新观察者 / 新维护步骤）需同样卸载，本条**无自动门禁**；
+  ④ **线程跳一次的成本非零**（三处各一次 `to_thread`）；⑤ **不改 `completion()` 薄壳** —— 从同步
+  上下文（CLI 一次性进程）调用仍是既有语义，从事件循环内直接调用仍是**错误用法**（本 change 只把
+  loop 侧用法改对，未加防呆断言）。
+- **规格**：`doc/openspec/specs/loop/spec.md` **ADDED** Requirement「收尾与维护工作的执行线程」
+  （5 Scenario：收尾钩子在工作线程 / 冷路径在工作线程 / 轮内压实不阻塞事件循环 / 含同步模型调用的
+  压实产出真的落库 / 降级语义零回归）—— ADDED 只追加 canonical 末尾，**既有 Requirement 逐字不改**；
+  文档面 `doc/02-modules/loop.md`、`doc/03-interfaces/loop-interface.md` §4、测试面
+  `doc/04-testing/test-cases.md` §79（TC-OFFLOAD）、台账 `coding-plan/known-risk.md` §1（E103）+ §3。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4756,3 +4809,4 @@
 | ADR-0154 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0155 | 02-modules/hooks.md, coding-plan/known-risk.md |
 | ADR-0156 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0157 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
