@@ -1232,6 +1232,69 @@ def test_resumed_agent_reply_renders_as_markdown() -> None:
     assert any("```python" in src for src in sources)
 
 
+_SRGB_LINEAR_CUTOFF = 0.03928  # WCAG sRGB → 线性 的分段阈值
+_OPAQUE_ALPHA = 1.0  # 代码块背景 SHALL 完全不透明（change 0158）
+_MIN_CODE_BLOCK_CONTRAST = 2.0  # 代码块背景与主背景的最低可辨对比度（change 0158）
+
+
+def _luminance(rgb: tuple[float, float, float]) -> float:
+    """WCAG 相对亮度（sRGB → 线性）。"""
+
+    def channel(value: float) -> float:
+        value /= 255.0
+        return value / 12.92 if value <= _SRGB_LINEAR_CUTOFF else ((value + 0.055) / 1.055) ** 2.4
+
+    red, green, blue = (channel(v) for v in rgb)
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+
+def _contrast_ratio(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    """WCAG 对比度（1.0 = 同色不可辨，21.0 = 黑白极值）。"""
+    la, lb = _luminance(a), _luminance(b)
+    high, low = max(la, lb), min(la, lb)
+    return (high + 0.05) / (low + 0.05)
+
+
+def _code_block_background(app: object) -> tuple[float, float]:
+    """时间线内首个 `MarkdownFence` 的解析后背景 —— 返回 `(不透明度, 与主背景的 WCAG 对比度)`。
+
+    背景色（含 CSS 变量）在**运行时**解析；半透明前景先**叠加**到 TUI 主背景再算对比度
+    （用户看到的是叠加后的实际色，不是色值本身）。"""
+
+    async def drive() -> tuple[float, float]:
+        from textual.color import Color  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:  # type: ignore[attr-defined]
+            for _ in range(5):
+                await pilot.pause()
+            fence = next(iter(app.query("MarkdownFence")))  # type: ignore[attr-defined]
+            color = fence.styles.background
+            assert isinstance(color, Color), f"代码块背景应解析为具体色值，实得 {color!r}"
+            alpha = color.a if color.a is not None else 1.0
+            base = Color.parse(app.get_css_variables()["background"])  # type: ignore[attr-defined]
+            shown = (
+                alpha * color.r + (1 - alpha) * base.r,
+                alpha * color.g + (1 - alpha) * base.g,
+                alpha * color.b + (1 - alpha) * base.b,
+            )
+            return alpha, _contrast_ratio(shown, (base.r, base.g, base.b))
+
+    return asyncio.run(drive())
+
+
+def test_code_block_background_is_distinguishable() -> None:
+    """代码块背景 SHALL **不透明**、且与主背景的 WCAG 对比度 SHALL **≥ 2.0** ⇒ 一眼可辨。
+    修复前 Textual 默认 `background: black 10%` 在 `#121212` 上合成为 `#101010`（对比度 ≈ 1.02），
+    等同没渲染。（change 0158 / ADR-0150 —— 用户实测「和主框颜色没差异，无法识别」。）"""
+    reply = "示例：\n\n```python\nprint('hi')\n```\n"
+    api, session_id = _api_with_history([("给我个 demo", reply)])
+
+    alpha, ratio = _code_block_background(build_app(api, session_id))
+
+    assert alpha == _OPAQUE_ALPHA, f"代码块背景应不透明（实得 alpha={alpha}）"
+    assert ratio >= _MIN_CODE_BLOCK_CONTRAST, f"代码块背景对比度应 ≥ 2.0（实得 {ratio:.2f}）"
+
+
 def test_build_app_rejects_unknown_session() -> None:
     """续接未登记会话：fail-closed 抛 `UiError`，且不静默新建会话顶替。"""
     api = UIAPILayer(loop=RecordingLoop())

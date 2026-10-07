@@ -321,6 +321,11 @@ Collapsible > CollapsibleTitle {
 Collapsible > CollapsibleTitle:hover {
     background: $panel;
 }
+MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同色（对比度≈1.02，用户实测不可辨）
+                    ⇒ 换为不透明中性灰，块边界一眼可辨；token 高亮仍为亮色，深灰底上可读
+                    （change 0158 / ADR-0150） */
+    background: $surface-lighten-3;
+}
 """
 
         # 退出走 App 默认 ctrl+q / ctrl+c；空回车不再退出（IME 确认等误触防护）

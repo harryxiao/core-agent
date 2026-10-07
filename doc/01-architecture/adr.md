@@ -4329,6 +4329,36 @@
 - **规格**：`ui`「CLI 友好交互」**MODIFIED**（+ 1 Scenario）；文档面 `03-interfaces/ui-interface.md` §2、
   测试面 `04-testing/test-cases.md` §72（TC-RESUMEMD）、台账 `coding-plan/known-risk.md`（§1 E98 / §3）。
 
+## ADR-0150：TUI 代码块背景可辨识（change 0158 / 账本 E98 后续）
+
+- **背景**：用户 2026-10-07 续报（承 change 0157）—— 「是颜色没有变化，和主框颜色没差异，无法识别」。
+  change 0157 解决的是**格式面**（续聊入口退化为明文，走回 `Markdown`），本缺陷在**视觉面**：
+  Textual `MarkdownFence` 默认样式为 `background: black 10%`（半透明黑），本仓 TUI 为**深色**主题
+  （`core`，`dark=True`、`ansi=False`）⇒ 主背景 `#121212` 上叠加合成为 `#101010`，
+  **WCAG 相对亮度对比度 ≈ 1.02** ⇒ 块的**边界不存在**。字色 `rgb(210,210,210)` 只管文字、不产生背景区隔。
+  ⇒ 「围栏渲染为代码块」在**语法层**成立（0157 已保证），在**视觉层**不成立 —— 等同没渲染。
+- **决策①：规格补「可辨识」为硬约束，而非只要求「渲染为代码块」。** `ui`「CLI 友好交互」
+  **MODIFIED**：代码块背景 SHALL **不透明**、且与 TUI 主背景的 **WCAG 相对亮度对比度 SHALL ≥ 2.0**；
+  深色主题下 SHALL NOT 以**近透明**深色叠加充数。该条款正是本缺陷长期存在的原因 ——
+  「渲染对了但看不见」此前无 SHALL 兜底（渲染面与视觉面在规格里被混为一谈）。
+- **决策②：取 `$surface-lighten-3`（本主题解析为中性灰 `#4F4F4F`，与 `#121212` 对比度 ≈ 2.3），
+  而非「真浅灰」。** 理由：语法高亮 token 色由 `HighlightTheme` 的**主题变量**给出
+  （`$text-primary` / `$text-accent` / `$text-warning` / `$text-success` / `$text-secondary`，
+  本主题均解析为**亮色** `#E5A590` 系），且 token span 会**覆盖**基色 `color` ⇒ 浅底 + 亮字**不可读**；
+  若真上浅底，必须**先改主题** `$text-*` 变量面（波及全部用 `$text-*` 的控件）——另议，本 change 不做。
+  在「可辨识」与「不牺牲高亮」之间取**深灰**为最大公约数。
+- **决策③：纯样式改动，落在 `ReplApp.CSS` 一处。** 不改渲染路径（0157 已统一两条入口为 `Markdown`）、
+  不改主题、不改表格样式、不引三方库。app 级 CSS 与 widget `DEFAULT_CSS` **特异性相同** ⇒ 后者（app）胜出，
+  这是 Textual 的既定级联规则，非侥幸。
+- **已知局限**：① **深灰在部分操作者眼里仍偏暗**（若期望「浅灰」），颜色集中于一条规则、一行可调
+  （`$surface-lighten-3` → 更亮 token 或显式色值）；② **对比度门禁按 `$background` 计算** ——
+  若主题背景色改暗/改亮，阈值需重估（测试会先红，属**有意**的护栏）；③ **未覆盖 `:ansi` 分支**
+  —— `MarkdownFence:ansi { background: transparent; }` 存在，但本主题 `ansi=False` ⇒ `:ansi` **不匹配**；
+  若未来启用 ANSI 主题，本条 SHALL 重新评（测试按解析后的样式断言，届时会红）；④ **未做跨端一致性** ——
+  Web / Desktop SPA 的代码块视觉属另一端（承 ADR-0149 局限① / E88 局限②）。
+- **规格**：`ui`「CLI 友好交互」**MODIFIED**（+ 1 Scenario）；文档面 `03-interfaces/ui-interface.md` §2、
+  测试面 `04-testing/test-cases.md` §73（TC-CODEBG）、台账 `coding-plan/known-risk.md`（§1 E98 / §3）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4473,3 +4503,4 @@
 | ADR-0147 | 03-interfaces/memory-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0148 | 11-rag/rag-architecture.md, 02-modules/rag.md, 03-interfaces/rag-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0149 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0150 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

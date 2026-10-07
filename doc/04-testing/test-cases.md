@@ -1144,6 +1144,21 @@
 
 ---
 
+## 73. TUI 代码块背景可辨识（TC-CODEBG，change `0158`／ADR-0150，账本 E98 后续）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-CODEBG-01 | ui/spec.md「CLI 友好交互」Scenario「代码块与正文可辨识（深色主题下不成透明块）」 | 真 `TranscriptStore` 会话，一轮 `assistant="示例：\n\n```python\nprint('hi')\n```\n"`；`build_app` 挂载后驱动 `run_test`，取时间线内首个 `MarkdownFence` 的**运行时解析**背景 | 背景 **alpha == 1.0**（不透明）**且**叠加到主背景（`$background`）后的 **WCAG 对比度 ≥ 2.0**（锚点：`tests/test_repl.py::test_code_block_background_is_distinguishable`） |
+
+> **无手工验收项**：纯样式，但以**运行时解析的样式**为断言面（CSS 变量 → 具体色值 → 叠加到主背景 → WCAG 比值），
+> 全自动门禁覆盖；**修复前**该用例红（Textual 默认 `black 10%` ⇒ alpha=0.1 ⇒ 对比度 ≈ 1.02）。
+> 语义：**「围栏渲染为代码块」含视觉可辨识** —— 语法层（走 `Markdown`）之外，块还须**看得见**：
+> 背景不透明 + 与主背景对比度 ≥ 2.0。取**深灰**（`$surface-lighten-3`）而非浅灰，是为保住亮色 token 高亮。
+> **已知局限**：颜色偏暗的观感风险（一处 CSS 可调）；对比度按 `$background` 计算（主题改色须重估，测试会先红）；
+> 未覆盖 `:ansi` 分支（本主题 `ansi=False`）；Web/Desktop SPA 的代码块视觉属另一端。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`
