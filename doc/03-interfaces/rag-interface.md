@@ -4,6 +4,20 @@
 
 ---
 
+## 0. 定位（辅助按需，**不**注入主链路；change `0156` / ADR-0148 / 路线图 G5）
+
+RAG 是**辅助的本地知识库查询面**：知识文档的**按需**语义检索，经 CLI `rag ingest|search|ask`
+**一次性**驱动，**不**参与 loop **每轮**上下文装配（不占固定窗口、不进系统提示装配）。
+
+- **三面各归其位**：`memory` = 经验轨迹 + **关键事实**（结构实体，change `0155`）；`notes` = 主题文档
+  （canonical 真相层）；**`rag`** = 外部知识文档（分块 + 向量，按需 top-k）。
+- **不注入 loop**（承 **ADR-0097 ⑥**）：主链路与三面兄弟（`loop` / `context` / `memory` / `notes`）
+  **不得** `import core.rag`（可执行守护 `tests/test_architecture.py::test_rag_not_imported_by_reference_chain`）；
+  `core.rag` 仅由**组合根** `runtime`（装配 `runtime.rag`）与 **CLI** `entry`（`rag` 命令族）引用。
+- **门槛**：若要令 RAG 参与 loop 上下文，**须先改 ADR-0097 ⑥**（属特性，牵动 context 预算与 prompt 装配）。
+
+---
+
 ## 1. VectorStore 接口（存储与索引）
 
 ```python

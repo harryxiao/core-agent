@@ -259,6 +259,7 @@
 | TC-RAG-11 | CORE-RAG-R1（跨进程复用 / 维度守护） | 一次进程 `ingest` 写入落盘索引后，**另一实例**装载同一索引检索；再以不同维度 `put` / `search` | 前者命中该文档块（落盘为真源、向量往返无损）；后者以 `INDEX_CORRUPT` 结构化拒绝并提示重建索引（锚点：`tests/test_rag.py::test_sqlite_store_reused_across_instances` / `test_sqlite_store_rejects_dim_mismatch`） |
 | TC-RAG-12 | cli-ops「运维命令集」（知识摄取 / 语义检索 / 检索增强生成） | 依次执行 `rag ingest <path> --doc-id d1`（两次）→ `rag search <query>` → `rag ask <query>` | 摄取打印块数、重复摄取按 content_hash 判为无变更；检索打印 top-k 片段（块 id / 来源 / 得分），**不调用生成**；ask 打印生成答案（片段注入提示词）；均一次性、不改运行态（锚点：`tests/test_rag_wiring.py::test_cli_rag_ingest_then_search_across_assemblies` / `test_cli_rag_ask_prints_answer`） |
 | TC-RAG-13 | rag「生成融合」+ 错误码（fail-closed） | 服务层未装配生成器时 `ask`；索引维度不一致时 CLI `rag search` | 分别以 `GENERATION_UNAVAILABLE` / `INDEX_CORRUPT` 结构化错误落 stderr + 退出码 1，不静默给空答案、不抛裸栈（锚点：`tests/test_rag.py::test_service_ask_without_generator_is_structured_error` / `tests/test_rag_wiring.py::test_cli_rag_search_rejects_dim_mismatch_with_hint`） |
+| TC-RAG-14 | rag 定位「辅助本地知识库，不注入主链路」（change `0156` / ADR-0148 / **规格中性**） | 架构成例扫描主链路与三面兄弟（`loop` / `context` / `memory` / `notes`）的 import 面 | 四包**均不** `import core.rag`（`core.rag` 仅由组合根 `runtime` 与 CLI `entry` 引用）；把 ADR-0097 ⑥ 的「不注入 loop」固化为可执行不变量（锚点：`tests/test_architecture.py::test_rag_not_imported_by_reference_chain`） |
 
 ---
 

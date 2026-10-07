@@ -4272,6 +4272,37 @@
   `03-interfaces/memory-interface.md` §3、模块面 `02-modules/memory.md`、测试面
   `04-testing/test-cases.md` §71、台账 `coding-plan/known-risk.md`（**E92 已修**）。
 
+## ADR-0148：记忆三面职责边界 —— rag 定位「辅助本地知识库，不注入主链路」（change 0156 / 记忆三面路线图 G5）
+
+- **背景**：记忆三面（`memory` / `notes` / `rag`）职责重划的**最后一站 G5**。用户裁决倾向（原始三问之③）：
+  「长期记忆重要信息走 **Notes**，**rag 做辅助 + 本地知识库查询**」。**现状即答案** —— rag 已是辅助本地
+  知识库（CLI `rag ingest|search|ask` **一次性**驱动）、**不**注入 loop（ADR-0097 ⑥）、**不**做结构化
+  实体抽取（该面已由 change `0155` 归 **memory**）。缺的是把**三面边界 + 不注入主链路**写成**单一目视
+  可达、且可守护**的定位。
+- **决策①：三面职责边界（各归其位、互不重叠）。** `memory` = **经验轨迹**（L2 episodic/semantic，自动
+  压实/固化/遗忘）＋ **关键事实**（`key_facts` 结构实体，跨会话，change `0155`）；`notes` = **主题文档**
+  （canonical Markdown 真相层，Consult/常驻注入）；**`rag`** = **外部知识文档**（分块 + 向量，按需 top-k，
+  按内容哈希增量重建）。三面**互不越界**：memory 不做知识文档语义检索、rag 不做经验记忆与实体抽取。
+- **决策②：rag 定位为辅助按需，不注入 loop 主链路（承 ADR-0097 ⑥，并把它从「ADR 决策内一条」升为
+  「文档定位 + 可执行守护」）。** 主链路与三面兄弟（`loop` / `context` / `memory` / `notes`）**不得**
+  `import core.rag`；`core.rag` 仅由**组合根**（`runtime` 装配 `runtime.rag`）与 **CLI**（`entry` 的
+  `rag` 命令族）引用。守护：`tests/test_architecture.py::test_rag_not_imported_by_reference_chain`
+  （沿既有 Phase 边界守护同构，stdlib `ast`、零三方依赖 ⇒ 把定位由**散文**固化为**可执行不变量**）。
+- **决策③：门槛钉死。** 若要令 RAG **参与 loop 上下文**（占固定窗口 / 进系统提示装配）⇒ **须先改
+  ADR-0097 ⑥** —— 那是**特性**（牵动 context 预算与 prompt 装配），**不是**本定位的自然延伸；跨门槛
+  须经「**改 ADR → 开规格变更**」，**不得**以「主链路直接 `import rag`」绕过（守护即为此设）。
+- **不改** rag 既有裁决（`HashEmbedder` 离线降级基线 / 不引本地语义模型 / 暴力余弦不换 ANN —— 承
+  `rag-offline-embedder-decision` 与 ADR-0097）；**不改**任何规格行为（**规格中性**：`.openspec.yaml`
+  `spec-driven + skip_specs: true`）；**不加** rag 代码 / CLI / 行为（**零 `src/` 改动**）。
+- **已知局限**：① **守护只覆盖「直接 import」** —— 若以**间接**路径（共享工具模块转发、动态 `importlib`）
+  令主链路触及 rag，守护不察（**刻意**：抓最常见的直连退化，非形式化隔离）；② **定位另一侧无守护** ——
+  `memory` / `notes` 是否越界「兼做知识文档检索」无自动门禁（只护 rag 一侧）；③ **门槛靠人守** ——
+  ADR-0097 ⑥ 的修改本身是人的动作、无自动门禁；④ **三面边界表是「当前」分工** —— 若某一面未来扩能
+  （memory 加向量 / notes 加实体），须**同步更新**本 ADR 与三处文档。
+- **规格**：**无**（规格中性，`skip_specs: true`）；文档面 `11-rag/rag-architecture.md` §1.1、
+  `02-modules/rag.md` §1.1、`03-interfaces/rag-interface.md` §0、测试面 `04-testing/test-cases.md`
+  §19（TC-RAG-14）、守护 `tests/test_architecture.py`、台账 `coding-plan/known-risk.md`（§3）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4414,3 +4445,4 @@
 | ADR-0145 | 03-interfaces/memory-interface.md, 03-interfaces/notes-interface.md, 02-modules/memory.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0146 | 03-interfaces/notes-interface.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0147 | 03-interfaces/memory-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0148 | 11-rag/rag-architecture.md, 02-modules/rag.md, 03-interfaces/rag-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

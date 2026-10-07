@@ -319,6 +319,29 @@ def test_phase4_orchestration_rag_no_reverse_dependency() -> None:
     assert not offenders, f"Phase4 编排/检索底座反向依赖上层: {offenders}"
 
 
+# ---- 主题 9（G5 补充）：RAG 定位 —— 辅助本地知识库，不注入主链路（ADR-0097 ⑥ / ADR-0148） ----
+
+
+def test_rag_not_imported_by_reference_chain() -> None:
+    """RAG 是辅助本地知识库，经 CLI 一次性驱动，**不**注入 loop 主链路。
+
+    守护 ADR-0097 ⑥ / ADR-0148：主链路与三面兄弟（``loop`` / ``context`` / ``memory`` /
+    ``notes``）SHALL NOT import ``core.rag`` —— 把「定位」由文档散文固化为**可执行不变量**
+    （要令 RAG 参与 loop 上下文，须**先改 ADR-0097 ⑥**、再经组合根 ``runtime`` 注入，而非让
+    主链路直接 import rag）。``runtime``（组合根）与 ``entry``（CLI）是仅有的例外。
+    """
+    chain = {"loop", "context", "memory", "notes"}
+    offenders: list[str] = []
+    for pkg in sorted(chain):
+        for path in (SRC / pkg).rglob("*.py"):
+            offenders.extend(
+                f"{pkg}/{path.name} -> core.rag"
+                for sub in sorted(_core_subpackages(path))
+                if sub == "rag"
+            )
+    assert not offenders, f"主链路 / 三面兄弟反向 import core.rag（ADR-0097 ⑥）: {offenders}"
+
+
 def test_phase5_evolution_no_reverse_dependency() -> None:
     """evolution 不得反向依赖 composition（L5 组合层）。"""
     forbidden: dict[str, set[str]] = {

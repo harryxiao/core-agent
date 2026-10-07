@@ -12,6 +12,29 @@ LLM 存在知识缺口：训练截止、私有/领域知识缺失。RAG（检索
 - **知识文档**：产品文档 / 领域知识 / 内部规范 / 会议纪要等「知识文档」的语义检索。
 - **与 codebase-memory-mcp 分工**：RAG 管「知识文档」语义检索，codebase-memory-mcp 管「代码结构」结构化理解，二者正交互补、同时引入。
 
+### 1.1 定位：辅助本地知识库，**不**注入主链路（change `0156` / ADR-0148）
+
+**现状即答案**（记忆三面 `memory` / `notes` / `rag` 职责重划 G5）：RAG 是**辅助的本地知识库查询面**
+—— 知识文档的**按需**语义检索，经 CLI `rag ingest|search|ask` **一次性**驱动，**不**参与 loop 的**每轮**
+上下文装配（不占据固定窗口、不进系统提示装配）。
+
+- **三面边界**（各归其位、互不重叠）：
+
+  | 面 | 存什么 | 读法 | 生命周期 |
+  |---|---|---|---|
+  | `memory` | **经验轨迹**（L2 episodic/semantic）＋ **关键事实**（`key_facts`，结构实体） | `read(query, budget)` 按需召回（温度分层 + 预算） | 自动压实/固化/遗忘（不删、可撤销） |
+  | `notes` | **主题文档**（canonical Markdown 真相层） | Consult（命中注入）/ 常驻（`pinned` 恒注入） | 覆盖式（无自动清理） |
+  | **`rag`** | **外部知识文档**（分块 + 向量） | CLI `search`/`ask` **一次性** top-k | 按内容哈希增量重建 |
+
+- **不注入 loop**（承 **ADR-0097 ⑥「不把 RAG 注入 loop 推理链」**）：主链路与三面兄弟
+  （`loop` / `context` / `memory` / `notes`）**不得** `import core.rag`（**可执行守护**：
+  `tests/test_architecture.py::test_rag_not_imported_by_reference_chain`）；`core.rag` 仅由
+  **组合根** `runtime`（装配 `runtime.rag`）与 **CLI** `entry`（`rag` 命令族）引用。
+- **不承担结构化实体抽取 / 跨会话实体**：该面归 **`memory` 关键事实**（change `0155` / ADR-0147）；
+  RAG 不重复建面（无抽取、无跨会话实体表）。
+- **门槛**：若要令 RAG 参与 loop 上下文（占固定窗口 / 进系统提示装配），**须先改 ADR-0097 ⑥** ——
+  那是**特性**（牵动 context 预算与 prompt 装配），不是本定位的自然延伸。
+
 ## 2. 架构
 
 > **订正（change 0104 / ADR-0097）**：调研（`research_findings.md`，2026-09-20）结论中的 `sqlite-vec` 与

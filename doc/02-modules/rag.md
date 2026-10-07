@@ -11,6 +11,19 @@ LLM 存在固有知识缺口：训练截止、私有/领域知识缺失。RAG（
 
 职责边界：RAG 管「知识文档」的**语义检索**，codebase-memory-mcp 管「代码结构」的**结构化理解**，二者正交互补、同时引入。
 
+### 1.1 定位：辅助本地知识库，**不**注入主链路（change `0156` / ADR-0148 / 路线图 G5）
+
+**现状即答案**：RAG 是**辅助的本地知识库查询面** —— 知识文档的**按需**语义检索，经 CLI
+`rag ingest|search|ask` **一次性**驱动，**不**参与 loop **每轮**上下文装配（不占固定窗口、不进系统提示）。
+
+- **三面各归其位**：`memory` = 经验轨迹 + **关键事实**（结构实体，change `0155`）；`notes` = 主题文档
+  （canonical 真相层）；**`rag`** = 外部知识文档（分块 + 向量，按需 top-k）。互不越界。
+- **不注入 loop**（承 ADR-0097 ⑥）：主链路与三面兄弟（`loop` / `context` / `memory` / `notes`）**不得**
+  `import core.rag`（可执行守护 `test_architecture.py::test_rag_not_imported_by_reference_chain`）；
+  `core.rag` 仅由组合根（`runtime.rag`）与 CLI（`entry` 的 `rag` 命令族）引用。
+- **不做结构化实体抽取 / 跨会话实体**：该面归 `memory` 关键事实（change `0155` / ADR-0147）。
+- **门槛**：若要令 RAG 参与 loop 上下文，**须先改 ADR-0097 ⑥**（属特性，牵动 context 预算与 prompt 装配）。
+
 ---
 
 ## 2. 内部组成
