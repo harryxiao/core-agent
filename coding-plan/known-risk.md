@@ -30,6 +30,7 @@
 | **—** | git | `GitClient` **零生产消费者**（phase-20 C2 偏离） | 来源：`phase-34.md:69`。**注**：高危原语（删远程分支 / 历史改写）已由 change `0138` 补齐，但**消费接线**仍未落 |
 | **—** | cli-ops | **若干子命令为 stub** | `src/core/entry.py`（运维命令面）。来源：`phase-34.md:70` |
 | **E88** | UI / TUI | **TUI 流式 Markdown 表格按行拆断**（渲染为竖线原文，非表格） | **已修（change `0146` / ADR-0138）**。根因：`src/core/ui/repl.py` `_show_delta` 按行固化（`repl.py:485`：`len(text) >= _TAIL_SPLIT` 或 `endswith("\n")` 即 `_freeze_tail`），把表头行拆成孤立块 ⇒ 表格永拼不齐；围栏已有同类保护（`_in_open_fence`，`repl.py:491`）**唯独没覆盖表格**。修：新增 `_in_open_table`（`repl.py:497`）+ `_TAIL_TABLE_CAP`（`repl.py:34`）+ 表格分支（`repl.py:478-484`）。**已知局限**：① 散文行含 ≥2 个 `|` 会**过度延后**固化（有界）；② **Web 端不渲染 Markdown**（`Chat.svelte` 纯文本）属**另一端、不在本 change 面** |
+| **E89** | UI / TUI | **流式回显「阶梯式」+ 表格逐行绘制（不够丝滑）** | **已修（change `0147` / ADR-0139）**。根因：① `src/core/ui/repl.py` `_show_delta` **逐 delta** 走 `_touch_tail` → `Markdown.update()`（Textual **整篇 re-parse + 全量 re-layout** 且被 `Markdown.lock` 串行化）⇒ 尾段 O(n²)、渲染队列积压；② 未闭合表格每拍重绘 + 表格**列宽按内容自适应** ⇒ 逐行抽动。修：**合帧节流**（delta 只入缓冲，`_TAIL_FLUSH_S = 0.04` 懒启动 timer 合并渲染一次）+ **表格整块延后渲染**（未闭合不渲染，闭合/超 `_TAIL_TABLE_CAP` 后一次成型）+ `_add` **时序闸**（挂非尾 widget 前先提交挂起尾段）。**已知局限**：① 未闭合长表格有「无可见进度」窗口（>8000 或流尽才显形）；② 40ms 节拍为**常量非配置项**；③ Web/APP 端**不适用** |
 
 ---
 
@@ -59,6 +60,7 @@
 | **change `0139`**（E81/E83 Host 心跳 + Desktop 交付面） | ① `touch`/`reap` 今日仍**无生产驱动**（本账补的是规格 SHALL 的**能力面**）；② **Rust 面无门禁** ⇒ 壳编译未经验证，Tauri 打包与壳行为归**手工验收**（`04-testing/test-cases.md` §55）。来源：ADR-0132 |
 | **change `0142`**（E85 core-profile 题词模板） | **未取 CLI scaffold**（落盘语义 + 会触碰 30 动词 CLI 基线 ⇒ YAGNI）。来源：ADR-0134 |
 | **change `0145`**（同上 ADR-0137） | Web (Svelte) / APP 面**无自动门禁** ⇒ 手工验收（见上） |
+| **ADR-0139**（change `0147` TUI 合帧节流 + 表格延后渲染） | ① **未闭合长表格有「无可见进度」窗口**（自表头到达至闭合、或超 `_TAIL_TABLE_CAP`=8000 之间屏幕上不出现该表；出路是加占位 `Static`，**不**回退 `_touch_tail`）；② **40ms 节拍为常量非配置项**（无 CLI/env 面，YAGNI）；③ **Web / APP 端不适用**（`Chat.svelte` 纯文本）。来源：`doc/01-architecture/adr.md` ADR-0139「已知局限」 |
 
 ---
 
@@ -71,6 +73,7 @@
 | Tauri 打包 + Desktop 壳行为（`CORE_PORT` 单点解析、程序化开窗） | `doc/04-testing/test-cases.md` §55（TC-DEPLOY） |
 | Think 真端点字段取证 / Web `<details>` / APP 同构 | `doc/04-testing/test-cases.md` §61（TC-THINK）手工项 1~3 |
 | TUI 流式表格目视（表格整块 / 围栏回归） | `doc/04-testing/test-cases.md` §62（TC-TABLE）手工项 1~2 |
+| TUI 流式回显丝滑化目视（不再阶梯 / 表格一次成型 / 时序不乱） | `doc/04-testing/test-cases.md` §63（TC-SMOOTH）手工项 1~3 |
 
 ---
 

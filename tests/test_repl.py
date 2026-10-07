@@ -544,6 +544,100 @@ def test_streamed_table_renders_in_single_block() -> None:
     assert "| 苹果 | 烟台 |" in source and "| 橙子 | 赣南 |" in source
 
 
+# ---- TUI 流式回显合帧节流与表格延后渲染（change 0147 / 账本 E89）----
+
+
+def test_show_delta_defers_until_flush() -> None:
+    """合帧节流：delta 只入缓冲、不即时渲染；`_flush_tail` 把缓冲合并渲染一次。
+
+    直接驱动 `_show_delta` / `_flush_tail`（不依赖 40ms 定时器真的触发 —— `pilot.pause()`
+    实测是 ~0.02s 真实 sleep，与节拍同量级、会偶发触发，断言不得跨 `await`）。
+    """
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+
+    from core.ui.repl import build_app  # noqa: PLC0415 — 可选依赖懒 import
+
+    app = build_app(api)
+
+    async def drive() -> tuple[bool, str, bool, int]:
+        async with app.run_test() as pilot:
+            from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+            from textual.widgets import Markdown  # noqa: PLC0415 — 可选依赖懒 import
+
+            timeline = app.query_one("#timeline", Vertical)
+            app._show_delta("你")  # noqa: SLF001 — 直接驱动流式入口（合帧前不渲染）
+            app._show_delta("好")  # noqa: SLF001
+            deferred = app._tail_widget is None  # 红态：旧实现逐 delta 立即建 widget
+            buffered = "".join(app._tail_buf)
+            app._flush_tail()  # noqa: SLF001 — 显式合帧（不依赖定时器）
+            touched = app._tail_widget is not None
+            await pilot.pause()
+            return deferred, buffered, touched, len(timeline.query(Markdown))
+
+    deferred, buffered, touched, rendered = asyncio.run(drive())
+    assert deferred, "合帧前不渲染（不逐 delta 重绘）"
+    assert buffered == "你好", "增量在缓冲里（不丢字）"
+    assert touched, "合帧后尾块建立"
+    assert rendered == 1, "合帧后渲染一次（增量合并为单块）"
+
+
+def test_open_table_not_rendered_until_closed() -> None:
+    """未闭合表格延后渲染：中间态不绘制；空行闭合后一次成型（恰一块、解析为表格）。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+
+    from core.ui.repl import build_app  # noqa: PLC0415 — 可选依赖懒 import
+
+    app = build_app(api)
+
+    async def drive() -> tuple[bool, bool, int, list[str]]:
+        async with app.run_test() as pilot:
+            from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+            from textual.widgets import Markdown  # noqa: PLC0415 — 可选依赖懒 import
+
+            timeline = app.query_one("#timeline", Vertical)
+            for row in ("| 水果 | 产地 |\n", "|---|---|\n", "| 苹果 | 烟台 |\n"):
+                app._show_delta(row)  # noqa: SLF001
+            app._flush_tail()  # noqa: SLF001 — 未闭合 ⇒ 延后（红态：旧实现已挂 Markdown）
+            deferred = app._tail_widget is None
+            buffered = bool(app._tail_buf)
+            app._show_delta("\n")  # noqa: SLF001 — 空行 ⇒ 表格块闭合
+            app._flush_tail()  # noqa: SLF001
+            await pilot.pause()
+            blocks = list(timeline.query(Markdown))
+            kinds = [type(k).__name__ for b in blocks for k in b.query("*")]
+            return deferred, buffered, len(blocks), kinds
+
+    deferred, buffered, count, kinds = asyncio.run(drive())
+    assert deferred, "未闭合表格不渲染中间态"
+    assert buffered, "表格文本仍在缓冲（不丢字）"
+    assert count == 1, "闭合后整块落入单一 Markdown 块"
+    assert "MarkdownTable" in kinds, "闭合后解析为表格（非竖线原文）"
+
+
+def test_open_fence_still_streams() -> None:
+    """回归守卫：未闭合代码围栏**仍流式可见**（表格延后不得误伤围栏）。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+
+    from core.ui.repl import build_app  # noqa: PLC0415 — 可选依赖懒 import
+
+    app = build_app(api)
+
+    async def drive() -> bool:
+        async with app.run_test():
+            app._show_delta("```python\n")  # noqa: SLF001
+            app._show_delta("print(1)\n")  # noqa: SLF001
+            app._flush_tail()  # noqa: SLF001
+            return app._tail_widget is not None
+
+    assert asyncio.run(drive()), "未闭合围栏合帧后仍渲染（流式可见）"
+
+
 # ---- TUI 子任务运行态与里程碑详情（change 0124 / 账本 E52） ----
 
 

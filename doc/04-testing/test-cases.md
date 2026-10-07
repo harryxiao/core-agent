@@ -955,6 +955,24 @@
 
 ---
 
+## 63. TUI 流式回显合帧节流 + 表格整块延后渲染（TC-SMOOTH，change `0147`／ADR-0139，账本 E89）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-SMOOTH-01 | ui/spec.md「CLI 友好交互」Scenario「流式回显合帧与表格延后渲染」（合帧节流） | 直接驱动 `_show_delta("你")` + `_show_delta("好")`；查状态；再 `_flush_tail()` | 合帧前 `_tail_widget is None`（**旧实现逐 delta 立即建 widget ⇒ 红**）、`"".join(_tail_buf) == "你好"`（增量在缓冲、不丢字）；合帧后尾块建立、`#timeline` 恰 **1** 个 `Markdown`（锚点：`test_repl.py::test_show_delta_defers_until_flush`） |
+| TC-SMOOTH-02 | 同 Scenario（表格整块延后渲染） | 逐行 `_show_delta` 表格三行（表头 / 分隔 / 数据行）+ `_flush_tail()`；再 `_show_delta("\n")`（空行闭合）+ `_flush_tail()` | 未闭合 flush 后 `_tail_widget is None`（**旧实现已挂 Markdown ⇒ 红**）、缓冲非空；闭合后恰 **1** 个 `Markdown` 块且子块含 `MarkdownTable`（锚点：`test_repl.py::test_open_table_not_rendered_until_closed`） |
+| TC-SMOOTH-03 | 同 Scenario（**围栏维持流式可见**） | `_show_delta("```python\n")` + `_show_delta("print(1)\n")` + `_flush_tail()` | 未闭合围栏合帧后**仍渲染**（`_tail_widget is not None`）—— 表格延后**不得误伤围栏**（锚点：`test_repl.py::test_open_fence_still_streams`） |
+
+> **手工验收项（无自动门禁）**：
+> 1. **高速流式目视「不再阶梯」** —— 真终端跑一次逐词高速流式回复，目视确认回显**不再一卡一卡**
+>    （渲染次数 ≪ delta 数）；可用桩 provider 逐字符流式放大观察。
+> 2. **表格一次成型 + 围栏回归** —— 流式产出表格时，目视确认**自表头到达至闭合之间不出现该表**、
+>    闭合后**一次整块成型**（不逐行抽动）；同时回归确认**代码围栏**流式仍逐行可见。
+> 3. **时序不乱** —— 流式进行中触发 **Ctrl+B 打断** / 命中**审批门**，目视确认打断行 / 审批提示出现
+>    在**已回显文本之下**（挂起尾段先提交，`_add` 时序闸）。
+
+---
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

@@ -9,7 +9,8 @@ CLIBridge.connect() 落地为 Textual 交互会话循环；textual 仅此文件�
 - 工作状态行 ✻ label… (Ns)（set_interval 轮换 glyph，无内置 Spinner 组件）；
 - 回复流式增量直接落时间线尾部同一滚动流（连续滚动输出，视口跟随），每段即按
   Markdown 增量渲染（标题/代码高亮流式即所见），段边界固化 append-only，
-  终态无整块替换、无重排跳变；
+  终态无整块替换、无重排跳变；增量**合帧节流**（入缓冲，40ms 合并渲染一次 ⇒
+  渲染次数与分片速率解耦，避免每 delta 全量 re-parse/re-layout 的阶梯抖动）；
 - 用户输入以 ❯ 前缀行回显；底部快捷键提示盒（F1 展开）；启动欢迎横幅；
 - 任务/子任务进度走折叠块（单行提示 + 展开详情）。
 
@@ -29,6 +30,7 @@ from .models import Event
 _ACCENT = "#d97757"  # core 主题 accent（Claude CLI terracotta）
 _SPIN_GLYPHS = ["✻", "·", "•", "∘", "○"]  # 工作状态行轮换符号
 _MS_PER_SECOND = 1000  # 耗时人类可读换算
+_TAIL_FLUSH_S = 0.04  # 尾段合并节拍：SSE delta 只入缓冲，40ms 由 timer 合并渲染一次
 _TAIL_SPLIT = 2000  # 流式尾段字符阈值：超过/行边界即固化（每 delta 重 wrap 有界）
 _TAIL_FENCE_CAP = 8000  # 未闭合围栏内尾段硬上限：超此值强固化兜底，约束内存
 _TAIL_TABLE_CAP = 8000  # 未闭合表格块内尾段硬上限：同围栏口径，约束内存
@@ -350,6 +352,9 @@ Collapsible > CollapsibleTitle:hover {
             self._actions: dict[str, tuple[Collapsible, Static]] = {}  # round:tool→(块, 详情)
             self._reasoning: tuple[Collapsible, Static] | None = None  # 本轮思考块（同轮归并）
             self._spin_timer: Timer | None = None  # 工作状态行驱动
+            self._tail_timer: Timer | None = None  # 尾段合并渲染驱动（懒启动，同 spinner）
+            self._tail_dirty = False  # 有未渲染增量（下一次 flush 合并渲染一次）
+            self._flushing = False  # 重入闸：_flush_tail 内部经 _add 挂尾块
             self._spin_t0 = 0.0
             self._spin_idx = 0
             self._spin_label = ""
@@ -397,7 +402,13 @@ Collapsible > CollapsibleTitle:hover {
         # ---- 时间线 ----
 
         def _add(self, widget: Widget) -> None:
-            """时间线追加 widget 并滚到底（mount 不等待，消息泵不被阻塞）。"""
+            """时间线追加 widget 并滚到底（mount 不等待，消息泵不被阻塞）。
+
+            挂**非尾** widget 前先提交挂起尾段（合帧节流下 delta 尚未渲染）：
+            保时序（挂起文本在动作行/思考块/审批提示/打断提示**之上**），
+            覆盖 barge-in / 审批中途挂件等非 delta 事件路径。重入安全。"""
+            if not self._flushing:  # 防重入：_flush_tail 内部经 _add 挂尾块
+                self._flush_tail()
             timeline = self.query_one("#timeline", Vertical)
             timeline.mount(widget)
             timeline.call_after_refresh(timeline.scroll_end, animate=False)
@@ -461,32 +472,46 @@ Collapsible > CollapsibleTitle:hover {
             self.query_one("#hints", Static).update(text)
 
         def _show_delta(self, delta: str) -> None:
-            """流式增量落时间线同一滚动流：尾段热更新（有界 wrap），
-            行边界/超阈值时固化为 append-only 块，超长输出不卡顿不抖动；
-            代码围栏或表格未闭合时延后固化，避免结构化块被拆断。"""
+            """流式增量**入缓冲（不即时渲染）**：40ms 合拍由 timer 合并热更新一次，
+            避免每 delta 全量 re-parse/re-layout 的阶梯抖动；终态/边界分支逻辑不变。"""
             self._live_buf.append(delta)
             self._tail_buf.append(delta)
-            text = "".join(self._tail_buf)
-            if self._in_open_fence(text):
-                # 围栏未闭合：不按行/常规阈值固化（避免大代码块被拦腰截断），
-                # 仅超硬上限时兜底固化，约束内存与重 wrap 代价
-                if len(text) >= _TAIL_FENCE_CAP:
-                    self._freeze_tail(text)
+            self._tail_dirty = True
+            if self._tail_timer is None:  # 懒启动（同 spinner）：空闲不空转
+                self._tail_timer = self.set_interval(_TAIL_FLUSH_S, self._flush_tail)
+
+        def _flush_tail(self) -> None:
+            """合并渲染：把挂起尾段按 fence/table/split 分支收口一次（timer 或事件边界驱动）。
+
+            重入安全（`_flushing`）+ 幂等（`_tail_dirty`）：`_add` 可在挂非尾 widget 前
+            无条件调用。围栏未闭合时热更新（流式可见）；**表格未闭合时延后**（不绘制中间态，
+            闭合或超硬上限后一次整块成型）；常规路径按行边界/阈值固化。"""
+            if not self._tail_dirty or self._flushing:
+                return
+            self._flushing = True
+            try:
+                self._tail_dirty = False
+                text = "".join(self._tail_buf)
+                if self._in_open_fence(text):
+                    # 围栏未闭合：不按行/常规阈值固化（避免大代码块被拦腰截断），
+                    # 仅超硬上限时兜底固化，约束内存与重 wrap 代价
+                    if len(text) >= _TAIL_FENCE_CAP:
+                        self._freeze_tail(text)
+                    else:
+                        self._touch_tail(text)
                     return
-                self._touch_tail(text)
-                return
-            if self._in_open_table(text):
-                # 表格未闭合：表格须整块（表头 + 分隔行 + 数据行）方能解析 ⇒
-                # 与围栏同理延后固化，否则逐行固化成孤立块、表格退化为竖线原文
-                if len(text) >= _TAIL_TABLE_CAP:
-                    self._freeze_tail(text)
+                if self._in_open_table(text):
+                    # 表格未闭合：表格须整块（表头 + 分隔行 + 数据行）方能解析 ⇒
+                    # 延后渲染（不逐行重排、列宽只算一次），超硬上限才兜底固化
+                    if len(text) >= _TAIL_TABLE_CAP:
+                        self._freeze_tail(text)
                     return
-                self._touch_tail(text)
-                return
-            if len(text) >= _TAIL_SPLIT or text.endswith("\n"):
-                self._freeze_tail(text)
-                return
-            self._touch_tail(text)
+                if len(text) >= _TAIL_SPLIT or text.endswith("\n"):
+                    self._freeze_tail(text)
+                else:
+                    self._touch_tail(text)
+            finally:
+                self._flushing = False
 
         @staticmethod
         def _in_open_fence(text: str) -> bool:
@@ -534,8 +559,13 @@ Collapsible > CollapsibleTitle:hover {
             timeline.call_after_refresh(timeline.scroll_end, animate=False)
 
         def _flush_live(self) -> None:
-            """流式终态：尾段固化为最后一块 Markdown，已固化块原样保留。
-            全程同格式渲染，无终态整块替换、无重排跳变。"""
+            """流式终态：停合帧节拍 + 尾段固化为最后一块 Markdown，已固化块原样保留。
+            覆盖「已热更新的尾块」与「仅缓冲未渲染的尾段」（含被延后的未闭合表格）⇒
+            回复结束（含异常/中断）**不丢字**。全程同格式渲染，无终态整块替换、无重排跳变。"""
+            if self._tail_timer is not None:
+                self._tail_timer.stop()  # 收尾停表（不再有合帧触发）
+                self._tail_timer = None
+            self._tail_dirty = False  # 直接走下方 _freeze_tail，不再经 _flush_tail（免双重渲染）
             if self._tail_buf:
                 self._freeze_tail("".join(self._tail_buf))
             self._last_reply = "".join(self._live_buf)

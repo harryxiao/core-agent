@@ -96,6 +96,15 @@ class UIAPILayer:
 > 不作表格）。**注**：Web 端 `Chat.svelte` 以纯文本呈现（无 Markdown 渲染器），表格在 Web 恒显
 > 竖线原文，属**另一端**（见 ADR-0138 已知局限②）。
 
+> **注（TUI 流式回显合帧节流 + 表格整块延后渲染，change `0147` / ADR-0139）**：TUI 流式增量**不保证
+> 每分片一次重绘** —— delta 先**入缓冲**，按固定节拍（`_TAIL_FLUSH_S = 0.04`，懒启动 timer）**合并
+> 渲染一次**，使渲染次数与分片速率**解耦**（消除逐 delta 全量 re-parse/re-layout 的**阶梯抖动**）。
+> 处于**未闭合**状态的 Markdown 表格块**延后渲染**（不绘制中间态），待块闭合或超硬上限后**一次整块
+> 成型**（列宽只算一次）；**代码围栏分支维持流式可见**（不延后）。挂**非尾** widget（动作行 / 思考块 /
+> 审批提示 / 打断提示）前 SHALL 先提交挂起尾段（时序不乱）。所有挂起缓冲**有界**，且回复收尾
+> （含异常 / 中断）时挂起尾段**被最终固化**（不丢字）。**注**：本机制对 Web / APP 端**不适用**
+> （`Chat.svelte` 纯文本，见 ADR-0139 已知局限③）。
+
 > **注（`subtask_progress` 载荷，change `0121` 数据面 / change `0124` 消费面）**：载荷
 > `{task_id, subtask_id, event, data, ts}` —— `event` 为内层事件类型，`data` 为**按类型白名单**取键的
 > 子集（`action_started`：round/tool_id/args；`action_completed`：round/tool_id/ok/duration_ms/output；

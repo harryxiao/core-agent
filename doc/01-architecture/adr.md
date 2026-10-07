@@ -3887,6 +3887,54 @@
 
 ---
 
+## ADR-0139：TUI 流式回显合帧节流 + 表格整块延后渲染（change 0147 / 账本 E89）
+
+- **背景**：TUI 流式回显「**阶梯式**、表格**逐行**绘制、不够丝滑」（`E89`）。两条并列根因（均在
+  `src/core/ui/repl.py`，**非** Markdown 控件缺陷）：① **逐 delta 全量重解析** —— `_show_delta`
+  每收到一个 SSE delta 就立即 `_touch_tail` → `Markdown.update(text)`；Textual 的 `update()` 是
+  **整篇 re-parse + 全量 re-layout**，且被 `Markdown.lock` **串行化** ⇒ 尾段越长每 delta 代价越高
+  （尾段 O(n²)），delta 密集时渲染队列积压 ⇒ 肉眼即「一卡一卡」；② **未闭合表格逐行重排** ——
+  change `0146` 已让表格**整块固化**，但未闭合期间仍每 delta `_touch_tail` 重绘，而 Markdown 表格
+  **列宽按内容自适应** ⇒ 每加一行整表列宽重算 ⇒ 表格区逐行「抽动」。**对照参考**：Claude Code 的
+  TUI 是 **Ink（React for CLI）** —— `state → 虚拟树 → reconciler diff → 只重写变化的终端行
+  （frame diffing）` + **节流/合批**渲染。本 change 只取其中**两条可直接落地的精髓**（合帧节流 +
+  整块延后渲染），**不引入** React/diffing 运行时（与「架构最优、不踩红线、尽量不依赖三方库」
+  冲突；Textual 自有布局/滚动，帧级 diff 无收益）。
+- **决策①：合帧节流 —— delta 只入缓冲，固定节拍合并渲染一次。** `_show_delta` 改为**仅**追加
+  `_live_buf`/`_tail_buf` + 置 `_tail_dirty`，并**懒启动** `_tail_timer =
+  set_interval(_TAIL_FLUSH_S, self._flush_tail)`（`_TAIL_FLUSH_S = 0.04`，与 `_spin_timer` **同型**：
+  空闲不空转）。新 `_flush_tail()` 在**合并后的缓冲**上跑原分支体（围栏 / 表格 / 常规）⇒ 渲染次数与
+  delta 速率**解耦**，尾段 O(n²) 降为「每 40ms 一次」。`Timer.stop()` 会 **cancel** tick 任务，
+  无残留排队。
+- **决策②：时序闸收在 `_add`（唯一挂载漏斗），而非 `_run_turn` 分支前。** `_flush_tail` 具备
+  **重入安全**（`_flushing` 闸）+ **幂等**（`_tail_dirty`），故 `_add` 可在挂**非尾** widget 前
+  **无条件**调用它。理由：`_add` 是**全部** widget 挂载的唯一漏斗 ⇒ 比在 `_run_turn` 非 delta 分支前
+  flush **覆盖更全** —— 还覆盖 `action_barge_in`（`:452-455`，Ctrl+B 中途打断）与 `_ask_approval`
+  （`:443-444`，审批门中途挂起）这两条**在 turn 中途**才挂 widget 的路径（挂起文本须在挂件**之上**）。
+  终止性：重入深度**恒为 1**（`_flush_tail` 内 `_add` 见 `_flushing=True` 直接跳过）。
+- **决策③：未闭合表格**延后渲染**（不绘制中间态）。** `_flush_tail` 的表格分支由「`_touch_tail`
+  热更新」改为「**直接返回**」：未闭合表格**不渲染**，待块**闭合**（空行 / 块外内容）或超
+  `_TAIL_TABLE_CAP` 后**一次整块成型**（列宽只算一次）。**围栏分支维持 `_touch_tail`**（代码应流式
+  可见，不回退）。理由：表格的中间态**必然错排**（列宽随内容变）⇒ 画了也要重画，不如不画。
+- **决策④：`_flush_live` 停表 + 清脏，**不**调 `_flush_tail`。** 收尾停 `_tail_timer`、置
+  `_tail_dirty = False`，再走既有 `if self._tail_buf: self._freeze_tail(...)`。理由：`_freeze_tail` 已
+  覆盖「已热更新的尾块」与「仅缓冲未渲染的尾段」（**含被延后的未闭合表格**）⇒ 中断/异常
+  （`_run_turn` 的 `finally`）**不丢字**；若改调 `_flush_tail` 则可能**先 touch 一块再 freeze 一块**
+  （双重渲染）。
+- **决策⑤：常规路径逐字不动（零回归）。** `_touch_tail` / `_freeze_tail` / `_in_open_fence` /
+  `_in_open_table` / `_TAIL_SPLIT`（**语义不变**，只改为在**合并缓冲**上求值 ⇒ 只会**更少、更大**的
+  冻结块，布局抖动**严格减少**）/ `_run_turn` / `_live_buf` / `_last_reply` **不动**。
+- **已知局限**：① **未闭合长表格有「无可见进度」窗口** —— 自表头到达至闭合（或超 `_TAIL_TABLE_CAP`
+  = 8000）之间**屏幕上不出现该表**；如不可接受，出路是加占位 `Static("…生成中")`，**不**回退
+  `_touch_tail`。② **40ms 节拍为常量非配置项**（无 CLI / env 面）—— YAGNI，调整改一处常量。
+  ③ **Web / APP 端不适用** —— `frontend/src/views/Chat.svelte` 以**纯文本**呈现（无渲染器），
+  属**另一端**。
+- **规格**：`ui`「CLI 友好交互」（MODIFIED，新增 Scenario「流式回显合帧与表格延后渲染」＋合帧/延后
+  条文）；接口面 `03-interfaces/ui-interface.md`、测试面 `04-testing/test-cases.md`、台账
+  `coding-plan/known-risk.md`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4020,3 +4068,4 @@
 | ADR-0136 | 03-interfaces/durability-interface.md, coding-plan/cli-contract-baseline.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/phase-34.md |
 | ADR-0137 | 03-interfaces/llm-provider-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/ui-interface.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/phase-32.md |
 | ADR-0138 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0139 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
