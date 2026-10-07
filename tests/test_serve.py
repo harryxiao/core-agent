@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from starlette import status
+
+fastapi_testclient = pytest.importorskip("fastapi.testclient")
+TestClient = fastapi_testclient.TestClient
+
+from starlette import status  # noqa: E402 — 可选 web 依赖，置于 importorskip 守卫之后（无 web 依赖环境优雅跳过而非崩溃）
 
 from core.configuration import ConfigManager
 from core.configuration.models import LLMConfig
