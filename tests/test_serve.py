@@ -1,5 +1,7 @@
 """serve 单元测试（对齐契约红线：12 端点 / SSE 流式 / 错误码映射 / 三模复用同一内核）。"""
 
+# ruff: noqa: E402 —— 可选 web 依赖：`importorskip` 守卫先于 `core.ui` 导入
+# （无 web 依赖环境优雅跳过而非崩溃），故其后的全部 import 均不在文件顶部。
 from __future__ import annotations
 
 import json
@@ -11,7 +13,7 @@ import pytest
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
 TestClient = fastapi_testclient.TestClient
 
-from starlette import status  # noqa: E402 — 可选 web 依赖，置于 importorskip 守卫之后（无 web 依赖环境优雅跳过而非崩溃）
+from starlette import status
 
 from core.configuration import ConfigManager
 from core.configuration.models import LLMConfig
@@ -27,9 +29,6 @@ from core.orchestration import (
 )
 from core.ui import UIAPILayer, fastapi_serve
 from core.ui.fastapi_serve import build_app
-
-fastapi_testclient = pytest.importorskip("fastapi.testclient")
-TestClient = fastapi_testclient.TestClient
 
 _LLM_SECTION = (
     "llm:\n"
