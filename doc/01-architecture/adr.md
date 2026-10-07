@@ -4658,6 +4658,38 @@
   文档面 `doc/02-modules/loop.md`、`doc/03-interfaces/loop-interface.md` §4、测试面
   `doc/04-testing/test-cases.md` §79（TC-OFFLOAD）、台账 `coding-plan/known-risk.md` §1（E103）+ §3。
 
+## ADR-0158：诊断视图列对齐按**显示宽度**（change 0165）
+
+- **背景**：TUI `/notes` 输出乱。`render_notes` 用 `\t` 拼三列（note_id / title / 时间戳），而
+  TUI 的呈现层是 `Static(..., markup=False)` **纯文本**（不解释制表符宽度）⇒ 列随 note_id 长度参差，
+  行前缀缩进叠加后观感更乱。用户实测所报。
+- **决策①：列宽按**显示宽度**计算，**不**按字符数。** 新增 `_display_width(text)`
+  （`unicodedata.east_asian_width(char) in "WF"` ⇒ 2 列，否则 1 列）与 `_pad(text, width)`。
+  必要性有**实测反例**：`f"{v:<{w}}"` 只按 `len()` 补齐，而中日韩字符在等宽终端占 **2 列** ——
+  清单 `a/短`、`longer-id/一个较长的标题`、`zz/ascii title` 三行**字符长度全等 36**，
+  **显示宽度 37 / 43 / 36** ⇒ 时间戳列落在第 37 / 43 / 36 列，**根本没对齐**。本仓笔记标题以中文
+  为主 ⇒ 按字符数补齐等于没做，规格「等宽终端下各数据列对齐」的目标句落空。
+- **决策②：对齐发生在**渲染层**（`diagnostics/views.py`），不换 TUI 组件。** 诊断视图的既有契约是
+  「只读、与 `doctor`/`status` **同源同形状**」⇒ 换 `DataTable` 会把对齐耦合进 TUI，且 CLI / Web
+  两条同样消费 `Report` 的路径得不到同一格式。渲染层补齐 ⇒ 三端一致、`Report` 接口零变更。
+- **决策③：分隔符为两个空格，弃 `\t`。** 制表符宽度由终端自定（正是本次缺陷根源），且 `\t` 在
+  跨列拼接时无法与补齐共存。
+- **决策④：歧义宽（Ambiguous）字符按 1 列。** `"WF"` 不含 `A` ⇒ `±`、`→` 一类按 1 列计，与多数
+  现代终端默认一致；若终端按双宽渲染歧义字符，含此类字符的行会有 1 列偏移（已知局限，见下）。
+- **范围**：本 change **只改 `render_notes`**。`render_sessions`（`\t`）、`render_mcp`（`\t`）与
+  `render_config` 的 `\t` 形态**同缺陷但在范围外**（proposal 明写「各自独立提案」）—— 记 §3 局限。
+- **兼容性**：`Report` 接口与 `render_notes` 签名零变更；既有断言
+  （`test_render_notes_marks_pinned` 的 `"alpha" in out` / `"常驻" in out`）在新格式下逐字仍成立；
+  空清单（`（空）`）与句柄缺失（`未接线`）两条早退路径不受影响。
+- **已知局限**：① **歧义宽字符按 1 列**（上文决策④）；② **超长 title 会拉长整行**（列宽取清单内
+  最长显示宽度，无截断 / 无换行 —— 笔记清单规模有限，暂可接受）；③ **只覆盖 `render_notes`** ——
+  `render_sessions` / `render_mcp` 仍 `\t` 参差（另立）；④ **未做 TUI 端列宽自适应 / 截断**
+  （终端宽度感知属呈现层，本 change 不做）。
+- **规格**：`doc/openspec/specs/cli-ops/spec.md` **ADDED** Requirement「诊断视图列对齐」
+  （3 Scenario：笔记清单等宽列 / **含中日韩字符的清单仍对齐** / title 回退对齐）—— ADDED 只追加
+  canonical 末尾，**既有 Requirement 逐字不改**；测试面 `doc/04-testing/test-cases.md` §80
+  （TC-NOTES-ALIGN）、台账 `coding-plan/known-risk.md` §1（E104）+ §3。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4810,3 +4842,4 @@
 | ADR-0155 | 02-modules/hooks.md, coding-plan/known-risk.md |
 | ADR-0156 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0157 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0158 | 04-testing/test-cases.md, coding-plan/known-risk.md |

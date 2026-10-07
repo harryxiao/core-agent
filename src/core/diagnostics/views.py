@@ -9,6 +9,7 @@ MCP 视图**不出** `EndpointRecord.args`（其可能是 `--token <值>` 形态
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Callable
 
 from core.diagnostics.deps import Deps
@@ -102,19 +103,38 @@ def _catalog_lines(market: MarketIndex) -> list[str]:
 
 
 def render_notes(deps: Deps) -> Report:
-    """canonical 笔记清单：`[常驻 优先 N]` 标记常驻项。"""
+    """canonical 笔记清单：等宽列（**按显示宽度**补齐）+ `[常驻 优先 N]` 标记常驻项。"""
     store = deps.notes
     if store is None:
         return Report(title="笔记", lines=(_NOT_WIRED,))
 
     def rows() -> list[str]:
+        notes = store.list()
+        if not notes:
+            return []
+        w_id = max(_display_width(n.note_id) for n in notes)
+        w_title = max(_display_width(n.title or n.note_id) for n in notes)
         return [
-            f"{note.note_id}\t{note.title or note.note_id}\t{int(note.updated_at)}"
-            f"{f' [常驻 优先 {note.pin_priority}]' if note.pinned else ''}"
-            for note in store.list()
+            f"{_pad(n.note_id, w_id)}  {_pad(n.title or n.note_id, w_title)}  {int(n.updated_at)}"
+            f"{f' [常驻 优先 {n.pin_priority}]' if n.pinned else ''}"
+            for n in notes
         ]
 
     return _sealed("笔记", rows)
+
+
+def _display_width(text: str) -> int:
+    """文本的**显示列宽**：东亚宽 / 全角字符按 2 列计，其余按 1 列。
+
+    `len()` 是**字符数**，与终端等宽字体下的列数不等 —— 含中日韩字符的清单若按字符数补齐，
+    列起点仍随内容错位（一条中文标题会把后列整体推右）。
+    """
+    return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
+
+
+def _pad(text: str, width: int) -> str:
+    """按**显示宽度**左对齐补齐到 `width` 列（`f"{text:<{width}}"` 只数字符数）。"""
+    return text + " " * max(0, width - _display_width(text))
 
 
 def _as_int(value: object) -> int:

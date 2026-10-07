@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import os
 import pathlib
+import unicodedata
 from typing import Any
 
 import pytest
@@ -38,6 +39,9 @@ from core.tools import ToolProvider, builtin_tools
 
 # 独特标记值：任何输出命中它即判定「密钥泄漏」（可 grep 的哨兵）。
 _CANARY = "sk-DIAG-CANARY-9f3a"
+
+_STAMP_LEN = 10  # 时间戳（epoch 秒）的十进制位数
+_ALIGN_NOTES = (("a", "短"), ("longer-id", "一个较长的标题"))  # 对齐用例：一条 ASCII、一条中日韩
 
 _VALID_YAML = """\
 llm:
@@ -249,6 +253,32 @@ def test_render_notes_marks_pinned(tmp_path) -> None:
     out = _lines(render_notes(_deps(tmp_path, notes=store)))
     assert "alpha" in out
     assert "常驻" in out
+
+
+def _display_width(text: str) -> int:
+    """显示列宽：东亚宽 / 全角字符按 2 列计（测试内独立实现，不复用被测代码以免自证）。"""
+    return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
+
+
+def _timestamp_column(line: str) -> int:
+    """行内时间戳（末尾 10 位数字）起始的**显示列**（其后的常驻标记不参与）。"""
+    body = line.split(" [常驻", 1)[0].rstrip()
+    assert body[-_STAMP_LEN:].isdigit(), body
+    return _display_width(body[: len(body) - _STAMP_LEN])
+
+
+def test_render_notes_columns_aligned(tmp_path) -> None:
+    """笔记清单等宽列：按**显示宽度**补齐，双空格分隔，禁 \\t —— 含中日韩宽字符仍对齐。"""
+    store = NoteStore(path=tmp_path / "notes")
+    for note_id, title in _ALIGN_NOTES:
+        store.create(note_id, title=title)
+    lines = _lines(render_notes(_deps(tmp_path, notes=store))).splitlines()
+    body = [ln for ln in lines if ln.strip()][1:]  # 首行是 Report 标题
+    assert len(body) == len(_ALIGN_NOTES), body
+    assert all("\t" not in ln for ln in body), body
+    # 中文标题按字符数补齐会把这行后列整体推右 ⇒ 按**显示列**断言时间戳起点一致
+    columns = [_timestamp_column(ln) for ln in body]
+    assert len(set(columns)) == 1, (columns, body)
 
 
 def test_render_skills_lists_catalog_and_library(tmp_path) -> None:

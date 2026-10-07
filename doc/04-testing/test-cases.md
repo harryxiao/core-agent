@@ -1296,6 +1296,19 @@
 > （卡住时本轮收尾会等它，缓解面是既有 `timeout_s` 与失败降级链）；只覆盖三处已确认边界（无自动门禁）；
 > 线程跳一次成本非零；不改 `completion()` 薄壳（从事件循环内直接调用仍是错误用法，未加防呆断言）。
 
+## 80. 诊断视图列对齐（TC-NOTES-ALIGN，change `0165`／ADR-0158）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-NOTES-ALIGN-01 | cli-ops/spec.md「诊断视图列对齐」Scenario「笔记清单等宽列」 | 笔记库两条（`a`/`短`、`longer-id`/`一个较长的标题`）⇒ `render` 去标题行取全部行 | 恰两行；每行**不含 `\t`**（锚点：`tests/test_diagnostics.py::test_render_notes_columns_aligned`） |
+| TC-NOTES-ALIGN-02 | 同上 Scenario「含中日韩字符的清单仍对齐」（**本 change 的核心**） | 同上 | 各行时间戳（末尾 10 位数字）起点的**显示列**相等 —— 按字符数补齐时中文行会整体右移 ⇒ 必红（锚点：同上；显示宽度由 `unicodedata.east_asian_width` 独立计算，**不复用被测代码**以免自证） |
+| TC-NOTES-ALIGN-03 | 同上 Scenario「title 回退对齐」（回归） | 常驻项清单 ⇒ `render_notes` | 既有断言 `"alpha" in out` / `"常驻" in out` 在新格式下逐字仍成立（锚点：`...::test_render_notes_marks_pinned`） |
+
+> **无手工验收项**：列对齐以**显示宽度**为判据（`east_asian_width` 的 `WF` 类按 2 列），
+> 时间戳列起点一致即通过 —— 该判据在按字符数补齐的旧实现下必红（实测同字符长度 36 而显示宽 37/43/36）。
+> **已知局限**：歧义宽（`A`）字符按 1 列（与多数终端默认一致）；超长 title 拉长整行（无截断）；
+> 只覆盖 `render_notes`（`render_sessions` / `render_mcp` 仍用 `\t`，另立）；未做 TUI 端列宽自适应。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`
