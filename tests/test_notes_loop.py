@@ -229,3 +229,81 @@ def test_planner_injects_notes_block_only_when_present() -> None:
     planner2 = LLMPlanner(llm2, model="test-model")  # type: ignore[arg-type]
     asyncio.run(planner2(LoopContext(messages=[{"role": "user", "content": "任务"}])))
     assert "相关笔记：" not in llm2.requests[0].messages[0].content  # type: ignore[attr-defined]
+
+
+# ---- 常驻（pinned）笔记：每轮无条件注入（change 0149 / ADR-0141 / 账本 E93） ----
+
+
+def test_loop_pinned_hook_populates_context_without_task_arg(tmp_path) -> None:
+    """常驻注入与 query 无关：零参钩子每轮无条件填 `ctx.pinned_notes`。"""
+    store = _store(tmp_path)
+    store.update(
+        NoteEntry(note_id="constraints", title="硬约束", content="接口必须 HTTPS", pinned=True)
+    )
+    calls: list[int] = []
+
+    def pinned() -> str:
+        calls.append(1)
+        return store.pinned_digest()
+
+    captured: list[str] = []
+    loop = DefaultLoop(
+        planner=lambda ctx: captured.append(ctx.pinned_notes) or Action(args={"reply": "done"}),
+        pinned_notes_consult=pinned,
+    )
+    loop.run("与约束完全无关的任务")
+
+    assert calls == [1], "常驻钩子每轮调用恰一次"
+    # 若 loop 误传任务文本，零参闭包会抛 TypeError 而降级为空 ⇒ 有内容即证「零参调用」
+    assert captured and "接口必须 HTTPS" in captured[0], "常驻正文进上下文（不依赖 query 命中）"
+
+
+def test_loop_without_pinned_hook_leaves_pinned_notes_empty() -> None:
+    captured: list[str] = []
+    loop = DefaultLoop(
+        planner=lambda ctx: captured.append(ctx.pinned_notes) or Action(args={"reply": "done"})
+    )
+    loop.run("任意任务")
+
+    assert captured == [""], "缺省未注入 ⇒ 空（不注入常驻块）"
+
+
+def test_loop_pinned_consult_failure_degrades() -> None:
+    tracer = _RecordingTracer()
+
+    def boom() -> str:
+        raise RuntimeError("常驻源不可用")  # noqa: TRY003
+
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "done"}),
+        tracer=tracer,
+        pinned_notes_consult=boom,
+    )
+    result = loop.run("任务")
+
+    assert not result.failed and result.reply == "done", "常驻注入抛错不影响本轮结果"
+    assert "pinned_notes_consult_failed" in tracer.kinds, "降级留痕"
+
+
+def test_planner_injects_pinned_block_before_related_notes() -> None:
+    llm = _FakeLLM("done")
+    planner = LLMPlanner(llm, model="test-model")  # type: ignore[arg-type]
+    ctx = LoopContext(
+        messages=[{"role": "user", "content": "任务"}],
+        pinned_notes="接口必须 HTTPS",
+        notes="命中笔记：先备份再滚动更新",
+    )
+    asyncio.run(planner(ctx))
+    prompt = llm.requests[0].messages[0].content  # type: ignore[attr-defined]
+
+    assert "常驻笔记" in prompt and "接口必须 HTTPS" in prompt
+    assert "相关笔记：" in prompt
+    assert prompt.index("常驻笔记") < prompt.index("相关笔记"), "常驻块先于「相关笔记」块（独立块）"
+
+
+def test_planner_omits_pinned_block_when_empty() -> None:
+    llm = _FakeLLM("done")
+    planner = LLMPlanner(llm, model="test-model")  # type: ignore[arg-type]
+    asyncio.run(planner(LoopContext(messages=[{"role": "user", "content": "任务"}])))
+
+    assert "常驻笔记" not in llm.requests[0].messages[0].content  # type: ignore[attr-defined]

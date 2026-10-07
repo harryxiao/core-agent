@@ -19,6 +19,7 @@ class NoteEntry:
     source: str = "notes"
     updated_at: float = 0.0           # 秒级时间戳（覆盖式更新的「最新」判据）
     search_queries: list[str] = field(default_factory=list)  # 头部 `## Search Queries` 关键词（词法检索用）
+    pinned: bool = False              # 常驻标记：True ⇒ 正文每轮无条件注入推理上下文（独立块，change 0149）
 
     @property
     def path(self) -> str:            # canonical 相对路径（派生）
@@ -34,6 +35,7 @@ class NoteEntry:
 - tags: a, b
 - source: notes
 - updated_at: 1759600000.0
+- pinned: true
 
 ## Search Queries
 
@@ -104,13 +106,23 @@ class NoteStore(Plugin):
     # 循环纪律接缝
     def digest(self, query: str) -> str: ...                      # 确定性：命中笔记摘要 + 笔记清单
     def observe_turn(self, task: str, steps: list[str], *, ok: bool) -> NoteEntry | None: ...
+
+    # 常驻（pinned）面（change 0149）
+    def pinned(self) -> list[NoteEntry]: ...                      # 常驻清单（note_id 升序，确定性）
+    def pinned_digest(self) -> str: ...                           # 常驻注入块（正文**全文**、无 query、有界）
+    def set_pinned(self, note_id: str, *, pinned: bool = True) -> NoteEntry: ...  # 置/清标记（幂等）
+
 ```
 
 - `ensure` = 幂等 get-or-create（**不**因已存在而报 `TOPIC_EXISTS`）；`create` 是显式创建、已存在即拒。
 - `digest(query)`：`consult(query)` 命中项渲染为「- 标题（note_id）：正文节选」+ `list()` 标题清单；
   总长有界（供 loop 直接注入，不自动全量注入正文）。
 - `observe_turn`：成功轮把「解决过程」覆盖式写回 `slug_topic(task)` 主题的 canonical 文件；`ok=False`
-  或 slug 为空 ⇒ `None`（不写盘）。
+  或 slug 为空 ⇒ `None`（不写盘）。写回**原样携带**既有 `pinned` 标记（逐轮写回不抹除常驻）。
+- `pinned_digest()`：常驻笔记**完整正文**（非节选）、无 query 入参（每轮无条件）、按 `note_id` 升序拼接，
+  总长有界于 `_MAX_PINNED_CHARS`(4000)；空正文的常驻笔记不占块；块内不含 `updated_at`（跨轮字节稳定）。
+- `set_pinned(note_id, *, pinned=True)`：缺失 ⇒ `NOTE_NOT_FOUND`；**幂等**（同值 ⇒ 不写盘、不 bump
+  `updated_at`），真变更走同一 `update()` 原子覆盖写路径（不另开第二写路径）。
 
 ---
 
@@ -135,16 +147,21 @@ class NoteError(Exception):
 
 ## 5. loop 接线（loop **不 import notes**）
 
-- `core.loop.protocol.LoopContext` 新增附加字段 `notes: str = ""`（缺省空 ⇒ 既有行为逐字不变）。
+- `core.loop.protocol.LoopContext` 新增附加字段 `notes: str = ""`（缺省空 ⇒ 既有行为逐字不变）与
+  `pinned_notes: str = ""`（**独立字段** —— 常驻面与命中面分列成块，不得折入 `notes`；change 0149）。
 - `core.loop.default` 新增钩子别名（**纯 Callable，不含 notes 类型**）：
 
 ```python
-NotesConsult = Callable[[str], str]   # 任务文本 → 笔记摘要文本（loop 不 import notes，组合根注入）
+NotesConsult = Callable[[str], str]      # 任务文本 → 笔记摘要文本（loop 不 import notes，组合根注入）
+PinnedNotesConsult = Callable[[], str]   # **零参** → 常驻注入块（签名即契约：与当轮任务无关）
 ```
 
   `DefaultLoop(..., notes_consult=...)`：`astream` 中 `perceive` 之后调用，写入 `ctx.notes`；抛错降级留痕、
-  不改本轮结局。**Update 侧复用既有 `TurnObserver`**（`_notify_turn` 即任务后唯一收尾点）。
-- `core.loop.planner.LLMPlanner._system_prompt`：`ctx.notes` 非空时插入「相关笔记」块。
+  不改本轮结局。`DefaultLoop(..., pinned_notes_consult=...)`：同处调用（`_load_pinned_notes`），写入
+  `ctx.pinned_notes`；抛错降级留痕 `pinned_notes_consult_failed`、不改本轮结局。
+  **Update 侧复用既有 `TurnObserver`**（`_notify_turn` 即任务后唯一收尾点）。
+- `core.loop.planner.LLMPlanner._system_prompt`：`ctx.notes` 非空时插入「相关笔记」块；`ctx.pinned_notes`
+  非空时插入**独立**「常驻笔记（任务级硬约束，逐轮生效，勿违背）」块，位置**紧随宪法规则、先于相关事实**。
 
 ---
 
@@ -152,8 +169,10 @@ NotesConsult = Callable[[str], str]   # 任务文本 → 笔记摘要文本（lo
 
 | 命令 | 语义 |
 |---|---|
-| `notes list` | 列出 canonical 笔记清单（id / 标题 / 更新时间） |
+| `notes list` | 列出 canonical 笔记清单（id / 标题 / 更新时间；常驻条目行尾追加 `\t[pinned]`） |
 | `notes show <note_id>` | 打印一篇 canonical 笔记（`NOTE_NOT_FOUND` ⇒ 退出码非零） |
 | `notes search <query>` | 词法检索（标题 / tags / Search Queries），打印命中 note 摘要 |
+| `notes pin <note_id>` | 置常驻标记（正文每轮无条件注入；幂等；缺失 ⇒ `NOTE_NOT_FOUND` 非零退出） |
+| `notes unpin <note_id>` | 清常驻标记 |
 
 一次 `notes` 命令 = 一次性进程；canonical 目录是**落盘真源** ⇒ 一次写入在后续进程可见。

@@ -409,7 +409,7 @@
 | TC-NOTE-15 | 同上 Consult → Update 版本语义 | 同主题先写「旧结论」再覆盖写「新结论」，两次 `consult` | 第二次读到**新结论**且**不含**旧结论（最新即权威）（锚点：`::test_store_consult_update_consult_reads_latest`） |
 | TC-NOTE-16 | 同上「既有记忆链路未改」 | `digest` 输出构成；以及 `git diff` 核对 `plugin_registry` / `memory` / `rag` | digest = 命中笔记节选 + **全量标题清单**（总量 ≤1200 字符，不自动注入正文）；三个既有子系统**零改动**（锚点：`::test_store_digest_carries_hits_and_catalog`；变更期 `git diff --stat src/core/{plugin_registry,memory,rag}` 为空） |
 | TC-NOTE-17 | 同上「循环纪律 + 分层」 | 架构成例扫描 `notes` 包与 `loop` 包的 import 面 | `loop` **不** import `notes`（反向依赖用例含 `notes`）；`notes` 包可导入、有 `__init__.py`（锚点：`tests/test_architecture.py::test_phase3_loop_no_reverse_dependency` / `::test_packages_importable`） |
-| TC-NOTE-18 | 同上 CLI 面 | 跨进程：一进程经 `NoteStore` 写 canonical（含 `observe_turn`），另一进程 `core-agent notes list` / `search <中文任务句>` / `show <id>`；`show` 不存在的 id | 三子命令都在**新进程**里从 canonical Markdown 读到内容（落盘为真源）；中文长句命中；缺失 id ⇒ `NOTE_NOT_FOUND` + 退出码 1（锚点：`tests/test_entry.py` notes 子命令用例 + change 0106 端到端冒烟） |
+| TC-NOTE-18 | 同上 CLI 面 | 跨进程：一进程经 `NoteStore` 写 canonical（含 `observe_turn`），另一进程 `core-agent notes list` / `search <中文任务句>` / `show <id>`；`show` 不存在的 id | 三子命令都在**新进程**里从 canonical Markdown 读到内容（落盘为真源）；中文长句命中；缺失 id ⇒ `NOTE_NOT_FOUND` + 退出码 1（锚点：`tests/test_entry.py` notes 子命令用例 —— change `0149` 起 `show`/`list` 有真锚点，`search` 仍缺（补锚点另立账）；change 0106 端到端冒烟） |
 | TC-NOTE-19 | notes/spec.md「Consult → Build → Update 循环纪律」+ evolution 归因 | 扫描仓内全部 `plugin_id = "..."` 声明与 `INTERNAL_PLUGIN_IDS` | 逐元素一致（`notes.store` 已登记）—— `notes` 的缺陷归因为**架构级**（`plugin`/`high`）而非技能级，不绕过人工审批（锚点：`tests/test_evolution_attribution.py::test_internal_plugin_ids_match_declared_plugin_ids`） |
 
 | TC-NOTE-20 | notes/spec.md「canonical Markdown 真相层与可插拔后端」（change `0107` 字段加权） | 两篇均含关键词 K：A **标题**命中、B **仅正文顺带**提及；另一组 tags / `## Search Queries` 命中 vs 正文命中；以及**无任何字段**命中 | A 排 B **之前**且两者**均被命中**（加权只改排序、不改过滤）；元数据命中排在正文命中之前；无命中 ⇒ **空列表**（返回结构不变）（锚点：`tests/test_notes.py::test_backend_search_weights_title_above_content` / `::test_backend_search_weights_meta_above_content` / `::test_backend_search_no_hit_returns_empty`） |
@@ -984,6 +984,27 @@
 | TC-ROLLSUM-05 | memory/spec.md「记忆压实」Scenario「压实可撤销」／「摘要提炼并归档」（**回归护栏**） | 既有 `tests/test_memory.py` 压实/固化/遗忘全量用例 | 逐字不动全绿——尤其三条 `seen ==` 断言（首次压实无既有摘要 ⇒ 材料逐字等于原始条目）、`test_compact_is_reversible_by_trace`（回滚 ⇒ 原条目迁回 L2、摘要移除、`undo_failed == []`） |
 
 > **无手工验收项**：纯库内行为（`memory` 层），全自动门禁（pytest）覆盖；无前端 / Rust / 真端点面。
+
+## 65. 常驻（pinned）笔记：任务级硬约束锚（TC-PIN，change `0149`／ADR-0141，账本 E93）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-PIN-01 | notes/spec.md「常驻（pinned）笔记（任务级硬约束锚）」标记往返（**零回归护栏**） | `render_note(NoteEntry(pinned=False))`；对照 `pinned=True` | False ⇒ 输出**逐字不含** `- pinned`（与改前逐字一致）；True ⇒ 含 `- pinned: true`（锚点：`test_notes.py::test_render_note_omits_pinned_line_when_false` / `::test_render_parse_roundtrip_with_pinned`） |
+| TC-PIN-02 | 同 Requirement（解析宽容 + fail-closed） | `parse_note` 喂 `pinned` 取 `true/yes/1/on`（含大小写变体）/ 其他拼写 / 缺行 | 前三类 ⇒ True；其他拼写与缺行 ⇒ False（手误**绝不**意外置常驻）（锚点：`::test_parse_note_pinned_truthy_spellings` / `::test_parse_note_pinned_falsey_spellings`） |
+| TC-PIN-03 | 同 Requirement（标记往返持久化 + 幂等） | `set_pinned(id, True)` 后**新实例**读回；再同值 `set_pinned` | 新实例 `pinned is True`（落盘真源）；同值重置 ⇒ **不写盘、不 bump** `updated_at`（锚点：`::test_store_set_pinned_persists_and_is_idempotent`） |
+| TC-PIN-04 | 同 Requirement（未知 id 结构化错误） | `set_pinned("missing", ...)` | `NoteError(NOTE_NOT_FOUND)`（锚点：`::test_store_set_pinned_missing_raises`） |
+| TC-PIN-05 | 同 Requirement（注入**全文**而非节选） | 常驻笔记正文 > `_MAX_EXCERPT_CHARS`(200)；另有非常驻笔记 | `pinned_digest()` 含常驻正文**全文**；非常驻正文**不出现**（锚点：`::test_store_pinned_digest_carries_full_body`） |
+| TC-PIN-06 | 同 Requirement（无常驻 ⇒ 空块；确定性 + 有界） | 无常驻笔记；多篇超长常驻正文 | 前者 ⇒ `""`（不注入空块）；后者 ⇒ 长度 ≤ `_MAX_PINNED_CHARS`(4000) 且按 `note_id` 升序**确定**（跨轮字节稳定）（锚点：`::test_store_pinned_digest_empty_without_pins` / `::test_store_pinned_digest_is_deterministic_and_capped`） |
+| TC-PIN-07 | 同 Requirement（逐轮写回不抹除常驻） | 先 `set_pinned`，再 `observe_turn` 同一主题（slug 命中该 id） | 写回后 `pinned` **仍为 True**（`observe_turn` 原样携带既有标记）（锚点：`::test_store_observe_turn_preserves_pinned`） |
+| TC-PIN-08 | 同 Requirement Scenario「每轮无条件注入（不依赖 query 命中）」 | 注入**零参** `pinned_notes_consult` 闭包；跑一轮与约束**完全无关**的任务 | 闭包被调**恰一次**、`ctx.pinned_notes` 即其返回值（零参闭包在误传任务文本时会 TypeError ⇒ 有内容即证零参调用）；缺省未注入 ⇒ `""`（锚点：`test_notes_loop.py::test_loop_pinned_hook_populates_context_without_task_arg` / `::test_loop_without_pinned_hook_leaves_pinned_notes_empty`） |
+| TC-PIN-09 | 同 Requirement Scenario「源失败降级不阻断」 | 常驻钩子抛错；对照正常轮 | 降级 ⇒ `ctx.pinned_notes` 置空 + `pinned_notes_consult_failed` 留痕、本轮结局**不变**（锚点：`::test_loop_pinned_consult_failure_degrades`） |
+| TC-PIN-10 | 同 Requirement Scenario「独立块且位置在最前」 | `LLMPlanner` 在 `pinned_notes` 与 `notes` **同时非空** / 缺省两种上下文装配 prompt | 同时非空 ⇒ 两**独立**块分列且「常驻笔记」**先于**「相关笔记」（`index` 序）；缺省 ⇒ **无**「常驻笔记」块（锚点：`::test_planner_injects_pinned_block_before_related_notes` / `::test_planner_omits_pinned_block_when_empty`） |
+| TC-PIN-11 | 同 Requirement CLI + Scenario「pin/unpin 持久化往返」 | 跨实例：`core-agent notes pin <id>` → `notes show` → `notes unpin`；未知 id | 落盘真源读回 `pinned is True`；`show` 输出含 `- pinned: true`；`unpin` 后 `False`；未知 id ⇒ 退出码 1 + stderr `NOTE_NOT_FOUND`（锚点：`test_entry.py::test_notes_pin_then_show_marks_pinned` / `::test_notes_pin_missing_note_returns_nonzero` / `::test_notes_pin_is_idempotent` / `::test_notes_list_marks_pinned` / `::test_notes_usage_lists_pin_verbs`） |
+| TC-PIN-12 | 同 Requirement（全局文档层，不参与会话隔离） | 内省 `pinned`/`pinned_digest`/`set_pinned` 参数名；两会话下同一常驻源注入 | 均**无** `session` 维度；两处注入块**相同** —— 常驻层与 Consult 同为全局刻意知识（锚点：`test_session_isolation.py::test_notes_pinned_is_not_session_scoped` + `::test_notes_api_has_no_session_dimension[pin/pinned/pinned_digest/set_pinned]`） |
+| TC-PIN-13 | 同 Requirement（**消歧**：不改变未标记笔记口径 + 零回归） | 既有 `tests/test_notes.py`（含 `digest` 三例）/ `tests/test_notes_loop.py`（含「相关笔记」两例）/ `tests/test_session_isolation.py` 全量用例 | 逐字不动全绿 —— 「不自动全量注入」口径只约束 Consult 命中路径；未标记笔记行为**逐字不变**（回归护栏） |
+
+> **无手工验收项**：纯库内行为（`notes` + loop 注入 + CLI），全自动门禁（pytest）覆盖；无前端 / Rust / 真端点面。
+> ⚠️ **使用红线（入 proposal 风险节）**：常驻笔记正文**每轮进模型上下文** ⇒ **绝不**把密钥 / 凭据写进常驻笔记。
 
 ---
 

@@ -151,22 +151,31 @@ class LLMPlanner:
 
     def _system_prompt(self, ctx: LoopContext) -> str:
         blocks: list[str] = [_SYSTEM_PROMPT]
-        if self._assembler is not None:
-            pack = self._assembler.build(
+        # 装配器调用提到块外：常驻笔记注入**不依赖**装配器（缺省未装装配器亦须每轮在场）
+        pack = (
+            self._assembler.build(
                 self._task(ctx), stage="reason", budget=2048, session_id=ctx.session_id
             )
-            if pack.constitution:
-                blocks.append("宪法规则：\n" + "\n".join(f"- {line}" for line in pack.constitution))
-            if pack.facts:
-                blocks.append(
-                    "相关事实：\n"
-                    + "\n".join(f"- [{f['source']}] {f['content']}" for f in pack.facts)
-                )
-            if pack.pointers:
-                blocks.append(
-                    "文档目录（按需取详情，勿请求全文）：\n"
-                    + "\n".join(f"- {p['pointer']}：{p['summary']}" for p in pack.pointers)
-                )
+            if self._assembler is not None
+            else None
+        )
+        if pack is not None and pack.constitution:
+            blocks.append("宪法规则：\n" + "\n".join(f"- {line}" for line in pack.constitution))
+        # 常驻笔记：任务级硬约束锚 —— **独立块**（不折入「相关笔记」），紧随宪法规则、先于其余块。
+        # 无条件（与 query 命中无关），故判据只看本字段是否非空。
+        if ctx.pinned_notes.strip():
+            blocks.append(
+                "常驻笔记（任务级硬约束，逐轮生效，勿违背）：\n" + ctx.pinned_notes.strip()
+            )
+        if pack is not None and pack.facts:
+            blocks.append(
+                "相关事实：\n" + "\n".join(f"- [{f['source']}] {f['content']}" for f in pack.facts)
+            )
+        if pack is not None and pack.pointers:
+            blocks.append(
+                "文档目录（按需取详情，勿请求全文）：\n"
+                + "\n".join(f"- {p['pointer']}：{p['summary']}" for p in pack.pointers)
+            )
         if ctx.notes.strip():
             blocks.append("相关笔记：\n" + ctx.notes.strip())
         skills = self._skill_hints(self._task(ctx), ctx.session_id)

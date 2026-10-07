@@ -16,6 +16,9 @@ _SEARCH_HEADER = "## Search Queries"
 _NOTES_HEADER = "## Notes"
 _TAG_SEP = ", "
 _META_SEP = ": "
+_PINNED_KEY = "pinned"
+_PINNED_TRUE = "true"  # 渲染面唯一真值拼写（解析面宽容读取，见 _TRUTHY）
+_TRUTHY = frozenset({"true", "yes", "1", "on"})
 
 
 @dataclass
@@ -29,6 +32,7 @@ class NoteEntry:
     source: str = "notes"
     updated_at: float = 0.0  # 秒级时间戳（覆盖式更新的「最新」判据）
     search_queries: list[str] = field(default_factory=list[str])  # 头部检索关键词（词法匹配）
+    pinned: bool = False  # 常驻标记：True ⇒ 正文每轮无条件注入推理上下文（见 change 0149）
 
     @property
     def path(self) -> str:
@@ -64,6 +68,7 @@ def render_note(note: NoteEntry) -> str:
         f"- tags{_META_SEP}{_TAG_SEP.join(note.tags)}",
         f"- source{_META_SEP}{note.source}",
         f"- updated_at{_META_SEP}{note.updated_at}",
+        *([f"- {_PINNED_KEY}{_META_SEP}{_PINNED_TRUE}"] if note.pinned else []),
         "",
         _SEARCH_HEADER,
         "",
@@ -112,6 +117,7 @@ def parse_note(text: str, *, note_id: str | None = None, source: str = "notes") 
         source=meta.get("source") or source,
         updated_at=_to_float(meta.get("updated_at", "")),
         search_queries=queries,
+        pinned=_to_bool(meta.get(_PINNED_KEY, "")),
     )
 
 
@@ -127,3 +133,13 @@ def _to_float(value: str) -> float:
         return float(value)
     except ValueError:
         return 0.0
+
+
+def _to_bool(value: str) -> bool:
+    """canonical 元数据真值解析（``render_note`` 只写 ``true``）。
+
+    宽容接受常见真值拼写（大小写不敏感）——canonical 文件是**人类可读、可 review** 的真源，
+    手改一行 ``- pinned: yes`` 应当生效；**无法识别者一律 False**（fail-closed：手误**绝不**
+    意外把一个主题变成常驻）。
+    """
+    return value.strip().lower() in _TRUTHY

@@ -25,6 +25,7 @@ from .models import NoteEntry, parse_note, render_note, slug_topic
 _NOTE_LAYER: Layer = "L2"
 _MAX_EXCERPT_CHARS = 200
 _MAX_DIGEST_CHARS = 1200
+_MAX_PINNED_CHARS = 4000  # 常驻注入总量上界（独立于 digest 的 1200；有界 ⇒ token 有界）
 
 
 def _default_root() -> Path:
@@ -156,6 +157,37 @@ class NoteStore(Plugin):
             )
         return "\n\n".join(sections)[:_MAX_DIGEST_CHARS]
 
+    def pinned(self) -> list[NoteEntry]:
+        """常驻（pinned）笔记清单：按 ``note_id`` 升序 —— **确定性**，使注入块逐轮稳定。"""
+        return sorted((note for note in self.list() if note.pinned), key=lambda note: note.note_id)
+
+    def pinned_digest(self) -> str:
+        """常驻注入块：常驻笔记**完整正文**（每轮无条件注入；与 ``digest`` 的命中面**互不交叉**）。
+
+        无 query 入参（无条件），故与 Consult 是两条独立通道；空正文的常驻笔记**不占块**
+        （避免每轮出现一个只说标题、不说约束的空块）；总长有界 ⇒ token 有界（P5）。
+        块内**不含** ``updated_at``：块字节只随正文变，跨轮稳定。
+        """
+        sections = [
+            f"## {note.title or note.note_id}（{note.note_id}）\n{note.content.strip()}"
+            for note in self.pinned()
+            if note.content.strip()
+        ]
+        return "\n\n".join(sections)[:_MAX_PINNED_CHARS]
+
+    def set_pinned(self, note_id: str, *, pinned: bool = True) -> NoteEntry:
+        """置 / 清常驻标记；缺失 ⇒ ``NOTE_NOT_FOUND``。
+
+        **幂等**：标记值未变化 ⇒ 直接返回、**不写盘、不 bump** ``updated_at`` —— 反复 ``pin``
+        不得搅动 canonical 文件的时间戳（否则「最新即权威」判据被无意义写入污染）。
+        真变更走 ``update()``（**唯一**写回路径：渲染 + 原子落盘 + 时间戳），不另开第二写路径。
+        """
+        note = self.get(note_id)
+        if note.pinned == pinned:
+            return note
+        note.pinned = pinned
+        return self.update(note)
+
     def observe_turn(self, task: str, steps: list[str], *, ok: bool) -> NoteEntry | None:
         """任务后 Update：成功轮把「解决过程」覆盖式写回任务主题；不适用则返回 ``None``。"""
         if not ok:
@@ -172,6 +204,8 @@ class NoteStore(Plugin):
                 title=title,
                 content=body,
                 tags=list(existing.tags) if existing is not None else [],
+                # 逐轮写回不得抹除常驻标记
+                pinned=existing.pinned if existing is not None else False,
                 source="notes.turn",
             )
         )

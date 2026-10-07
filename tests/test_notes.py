@@ -19,6 +19,7 @@ from core.notes import (
     render_note,
     slug_topic,
 )
+from core.notes.store import _MAX_PINNED_CHARS
 
 
 def _entry(note: NoteEntry) -> MemoryEntry:
@@ -223,3 +224,131 @@ def test_store_digest_carries_hits_and_catalog(tmp_path) -> None:
     digest = store.digest("部署流程")
     assert "部署流程" in digest  # 命中摘要
     assert "other" in digest  # 笔记清单（全量标题，不含正文）
+
+
+# ---- 常驻（pinned）笔记（change 0149 / ADR-0141 / 账本 E93） ----
+
+
+def test_render_note_omits_pinned_line_when_false() -> None:
+    """`pinned=False` ⇒ 渲染逐字不变（零回归护栏：既有 canonical 文件字节不动）。"""
+    note = NoteEntry(note_id="t", title="T", content="body", updated_at=0.0)
+    expected = (
+        "# T\n"
+        "\n"
+        "- id: t\n"
+        "- tags: \n"
+        "- source: notes\n"
+        "- updated_at: 0.0\n"
+        "\n"
+        "## Search Queries\n"
+        "\n"
+        "- T\n"
+        "\n"
+        "## Notes\n"
+        "\n"
+        "body\n"
+    )
+    assert render_note(note) == expected
+    assert "- pinned" not in render_note(note)
+
+
+def test_render_parse_roundtrip_with_pinned() -> None:
+    note = NoteEntry(note_id="constraints", title="硬约束", content="接口必须 HTTPS", pinned=True)
+    rendered = render_note(note)
+    assert "- pinned: true" in rendered
+    got = parse_note(rendered, note_id="constraints")
+    assert got.pinned is True
+    assert got.content == "接口必须 HTTPS"
+
+
+@pytest.mark.parametrize(
+    "spelling", ["true", "True", "TRUE", "yes", "Yes", "1", "on", "ON", " true "]
+)
+def test_parse_note_pinned_truthy_spellings(spelling: str) -> None:
+    text = f"# T\n\n- id: t\n- pinned: {spelling}\n\n## Notes\n\nbody\n"
+    assert parse_note(text, note_id="t").pinned is True
+
+
+@pytest.mark.parametrize("spelling", ["false", "no", "0", "off", "", "maybe", "pinneed"])
+def test_parse_note_pinned_falsey_spellings(spelling: str) -> None:
+    """无法识别的取值一律 False（fail-closed：手误不得意外置常驻）。"""
+    text = f"# T\n\n- id: t\n- pinned: {spelling}\n\n## Notes\n\nbody\n"
+    assert parse_note(text, note_id="t").pinned is False
+
+
+def test_store_set_pinned_persists_and_is_idempotent(tmp_path) -> None:
+    store = NoteStore(path=tmp_path, clock=lambda: 100.0)
+    store.update(NoteEntry(note_id="constraints", title="硬约束", content="接口必须 HTTPS"))
+    assert store.get("constraints").pinned is False
+
+    pinned = store.set_pinned("constraints", pinned=True)
+    assert pinned.pinned is True
+    assert pinned.updated_at == 100.0  # noqa: PLR2004 — 注入时钟常量
+    raw = (tmp_path / "constraints.md").read_text(encoding="utf-8")
+    assert "- pinned: true" in raw
+
+    # 新实例读回（落盘真源）
+    assert NoteStore(path=tmp_path).get("constraints").pinned is True
+
+    # 幂等：同值再置 ⇒ 不写盘、不 bump updated_at
+    store2 = NoteStore(path=tmp_path, clock=lambda: 999.0)
+    again = store2.set_pinned("constraints", pinned=True)
+    assert again.updated_at == 100.0, "同值重置不搅动时间戳"  # noqa: PLR2004 — 仍是首次时钟值
+    assert (tmp_path / "constraints.md").read_text(encoding="utf-8") == raw
+
+    # unpin ⇒ 行消失、渲染回到逐字
+    store2.set_pinned("constraints", pinned=False)
+    assert "- pinned" not in (tmp_path / "constraints.md").read_text(encoding="utf-8")
+    assert store2.get("constraints").pinned is False
+
+
+def test_store_set_pinned_missing_raises(tmp_path) -> None:
+    store = NoteStore(path=tmp_path)
+    with pytest.raises(NoteError) as excinfo:
+        store.set_pinned("missing", pinned=True)
+    assert excinfo.value.code is NoteErrorCode.NOTE_NOT_FOUND
+
+
+def test_store_pinned_digest_carries_full_body(tmp_path) -> None:
+    store = NoteStore(path=tmp_path)
+    long_body = "硬约束：" + "必须" * 300  # 远超 _MAX_EXCERPT_CHARS(200)
+    store.update(NoteEntry(note_id="constraints", title="硬约束", content=long_body, pinned=True))
+    store.update(NoteEntry(note_id="other", title="其他", content="无关正文"))
+
+    block = store.pinned_digest()
+    assert long_body in block, "常驻注入完整正文（非节选）"
+    assert "无关正文" not in block, "未标记笔记不进常驻块"
+    assert long_body not in store.digest("硬约束"), "Consult 面仍只给 ≤200 节选（两通道互不交叉）"
+
+
+def test_store_pinned_digest_empty_without_pins(tmp_path) -> None:
+    store = NoteStore(path=tmp_path)
+    store.update(NoteEntry(note_id="a", title="A", content="正文"))
+    assert store.pinned_digest() == ""
+
+    # 空正文的常驻笔记：仍在 pinned()，但不占块（避免每轮一个只有标题的空块）
+    store.update(NoteEntry(note_id="b", title="B", content="   ", pinned=True))
+    assert [note.note_id for note in store.pinned()] == ["b"]
+    assert store.pinned_digest() == ""
+
+
+def test_store_pinned_digest_is_deterministic_and_capped(tmp_path) -> None:
+    store = NoteStore(path=tmp_path)
+    store.update(NoteEntry(note_id="b", title="B", content="b-body", pinned=True))
+    store.update(NoteEntry(note_id="a", title="A", content="a-body", pinned=True))
+    block = store.pinned_digest()
+    assert block.index("a-body") < block.index("b-body"), "按 note_id 升序（确定性）"
+
+    store.update(NoteEntry(note_id="huge", title="Huge", content="x" * 10000, pinned=True))
+    assert len(store.pinned_digest()) == _MAX_PINNED_CHARS, "总长有界（token 有界）"
+
+
+def test_store_observe_turn_preserves_pinned(tmp_path) -> None:
+    """逐轮写回（observe_turn）不得抹除常驻标记（否则常驻在长任务中途静默消失 —— E93 失效面）。"""
+    store = NoteStore(path=tmp_path)
+    store.update(NoteEntry(note_id="部署流程", title="部署流程", content="先备份", pinned=True))
+
+    assert store.observe_turn("部署流程", ["滚动更新"], ok=True) is not None
+    raw = (tmp_path / "部署流程.md").read_text(encoding="utf-8")
+    assert "- pinned: true" in raw
+    assert store.get("部署流程").pinned is True

@@ -96,6 +96,21 @@ canonical 目录缺省 `$CORE_STATE_DIR/notes`（未设则 `~/.core/state/notes`
   总量 ≤1200 字符 ⇒ token 有界。
 - 钩子抛错**只降级留痕**（`notes_consult_failed`），`ctx.notes` 置空，**不改本轮结局**。
 
+### 3.4.1 常驻（pinned）：任务级硬约束锚（与 Consult **分列**的两条通道）
+
+- 动机（账本 `E93`）：Consult 只在 query **命中**时注入正文，未命中只剩 ≤1200 字标题清单
+  ⇒ 长任务中期的硬约束（「对外接口必须 HTTPS」）**不保证每轮在场**；每轮恒注入的此前只有 L0 宪法
+  （**全局、非任务级**）。常驻语义补上「**任务级、每轮无条件**」这一维。
+- 标记面：`NoteEntry.pinned` ＋ canonical 元数据行 `- pinned: true`（未置位**不输出** ⇒ 既有文件逐字不变）
+  ＋ CLI `notes pin/unpin`。解析**宽容**（`true/yes/1/on`，大小写不敏感；其余一律 False，fail-closed）。
+- 注入面：`PinnedNotesConsult = Callable[[], str]`（**零参** ⇒ 与当轮任务无关，签名即契约）
+  → `LoopContext.pinned_notes` → planner **独立块**「常驻笔记」，紧随宪法规则、**先于**相关事实/文档目录/
+  相关笔记。**正文全文**（非节选）、无 query 判据、总量有界于 `_MAX_PINNED_CHARS`(4000)。
+- **与 Consult 的边界**：常驻走**另一条**显式路径，**不改变**「Consult → Build → Update 循环纪律」对
+  **未标记**笔记的「不自动全量注入」口径（该口径只管 Consult 命中路径）。
+- 全局层：`pinned()/pinned_digest()/set_pinned()` **不接受**会话维度（承 §4 的「刻意知识不参与隔离」）。
+- 三 loop 同注入（主 / 子任务 / 神兽）—— 子任务与神兽同须遵守任务级硬约束。
+
 ### 3.5 Update：任务后写回（复用既有收尾观察者）
 
 - **复用 `TurnObserver`**，不新增第二个收尾钩子：成功轮的（任务, 行动/结果序列）已经过该钩子，
@@ -115,7 +130,8 @@ canonical 目录缺省 `$CORE_STATE_DIR/notes`（未设则 `~/.core/state/notes`
 `notes` **恒装配**，不入 `GATABLE_MODULES`（真相层不是可选玩法）。`NoteStore` 是 `Plugin`
 （`plugin_id="notes.store"`）但**未纳入 `PluginRegistry`**（同 E31 欠账）；
 它已登记进 `evolution` 的归因白名单 `INTERNAL_PLUGIN_IDS`（13 → 14，ADR-0099），
-使其缺陷归因为**架构级**（走人工审批）而非技能级。
+使其缺陷归因为**架构级**（走人工审批）而非技能级。常驻注入（§3.4.1）同属**组合根注入闭包**
+（`Runtime.build_runtime` 的 `_pinned_notes`）⇒ notes 仍恒装配、仍不入 `GATABLE_MODULES`。
 
 ---
 

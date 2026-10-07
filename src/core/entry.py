@@ -270,6 +270,10 @@ def _add_notes_parser(sub: Any) -> None:
     search = notes_sub.add_parser("search", help="词法检索（标题 / tags / Search Queries）")
     search.add_argument("query", help="查询语句")
     search.add_argument("--top-k", type=int, default=5, metavar="N", help="返回条数")
+    pin = notes_sub.add_parser("pin", help="置常驻标记（正文每轮无条件注入推理上下文）")
+    pin.add_argument("note_id", help="笔记（主题）id")
+    unpin = notes_sub.add_parser("unpin", help="清常驻标记（正文不再无条件注入）")
+    unpin.add_argument("note_id", help="笔记（主题）id")
 
 
 def _add_evolve_parser(sub: Any) -> None:
@@ -1430,7 +1434,9 @@ def _rag_ask(runtime: Any, args: argparse.Namespace) -> int:
     return 0
 
 
-_NOTES_USAGE = "用法: core-agent notes {list|show <note_id>|search <query>}"
+_NOTES_USAGE = (
+    "用法: core-agent notes {list|show <note_id>|search <query>|pin <note_id>|unpin <note_id>}"
+)
 
 
 def _notes_store() -> NoteStore:
@@ -1439,8 +1445,14 @@ def _notes_store() -> NoteStore:
 
 
 def _notes(args: argparse.Namespace) -> int:
-    """文档化记忆操作面：列清单 / 打印一篇 / 词法检索（均只读，不改运行态）。"""
-    handlers = {"list": _notes_list, "show": _notes_show, "search": _notes_search}
+    """文档化记忆操作面：列清单 / 打印一篇 / 词法检索（读）+ 常驻标记（写回 canonical 文档层）。"""
+    handlers = {
+        "list": _notes_list,
+        "show": _notes_show,
+        "search": _notes_search,
+        "pin": _notes_pin,
+        "unpin": _notes_unpin,
+    }
     handler = handlers.get(args.notes_cmd or "")
     if handler is None:
         print(_NOTES_USAGE, file=sys.stderr)
@@ -1459,7 +1471,22 @@ def _notes_list(store: NoteStore, _args: argparse.Namespace) -> int:
         print("（无笔记）")
         return 0
     for note in notes:
-        print(f"{note.note_id}\t{note.title or note.note_id}\t{int(note.updated_at)}")
+        marker = "\t[pinned]" if note.pinned else ""  # 非常驻行输出逐字不变
+        print(f"{note.note_id}\t{note.title or note.note_id}\t{int(note.updated_at)}{marker}")
+    return 0
+
+
+def _notes_pin(store: NoteStore, args: argparse.Namespace) -> int:
+    """`notes pin <note_id>`：置常驻标记（正文每轮无条件注入；**幂等**，已标记不写盘）。"""
+    store.set_pinned(args.note_id, pinned=True)
+    print(f"已常驻: {args.note_id}")
+    return 0
+
+
+def _notes_unpin(store: NoteStore, args: argparse.Namespace) -> int:
+    """`notes unpin <note_id>`：清常驻标记（不存在 ⇒ ``NOTE_NOT_FOUND`` 非零退出）。"""
+    store.set_pinned(args.note_id, pinned=False)
+    print(f"已取消常驻: {args.note_id}")
     return 0
 
 

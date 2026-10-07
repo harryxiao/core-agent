@@ -470,6 +470,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         """任务前 Consult：确定性读命中笔记 + 清单（loop 不 import notes，组合根注入闭包）。"""
         return note_store.digest(task)
 
+    def _pinned_notes() -> str:
+        """常驻注入（0149）：**零参**取常驻笔记全文块（与当轮任务无关 ⇒ 每轮无条件在场）。"""
+        return note_store.pinned_digest()
+
     def _loop_hooks(
         domain: str | None = None,
     ) -> tuple[Callable[[str], list[SkillHint]], TurnObserver]:
@@ -695,6 +699,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         compactor=context_compactor,
         turn_observer=loop_turn,
         notes_consult=_consult_notes,
+        pinned_notes_consult=_pinned_notes,
         cold_path=cold_path,
         trace_observer=trace_observer,
         middlewares=[constraints_chain.middleware],
@@ -738,6 +743,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 compactor=context_compactor,
                 turn_observer=agent_turn,
                 notes_consult=_consult_notes,
+                pinned_notes_consult=_pinned_notes,
                 middlewares=[constraints_chain.middleware],
                 action_observers=[constraints_chain.observe_result],
                 max_rounds=max_rounds,
@@ -777,6 +783,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 compactor=context_compactor,
                 turn_observer=beast_turn,
                 notes_consult=_consult_notes,
+                pinned_notes_consult=_pinned_notes,
                 middlewares=[constraints_chain.middleware],
                 action_observers=[constraints_chain.observe_result],
                 source=beast.agent_id,

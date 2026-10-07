@@ -43,6 +43,9 @@ class LoopContext:
     rounds: int = 0
     token_used: int = 0
     notes: str = ""  # 任务前 Consult 摘要（文档化记忆；缺省空 ⇒ 不注入。见 change 0106）
+    # 常驻（pinned）笔记注入块：任务级硬约束锚，**每轮无条件**（不依赖 query 命中；见 0149）。
+    # **独立字段**：不得折入 `notes` —— 二者是两条通道（命中面 vs 常驻面），分列成块。
+    pinned_notes: str = ""
     session_id: str = ""  # 本轮会话标识（缺省空串 = 未归属）；推理期检索/技能路由的归属维度
     # 本会话最近历史对话（「用户原话 / 最终回复」成对；缺省空 ⇒ 不回灌）。
     # **独立字段**：不得前置进 `messages` —— 后者首条被当「本轮任务」、其后被当动作序列。

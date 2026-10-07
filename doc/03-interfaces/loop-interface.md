@@ -99,6 +99,8 @@ class LoopContext:
     trajectory: list[Step]      # 本轮轨迹（供 Remember 写入）
     reply: str = ""
     notes: str = ""             # 任务前 Consult 摘要（文档化记忆；缺省空 ⇒ 不注入）
+    pinned_notes: str = ""      # 常驻（pinned）笔记注入块：任务级硬约束锚，**每轮无条件**
+                                # （与 query 命中无关；独立字段、与 ``notes`` 分列成块；change 0149）
     session_id: str = ""        # 本轮会话标识（缺省空串 = 未归属）；推理期检索/技能路由的归属维度
     history: list[Message] = field(default_factory=list)
                                 # 本会话**既往**轮次的 (user, assistant) 对（转录回灌；缺省空 ⇒ 不回灌）

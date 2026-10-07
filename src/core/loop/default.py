@@ -55,6 +55,11 @@ ColdPath = Callable[[], None]
 # loop 不 import notes（架构红线），生产侧注入组合根闭包（内部调 NoteStore.digest）。
 NotesConsult = Callable[[str], str]
 
+# 常驻（pinned）笔记钩子：**零参** → 任务级硬约束注入块文本（确定性、纯读）；缺省未注入则不做。
+# **零参即契约**：常驻注入与当轮任务无关（不因 query 未命中而缺席）；loop 不 import notes（红线），
+# 生产侧注入组合根闭包（内部调 NoteStore.pinned_digest）。
+PinnedNotesConsult = Callable[[], str]
+
 # trace 完成回调：本轮遥测记录完毕后按**轮**提交 trace_id（登记一条已完成 trace）；缺省不做。
 # 与冷路径回调**节律不同**（不随维护节拍节流）；loop 不 import evolution（架构红线），
 # 生产侧注入组合根闭包（内部调 EvolutionWorker.on_trace_complete）。
@@ -144,6 +149,7 @@ class DefaultLoop(Plugin):
         compactor: Compactor | None = None,
         turn_observer: TurnObserver | None = None,
         notes_consult: NotesConsult | None = None,
+        pinned_notes_consult: PinnedNotesConsult | None = None,
         cold_path: ColdPath | None = None,
         trace_observer: TraceObserver | None = None,
         source: str = "loop",
@@ -168,6 +174,7 @@ class DefaultLoop(Plugin):
         self._compactor = compactor
         self._turn_observer = turn_observer
         self._notes_consult = notes_consult
+        self._pinned_notes_consult = pinned_notes_consult
         self._cold_path = cold_path
         self._trace_observer = trace_observer
         # 落记忆的命名空间：主 Agent 缺省 "loop"；神兽 loop 由组合根注入 "beast.<agent_id>"
@@ -247,6 +254,7 @@ class DefaultLoop(Plugin):
         self._trace(trace_id, "loop_started", {"trace_id": trace_id})
         ctx = self.perceive(user_input, session_id=session_id)
         self._consult_notes(ctx, trace_id)
+        self._load_pinned_notes(ctx, trace_id)
         limit_reason = ""
         # 本轮循环是否已流式外发**回复**增量（避免终态重复全文）。判据**只认** `reply_delta`：
         # 思考回显事件（`loop.reasoning`）与回复增量同形相异类，计入会吞掉终态补发。
@@ -343,6 +351,20 @@ class DefaultLoop(Plugin):
         except Exception as err:  # noqa: BLE001 — Consult 失败降级，不影响本轮结果
             ctx.notes = ""
             self._trace(trace_id, "notes_consult_failed", {"error": str(err)})
+
+    def _load_pinned_notes(self, ctx: LoopContext, trace_id: str) -> None:
+        """任务前常驻注入：把零参钩子产出的**常驻笔记块**写入 ``ctx.pinned_notes``（缺省不启用）。
+
+        **每轮无条件**（钩子无任务文本入参 ⇒ 与 query 命中无关）；抛错仅降级留痕、置空，
+        **不改变本轮结局**（与 ``_consult_notes`` 同口径）。
+        """
+        if self._pinned_notes_consult is None:
+            return
+        try:
+            ctx.pinned_notes = self._pinned_notes_consult()
+        except Exception as err:  # noqa: BLE001 — 常驻注入失败降级，不影响本轮结果
+            ctx.pinned_notes = ""
+            self._trace(trace_id, "pinned_notes_consult_failed", {"error": str(err)})
 
     def _notify_turn(self, ctx: LoopContext, trace_id: str, *, ok: bool) -> None:
         """收尾钩子：把任务文本 + 行动/结果序列 + 本轮成败交给注入的观察者（缺省不启用）。

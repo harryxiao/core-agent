@@ -3980,6 +3980,51 @@
 
 ---
 
+## ADR-0141：常驻（pinned）笔记 —— 任务级硬约束锚（change 0149 / 账本 E93）
+
+- **背景**：`notes`（canonical Markdown 真相层，ADR-0099）承载「刻意知识」，但其 Consult 只在 **query 命中**
+  时注入正文；未命中仅进 ≤1200 字**标题清单**（`NoteStore.digest`）。长任务中期的硬约束（「对外接口必须 HTTPS」）
+  **不保证每轮在场** —— 取决于当轮 query 是否命中。每轮**恒注入**的此前只有 L0 宪法（**全局、非任务级**）。
+  审查外部参考件 `Agent-Memory-LongTask.md`（跨月级任务记忆方案）后**取精华弃糟粕**立账 `E93`（其「里程碑锚定」
+  ＝高保真硬约束永久置顶于 System Prompt 最前端）；同源不同层的 `E94`（摘要→canonical 提升**触发**）
+  是 change `0150`/ADR-0142，**依赖**本 change。
+- **决策① 注入架构 = 独立块**：新增 `LoopContext.pinned_notes` 字段 + `LLMPlanner._system_prompt` 新增
+  **独立块**「常驻笔记（任务级硬约束，逐轮生效，勿违背）」，位置**紧随宪法规则、先于**相关事实/文档目录/相关笔记。
+  **不并入**既有「相关笔记」块 ⇒ 命中面与常驻面**分列**，spec delta 得以**纯 ADDED**（无需重述既有 3 条 Requirement
+  的 5 条 Scenario）。
+- **决策② 钩子 = 零参**：`PinnedNotesConsult = Callable[[], str]`（对比 `NotesConsult = Callable[[str], str]`）。
+  **签名即契约** —— 无任务文本入参 ⇒ 常驻注入**与当轮任务无关**、不因 query 未命中而缺席；误传任务文本会
+  TypeError ⇒ 测试以「有内容即证零参调用」钉住。
+- **决策③ 标记面 = 元数据 + CLI**：`NoteEntry.pinned` ＋ canonical 行 `- pinned: true`（**未置位不输出** ⇒
+  既有文件逐字不变、`render_note` 零回归）＋ `notes pin/unpin`。解析**宽容**（`true/yes/1/on`，大小写不敏感），
+  无法识别一律 False（**fail-closed**：手误绝不意外置常驻）。`set_pinned` **幂等**（同值不写盘、不 bump
+  `updated_at`），真变更走**唯一** `update()` 原子覆盖写路径。
+- **决策④ 专设 `_MAX_PINNED_CHARS = 4000`**（独立于 `_MAX_DIGEST_CHARS = 1200`）：常驻注入为**正文全文**
+  （非 `_MAX_EXCERPT_CHARS=200` 的节选），若共用 digest 上界则摘要会**吞掉**常驻；独立上界使常驻面**有界**
+  （token 有界，P5）又不与命中面互相挤占。`pinned_digest` **无 query 入参**、按 `note_id` 升序
+  （**确定性** ⇒ 块字节跨轮稳定）、空正文笔记不占块、块内**不含** `updated_at`。
+- **决策⑤ 三 loop 同注入**：组合根 `Runtime.build_runtime` 的 `_pinned_notes` 闭包注入**主 loop / 子任务 loop /
+  神兽 loop** 三处 —— 子任务与神兽同须遵守任务级硬约束（与 `notes_consult` 的注入面**完全同构**）。
+  loop **不 import notes**（架构红线），常驻源取用失败 ⇒ 降级置空 + 留痕 `pinned_notes_consult_failed`、
+  **不改变本轮结局**（与 Consult 同口径）。
+- **决策⑥ planner 装配顺序显式化**：宪法/相关事实/文档目录原同处一个 `if assembler is not None` 块内，
+  常驻块须**紧随宪法规则**且**不依赖装配器**（缺省未装装配器亦须在场）⇒ 把 `pack` 求值提到块外（
+  `pack = ... if assembler else None`），随后按
+  `宪法规则 → 常驻笔记 → 相关事实 → 文档目录 → 相关笔记 → 可用技能 → 可用工具` 顺序 append。
+  **语义逐字不变**，仅在 `_system_prompt` 函数内使顺序显式化（本 change 面内）。
+- **决策⑦ `observe_turn` 原样携带 `pinned`**：任务后写回重建 `NoteEntry` 时**必须**携带既有 `pinned`
+  （否则一轮 slug 命中常驻笔记 ⇒ 标记被静默抹除 —— 恰是 E93 的失效形态）；"逐轮写回不得抹除常驻标记"。
+- **已知局限**：① 常驻正文**每轮进模型上下文** ⇒ **绝不**可把密钥/凭据写进常驻笔记（已入 proposal 风险节与
+  proposal 红线）；② 总量有界于 `_MAX_PINNED_CHARS` 但**无 per-note 上限** —— 多篇各自很长时仍受总量约束，
+  末篇可能被截断；③ notes 写操作**不接** `EffectTracker`（canonical 文档层的**既有取舍**，ADR-0099；
+  pin/unpin 走同一 `update()` 路径 ⇒ 与既有写入面**一致**，非本次引入）；④ 常驻层是**全局**文档层 ⇒ 跨会话共享
+  （与既有「刻意知识不参与隔离」一致，**非**缺陷）。
+- **规格**：`notes`（**ADDED** Requirement「常驻（pinned）笔记（任务级硬约束锚）」＋ 6 Scenario）；
+  接口面 `03-interfaces/notes-interface.md`、模块面 `02-modules/notes.md`、测试面
+  `04-testing/test-cases.md` §65、台账 `coding-plan/known-risk.md`。
+
+---
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4115,3 +4160,4 @@
 | ADR-0138 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0139 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0140 | 03-interfaces/memory-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0141 | 03-interfaces/notes-interface.md, 02-modules/notes.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

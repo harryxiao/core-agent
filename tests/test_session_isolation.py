@@ -23,7 +23,7 @@ from core.llm_provider import LLMProvider
 from core.loop import Action, DefaultLoop, LoopContext, LoopEvent, LoopPlugin, LoopResult
 from core.loop.planner import LLMPlanner
 from core.memory import MemoryEntry, MemoryStore
-from core.notes import NoteStore
+from core.notes import NoteEntry, NoteStore
 from core.orchestration import (
     AgentProfile,
     MultiAgentRouter,
@@ -364,7 +364,9 @@ def test_scheduler_default_keeps_sub_loop_call_unchanged() -> None:
 # ---- notes：显式全局层（不参与会话隔离） ----
 
 
-@pytest.mark.parametrize("method", ["digest", "consult", "observe_turn"])
+@pytest.mark.parametrize(
+    "method", ["digest", "consult", "observe_turn", "pinned", "pinned_digest", "set_pinned"]
+)
 def test_notes_api_has_no_session_dimension(method: str) -> None:
     """可执行的全局层钉住：笔记层的 Consult / 写入面**不接受**会话维度。"""
     params = inspect.signature(getattr(NoteStore, method)).parameters
@@ -384,3 +386,18 @@ def test_notes_consult_is_not_session_scoped(tmp_path: Path) -> None:
 
     assert ctx_a.notes != ""
     assert ctx_a.notes == ctx_b.notes
+
+
+def test_notes_pinned_is_not_session_scoped(tmp_path: Path) -> None:
+    """常驻注入是全局文档层的另一条通道：注入面不接受会话维度（change 0149）。"""
+    store = NoteStore(path=tmp_path)
+    store.update(NoteEntry(note_id="约束", title="约束", content="必须 HTTPS", pinned=True))
+    loop = DefaultLoop(pinned_notes_consult=store.pinned_digest)
+
+    ctx_a = loop.perceive("任意", session_id="A")
+    ctx_b = loop.perceive("任意", session_id="B")
+    loop._load_pinned_notes(ctx_a, "t")  # noqa: SLF001
+    loop._load_pinned_notes(ctx_b, "t")  # noqa: SLF001
+
+    assert ctx_a.pinned_notes != ""
+    assert ctx_a.pinned_notes == ctx_b.pinned_notes

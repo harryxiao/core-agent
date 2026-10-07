@@ -22,6 +22,7 @@ from core.durability import (
 from core.entry import _build_installer, _build_parser, _state_path, main
 from core.loop import LoopEvent
 from core.memory import TranscriptStore
+from core.notes import NoteEntry, NoteStore
 from core.orchestration import Plan, Subtask, plan_to_dict
 from core.pet.core import (
     FAILED,
@@ -1128,3 +1129,60 @@ def test_run_stream_skips_reasoning_frames(capsys: pytest.CaptureFixture[str]) -
     assert "内部草稿" not in out
     assert "你" not in out
     assert "[loop.result] 好了" in out
+
+
+# ---- notes：常驻标记 CLI（change 0149 / ADR-0141 / 账本 E93） ----
+
+
+def _seed_note(note_id: str, *, title: str, content: str, pinned: bool = False) -> None:
+    """以组合根同源路径播种一篇 canonical 笔记（`CORE_STATE_DIR` 由 conftest 隔离）。"""
+    NoteStore(path=_state_path("notes")).update(
+        NoteEntry(note_id=note_id, title=title, content=content, pinned=pinned)
+    )
+
+
+def test_notes_pin_then_show_marks_pinned(capsys: pytest.CaptureFixture[str]) -> None:
+    """pin 落盘 ⇒ 跨实例（新进程语义）读回 ⇒ `notes show` 显示 `- pinned: true`。"""
+    _seed_note("约束", title="硬约束", content="接口必须 HTTPS")
+
+    assert main(["notes", "pin", "约束"]) == 0
+    assert NoteStore(path=_state_path("notes")).get("约束").pinned is True, "落盘真源"
+
+    assert main(["notes", "show", "约束"]) == 0
+    assert "- pinned: true" in capsys.readouterr().out
+
+    assert main(["notes", "unpin", "约束"]) == 0
+    assert NoteStore(path=_state_path("notes")).get("约束").pinned is False
+
+
+def test_notes_pin_missing_note_returns_nonzero(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["notes", "pin", "不存在"]) == 1
+    assert "NOTE_NOT_FOUND" in capsys.readouterr().err
+
+
+def test_notes_pin_is_idempotent() -> None:
+    """同值重复 pin ⇒ 不写盘（`updated_at` 不变），两次均成功退出。"""
+    _seed_note("约束", title="硬约束", content="接口必须 HTTPS")
+
+    assert main(["notes", "pin", "约束"]) == 0
+    first = NoteStore(path=_state_path("notes")).get("约束").updated_at
+    assert main(["notes", "pin", "约束"]) == 0
+    assert NoteStore(path=_state_path("notes")).get("约束").updated_at == first
+
+
+def test_notes_list_marks_pinned(capsys: pytest.CaptureFixture[str]) -> None:
+    _seed_note("约束", title="硬约束", content="必须 HTTPS", pinned=True)
+    _seed_note("其他", title="其他", content="无关")
+
+    assert main(["notes", "list"]) == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if line]
+    pinned_line = next(line for line in lines if line.startswith("约束"))
+    other_line = next(line for line in lines if line.startswith("其他"))
+    assert pinned_line.endswith("\t[pinned]")
+    assert not other_line.endswith("[pinned]"), "非常驻行输出不变"
+
+
+def test_notes_usage_lists_pin_verbs(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["notes"]) == 1
+    err = capsys.readouterr().err
+    assert "pin <note_id>" in err and "unpin <note_id>" in err
