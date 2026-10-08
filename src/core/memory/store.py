@@ -64,23 +64,36 @@ def _below_gate(entries: list[MemoryEntry], scores: dict[str, float]) -> bool:
     return bool(got) and max(got) < _CONSOLIDATE_THRESHOLD
 
 
-def _plan_key_facts(raw: list[KeyFact]) -> tuple[list[KeyFact], list[str]]:
-    """整批归一化关键事实：**脱敏 + 有界**，返回（可落库事实, 被丢弃的实体名）。
+def _plan_key_facts(raw: list[KeyFact]) -> tuple[list[KeyFact], list[str], list[str]]:
+    """整批归一化关键事实：**脱敏 + 同批归并 + 有界**。
+
+    返回（可落库事实, 因密钥丢弃的实体名, 因同批同 slug 被归并的实体名）。
 
     脱敏由 ``scrub_key_fact`` 无条件执行（注入方不构成信任边界）；无实体 slug 者不计入落库。
+    **同批**内 slug 相同者只留**首条**（change 0172）—— 同批重复是**单次模型响应内的重复枚举**，
+    区别于跨压实的「重复抽取」（后者由同实体幂等覆盖处理，`_write_key_fact` 同一 `id`）。
+    归并后条数计额 ⇒ 重复项不再挤占 `MAX_KEY_FACTS_PER_COMPACT`。
     """
     plan: list[KeyFact] = []
     dropped: list[str] = []
+    deduped: list[str] = []
+    seen: set[str] = set()
     for fact in raw:
         cleaned = scrub_key_fact(fact)
         if cleaned is None:
             dropped.append(fact.entity.strip() or "<?>")
             continue
-        if slug_entity(cleaned.entity):
-            plan.append(cleaned)
+        slug = slug_entity(cleaned.entity)
+        if not slug:
+            continue
+        if slug in seen:
+            deduped.append(cleaned.entity.strip())
+            continue
+        seen.add(slug)
+        plan.append(cleaned)
         if len(plan) >= MAX_KEY_FACTS_PER_COMPACT:
             break
-    return plan, dropped
+    return plan, dropped, deduped
 
 
 class MemoryStore:
@@ -495,17 +508,18 @@ class MemoryStore:
     def _extract_key_facts(self, session_id: str, entries: list[MemoryEntry]) -> None:
         """结构化关键事实抽取（change 0155 / ADR-0147 / 路线图 G4）。
 
-        先**整批**归一化（脱敏 + 有界），再落库 —— 归一化阶段任何失败 ⇒ **整批不写**（不留半批）。
-        **脱敏在 store 侧无条件执行**：组合根注入的抽取器**不构成信任边界**。裸密钥无可用引用 ⇒
-        整条丢弃并留痕（留痕含实体名、**不含**取值）。条目属**全局层**（`session_id` 置空 ⇒ 跨会话
-        可见），产生它的会话经 `tags` 的 `session:<sid>` 标注溯源。
+        先**整批**归一化（脱敏 + 同批归并 + 有界），再落库 —— 归一化阶段任何失败 ⇒ **整批不写**
+        （不留半批）。**脱敏在 store 侧无条件执行**：组合根注入的抽取器**不构成信任边界**。裸密钥无
+        可用引用 ⇒ 整条丢弃并留痕（留痕含实体名、**不含**取值）。**同批同 slug** ⇒ 只留首条并留痕
+        （change 0172）。条目属**全局层**（`session_id` 置空 ⇒ 跨会话可见），产生它的会话经 `tags`
+        的 `session:<sid>` 标注溯源。
         """
         extractor = self._key_fact_extractor
         if extractor is None or not entries:
             return
         key = session_id or "default"
         try:
-            plan, dropped = _plan_key_facts(extractor(entries))
+            plan, dropped, deduped = _plan_key_facts(extractor(entries))
         except Exception:  # noqa: BLE001 — 抽取失败降级：整批不写，不牵连压实
             warnings.warn(
                 f"key-fact extraction failed for session {key!r}; no key facts were written",
@@ -519,6 +533,13 @@ class MemoryStore:
             warnings.warn(
                 "key facts dropped (secret-shaped value without a usable reference): "
                 f"{', '.join(dropped)}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        if deduped:
+            warnings.warn(
+                "key facts deduplicated within one batch (same entity slug; first kept): "
+                f"{', '.join(deduped)}",
                 RuntimeWarning,
                 stacklevel=2,
             )

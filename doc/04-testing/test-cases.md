@@ -1394,6 +1394,25 @@
 > 无信息量的工具轮仍写回（覆盖式写同一主题、不增长）；⑤ 派生主题 `<topic>-N` 机制**逐字不变**
 > （靠闸门减量，未做结构性收敛）。
 
+## 85. 关键事实抽取端质量：同批归并 + 解析失败可观测 + 取值首尾保留（TC-EXTRACT-QUALITY，change `0172`／ADR-0163，台账 E109）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-EXTRACT-QUALITY-01 | memory/spec.md「结构化实体抽取（关键事实）」Scenario「同批同 slug 归并（只留首条 + 留痕）」 | 同批两条 `KeyFact(entity="API Key", value="首值")` + `KeyFact(entity="api-key", value="次值")`（slug 折叠后同 slug） | 落库**单条** `keyfact.api-key`、取值为**首条** `API Key: 首值`；留痕含实体名、**不含**取值（锚点：`tests/test_memory_key_facts.py::test_same_batch_same_slug_is_merged_keeping_first`） |
+| TC-EXTRACT-QUALITY-02 | 同上（归并后条数计额） | 1 条重复（同 slug）+ 7 条不同实体（共 8 实体唯一） | 落满 `MAX_KEY_FACTS_PER_COMPACT`(8) 条；第 8 个**不同**实体未被重复项挤出（锚点：`...::test_same_batch_merge_does_not_consume_extra_quota`） |
+| TC-EXTRACT-QUALITY-03 | 同上 Scenario「解析失败留痕且不含模型输出正文」 | `extract_with(lambda prompt: f"我无法判断，参考 {sk-…} 好了")`（有输出、无 JSON 数组） | 不抽取 + `warnings.warn`；留痕**不含**输出正文（哨兵 `sk-…` 不在告警中）（锚点：`...::test_unparseable_output_warns_without_dumping_model_text`） |
+| TC-EXTRACT-QUALITY-04 | 同上（合法空数组不告警） | `extract_with(lambda prompt: "[]")`（模型明确无可抽） | 不抽取、**无**「unparseable」告警（防误报）（锚点：`...::test_empty_json_array_does_not_warn`） |
+| TC-EXTRACT-QUALITY-05 | 同上 Scenario「取值超长 ⇒ 首尾保留（总额度不变）」 | `value` = `"头"*10 + "甲"*300 + "尾"*10`（CJK 填充，不触发脱敏） | 落库取值 `<= _MAX_FACT_CHARS`(200)；`startswith("头"*10)` **且** `endswith("尾"*10)`；含 `…`（锚点：`...::test_long_value_keeps_head_and_tail`） |
+| TC-EXTRACT-QUALITY-06 | 同上（`entity` / `ref` 维持头部截断） | 超长 `entity` 与长 `ref`（`coeffect:` + `ab.`×70，非密钥形态） | `entity == "长"*200` 且**无** `…`；`ref == long_ref[:200]` 且**无** `…`（首尾保留**只**用于 `value`）（锚点：`...::test_entity_and_ref_keep_head_only_truncation`） |
+
+> **红态证据**：实现落地前（stash `src/core/memory` 改动）跑 `tests/test_memory_key_facts.py`
+> ⇒ **4 failed / 39 passed** —— 4 条新增断言按预期变红（同批归并两条 + 解析失败留痕 + 取值首尾保留），
+> 复刻三处缺口；`entity` / `ref` 头部截断用例在修复前后皆绿（守护「未误改形态」）。
+> **已知局限**：① 首尾保留扩大截断后可见面 ⇒ 对脱敏完备性要求更高（不改脱敏启发式，方向仍 over-redact）；
+> ② 归并只消**同批**重复，跨批仍靠 `id` 同实体幂等覆盖（不合并为「历史值」）；③ 归并丢弃的取值**不进**
+> 任何记忆面（有损）；④ 解析失败留痕**不含**模型输出正文（排查须回看 trace，不以牺牲红线换可诊断性）；
+> ⑤ 数组存在但元素**全**不合规时不告警；⑥ `MAX_KEY_FACTS_PER_COMPACT`(8) **未**放宽。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

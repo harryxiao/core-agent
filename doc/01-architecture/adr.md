@@ -4903,6 +4903,45 @@
   `notes-interface.md` §3；模块 `02-modules/loop.md` §3.4；测试 `04-testing/test-cases.md` §84
   （TC-NOTES-WRITEBACK）；台账 `coding-plan/known-risk.md` §1（E108）。
 
+## ADR-0163：关键事实抽取端质量 —— 同批归并 + 解析失败可观测 + 取值首尾保留（change 0172）
+
+- **背景 / 用户实测（2026-10-08）**：关键事实抽取（G4，change 0155 / ADR-0147）在**抽取端**有三处质量缺口，
+  经读代码逐条取证 —— ① **同批同 slug 重复**：`_plan_key_facts` 只做脱敏 + 有界、**不做**批内去重 ⇒
+  模型在同一次压实里对「同一实体」给出多条（大小写 / 连字符变体，`slug_entity` 折叠后同 slug）时，后写者
+  **覆盖**先写者（同 `id` 幂等覆盖），且额度按落库前条数计 ⇒ 抽取条数被**无声**挤占；② **解析失败静默**：
+  `parse_key_facts` 不可解析恒返回 `[]`，与「模型明确给出 `[]`」**不可区分** ⇒ 抽取器**哑失败**、端到端
+  只见「无关键事实」，无从判断是模型没抽到还是输出格式崩了；③ **取值只留头部**：`value[:_MAX_FACT_CHARS]`
+  为头截断，而关键事实取值常「**头定名、尾定值**」（如 `部署环境：prod-cluster-…-shanghai`）⇒ 尾部信息量的
+  部分被丢。
+- **决策 ①「同批归并落在 `_plan_key_facts`、只留首条」**：增 `seen: set[str]`（按 `slug_entity` 归一）
+  ⇒ 同 slug 后继条**归并**（不入 `plan`）、记入 `deduped`（**独立**于因密钥 `dropped` 的留痕 —— 二者语义不同、
+  不可复用同一列表）；**保留首条**（模型通常先给主事实，不引入「优先级」字段）；归并后**条数计额**
+  （`break` 仍在**入 plan 后**判 ⇒ 同批重复**不**挤占额度）。跨压实的「重复抽取」**不**走此路，由同实体
+  幂等覆盖处理（规格既有、逐字不变）。
+- **决策 ②「解析失败在 `extract_with` 闭包补告警、契约零变更」**：`parse_key_facts` 的**返回契约不变**
+  （不可解析仍 `[]`）—— 失败判别落在 `extract_with` 的 `_extract` 闭包：`not facts and text.strip() and
+  _json_array(text) is None` ⇒ 「有输出但**无 JSON 数组**」才 `warnings.warn`。**合法空数组 `[]`**（模型
+  明确无可抽）**不**告警（防误报）。留痕**只报失败事实与文本长度、不含输出正文** —— 正文可能含明文密钥（红线）。
+- **决策 ③「`value` 首尾保留、总额度不变」**：新增 `_truncate_value`（`len > _MAX_FACT_CHARS` 时头 / 尾各
+  `(_MAX_FACT_CHARS - 1) // 2` 字符、中以 `…` 连接），**只用于 `value`**；`entity` / `ref` 维持头部截断
+  （尾部无信息）；总额度仍 ≤ `_MAX_FACT_CHARS`(200)、**先脱敏后截断**次序不变（截断不得使明文逃逸）。
+- **被原稿误判为缺陷的项（本 change **不**采纳）**：① 「跨批重复累积」—— 规格既有「同实体幂等覆盖」已按 `id`
+  归一，**非**缺陷；② 「`content[:400]` 截断丢信息」—— 全库**无**此代码，真实上界是 `_MAX_FACT_CHARS`(200)
+  （已由决策 ③ 处理），`_MAX_ENTRY_CHARS`(400) 只是**入 prompt 的事件节选**（token 有界，非落库形态）；
+  ③ **不得**给「长随机串」密钥形态加 URL 白名单 —— 会开密钥外泄口子（红线）。
+- **切出**：0173「密钥形态 URL 白名单」**建议不做**（红线）；0174「主题归并」属 L5 组合根职责、非 memory 端。
+- **接口不变**：`KeyFactExtractor` / `MemoryStore(key_fact_extractor=)` / `extract_with` / `parse_key_facts` /
+  `scrub_key_fact` 签名与调用点**逐字不变**；`KeyFact` 结构不变；脱敏仍**无条件**在 store 侧执行。终止语义 /
+  事件序 / 转录追加 / 降级链 / 压实可回滚（同 trace）零回归。
+- **局限**：① 首尾保留扩大截断后可见面 ⇒ 对脱敏完备性要求更高（不改脱敏启发式，方向仍 over-redact）；
+  ② 归并只消**同批**重复，跨批仍靠幂等覆盖（不合并为「历史值」）；③ 归并丢弃的取值**不进**任何记忆面（有损）；
+  ④ 解析失败留痕**不含**模型输出正文（排查须回看 trace，不以牺牲红线换可诊断性）；⑤ 数组存在但元素**全**不合规
+  时不告警（`_json_array` 非 `None`）；⑥ `MAX_KEY_FACTS_PER_COMPACT`(8) **未**放宽（同批归并已缓解挤占）。
+- **规格**：`doc/openspec/specs/memory/spec.md` —— 「结构化实体抽取（关键事实）」**MODIFIED**
+  （+ 同批归并 + 解析失败判别口径 + `value` 首尾保留；既有 8 Scenario 逐字保留 + 3 新增）；接口
+  `03-interfaces/memory-interface.md` §3；模块 `02-modules/memory.md`；测试 `04-testing/test-cases.md`
+  §85（TC-EXTRACT-QUALITY）；台账 `coding-plan/known-risk.md` §1（E109）。`loop` / `notes` / `cli-ops` 零改动。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5060,3 +5099,4 @@
 | ADR-0160 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0161 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 03-interfaces/llm-provider-interface.md, 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0162 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0163 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

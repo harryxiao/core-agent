@@ -378,12 +378,17 @@ L5 组合根注入。抽取材料 SHALL 是**本次压实聚合的 episodic 条�
   就**不记**），并 SHALL 经 `warnings.warn` 留痕（留痕 SHALL 含实体名，SHALL NOT 含取值）。
 - **抽取器不构成信任边界**：脱敏 SHALL 在**落库前**由 memory 侧**无条件**执行（对抽取器返回的
   每一条都跑）；抽取器抛错或返回**不可解析**的结果 ⇒ SHALL 降级为**不抽取**（`warnings.warn`
-  留痕），SHALL NOT 牵连本次压实的摘要写回与条目迁移。
+  留痕），SHALL NOT 牵连本次压实的摘要写回与条目迁移。「不可解析」SHALL 判为「**有输出但无 JSON
+  数组**」（合法但 0 条 SHALL NOT 告警）；该留痕 SHALL NOT 含模型输出正文（可能含明文密钥）。
 - 脱敏方向 SHALL 是 **over-redact**（拿不准即多脱敏，落在安全侧），SHALL NOT 出现「拿不准就保留
   明文」。
 
-抽取 SHALL **有界**：单次压实抽取条数 SHALL 有界（`MAX_KEY_FACTS_PER_COMPACT`）；`entity` /
-`value` 长度 SHALL 有界（`_MAX_FACT_CHARS`），且 SHALL **先脱敏后截断**（截断不得使明文逃逸）。
+抽取 SHALL **有界**：单次压实抽取条数 SHALL 有界（`MAX_KEY_FACTS_PER_COMPACT`；**同一批**内实体
+slug 相同者 SHALL **归并**为一条、**只留首条**落库，归并后条数计额；被归并者 SHALL 经
+`warnings.warn` 留痕（留痕含实体名、SHALL NOT 含取值）—— 同批重复是**单次模型响应内的重复枚举**，
+区别于跨压实的「重复抽取」，后者由同实体幂等覆盖处理）；`entity` / `value` 长度 SHALL 有界
+（`_MAX_FACT_CHARS`），且 SHALL **先脱敏后截断**（截断不得使明文逃逸）；其中 `value` 超长时截断
+SHALL **首尾保留**（头尾各半、中以 `…` 连接，总长 SHALL NOT 超过 `_MAX_FACT_CHARS`）。
 
 未注入抽取器（缺省）⇒ SHALL NOT 抽取，压实行为（摘要写回、条目迁移、评分）**逐字不变**。
 
@@ -433,3 +438,24 @@ L5 组合根注入。抽取材料 SHALL 是**本次压实聚合的 episodic 条�
 - **WHEN** 压实运行
 - **THEN** 单次落库条数不超过 `MAX_KEY_FACTS_PER_COMPACT`，`entity` / `value` 长度不超过
   `_MAX_FACT_CHARS`；**AND** 超长取值在**脱敏之后**才被截断（截断产物 SHALL NOT 使明文逃逸）
+
+#### Scenario: 同批同 slug 归并（只留首条 + 留痕）
+- **GIVEN** 抽取器**单次**返回两条事实，其实体不同但 slug 相同（如 `API Key` 与 `api-key`），
+  **或**两次返回同一实体的**不同取值**
+- **WHEN** 压实运行
+- **THEN** 落库为**单条** `keyfact.<slug>` 条目，其取值为**首条**的取值；**AND** 被归并者经
+  `warnings.warn` 留痕（留痕含实体名、**不含**取值）；**AND** 归并后条数计额（不重复占用
+  `MAX_KEY_FACTS_PER_COMPACT`）
+
+#### Scenario: 解析失败留痕且不含模型输出正文
+- **GIVEN** 抽取器返回的文本**非空**但**不含**可解析的 JSON 数组（如「解释文字 + 代码围栏」形态）
+- **WHEN** 压实运行
+- **THEN** 不产出 `key_fact` 条目，且经 `warnings.warn` 留痕；留痕 SHALL **不含**模型输出正文
+  （只报失败事实与文本长度）；**AND GIVEN** 返回的是**合法空数组**（模型明确表示无可抽）
+  **THEN** SHALL NOT 告警
+
+#### Scenario: 取值超长 ⇒ 首尾保留（总额度不变）
+- **GIVEN** 抽取器返回的事实其 `value` 超过 `_MAX_FACT_CHARS`
+- **WHEN** 该事实落库
+- **THEN** 落库 `value` 长度 SHALL NOT 超过 `_MAX_FACT_CHARS`，且**同时保留头部与尾部**
+  （中以 `…` 连接）—— 而非只留头部

@@ -6,6 +6,8 @@ change 0155 / ADR-0147 / 记忆三面路线图 G4（账本 E92）。
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 from core.memory import (
@@ -13,6 +15,7 @@ from core.memory import (
     KeyFact,
     MemoryEntry,
     MemoryStore,
+    extract_with,
     parse_key_facts,
     scrub_key_fact,
 )
@@ -320,3 +323,101 @@ def test_parse_skips_malformed_items() -> None:
     """非对象 / 缺字段 / 类型不符的元素被跳过，合规元素保留。"""
     text = '[1, {"entity": "A"}, {"entity": "B", "value": "b"}, {"entity": "C", "value": 3}]'
     assert parse_key_facts(text) == [KeyFact(entity="B", value="b", ref="")]
+
+
+# ---- change 0172：抽取端质量（同批归并 / 解析失败可观测 / 取值首尾保留） ----
+
+
+def test_same_batch_same_slug_is_merged_keeping_first() -> None:
+    """同批同 slug（不同实体撞车 或 同实体不同取值）⇒ 归并为单条、取值为**首条**、并留痕。"""
+    store = _store(
+        [
+            KeyFact(entity="API Key", value="首值"),
+            KeyFact(entity="api-key", value="次值"),
+        ]
+    )
+
+    with pytest.warns(RuntimeWarning) as caught:
+        store.compact(session_id="s1")
+
+    hits = _facts(store)
+    assert [e.id for e in hits] == ["keyfact.api-key"], "同 slug ⇒ 单条"
+    assert hits[0].content == "API Key: 首值", "保留**首条**的取值"
+    joined = " ".join(str(w.message) for w in caught)
+    assert "api-key" in joined, "归并留痕含实体名"
+    assert "次值" not in joined, "归并留痕**不含**取值"
+
+
+def test_same_batch_merge_does_not_consume_extra_quota() -> None:
+    """归并后条数计额：同批重复不再挤占额度（第 8 个**不同**实体仍能落库）。"""
+    facts = [KeyFact(entity="实体1", value="v1"), KeyFact(entity="实体1", value="v1重复")]
+    facts += [
+        KeyFact(entity=f"实体{i}", value=f"v{i}") for i in range(2, MAX_KEY_FACTS_PER_COMPACT + 1)
+    ]
+
+    store = _store(facts)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        store.compact(session_id="s1")
+
+    ids = sorted(e.id for e in _facts(store))
+    assert len(ids) == MAX_KEY_FACTS_PER_COMPACT, "归并后仍可落满额度"
+    assert f"keyfact.实体{MAX_KEY_FACTS_PER_COMPACT}" in ids, "第 8 个不同实体未被重复项挤出"
+
+
+def test_unparseable_output_warns_without_dumping_model_text() -> None:
+    """有输出但无 JSON 数组 ⇒ 不抽取 + 留痕；留痕**不含**模型输出正文（可能含明文密钥）。"""
+    sentinel = "sk-abcdefgh12345678"
+    store = MemoryStore(
+        summarizer=lambda entries: "摘要：事实",
+        key_fact_extractor=extract_with(lambda prompt: f"我无法判断，参考 {sentinel} 好了"),
+    )
+    store.write("L2", _episodic("e0", "s1"))
+
+    with pytest.warns(RuntimeWarning) as caught:
+        store.compact(session_id="s1")
+
+    assert _facts(store) == [], "不可解析 ⇒ 不抽取"
+    joined = " ".join(str(w.message) for w in caught)
+    assert sentinel not in joined, "留痕**不含**模型输出正文"
+
+
+def test_empty_json_array_does_not_warn() -> None:
+    """合法空数组（模型明确表示无可抽）⇒ 正常结果，**不**告警（防误报）。"""
+    store = MemoryStore(
+        summarizer=lambda entries: "摘要：事实",
+        key_fact_extractor=extract_with(lambda prompt: "[]"),
+    )
+    store.write("L2", _episodic("e0", "s1"))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        store.compact(session_id="s1")
+
+    assert _facts(store) == []
+    assert [w for w in caught if "unparseable" in str(w.message)] == [], "合法空数组不告警"
+
+
+def test_long_value_keeps_head_and_tail() -> None:
+    """取值超长 ⇒ 首尾保留（头尾皆在、中以 `…` 连接），总额度 `_MAX_FACT_CHARS` 不变。"""
+    value = "头" * 10 + "甲" * 300 + "尾" * 10  # CJK 填充：不触发「长随机串」脱敏
+    store = _store([KeyFact(entity="长文", value=value)])
+
+    store.compact(session_id="s1")
+
+    entry = next(iter(_facts(store)))
+    kept = entry.content.split(": ", 1)[1]
+    assert len(kept) <= _MAX_FACT_CHARS, "总额度不变"
+    assert kept.startswith("头" * 10), "保留头部"
+    assert kept.endswith("尾" * 10), "**同时**保留尾部"
+    assert "…" in kept, "截断处以省略号标示"
+
+
+def test_entity_and_ref_keep_head_only_truncation() -> None:
+    """`entity` / `ref` 维持头部截断（形态未被误改为首尾保留）。"""
+    long_ref = "coeffect:" + "ab." * 70  # 长但非密钥形态（无 ≥32 连续 alnum 段）
+    cleaned = scrub_key_fact(KeyFact(entity="长" * 400, value="v", ref=long_ref))
+
+    assert cleaned is not None
+    assert cleaned.entity == "长" * _MAX_FACT_CHARS and "…" not in cleaned.entity
+    assert cleaned.ref == long_ref[:_MAX_FACT_CHARS] and "…" not in cleaned.ref

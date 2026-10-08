@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import cast
@@ -29,7 +30,7 @@ _MAX_ENTRY_CHARS = 400
 # 单次压实抽取条数上界（控制单次写入量）
 MAX_KEY_FACTS_PER_COMPACT = 8
 
-# 实体名 / 取值长度上界（**先脱敏后截断**：截断不得使明文逃逸）
+# 实体名 / 取值长度上界（**先脱敏后截断**：截断不得使明文逃逸；`value` 超长时**首尾保留**）
 _MAX_FACT_CHARS = 200
 
 # 脱敏字面量：引用式取值的占位
@@ -89,6 +90,17 @@ def slug_entity(entity: str, *, max_len: int = 48) -> str:
     return "".join(chars).strip("-")[:max_len].strip("-")
 
 
+def _truncate_value(text: str) -> str:
+    """取值截断：超长时**首尾保留**（头/尾各半、中以 ``…`` 连接），总长有界于 ``_MAX_FACT_CHARS``。
+
+    只用于 ``value`` —— ``entity`` / ``ref`` 恒短（尾部无信息），维持头部截断。
+    """
+    if len(text) <= _MAX_FACT_CHARS:
+        return text
+    half = (_MAX_FACT_CHARS - 1) // 2
+    return f"{text[:half]}…{text[-half:]}"
+
+
 def scrub_key_fact(fact: KeyFact) -> KeyFact | None:
     """脱敏一条关键事实；返回 ``None`` 表示**整条丢弃**（fail-closed）。
 
@@ -97,7 +109,8 @@ def scrub_key_fact(fact: KeyFact) -> KeyFact | None:
     2. 像密钥的 ``ref`` 本身 ⇒ 弃用该引用（引用不可是凭据）。
     3. ``value`` 呈密钥形态**且无可用引用** ⇒ 丢弃（**记不住引用就不记**）。
     4. 有引用 ⇒ ``value`` **一律** ``REDACTED``（有引用即不留明文，即便原值看似正常）。
-    5. 先脱敏（第 3/4 步）**后**截断 —— 截断不得使明文逃逸。
+    5. 先脱敏（第 3/4 步）**后**截断 —— 截断不得使明文逃逸；``value`` 的截断形态为**首尾保留**
+       （change 0172：取值常「头定名、尾定值」，只留头部会丢尾部；总长仍 ≤ ``_MAX_FACT_CHARS``）。
     """
     entity = fact.entity.strip()
     if not entity:
@@ -112,7 +125,7 @@ def scrub_key_fact(fact: KeyFact) -> KeyFact | None:
         value = REDACTED
     return KeyFact(
         entity=entity[:_MAX_FACT_CHARS],
-        value=value[:_MAX_FACT_CHARS],
+        value=_truncate_value(value),
         ref=ref[:_MAX_FACT_CHARS],
     )
 
@@ -173,9 +186,23 @@ def parse_key_facts(text: str) -> list[KeyFact]:
 def extract_with(
     llm: Callable[[str], str], *, max_facts: int = MAX_KEY_FACTS_PER_COMPACT
 ) -> KeyFactExtractor:
-    """把「prompt → 文本」的模型调用适配为 ``MemoryStore`` 的抽取契约。"""
+    """把「prompt → 文本」的模型调用适配为 ``MemoryStore`` 的抽取契约。
+
+    **解析失败可观测**（change 0172）：模型**有输出但无可解析 JSON 数组** ⇒ 经 ``warnings.warn``
+    留痕（只报失败事实与文本长度、**不含**输出正文 —— 正文可能含明文密钥）。**合法空数组**
+    （``[]``，模型明确无可抽）**不**告警。``parse_key_facts`` 契约不变（不可解析仍返回 ``[]``）。
+    """
 
     def _extract(entries: list[MemoryEntry]) -> list[KeyFact]:
-        return parse_key_facts(llm(build_extract_prompt(entries, max_facts=max_facts)))
+        text = llm(build_extract_prompt(entries, max_facts=max_facts))
+        facts = parse_key_facts(text)
+        if not facts and text.strip() and _json_array(text) is None:
+            warnings.warn(
+                "key-fact extraction output was unparseable (no JSON array found; "
+                f"{len(text)} chars); no key facts were extracted",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return facts
 
     return _extract
