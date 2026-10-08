@@ -358,6 +358,7 @@ SHALL 在**排名与预算之前**剔除 —— 被剔除项 SHALL NOT 占用 to
 `summarizer` / `embedder` 同一依赖方向：memory SHALL NOT import 任何 LLM / rag 抽象，模型调用由
 L5 组合根注入。抽取材料 SHALL 是**本次压实聚合的 episodic 条目**（即「行动与结果」产生的事件），
 承「无行动不记忆」。
+承载本轮**行动与结果**序列的那条 L2 条目，其**内容口径**（有界、写入前脱敏）由 `loop`「执行循环」规定 —— 本能力只消费该材料，不另行定义其形态。
 
 落库形态 SHALL 为：`id = f"keyfact.{实体 slug}"`（**同一实体至多一条** —— 重复抽取得**覆盖式
 更新**，条目不增长）；`kind="semantic"`；`source="extraction"`（短标签）；`trace_id` 与压实同
@@ -372,10 +373,16 @@ L5 组合根注入。抽取材料 SHALL 是**本次压实聚合的 episodic 条�
 
 - `value` 命中**密钥形态**（已知令牌前缀族 / 长随机串 / `key[:=]value` 赋值式）⇒ SHALL **强制**
   置为字面量 `"<redacted>"`。
-- 给出 `ref` 时 ⇒ `value` SHALL **一律**为 `"<redacted>"`（引用式：`ref` 形如 `coeffect:<名称>`，
-  真实取值在使用时经 `CoeffectResolver` 注入；**即便**原值不含密钥形态也不得留明文）。
+- 给出 `ref` 时 ⇒ `value` SHALL **一律**为 `"<redacted>"`（引用式：真实取值在使用时经
+  `CoeffectResolver` 注入；**即便**原值不含密钥形态也不得留明文）。**`ref` SHALL 仅当形如
+  `coeffect:<名称>` 时才算「给出引用」**；**非该形态**的 `ref`（含模型自造的说明性文字，
+  如 `round 1` / `会话事件`）SHALL 视为**无引用** —— 弃用该 `ref`、SHALL NOT 落 `ref:` 标签，
+  取值随即按**裸值**判据处理。这是**放宽**而非收紧：模型把「出处说明」当引用回填时，
+  不得据此把正常取值抹成 `<redacted>`。
 - **fail-closed**：`value` 被判为密钥形态**且无可用 `ref`** ⇒ 该条 SHALL **整条丢弃**（记不住引用
   就**不记**），并 SHALL 经 `warnings.warn` 留痕（留痕 SHALL 含实体名，SHALL NOT 含取值）。
+  「无可用 `ref`」SHALL 含 `ref` 为空串**与** `ref` 呈**非** `coeffect:<名称>` 形态两种情形
+  —— 自造的说明性引用**不能**为明文密钥背书。
 - **抽取器不构成信任边界**：脱敏 SHALL 在**落库前**由 memory 侧**无条件**执行（对抽取器返回的
   每一条都跑）；抽取器抛错或返回**不可解析**的结果 ⇒ SHALL 降级为**不抽取**（`warnings.warn`
   留痕），SHALL NOT 牵连本次压实的摘要写回与条目迁移。「不可解析」SHALL 判为「**有输出但无 JSON
@@ -459,3 +466,16 @@ SHALL **首尾保留**（头尾各半、中以 `…` 连接，总长 SHALL NOT �
 - **WHEN** 该事实落库
 - **THEN** 落库 `value` 长度 SHALL NOT 超过 `_MAX_FACT_CHARS`，且**同时保留头部与尾部**
   （中以 `…` 连接）—— 而非只留头部
+
+#### Scenario: 非 coeffect 形态的 ref 视为无引用
+- **GIVEN** 抽取器返回的事实其 `value` 是一段**看起来正常**的文本，且给出了 `ref` 但**非**
+  `coeffect:<名称>` 形态（如 `round 1` / `会话事件`）
+- **WHEN** 该事实落库
+- **THEN** `ref` 被**弃用**（不落 `ref:` 标签）、取值**按裸值判据**处理 —— **不因该 `ref` 被抹成**
+  `<redacted>`（正常文本 SHALL 原样保留）；条目照常落库
+
+#### Scenario: 非 coeffect 形态 ref + 密钥形态取值 ⇒ 整条丢弃
+- **GIVEN** 抽取器返回的事实其 `value` 是**密钥形态**，且给出的 `ref` **非** `coeffect:<名称>` 形态
+- **WHEN** 该事实落库
+- **THEN** 该条 SHALL **不落库**（视同「无可用 `ref`」），并 SHALL 经 `warnings.warn` 留痕
+  （含实体名、**不含**取值）；同批**其余**合规事实照常落库

@@ -10,7 +10,7 @@ LoopPlugin 声明同步 run / 异步 arun / 流式 astream 三入口 + 阶段方
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast, runtime_checkable
 
@@ -162,8 +162,19 @@ class LoopPlugin(Protocol):
         """把动作结果写回上下文，推进循环。"""
         ...
 
-    def remember(self, trace_id: str, trajectory: list[Any], *, session_id: str = "") -> None:
-        """写本轮轨迹/教训入 L2/L3（每轮必做，无行动不记忆），条目带会话归属。"""
+    def remember(
+        self,
+        trace_id: str,
+        trajectory: list[Any],
+        *,
+        session_id: str = "",
+        steps: Sequence[str] = (),
+    ) -> None:
+        """写本轮轨迹/教训入 L2/L3（每轮必做，无行动不记忆），条目带会话归属。
+
+        ``steps`` 非空 ⇒ **另立一条**条目承载本轮行动与结果序列（change 0173），
+        轨迹条目内容逐字不变；缺省空 ⇒ 行为与变更前逐字一致。
+        """
         ...
 
 

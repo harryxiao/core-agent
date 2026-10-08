@@ -16,12 +16,12 @@ import json
 import time
 import uuid
 import warnings
-from collections.abc import AsyncIterator, Awaitable, Callable, Sized
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence, Sized
 from typing import Any, cast
 
 from core.context import Compactor, ContextError, estimate_tokens
 from core.judgment import DecisionResult, DecisionRouter
-from core.memory import MemoryEntry, MemoryStore, TranscriptStore
+from core.memory import MemoryEntry, MemoryStore, TranscriptStore, redact_secrets
 from core.observability import TraceEvent, TraceLogger, Tracer
 from core.plugin_registry import Plugin
 from core.tools import SafetyGate, ToolProvider
@@ -75,6 +75,7 @@ _MAINTENANCE_INTERVAL_S = 900.0  # 记忆维护节拍（秒）：默认 15 分�
 _MAX_ACTION_EXCERPT = 400  # 动作事件 args/output 节选上界（事件面有界）
 _MAX_STEP_VALUE = 80  # 行动序列单参数值摘要上界（change 0171 / ADR-0162）
 _MAX_STEP_LINE = 300  # 行动序列整行上界（change 0171 / ADR-0162）
+_MAX_MEMORY_ENTRY = 2048  # 单条 L2 沉淀条目长度上界（轨迹条目与行动序列条目共用）
 
 
 def _args_excerpt(args: dict[str, Any]) -> dict[str, Any] | str:
@@ -434,7 +435,12 @@ class DefaultLoop(Plugin):
         # 上面刚把 `ctx.reply` 覆盖为**合成**终止文案，落盘即谎报模型原话。
         if not limit_reason:
             self._append_transcript(session_id, "assistant", ctx.reply)
-        self.remember(trace_id, [*ctx.trajectory, {"reply": ctx.reply}], session_id=session_id)
+        self.remember(
+            trace_id,
+            [*ctx.trajectory, {"reply": ctx.reply}],
+            session_id=session_id,
+            steps=_action_steps(ctx),
+        )
         # 维护节拍同样卸载：冷路径（进化 review / patch author）内含同步模型调用
         # （change 0167 / ADR-0157）。
         await asyncio.to_thread(self._maintain, trace_id)
@@ -671,31 +677,57 @@ class DefaultLoop(Plugin):
             return 0
         return value if isinstance(value, int) and value > 0 else 0
 
-    def remember(self, trace_id: str, trajectory: list[Any], *, session_id: str = "") -> None:
+    def remember(
+        self,
+        trace_id: str,
+        trajectory: list[Any],
+        *,
+        session_id: str = "",
+        steps: Sequence[str] = (),
+    ) -> None:
         """把本轮轨迹沉淀为 L2 记忆（无行动不记忆）。
 
         轨迹项渲染为可读行（轮次/成败/错误），末条 ``reply`` 提供可检索的语义内容；
         ``session_id`` 记入条目，供压实/固化/遗忘按会话归组（缺省空串 = 未归属）；
         ``source`` 取构造注入的命名空间（缺省 ``"loop"``，神兽 loop 为 ``beast.<agent_id>``）。
+
+        ``steps``（change 0173 / ADR-0164）非空时**另立一条** L2 条目承载本轮**行动与结果**序列
+        —— 与轨迹条目**并存**、轨迹条目内容**逐字不变**。另立而非合并：抽取器对**每条** L2 条目
+        只取前 ``extract._MAX_ENTRY_CHARS``(400) 字符入 prompt，而 keyfact 的实体历来产自轨迹条目的
+        **散文** ⇒ 合并会把散文顶出窗口。序列逐行经 ``redact_secrets`` 脱敏（判据与关键事实抽取
+        **同源**，方向 over-redact）⇒ 密钥只引用不读取、绝不进记忆。缺省空 ⇒ 行为与变更前逐字一致。
         """
         if not trajectory or self._memory is None:
             return
         lines = [line for item in trajectory if (line := _trajectory_line(item))]
         if not lines:
             return
-        summary = "\n".join(lines)[:2048]
         self._memory.write(
             "L2",
             MemoryEntry(
                 id=f"loop.{trace_id}",
                 layer="L2",
-                content=summary,
+                content="\n".join(lines)[:_MAX_MEMORY_ENTRY],
                 tags=["loop", "trajectory"],
                 source=self._source,
                 trace_id=trace_id,
                 session_id=session_id,
             ),
         )
+        if steps:
+            sequence = "\n".join(redact_secrets(step) for step in steps)[:_MAX_MEMORY_ENTRY]
+            self._memory.write(
+                "L2",
+                MemoryEntry(
+                    id=f"loop.steps.{trace_id}",
+                    layer="L2",
+                    content=sequence,
+                    tags=["loop", "steps"],
+                    source=self._source,
+                    trace_id=trace_id,
+                    session_id=session_id,
+                ),
+            )
 
     def rollback(self, trace_id: str) -> None:
         if self._tools is not None:

@@ -1413,6 +1413,41 @@
 > 任何记忆面（有损）；④ 解析失败留痕**不含**模型输出正文（排查须回看 trace，不以牺牲红线换可诊断性）；
 > ⑤ 数组存在但元素**全**不合规时不告警；⑥ `MAX_KEY_FACTS_PER_COMPACT`(8) **未**放宽。
 
+## 86. 记忆材料与引用语义：行动序列另立条目 + `ref` 只认 `coeffect:`（TC-MEM-REF，change `0173`／ADR-0164，台账 E110）
+
+> **背景取证**（用户 2026-10-08）：复查生产 `memory.jsonl` 的 24 条 `key_fact` —— **8 正常 / 16 被抹成
+> `<redacted>`**。两条根因：① 模型把「取自哪一句」当 `ref` 回填（`round1:热带水果有哪些` / `会话事件` /
+> `证据链第1条` / `分析结论`），而 store 侧判据是「有 `ref` ⇒ `value` **一律** `<redacted>`」⇒ **纯自伤**
+> （那些取值**不是**密钥）；② 逐会话回看抽取材料（`remember()` 写的 `round N ok` + **回复散文**）：
+> **24/24** 条实体的来源**全是散文**、**无一条**来自工具调用或结果（实体名里出现 `round 5 执行结果`
+> 即反证）。故本 change 双修：**引用判据**（D-B）+ **材料补厚**（D-A′，另立条目）。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-MEM-REF-01 | loop/spec.md「执行循环」Scenario「行动与结果另立一条 L2 条目」 | `remember("t1", [{"round":1,"ok":True},{"reply":"已回显"}], steps=_action_steps(ctx))`（ctx 含一次 `tools.echo`） | **两条并存**：`loop.t1` 内容 `"round 1 ok\n已回显"`（**逐字不变**）、`loop.steps.t1` 内容 `"tools.echo（text: 中间结论） → echo:中间结论"`（锚点：`tests/test_loop_memory_sequence.py::test_action_sequence_lands_as_separate_entry`） |
+| TC-MEM-REF-02 | 同上（条目归属） | 同上有 `session_id="s1"` | 行动序列条目 `layer=="L2"`、`trace_id=="t2"`、`session_id=="s1"`、`source=="loop"` —— 与轨迹条目同口径（回滚/归组一致）（锚点：`...::test_sequence_entry_shares_trace_and_session`） |
+| TC-MEM-REF-03 | 同上 Scenario「无工具调用不另立条目」 | `steps=_action_steps(纯文字 ctx)`（零工具动作） | **只**有 `loop.t3`；**不**出现 `loop.steps.t3`（无行动不记忆）（锚点：`...::test_reply_only_turn_does_not_add_sequence_entry`） |
+| TC-MEM-REF-04 | 同上（缺省逐字一致） | `remember("t4", [{"reply":"结论"}])`（**不传** `steps`） | 只有 `loop.t4`，内容 `"结论"` —— 变更前后**逐字一致**（旧调用形态零回归）（锚点：`...::test_default_steps_keeps_trajectory_entry_only`） |
+| TC-MEM-REF-05 | 同上 Scenario「行动序列条目脱敏且有界」（脱敏） | 观察含 `token: sk-abcdefgh12345678` | 条目**不含**该明文；含 `REDACTED`；`startswith("code_run（")` ⇒ **行内子串替换**（工具名/结构保留，非整行抹除）（锚点：`...::test_sequence_entry_redacts_secret_substrings`） |
+| TC-MEM-REF-06 | 同上（有界） | 40 条超长 steps（每条 200 字符） | 条目长度 `<= _MAX_MEMORY_ENTRY`(2048)（token 有界）（锚点：`...::test_sequence_entry_is_bounded`） |
+| TC-MEM-REF-07 | memory/spec.md「结构化实体抽取（关键事实）」Scenario「非 coeffect 形态的 ref 视为无引用」 | `scrub_key_fact(KeyFact(entity=…, value="正常取值", ref=r))`，`r` ∈ {`round1:热带水果有哪些`, `会话事件`, `证据链第1条`, `分析结论`}（参数化 4 例） | 返回条目的 `ref == ""`（该 `ref` **被弃用**）；`value` **保持明文**（不因自造引用而 `<redacted>`）（锚点：`tests/test_memory_key_facts.py::test_non_coeffect_ref_is_treated_as_absent`） |
+| TC-MEM-REF-08 | 同上（fail-closed 不许自造引用背书） | 同上但 `ref="会话事件"`、`value="sk-abcdefgh12345678"`（密钥形态） | 返回 **`None`** ⇒ 整条丢弃（自造引用**不能**为明文密钥背书）（锚点：`...::test_non_coeffect_ref_cannot_vouch_for_secret_value`） |
+| TC-MEM-REF-09 | 同上（端到端落库形态） | 经 `MemoryStore` 压实一条 `ref="分析结论"`、取值普通的 KeyFact | 落库 `content` 为**裸值**、**不**含 `ref:` 标签（锚点：`...::test_non_coeffect_ref_lands_plain_value_without_ref_tag`） |
+| TC-MEM-REF-10 | 同上 Scenario「非 coeffect 形态 ref + 密钥形态取值 ⇒ 整条丢弃」 | 经 `MemoryStore` 压实 `ref="会话事件"` + 密钥形态取值 | **无** `key_fact` 落库 + `pytest.warns(RuntimeWarning)`（丢弃留痕）（锚点：`...::test_non_coeffect_ref_with_secret_is_dropped_with_warning`） |
+| TC-MEM-REF-11 | memory/spec.md（判据提公开：一处定义、两处消费） | `looks_like_secret(s)`，`s` 遍历既有 `_SECRETS` 全集 + 一条长随机串（参数化） | 全部 `is True` ⇒ 公开判据与 `scrub_key_fact` **同源**（非第二份启发式）（锚点：`...::test_looks_like_secret_is_public`） |
+| TC-MEM-REF-12 | 同上（行内脱敏语义） | ① `redact_secrets("prefix sk-… suffix")`；② 纯文本；③ 一行含两种密钥形态 | ① **只**替换命中子串、保留 `prefix`/`suffix` 结构；② 原样返回（无操作）；③ 两处**均**替换（锚点：`...::test_redact_secrets_replaces_only_matched_substrings` / `...::test_redact_secrets_is_noop_on_plain_text` / `...::test_redact_secrets_handles_multiple_patterns`） |
+
+> **红态证据**：实现落地前跑两文件 ⇒ **收集期即失败**（预期，作为「新面确由本 change 引入」的证据）：
+> `ImportError: cannot import name '_MAX_MEMORY_ENTRY' from 'core.loop.default'`、
+> `cannot import name 'looks_like_secret' from 'core.memory'`（`redact_secrets` 同）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2003 passed**（基线 1979，**+24**）。
+> **已知局限**：① 脱敏判据是**启发式** —— 不符合任何 `_SECRET_PATTERNS` 的内联凭据仍会入 L2 并**落盘**
+> （根治需在工具侧打标 ⇒ 另立）；② `ref` **只认前缀** —— `coeffect:` 之外的真实引用源（如 `env:`）
+> 一律视为无引用；③ 每轮多一条 L2 条目 ⇒ 压实材料条数与 token 成本上升（有界）；④ `_MAX_ENTRY_CHARS`(400)
+> **未**放宽 —— 靠「另立条目」绕开窗口竞争（某轮行动序列超 400 字符时抽取器仍只看前 400）；⑤ 既有 16 条
+> 错误条目不主动清理（靠同实体幂等覆盖自然刷新）；⑥ 非 `coeffect:` 引用**被弃用时不发** `warnings.warn`
+> （规格只要求「整条丢弃」时留痕）。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

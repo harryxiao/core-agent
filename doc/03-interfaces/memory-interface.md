@@ -219,13 +219,21 @@ object]``）时，某会话摘要**首次越过**上界（既有摘要长度 ≤
 | `tags` | `["key_fact", "entity:<slug>", ("ref:<ref>")?, ("session:<sid>")?]` |
 | `session_id` | **空串**（全局层、**不**参与会话隔离 —— 跨会话长期知识；会话只作 `tags` 溯源标注） |
 
-``KeyFact``（``core.memory.extract``）：``entity`` / ``value`` / ``ref``（``ref`` 非空 ⇒ **引用式**，
-形如 ``coeffect:<名称>``，真值经 ``CoeffectResolver`` 在使用时注入 ⇒ ``value`` 恒为 ``"<redacted>"``）。
+``KeyFact``（``core.memory.extract``）：``entity`` / ``value`` / ``ref``（``ref`` **仅当形如
+``coeffect:<名称>``** 才构成**引用式** —— 真值经 ``CoeffectResolver`` 在使用时注入 ⇒ ``value`` 恒为
+``"<redacted>"``；**非该形态**的 ``ref`` **视为无引用**（弃用、不落 ``ref:`` 标签），取值回裸值判据
+—— change `0173`）。
+
+**公开脱敏判据**（change `0173`，``core.memory`` 导出）：``looks_like_secret(text) -> bool``
+（密钥形态启发式）与 ``redact_secrets(text) -> str``（**子串**替换为 ``"<redacted>"``、保留其余结构）。
+loop 侧把行动序列写入 L2 **前**复用同一份判据 ⇒ **一处定义、两处消费**。
 
 **密钥红线**（本能力的核心）：脱敏在 **memory 侧**对抽取器返回的**每一条**结果**无条件**执行 ——
 注入的抽取器**不构成信任边界**。规则 ① ``value`` 呈密钥形态（令牌前缀族 / 私钥块 / JWT /
-``key[:=]value`` / 长随机串兜底）⇒ **强制** ``"<redacted>"``；② 有 ``ref`` ⇒ ``value`` **一律**
-``"<redacted>"``；③ **裸密钥无可用引用 ⇒ 整条丢弃** + ``warnings.warn`` 留痕（含实体名、**不含**取值）。
+``key[:=]value`` / 长随机串兜底）⇒ **强制** ``"<redacted>"``；② ``ref`` **仅当形如 ``coeffect:<名称>``**
+⇒ ``value`` **一律** ``"<redacted>"``（非该形态视为无引用 ⇒ 取值回裸值判据）；③ **裸密钥无可用引用
+⇒ 整条丢弃** + ``warnings.warn`` 留痕（含实体名、**不含**取值；「无可用引用」含空串**与**非
+``coeffect:`` 形态）。
 方向恒为 **over-redact**。**先脱敏后截断**（``_MAX_FACT_CHARS``=200；条数上界
 ``MAX_KEY_FACTS_PER_COMPACT``=8）：``entity`` / ``ref`` 头部截断，``value`` 超长时**首尾保留**
 （头 / 尾各半、中以 ``…`` 连接，总长仍 ≤ 上限 —— 取值常「头定名、尾定值」；change `0172`）。

@@ -67,9 +67,35 @@ class KeyFact:
 KeyFactExtractor = Callable[[list[MemoryEntry]], list[KeyFact]]
 
 
-def _looks_secret(text: str) -> bool:
-    """文本是否呈**密钥形态**（启发式；命中即视为不可入记忆）。"""
+def looks_like_secret(text: str) -> bool:
+    """文本是否呈**密钥形态**（启发式；命中即视为不可入记忆）。
+
+    公开判据（change 0173）：loop 侧把行动序列写入 L2 **前**复用**同一份**启发式脱敏 ——
+    判据只有一处定义、两处消费（``scrub_key_fact`` / ``redact_secrets``），不写第二份。
+    """
     return any(pattern.search(text) is not None for pattern in _SECRET_PATTERNS)
+
+
+def redact_secrets(text: str) -> str:
+    """把文本中命中密钥形态的**子串**替换为 ``REDACTED``（保留其余结构）。
+
+    与 ``looks_like_secret`` 同源、方向同为 **over-redact**。用于**行内**脱敏：整行抹除会连
+    工具名 / 路径一并丢掉，而「做了什么」正是行动序列要保留的信息（change 0173）。
+    """
+    cleaned = text
+    for pattern in _SECRET_PATTERNS:
+        cleaned = pattern.sub(REDACTED, cleaned)
+    return cleaned
+
+
+def _is_coeffect_ref(ref: str) -> bool:
+    """``ref`` 是否呈**引用式**形态（``coeffect:<名称>``，且名称非空）。
+
+    仅此形态算「给出引用」；其余（含模型自造的出处说明，如 `round1:…` / `会话事件`）
+    一律**视为无引用**（change 0173）。
+    """
+    prefix = "coeffect:"
+    return ref.startswith(prefix) and bool(ref[len(prefix) :].strip())
 
 
 def slug_entity(entity: str, *, max_len: int = 48) -> str:
@@ -106,7 +132,8 @@ def scrub_key_fact(fact: KeyFact) -> KeyFact | None:
 
     规则（方向恒为 over-redact）：
     1. 无实体名 ⇒ 丢弃。
-    2. 像密钥的 ``ref`` 本身 ⇒ 弃用该引用（引用不可是凭据）。
+    2. ``ref`` **非** ``coeffect:<名称>`` 形态（含像密钥者、含模型自造的出处说明）⇒ 弃用该引用
+       —— 引用只认 ``coeffect:`` 形态，自造引述**不能**为明文取值背书（change 0173）。
     3. ``value`` 呈密钥形态**且无可用引用** ⇒ 丢弃（**记不住引用就不记**）。
     4. 有引用 ⇒ ``value`` **一律** ``REDACTED``（有引用即不留明文，即便原值看似正常）。
     5. 先脱敏（第 3/4 步）**后**截断 —— 截断不得使明文逃逸；``value`` 的截断形态为**首尾保留**
@@ -117,9 +144,9 @@ def scrub_key_fact(fact: KeyFact) -> KeyFact | None:
         return None
     ref = fact.ref.strip()
     value = fact.value.strip()
-    if ref and _looks_secret(ref):
+    if not _is_coeffect_ref(ref):
         ref = ""
-    if not ref and _looks_secret(value):
+    if not ref and looks_like_secret(value):
         return None
     if ref:
         value = REDACTED
@@ -135,6 +162,8 @@ _PROMPT_HEAD = (
     '只输出一个 JSON 数组，元素形如 {{"entity": "实体名", "value": "取值", "ref": ""}}。'
     "**绝不**输出任何密钥 / 凭据 / 口令的明文：凡属此类，value 一律写 "
     '"<redacted>" 并在 ref 写 "coeffect:<名称>"；若给不出引用，就不要输出该条。'
+    'ref **只允许**形如 "coeffect:<名称>" 的引用；给不出这样的引用时 ref 留**空字符串**，'
+    "**不要**用出处说明（如「第 N 轮」「某结论」「证据链」）充数。"
     "不要输出解释或多余文字。"
 )
 

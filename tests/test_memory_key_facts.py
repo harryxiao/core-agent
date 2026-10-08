@@ -16,7 +16,9 @@ from core.memory import (
     MemoryEntry,
     MemoryStore,
     extract_with,
+    looks_like_secret,
     parse_key_facts,
+    redact_secrets,
     scrub_key_fact,
 )
 from core.memory.extract import _MAX_FACT_CHARS, MAX_KEY_FACTS_PER_COMPACT
@@ -421,3 +423,79 @@ def test_entity_and_ref_keep_head_only_truncation() -> None:
     assert cleaned is not None
     assert cleaned.entity == "长" * _MAX_FACT_CHARS and "…" not in cleaned.entity
     assert cleaned.ref == long_ref[:_MAX_FACT_CHARS] and "…" not in cleaned.ref
+
+
+# ---- 引用形态判据 + 公开脱敏判据（change 0173 / ADR-0164 / 台账 E110） ----
+#
+# 取证：24 条 keyfact 中 **16 条**被抹成 `<redacted>`，其 `ref` 全是模型**自造的出处说明**
+# （`round1:热带水果有哪些` / `会话事件` / `证据链第1条` …），**不是** `coeffect:<名称>`。
+# 旧判据「有 `ref` 即抹」把正常取值一并销毁 ⇒ 本组守护「非 `coeffect:` 形态视为无引用」。
+
+
+@pytest.mark.parametrize("ref", ["round1:热带水果有哪些", "会话事件", "证据链第1条", "分析结论"])
+def test_non_coeffect_ref_is_treated_as_absent(ref: str) -> None:
+    """非 `coeffect:<名称>` 形态的 `ref` ⇒ 视为无引用：取值回裸值判据、`ref` 弃用。"""
+    cleaned = scrub_key_fact(KeyFact(entity="榴莲", value="热带水果", ref=ref))
+
+    assert cleaned is not None
+    assert cleaned.value == "热带水果", "正常取值不因自造引用被抹"
+    assert cleaned.ref == "", "自造引用被弃用"
+
+
+def test_non_coeffect_ref_cannot_vouch_for_secret_value() -> None:
+    """自造引用**不能**为明文密钥背书 ⇒ 视同无引用、fail-closed 整条丢弃。"""
+    fact = KeyFact(entity="凭据", value="sk-abcdefgh12345678", ref="会话事件")
+
+    assert scrub_key_fact(fact) is None
+
+
+def test_non_coeffect_ref_lands_plain_value_without_ref_tag() -> None:
+    """端到端：自造引用的事实落库后取值**保留**、`tags` **不含** `ref:` 标签。"""
+    store = _store([KeyFact(entity="榴莲", value="热带水果", ref="round1:热带水果有哪些")])
+
+    store.compact(session_id="s1")
+
+    entry = next(iter(_facts(store)))
+    assert entry.content == "榴莲: 热带水果"
+    assert not any(tag.startswith("ref:") for tag in entry.tags)
+
+
+def test_non_coeffect_ref_with_secret_is_dropped_with_warning() -> None:
+    """端到端：密钥形态取值 + 自造引用 ⇒ 整条丢弃 + 留痕（同「裸密钥无引用」口径）。"""
+    store = _store([KeyFact(entity="凭据", value="sk-abcdefgh12345678", ref="会话事件")])
+
+    with pytest.warns(RuntimeWarning):
+        store.compact(session_id="s1")
+
+    assert _facts(store) == []
+
+
+@pytest.mark.parametrize("secret", [*_SECRETS, _LONG_RANDOM])
+def test_looks_like_secret_is_public(secret: str) -> None:
+    """公开判据与内部实现同源（loop 侧脱敏复用同一份，不写第二份启发式）。"""
+    assert looks_like_secret(secret) is True
+    assert looks_like_secret("普通文本：生产集群 A") is False
+
+
+def test_redact_secrets_replaces_only_matched_substrings() -> None:
+    """只替换命中子串、保留其余结构（工具名 / 路径不被整行抹除）。"""
+    cleaned = redact_secrets("code_run（script: echo） → token: sk-abcdefgh12345678")
+
+    assert "sk-abcdefgh12345678" not in cleaned
+    assert REDACTED in cleaned
+    assert cleaned.startswith("code_run（script: echo）")
+
+
+def test_redact_secrets_is_noop_on_plain_text() -> None:
+    """非命中文本逐字不变（避免无谓改动）。"""
+    text = "file_read（path: src/core/loop/default.py） → 12 行"
+
+    assert redact_secrets(text) == text
+
+
+def test_redact_secrets_handles_multiple_patterns() -> None:
+    """同现多个 pattern ⇒ 各自替换。"""
+    cleaned = redact_secrets("a sk-abcdefgh12345678 b AKIAIOSFODNN7EXAMPLE c")
+
+    assert "sk-abcdefgh12345678" not in cleaned
+    assert "AKIAIOSFODNN7EXAMPLE" not in cleaned

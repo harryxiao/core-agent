@@ -4942,6 +4942,58 @@
   `03-interfaces/memory-interface.md` §3；模块 `02-modules/memory.md`；测试 `04-testing/test-cases.md`
   §85（TC-EXTRACT-QUALITY）；台账 `coding-plan/known-risk.md` §1（E109）。`loop` / `notes` / `cli-ops` 零改动。
 
+## ADR-0164：记忆材料与引用语义 —— 行动序列另立条目 + `ref` 只认 `coeffect:`（change 0173）
+
+- **背景 / 用户实测取证（2026-10-08）**：关键事实抽取（G4，change 0155 / ADR-0147，经 0172 / ADR-0163
+  修抽取端质量）在生产落库的 `memory.jsonl` 上复查，24 条 `key_fact` 里 **8 条正常 / 16 条被抹成
+  `<redacted>`**。逐条回看那 16 条：其 `ref` 全是模型**自造的出处说明**（`round1:热带水果有哪些`
+  / `会话事件` / `证据链第1条` / `分析结论`），**不是** `coeffect:<名称>`；而 `scrub_key_fact` 的判据是
+  「有 `ref` ⇒ `value` **一律** `<redacted>`」⇒ **纯自伤**：那些取值**不是**密钥，本可原样保留。
+  同时按会话回看材料（该会话的 L2 episodic 条目 = `remember()` 写的 `round N ok` + **回复散文**）：
+  **24/24** 条 keyfact 的实体**全部**产自**散文**，无一条来自工具调用或结果 —— 而实体名里出现
+  `round 5 执行结果` / `round 6 执行结果`，反证材料里**没有**「做了什么、得到什么」。
+- **决策 ①：`ref` 只认 `coeffect:<名称>` 形态，其余**视为无引用**。判据放在 **store 侧**
+  （`_is_coeffect_ref`）—— 注入的抽取器**不构成信任边界**（0155 既定原则），prompt 收紧只是辅助。
+  「视为无引用」而非「整条丢弃」：正常取值**原样保留**、不落 `ref:` 标签；密钥形态取值仍走既有
+  **fail-closed 整条丢弃 + 留痕**（自造引用**不能**为明文密钥背书）⇒ **两个方向都不放松**，
+  方向仍是 over-redact。**这一条是「放宽」**：本 change 使**更少**的东西被抹，但**不**使任何
+  密钥形态之物逃逸。`_is_coeffect_ref` 同时**覆盖**了旧的「像密钥的 `ref` 弃用」判据（密钥形态
+  必然不满足 `coeffect:` 形态）⇒ 一条判据两义，非丢失。
+- **决策 ②：行动序列**另立一条** L2 条目（`loop.steps.<trace_id>`），**不**插进既有轨迹条目。
+  证据：抽取器对**每条** L2 条目只取前 `extract._MAX_ENTRY_CHARS`(400) 字符入 prompt
+  （`build_extract_prompt` 逐条截断后才拼行），而**全部** 24 条 keyfact 的实体都产自轨迹条目的
+  **散文** ⇒ 把行动序列插到既有条目**开头**会把那段散文顶出窗口，**很可能把仅有的好结果一起弄坏**。
+  另立 ⇒ 两条各占一窗，既有散文抽取**零风险**，材料里也确有「行动与结果」。轨迹条目
+  `id`/`tags`/`content` **逐字不变**（`test_memory_namespace` 等既有调用零回归）；行动序列条目与
+  轨迹条目**同 `trace_id`**（按 trace 一并可逆）、**同 `session_id`**（压实归组口径一致）、
+  `kind` 取缺省 `episodic`（自然成为压实材料）。
+- **决策 ③：判据**提为公开**（`looks_like_secret` + 新增 `redact_secrets`），loop 侧复用。**
+  loop 直接调 `extract._looks_secret` 会**跨模块私有边界**；`core/memory/__init__.py` 已有
+  `REDACTED` 等公开导出的先例 ⇒ 上提后 loop 走 `from core.memory import …`，**依赖方向不变**
+  （loop → memory 是既有合法方向）、私有面不破，且判据**只有一处定义**。`scrub_key_fact` 改用
+  改名的公开判据 ⇒ **行为逐字不变**（纯重命名 + 新增 `redact_secrets`）。
+- **决策 ④：脱敏粒度 = **子串替换**（`redact_secrets`），不是整行抹除。** 行动序列一行是
+  「工具名（参数摘要）→ 结果节选」，整行抹除会连**工具名**一起丢，而「做了什么」正是要保留的信息；
+  逐 pattern 命中即换 `<redacted>`，保留结构。
+- **接口面**：`Loop.remember` 增**仅关键字**形参 `steps: Sequence[str] = ()`（`default.py` 实现 +
+  `protocol.py` 声明同步）；缺省 `()` ⇒ **行为与变更前逐字一致**（既有调用与测试零回归）。
+  `MemoryStore` / `KeyFactExtractor` / `TurnObserver` / `MemoryEntry` 签名与调用点**逐字不动**。
+  新增模块级常量 `_MAX_MEMORY_ENTRY = 2048`（轨迹条目与行动序列条目**共用**，既有 `[:2048]`
+  字面量一并改用 ⇒ 单一真源，行为不变）。
+- **规格**：`memory`「结构化实体抽取（关键事实）」**MODIFIED**（`ref` 形态判据 + 材料口径指针，
+  **既有 10 Scenario 逐字保留** + 2 新增：非 `coeffect:` 形态 `ref` 视为无引用 / 该形态 + 密钥取值
+  ⇒ 整条丢弃）；`loop`「执行循环」**MODIFIED**（行动序列另立条目，**既有 21 Scenario 逐字保留**
+  + 3 新增：另立一条 L2 条目 / 条目脱敏且有界 / 无工具调用不另立条目）。
+- **被本 ADR 更正的先前判断**：起草期初稿把 `memory/spec.md:359` 的「（即「行动与结果」产生的事件）」
+  读成「L2 内容须含工具调用序列」的**规范句**、据此称 D-A 是「兑现既有承诺」—— 该括号实为**解释
+  episodic 条目是什么**（承「无行动不记忆」）⇒ D-A 是**新增行为**，措辞已在 proposal 更正留痕。
+- **局限**：① 脱敏判据是**启发式**（不符合任何 `_SECRET_PATTERNS` 的内联凭据仍会入 L2 并落盘；
+  根治需在工具侧打标）② `ref` 只认前缀 ⇒ 未来若要支持 `coeffect:` 之外的真实引用源（如 `env:`）
+  需另立 change ③ 每轮多一条 L2 条目 ⇒ 压实材料条数与 token 成本上升（有界）④ `_MAX_ENTRY_CHARS`
+  **未**放宽（靠另立条目绕开窗口竞争；单条超 400 字符仍只看前 400）⑤ 既有 16 条错误条目**不**由本
+  change 清理（同实体重抽幂等覆盖自然刷新）⑥ 非 `coeffect:` 引用被弃用**不**发 `warnings.warn`
+  （视作正常路径；规格只要求「整条丢弃」时留痕）—— 留痕与否可由后续 change 决定。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5100,3 +5152,4 @@
 | ADR-0161 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 03-interfaces/llm-provider-interface.md, 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0162 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0163 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0164 | 02-modules/memory.md, 02-modules/loop.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
