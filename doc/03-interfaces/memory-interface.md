@@ -258,12 +258,15 @@ loop 侧把行动序列写入 L2 **前**复用同一份判据 ⇒ **一处定义
 ``backup_path`` / ``skipped``（**原因 → 条目 id 或会话**：``no_session`` / ``no_extractor`` /
 ``extract_failed`` / ``backup_failed``）/ ``dry_run``。
 
-语义：**识别**失效条目（``tags`` 带 ``ref:`` 且该 ref **非** ``coeffect:`` 形态、``content`` 取值为
-``"<redacted>"``）⇒ 按 ``session:<sid>`` 标签**按会话**分组 ⇒ 取该会话 episodic 材料（**全层**：
-``layer`` 不过滤，已归档 L4 的条目同样参与）⇒ 复用本能力 prompt / 脱敏 / 有界**重抽** ⇒ 备份 ⇒
-落新 ⇒ 删该会话**全部旧** keyfact（**排除**本次已写入的 id）。**fail-closed 三处**：抽取器未注入 /
-该会话重抽抛错 / 备份写入失败 ⇒ **不删**。重抽返回合法空数组 ⇒ 视为成功 ⇒ 旧条目**仍删**。无失效
-条目 ⇒ 幂等（零写入、零备份）。CLI：``core-agent memory repair-keyfacts [--dry-run]``。
+语义（**三段式**，备份口径见 change `0175`／ADR-0166）：**识别**失效条目（``tags`` 带 ``ref:`` 且该 ref
+**非** ``coeffect:`` 形态、``content`` 取值为 ``"<redacted>"``）⇒ 按 ``session:<sid>`` 标签**按会话**
+分组 ⇒ ① **收集**：每会话取 episodic 材料（**全层**：``layer`` 不过滤，已归档 L4 的条目同样参与）⇒
+复用本能力 prompt / 脱敏 / 有界**重抽** ⇒ 落新；② **备份**：各成功会话待删条目的**并集** ⇒ **一份**文件
+（``backup_path`` 指向它，**每次操作恰好一份**、共用一个时间戳）；③ **删除**：统一删各会话**全部旧**
+keyfact（**排除**本次已写入的 id）。**fail-closed 三处**：抽取器未注入 / 该会话重抽抛错（**会话级**）/
+备份写入失败（**操作级 ⇒ 跨会话一并阻断**，``skipped["backup_failed"]`` 列出全部会话）⇒ **不删**。
+重抽返回合法空数组 ⇒ 视为成功 ⇒ 旧条目**仍删**。无失效条目 ⇒ 幂等（零写入、零备份）。
+CLI：``core-agent memory repair-keyfacts [--dry-run]``。
 
 ``MemoryBackend`` 契约**零改动**（删除走既有 ``delete``）；memory 仍**不** import ``core.notes`` /
 ``core.loop``。

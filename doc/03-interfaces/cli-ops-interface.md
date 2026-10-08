@@ -155,3 +155,7 @@ def render_sessions / render_config / render_mcp / render_skills / render_notes(
 - **报表口径**：识别到的失效条目数与会话数 · 成功重抽与已删除条数 · 备份文件路径 · 跳过项
   （`no_session` / `no_extractor` / `extract_failed` / `backup_failed`）。**报表 SHALL NOT 打印条目取值**
   （取值恒为 `"<redacted>"`，但口径上不落正文）。
+- **备份「一次操作**恰好一份**」**（change `0175`／ADR-0166）：跨会话的待删条目**合并**写入**一份**
+  `memory.repair.<时间戳>.jsonl`（`backup_path` 即该文件，**不再**每会话各落一份、不覆盖）；备份**写入失败**
+  ⇒ **跨会话一并阻断**（整次操作**一条都不删**）。
+

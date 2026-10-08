@@ -1481,6 +1481,30 @@
 > ④ 无 `session:` 出处的失效条目**只报告不动作**，永远留在库里；⑤ 只覆盖 keyfact 这一面；⑥ **不做
 > 实体名映射** ⇒ 命名漂移不可避免。
 
+## 88. 修复备份「一次操作一份」：备份/删除提出会话循环（TC-KFBACKUP，change `0175`／ADR-0166，台账 E112）
+
+> **背景取证**（change `0174` 首次**实跑**，生产 2 个会话）：备份/删除原在**每会话循环体**内 ⇒ 备份文件数
+> = 会话数（实落 `memory.repair.20261008-234522.jsonl` 2 行 + `…234545.jsonl` 5 行）。`RepairReport.backup_path`
+> 是**标量**，循环里**后写覆盖前写** ⇒ 报告只显示**最后一份**、第一份成**孤儿**（回滚会漏）；且与规格句
+> 「落**一份**备份文件」不符。附带缺陷：备份失败只阻断**该会话** ⇒ 一次操作可能**部分删除**。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-KFBACKUP-01 | memory/spec.md「失效关键事实的运维修复」Scenario「待删条目跨会话合并为一份备份」 | 两个会话（`s1` / `s2`）各有一条失效条目 + 各自 episodic 材料；抽取器按会话给不同事实 | 备份文件**恰好 1 份**、`backup_path` 指向它、行 id 集合 = 两会话待删 id 的**并集**、`deleted` 与之相等（锚点：`tests/test_memory_keyfact_repair.py::test_two_sessions_share_one_backup`） |
+| TC-KFBACKUP-02 | 同上 Scenario「备份文件先落且失败即不删」（多会话） | 同上布景，`CORE_STATE_DIR` 指向一个**文件** ⇒ 备份写入必失败 | `deleted == []`、`backup_path == ""`、`skipped["backup_failed"] == ["s1","s2"]`（**跨会话一并阻断**）、两会话旧条目**都在**、新条目已落（锚点：`...::test_backup_failure_blocks_every_session`） |
+| TC-KFBACKUP-03 | 同上（**单**会话口径不变） | 单会话、有待删条目 | 恰好一份备份、旧条目删净、`skipped["backup_failed"]` 标明（锚点：`...::test_backup_file_keeps_original_entries` / `...::test_backup_failure_means_no_deletion`） |
+
+> **红态证据**：实现落地前跑 `tests/test_memory_keyfact_repair.py` ⇒ **1 failed / 13 passed**
+> （`test_two_sessions_share_one_backup`）。失败形态比预期更锋利：两次调用落在**同一秒** ⇒ **同一路径**
+> ⇒ 第二会话的备份**静默覆盖**第一会话的（文件恰好 1 个但内容只有会话 2 的待删条目 ⇒ **会话 1 的回滚面
+> 被覆盖清除**）。另一新增用例 `test_backup_failure_blocks_every_session` 是**等价守护**（「目录不可写」
+> 对两会话**同时**生效 ⇒ 实现前后皆绿），诚实记之。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2017 passed**（基线 **2015**，**+2**）。
+> **已知局限**：① 备份失败即**整次不删** ⇒ 一个坏目录（磁盘满 / 权限错）会让**所有**会话都修不成（以
+> 「不修」换「不错删」）；② **已产生的历史多份备份不合并/不清理** ⇒ 本 change 只保证**此后**每次操作
+> 恰好一份；③ 跨会话**同 slug** 时最后一个会话胜，报告里该 id 只出现一次、用户**看不出**发生了覆盖；
+> ④ `doomed` 并集顺序不保证稳定（回滚按行不按序）；⑤ 承 §87 全部局限。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

@@ -5044,6 +5044,48 @@
   启发式）；④ 不可修复类（无 `session:` 出处）**只报告不动作**，永远留在库里；⑤ 只覆盖 keyfact 这一面
   （摘要 / 迹条同类问题不覆盖）；⑥ **不做实体名映射** ⇒ 命名漂移不可避免。
 
+## ADR-0166：修复备份「一次操作一份」——备份/删除提出会话循环（change 0175）
+
+- **背景**：ADR-0165（change 0174）首次**实跑**（生产 2 个会话）当场暴露：`_repair_session` 把「落备份 +
+  删除」放在**每会话循环体**内 ⇒ 备份文件数 = 会话数（实落 `memory.repair.20261008-234522.jsonl` 2 行 +
+  `…234545.jsonl` 5 行）。两个后果：① `RepairReport.backup_path` 是**标量**，循环里**后写覆盖前写** ⇒ 报告
+  只显示**最后一份**，第一份成为**孤儿**（用户回滚时会漏）；② 与规格句「落**一份**备份文件」**不符**。
+  附带缺陷：备份失败只阻断**该会话** ⇒ 一次操作可能**部分删除**。
+- **决策 ①：一次操作**恰好一份**备份。** 把 `_repair_session` 的**后半段**（备份 + 删除）提出循环 ⇒
+  `repair_stale_key_facts` 提为三段式：① **收集**（每会话重抽 + 落新）→ ② **备份**（全部会话待删条目
+  **合并**为一份、**共用同一时间戳**）→ ③ **删除**（统一）。`_repair_session` → `_collect_session`
+  （返回 `bool`：该会话是否重抽成功），另立 `_doomed_key_facts`（一次扫描求并集）与
+  `_backup_then_delete`（备份相 + 删除相）。
+- **决策 ②：`doomed` 求值推迟到**全部会话落新之后**。** `written` 本就**跨会话累积**（单例 set、逐会话
+  update）⇒ 推迟后 `written` 只会**更大**、`doomed` 只会**更小** ⇒ 只会**更少删**、不会误删。差异仅在
+  「会话 A 的新 id 恰好等于会话 B 的旧 keyfact id」这一跨会话同 slug 情形：现状会删，新形态**不删**
+  （那条 id 上此刻是 A 会话给出的新值）—— 是**正确的收紧**。
+- **决策 ③：备份失败 ⇒ **跨会话一并阻断**（操作级全或无）。** 一份备份就是**整次操作的回滚面**：它没落成
+  ⇒ 谁的旧条目都别删（`skipped["backup_failed"] = sorted(report.sessions)`）。判据是「失败的**作用域**是否
+  等于操作的**作用域**」：**抽取失败**是**材料级/会话级**（该会话没有可用的新信息，不该因它阻断别的会话）
+  ⇒ **保持会话级**；**备份失败**是**操作级** ⇒ 升为全或无。两种失败下**已落的新条目都保留** —— 它们是正确
+  的脱敏事实，且 `_write_key_fact` 走唯一写路径、本就有 `EffectTracker` 可撤销。
+- **决策 ④：文件名与格式**零改动**。** 仍 `$CORE_STATE_DIR/memory.repair.<时间戳>.jsonl`、每行
+  `asdict(entry)` ⇒ 人工回滚口径不变；`RepairReport.backup_path` **保持标量**（此后不再被覆盖，字段无需改形
+  ⇒ CLI 打印零改动）。`doomed` 并集为空 ⇒ 不落备份、不删除（不产生空备份文件，承 ADR-0165）。
+- **红态证据（实现前）**：新增用例 `test_two_sessions_share_one_backup` **失败** —— 且失败形态比预期更锋利：
+  两次调用落在**同一秒** ⇒ **同一路径** ⇒ 第二会话的备份**静默覆盖**第一会话的 ⇒ 文件恰好 1 个但内容只有
+  会话 2 的待删条目（**会话 1 的回滚面被覆盖清除**）。另一新增用例 `test_backup_failure_blocks_every_session`
+  为**等价守护**（现状的「目录不可写」缺陷对两会话**同时**生效 ⇒ 实现前后皆绿），诚实记之。
+- **规格**：`memory` **MODIFIED**「失效关键事实的运维修复」—— 备份句追加「**每次操作恰好一份**（跨会话的
+  待删条目**合并**写入、**共用同一时间戳**；SHALL NOT 每会话各落一份）」、失败句改为「⇒ SHALL NOT 删除
+  **任何**条目（fail-closed；**跨会话一并阻断**，无部分删除）」；改 1 Scenario（多会话 GIVEN）+ 加 1 Scenario
+  （「待删条目跨会话合并为一份备份」）⇒ 7 → **8** Scenario。`cli-ops` / 其余能力**零改动**。
+- **落点**：`store.py`（`_collect_session` / `_doomed_key_facts` / `_backup_then_delete` / 三段式
+  `repair_stale_key_facts`）。`RepairReport` / `_repair_backup_path` / `_delete_entry` /
+  `_group_stale_by_session` / `entry.py` / `core/memory/__init__.py` **零改动**。
+- **局限**：① 备份失败即整次不删 ⇒ 一个坏目录（磁盘满 / 权限错）会让**所有**会话都修不成（以「不修」换
+  「不错删」，方向恒为保守）；② **已产生的历史多份备份不合并/不清理**（本次实跑那两份是既成事实的回滚面，
+  动它们才是风险）⇒ 库里仍存多份旧备份，本 change 只保证**此后**每次操作恰好一份；③ 跨会话同 slug 时
+  **最后一个会话胜**（同 slug 只有一条），报告里该 id 只出现一次、用户**看不出**发生了覆盖；④ `doomed`
+  并集顺序 = 会话遍历序 × 会话内 `_all_entries()` 序，**不保证稳定**（回滚按行不按序 ⇒ 不影响正确性）；
+  ⑤ 承 ADR-0165 全部局限（重抽不确定 / 命名漂移 / 启发式脱敏等）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5204,3 +5246,4 @@
 | ADR-0163 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0164 | 02-modules/memory.md, 02-modules/loop.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0165 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0166 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

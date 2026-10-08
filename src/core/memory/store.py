@@ -672,10 +672,14 @@ class MemoryStore:
             by_session.setdefault(session_id, []).append(entry)
         return by_session
 
-    def _repair_session(
+    def _collect_session(
         self, session_id: str, extractor: KeyFactExtractor, report: RepairReport, written: set[str]
-    ) -> None:
-        """修一个会话：取材料 → 重抽 → 备份 → 删该会话旧条目（见 `repair_stale_key_facts`）。"""
+    ) -> bool:
+        """收集相：取材料 → 重抽 → 落新（**不**备份、**不**删除）。
+
+        返回该会话是否**重抽成功**（成功者才参与后续清理）。重抽抛错 ⇒ 该会话不落库、不清理
+        （fail-closed），其余会话照常。
+        """
         try:
             plan, _, _ = _plan_key_facts(extractor(self._material_for_session(session_id)))
         except Exception:  # noqa: BLE001 — 重抽失败 ⇒ 该会话不落库、不删（fail-closed）
@@ -685,24 +689,36 @@ class MemoryStore:
                 stacklevel=2,
             )
             report.skipped.setdefault("extract_failed", []).append(session_id)
-            return
+            return False
 
         fresh = [f"keyfact.{slug_entity(fact.entity)}" for fact in plan]
         for fact in plan:
             self._write_key_fact(fact, key=session_id, session_id=session_id)
         report.written.extend(fresh)
         written.update(fresh)
+        return True
 
-        # 该会话产出的**全部旧** keyfact（不止失效者：重抽实体名不保证重合 ⇒ 只删失效者留死条目）
-        tag = f"{_SESSION_TAG}{session_id}"
-        doomed = [
+    def _doomed_key_facts(self, sessions: list[str], written: set[str]) -> list[MemoryEntry]:
+        """这些会话产出的**全部旧** keyfact（不止失效者），**排除**本次已写入的 id。
+
+        **全部旧**：重抽实体名不保证与当年重合 ⇒ 只删失效者会留下死条目。
+        **排除本次已写入**：同 slug 即覆盖式更新，否则刚修好的条目会被自己删掉。
+        """
+        tags = {f"{_SESSION_TAG}{session_id}" for session_id in sessions}
+        return [
             entry
             for entry in self._all_entries()
-            if _KEY_FACT_TAG in entry.tags and tag in entry.tags and entry.id not in written
+            if _KEY_FACT_TAG in entry.tags
+            and entry.id not in written
+            and any(tag in entry.tags for tag in tags)
         ]
-        if not doomed:
-            return  # 无可删 ⇒ 不落空备份文件
 
+    def _backup_then_delete(self, doomed: list[MemoryEntry], report: RepairReport) -> None:
+        """备份相 + 删除相：把**全部**待删条目落**一份**备份，再统一删除。
+
+        **一次操作恰好一份**备份（跨会话合并、共用一个时间戳）；备份**写入失败** ⇒ 一条都不删
+        （fail-closed，跨会话一并阻断 —— 这份备份就是整次操作的回滚面）。
+        """
         backup = _repair_backup_path()
         try:
             backup.parent.mkdir(parents=True, exist_ok=True)
@@ -716,7 +732,7 @@ class MemoryStore:
                 RuntimeWarning,
                 stacklevel=2,
             )
-            report.skipped.setdefault("backup_failed", []).append(session_id)
+            report.skipped["backup_failed"] = sorted(report.sessions)
             return
 
         report.backup_path = str(backup)
@@ -725,12 +741,13 @@ class MemoryStore:
             report.deleted.append(entry.id)
 
     def repair_stale_key_facts(self, *, dry_run: bool = False) -> RepairReport:
-        """失效关键事实的运维修复（change 0174 / ADR-0165）：按会话重抽 + 清理该会话旧条目。
+        """失效关键事实的运维修复（change 0174 / ADR-0165，备份口径 change 0175 / ADR-0166）。
 
-        顺序恒为「**先重抽、成功后才清理**」，且删除**排除本次已写入的 id**（同 slug 即覆盖式
-        更新，否则刚修好的条目会被自己删掉）。三处 **fail-closed**：抽取器未注入 / 该会话重抽
-        抛错 / 备份文件写入失败 ⇒ 均**不删**（宁可不修，不可修坏）。无失效条目 ⇒ 幂等（零写入、
-        零备份）。
+        三段式：① **收集**（按会话重抽 + 落新）→ ② **备份**（全部会话待删条目合并为**一份**）→
+        ③ **删除**（统一）。顺序恒为「**先重抽、成功后才清理**」，且删除**排除本次已写入的 id**
+        （同 slug 即覆盖式更新，否则刚修好的条目会被自己删掉）。三处 **fail-closed**：抽取器未注入
+        / 该会话重抽抛错 / 备份文件写入失败 ⇒ 均**不删**（前两处为会话级，第三处**跨会话
+        一并阻断**）。无失效条目 ⇒ 幂等（零写入、零备份）。
         """
         report = RepairReport(dry_run=dry_run)
         stale = self._stale_key_facts()
@@ -745,8 +762,12 @@ class MemoryStore:
             return report
 
         written: set[str] = set()
-        for session_id in by_session:
-            self._repair_session(session_id, extractor, report, written)
+        cleaned = [
+            sid for sid in by_session if self._collect_session(sid, extractor, report, written)
+        ]
+        doomed = self._doomed_key_facts(cleaned, written)
+        if doomed:
+            self._backup_then_delete(doomed, report)
         return report
 
     def _all_entries(self) -> list[MemoryEntry]:

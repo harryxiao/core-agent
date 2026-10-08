@@ -1,10 +1,11 @@
 """失效关键事实的运维修复（keyfact repair）单测。
 
 对应规格：doc/openspec/specs/memory/spec.md「失效关键事实的运维修复」
-（change 0174 / ADR-0165 / 台账 E111）。
+（change 0174 / ADR-0165 / 台账 E111；备份口径 change 0175 / ADR-0166 / 台账 E112）。
 
 覆盖：识别判据 / 按会话重抽（含 L4 材料）· 清理旧条目（含同 slug 不误删）· 三处 fail-closed
-（抽取器未注入 / 抽取失败 / 备份写入失败）· 备份文件 · 幂等 · 只读预演 · 无会话出处不删。
+（抽取器未注入 / 抽取失败 / 备份写入失败）· 备份文件（含**多会话恰好一份**）· 幂等 ·
+只读预演 · 无会话出处不删。
 """
 
 from __future__ import annotations
@@ -65,6 +66,18 @@ def _store(facts: list[KeyFact] | None) -> MemoryStore:
     if facts is None:
         return MemoryStore()
     return MemoryStore(key_fact_extractor=lambda entries: list(facts))
+
+
+# 按会话给出不同重抽结果（多会话用例用；同 slug 会让跨会话口径模糊）
+_BY_SESSION = {
+    "s1": KeyFact(entity="榴莲", value="被称为水果之王"),
+    "s2": KeyFact(entity="Textual版本", value="8.2.8"),
+}
+
+
+def _store_by_session() -> MemoryStore:
+    """抽取器按**材料所属会话**返回不同事实（`s1` / `s2`）。"""
+    return MemoryStore(key_fact_extractor=lambda entries: [_BY_SESSION[entries[0].session_id]])
 
 
 def _contents(store: MemoryStore) -> dict[str, str]:
@@ -226,6 +239,57 @@ def test_backup_file_keeps_original_entries() -> None:
     assert {r["id"] for r in rows} == set(report.deleted)
     assert {r["id"]: r["content"] for r in rows}["keyfact.榴莲"] == f"榴莲: {REDACTED}"
     assert all(r["tags"] for r in rows)
+
+
+def _seed_two_sessions(store: MemoryStore) -> None:
+    """两个会话各一条失效条目 + 各自的 episodic 材料（多会话用例的公共布景）。"""
+    store.write("L2", _episodic("e1", "s1", "round 1 ok\n热带水果与产地"))
+    store.write("L2", _episodic("e2", "s2", "round 1 ok\nTUI 表格显示问题"))
+    store.write("L2", _keyfact("榴莲", REDACTED, _BOGUS_REF, session="s1"))
+    store.write("L2", _keyfact("山竹", REDACTED, _BOGUS_REF, session="s1"))
+    store.write("L2", _keyfact("Textual 依赖版本", REDACTED, "会话事件", session="s2"))
+
+
+def test_two_sessions_share_one_backup(tmp_path: Path) -> None:
+    """**一次操作恰好一份**备份：跨会话待删条目合并写入、共用一个时间戳。"""
+    store = _store_by_session()
+    _seed_two_sessions(store)
+
+    report = store.repair_stale_key_facts()
+
+    backups = _backups(tmp_path / "state")
+    assert len(backups) == 1  # 会话数 2 ≠ 备份文件数 1
+    assert report.backup_path == str(backups[0])
+    rows = [
+        json.loads(ln) for ln in backups[0].read_text(encoding="utf-8").splitlines() if ln.strip()
+    ]
+    assert {r["id"] for r in rows} == {  # 两份备份的**并集**
+        "keyfact.山竹",
+        f"keyfact.{slug_entity('Textual 依赖版本')}",
+    }
+    assert set(report.deleted) == {r["id"] for r in rows}
+
+
+def test_backup_failure_blocks_every_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """备份写入失败 ⇒ **跨会话一并阻断**：任何会话都不删（新落条目保留）。"""
+    not_a_dir = tmp_path / "not-a-dir"
+    not_a_dir.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("CORE_STATE_DIR", str(not_a_dir))
+
+    store = _store_by_session()
+    _seed_two_sessions(store)
+
+    report = store.repair_stale_key_facts()
+    got = _contents(store)
+
+    assert report.deleted == []
+    assert report.backup_path == ""
+    assert sorted(report.skipped["backup_failed"]) == ["s1", "s2"]
+    assert got["keyfact.山竹"] == f"山竹: {REDACTED}"  # 两会话旧条目都留在原地
+    assert got[f"keyfact.{slug_entity('Textual 依赖版本')}"] == f"Textual 依赖版本: {REDACTED}"
+    assert got["keyfact.榴莲"] == "榴莲: 被称为水果之王"  # 新条目已落（正确信息，不回滚）
 
 
 # ---- 幂等与预演 ----
