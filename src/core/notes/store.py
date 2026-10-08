@@ -224,8 +224,12 @@ class NoteStore(Plugin):
         产出 / 其他路径），则**不改写**该主题 —— 本轮沉淀改写入首个不冲突的派生主题
         ``"<topic>-<n>"``（既保外来源正文逐字不变，也不丢本轮沉淀）。来源为 ``notes.turn``
         （或主题不存在）时保持既有覆盖式写回，**逐字不变**。
+
+        **有意义闸门**（change 0171）：``steps`` 为空（纯文字回复轮 —— 无任何工具行动）⇒
+        **不落盘**（返回 ``None``），与 ``ok=False`` / 空 slug 同口径 —— 琐碎轮不得创建或覆写
+        canonical 文件。正文的可读渲染（非 ReAct 原文）由 loop 侧 ``_action_steps`` 保证。
         """
-        if not ok:
+        if not ok or not steps:
             return None
         topic = slug_topic(task)
         if not topic:

@@ -217,6 +217,23 @@ def test_store_observe_turn_writes_canonical(tmp_path) -> None:
     assert store.observe_turn("另一任务", ["x"], ok=False) is None
 
 
+def test_store_observe_turn_skips_empty_action_sequence(tmp_path) -> None:
+    """有意义闸门（change 0171）：纯文字回复轮（行动序列为空）⇒ 不落盘。"""
+    store = NoteStore(path=tmp_path)
+    assert store.observe_turn("你好", [], ok=True) is None
+    assert list(tmp_path.glob("*.md")) == [], "无工具动作的轮次不得创建 canonical 文件"
+
+
+def test_store_observe_turn_empty_steps_does_not_touch_existing(tmp_path) -> None:
+    """空序列**不改写**既有主题（与「覆写」区分：跳过即零写入）。"""
+    store = NoteStore(path=tmp_path)
+    store.observe_turn("部署流程", ["跑测试"], ok=True)
+    before = {p.name: p.read_text(encoding="utf-8") for p in tmp_path.glob("*.md")}
+    assert store.observe_turn("部署流程", [], ok=True) is None
+    after = {p.name: p.read_text(encoding="utf-8") for p in tmp_path.glob("*.md")}
+    assert before == after, "空序列轮次不改写既有文件"
+
+
 def test_store_digest_carries_hits_and_catalog(tmp_path) -> None:
     store = NoteStore(path=tmp_path)
     store.update(NoteEntry(note_id="deploy", title="部署流程", content="先备份再滚动更新"))

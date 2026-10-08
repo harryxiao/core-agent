@@ -4865,6 +4865,44 @@
   接口文档 `03-interfaces/loop-interface.md` / `llm-provider-interface.md` / `ui-interface.md` §2、
   台账 `coding-plan/known-risk.md` §1（E107）。
 
+## ADR-0162：notes 逐轮写回 —— 行动序列改人类可读 + 有意义闸门（change 0171）
+
+- **背景 / 用户实测（2026-10-08）**：文档化记忆（notes）的逐轮写回把 canonical 知识库塞进
+  **不可读原文转储**且**琐碎轮次也入库**。逐条取证（读代码）：
+  ① `loop/default.py::_action_steps` 把首条 user 消息之后的每条上下文消息渲染为
+  `f"{role}: {content}"`，而 `content` 正是 `_record_observation` 写死的 `json.dumps(...)`
+  （助手动作 `{"tool_id":…, "args":…}` / 工具观察 `{"data":…}`）⇒ `## 解决过程` 逐字为 JSON 转储 +
+  整篇工具输出（无界）；② `runtime.py::on_turn` 在**每个**成功轮无条件调 `observe_turn`，
+  **无有意义判据** ⇒ 一句「你好」也成篇；③ 主题键取 `slug_topic(首条 user 消息)` ⇒ 每句不同措辞
+  各成一篇（叠加来源守护派生 `<topic>-N`）。
+- **决策 ①「行动序列全局改人类可读」（不设 notes 专属投影）**：`steps` 有**两个**消费者
+  （`sop_extractor.observe` 经 LLM 提炼 / `note_store.observe_turn` 逐轮写回），若只在 notes 路径
+  二次投影则渲染逻辑两份、SOP 仍吃 dump。改为在 `_action_steps` **全局**渲染
+  「工具名（参数摘要）→ 结果节选」⇒ 单一实现、SOP 输入一并变干净。SOP 提炼器对 `steps` 只做
+  「拼进 prompt」，其阈值 / 分组键 / 入库逻辑以 `task` 为键、与 step 文本形态无关 ⇒ 可接受。
+- **决策 ②「渲染契约：人类可读 + 有界」**：工具名取 `tool_id` **原样**（不发明命名策略 —— 友好名
+  映射是展示层政策，loop 不复制）；参数摘要 `key: value` 升序逗号连接，`str` 值超 `_MAX_STEP_VALUE`(80)
+  截断、标量直出、**容器型只报 `<type len=N>`（绝不 dump 正文）**；结果节选复用既有 `_output_excerpt`
+  (`_MAX_ACTION_EXCERPT`=400)，`{"error":…}` 加「错误：」前缀；整行 `line[:_MAX_STEP_LINE]`(300) 兜底；
+  非 `{"tool_id": str}` 形态静默跳过（渲染失败绝不外溢 —— 收尾降级链仍在）。
+- **决策 ③「有意义闸门落在存储侧 `observe_turn`」**：判据 `if not ok or not steps: return None`
+  （与既有 `ok=False` / 空 slug 守卫同处、同口径、可单测，对任意注入方一致生效）；**不改** `on_turn`
+  （其仍无条件调用，由被调方自守）。纯文字回复轮按 `_record_observation` 的 `is_terminal` 早退，
+  `steps` 天然为空 ⇒ 判据可判。
+- **决策 ④「派生增殖不改」**（用户裁决）：`_derived_turn_topic` 与来源守护**逐字不变**；闸门 ③ 消除
+  「纯聊天轮成篇」这一主噪音源，残留多为真实任务轮（每篇一份沉淀、派生链同主题复用）。
+- **接口不变**：`TurnObserver` / `turn_observer(task, steps, ok)` 签名与调用点**逐字不变**，只改
+  `steps` 的内容渲染；`observe_turn` 签名不变。终止语义 / 事件序 / 转录追加 / 遥测 / 降级链零回归。
+- **局限**：① 参数摘要对深层嵌套参数只报类型与规模 ⇒ 可能「看不出改了什么」（按工具语义字段白名单
+  属展示层政策，**不**下沉 loop —— 记入台账另议）；② 工具名保留 `tools.` / `mcp.` 命名空间前缀（未美化）；
+  ③ 结果节选为 `str()` 形态（dict 结果呈 Python repr 而非 JSON）；④ 闸门以「有无工具动作」为判据、
+  **不**判「有无新结论」⇒ 无信息量的工具轮仍写回（覆盖式写同一主题、不增长）。
+- **规格**：`doc/openspec/specs/notes/spec.md` —— 「Consult → Build → Update 循环纪律」**MODIFIED**
+  （+ 可读正文 + 有意义闸门 clauses；既有 6 Scenario 逐字保留 + 2 新增）；`loop` / `cli-ops` /
+  `observability` 规格零改动。接口文档 `03-interfaces/loop-interface.md` §3（行动序列渲染契约）/
+  `notes-interface.md` §3；模块 `02-modules/loop.md` §3.4；测试 `04-testing/test-cases.md` §84
+  （TC-NOTES-WRITEBACK）；台账 `coding-plan/known-risk.md` §1（E108）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5021,3 +5059,4 @@
 | ADR-0159 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0160 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0161 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 03-interfaces/llm-provider-interface.md, 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0162 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -1371,6 +1371,29 @@
 > **不下发 `max_tokens`** ⇒ 端点缺省限额导致的截断**仍会发生**（本 change 只使其**可见、归得因**）；
 > Web / APP 不呈现该折叠块（SPA 零改动）。
 
+## 84. notes 逐轮写回：可读解决过程 + 有意义闸门（TC-NOTES-WRITEBACK，change `0171`／ADR-0162，台账 E108）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-NOTES-WRITEBACK-01 | notes/spec.md「Consult → Build → Update 循环纪律」Scenario「解决过程人类可读（不落原文）」 | `LoopContext.messages` = user + 助手动作 `json.dumps({"tool_id":…, "args":…})` + 工具观察 `json.dumps({"data":…})` | `_action_steps` 产出一行 `工具名（参数摘要） → 结果节选`；**不含** `{"tool_id"` / `{"data"` / `"args"` / 角色前缀 `assistant:` / `tool:`（锚点：`tests/test_action_steps.py::test_action_steps_renders_readable_line` + `::test_action_steps_has_no_raw_json_dump`） |
+| TC-NOTES-WRITEBACK-02 | 同上 Scenario「纯文字回复轮不写回」（loop 侧判据） | `LoopContext.messages` = 仅 user（终止动作不产生行动消息） | `_action_steps(ctx) == []` ⇒ 写回侧闸门可判（锚点：`...::test_action_steps_empty_for_reply_only_turn`） |
+| TC-NOTES-WRITEBACK-03 | 同上（有界） | 参数值 / 结果均 5000 字符 | 整行 `<= _MAX_STEP_LINE`(300)；原文（5000 字符）**不在**行内；截断留 `…`（锚点：`...::test_action_steps_bounds_long_arg_and_output`） |
+| TC-NOTES-WRITEBACK-04 | 同上（容器不 dump） | `args={"script":…, "env":{"A":"1","B":"2"}}` | `env: <dict len=2>` 出现；`"A"` **不**出现（容器只报类型与规模）（锚点：`...::test_action_steps_reports_container_arg_by_type_and_size`） |
+| TC-NOTES-WRITEBACK-05 | 同上（错误前缀 + 畸形跳过） | 工具观察 `{"error":"NOT_FOUND"}`；另一路：助手消息为纯文本 | 前者 ⇒ `… → 错误：NOT_FOUND`；后者 ⇒ 该消息**不**产行（静默跳过、不崩）（锚点：`...::test_action_steps_marks_tool_error` + `::test_action_steps_skips_message_without_action_shape`） |
+| TC-NOTES-WRITEBACK-06 | 同上 Scenario「纯文字回复轮不写回」（存储侧） | `store.observe_turn("你好", [], ok=True)` | `is None` 且 canonical 目录**无新增文件**（锚点：`tests/test_notes.py::test_store_observe_turn_skips_empty_action_sequence`） |
+| TC-NOTES-WRITEBACK-07 | 同上（空序列不改写既有） | 先 `observe_turn("部署流程", ["跑测试"])`，再 `observe_turn("部署流程", [])` | 第二次 `is None`；目录内文件**逐字不变**（锚点：`...::test_store_observe_turn_empty_steps_does_not_touch_existing`） |
+| TC-NOTES-WRITEBACK-08 | 同上（端到端 + 红线） | `DefaultLoop` + 真 `NoteStore`，一轮含工具动作成功；另一轮纯文字回复 | 前者 canonical 文件正文含 `tools.echo` / `中间结论`、**不含** `{"tool_id"` / `{"data"`；后者**零文件**（锚点：`tests/test_notes_loop.py::test_loop_turn_observer_writes_canonical_note` + `::test_loop_reply_only_turn_does_not_write_note`） |
+
+> **红态证据**：实现落地前跑两类取证 —— ① 存储侧 `pytest tests/test_notes.py tests/test_notes_loop.py`
+> ⇒ **4 failed**（含 `test_notes_loop` 端到端用例证明旧实现为纯文字回复轮写下 `你好.md` —— 精确复刻
+> 「琐碎轮入库」）；② 渲染侧自包含脚本对旧 `_action_steps` ⇒ 首行为 `assistant: {"tool_id": …}`
+> （JSON 原文）、工具观察行 **1846 字符**（整篇输出无界）—— 精确复刻「JSON 转储进笔记」。
+> **已知局限**：① 参数摘要对深层嵌套参数只报类型与规模（按工具语义字段白名单属展示层政策，不下沉
+> loop）；② 工具名保留 `tools.` / `mcp.` 命名空间前缀（未美化）；③ 结果节选为 `str()` 形态
+> （dict 结果呈 Python repr 而非 JSON）；④ 闸门以「有无工具动作」为判据、**不**判「有无新结论」⇒
+> 无信息量的工具轮仍写回（覆盖式写同一主题、不增长）；⑤ 派生主题 `<topic>-N` 机制**逐字不变**
+> （靠闸门减量，未做结构性收敛）。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

@@ -16,7 +16,7 @@ import json
 import time
 import uuid
 import warnings
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sized
 from typing import Any, cast
 
 from core.context import Compactor, ContextError, estimate_tokens
@@ -73,6 +73,8 @@ ActionObserver = Callable[[LoopContext, Action, ActionResult], None]
 
 _MAINTENANCE_INTERVAL_S = 900.0  # 记忆维护节拍（秒）：默认 15 分钟
 _MAX_ACTION_EXCERPT = 400  # 动作事件 args/output 节选上界（事件面有界）
+_MAX_STEP_VALUE = 80  # 行动序列单参数值摘要上界（change 0171 / ADR-0162）
+_MAX_STEP_LINE = 300  # 行动序列整行上界（change 0171 / ADR-0162）
 
 
 def _args_excerpt(args: dict[str, Any]) -> dict[str, Any] | str:
@@ -106,10 +108,100 @@ def _task_text(ctx: LoopContext) -> str:
 
 
 def _action_steps(ctx: LoopContext) -> list[str]:
-    """行动/结果序列：首条 user 消息之后的上下文消息（助手动作 + 工具观察）逐条渲染。"""
-    return [
-        f"{message.get('role', '')}: {message.get('content', '')}" for message in ctx.messages[1:]
-    ]
+    """行动/结果序列（人类可读）：每个工具动作一行「工具名（参数摘要）→ 结果节选」。
+
+    供收尾观察者（SOP 提炼 / 笔记写回）消费 —— **不落** ReAct 消息原文（助手动作的
+    ``{"tool_id":…}`` / 工具观察的 ``{"data":…}`` JSON 转储）与整篇工具输出（change 0171 /
+    ADR-0162）。终止动作不产生行动消息（``_record_observation`` 对 ``is_terminal`` 早退），
+    故纯文字回复轮返回空列表 —— 写回侧「有意义闸门」据此跳过。
+    """
+    messages = ctx.messages
+    steps: list[str] = []
+    index = 1
+    while index < len(messages):
+        action = _decode_action(messages[index])
+        if action is None:
+            index += 1
+            continue
+        line = f"{action[0]}（{_summarize_args(action[1])}）"
+        if index + 1 < len(messages) and _role(messages[index + 1]) == "tool":
+            line += f" → {_summarize_result(messages[index + 1])}"
+            index += 1
+        steps.append(line[:_MAX_STEP_LINE])
+        index += 1
+    return steps
+
+
+def _role(message: Any) -> str:
+    """消息角色（非 dict ⇒ 空串）。"""
+    if not isinstance(message, dict):
+        return ""
+    return str(cast("dict[str, Any]", message).get("role", ""))
+
+
+def _loads(text: Any) -> Any:
+    """``json.loads`` 容错包装：非字符串 / 非法 JSON ⇒ ``None``（渲染失败绝不外溢）。"""
+    if not isinstance(text, str):
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def _decode_action(message: Any) -> tuple[str, dict[str, Any]] | None:
+    """助手动作消息 → ``(工具名, 参数字典)``；非 ``{"tool_id": str}`` 形态 ⇒ ``None``。"""
+    if not isinstance(message, dict):
+        return None
+    data = cast("dict[str, Any]", message)
+    if data.get("role") != "assistant":
+        return None
+    payload = _loads(data.get("content"))
+    if not isinstance(payload, dict):
+        return None
+    fields = cast("dict[str, Any]", payload)
+    tool_id = fields.get("tool_id")
+    if not isinstance(tool_id, str) or not tool_id:
+        return None
+    args = fields.get("args")
+    return tool_id, cast("dict[str, Any]", args) if isinstance(args, dict) else {}
+
+
+def _summarize_args(args: dict[str, Any]) -> str:
+    """参数字典 → 人类可读摘要（``key: value`` 升序逗号连接；容器只报类型与规模）。"""
+    return ", ".join(f"{key}: {_summarize_value(value)}" for key, value in sorted(args.items()))
+
+
+def _summarize_value(value: Any) -> str:
+    """单参数值 → 有界可读摘要；容器型只报 ``<type len=N>``（绝不 dump 正文）。"""
+    if isinstance(value, str):
+        return value[:_MAX_STEP_VALUE] + "…" if len(value) > _MAX_STEP_VALUE else value
+    if value is None or isinstance(value, (bool, int, float)):
+        return str(value)
+    return _summarize_container(value)
+
+
+def _summarize_container(value: Any) -> str:
+    """非标量参数值 → ``<type len=N>``（可计数）或 ``<type>``。"""
+    name = type(value).__name__
+    if isinstance(value, Sized):
+        return f"<{name} len={len(value)}>"
+    return f"<{name}>"
+
+
+def _summarize_result(message: Any) -> str:
+    """工具观察消息 → 有界节选；``{"error": …}`` 加「错误：」前缀，否则取 ``data`` 节选。"""
+    if not isinstance(message, dict):
+        return _output_excerpt(message)
+    content = cast("dict[str, Any]", message).get("content")
+    payload = _loads(content)
+    if isinstance(payload, dict):
+        observation = cast("dict[str, Any]", payload)
+        if observation.get("error"):
+            return f"错误：{_output_excerpt(observation['error'])}"
+        if "data" in observation:
+            return _output_excerpt(observation["data"])
+    return _output_excerpt(content)
 
 
 def _output_excerpt(value: Any) -> str:

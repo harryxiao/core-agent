@@ -151,7 +151,21 @@ def test_loop_turn_observer_writes_canonical_note(tmp_path) -> None:
     note_id = store.list()[0].note_id
     raw = (tmp_path / f"{note_id}.md").read_text(encoding="utf-8")
     assert "## 解决过程" in raw, "成功轮写回 canonical Markdown"
-    assert "tool" in raw, "写回内容承载行动/结果序列"
+    # change 0171：正文为人类可读行（工具名 + 参数摘要 + 结果节选），**不落** ReAct 消息原文。
+    assert "tools.echo" in raw and "中间结论" in raw, "写回内容承载可读的行动/结果序列"
+    assert '{"tool_id"' not in raw and '{"data"' not in raw, "不落 JSON 原文转储"
+
+
+def test_loop_reply_only_turn_does_not_write_note(tmp_path) -> None:
+    """纯文字回复轮（无工具动作）⇒ 有意义闸门跳过写回（change 0171）。"""
+    store = _store(tmp_path)
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "你好呀"}),
+        turn_observer=lambda task, steps, ok: store.observe_turn(task, steps, ok=ok),
+    )
+    loop.run("你好")
+
+    assert list(tmp_path.glob("*.md")) == [], "无行动轮次不创建笔记"
 
 
 def test_loop_failed_round_does_not_write_note(tmp_path) -> None:

@@ -69,6 +69,16 @@ note + `NoteStore.list()` 清单，作为「相关笔记」块注入本轮推理
 `notes.turn`（或该主题不存在）时，写回 SHALL 保持**覆盖式**、落到**同一**主题，且 SHALL 保留既有
 `tags` 与 `pinned`（**逐字不变**）。来源守护 SHALL NOT 删除任何笔记、SHALL NOT 覆写任何**跨来源**正文。
 
+任务后写回 SHALL 受**有意义闸门**（change `0171`）：本轮行动序列**为空**（纯文字回复轮 —— 无任何
+工具动作）时，写回 SHALL **不落盘**（返回空，与 `ok=False` / 空 slug 的既有跳过口径一致），SHALL NOT
+为该轮创建或覆写任何笔记。
+
+任务后写回的**正文 SHALL 为人类可读**（change `0171`）：`## 解决过程` 之下的每条行动 SHALL 以
+可读形式呈现（工具名 + **有界**参数摘要 + **有界**结果节选），SHALL NOT 落 ReAct 消息**原文**
+（助手动作的 `json.dumps({"tool_id":…})` / 工具观察的 `json.dumps({"data":…})`）或**整篇**工具输出；
+正文长度 SHALL 有界（容器型参数只报类型与规模，正文参数不 dump）。此为 loop 侧 `turn_observer`
+交付的行动序列（`steps`）的渲染契约，**同源**供 SOP 提炼消费。
+
 #### Scenario: 任务前注入相关笔记
 - **GIVEN** 组合根注入了 Consult 钩子，且 canonical 目录含与任务相关的 note
 - **WHEN** loop 开始一轮任务
@@ -102,6 +112,18 @@ note + `NoteStore.list()` 清单，作为「相关笔记」块注入本轮推理
   `<topic>-2` 中
 - **AND GIVEN** 该既有笔记来源为 `notes.turn`
 - **THEN** 仍**覆盖式**写回**同一**主题（既有行为逐字不变，保留 `tags` 与 `pinned`）
+
+#### Scenario: 纯文字回复轮不写回
+- **GIVEN** 一轮任务成功完成，但本轮**无任何工具动作**（行动序列为空）
+- **WHEN** 收尾钩子触发任务后写回
+- **THEN** 写回**不落盘**，canonical 目录**无新增文件**、既有文件**逐字不变**
+
+#### Scenario: 解决过程人类可读（不落原文）
+- **GIVEN** 一轮含工具动作的任务成功完成
+- **WHEN** 写回 canonical 文件
+- **THEN** `## 解决过程` 之下为人类可读行（工具名 + 有界参数摘要 + 有界结果节选）
+- **AND** 正文**不含** ReAct 消息原文（如 `{"tool_id"` / `{"data"` 形态的 JSON 转储），
+  亦**不含**整篇工具输出（正文长度有界）
 
 ### Requirement: 结构化错误码与既有链路不变
 

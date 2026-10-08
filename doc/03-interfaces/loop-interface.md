@@ -239,6 +239,10 @@ def remember(self, trace_id: str, trajectory: list[Step]) -> None
   即超限终止轮，失败信号供技能迭代判据），由组合根分发到技能反馈与 SOP 提炼
   （`SopExtractor.observe` 仍只吸收成功，见 `skills-interface.md §6`）；钩子抛错降级留痕
   （记 `turn_observer_failed`），不改变本轮结果与终止语义；未注入钩子时行为完全不变。
+  `steps` 为**人类可读**的行动/结果序列（change 0171 / ADR-0162）：每个工具动作一行
+  「工具名（有界参数摘要）→ 有界结果节选」，**不落** ReAct 消息原文（`{"tool_id":…}` / `{"data":…}`
+  JSON 转储）与整篇工具输出；**纯文字回复轮为空列表**（终止动作不产生行动消息）——下游写回侧据此
+  判「有无行动」。签名 / 调用点 / 降级链**逐字不变**，仅 `steps` 内容渲染改变。
 - trace 完成回调：本轮**全部遥测记录完毕之后**按轮调 `trace_observer(trace_id)`（**不随维护节拍节流**，
   与 `cold_path` 是两个独立节律：前者按轮、后者按 `maintenance_interval`）；回调抛错降级留痕
   （记 `trace_observer_failed`），不改变本轮结果与终止语义；未注入时行为完全不变。

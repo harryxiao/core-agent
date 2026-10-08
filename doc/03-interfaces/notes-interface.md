@@ -124,6 +124,10 @@ class NoteStore(Plugin):
   或 slug 为空 ⇒ `None`（不写盘）。写回**原样携带**既有 `pinned` 标记（逐轮写回不抹除常驻）。
   **来源守护**（change 0151 / ADR-0143）：撞上来源**非** `notes.turn` 的既有笔记 ⇒ **不覆写**该主题，
   沉淀改写入派生主题 `<topic>-<n>`（`n` 为 2 起、取首个「不存在或来源为 `notes.turn`」者）。
+  **有意义闸门 + 可读正文**（change 0171 / ADR-0162）：`steps` **为空**（纯文字回复轮 —— 无工具
+  动作）⇒ `None`（不写盘，琐碎轮不成篇）；`steps` 为**人类可读**行（loop 侧 `_action_steps` 交付，
+  「工具名（有界参数摘要）→ 有界结果节选」），写入正文**不含** ReAct 消息原文（JSON dump）与整篇
+  工具输出、长度有界。
 - `pinned()`：次序 = **`pin_priority` 降序、同优先级 `note_id` 升序**（确定性）—— 在场判据是**显式
   优先级**，不是 `note_id` 字典序（change 0154）。
 - `pinned_digest()`：常驻笔记**完整正文**（非节选）、无 query 入参（每轮无条件）、按 `pinned()` 次序拼接，
