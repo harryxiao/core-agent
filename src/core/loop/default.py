@@ -265,6 +265,9 @@ class DefaultLoop(Plugin):
         # 与 `limit_reason` **并列**：后者管**终止语义**（`loop_failed` 事件、合成文案、转录门控），
         # 本标记只管**成败记账**（收尾钩子 + `LoopResult.failed`），不改终止语义。
         turn_failed = False
+        # 不可解析的原始产出（有界；change 0170 / ADR-0161）：只经 `LoopResult` 与 trace 外发，
+        # **不进**转录（追加的是 `ctx.reply` 可读提示）与记忆（`remember` 收的也是 `reply`）。
+        raw_output = ""
         # 本轮循环是否已流式外发**回复**增量（避免终态重复全文）。判据**只认** `reply_delta`：
         # 思考回显事件（`loop.reasoning`）与回复增量同形相异类，计入会吞掉终态补发。
         streamed = False
@@ -295,6 +298,7 @@ class DefaultLoop(Plugin):
             result = await self.act(action, trace_id, approved=approved)
             if action.is_terminal and result.failed:
                 turn_failed = True  # 终止动作的失败态（工具动作失败不入此列：ReAct 多轮自愈）
+                raw_output = action.raw_output  # 不可解析原始产出：另路留存，不进回复正文
             if not action.is_terminal:
                 duration_ms = int((time.monotonic() - act_t0) * 1000)
                 output = _output_excerpt(result.error if result.failed else result.data)
@@ -345,7 +349,12 @@ class DefaultLoop(Plugin):
         self._trace(
             trace_id,
             "loop_finished",
-            {"reply": ctx.reply, "failed": bool(limit_reason) or turn_failed},
+            {
+                "reply": ctx.reply,
+                "failed": bool(limit_reason) or turn_failed,
+                # 有则加：仅不可解析轮次才带该字段（其余轮次载荷逐字不变）
+                **({"raw_output": raw_output} if raw_output else {}),
+            },
             module_id="loop.default" if limit_reason else None,
         )
         # 本轮遥测已齐：交给 trace 完成回调（登记一条已完成 trace；缺省不启用）
@@ -357,7 +366,10 @@ class DefaultLoop(Plugin):
         yield LoopEvent(
             "loop_finished",
             LoopResult(
-                reply=ctx.reply, trace_id=trace_id, failed=bool(limit_reason) or turn_failed
+                reply=ctx.reply,
+                trace_id=trace_id,
+                failed=bool(limit_reason) or turn_failed,
+                raw_output=raw_output,
             ),
         )
 

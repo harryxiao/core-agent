@@ -314,6 +314,19 @@ def test_thinking_empty_when_absent() -> None:
     )
 
 
+def test_chunk_maps_finish_reason() -> None:
+    """流式增量携带终止原因（change 0170）：末块 `length` ⇒ 字段为 `length`；缺失 ⇒ 空串。"""
+    chunks = _chunks(
+        _sse_lines(
+            '{"choices":[{"delta":{"content":"甲"}}]}',
+            '{"choices":[{"delta":{},"finish_reason":"length"}]}',
+        )
+    )
+    assert [c.finish_reason for c in chunks] == ["", "length"]
+    assert [c.content for c in chunks] == ["甲", ""]  # 其余字段逐字不受影响
+    assert chunks[0].thinking == "" and chunks[0].tool_calls is None
+
+
 def test_response_maps_native_tool_calls() -> None:
     """非流式：message.tool_calls 归一为 ToolCall（原生 function call 协议）。"""
     provider = _make_provider()

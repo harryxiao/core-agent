@@ -22,6 +22,9 @@ class LoopResult:
     reply: str  # 最终回复
     trace_id: str  # 本轮追溯 ID（贯穿日志/效应/记忆）
     failed: bool = False  # 成败信号：目标未达成/异常终止/预算耗尽为 True
+    # 推理产出不可解析时的**原始文本**（有界；缺省空）。仅供呈现层折叠查看与 trace 留痕，
+    # SHALL NOT 进入转录 / 记忆 / 笔记（见 change 0170 / ADR-0161）。
+    raw_output: str = ""
 
 
 @dataclass
@@ -80,12 +83,17 @@ class Action:
     ``failed`` **仅对终止动作有意义**：推理产出**不可用**（解析失败 / 模型调用失败）时置位，
     供循环把本轮记为失败。缺此标记时，这类终止动作与正常回复无从区分 ⇒「没执行」会被
     静默记成成功（见 change 0166 / ADR-0156）。非终止动作（工具调用）不用本字段。
+
+    ``raw_output`` 亦**仅对终止动作有意义**：推理产出的**原始文本**（有界，见 change 0170 /
+    ADR-0161），供呈现层折叠查看与 trace 留痕；SHALL NOT 并入 ``reply``（后者只放可读提示），
+    SHALL NOT 写入转录 / 记忆 / 笔记。
     """
 
     tool_id: str = ""
     args: dict[str, Any] = field(default_factory=dict[str, Any])
     is_irreversible: bool = False
     failed: bool = False
+    raw_output: str = ""
 
     @property
     def is_terminal(self) -> bool:

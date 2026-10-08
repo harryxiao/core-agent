@@ -261,11 +261,14 @@ class StdlibLLMProvider(LLMProvider):
         choices = cast(list[Any], part.get("choices", []))
         if not choices:
             return LLMChunk(content="")
-        delta = cast(dict[str, Any], choices[0].get("delta")) or {}
+        choice = cast(dict[str, Any], choices[0]) or {}
+        delta = cast(dict[str, Any], choice.get("delta")) or {}
         return LLMChunk(
             content=str(delta.get("content") or ""),
             tool_calls=self._map_tool_calls(delta.get("tool_calls")),
             thinking=_thinking_text(delta),
+            # 终止原因通常只在末块携带（缺省块为空串）⇒ 归因「被截断」的权威信号（change 0170）。
+            finish_reason=str(choice.get("finish_reason") or ""),
         )
 
     @staticmethod

@@ -13,6 +13,8 @@ from typing import Any
 
 from core.llm_provider import LLMError, LLMResponse, TokenUsage
 from core.loop import Action, DefaultLoop, LLMPlanner, LoopContext, LoopResult
+from core.loop.planner import _RAW_OUTPUT_MAX
+from core.memory import MemoryEntry
 from core.tools import Tool, ToolDef, ToolProvider
 
 # 事故现场的最小复刻：正文（解释）在前、动作 JSON 在尾部
@@ -153,6 +155,20 @@ def test_llm_error_marks_action_failed() -> None:
 # ---- ③ 端到端：失败态终止动作 ⇒ 本轮失败（收尾钩子同口径） ----
 
 
+class _RecordingMemory:
+    """记录写入条目的记忆替身（只关心沉淀结果，参照 test_loop.py）。"""
+
+    def __init__(self) -> None:
+        self.written: list[MemoryEntry] = []
+
+    def read(self, query: str, budget: int = 0) -> list[MemoryEntry]:
+        return []
+
+    def write(self, layer: str, entry: MemoryEntry) -> str:
+        self.written.append(entry)
+        return entry.id
+
+
 def _run_with(content: str | list[str]) -> tuple[LoopResult, list[bool], list[str]]:
     seen: list[bool] = []
     calls: list[str] = []
@@ -194,3 +210,64 @@ def test_trailing_action_json_executes_in_loop() -> None:
     assert result.reply == "完成"
     assert result.failed is False
     assert seen == [True]
+
+
+# ---- ④ 形态 4：未闭合的动作载荷（change 0170 / ADR-0161）----
+
+# 事故轮的最小复刻：外层动作对象**未闭合**，文本止于内层字符串（内层 args 恰好闭合
+# ⇒ 旧 `_trailing_json_object` 会把**参数块**当「尾部对象」返回，`tool_id` 判空后整段当正文）。
+_UNCLOSED = _PROSE + '{"tool_id": "tools.file_write", "args": {"path": "a.md", "content": "未写完'
+
+
+def test_unclosed_action_payload_marks_failed() -> None:
+    """未闭合的动作载荷 ⇒ 失败态终止动作；`reply` 为可读提示，**不含**原始 JSON。"""
+    action = _parse(_UNCLOSED)
+    assert action.is_terminal
+    assert action.failed is True
+    assert "LLM_PLAN_PARSE_FAILED" in action.args["reply"]
+    assert '"tool_id"' not in action.args["reply"]  # 不得把 JSON 当正文
+    assert action.raw_output  # 原始产出另路留存（有界）
+    assert "tools.file_write" in action.raw_output
+
+
+def test_unclosed_action_payload_raw_output_is_bounded() -> None:
+    """原始产出有界：超长输入只留上界内前缀。"""
+    huge = _PROSE + '{"tool_id": "tools.file_write", "args": {"content": "' + "甲" * 9000
+    action = _parse(huge)
+    assert action.failed is True
+    assert 0 < len(action.raw_output) <= _RAW_OUTPUT_MAX
+
+
+def test_closed_tail_object_without_tool_id_stays_reply() -> None:
+    """形态 4 的反面守护：**闭合**的尾部对象 ⇒ 仍是答复（承 0166「只认尾部、宁漏勿误」）。"""
+    closed = '建议这样调：\n\n{"tool_id": "tools.echo", "args": {"text": "hi"}} 就这样。'
+    action = _parse(closed)
+    assert action.is_terminal
+    assert action.args["reply"] == closed
+    assert action.failed is False
+    assert action.raw_output == ""
+
+
+def test_unclosed_payload_finish_reason_length_distinguishes_cause() -> None:
+    """成因可辨：provider 报 `length` ⇒ 提示明示「截断」；信号缺省 ⇒ 「未闭合」（失败语义相同）。"""
+    provider = ToolProvider()
+    planner = LLMPlanner(_FakeLLM("x"), tools=provider)
+    truncated = planner._parse(_UNCLOSED, finish_reason="length")
+    unclosed = planner._parse(_UNCLOSED)
+    assert "截断" in truncated.args["reply"]
+    # 「未闭合」措辞**允许**把截断列为疑似成因（规格 形态 4），但不得声称 provider 报告了截断。
+    assert "finish_reason" not in unclosed.args["reply"]
+    assert truncated.args["reply"] != unclosed.args["reply"]
+    assert truncated.failed is True and unclosed.failed is True
+
+
+def test_unclosed_action_payload_keeps_raw_out_of_persisted_surfaces() -> None:
+    """端到端：本轮失败可见，原始产出**不进**回复与记忆沉淀（只经 LoopResult 可见）。"""
+    memory = _RecordingMemory()
+    loop = DefaultLoop(planner=LLMPlanner(_FakeLLM(_UNCLOSED)), memory=memory)  # type: ignore[arg-type]
+    result = loop.run("hi")
+    assert result.failed is True
+    assert '"tool_id"' not in result.reply  # 正文只留可读提示
+    assert "tools.file_write" in result.raw_output  # 原始产出另路可诊断
+    persisted = "\n".join(entry.content for entry in memory.written)
+    assert '"tool_id"' not in persisted  # 红线：不进转录 / 记忆 / 笔记

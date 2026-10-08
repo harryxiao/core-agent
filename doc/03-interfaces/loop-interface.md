@@ -82,6 +82,9 @@ class DefaultLoop(Plugin):
 class LoopResult:
     reply: str                  # 最终回复
     trace_id: str               # 本轮追溯 ID（贯穿日志/效应/记忆）
+    failed: bool = False        # 成败信号（目标未达成/异常终止/预算耗尽/推理产出不可用）
+    raw_output: str = ""        # 推理产出不可解析时的**原始文本**（有界；缺省空）。仅供呈现层
+                                # 折叠查看与 trace 留痕，SHALL NOT 进转录/记忆/笔记（change 0170 / ADR-0161）
 
 @dataclass
 class LoopEvent:
@@ -116,6 +119,8 @@ class Action:
     failed: bool = False        # **仅对终止动作有意义**：推理产出不可用（解析失败/模型调用失败）
                                 # ⇒ 本轮记为失败，不再与「正常收尾」无从区分（change 0166 / ADR-0156）
                                 # 非终止动作（工具调用）**不用**本字段：工具失败属 ReAct 自愈面
+    raw_output: str = ""        # **仅对终止动作有意义**：原始产出的**有界**留存（change 0170 / ADR-0161）
+                                # SHALL NOT 并入 ``reply``（后者只放可读提示）/ 写入转录 / 记忆 / 笔记
 ```
 
 ### 2.1 思考回显通道（`Thinking` / `loop.reasoning`，change `0145` / ADR-0137 / 账本 E57~E58）
@@ -168,9 +173,9 @@ def remember(self, trace_id: str, trajectory: list[Step]) -> None
 | Act | `act` | 执行动作，经 EffectTracker 记录 | 可回滚；不可逆操作过确认门 |
 | Remember | `remember` | 写本轮轨迹/教训入 L2/L3 | **每轮必做**（无行动不记忆） |
 
-### 3.1 推理输出的三形态与失败可见（planner，change `0166` / ADR-0156）
+### 3.1 推理输出的四形态与失败可见（planner，change `0166` / `0170` / ADR-0156 / ADR-0161）
 
-`LLMPlanner` 把模型输出解析为 `Action`，**形态三选**（判据一律只到「含非空 `tool_id`」，
+`LLMPlanner` 把模型输出解析为 `Action`，**形态四选**（判据一律只到「含非空 `tool_id`」，
 参数校验的单一真源仍在工具调用链，解析层不写第二份）：
 
 | 输入形态 | 解析结果 | 失败态 |
@@ -178,12 +183,22 @@ def remember(self, trace_id: str, trajectory: list[Step]) -> None
 | 纯 JSON 对象（首字符 `{`） | `_from_dict` ⇒ 动作 / 回复 | 解析失败 ⇒ `failed=True` |
 | 原生 `tool_calls` | `_from_tool_calls`（**优先于** content 协议） | 缺 `function.name` / 参数非对象 ⇒ `failed=True` |
 | 自然语言回复（**含尾部动作 JSON**） | 正文 + **收在文末**的 JSON 对象（其后仅剩空白与 Markdown 围栏符）且含非空 `tool_id` ⇒ 转动作；否则整段为回复 | 解析失败 ⇒ `failed=True` |
+| **未闭合的动作载荷**（尾部有**到内容结束仍未闭合**的 `"tool_id"` 结构，change `0170`） | **失败态终止动作** ⇒ `reply` 为可读提示，SHALL NOT 把原文当回复 | 命中即 `failed=True` |
 
 - **只认尾部**：模型解释协议时会**引用**动作 JSON 作示例，全文扫描会把「解释」当「执行」
   ⇒ **宁可漏检，不可误判**（非尾部形态仍按回复，属已知局限）。
+- **形态 4 判据（严格）**：自**最后一次**出现的 `"tool_id"` 回退至其外层 `{`，做**字符串感知**的
+  括号深度扫描（见 `_never_closes`）；深度**从未**回到 0 即命中。**闭合**的尾部对象 —— 不论其后是否
+  仍有正文、是否含 `tool_id` —— 一律**不**命中。（动机：外层动作被截断时，尾部最末一个「可解析且其后
+  无剩余」的对象往往是它的**内层 `args`** ⇒ 承 0166 的兜底会把整段 JSON 当回复且记为**成功**。）
 - **失败可见**：`_parse` 各 `LLM_PLAN_PARSE_FAILED` 分支与两处 `LLM 调用失败: {exc}` 均置
   `Action.failed=True` ⇒ `act()` 终止分支透出 ⇒ `trajectory.ok` / `step_completed.failed` /
   `_notify_turn(ok=…)` / `LoopResult.failed` 四处同口径。
+- **原始产出可诊断（change `0170`）**：「首字符 `{` 解析失败」与**形态 4** 两类失败态终止动作 SHALL
+  另带**有界**原始产出（`Action.raw_output` → `LoopResult.raw_output`；上界 `_RAW_OUTPUT_MAX`，超出即
+  截断）。该产出 SHALL NOT 写入转录 / 记忆 / 笔记，SHALL NOT 并入 `reply`（`reply` 为可读提示）；
+  TUI 折叠呈现（见 `ui-interface.md` §2）。**成因措辞**（形态 4）：provider 报 `finish_reason="length"`
+  ⇒ 提示明示**被截断**；信号不可用 ⇒ **未闭合（疑似截断或写坏）**；二者**失败语义相同**。
 - **不改终止语义**：解析失败**照旧以回复收尾**（`loop_failed` 仍**只**由 `limit_reason` 触发），
   变的只是**成败核算**；合成文案仍进转录（既有口径），转录追加逻辑零改动。
 - **同族但不动**：审批拒绝 `decline()` 与 `pet/safety` 阻断属**审批**语义，不置 `failed`

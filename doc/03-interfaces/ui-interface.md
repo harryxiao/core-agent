@@ -307,6 +307,15 @@ class 规则同优先级会打架）。**标题目标摘要**：`_tool_target(to
 `format_action_event`（CLI 与子任务里程碑共用、6 处断言依赖逐字输出）、子任务折叠块与焦点视图
 （`/focus`）、回复流式的合帧节流（`_flush_tail` 系列）、Web / APP 呈现。
 
+**TUI 未能解析的模型原始输出（change 0170 / ADR-0161）**：当一轮以「推理产出不可解析」收尾
+（`LoopResult.failed` 且 `raw_output` 非空）时，TUI 在主时间线挂**一个** `_StepBlock("⚠ 未能解析的
+模型原始输出", collapsed=True)` —— **缺省收起**（与思考块 / 工具块的缺省缩略态**有意不同**：正文是
+可能被截断或写坏的原始载荷，缺省不遮蔽时间线），点标题展开查看，供操作者归因。挂块分支走
+`loop.result` 事件（`loop_finished` 映射，载荷为 `LoopResult` 透传）且置于 `_format_event` **之前**
+（后者对 `LoopResult` 返回 `None`）；**不落** `❯` 回显、**不进**对话。原始产出**只在此处呈现**：
+不进转录 / 记忆 / 笔记 / 日志。正常轮 `raw_output` 为空 ⇒ **不落块**（零回归）。**Web / APP 不呈现**
+该块（新字段可忽略，SPA 零改动）。
+
 **Web Client 与 Host 分离**：Web 前端（SPA）作为纯静态资源独立托管，`WebBridge` 仅暴露统一后端 API；前端经该 API 连接远程 / 本机常驻 Harness Host（见 `deployment-interface.md`），前端升级无需重启 Host 后端。
 
 ---

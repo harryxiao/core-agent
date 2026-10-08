@@ -1349,6 +1349,28 @@
 > `code_run` 目标取 `script` 首行 ⇒ 操作者自填内联凭据与终端显示命令**同等**暴露（步骤块不落盘）；
 > 缩略窗口恒**跟随最新**（不因用户上滚而冻结）；**不覆盖**子任务折叠块与 `/focus` 焦点视图；Web / APP 维持缺省收起。
 
+## 83. 未闭合动作载荷：失败可见 + 原始产出可诊断（TC-UNPARSED-ACTION，change `0170`／ADR-0161，台账 E107）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-UNPARSED-ACTION-01 | loop/spec.md「推理动作解析与失败可见」Scenario「未闭合的动作载荷不再被当作正文」 | `解释文字 + 换行 + {"tool_id": "tools.file_write", "args": {"path": "a.md", "content": "未写完`（外层**未闭合**、文本止于内层字符串） | `_parse` ⇒ **失败态终止动作**（`failed is True`）；`reply` 含 `LLM_PLAN_PARSE_FAILED` 且**不含** `"tool_id"`；`raw_output` 非空且含 `tools.file_write`（锚点：`tests/test_loop_output_protocol.py::test_unclosed_action_payload_marks_failed`） |
+| TC-UNPARSED-ACTION-02 | 同上 Scenario「未闭合载荷的原始产出有界且不进持久面」 | 超长输入（`甲` × 9000 追加其后） | `0 < len(raw_output) <= _RAW_OUTPUT_MAX`(4096)（上界**含**截断提示行 ⇒ 总长受约束）（锚点：`...::test_unclosed_action_payload_raw_output_is_bounded`） |
+| TC-UNPARSED-ACTION-03 | 同上（形态 4 反面守护） | `建议这样调：\n\n{"tool_id": "tools.echo", "args": {"text": "hi"}} 就这样。`（尾部对象**闭合**，其后仍有正文） | **不命中**形态 4 ⇒ 整段原文为回复、`failed is False`、`raw_output == ""`（承 0166「只认尾部、宁漏勿误」）（锚点：`...::test_closed_tail_object_without_tool_id_stays_reply`） |
+| TC-UNPARSED-ACTION-04 | 同上 Scenario「provider 报告截断时提示区分成因」 | 同一未闭合输入，`finish_reason="length"` vs 缺省 | `length` ⇒ 提示含 `截断`；缺省 ⇒ 提示为「未闭合」措辞（**不含** `finish_reason` 字样 ⇒ 不声称 provider 报告了截断）；两态 `failed is True`（锚点：`...::test_unclosed_payload_finish_reason_length_distinguishes_cause`） |
+| TC-UNPARSED-ACTION-05 | 同上（端到端 + 红线） | `DefaultLoop` + 记录型 `MemoryStore`，模型回该未闭合载荷 | `LoopResult.failed is True`；`reply` **不含** `"tool_id"`；`raw_output` 含 `tools.file_write`；**记忆落库**不含 `"tool_id"`（原始产出不进转录 / 记忆 / 笔记）（锚点：`...::test_unclosed_action_payload_keeps_raw_out_of_persisted_surfaces`） |
+| TC-UNPARSED-ACTION-06 | llm-provider/spec.md「流式增量携带终止原因」Scenario「末块终止原因透出」 | `_map_chunk` 依次喂 `delta.content="甲"`（无 `finish_reason`）与空 delta + `choices[0].finish_reason="length"` | `[c.finish_reason for c in chunks] == ["", "length"]`；`[c.content …] == ["甲", ""]`（缺省空洞零影响）（锚点：`tests/test_llm_provider.py::test_chunk_maps_finish_reason`） |
+| TC-UNPARSED-ACTION-07 | ui/spec.md「TUI 折叠呈现未能解析的模型原始输出」Scenario「TUI 折叠呈现原始产出」 | 注入「`loop_finished` 携带非空 `raw_output`」的事件流 | 时间线**恰一个** `Collapsible` 且 `collapsed is True`（缺省收起、不遮蔽时间线）；展开后 `.step-body` 含 `tools.file_write`；块外时间线文本**不含** `"tool_id"`（锚点：`tests/test_repl.py::test_tui_raw_output_renders_collapsed_block`） |
+| TC-UNPARSED-ACTION-08 | 同上 Scenario「正常轮不呈现」 | 同上，但 `raw_output=""` | 时间线**零**折叠块（与既有行为逐字一致）（锚点：`...::test_tui_no_raw_output_block_on_normal_turn`） |
+
+> **红态证据**：实现落地前 `git stash push -u -- src/core/loop/planner.py …`（五处 src 改动）后跑取证脚本 ⇒
+> 同一未闭合载荷在旧实现下 `is_terminal=True`（**零执行**）、`failed=False`、`reply` 含 `"tool_id"`、
+> **无** `raw_output` 字段；`LLMChunk` 亦**无** `finish_reason` ⇒ 08 类断言全红（精确复刻事故：
+> 「JSON 当正文 + 静默成功」）。
+> **已知局限**：判据只认**最后一次** `"tool_id"` 标记（更早一处未闭合、最后闭合 ⇒ 按答复处理）；
+> 未闭合是**结构**判据、信号不可用时不解释成因；原始产出上界 4096 字符（超长截断）；
+> **不下发 `max_tokens`** ⇒ 端点缺省限额导致的截断**仍会发生**（本 change 只使其**可见、归得因**）；
+> Web / APP 不呈现该折叠块（SPA 零改动）。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

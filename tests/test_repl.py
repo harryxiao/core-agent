@@ -2359,3 +2359,83 @@ def test_readonly_commands_have_zero_side_effects(tmp_path) -> None:
     assert sid_after == sid
     assert sessions == 1
     assert messages == messages_before == len(seeded)  # 仅预置的几条；只读命令**不**写转录
+
+
+# ---- TUI 折叠呈现未能解析的模型原始输出（change 0170 / ADR-0161 / 台账 E107）----
+
+_RAW_OUTPUT = (
+    "清理状态确认：垃圾笔记已清零。\n\n现在立提案：\n\n"
+    '{"tool_id": "tools.file_write", "args": {"path": "a.md", "content": "未写完'
+)
+
+
+def _raw_app(raw: str) -> object:
+    """构造 app 并注入「一轮以不可解析收尾」的 loop 替身（`raw_output` 由调用方给定）。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    class _RawLoop:
+        async def astream(self, user_input: str, *, session_id: str = ""):
+            from core.loop import LoopEvent  # noqa: PLC0415 — 事件构造
+
+            yield LoopEvent("loop_started", {"trace_id": "t1"})
+            note = "LLM_PLAN_PARSE_FAILED: 疑似工具调用 JSON 未闭合"
+            yield LoopEvent("reply_delta", {"text": note})
+            yield LoopEvent(
+                "loop_finished",
+                LoopResult(
+                    reply="LLM_PLAN_PARSE_FAILED: 疑似工具调用 JSON 未闭合",
+                    trace_id="t1",
+                    failed=True,
+                    raw_output=raw,
+                ),
+            )
+
+    api._loop = _RawLoop()  # noqa: SLF001 — 注入替身驱动事件面
+    return app
+
+
+def test_tui_raw_output_renders_collapsed_block() -> None:
+    """不可解析收尾 ⇒ 一个**缺省收起**的步骤块；展开后正文含原始产出，正文不含原始 JSON。"""
+    app = _raw_app(_RAW_OUTPUT)
+
+    async def drive() -> tuple[bool, str, str]:
+        from textual.widgets import Collapsible, Static  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _step_submit(pilot)
+            blocks = _blocks(app)
+            assert len(blocks) == 1  # 恰好一个块（不并入正文）
+            block = blocks[0]
+            collapsed = bool(block.collapsed)
+            # 展开前：正文藏于折叠区
+            assert block.query_one(Collapsible.Contents).display is False
+            assert await pilot.click(block.query_one("CollapsibleTitle"))
+            await pilot.pause()
+            body = str(block.query_one(".step-body", Static).render())
+            from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+
+            timeline = app.query_one("#timeline", Vertical)
+            plain = "\n".join(
+                str(w.render()) for w in timeline.query(Static) if not w.has_class("step-body")
+            )
+            return collapsed, body, plain
+
+    collapsed, body, timeline_text = asyncio.run(drive())
+    assert collapsed is True  # 缺省收起（不遮蔽时间线）
+    assert "tools.file_write" in body  # 展开可见原始产出
+    assert '"tool_id"' not in timeline_text  # 正文（块外）不含原始 JSON
+
+
+def test_tui_no_raw_output_block_on_normal_turn() -> None:
+    """正常轮（`raw_output` 为空）⇒ SHALL NOT 新增块（与既有行为逐字一致）。"""
+    app = _raw_app("")
+
+    async def drive() -> int:
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _step_submit(pilot)
+            return len(_blocks(app))
+
+    assert asyncio.run(drive()) == 0

@@ -68,7 +68,20 @@ class LLMChunk:
     content: str
     tool_calls: list[ToolCall] | None = None  # delta.tool_calls 增量片段（index 分组）
     thinking: str = ""                        # 推理原文增量（归一化后；缺省空串，见 §2.1）
+    finish_reason: str = ""                   # 终止原因（该块未携带时为空串，见 §2.2）
 ```
+
+### 2.2 流式增量的终止原因（`finish_reason`，change `0170` / ADR-0161）
+
+`LLMResponse.finish_reason` **早已存在**（非流式路径，`choices[0].finish_reason`，缺省 `"stop"`）；
+流式路径此前**丢弃**该字段 ⇒ 消费方（planner）无从判断输出是否被**截断**。本 change 补上：
+
+- **键位**：`LLMChunk.finish_reason` 取 `choices[0].finish_reason`，**该块未携带时为空串**（OpenAI
+  兼容端点通常在**末块**携带，如 `stop` / `length`）；与 `content` / `thinking` 同为**归一化后的字符串**。
+- **只读不解释**：provider **只透传**该值，不解读语义；「`length` ⇒ 输出被截断」的**归因**由消费方
+  （`LLMPlanner._parse(..., finish_reason=…)`）完成 ⇒ 提示成因可辨（见 §3.1）。
+- **尾字段带缺省**：缺省空串 ⇒ 全部既有构造点零改动；`getattr` 取值 ⇒ 第三方 provider 自有的形块
+  不致破。
 
 ### 2.1 思考原文归一（`thinking`，change `0145` / ADR-0137 / 账本 E56）
 

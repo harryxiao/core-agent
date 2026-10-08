@@ -382,12 +382,12 @@ def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — �
         收起 / 缩略 / 全文。行缓冲 append-only（末元素是未完成行）⇒ 消原全文重拼的 O(n²)。
         """
 
-        def __init__(self, title: str) -> None:
+        def __init__(self, title: str, *, collapsed: bool = False) -> None:
             self._lines: list[str] = [""]
             self._full = False
             self._body = Static("", classes="step-body", markup=False)
             self._more = Static("", classes="step-more")
-            super().__init__(self._body, self._more, title=title, collapsed=False)
+            super().__init__(self._body, self._more, title=title, collapsed=collapsed)
 
         def feed(self, text: str) -> None:
             """增量追加片段（只追加、不重拼 ⇒ 长流实时可见）。"""
@@ -1100,6 +1100,20 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 return
             entry.feed(text)
 
+        def _add_raw_output_widget(self, event: Event) -> None:
+            """未能解析的模型原始产出 → `⚠` 步骤块（**缺省收起**，change `0170` / ADR-0161）。
+
+            与思考块 / 工具块的缺省缩略态**有意不同**：本块正文是未解析的原始载荷（可能被截断
+            或写坏），缺省收起以免污染时间线；点标题展开归因。原始产出**只在此处呈现**：
+            不进转录 / 记忆 / 笔记 / 日志（正常轮 `raw_output` 为空 ⇒ 不落块）。
+            """
+            raw = getattr(event.payload, "raw_output", "")
+            if not raw:
+                return
+            box = _StepBlock("⚠ 未能解析的模型原始输出", collapsed=True)
+            box.set_text(str(raw))
+            self._add(box)
+
         def _open_subtask(self, sid: str, data: dict[str, Any]) -> None:
             """子任务开工：单行折叠块 + 验收详情（构造期入折叠区，收尾 update 补判定）。"""
             goal = str(data.get("goal", ""))
@@ -1339,6 +1353,9 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                         continue
                     if event.type.startswith("loop.action_"):  # 工具动作行（折叠块）
                         self._add_action_widget(event)
+                        continue
+                    if event.type == "loop.result":  # 未能解析的原始产出（折叠块，缺省收起）
+                        self._add_raw_output_widget(event)
                         continue
                     line = _format_event(event)
                     if line:

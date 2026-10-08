@@ -23,6 +23,15 @@ from .protocol import Action, LoopContext, Thinking
 # 解析模型输出失败时的结构化错误码（终端回复，不中断循环）。
 _PARSE_FAILED = "LLM_PLAN_PARSE_FAILED"
 
+# 不可解析原始产出的留存上界（供呈现层折叠查看与 trace 留痕；超出即截断）。见 change 0170。
+_RAW_OUTPUT_MAX = 4096
+
+# 未闭合动作载荷的可读提示（change 0170 / ADR-0161）：成因可辨时区分「被截断」与「未闭合」。
+_UNPARSED_TRUNCATED = (
+    f"{_PARSE_FAILED}: 输出被 provider 截断（finish_reason=length），工具调用 JSON 未闭合"
+)
+_UNPARSED_UNCLOSED = f"{_PARSE_FAILED}: 疑似工具调用 JSON 未闭合（输出可能被截断或写坏）"
+
 # 命中技能提示：**纯数据**快照（loop 不 import skills —— 架构红线），由组合根组装
 SkillHint = dict[str, str]  # {"skill_id": ..., "version": ..., "instructions": ...}
 
@@ -67,6 +76,60 @@ def _trailing_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
+def _bounded_raw(text: str) -> str:
+    """原始产出的**有界**留存（超上界即截断并标记；供呈现层与 trace，不入转录/记忆）。"""
+    if len(text) <= _RAW_OUTPUT_MAX:
+        return text
+    note = f"\n…（原始产出共 {len(text)} 字符，已截断）"
+    return text[: max(0, _RAW_OUTPUT_MAX - len(note))] + note
+
+
+def _never_closes(text: str, start: int) -> bool:
+    """自 ``text[start]`` 起做**字符串感知**的括号深度扫描：深度**从未**回到 0 ⇒ True。
+
+    引号内（含转义符）不计括号；深度降到 0（含负）即结构已闭合 ⇒ 立刻返回 False
+    （故结束仍在字符串内 / 括号仍开 ⇒ True）。纯判定，供 `_unclosed_action_payload` 复用。
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in text[start:]:
+        if in_string:
+            escaped = char == "\\" and not escaped
+            if char == '"' and not escaped:
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char in "{[":
+            depth += 1
+            continue
+        if char in "}]":
+            depth -= 1
+            if depth <= 0:
+                return False
+    return True
+
+
+def _unclosed_action_payload(text: str) -> bool:
+    """文本尾部是否存在**到内容结束仍未闭合**的 ``"tool_id"`` 动作载荷（change 0170 / ADR-0161）。
+
+    模型确实在**发出**动作协议、只是产出被截断或写坏时，``_trailing_json_object`` 会取到
+    **内层 ``args`` 对象**（它恰好闭合且收在文末）⇒ ``tool_id`` 判空 ⇒ 旧实现把整段 JSON
+    当最终答复且记为成功。本判据把这类输出识别为**不可用**。
+
+    判据（严格，非启发式）：自**最后一次**出现的 ``"tool_id"`` 回退至其外层 ``{``，对其后文本做
+    括号深度扫描（见 `_never_closes`）；深度从未回到 0 即命中。**闭合**的尾部对象 —— 不论其后
+    是否仍有正文、是否含 ``tool_id`` —— 一律**不**命中（承 change 0166 的「只认尾部、宁漏勿误」）。
+    """
+    at = text.rfind('"tool_id"')
+    if at < 0:
+        return False
+    start = text.rfind("{", 0, at)
+    return start >= 0 and _never_closes(text, start)
+
+
 class LLMPlanner:
     """ReAct 式 LLM 规划器：感知 → 装配 → 推理 → 解析 Action。"""
 
@@ -109,7 +172,10 @@ class LLMPlanner:
         self._last_prompt_tokens = max(self._last_prompt_tokens, response.usage.prompt_tokens)
         if response.tool_calls:  # 原生 function call 优先于 content 协议
             return self._from_tool_calls(response.tool_calls), response.thinking
-        return self._parse(response.content), response.thinking
+        return (
+            self._parse(response.content, finish_reason=response.finish_reason),
+            response.thinking,
+        )
 
     async def astream(  # noqa: C901 — 长管道：降级分支 + 回复增量 + 原生工具片段 + 思考增量
         self, ctx: LoopContext
@@ -137,8 +203,12 @@ class LLMPlanner:
         native_tool = False  # 出现原生 tool_calls 片段
         tool_names: dict[int, str] = {}
         tool_args: dict[int, str] = {}
+        # 终止原因（change 0170）：末个非空值胜出，用于把「被截断」与「未闭合」区分开。
+        # `getattr` 取值：第三方 provider 若产出自有形块（无该字段），退化为空串、不破。
+        finish_reason = ""
         try:
             async for chunk in self._llm.astream(request):
+                finish_reason = getattr(chunk, "finish_reason", "") or finish_reason
                 for fragment in chunk.tool_calls or []:
                     native_tool = True
                     index = fragment.index
@@ -167,7 +237,7 @@ class LLMPlanner:
             ]
             yield self._from_tool_calls(calls)
             return
-        yield self._parse("".join(chunks))
+        yield self._parse("".join(chunks), finish_reason=finish_reason)
 
     def last_prompt_tokens(self) -> int:
         """最近一次装配的提示 token 观测（记账**下界**；尚未推理过时为 0）。
@@ -294,7 +364,7 @@ class LLMPlanner:
 
     # ---- 解析 ----
 
-    def _parse(self, content: str) -> Action:
+    def _parse(self, content: str, *, finish_reason: str = "") -> Action:
         text = content.strip()
         if not text:
             return Action(args={"reply": f"{_PARSE_FAILED}: 空响应"}, failed=True)
@@ -303,7 +373,9 @@ class LLMPlanner:
                 data = json.loads(text)
             except ValueError:
                 return Action(
-                    args={"reply": f"{_PARSE_FAILED}: 无法解析模型输出为动作"}, failed=True
+                    args={"reply": f"{_PARSE_FAILED}: 无法解析模型输出为动作"},
+                    raw_output=_bounded_raw(text),
+                    failed=True,
                 )
             return self._from_dict(data)
         # 混写形态（正文 + 尾部动作 JSON）容错：见 change 0166 / ADR-0156。
@@ -311,6 +383,11 @@ class LLMPlanner:
         embedded = _trailing_json_object(text)
         if embedded is not None and embedded.get("tool_id"):
             return self._from_dict(embedded)
+        # 未闭合的动作载荷（change 0170 / ADR-0161）：模型在**发出**动作协议，只是产出被截断/写坏
+        # —— 旧实现会把整段 JSON 当答复且记为成功（静默 + JSON 进转录与记忆）。
+        if _unclosed_action_payload(text):
+            reply = _UNPARSED_TRUNCATED if finish_reason == "length" else _UNPARSED_UNCLOSED
+            return Action(args={"reply": reply}, raw_output=_bounded_raw(text), failed=True)
         return Action(args={"reply": text})
 
     def _from_tool_calls(self, calls: list[ToolCall]) -> Action:

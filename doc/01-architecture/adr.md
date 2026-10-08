@@ -4800,6 +4800,71 @@
   测试面 `doc/04-testing/test-cases.md` §82（TC-STEP-BLOCK）、接口文档 `03-interfaces/ui-interface.md` §2、
   台账 `coding-plan/known-risk.md` §1（E106）。
 
+## ADR-0161：未闭合的动作载荷 —— 识别面收紧 + 失败可见 + 原始产出可诊断（change 0170）
+
+- **背景（用户实测）**：TUI 里出现整段 `{"tool_id": …}` **当正文**打印、且该轮**零执行零报错**。
+  trace 取证（`9ae2ae1fe3b34329a8cfaf028e722200`）：载荷本身**从不畸变**、模型动作 JSON **完全正确**，
+  形态是「解释文字 + 换行 + 动作 JSON」；致命处在于该轮动作 JSON 的**外层对象未闭合**（模型产出被
+  截断或写坏，末态括号深度 = 1）。全库统计：56 轮中 5 轮回复含 `"tool_id"`，其 13 条 `step_completed`
+  **全部 `failed=False`** —— 失败率 ≈9%、**100% 静默**。
+- **根因（承 0166 / ADR-0156 的取向空洞）**：0166 定「尾部**可解析**且含非空 `tool_id` 的对象」为唯一
+  容错形态，明文**宁可漏检不误判**。外层动作被截断时，尾部最末一个「可解析且其后无剩余」的对象**不是
+  动作而是它的内层 `args`**（本例恰好闭合）⇒ `embedded.get("tool_id")` 为假 ⇒ 落兜底
+  `Action(args={"reply": text})`，整段 JSON 变正文且 `failed=False`。**同一缺陷在「内容以 `{` 开头」的
+  路径早已可见**（`json.loads` 失败 ⇒ `LLM_PLAN_PARSE_FAILED`）—— 只因前缀多了一段解释文字，就从
+  「失败可见」变成「静默成功 + JSON 当正文」。本 change 把两者对齐。
+- **决策①：新判据为「自**最后一次** `"tool_id"` 回退至其外层 `{`，做**字符串感知**的括号深度扫描，
+  深度**从未**回到 0 即命中」（形态 4）。** 要区分的是两种「尾部不是动作」：**闭合**的示例对象
+  （含/不含 `tool_id`）＝模型在**说** ⇒ 自然语言回复（0166 口径不变）；**未闭合**的 `"tool_id"` 结构
+  ＝模型在**做**、只是产出坏了 ⇒ **失败态终止动作**（本 change）。判据**严格、不启发式**：闭合的尾部
+  对象一律不命中（承 0166「只认尾部、宁漏勿误」）。
+  - **弃「`raw_decode` 报错且位置在文末」**：`Unterminated string` 的 `pos` 指向**字符串开头**而非
+    文末，而「长 `content` 被截断」正是主场景 ⇒ 必然漏检。
+  - **弃「遍历每个 `{` 起 `raw_decode`」**：无法区分「截断」与「正文里恰好不配对的 `{`」。
+  - **取最后一次标记**：截断必发生在文末，最后一次即当事结构（若最后一次已闭合而更早一处未闭合，
+    按答复处理 —— 记入局限）。
+  - 判据实现拆为 `_never_closes(text, start)` 纯扫描 + `_unclosed_action_payload(text)` 定位，二者
+    均满足仓内「if/else 嵌套 ≤3」架构门禁。
+- **决策②：`Action` / `LoopResult` 增尾字段 `raw_output: str = ""` 承载**有界原始产出**，**不复用
+  `args`**。** `args` 是**工具参数面**（终止动作的 `args` 会成 `ActionResult.data`），塞诊断字段会污染
+  该面。传递链：`planner._parse` → `action.raw_output` →（`act` 不读它；`astream` 内 `action` 仍在作用
+  域 ⇒ 局部 `raw_output` 直取）→ `LoopResult.raw_output`（呈现面）→ `loop_finished` trace `raw_output`
+  （诊断面，条件键）。**不变量**：`ctx.reply` 只取 `data["reply"]` ⇒ 转录（`_append_transcript`）与记忆
+  （`remember(..., {"reply": ctx.reply})`）**天然不含**原始产出，**无需门控代码**；终止动作**不回灌**
+  `ctx.messages` ⇒ 原始产出**不进**下一轮提示词。上界 `_RAW_OUTPUT_MAX = 4096`（**含**截断提示行 ⇒
+  总长受上界约束，非「上界 + 提示」）。
+- **决策③：消费 `finish_reason` 使**成因可辨**。** `LLMResponse.finish_reason` 早已存在且 `stdlib` 已
+  填，planner 从不读；`LLMChunk` **无**该字段、`_map_chunk` **丢弃**它 ⇒ 流式（TUI 主用）无信号。
+  故 `LLMChunk` 增尾字段 `finish_reason: str = ""`（缺省空洞零影响）、`_map_chunk` 取
+  `choices[0].finish_reason`；`planner._parse(content, *, finish_reason="")`：`"length"` ⇒ 提示明示
+  **被截断**，否则 ⇒ **未闭合（疑似截断或写坏）**，二者**失败语义相同**。`astream` 累积末个非空
+  `chunk.finish_reason`（`getattr` 取值 ⇒ 第三方 provider 自有形块不致破）。
+  - **Non-goal：不下发 `max_tokens`**。截断上游是「`_build_request` 至今不下发 `max_tokens` ⇒ 端点用
+    自身缺省限额」；以 `loop.output_reserve` 驱动该字段看似顺理成章，但**部分端点会拒绝过大的
+    `max_tokens`（400）**，属独立兼容性决策 ⇒ 另立台账项（E107 附注）。本 change 只保证「截断
+    **看得见、归得因**」。
+- **决策④：呈现面承 0169 —— `_StepBlock.__init__` 增 **关键字** 形参 `collapsed: bool = False`（既有
+  调用点零改动）；TUI 在 `loop.result` 载荷（`LoopResult` 透传）携带非空 `raw_output` 时挂
+  `_StepBlock("⚠ 未能解析的模型原始输出", collapsed=True)`。** 该块**缺省收起**，与思考块/工具块的
+  缺省缩略态**有意不同**：正文是未解析的原始载荷（可能被截断或写坏），缺省收起以免污染时间线。分支
+  置于 `_format_event` **之前**（后者对 `LoopResult` 返回 `None`）；`continue` 后**不落** `❯` 回显。
+  原始产出**只在此处呈现**：不进转录 / 记忆 / 笔记 / 日志。
+- **兼容性**：形态 1/2/3 与自然语言回复路径**逐字不变**（含缺 `tool_id`/`reply` 时的
+  `LLM_PLAN_PARSE_FAILED` 文案）；`decline()` / `pet` 审批语义**不置** `failed`（非推理产出不可用）；
+  终止语义不改（解析失败照旧以回复收尾、`loop_failed` 仍只认 `limit_reason`）；工具失败口径不改
+  （ReAct 自愈面）。`Action.raw_output` / `LoopResult.raw_output` / `LLMChunk.finish_reason` 均为
+  **尾字段带缺省** ⇒ 全部既有构造点零改动。
+- **已知局限**：① 判据只认**最后一次** `"tool_id"` 标记（更早未闭合、最后闭合 ⇒ 按答复处理）；
+  ② 未闭合是**结构**判据、不解释成因（信号不可用时不下断语）；③ 原始产出上界 4096 字符，超长截断；
+  ④ **不发 `max_tokens`** ⇒ 端点缺省限额导致的截断**仍会发生**，本 change 只使其**可见**；
+  ⑤ Web / APP 不呈现该折叠块（SPA 零改动）。
+- **规格**：`doc/openspec/specs/loop/spec.md` —— 「推理动作解析与失败可见」**MODIFIED**（+ 形态 4 +
+  判据 + raw_output/成因措辞 clauses；既有 5 Scenario 逐字保留 + 3 新增）；`llm-provider/spec.md`
+  —— 「流式增量携带终止原因」**ADDED**（2 Scenario）；`ui/spec.md` —— 「TUI 折叠呈现未能解析的模型
+  原始输出」**ADDED**（2 Scenario）。测试面 `doc/04-testing/test-cases.md` §83（TC-UNPARSED-ACTION）、
+  接口文档 `03-interfaces/loop-interface.md` / `llm-provider-interface.md` / `ui-interface.md` §2、
+  台账 `coding-plan/known-risk.md` §1（E107）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4955,3 +5020,4 @@
 | ADR-0158 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0159 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0160 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0161 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 03-interfaces/llm-provider-interface.md, 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

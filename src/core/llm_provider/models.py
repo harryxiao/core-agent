@@ -82,3 +82,6 @@ class LLMChunk:
     content: str
     tool_calls: list[ToolCall] | None = None  # delta.tool_calls 增量片段
     thinking: str = ""  # 推理原文增量（归一化后；缺省空串）
+    # 终止原因（归一化后；该块未携带时为空串）。OpenAI 兼容端点通常在**末块**携带
+    # （如 `stop` / `length`）；供消费方归因输出是否被截断（见 change 0170 / ADR-0161）。
+    finish_reason: str = ""
