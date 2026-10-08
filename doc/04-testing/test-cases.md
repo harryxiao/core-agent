@@ -1448,6 +1448,39 @@
 > 错误条目不主动清理（靠同实体幂等覆盖自然刷新）；⑥ 非 `coeffect:` 引用**被弃用时不发** `warnings.warn`
 > （规格只要求「整条丢弃」时留痕）。
 
+## 87. 失效关键事实的运维修复：按会话重抽 + 删除 + 备份兜底（TC-KFREPAIR，change `0174`／ADR-0165，台账 E111）
+
+> **背景取证**（用户 2026-10-08）：change `0173` 修好了**判据**，但**已写坏的条目仍在库里** —— 生产
+> `memory.jsonl` 的 24 条 `key_fact` 里 **16 条**取值被抹成 `<redacted>`，`ref` 是模型自造的出处说明。
+> 这些条目**已无任何可用信息**，却仍被检索命中（`keyfact.榴莲` 的 `reuse_count` 达 **36**）。
+> 只读 dry-run 实证（`memory.jsonl` 前后 sha256 一致）：两来源会话材料仍在（episodic 原文已归档 **L4**，
+> `_all_entries()` 读全层）、`build_runtime` 已注入 `extract_with(_llm_text)` ⇒ 同材料重抽即得**每会话
+> 8 条明文**、零假 `ref`、无 `round N 执行结果` 类垃圾。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-KFREPAIR-01 | memory/spec.md「失效关键事实的运维修复」Scenario「识别失效条目」 | 库中并存：`coeffect:` 引用的 keyfact、无 `ref:` 的正常 keyfact、`ref:` 非 `coeffect:` 形态且取值 `<redacted>` 者 | **只**第三条被识别；`identified == ["keyfact.榴莲"]`（锚点：`tests/test_memory_keyfact_repair.py::test_identifies_only_stale_entries`） |
+| TC-KFREPAIR-02 | 同上 Scenario「重抽成功后清理该会话旧条目」 | 会话 `s1` 有失效条目 `榴莲` / `山竹`；重抽产出 `榴莲` / `泰国` | 旧条目**全删**（含重抽**未**再产出的 `山竹`）、新条目落库；`backup_path` 非空（锚点：`...::test_successful_reextract_clears_all_old_entries_of_the_session`） |
+| TC-KFREPAIR-03 | 同上 Scenario「同 slug 重抽不误删」 | 失效条目 `keyfact.榴莲`，重抽又产出实体 `榴莲`（slug 相同） | 该 id 上落**新**取值；该条目**不在** `deleted` 中（刚修好的条目不得被自己删掉）（锚点：`...::test_same_slug_rewrite_is_not_deleted`） |
+| TC-KFREPAIR-04 | 同上（材料口径 = episodic **全层**） | 该会话的 episodic 原文已迁 **L4**（`_episodic_groups` 会取空） | `sessions == ["s1"]` 且重抽成功 ⇒ 证明材料取自**全层**（守护「去掉 L2 层过滤」）（锚点：`...::test_material_includes_archived_l4_entries`） |
+| TC-KFREPAIR-05 | 同上 Scenario「重抽失败不删条目」（抽取器**未注入**） | `MemoryStore()`（无 `key_fact_extractor`）+ 一条失效条目 | 不删、无写入、`backup_path == ""`、`skipped["no_extractor"]` 标明（锚点：`...::test_no_extractor_means_no_deletion`） |
+| TC-KFREPAIR-06 | 同上 Scenario「重抽失败不删条目」（抽取器**抛错**） | 抽取器 `raise RuntimeError` | 不删、条目原样、`skipped["extract_failed"]` 含该会话（fail-closed）（锚点：`...::test_extractor_failure_means_no_deletion`） |
+| TC-KFREPAIR-07 | 同上 Scenario「备份文件先落且失败即不删」 | `CORE_STATE_DIR` 指向一个**文件** ⇒ 备份路径写入必失败 | 不删任何条目（旧条目留在原地）、`backup_path == ""`、`skipped["backup_failed"]` 标明（锚点：`...::test_backup_failure_means_no_deletion`） |
+| TC-KFREPAIR-08 | 同上（备份文件口径） | 备份文件逐行 = 待删条目原文 | 每行可 `json.loads` 回条目；id 集合 == `deleted`；`content` == `榴莲: <redacted>`；`tags` 非空（锚点：`...::test_backup_file_keeps_original_entries`） |
+| TC-KFREPAIR-09 | 同上 Scenario「幂等与只读预演」（幂等） | 库中**无**失效条目（正常 keyfact + 会话材料） | `identified` / `deleted` / `written` 全空、无备份文件、库内容逐字不变（锚点：`...::test_idempotent_when_no_stale_entries`） |
+| TC-KFREPAIR-10 | 同上 Scenario「幂等与只读预演」（预演） | `repair_stale_key_facts(dry_run=True)` | `dry_run is True`、`identified` 非空而 `deleted` / `written` 空、`backup_path == ""`、库内容不变、无备份文件（锚点：`...::test_dry_run_reports_but_never_writes`） |
+| TC-KFREPAIR-11 | 同上 Scenario「无会话出处的失效条目不删」 | 失效条目**不带** `session:` 标签 | 不删、`skipped["no_session"]` 含该 id、内容不变（无材料即无法重抽）（锚点：`...::test_stale_without_session_tag_is_not_deleted`） |
+| TC-KFREPAIR-12 | design.md §3「抽样返回**合法空数组**」 | 抽取器返回 `[]`（模型明确无可抽） | 视为**重抽成功** ⇒ 旧条目**仍删**（它们已无信息）（锚点：`...::test_empty_reextract_result_still_clears_stale_entries`） |
+
+> **红态证据**：实现落地前跑 `tests/test_memory_keyfact_repair.py` ⇒ **12 failed / 0 passed**，全部为
+> `AttributeError: 'MemoryStore' object has no attribute 'repair_stale_key_facts'`（新面确由本 change 引入）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2015 passed**（基线 2003，**+12**）。
+> **已知局限**：① 删除是**不可逆的持久动作**（备份文件是唯一回滚路径，且**不自动清理**）；② 重抽结果
+> **不确定** —— 同一材料两次调用可能给出不同实体名与取值，产出的新事实**可能少于**旧条目数 ⇒ 修复后
+> 信息面**不保证等量**；③ 备份文件含旧条目原文（与 `memory.jsonl` 同暴露度，承 ADR-0164 局限①）；
+> ④ 无 `session:` 出处的失效条目**只报告不动作**，永远留在库里；⑤ 只覆盖 keyfact 这一面；⑥ **不做
+> 实体名映射** ⇒ 命名漂移不可避免。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

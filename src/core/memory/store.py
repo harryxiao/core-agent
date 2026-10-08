@@ -9,11 +9,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
+import os
 import time
 import warnings
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from core.judgment import Compactor, DecisionResult
 from core.plugin_registry import Effect, EffectTracker
@@ -21,6 +24,7 @@ from core.plugin_registry import Effect, EffectTracker
 from .backend import FileBackend
 from .extract import (
     MAX_KEY_FACTS_PER_COMPACT,
+    REDACTED,
     KeyFact,
     KeyFactExtractor,
     scrub_key_fact,
@@ -47,6 +51,36 @@ _MAX_SCORED_PER_COMPACT = 20
 
 # 关键事实条目标签前缀（`MAX_KEY_FACTS_PER_COMPACT` 见 extract 模块）
 _KEY_FACT_TAG = "key_fact"
+
+# 出处（引用）标签前缀；`coeffect:` 形态的取值才是可用引用（change 0173 / ADR-0164）
+_REF_TAG = "ref:"
+_COEFFECT_REF_PREFIX = "coeffect:"
+
+# 会话溯源标签前缀（`_write_key_fact` 在会话非空时追加）
+_SESSION_TAG = "session:"
+
+
+def _repair_backup_path(stamp: str | None = None) -> Path:
+    """修复操作的备份文件路径：$CORE_STATE_DIR（缺省 ~/.core/state）/memory.repair.<时间戳>.jsonl。
+
+    与 `memory.jsonl` 同目录、同格式（每行一条 `MemoryEntry`）—— 该文件是修复删除的**持久**
+    可逆性来源。
+    """
+    base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
+    return base / f"memory.repair.{stamp or time.strftime('%Y%m%d-%H%M%S')}.jsonl"
+
+
+@dataclass
+class RepairReport:
+    """一次失效关键事实修复的结果（报表口径见 design §D5）。"""
+
+    identified: list[str] = field(default_factory=list[str])  # 识别到的失效条目 id
+    sessions: list[str] = field(default_factory=list[str])  # 涉及的会话（可重抽的单位）
+    deleted: list[str] = field(default_factory=list[str])  # 实际删除的条目 id
+    written: list[str] = field(default_factory=list[str])  # 重抽落库的条目 id
+    backup_path: str = ""  # 备份文件路径（未落备份则空串）
+    skipped: dict[str, list[str]] = field(default_factory=dict[str, list[str]])  # 原因 → 目标
+    dry_run: bool = False
 
 
 def _decay_score(entry: MemoryEntry) -> float:
@@ -565,6 +599,155 @@ class MemoryStore:
                 kind="semantic",
             ),
         )
+
+    def _stale_key_facts(self) -> list[MemoryEntry]:
+        """识别**失效关键事实**：`tags` 带 `ref:`、该 ref **非** `coeffect:` 形态，且取值已被抹。
+
+        这类条目是 change `0173` 判据修复前的产物（模型自造的出处说明被当成真引用 ⇒ 取值整条被抹）
+        ⇒ **已不含任何可用信息**。带 `coeffect:` 引用的条目（引用本身即信息）与无 `ref` 的条目
+        不识别。
+        """
+        stale: list[MemoryEntry] = []
+        for entry in self._all_entries():
+            if _KEY_FACT_TAG not in entry.tags:
+                continue
+            refs = [tag[len(_REF_TAG) :] for tag in entry.tags if tag.startswith(_REF_TAG)]
+            if not refs or any(ref.startswith(_COEFFECT_REF_PREFIX) for ref in refs):
+                continue
+            if entry.content.rpartition(": ")[2] != REDACTED:
+                continue
+            stale.append(entry)
+        return stale
+
+    def _material_for_session(self, session_id: str) -> list[MemoryEntry]:
+        """该会话的 episodic 材料（**全层** —— 已归档到 L4 的条目同样参与重抽）。
+
+        判据复用 `_episodic_groups`（`kind == "episodic"`）但**去掉 L2 层过滤**：当年抽取时
+        它们还是 L2，之后被压实迁到 L4；沿用层过滤会取到空材料 ⇒ 无从重抽。
+        """
+        tag = f"{_SESSION_TAG}{session_id}"
+        return [
+            entry
+            for entry in self._all_entries()
+            if entry.kind == "episodic" and (entry.session_id == session_id or tag in entry.tags)
+        ]
+
+    def _delete_entry(self, entry: MemoryEntry) -> None:
+        """删除条目（热区 + 后端）并记录进程内可逆效应。
+
+        **持久**可逆性不由这里承担：`EffectTracker` 的 undo 随一次性 CLI 进程结束即失效，
+        真正的回滚路径是删除前落的备份文件（见 `repair_stale_key_facts`）。
+        """
+        self._hot.pop(entry.id, None)
+        self._backend.delete(entry.id)
+        self._tracker.record(
+            Effect(
+                op="memory.delete",
+                target=entry.id,
+                undo=lambda: self._restore_entry(entry),
+                reversible=True,
+                coeffect=[],
+                trace_id=entry.trace_id,
+                ts=time.time(),
+            )
+        )
+
+    def _restore_entry(self, entry: MemoryEntry) -> None:
+        """把条目放回后端与热区（`_delete_entry` 的进程内 undo）。"""
+        self._backend.put(entry)
+        self._hot[entry.id] = entry
+
+    def _group_stale_by_session(
+        self, stale: list[MemoryEntry], report: RepairReport
+    ) -> dict[str, list[MemoryEntry]]:
+        """失效条目按产生它的会话分组；无 `session:` 出处者记入 `skipped`（无材料 ⇒ 不可修复）。"""
+        by_session: dict[str, list[MemoryEntry]] = {}
+        for entry in stale:
+            session_id = next(
+                (tag[len(_SESSION_TAG) :] for tag in entry.tags if tag.startswith(_SESSION_TAG)), ""
+            )
+            if not session_id:
+                report.skipped.setdefault("no_session", []).append(entry.id)
+                continue
+            by_session.setdefault(session_id, []).append(entry)
+        return by_session
+
+    def _repair_session(
+        self, session_id: str, extractor: KeyFactExtractor, report: RepairReport, written: set[str]
+    ) -> None:
+        """修一个会话：取材料 → 重抽 → 备份 → 删该会话旧条目（见 `repair_stale_key_facts`）。"""
+        try:
+            plan, _, _ = _plan_key_facts(extractor(self._material_for_session(session_id)))
+        except Exception:  # noqa: BLE001 — 重抽失败 ⇒ 该会话不落库、不删（fail-closed）
+            warnings.warn(
+                f"key-fact re-extraction failed for session {session_id!r}; nothing was deleted",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            report.skipped.setdefault("extract_failed", []).append(session_id)
+            return
+
+        fresh = [f"keyfact.{slug_entity(fact.entity)}" for fact in plan]
+        for fact in plan:
+            self._write_key_fact(fact, key=session_id, session_id=session_id)
+        report.written.extend(fresh)
+        written.update(fresh)
+
+        # 该会话产出的**全部旧** keyfact（不止失效者：重抽实体名不保证重合 ⇒ 只删失效者留死条目）
+        tag = f"{_SESSION_TAG}{session_id}"
+        doomed = [
+            entry
+            for entry in self._all_entries()
+            if _KEY_FACT_TAG in entry.tags and tag in entry.tags and entry.id not in written
+        ]
+        if not doomed:
+            return  # 无可删 ⇒ 不落空备份文件
+
+        backup = _repair_backup_path()
+        try:
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            backup.write_text(
+                "".join(json.dumps(asdict(entry), ensure_ascii=False) + "\n" for entry in doomed),
+                encoding="utf-8",
+            )
+        except OSError:
+            warnings.warn(
+                f"key-fact repair backup failed at {backup}; nothing was deleted",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            report.skipped.setdefault("backup_failed", []).append(session_id)
+            return
+
+        report.backup_path = str(backup)
+        for entry in doomed:
+            self._delete_entry(entry)
+            report.deleted.append(entry.id)
+
+    def repair_stale_key_facts(self, *, dry_run: bool = False) -> RepairReport:
+        """失效关键事实的运维修复（change 0174 / ADR-0165）：按会话重抽 + 清理该会话旧条目。
+
+        顺序恒为「**先重抽、成功后才清理**」，且删除**排除本次已写入的 id**（同 slug 即覆盖式
+        更新，否则刚修好的条目会被自己删掉）。三处 **fail-closed**：抽取器未注入 / 该会话重抽
+        抛错 / 备份文件写入失败 ⇒ 均**不删**（宁可不修，不可修坏）。无失效条目 ⇒ 幂等（零写入、
+        零备份）。
+        """
+        report = RepairReport(dry_run=dry_run)
+        stale = self._stale_key_facts()
+        report.identified = [entry.id for entry in stale]
+        by_session = self._group_stale_by_session(stale, report)
+        report.sessions = list(by_session)
+
+        extractor = self._key_fact_extractor
+        if by_session and extractor is None:
+            report.skipped["no_extractor"] = sorted(by_session)
+        if not by_session or extractor is None or dry_run:
+            return report
+
+        written: set[str] = set()
+        for session_id in by_session:
+            self._repair_session(session_id, extractor, report, written)
+        return report
 
     def _all_entries(self) -> list[MemoryEntry]:
         """全量条目（冷区 + 热区）：冷区读取失败降级为热区，不抛。"""

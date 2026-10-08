@@ -25,7 +25,7 @@ from .extract import (
 )
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
 from .relevance import rank, recency_decay, relevance
-from .store import MemoryStore
+from .store import MemoryStore, RepairReport
 from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter, build_prompt, summarize_with
 from .transcript import TranscriptStore
 
@@ -44,6 +44,7 @@ __all__ = [
     "MemoryStore",
     "PluginCandidate",
     "REDACTED",
+    "RepairReport",
     "Summarizer",
     "SummaryPromoter",
     "TranscriptStore",

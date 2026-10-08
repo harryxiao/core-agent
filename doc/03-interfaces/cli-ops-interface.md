@@ -133,3 +133,25 @@ def render_sessions / render_config / render_mcp / render_skills / render_notes(
   **不** `import core.ui`（后者反向引用诊断源）⇒ 句柄全经 `Deps` 注入，`_diag_deps` 在 `entry.py` 装配。
 - **未注册动词**（`kill` / `logs` / `version` / `help` / `install` / `uninstall` / `list` / `info` / `auth` /
   `permission-mode` / `gateway`）仍**不在** argparse 子命令面 —— 台账 `coding-plan/known-risk.md` §1 **E100** 挂账。
+
+---
+
+## 6. 一次性运维动作面（`memory <sub>`，change `0174` / ADR-0165）
+
+`memory` 子命令由 `entry._memory()` 经**分派表** `_MEMORY_COMMANDS` 路由到具体动作 ——
+每个动作的签名恒为 `(memory, args) -> int`（与 `rag` / `notes` 的 `handlers` 同形）：
+
+| 子命令 | 退出码 | 产出 |
+|---|---|---|
+| `core-agent memory maintain` | 恒 `0` | 压实 + 遗忘，打印归档条数 |
+| `core-agent memory repair-keyfacts [--dry-run]` | 恒 `0` | `MemoryStore.repair_stale_key_facts`，打印报表 |
+
+契约要点：
+
+- **一次性、不改变运行态**：二者都「装配 runtime → 执行一次动作 → 打印 → 退出」，**不**启动常驻进程、
+  **不**挂维护节拍（自动触发须另立 change）。
+- **缺省执行、`--dry-run` 只报告**：与 `evolve implement --dry-run` 同口径 —— 该命令是**显式**运维入口。
+  预演**只读**：不删条目、不落库、不落备份文件。
+- **报表口径**：识别到的失效条目数与会话数 · 成功重抽与已删除条数 · 备份文件路径 · 跳过项
+  （`no_session` / `no_extractor` / `extract_failed` / `backup_failed`）。**报表 SHALL NOT 打印条目取值**
+  （取值恒为 `"<redacted>"`，但口径上不落正文）。

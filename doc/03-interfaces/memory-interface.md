@@ -249,6 +249,25 @@ loop 侧把行动序列写入 L2 **前**复用同一份判据 ⇒ **一处定义
 ``compact`` 的会话循环在「摘要器**或**抽取器」注入时运行。模型调用经 ``extract_with(llm)`` 适配
 （prompt 与解析器属 memory 域；memory **不** import LLM 抽象）。
 
+### 失效关键事实的运维修复（change `0174` / ADR-0165）
+
+``MemoryStore.repair_stale_key_facts(*, dry_run: bool = False) -> RepairReport``（**只读预演**：
+``dry_run=True`` 时不删、不落库、不落备份）。
+
+``RepairReport``（``core.memory`` 导出）：``identified`` / ``sessions`` / ``deleted`` / ``written`` /
+``backup_path`` / ``skipped``（**原因 → 条目 id 或会话**：``no_session`` / ``no_extractor`` /
+``extract_failed`` / ``backup_failed``）/ ``dry_run``。
+
+语义：**识别**失效条目（``tags`` 带 ``ref:`` 且该 ref **非** ``coeffect:`` 形态、``content`` 取值为
+``"<redacted>"``）⇒ 按 ``session:<sid>`` 标签**按会话**分组 ⇒ 取该会话 episodic 材料（**全层**：
+``layer`` 不过滤，已归档 L4 的条目同样参与）⇒ 复用本能力 prompt / 脱敏 / 有界**重抽** ⇒ 备份 ⇒
+落新 ⇒ 删该会话**全部旧** keyfact（**排除**本次已写入的 id）。**fail-closed 三处**：抽取器未注入 /
+该会话重抽抛错 / 备份写入失败 ⇒ **不删**。重抽返回合法空数组 ⇒ 视为成功 ⇒ 旧条目**仍删**。无失效
+条目 ⇒ 幂等（零写入、零备份）。CLI：``core-agent memory repair-keyfacts [--dry-run]``。
+
+``MemoryBackend`` 契约**零改动**（删除走既有 ``delete``）；memory 仍**不** import ``core.notes`` /
+``core.loop``。
+
 ### 固化打分 + 价值门控（compact，0042）
 
 注入 ``compactor`` 时，``compact`` 在提炼前先**逐条目打分**并写回 ``importance``：

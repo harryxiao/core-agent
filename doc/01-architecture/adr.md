@@ -4994,6 +4994,56 @@
   change 清理（同实体重抽幂等覆盖自然刷新）⑥ 非 `coeffect:` 引用被弃用**不**发 `warnings.warn`
   （视作正常路径；规格只要求「整条丢弃」时留痕）—— 留痕与否可由后续 change 决定。
 
+## ADR-0165：失效关键事实的运维修复 —— 按会话重抽 + 删除 + 备份兜底（change 0174）
+
+- **背景**：ADR-0164（change 0173）修好了**判据**，但**已写坏的条目仍在库里**：生产 `memory.jsonl`
+  24 条 `key_fact` 里 **16 条**取值被抹成 `<redacted>`，其 `ref` 是模型自造的出处说明。这些条目**已无
+  任何可用信息**，却仍被检索命中并注入上下文（`keyfact.榴莲` 的 `reuse_count` 已达 **36**）⇒ 判据修复
+  **止不住既有污染**。前置实证（只读 dry-run，`memory.jsonl` 前后 sha256 一致）：两来源会话的材料仍在
+  （episodic 原文已归档 L4，`_all_entries()` 经 `backend.search("")` 读全层）、`build_runtime` 已注入
+  `extract_with(_llm_text)` ⇒ 同材料重抽即得**每会话 8 条明文**、零假 `ref`、无 `round N 执行结果` 类垃圾。
+- **决策 ①：以**会话**为执行单位，不是以条目为单位。** 材料只能是会话的（该会话的 episodic 条目），
+  故「识别 → 重抽 → 清理」三层都按会话组织。无 `session:` 标签的失效条目**不可修复**（无材料可重抽）
+  ⇒ **不删**（存疑即留），报告标明。
+- **决策 ②：顺序恒为「**先重抽、成功后才清理**」，且删除**排除本次已写入的 id**。** `_write_key_fact`
+  的 id 是 `keyfact.<slug>`（同 slug 即**覆盖式更新**）；实证重抽会产出与旧条目同 slug 的实体（`榴莲`
+  / `泰国`）⇒ 若按「该会话全部 keyfact id」删除，会把**刚修好的条目自己删掉**。故待删集合 = 该会话全部
+  旧 keyfact **减去**本次写入集。顺序上「先落新、后删旧」⇒ 任何一步失败时库里要么旧状态、要么新旧并存，
+  **不会**出现「旧已删、新未落」的空窗。
+- **决策 ③：清理范围 = 该会话**全部旧** keyfact（不止失效者）。** 实证重抽产出的**实体名与当年不同**
+  （`表格显示不出的根因` vs `表格显示问题根因`、`Textual版本` vs `Textual 依赖版本`）⇒ slug 不重合 ⇒
+  旧条目**不会被覆盖**；只删「仍呈失效形态者」会留下**死条目**继续参与检索。
+- **决策 ④：旧条目**删除**，不迁 L4。** 本仓既有清理口径 `forget()` 是迁 L4（可逆），此处**不沿用**
+  —— 实测归档**止不了血**：`read()` → `backend.search()` **无层过滤**（L4 同样进候选），层权重只是
+  **加性**项 `_W_LAYER × priority`（L4 `0.2` vs L2 `0.6`，差 `0.08`），而 `reuse_count` / `importance`
+  是**乘性**调制 ⇒ `reuse_count=36` 的放大足以盖过加性差距。可逆性改由**备份文件**
+  `$CORE_STATE_DIR/memory.repair.<时间戳>.jsonl`（与 `memory.jsonl` 同目录、同格式）承担 —— 一次性 CLI
+  进程内的 `EffectTracker` undo 随进程结束即失效，**不能**作为持久可逆性。备份**不引入新明文面**：被删
+  条目取值恒为 `<redacted>`（密钥形态取值当初即被整条丢弃、从未落库）。
+- **决策 ⑤：三处 **fail-closed**（宁可不修，不可修坏）。** 抽取器**未注入** / 该会话重抽**抛错** /
+  备份文件**写入失败** ⇒ 均**不删**（备份失败时已落的新条目保留 —— 它是正确信息，只是旧条目不清理）。
+  另：重抽返回**合法空数组** ⇒ 视为**重抽成功**（模型明确无可抽）⇒ 旧条目**仍删**（它们已无信息）。
+  待删集合为空 ⇒ 跳过备份与删除（不产生空备份文件）。
+- **决策 ⑥：材料口径去**层过滤**。** 复用 `_episodic_groups` 的判据（`kind == "episodic"`）但**去掉**
+  `layer == "L2"` —— 当年抽取时它们还是 L2，压实后**已归档 L4**，沿用层过滤会取到空材料。材料口径其余
+  部分与当年**逐字一致**（同条目、同 `build_extract_prompt` 每条 400 字符窗口）—— 这是「重抽能复现
+  同样实体」的前提。
+- **CLI 形态**：`memory repair-keyfacts [--dry-run]`，缺省**执行**（与 `memory maintain` / `evolve
+  implement --dry-run` 同族：装配运行时 → 动作 → 打印报表 → 不改变运行态）。`_memory()` 由「只认
+  maintain」改为**分派表** `_MEMORY_COMMANDS`。**不**引入自动/定时触发（须另立 change）。
+- **规格**：`memory` **ADDED**「失效关键事实的运维修复」（+7 Scenario，落在既有 `memory` 能力内 ⇒
+  capability 数不变）；`cli-ops` **MODIFIED**「运维命令集」（+1 Scenario，**既有 9 条逐字保留**）。
+- **落点**：`store.py`（`RepairReport` + `repair_stale_key_facts` + `_stale_key_facts` /
+  `_material_for_session` / `_group_stale_by_session` / `_repair_session` / `_delete_entry` /
+  `_restore_entry` / `_repair_backup_path`）/ `core/memory/__init__.py`（导出 `RepairReport`）/
+  `entry.py`（子命令 + 分派表 + 报表）。`protocol.py` / `backend.py` **零改动**（删除走既有
+  `MemoryBackend.delete`）；`core.memory` 仍**不** import `core.notes` / `core.loop`。
+- **局限**：① 删除是**不可逆的持久动作**（备份文件是唯一回滚路径，且**不自动清理**）；② 重抽结果
+  **不确定** —— 同一材料两次调用可能给出不同实体名与取值，产出的新事实**可能少于**旧条目数 ⇒ 修复后
+  信息面**不保证等量**；③ 备份文件含旧条目原文，与 `memory.jsonl` 同暴露度（承 ADR-0164 局限①：脱敏是
+  启发式）；④ 不可修复类（无 `session:` 出处）**只报告不动作**，永远留在库里；⑤ 只覆盖 keyfact 这一面
+  （摘要 / 迹条同类问题不覆盖）；⑥ **不做实体名映射** ⇒ 命名漂移不可避免。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5153,3 +5203,4 @@
 | ADR-0162 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0163 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0164 | 02-modules/memory.md, 02-modules/loop.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0165 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

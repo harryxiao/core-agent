@@ -139,6 +139,17 @@ MemoryStore
   顶出窗口。公开脱敏判据 `looks_like_secret` / `redact_secrets`（`core.memory` 导出）由 loop 侧
   复用 —— **一处定义、两处消费**。
 - 落库走既有唯一写路径 `MemoryStore.write()`（记可撤销效应），不另开第二写路径。
+- **失效条目的运维修复**（change `0174`／ADR-0165）：判据修好了（上条 ②）**止不住既有污染** ——
+  生产库里 **16/24** 条取值已被抹的条目仍在被检索命中（`keyfact.榴莲` 的 `reuse_count` 达 **36**）。
+  `MemoryStore.repair_stale_key_facts(*, dry_run=False) -> RepairReport` 提供显式修复：
+  **识别**（`_stale_key_facts`：`tags` 带 `ref:` 且**非** `coeffect:` 形态 + 取值 `<redacted>`）
+  → **按会话**取**全层**材料（`_material_for_session`：`kind == "episodic"`，**去掉 L2 层过滤** ——
+  当年材料压实后已归档 L4）→ 重抽（复用本能力 prompt / 脱敏 / 有界，判据**无第二份**）→ 备份 →
+  落新 → 删该会话**全部旧** keyfact（**排除本次已写入的 id**：同 slug 即覆盖式更新，否则自删）。
+  三处 **fail-closed**：抽取器未注入 / 该会话重抽抛错 / 备份写入失败 ⇒ **均不删**。删除**不迁 L4**
+  —— 实测 `search()` 无层过滤、层权重是**加性**而 `reuse_count` 是**乘性**，归档止不了血；可逆性由
+  `$CORE_STATE_DIR/memory.repair.<时间戳>.jsonl`（同目录同格式）承担。幂等；`dry_run` 只读。
+  **不自动触发**（只在 `core-agent memory repair-keyfacts` 显式入口发生）。局限性见 ADR-0165。
 
 ### 3.5 后端可插拔
 

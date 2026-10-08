@@ -251,6 +251,8 @@ def _add_memory_parser(sub: Any) -> None:
     memory = sub.add_parser("memory", help="记忆维护")
     mem_sub = memory.add_subparsers(dest="memory_cmd", metavar="<memory-cmd>")
     mem_sub.add_parser("maintain", help="触发一次记忆维护（压实 + 遗忘归档）")
+    repair = mem_sub.add_parser("repair-keyfacts", help="修复失效关键事实（重抽 + 清理旧条目）")
+    repair.add_argument("--dry-run", action="store_true", help="只报告将修复的内容，不删不写")
 
 
 def _add_rag_parser(sub: Any) -> None:
@@ -1177,21 +1179,51 @@ def _session_show(registry: SessionRegistry, session_id: str) -> int:
     return 0
 
 
+def _memory_maintain(memory: Any, _args: argparse.Namespace) -> int:
+    """`memory maintain`：触发一次记忆维护（压实 + 遗忘），打印归档条数。"""
+    memory.compact()
+    forgotten = memory.forget()
+    print(f"记忆维护完成：归档 {len(forgotten)} 条")
+    return 0
+
+
+def _memory_repair_keyfacts(memory: Any, args: argparse.Namespace) -> int:
+    """`memory repair-keyfacts`：修复失效关键事实，打印报表（口径见 design §D5）。"""
+    dry_run = bool(args.dry_run)
+    report = memory.repair_stale_key_facts(dry_run=dry_run)
+    head = "失效关键事实修复（预演，未动作）" if dry_run else "失效关键事实修复完成"
+    print(f"{head}：识别 {len(report.identified)} 条失效条目 / {len(report.sessions)} 个会话")
+    for session_id in report.sessions:
+        print(f"  - 会话 {session_id}")
+    if dry_run:
+        print(f"  将删除 {len(report.identified)} 条（预演，未动作）")
+    else:
+        print(f"  已删除 {len(report.deleted)} 条；重抽落库 {len(report.written)} 条")
+        if report.backup_path:
+            print(f"  备份文件：{report.backup_path}")
+    for reason, targets in sorted(report.skipped.items()):
+        print(f"  跳过（{reason}）：{len(targets)} 项 {'/'.join(targets)}")
+    return 0
+
+
+_MEMORY_COMMANDS: dict[str, Callable[[Any, argparse.Namespace], int]] = {
+    "maintain": _memory_maintain,
+    "repair-keyfacts": _memory_repair_keyfacts,
+}
+
+
 def _memory(args: argparse.Namespace) -> int:
-    """`memory maintain`：装配 runtime → 触发一次记忆维护（压实 + 遗忘），打印归档条数。"""
-    if args.memory_cmd != "maintain":
-        print("用法: core-agent memory maintain", file=sys.stderr)
+    """`memory <sub>`：装配 runtime → 分派到对应记忆运维动作。"""
+    action = _MEMORY_COMMANDS.get(args.memory_cmd or "")
+    if action is None:
+        print("用法: core-agent memory {maintain|repair-keyfacts [--dry-run]}", file=sys.stderr)
         return 1
     try:
         runtime = build_runtime(_config_manager(args))
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
         print(f"装配失败: {exc}", file=sys.stderr)
         return 1
-    memory = runtime.memory
-    memory.compact()
-    forgotten = memory.forget()
-    print(f"记忆维护完成：归档 {len(forgotten)} 条")
-    return 0
+    return action(runtime.memory, args)
 
 
 _EVOLVE_USAGE = (
