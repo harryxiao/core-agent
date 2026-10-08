@@ -132,6 +132,13 @@ canonical 目录缺省 `$CORE_STATE_DIR/notes`（未设则 `~/.core/state/notes`
   「不存在或来源为 `notes.turn`」者）；同一派生主题后续轮次**复用**（覆盖式，不无谓增长）。
   来源为 `notes.turn` 的既有行为**逐字不变**（含保留 `tags` / `pinned`）。⇒ 外来源正文与标题**绝不**
   被静默替换（堵住「常驻笔记被步骤列表污染」的真缺陷）。
+- **有意义闸门**（change 0171／ADR-0162／账本 E108）：`steps` **为空**（纯文字回复轮）⇒ 不落盘。
+- **效应闸门**（change 0176／ADR-0167／账本 E113）：`steps` 非空但**不含成功的写效应工具动作**
+  （仅纯读型如 `web_fetch`/`file_read`，或写效应动作失败）⇒ **不落盘**。写效应工具集
+  `file_write`/`file_patch`/`code_run`/`gate_run`/`install`/`uninstall`；工具名从 steps 行前缀解析
+  （行首至首个 `（`，剥 `tools.` 前缀）—— `loop._action_steps` 行格式**不改**（红线：loop 不 import
+  notes），非已知工具名 ⇒ 保守判为无写效应。纯读产出的内容是**素材**，归 memory 侧 keyfact 抽取沉淀，
+  不进 canonical 知识层（「无行动不记忆：只沉淀行动与结果」——「行动」须有**持久化效应**）。
 
 ### 3.5.1 会话摘要提升（promotion，change 0150／ADR-0142／账本 E94；半自动 change 0153／ADR-0145／路线图 G3）
 

@@ -1505,6 +1505,33 @@
 > 恰好一份；③ 跨会话**同 slug** 时最后一个会话胜，报告里该 id 只出现一次、用户**看不出**发生了覆盖；
 > ④ `doomed` 并集顺序不保证稳定（回滚按行不按序）；⑤ 承 §87 全部局限。
 
+## 89. notes 写回效应闸门：纯读轮不落盘（TC-NOTES-EFFECT-GATE，change `0176`／ADR-0167，台账 E113）
+
+> **背景取证**（用户 2026-10-09 实测）：逐轮写回仍把**纯读型工具轮**整篇塞进 canonical 知识库
+> （`web_fetch` 抓的网页正文、`file_read` 的一次性排查产物）。change 0171 的闸门只看 `steps` 是否**为空**
+> （`if not ok or not steps: return None`），而 `loop._action_steps` 对**所有**工具动作一律产出行 ⇒
+> 「调过 `web_fetch`/`file_read`」即满足写回条件。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-NOTES-EFFECT-GATE-01 | notes/spec.md「Consult → Build → Update 循环纪律」Scenario「纯读轮不写回（效应闸门）」 | `observe_turn(task, [<纯读型行>], ok=True)`，参数化 `web_fetch` / `file_read` / `context_read` / `list` | 返回 `None`、canonical 目录**无新增文件**（锚点：`tests/test_notes.py::test_observe_turn_pure_read_step_skips`） |
+| TC-NOTES-EFFECT-GATE-02 | 同上 Scenario「写效应失败不计入（效应闸门失败口径）」 | `observe_turn(task, ["tools.code_run（script=boom） → 错误：boom"], ok=True)` | 返回 `None`（失败执行不构成可沉淀效应）（锚点：`...::test_observe_turn_failed_write_effect_step_skips`） |
+| TC-NOTES-EFFECT-GATE-03 | 同上 Scenario「含写效应轮正常写回」 | 参数化 `file_write` / `file_patch` / `code_run` / `gate_run` / `install` / `uninstall` 的成功行 | 返回非 `None`（照常覆盖式写回）（锚点：`...::test_observe_turn_write_effect_step_writes`） |
+| TC-NOTES-EFFECT-GATE-04 | 同 design.md 决策③（非已知工具名 ⇒ 保守判无写效应） | `observe_turn(task, ["跑测试", "上线"], ok=True)` | 返回 `None`（锚点：`...::test_observe_turn_unrecognized_step_skips`） |
+| TC-NOTES-EFFECT-GATE-05 | 同 design.md 决策①（读写混轮含写即写回） | 纯读行 + 一个成功写效应行 | 返回非 `None`（锚点：`...::test_observe_turn_mixed_read_and_write_writes`） |
+| TC-NOTES-EFFECT-GATE-06 | notes/spec.md 同上（loop 接线） | 真 loop + 只读替身工具（`tools.echo`）跑一轮成功 | canonical 目录**无新增文件**（锚点：`tests/test_notes_loop.py::test_loop_pure_read_turn_does_not_write_note`） |
+
+> **红态证据**：实现落地前跑 `tests/test_notes.py tests/test_notes_loop.py tests/test_notes_pinned_budget.py`
+> ⇒ **7 failed / 79 passed**，失败者为 4 条纯读参数化用例 + 写效应失败 + 非工具行形态 + loop 侧纯读轮
+> （loop 侧实落 `查一下资料.md`）；写效应正例同期全绿。绿后全量 `.venv/bin/pytest -q` ⇒ **2031 passed**
+> （基线 **2017**，**+14**）。
+> **连带调整**：闸门依赖 steps 的**工具行形态**，10 个既有用例的 steps 是散文占位 / 只读替身 ⇒ 改为
+> 工具行形态的写效应 steps（断言不变量不变；`test_notes_loop.py` 新增 `_write_tool()` 替身）。
+> **已知局限**：① 判据靠**解析 steps 行前缀**（渲染契约的隐式耦合）—— 行格式变更会让闸门静默退化为
+> 「无写效应」（保守方向）；② 工具名为**白名单快照**，新增写效应型工具须同步 `_WRITE_EFFECT_TOOLS`
+> （否则该类轮次静默不写回）；③ 只覆盖**持久化**效应；④ `错误：` 判据是行内子串匹配，参数摘要恰含该
+> 子串会被误判为失败（方向保守）；⑤ memory 侧 keyfact 抽取**不受本闸门约束**（纯读素材按设计归其沉淀）。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

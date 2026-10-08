@@ -209,7 +209,14 @@ def test_store_create_topic_exists_but_ensure_is_idempotent(tmp_path) -> None:
 
 def test_store_observe_turn_writes_canonical(tmp_path) -> None:
     store = NoteStore(path=tmp_path)
-    note = store.observe_turn("修复 登录 超时", ["定位到 token 过期", "刷新 token"], ok=True)
+    note = store.observe_turn(
+        "修复 登录 超时",
+        [
+            "tools.file_read（path=auth.py）→ 定位到 token 过期",
+            "tools.file_patch（path=auth.py）→ 刷新 token",
+        ],
+        ok=True,
+    )
     assert note is not None
     raw = (tmp_path / f"{note.note_id}.md").read_text(encoding="utf-8")
     assert "刷新 token" in raw
@@ -227,7 +234,7 @@ def test_store_observe_turn_skips_empty_action_sequence(tmp_path) -> None:
 def test_store_observe_turn_empty_steps_does_not_touch_existing(tmp_path) -> None:
     """空序列**不改写**既有主题（与「覆写」区分：跳过即零写入）。"""
     store = NoteStore(path=tmp_path)
-    store.observe_turn("部署流程", ["跑测试"], ok=True)
+    store.observe_turn("部署流程", ["tools.code_run（script=pytest）→ 全绿"], ok=True)
     before = {p.name: p.read_text(encoding="utf-8") for p in tmp_path.glob("*.md")}
     assert store.observe_turn("部署流程", [], ok=True) is None
     after = {p.name: p.read_text(encoding="utf-8") for p in tmp_path.glob("*.md")}
@@ -371,7 +378,10 @@ def test_store_observe_turn_preserves_pinned(tmp_path) -> None:
     store = NoteStore(path=tmp_path)
     store.update(NoteEntry(note_id="部署流程", title="部署流程", content="先备份", pinned=True))
 
-    assert store.observe_turn("部署流程", ["滚动更新"], ok=True) is not None
+    assert (
+        store.observe_turn("部署流程", ["tools.code_run（script=deploy）→ 滚动更新"], ok=True)
+        is not None
+    )
     raw = (tmp_path / "部署流程.md").read_text(encoding="utf-8")
     assert "- pinned: true" in raw
     assert store.get("部署流程").pinned is True
@@ -388,7 +398,7 @@ def test_observe_turn_does_not_clobber_foreign_source_note(tmp_path) -> None:
     )
     before = (tmp_path / "部署流程.md").read_text(encoding="utf-8")
 
-    note = store.observe_turn("部署流程", ["滚动更新"], ok=True)
+    note = store.observe_turn("部署流程", ["tools.code_run（script=deploy）→ 滚动更新"], ok=True)
 
     assert note is not None
     assert note.note_id == "部署流程-2", "外来源占据主题 ⇒ 沉淀改道派生主题"
@@ -399,9 +409,11 @@ def test_observe_turn_does_not_clobber_foreign_source_note(tmp_path) -> None:
 def test_observe_turn_overwrites_own_source_same_topic(tmp_path) -> None:
     """撞上**自己**来源（`notes.turn`）⇒ 仍覆盖同一主题（既有行为逐字不变，防回归）。"""
     store = NoteStore(path=tmp_path)
-    first = store.observe_turn("修复 登录 超时", ["定位"], ok=True)
+    first = store.observe_turn("修复 登录 超时", ["tools.file_write（path=a.py）→ 定位"], ok=True)
     assert first is not None
-    second = store.observe_turn("修复 登录 超时", ["刷新 token"], ok=True)
+    second = store.observe_turn(
+        "修复 登录 超时", ["tools.file_patch（path=a.py）→ 刷新 token"], ok=True
+    )
 
     assert second is not None and second.note_id == first.note_id == "修复-登录-超时"
     raw = (tmp_path / f"{first.note_id}.md").read_text(encoding="utf-8")
@@ -413,8 +425,8 @@ def test_observe_turn_derived_topic_reuses_own_across_rounds(tmp_path) -> None:
     store = NoteStore(path=tmp_path)
     store.update(NoteEntry(note_id="k", title="K", content="人工正文", source="notes"))
 
-    first = store.observe_turn("k", ["一"], ok=True)
-    second = store.observe_turn("k", ["二"], ok=True)
+    first = store.observe_turn("k", ["tools.file_write（path=k）→ 一"], ok=True)
+    second = store.observe_turn("k", ["tools.file_write（path=k）→ 二"], ok=True)
 
     assert first is not None and second is not None
     assert first.note_id == second.note_id == "k-2"
@@ -431,8 +443,64 @@ def test_observe_turn_does_not_clobber_pinned_foreign_note(tmp_path) -> None:
     )
     before = (tmp_path / "硬约束.md").read_text(encoding="utf-8")
 
-    note = store.observe_turn("硬约束", ["步骤"], ok=True)
+    note = store.observe_turn("硬约束", ["tools.file_write（path=c）→ 步骤"], ok=True)
 
     assert note is not None and note.note_id == "硬约束-2"
     assert (tmp_path / "硬约束.md").read_text(encoding="utf-8") == before
     assert store.get("硬约束").pinned is True
+
+
+# ---- 写回效应闸门（change 0176 / ADR-0167 / 账本 E113） ----
+
+# 写效应工具动作（行形态同 `loop._action_steps`：`工具名（参数摘要） → 结果节选`）。
+_WRITE_EFFECT_STEPS = [
+    "tools.file_write（path=a.txt） → 已写入",
+    "tools.file_patch（path=a.txt） → 已修改",
+    "tools.code_run（script=pytest） → 全绿",
+    "tools.gate_run（gate=ruff） → 通过",
+    "tools.install（source=./p） → 已安装",
+    "tools.uninstall（name=p） → 已卸载",
+]
+
+# 纯读型工具动作（无持久化效应 ⇒ 内容属素材，归 memory 侧 keyfact 抽取）。
+_PURE_READ_STEPS = [
+    "tools.web_fetch（url=https://x） → 榴莲正文",
+    "tools.file_read（path=a.py） → 内容",
+    "tools.context_read（pointer=p） → 片段",
+    "tools.list（） → 工具清单",
+]
+
+
+@pytest.mark.parametrize("step", _WRITE_EFFECT_STEPS)
+def test_observe_turn_write_effect_step_writes(tmp_path, step: str) -> None:
+    """含写效应动作 ⇒ 照常写回（覆盖式，既有行为逐字不变）。"""
+    store = NoteStore(path=tmp_path)
+    assert store.observe_turn("任务", [step], ok=True) is not None
+
+
+@pytest.mark.parametrize("step", _PURE_READ_STEPS)
+def test_observe_turn_pure_read_step_skips(tmp_path, step: str) -> None:
+    """纯读轮（无写效应）⇒ 不落盘（返回 None），canonical 目录不新增文件。"""
+    store = NoteStore(path=tmp_path)
+    assert store.observe_turn("任务", [step], ok=True) is None
+    assert list(tmp_path.glob("*.md")) == [], "纯读轮不得创建 canonical 文件"
+
+
+def test_observe_turn_failed_write_effect_step_skips(tmp_path) -> None:
+    """写效应动作**失败**（`错误：` 前缀）⇒ 不计写效应 ⇒ 不落盘。"""
+    store = NoteStore(path=tmp_path)
+    step = "tools.code_run（script=boom） → 错误：boom"
+    assert store.observe_turn("任务", [step], ok=True) is None
+
+
+def test_observe_turn_unrecognized_step_skips(tmp_path) -> None:
+    """非工具行形态（解析不出已知工具名）⇒ 保守判定为无写效应 ⇒ 不落盘。"""
+    store = NoteStore(path=tmp_path)
+    assert store.observe_turn("任务", ["跑测试", "上线"], ok=True) is None
+
+
+def test_observe_turn_mixed_read_and_write_writes(tmp_path) -> None:
+    """读写混轮：只要含一个成功写效应动作即写回（读动作不阻碍）。"""
+    store = NoteStore(path=tmp_path)
+    steps = ["tools.web_fetch（url=https://x） → 资料", *_WRITE_EFFECT_STEPS[:1]]
+    assert store.observe_turn("任务", steps, ok=True) is not None

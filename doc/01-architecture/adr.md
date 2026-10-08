@@ -5086,6 +5086,48 @@
   并集顺序 = 会话遍历序 × 会话内 `_all_entries()` 序，**不保证稳定**（回滚按行不按序 ⇒ 不影响正确性）；
   ⑤ 承 ADR-0165 全部局限（重抽不确定 / 命名漂移 / 启发式脱敏等）。
 
+## ADR-0167：notes 写回效应闸门 —— 纯读轮不落盘（change 0176）
+
+- **背景**：用户 2026-10-09 实测：逐轮写回仍把**纯读型工具轮**整篇塞进 canonical 知识库
+  （`web_fetch` 抓的网页正文、`file_read` 的一次性排查产物）。change 0171 的「有意义闸门」判据是
+  `if not ok or not steps: return None` —— 只看 `steps` **是否为空**（挡纯文字回复轮），而
+  `loop._action_steps` 对**所有**工具动作一律产出行 ⇒ 「调过 `web_fetch`/`file_read`」即满足写回条件。
+- **决策 ①：判据为「本轮含至少一个成功的**写效应**工具动作」（确定性、零 LLM）。** 写效应工具集
+  `_WRITE_EFFECT_TOOLS` = `file_write` / `file_patch` / `code_run` / `gate_run` / `install` /
+  `uninstall`（文件系统写 / 代码执行 / 质量门禁 / 插件注册表效应）。**不**引入 LLM importance 评分 ——
+  与 0171 闸门同处同口径、可单测、无新依赖注入面，且用户实测的垃圾笔记来源**全部**是纯读轮。
+  与「无行动不记忆：只沉淀**行动与结果**」一致 —— 「行动」须有**持久化效应**，而非仅「有信息流入」。
+- **决策 ②：判据落在存储侧 `observe_turn`（与 0171 同位）。** 对被注入的任意 `turn_observer` 一致生效，
+  不改 `on_turn`（其仍无条件调用，由被调方自守）。
+- **决策 ③：`loop._action_steps` 不改（架构红线）。** steps 仍**完整**产出（SOP 提炼需要完整行动
+  序列）；工具名从行**前缀解析**（`_tool_of_step`：行首至首个 `（`，再剥 `tools.` 前缀）—— 不引入
+  loop↔notes 新接口，loop **不** import notes、notes 也**不** import loop。**已否决备选**：loop 侧给
+  steps 附带结构化元数据（更稳健，但要改 `TurnObserver` 接口签名、影响所有注入方，超出最小改动面）。
+  **容错**：行不以已知工具名开头 ⇒ 保守判定为**无写效应**（宁漏写、不滥写）。
+- **决策 ④：写效应动作**失败**不计入（行含 `错误：`）。** 失败标记取自 `loop._summarize_result` 对
+  `{"error": …}` 的渲染前缀；`code_run`「成功」与 `gate_run`「通过」**同一条规则**覆盖（都归约为
+  「无 `错误：`」）。与「只沉淀**验证过的**行动与结果」一致。
+- **红态证据（实现前）**：新增 7 用例**全红** —— 4 条纯读参数化用例（`web_fetch`/`file_read`/
+  `context_read`/`list`）+ 写效应失败 + 非工具行形态（`["跑测试", "上线"]`）+ loop 侧纯读轮
+  （`test_loop_pure_read_turn_does_not_write_note`，实落 `查一下资料.md`）；写效应正例同期全绿。
+- **连带调整（既有用例口径）**：闸门依赖 steps 的**工具行形态**，而 7 个既有 `test_notes.py` 用例、
+  `test_notes_pinned_budget.py` 1 例、`test_notes_loop.py` 2 例的 steps 是**散文占位**（`["滚动更新"]`）或
+  只读替身（`tools.echo`）—— 均改为**工具行形态的写效应 steps**（断言不变量不变）。新增 `_write_tool()`
+  替身（id 落在写效应集内，`coeffects=[]` 以免离线 run 因缺 `CoeffectResolver` 得 `COEFFECT_MISSING`
+  而被闸门判为失败）。
+- **规格**：`notes` **MODIFIED**「Consult → Build → Update 循环纪律」—— 追加**效应闸门**段（既有 8
+  Scenario 逐字保留 + 3 新增：纯读轮不写回 / 写效应失败不计入 / 含写效应轮正常写回）⇒ 8 → **11**
+  Scenario。`loop` / `memory` / `cli-ops` 零改动。
+- **落点**：`src/core/notes/store.py`（`_WRITE_EFFECT_TOOLS` / `_TOOL_ID_PREFIX` / `_ERROR_MARKER` /
+  `_tool_of_step` / `_has_write_effect` / `observe_turn` 闸门）。接口签名、`NoteEntry`、`MarkdownBackend`
+  零改动。
+- **局限**：① 判据靠**解析 steps 行前缀**（渲染契约的隐式耦合）—— 若 `_action_steps` 行格式变更，闸门
+  会静默退化为「无写效应」（保守方向，不滥写）；② 工具名为**白名单快照**，新增写效应型工具须同步
+  `_WRITE_EFFECT_TOOLS`（否则该类轮次**静默不写回**）；③ 「上下文变更」型效应（如 `context_write` 若
+  存在）不在集内 —— 本 change 只覆盖**持久化**效应；④ `错误：` 判据是**行内子串**匹配，若某写效应的
+  **参数摘要**恰含该子串会被误判为失败（方向保守）；⑤ 只覆盖 canonical notes 这一面，memory 侧 keyfact
+  抽取**不受本闸门约束**（纯读素材按设计归其沉淀）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5247,3 +5289,4 @@
 | ADR-0164 | 02-modules/memory.md, 02-modules/loop.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0165 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0166 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0167 | 02-modules/notes.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -29,6 +29,40 @@ _MAX_EXCERPT_CHARS = 200
 _MAX_DIGEST_CHARS = 1200
 _MAX_PINNED_CHARS = 4000  # 常驻注入总量上界（独立于 digest 的 1200；有界 ⇒ token 有界）
 
+# 效应闸门（change 0176 / ADR-0167）：只有产生**持久化效应**的轮次才值得沉淀。
+# 内置工具 id 形如 ``tools.<名>``（`_action_steps` 行首即完整 tool_id）；工具名从行首解析。
+_TOOL_ID_PREFIX = "tools."
+_WRITE_EFFECT_TOOLS = frozenset(
+    {
+        "file_write",  # 文件系统写
+        "file_patch",
+        "code_run",  # 代码执行（产生副作用；失败见 _ERROR_MARKER）
+        "gate_run",  # 质量门禁（产出验证结论）
+        "install",  # 插件注册表效应
+        "uninstall",
+    }
+)
+_ERROR_MARKER = "错误："  # `loop._summarize_result` 对失败观察渲染的前缀
+
+
+def _tool_of_step(step: str) -> str:
+    """行动序列行 → 工具名（行首至首个 ``（``）；非该形态 ⇒ 整行（⇒ 匹配不到已知工具名）。"""
+    return step.split("（", 1)[0].strip()
+
+
+def _has_write_effect(steps: list[str]) -> bool:
+    """本轮是否含**成功的写效应**工具动作（确定性、零 LLM —— 与 ADR-0045 依赖方向一致）。
+
+    纯读型动作（``file_read`` / ``web_fetch`` / ``context_read`` / ``list``）产出的内容是
+    **素材**，归 memory 侧 keyfact 抽取路径沉淀，不进 canonical notes（刻意知识层）；
+    写效应动作**失败**（行含 `错误：`）亦不计 —— 只沉淀**验证过的**行动与结果。
+    """
+    for step in steps:
+        tool = _tool_of_step(step).removeprefix(_TOOL_ID_PREFIX)
+        if tool in _WRITE_EFFECT_TOOLS and _ERROR_MARKER not in step:
+            return True
+    return False
+
 
 def _default_root() -> Path:
     """canonical 目录缺省位置：$CORE_STATE_DIR（缺省 ~/.core/state）/notes。"""
@@ -228,8 +262,13 @@ class NoteStore(Plugin):
         **有意义闸门**（change 0171）：``steps`` 为空（纯文字回复轮 —— 无任何工具行动）⇒
         **不落盘**（返回 ``None``），与 ``ok=False`` / 空 slug 同口径 —— 琐碎轮不得创建或覆写
         canonical 文件。正文的可读渲染（非 ReAct 原文）由 loop 侧 ``_action_steps`` 保证。
+
+        **效应闸门**（change 0176 / ADR-0167）：``steps`` 非空但**不含任何成功的写效应工具动作**
+        （仅纯读型动作，或写效应动作失败）⇒ 同样**不落盘** —— 纯读产出的内容是**素材**（归 memory
+        侧 keyfact 抽取），不进 canonical 知识层。判据确定性（按行首工具名匹配写效应工具集），
+        非工具行形态 ⇒ 保守判定为无写效应。
         """
-        if not ok or not steps:
+        if not ok or not steps or not _has_write_effect(steps):
             return None
         topic = slug_topic(task)
         if not topic:

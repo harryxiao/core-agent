@@ -170,7 +170,11 @@ def test_observe_turn_preserves_pin_priority(tmp_path) -> None:
     )
     store.set_pinned("部署流程", pinned=True, priority=7)
 
-    assert store.observe_turn("部署流程", ["跑测试", "上线"], ok=True) is not None
+    steps = [
+        "tools.code_run（script=pytest） → 全绿",
+        "tools.code_run（script=deploy） → 上线",
+    ]
+    assert store.observe_turn("部署流程", steps, ok=True) is not None
     note = store.get("部署流程")
     assert "上线" in note.content, "同来源 ⇒ 覆盖式写回同一主题"
     assert note.pinned is True

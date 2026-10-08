@@ -72,12 +72,30 @@ def _store(tmp_path) -> NoteStore:
     return NoteStore(path=tmp_path)
 
 
-def _tool_then_reply(*, reply: str):
+def _write_tool() -> Tool:
+    """写效应工具（change 0176 效应闸门：只有写效应轮才写回笔记）。
+
+    效应闸门按**工具名**判定，故此替身只需 id 落在写效应集内；`coeffects=[]` 以免离线
+    运行因缺 `CoeffectResolver` 而 `COEFFECT_MISSING`（闸门会据此视为失败、不写回）。
+    """
+    return Tool(
+        definition=ToolDef(
+            tool_id="tools.file_write",
+            description="write",
+            schema={"type": "object", "properties": {"text": {"type": "string"}}},
+            coeffects=[],
+            reversible=True,
+        ),
+        handler=lambda text: f"written:{text}",
+    )
+
+
+def _tool_then_reply(*, reply: str, tool_id: str = "tools.echo"):
     """首轮调工具、次轮终止回复的 planner（保证 steps 非空）。"""
 
     def planner(ctx: LoopContext) -> Action:
         if ctx.rounds == 0:
-            return Action(tool_id="tools.echo", args={"text": "中间结论"})
+            return Action(tool_id=tool_id, args={"text": "中间结论"})
         return Action(args={"reply": reply})
 
     return planner
@@ -138,10 +156,10 @@ def test_loop_consult_failure_degrades_and_does_not_change_outcome() -> None:
 def test_loop_turn_observer_writes_canonical_note(tmp_path) -> None:
     store = _store(tmp_path)
     provider = ToolProvider()
-    provider.register(_echo_tool())
+    provider.register(_write_tool())
 
     loop = DefaultLoop(
-        planner=_tool_then_reply(reply="done"),
+        planner=_tool_then_reply(reply="done", tool_id="tools.file_write"),
         tools=provider,
         max_rounds=3,
         turn_observer=lambda task, steps, ok: store.observe_turn(task, steps, ok=ok),
@@ -152,8 +170,25 @@ def test_loop_turn_observer_writes_canonical_note(tmp_path) -> None:
     raw = (tmp_path / f"{note_id}.md").read_text(encoding="utf-8")
     assert "## 解决过程" in raw, "成功轮写回 canonical Markdown"
     # change 0171：正文为人类可读行（工具名 + 参数摘要 + 结果节选），**不落** ReAct 消息原文。
-    assert "tools.echo" in raw and "中间结论" in raw, "写回内容承载可读的行动/结果序列"
+    assert "tools.file_write" in raw and "中间结论" in raw, "写回内容承载可读的行动/结果序列"
     assert '{"tool_id"' not in raw and '{"data"' not in raw, "不落 JSON 原文转储"
+
+
+def test_loop_pure_read_turn_does_not_write_note(tmp_path) -> None:
+    """纯读轮（无写效应动作）⇒ 效应闸门跳过写回（change 0176 / ADR-0167）。"""
+    store = _store(tmp_path)
+    provider = ToolProvider()
+    provider.register(_echo_tool())
+
+    loop = DefaultLoop(
+        planner=_tool_then_reply(reply="done"),
+        tools=provider,
+        max_rounds=3,
+        turn_observer=lambda task, steps, ok: store.observe_turn(task, steps, ok=ok),
+    )
+    loop.run("查一下资料")
+
+    assert list(tmp_path.glob("*.md")) == [], "仅调过只读工具的轮次不得写回笔记"
 
 
 def test_loop_reply_only_turn_does_not_write_note(tmp_path) -> None:
@@ -187,10 +222,10 @@ def test_loop_failed_round_does_not_write_note(tmp_path) -> None:
 def test_consult_update_loop_roundtrip_through_loop(tmp_path) -> None:
     store = _store(tmp_path)
     provider = ToolProvider()
-    provider.register(_echo_tool())
+    provider.register(_write_tool())
 
     loop = DefaultLoop(
-        planner=_tool_then_reply(reply="done"),
+        planner=_tool_then_reply(reply="done", tool_id="tools.file_write"),
         tools=provider,
         max_rounds=3,
         notes_consult=store.digest,
