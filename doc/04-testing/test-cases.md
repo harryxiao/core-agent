@@ -1326,6 +1326,29 @@
 > **已知局限**：歧义宽（`A`）字符按 1 列（承 §80，ADR-0159 局限①）；超长字段拉长整行（无截断）；
 > 值内含 2+ 空格时「2 空格分列」解析会拆格（值为单空格形态，无实例）。
 
+## 82. TUI 步骤块：缩略 / 全文 / 收起（TC-STEP-BLOCK，change `0169`／ADR-0160，台账 E106）
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-STEP-BLOCK-01 | ui/spec.md「TUI 步骤块（缩略 / 全文 / 收起）」Scenario「缩略窗口与剩余行数提示」 | 注入「一轮 `code_run` + 20 行输出」的事件流 | 步骤块**缺省展开**（`.step-body` 所在折叠区 `display` 非 `False`、`collapsed is False`）；正文恰 **8** 行（末尾窗口，含 `第 13 行`/`第 20 行`、不含 `第 12 行`）；提示行逐字 `⋯ 还有 12 行 · 点击展开全文`（锚点：`tests/test_repl.py::test_tui_step_block_truncates_tail_and_expands`） |
+| TC-STEP-BLOCK-02 | 同上 Scenario「点正文展开全文并回缩」 | 同 01，`pilot.click(正文)` 一次 / 再一次 | 一次点击 ⇒ 正文 **20** 行（含 `第 1 行`）、提示改 `⋯ 点击正文收起`；再次点击 ⇒ 回到 **8** 行 + 原提示（锚点：同上） |
+| TC-STEP-BLOCK-03 | 同上 Scenario「点标题收起与展开」 | 同 01，`pilot.click(CollapsibleTitle)` 一次 / 再一次 | 一次 ⇒ `collapsed is True` 且折叠区 `display is False`（正文隐藏）；再一次 ⇒ `collapsed is False`、正文回缩略 **8** 行（锚点：`...::test_tui_step_block_title_toggles_collapse`） |
+| TC-STEP-BLOCK-04 | 同上 Scenario「标题带目标且不含正文参数」 | `code_run`（`script="echo hi"`）与 `file_read`（含 `content` 类正文参数） | 标题逐字 `⏺ Bash  echo hi ✓ (12ms)`（友好名 + 目标 + 完成标记）；**不含** `tools.code_run`（内部 `tool_id`）与 `{'script'`（原始参数容器）；工具输出落 `└ ` 缩略区（锚点：`...::test_tui_step_block_shows_target_but_not_raw_args`、`...::test_tui_action_widget_lifecycle`） |
+| TC-STEP-BLOCK-05 | 同上 Scenario「超宽正文折行而非裁切」 | 单行 `"Z" * 200` 作工具输出 | 正文 `size.width` 与 `virtual_size.width` **均 ≤** 时间线宽度（`width: 1fr` 生效 ⇒ 折行）；**红态**：退回 `width: auto` 即超宽被裁（`virtual` 达 ~200）（锚点：`...::test_tui_step_block_body_wraps_wide_line`） |
+| TC-STEP-BLOCK-06 | ui/spec.md「思考过程回显（Think）」Scenario「TUI 思考折叠回显」（MODIFIED 后的缩略口径） | 同一轮连喂两条 `loop.reasoning`（`先读文件` / `，再改配置`）+ 一条 `reply_delta` | 时间线**恰一个**步骤块（同轮归并、不逐段新建）；该块**缺省缩略**（折叠区可见）；正文含 `先读文件，再改配置`（增量按序拼接）；主回复终态 `好了` 不受影响（锚点：`...::test_tui_thinking_stream_merges_and_updates_in_place`） |
+| TC-STEP-BLOCK-07 | 同上「标题带目标且不含正文参数」（取数判据） | `_tool_target` 表驱动 12 例：7 类白名单字段 / 白名单表外工具 / 缺字段 / 空白值 / 非字符串值 / `args` 为 str（事件面节选形态）；另 200 字符超长值 | 白名单字段取值、**多行只取首行**；其余一律 `""`（不解析 repr）；超长按 `_MAX_TARGET_CHARS`(60) 截断加 `…`（锚点：`...::test_tool_target_whitelist`、`...::test_tool_target_truncates_long_value`） |
+| TC-STEP-BLOCK-08 | 同上（标题拼装口径） | `_action_title`：开工态 / 完成 ✓ / 失败 ✗ / 无目标 | `⏺ <友好名>  <目标>`；完成态**保留目标**只追加 `✓ (耗时)`、失败态 `✗`；无目标只留友好名（不落占位）（锚点：`...::test_action_title_keeps_target_across_completion`） |
+
+> **红态证据**：实现落地前跑 `tests/test_repl.py` ⇒ 01~04、06 **行为全红**（既有实现 `collapsed=True`、
+> 标题无目标、无 `└ ` 角标、`输出：` 前缀、无 `.step-body`）；07/08 属新落地的模块级纯函数，随其实现在同一步转绿。
+> **手工验收**：`.venv/bin/python -m core.entry` 发一句触发工具调用的话 —— 思考**实时滚动**（末尾 8 行 +
+> `└` 肘线）、每步一行标题（`⏺ Bash  <script 首行>` / `⏺ Read  <路径>`）、点正文 ⇒ 全文、点标题 ⇒ 收起、
+> 长行折行；另以 `show_thinking: false` 复跑确认**不出现**思考块。
+> **已知局限**：`file_write` / `file_patch` 标题**无目标**（其正文参数使事件面 `args` 超 400 字符上界而退化为
+> 节选字符串，TUI 不解析 repr ⇒ 取不到 `path`；路径仍见于 `└` 输出摘录，根治需改 `loop` 节选口径 ⇒ 另立 change）；
+> `code_run` 目标取 `script` 首行 ⇒ 操作者自填内联凭据与终端显示命令**同等**暴露（步骤块不落盘）；
+> 缩略窗口恒**跟随最新**（不因用户上滚而冻结）；**不覆盖**子任务折叠块与 `/focus` 焦点视图；Web / APP 维持缺省收起。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

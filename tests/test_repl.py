@@ -14,10 +14,14 @@ from core.memory import TranscriptStore
 from core.ui import Event, UIAPILayer, UiError, UiErrorCode
 from core.ui.repl import (
     _COMMANDS,
+    _MAX_TARGET_CHARS,
+    _STEP_TAIL_LINES,
+    _action_title,
     _event_delta,
     _format_event,
     _palette_options,
     _parse_beast_command,
+    _tool_target,
     barge_in_event,
     build_app,
     format_task_event,
@@ -374,7 +378,7 @@ def test_task_subtask_collapsible_lifecycle() -> None:
 
 
 def test_tui_action_widget_lifecycle() -> None:
-    """TUI 工具动作行：⏺ 折叠块标题随完成落 ✓+耗时，展开区含参数/输出。"""
+    """TUI 工具动作行：⏺ 步骤块标题随完成落 ✓+耗时（**保留目标**），缩略区含输出。"""
     loop = RecordingLoop()
     api = UIAPILayer(loop=loop)
     api.set_llm_config(_llm())
@@ -392,7 +396,7 @@ def test_tui_action_widget_lifecycle() -> None:
             yield LoopEvent("loop_started", {"trace_id": "t1"})
             yield LoopEvent(
                 "action_started",
-                {"round": 0, "tool_id": "tools.code_run", "args": {"code": "print(1)"}},
+                {"round": 0, "tool_id": "tools.code_run", "args": {"script": "print(1)"}},
             )
             yield LoopEvent(
                 "action_completed",
@@ -422,31 +426,216 @@ def test_tui_action_widget_lifecycle() -> None:
                 await pilot.pause()
             box = app.query_one("#timeline", Vertical).query_one(Collapsible)
             contents = box.query_one(Collapsible.Contents)
-            assert contents.display is False  # 输出藏折叠区（不直接显示）
+            assert contents.display is not False  # 缺省**缩略**（正文可见），不是收起
             return _timeline_text(app)
 
     text = asyncio.run(drive())
-    assert "⏺ Bash ✓ (1.5s)" in text  # 友好名 + 完成标题（tools.code_run → Bash）
-    assert "参数" not in text  # 回显不含原始参数（args 不进用户可见层）
-    assert "输出：1" in text  # 展开区：输出节选
+    # 友好名 + 目标 + 完成标题（tools.code_run → Bash；目标取白名单字段 script）
+    assert "⏺ Bash  print(1) ✓ (1.5s)" in text
+    assert "'script'" not in text  # 原始参数容器不进用户可见层（只出白名单目标值）
+    assert "└ 1" in text  # 缩略区：输出节选
 
 
-# ---- TUI 思考回显（change 0145 / 账本 E60 呈现面）----
+# ---- TUI 步骤块（change 0169 / ADR-0160 / 台账 E106）----
+#
+# 旧的 `test_tui_thinking_renders_in_single_collapsed_block` 已由本段末的
+# `test_tui_thinking_stream_merges_and_updates_in_place` 取代（缺省形态由「收起」改「缩略」）。
+
+_LONG_LINES = 20
+_LONG_OUTPUT = "\n".join(f"第 {i} 行" for i in range(1, _LONG_LINES + 1))  # 缩略只留末尾 8 行
 
 
-def test_tui_thinking_renders_in_single_collapsed_block() -> None:
-    """TUI 思考回显：`loop.reasoning` 增量归并到**单个**缺省收起折叠块，主回复不受影响。"""
+def _step_app(output: str, *, script: str = "print(1)") -> object:
+    """构造 app 并注入「一轮工具动作 + 给定输出」的 loop 替身（步骤块用例复用）。"""
     loop = RecordingLoop()
     api = UIAPILayer(loop=loop)
     api.set_llm_config(_llm())
+    app = build_app(api)
 
-    from core.ui.repl import build_app  # noqa: PLC0415 — 可选依赖懒 import
+    class _StepLoop:
+        async def astream(self, user_input: str, *, session_id: str = ""):
+            from core.loop import LoopEvent  # noqa: PLC0415 — 事件构造
 
+            yield LoopEvent("loop_started", {"trace_id": "t1"})
+            yield LoopEvent(
+                "action_started",
+                {"round": 0, "tool_id": "tools.code_run", "args": {"script": script}},
+            )
+            yield LoopEvent(
+                "action_completed",
+                {
+                    "round": 0,
+                    "tool_id": "tools.code_run",
+                    "ok": True,
+                    "duration_ms": 12,
+                    "output": output,
+                },
+            )
+            yield LoopEvent("loop_finished", {"reply": "done", "trace_id": "t1"})
+
+    api._loop = _StepLoop()  # noqa: SLF001 — 注入替身驱动事件面
+    return app
+
+
+async def _step_submit(pilot: object) -> None:
+    """提交一句话并等事件流落定（步骤块已建）。"""
+    from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+    inp = pilot.app.query_one("#input", Input)
+    inp.focus()
+    inp.value = "跑一下"
+    await pilot.press("enter")
+    for _ in range(30):
+        await pilot.pause()
+
+
+def _blocks(app: object) -> list[object]:
+    from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+    from textual.widgets import Collapsible  # noqa: PLC0415 — 可选依赖懒 import
+
+    return list(app.query_one("#timeline", Vertical).query(Collapsible))
+
+
+def _inner(block: object, selector: str) -> object:
+    from textual.widgets import Static  # noqa: PLC0415 — 可选依赖懒 import
+
+    return block.query_one(selector, Static)
+
+
+def test_tool_target_whitelist() -> None:
+    """目标摘要**只取白名单结构性字段**（单行 + 有界）；未知工具 / 缺字段 / 非映射 ⇒ ""。"""
+    cases: list[tuple[object, object, str]] = [
+        ("tools.file_read", {"path": "src/a.py"}, "src/a.py"),
+        ("tools.file_write", {"path": "x.py", "content": "整篇正文"}, "x.py"),
+        ("tools.file_patch", {"path": "y.py", "old_content": "a"}, "y.py"),
+        ("tools.web_fetch", {"url": "https://e.example/x"}, "https://e.example/x"),
+        ("tools.code_run", {"script": "echo hi\nrm -rf /"}, "echo hi"),  # 多行只取首行
+        ("tools.gate_run", {"gate": "pytest"}, "pytest"),
+        ("tools.context_read", {"pointer": "L2/fact"}, "L2/fact"),
+        ("tools.unknown", {"path": "nope"}, ""),  # 白名单表外工具
+        ("tools.file_read", {}, ""),  # 缺字段
+        ("tools.file_read", {"path": "   "}, ""),  # 空白值
+        ("tools.file_read", {"path": 42}, ""),  # 非字符串值
+        ("tools.file_read", "path=src/a.py", ""),  # 事件面「超长节选」的 str 形态 ⇒ 不解析 repr
+    ]
+    for tool_id, args, expected in cases:
+        assert _tool_target(tool_id, args) == expected, (tool_id, args)
+
+
+def test_tool_target_truncates_long_value() -> None:
+    """超长目标按有界长度截断并加省略号。"""
+    assert _tool_target("tools.file_read", {"path": "p" * 200}) == "p" * _MAX_TARGET_CHARS + "…"
+
+
+def test_action_title_keeps_target_across_completion() -> None:
+    """工具步骤块标题：`⏺ <友好名>  <目标>`；完成落 `✓ (耗时)` / `✗`；无目标只留友好名。"""
+    assert _action_title("Read", "src/a.py") == "⏺ Read  src/a.py"
+    assert _action_title("Read", "src/a.py", ok=True, ms=12) == "⏺ Read  src/a.py ✓ (12ms)"
+    assert _action_title("Read", "src/a.py", ok=False) == "⏺ Read  src/a.py ✗"
+    assert _action_title("Bash", "") == "⏺ Bash"
+    assert _action_title("Bash", "", ok=True, ms=1500) == "⏺ Bash ✓ (1.5s)"
+
+
+def test_tui_step_block_truncates_tail_and_expands() -> None:
+    """步骤块缺省**缩略**：正文只呈现末尾 8 行 + 剩余行数；点正文 ⇒ 全文，再点 ⇒ 回缩略。"""
+    app = _step_app(_LONG_OUTPUT)
+
+    async def drive() -> None:
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _step_submit(pilot)
+            block = _blocks(app)[0]
+            shown = _inner(block, ".step-body")
+            more = _inner(block, ".step-more")
+            # 缺省缩略：末尾 8 行 + 「还有 12 行」
+            body = str(shown.render())
+            assert len(body.split("\n")) == _STEP_TAIL_LINES
+            assert "第 13 行" in body and "第 20 行" in body
+            assert "第 12 行" not in body
+            assert str(more.render()) == "⋯ 还有 12 行 · 点击展开全文"
+            assert block.collapsed is False  # 缺省**展开**（缩略态，不是收起）
+            # 点正文 ⇒ 全文
+            assert await pilot.click(shown)
+            await pilot.pause()
+            full = str(_inner(block, ".step-body").render())
+            assert len(full.split("\n")) == _LONG_LINES
+            more_full = str(_inner(block, ".step-more").render())
+            assert "第 1 行" in full and more_full == "⋯ 点击正文收起"
+            # 再点正文 ⇒ 回缩略
+            assert await pilot.click(_inner(block, ".step-body"))
+            await pilot.pause()
+            assert len(str(_inner(block, ".step-body").render()).split("\n")) == _STEP_TAIL_LINES
+            assert str(_inner(block, ".step-more").render()) == "⋯ 还有 12 行 · 点击展开全文"
+
+    asyncio.run(drive())
+
+
+def test_tui_step_block_title_toggles_collapse() -> None:
+    """点**标题** ⇒ 收起（正文隐藏）；再点 ⇒ 展开回缩略态。"""
+    app = _step_app(_LONG_OUTPUT)
+
+    async def drive() -> None:
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _step_submit(pilot)
+            from textual.widgets import Collapsible  # noqa: PLC0415 — 可选依赖懒 import
+
+            block = _blocks(app)[0]
+            title = block.query_one("CollapsibleTitle")
+            assert block.query_one(Collapsible.Contents).display is True
+            assert await pilot.click(title)
+            await pilot.pause()
+            assert block.collapsed is True
+            assert block.query_one(Collapsible.Contents).display is False  # 正文藏折叠区
+            assert await pilot.click(title)
+            await pilot.pause()
+            assert block.collapsed is False
+            assert block.query_one(Collapsible.Contents).display is True
+            assert len(str(_inner(block, ".step-body").render()).split("\n")) == _STEP_TAIL_LINES
+
+    asyncio.run(drive())
+
+
+def test_tui_step_block_body_wraps_wide_line() -> None:
+    """正文以**确定宽度**呈现 ⇒ 远超视口的单行**折行**而非被裁（`width: auto` 回归即红）。"""
+    app = _step_app("Z" * 200)
+
+    async def drive() -> tuple[int, int, int]:
+        async with app.run_test(size=(100, 40)) as pilot:
+            from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+
+            await _step_submit(pilot)
+            body = _inner(_blocks(app)[0], ".step-body")
+            timeline = app.query_one("#timeline", Vertical)
+            return body.size.width, body.virtual_size.width, timeline.size.width
+
+    width, virtual, timeline_width = asyncio.run(drive())
+    assert width <= timeline_width, (width, timeline_width)
+    assert virtual <= timeline_width, (virtual, timeline_width)
+
+
+def test_tui_step_block_shows_target_but_not_raw_args() -> None:
+    """标题含**目标摘要**（白名单字段）；**不含**原始参数容器与内部 tool_id。"""
+    app = _step_app("1", script="echo hi")
+
+    async def drive() -> str:
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _step_submit(pilot)
+            return _timeline_text(app)
+
+    text = asyncio.run(drive())
+    assert "⏺ Bash  echo hi ✓ (12ms)" in text  # 友好名 + 目标 + 完成标记
+    assert "tools.code_run" not in text  # 内部 tool_id 不出现
+    assert "{'script'" not in text  # 原始参数容器不出现
+    assert "└ 1" in text  # 输出落缩略区
+
+
+def test_tui_thinking_stream_merges_and_updates_in_place() -> None:
+    """思考增量**实时追加**到同一轮的**同一个**步骤块（不逐段新建），缺省为缩略态。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
     app = build_app(api)
 
     class _ThinkingLoop:
-        """回放思考增量、回复增量与终态的 loop 替身。"""
-
         async def astream(self, user_input: str, *, session_id: str = ""):
             from core.loop import LoopEvent  # noqa: PLC0415 — 事件构造
 
@@ -459,25 +648,19 @@ def test_tui_thinking_renders_in_single_collapsed_block() -> None:
     api._loop = _ThinkingLoop()  # noqa: SLF001 — 注入替身驱动事件面
 
     async def drive() -> tuple[str, int, bool, str]:
-        async with app.run_test() as pilot:
-            from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
-            from textual.widgets import Collapsible, Input  # noqa: PLC0415 — 可选依赖懒 import
+        async with app.run_test(size=(100, 40)) as pilot:
+            from textual.widgets import Collapsible  # noqa: PLC0415 — 可选依赖懒 import
 
-            inp = app.query_one("#input", Input)
-            inp.focus()
-            inp.value = "怎么做"
-            await pilot.press("enter")
-            for _ in range(30):
-                await pilot.pause()
-            boxes = list(app.query_one("#timeline", Vertical).query(Collapsible))
-            collapsed = [b.query_one(Collapsible.Contents).display is False for b in boxes]
-            return _timeline_text(app), len(boxes), all(collapsed), str(app._last_reply)
+            await _step_submit(pilot)
+            blocks = _blocks(app)
+            expanded = [b.query_one(Collapsible.Contents).display is not False for b in blocks]
+            return _timeline_text(app), len(blocks), all(expanded), str(app._last_reply)
 
-    text, boxes, all_collapsed, reply = asyncio.run(drive())
-    assert boxes == 1, "同轮思考增量归并到同一块（不逐段新建）"
-    assert all_collapsed, "思考块缺省收起（标题可见、正文藏折叠区）"
-    assert "思考" in text  # 折叠块标题
-    assert "先读文件，再改配置" in text  # 增量按序拼接
+    text, blocks, all_expanded, reply = asyncio.run(drive())
+    assert blocks == 1, "同轮思考增量归并到同一块（不逐段新建）"
+    assert all_expanded, "思考块缺省**缩略**（正文可见，不是收起）"
+    assert "思考" in text  # 步骤块标题
+    assert "先读文件，再改配置" in text  # 增量按序拼接（同轮归并同一块）
     assert reply == "好了"  # 主回复呈现不受影响（终态收口原文）
 
 

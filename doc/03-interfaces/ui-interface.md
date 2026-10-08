@@ -79,7 +79,7 @@ class UIAPILayer:
 |---|---|---|
 | `session.created` | session_id | 会话建立 |
 | `loop.perception` | turn_id, observation | 感知阶段 |
-| `loop.reasoning` | text | **思考原文增量**（`Thinking` item 映射；**与 `loop.delta` 同形相异类**，change `0145`/ADR-0137）—— 仅 `show_thinking=True` 时产出，三端**折叠块默认收起**呈现（TUI 单块 `▸ 思考`、同轮增量归并；Web `<details>`；APP 同构），关闭时不产、输出与既有缺省逐字一致 |
+| `loop.reasoning` | text | **思考原文增量**（`Thinking` item 映射；**与 `loop.delta` 同形相异类**，change `0145`/ADR-0137）—— 仅 `show_thinking=True` 时产出，三端**折叠块**呈现（TUI 单块 `▸ 思考`、同轮增量归并，缺省**缩略**：change `0169`/ADR-0160；Web `<details>`、APP 同构，缺省**收起**），关闭时不产、输出与既有缺省逐字一致 |
 | `loop.action` | turn_id, action | 回合推进（step_completed 映射，既有契约） |
 | `loop.action_started` | round, tool_id, args | 工具动作开工（⏺ 动作行，TUI 折叠块呈现） |
 | `loop.action_completed` | round, tool_id, ok, duration_ms, output | 工具动作收尾（标题落 ✓/✗+耗时，展开含输出节选） |
@@ -287,6 +287,25 @@ fail-closed，先于进入 TUI 拒绝），缺省 ⇒ 新建（既有行为不�
 `args`（可能含 `--token`）。**同名异义**：TUI `/sessions` 列**会话注册表**（与 `/resume` 二级候选同源），
 CLI `sessions` 列 Harness Host 连接记录。本族**只读**：写操作命令（`config set` / `mcp add|remove` /
 `skill install|remove` / `plugin install`）**不在**其内。
+
+**TUI 步骤块（change 0169 / ADR-0160）**：TUI 的**思考块**（`▸ 思考`）与**工具动作块**（`⏺ <友好名>`）
+统一为 `_StepBlock`（`Collapsible` 子类，定义于 `build_app` 内），**缺省不再收起**而是取**缩略态** ——
+三态 = `collapsed`（Textual 折叠：点**标题**切 收起 ⇄ 展开）× `_full`（窗口：点**正文**切 缩略 ⇄ 全文）：
+**缩略**（缺省）= 正文只呈现**末尾 `_STEP_TAIL_LINES`(8) 行** + 末行 `⋯ 还有 M 行 · 点击展开全文`；
+**全文** = 全量 + 末行 `⋯ 点击正文收起`；**收起** = 仅标题。Textual **无**「只显示末尾 N 行」的样式能力
+（`max-height` 裁**顶部**）⇒ 末尾窗口落在 **Python 侧行切片**，样式层只管宽度与颜色。
+正文首行加 `└ ` 角标、续行两空格（`Collapsible.Contents` 原生 `padding-left: 3` ⇒ **L 形缩进原生**）；
+正文取**新 class `.step-body { width: 1fr }`**（**确定宽度 ⇒ 超宽行折行**；`width: auto` 的 `Static`
+宽度等于最长行宽、超出被祖先 `overflow-x: hidden` **裁掉不折行**）—— **不复用 `.hint`**（同名两条
+class 规则同优先级会打架）。**标题目标摘要**：`_tool_target(tool_id, args)` **只**读**白名单结构性字段**
+（`file_read`/`file_write`/`file_patch`→`path`、`web_fetch`→`url`、`code_run`→`script`、`gate_run`→`gate`、
+`context_read`→`pointer`），**单行**（首个 `\n` 前）+ **有界**（超 `_MAX_TARGET_CHARS`(60) 加 `…`）；
+`args` 非映射（事件面对超长参数返回**节选字符串**）或取不到 ⇒ 无目标（标题只留友好名）。**正文类参数**
+（`content` / `old_content` / `new_content`）与内部 `tool_id` **永不进入标题**（承 §1.1 注「原始 `args` /
+`output` / 内部 `tool_id` 不进用户可见层」）。思考增量走 `feed()` **append-only 行缓冲**（末元素为未完成行，
+只追加不重拼）⇒ 消原「每 delta 全文重拼 + 重解析」的 **O(n²)**（长思考流越跑越卡）。**不改**：
+`format_action_event`（CLI 与子任务里程碑共用、6 处断言依赖逐字输出）、子任务折叠块与焦点视图
+（`/focus`）、回复流式的合帧节流（`_flush_tail` 系列）、Web / APP 呈现。
 
 **Web Client 与 Host 分离**：Web 前端（SPA）作为纯静态资源独立托管，`WebBridge` 仅暴露统一后端 API；前端经该 API 连接远程 / 本机常驻 Harness Host（见 `deployment-interface.md`），前端升级无需重启 Host 后端。
 

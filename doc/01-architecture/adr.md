@@ -4732,6 +4732,74 @@
   `doc/04-testing/test-cases.md` §81（TC-ALIGN-ALL）、台账 `coding-plan/known-risk.md` §1（E105；
   并回填 E104 与 ADR-0158 局限③ 的闭合）。
 
+## ADR-0160：TUI 步骤块 —— 缺省**缩略**（末尾 N 行）+ 三态手势 + 目标摘要（change 0169）
+
+- **背景（用户实测）**：TUI 发一句话后「默认只有『思考中...』」，看不到实时思考；工具动作「点击箭头
+  只有看到结果」而看不出在干什么；且长行**不自动换行**。逐行核实四点根因：
+  ① `repl.py:1003` 思考块建时 `collapsed=True`（事件流本身是**通**的：`show_thinking` 已开）；
+  ② `repl.py:973` 工具块同样 `collapsed=True` 且**标题不带目标**；
+  ③ `repl.py:401` 的 `.hint { width: auto }` 用在折叠区正文 `Static` 上 —— Textual 下 `width: auto`
+  的 `Static` 宽度 = **最长行宽**，超出部分被祖先 `overflow-x: hidden` **裁掉而非折行**；
+  ④ `repl.py:1008` 每来一个思考 delta 就 `str(detail.render()) + text` **全文重拼 + 重解析**（O(n²)），
+  是「实时」不可得的第二个原因。
+- **决策①：以 `Collapsible` 的**子类** `_StepBlock` 承载，不新造控件。** 三点理由：既有时间线测试助手
+  （`tests/test_repl.py` / `tests/test_ui.py` 的 `_timeline_text`）按 `isinstance(child, Collapsible)`
+  遍历 ⇒ 子类**天然命中、零改动**；折叠语义（`.-collapsed > Contents{display:none}`、`DOMNode.display`
+  为其 property、切换后 `call_after_refresh(scroll_visible)` 自动滚入视野）由 Textual 维护、不重造；
+  与仓内 `_PaletteList(OptionList)`、`_PaletteSuggester(Suggester)` 的子类化惯例一致。类**定义在
+  `build_app` 内**（textual 全仓懒 import，ADR-0040 MAL 隔离）。
+- **决策②：三态物理落点 —— 缩略 = `collapsed=False` + 正文切末尾 N 行；全文 = `collapsed=False` +
+  全量；收起 = `collapsed=True`。** Textual **没有**「只显示末尾 N 行」的样式能力：`max-height` 裁
+  **顶部**、`overflow-y` 给的是滚动而非窗口。故末尾窗口必须落在 **Python 切片**（`_render_body()`），
+  样式层只负责**宽度**与**颜色**。这一分工是「三态」能成立的前提：折叠态由 Textual 管，**窗口态**由
+  语言层管。
+- **决策③：缺省取**缩略**而非收起 ⇒ 规格「思考过程回显（Think）」SHALL 被 MODIFIED，把写死的
+  「**缺省收起**」**分端化**（TUI 缩略 / Web + APP 逐字保留收起）。** 这是本 change **唯一**触碰规格
+  规范句的地方：原句把三端缺省形态写成了同一约束，TUI 改缺省形态即与之冲突。三态机制（窗口 N、
+  手势、标题口径）**只在**新增的「TUI 步骤块（缩略 / 全文 / 收起）」Requirement 定义**一处**，
+  「Think」条改为**指向**该条 ⇒ 不落两份真源。
+- **决策④：工具目标摘要取**白名单结构性字段**（`path` / `url` / `script` / `gate` / `pointer`），
+  单行、有界，**只**读既有 `action_started` 载荷的 `args`。** 这是「TUI 子任务运行态与详情」既有红线
+  （SHALL NOT 暴露内部 `tool_id` 与原始参数）在**主时间线**上的**同一延伸**：友好名（`_tool_name`，
+  `repl.py:132-148`）之上补一个**结构性**目标，**正文类**参数（`content` / `old_content` /
+  `new_content`）在标题里**永不出现**。既不新建第二数据源，也不放宽既有「不暴露原始参数」口径。
+- **决策⑤：正文折行 = 新 class `.step-body { width: 1fr }`，**不复用 `.hint`**。** 两条 class 规则同
+  优先级会互相打架（`.hint` 的 `width: auto` 与目标规则并存 ⇒ 结果依赖声明次序，脆）。`Collapsible.Contents`
+  自带 `padding: 1 0 0 3` ⇒ **L 形缩进是原生的**，本仓只需在正文首行补 `└ ` 角标、续行补两空格
+  （同为 2 字符 ⇒ 与原生 3 列缩进叠加后同列对齐）。
+- **决策⑥：`format_action_event` **逐字不动**（`repl.py:160-172`）。** 它是 CLI（`entry.py`）与
+  TUI 子任务里程碑（`_progress_subtask`）**共用**的取口，且 6 处测试断言依赖其**逐字**输出
+  （`⏺ Bash ✓ (1.5s)` 等）。目标摘要**只**加在 TUI 步骤块**标题**（`_add_action_widget`）⇒
+  CLI 呈现与子任务里程碑零回归。
+- **决策⑦：append-only 行缓冲消 O(n²)（思考实时性的前提）。** `_lines: list[str]` + 末元素为未完成行，
+  每次 `feed(text)` 只**追加**；`_render_body()` 才做（有界的）行切分与拼接。原实现每 delta 全文重拼 +
+  重解析，长思考流越跑越卡 —— 与「实时」直接冲突。
+- **决策⑧：「CLI 友好交互」的 Scenario「折叠块展示」（`ui/spec.md:122-125`「长内容默认折叠，用户可
+  展开/收起」）**相容，该 Requirement 逐字不改**。** 缩略**就是**该「折叠」在本 change 的具体形态：
+  超出有界行数的部分默认不可见、点开可见 ⇒ 语义未变，只是把「折叠」从「全隐」细化为「末尾窗口 +
+  剩余行数提示」。**不改**该条，避免为一个已有约束再写一遍。
+- **手势的实现依据（Textual 8.2.8 源码核实）**：`CollapsibleTitle._on_click` 先 `event.stop()` 再
+  `post_message(Toggle())` ⇒ 点标题**只**走原生折叠、**不会**冒泡到正文分支；正文路径
+  `Static → Collapsible.Contents(Container) → Collapsible` **全程无 `stop()`**（只有标题停）⇒
+  Click 必达 `_StepBlock.on_click`。`Collapsible.__init__(*children, title=…, collapsed=…)` 是普通
+  构造器 ⇒ 自定义 `__init__` 合法。
+- **兼容性**：CLI / Web / APP 呈现零改动，转录 / 记忆 / 日志 / trace **零改动**（思考原文仍 SHALL ONLY
+  经事件面呈现）；`format_action_event` / 子任务折叠块 / 子 Agent 焦点视图 / `_flush_tail` 系列
+  （回复流式的合帧节流**专供回复**，步骤块不参与、不争 `scroll_end`）/ `_reset_turn_state` 口径
+  **逐字不变**；`_StepBlock` 是 `Collapsible` 子类 ⇒ 既有 `_timeline_text` 助手与全部 `isinstance`
+  断言零回归。事件面与 `loop` / `cli-ops` / `observability` 规格**零改动**。
+- **已知局限**：① **`file_write` / `file_patch` 标题无目标** —— 其正文参数使 `args` 超过事件面既有的
+  **≤400 字符**上界（`_args_excerpt`，`loop/default.py:78-83`；`loop/spec.md:239` 与 `observability`
+  tracer 的「`args` 允许为节选字符串」契约）而**退化为字符串**，TUI 不解析 repr 故取不到 `path`
+  （其路径仍会出现在 `└` 输出摘录）。根治需把 `loop` 的 args 节选改为「恒为映射、逐值有界」，牵动
+  `observability` 既有契约 ⇒ **另立 change**，本 change 记入台账；② **`code_run` 目标取 `script`
+  首行** ⇒ 操作者自填内联凭据会被显示（与终端显示命令**同等**暴露度；步骤块**不落盘**）；③ 缩略窗口
+  恒**跟随最新**（与既有回复尾段行为一致）；④ **不改**子任务折叠块与焦点视图；⑤ Web / APP 维持缺省收起。
+- **规格**：`doc/openspec/specs/ui/spec.md` —— 「思考过程回显（Think）」**MODIFIED**（缺省形态分端；
+  既有 2 Scenario 逐字保留 + 1 条改写）+ 「TUI 步骤块（缩略 / 全文 / 收起）」**ADDED**（6 Scenario）。
+  测试面 `doc/04-testing/test-cases.md` §82（TC-STEP-BLOCK）、接口文档 `03-interfaces/ui-interface.md` §2、
+  台账 `coding-plan/known-risk.md` §1（E106）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -4886,3 +4954,4 @@
 | ADR-0157 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0158 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0159 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0160 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
