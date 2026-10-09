@@ -16,6 +16,7 @@ prompt 文本属 memory 域，生产侧由 L5 组合根注入模型调用。
 from __future__ import annotations
 
 import json
+import math
 import re
 import warnings
 from collections.abc import Callable, Sequence
@@ -27,8 +28,15 @@ from .protocol import MemoryEntry
 # 单条入 prompt 的事件节选上界（token 有界；与 `summarize._MAX_ENTRY_CHARS` 同口径）
 _MAX_ENTRY_CHARS = 400
 
-# 单次压实抽取条数上界（控制单次写入量）
-MAX_KEY_FACTS_PER_COMPACT = 8
+# 单次压实抽取条数上界：随本次聚合的 episodic 条数**自适应**（change 0177 / ADR-0168）。
+# `key_fact_cap(n) = clamp(ceil(n × RATIO), MIN, MAX)`；`MIN` 取既有固定上界原值 ⇒ 任何会话
+# 长度下名额都不收紧（自适应只放宽）。上限/比例/下限为常量、不引入 LLM 判断。
+KEY_FACTS_RATIO = 0.25
+KEY_FACTS_MIN = 8
+KEY_FACTS_MAX = 16
+
+# 既有固定上界：保留公开名作**兼容别名**（语义上等于自适应下限 `KEY_FACTS_MIN`）。
+MAX_KEY_FACTS_PER_COMPACT = KEY_FACTS_MIN
 
 # 实体名 / 取值长度上界（**先脱敏后截断**：截断不得使明文逃逸；`value` 超长时**首尾保留**）
 _MAX_FACT_CHARS = 200
@@ -116,6 +124,16 @@ def slug_entity(entity: str, *, max_len: int = 48) -> str:
     return "".join(chars).strip("-")[:max_len].strip("-")
 
 
+def key_fact_cap(aggregated: int) -> int:
+    """单次压实抽取条数上界：``clamp(ceil(n × RATIO), MIN, MAX)``（change 0177 / ADR-0168）。
+
+    ``n`` = 本次压实聚合的 episodic 条数。下限为既有固定上界原值 ⇒ 任何会话长度下名额都不收紧
+    （自适应只放宽）；``n <= 0`` 亦落 ``KEY_FACTS_MIN``。
+    """
+    scaled = math.ceil(max(0, aggregated) * KEY_FACTS_RATIO)
+    return max(KEY_FACTS_MIN, min(KEY_FACTS_MAX, scaled))
+
+
 def _truncate_value(text: str) -> str:
     """取值截断：超长时**首尾保留**（头/尾各半、中以 ``…`` 连接），总长有界于 ``_MAX_FACT_CHARS``。
 
@@ -168,9 +186,7 @@ _PROMPT_HEAD = (
 )
 
 
-def build_extract_prompt(
-    entries: Sequence[MemoryEntry], *, max_facts: int = MAX_KEY_FACTS_PER_COMPACT
-) -> str:
+def build_extract_prompt(entries: Sequence[MemoryEntry], *, max_facts: int = KEY_FACTS_MIN) -> str:
     """把会话事件条目渲染为抽取 prompt（逐条节选，token 有界）。"""
     heads = [_PROMPT_HEAD.format(max=max_facts), "", "会话事件："]
     lines = [f"- {entry.content[:_MAX_ENTRY_CHARS]}" for entry in entries]
@@ -212,9 +228,7 @@ def parse_key_facts(text: str) -> list[KeyFact]:
     return facts
 
 
-def extract_with(
-    llm: Callable[[str], str], *, max_facts: int = MAX_KEY_FACTS_PER_COMPACT
-) -> KeyFactExtractor:
+def extract_with(llm: Callable[[str], str], *, max_facts: int = KEY_FACTS_MIN) -> KeyFactExtractor:
     """把「prompt → 文本」的模型调用适配为 ``MemoryStore`` 的抽取契约。
 
     **解析失败可观测**（change 0172）：模型**有输出但无可解析 JSON 数组** ⇒ 经 ``warnings.warn``

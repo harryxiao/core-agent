@@ -1532,6 +1532,39 @@
 > （否则该类轮次静默不写回）；③ 只覆盖**持久化**效应；④ `错误：` 判据是行内子串匹配，参数摘要恰含该
 > 子串会被误判为失败（方向保守）；⑤ memory 侧 keyfact 抽取**不受本闸门约束**（纯读素材按设计归其沉淀）。
 
+## 90. 记忆质量闭环：写入侧闸门 + 复用强化衰减 + 自适应抽取上限（TC-MEM-QUALITY，change `0177`／ADR-0168，台账 E114）
+
+> **背景取证**（用户 2026-10-09 三面复盘）：① `importance` 只在检索 / 遗忘评分被**消费**、**写入路径
+> 从不生产它**（唯一产出点是压实固化对**存量**条目的**事后修正**）；② 抽取条数上界 `MAX_KEY_FACTS_PER_COMPACT`
+> 是**死值 8**；③ 遗忘评分 `_decay_score` 的 freshness 项对**被复用过的条目**不设延缓 ⇒ 好条目与新条目
+> **同速衰老**。三处构成同一「记忆质量闭环」缺口：**入口不筛、出口不保、容量不随规模伸缩**。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-MEM-QUALITY-01 | memory/spec.md「记忆遗忘」Scenario「未复用条目衰减不变」 | `reuse_count=0` 的 L2 episodic（冻结时钟） | 遗忘评分与改动前**逐字一致**（锚点：`tests/test_memory.py::test_decay_score_unchanged_when_never_reused`） |
+| TC-MEM-QUALITY-02 | 同 Scenario「复用延缓新鲜度衰减」 | 同时间戳 / 同 importance，`reuse_count=3` vs `0` | 复用者评分**高于**未复用者（锚点：`...::test_decay_score_slows_freshness_decay_by_reuse`） |
+| TC-MEM-QUALITY-03 | 同上（阈值判据） | 99 天龄，`reuse_count=1` | 新评分 ≥ 遗忘阈值（旧评分 < 阈值）⇒ 不被归档（锚点：`...::test_forget_spares_reused_entry_that_plain_decay_would_archive`） |
+| TC-MEM-QUALITY-04 | 同 Scenario（检索排序不受影响） | `relevance.recency_decay` / `rank` | **逐字不变**（调制只落 `store._decay_score`）（锚点：既有 `test_rank_*` 全绿） |
+| TC-MEM-QUALITY-05 | 关键事实「条数与长度有界」/「上限随会话长度自适应」 | `key_fact_cap(n)` 表驱动 `n∈{0,1,20,32,36,40,64,200}` | `8,8,8,8,9,10,16,16`（锚点：`tests/test_memory_key_facts.py::test_key_fact_cap_bounds_and_scaling`） |
+| TC-MEM-QUALITY-06 | 同 Scenario「自适应上限不低于既有死值」 | `key_fact_cap(n)`，`n∈[0,300)` | 恒 `≥ 8`（既有死值）且单调不减（锚点：`...::test_key_fact_cap_never_tightens_below_legacy_value`） |
+| TC-MEM-QUALITY-07 | 同 Scenario（端到端名额） | 36 条 L2 episodic、抽取器返回 50 条 | 落库恰 `key_fact_cap(36)=9` 条（锚点：`...::test_fact_count_cap_adapts_to_aggregated_episodic_count`） |
+| TC-MEM-QUALITY-08 | memory/spec.md「写入侧重要度闸门」Scenario「未注入评分器时写入不变」 | `MemoryStore()`（UNWIRED）`write()` | 正常入库、`importance` 不动、**无留痕**（锚点：`tests/test_memory.py::test_gate_unwired_write_is_unchanged`） |
+| TC-MEM-QUALITY-09 | 同 Scenario「低分条目拒收」 | scorer 返回 0.1（< FLOOR 0.2） | 返回 `None`、不落库、无效应、`warnings.warn` 留痕（锚点：`...::test_gate_rejects_low_score_entry`） |
+| TC-MEM-QUALITY-10 | 同 Scenario「中间分降层写入」 | scorer 返回 0.3（`[0.2,0.4)`） | 落 **L4**；`rollback("gate.e1")` 后**迁回原意向层 L2**（锚点：`...::test_gate_middle_score_downgrades_to_l4_reversibly`） |
+| TC-MEM-QUALITY-11 | 同 Scenario「高分正常入库并写回分值」 | scorer 返回 0.5（≥ AMBIT 0.4） | 落 L2 且 `importance==0.5`；回滚条目 trace ⇒ 两效应均撤销（锚点：`...::test_gate_high_score_keeps_layer_and_writes_back_importance`） |
+| TC-MEM-QUALITY-12 | 同 Scenario「评分器抛错降级放行」 | scorer 抛 `RuntimeError` | 按意向层正常入库、留痕、不中断（锚点：`...::test_gate_scorer_error_degrades_to_normal_write`） |
+| TC-MEM-QUALITY-13 | 同 design.md 决策②（界外值 ⇒ 降级放行） | scorer 返回 1.5 | 正常入库、留痕（锚点：`...::test_gate_out_of_range_score_degrades_to_normal_write`） |
+| TC-MEM-QUALITY-14 | ADR-0045（memory 依赖方向红线） | `src/core/memory/` 无 LLM/rag import | 架构测试全绿（锚点：`tests/test_architecture.py::test_phase1_capability_no_reverse_dependency`） |
+
+> **红态证据**：实现落地前 —— Layer A `ImportError: cannot import name 'KEY_FACTS_MAX'`；Layer B 两条判别性
+> 用例在旧公式下红（99 天龄 + `reuse_count=1`：旧评分 ≈0.017 < 阈值 0.05、新评分 ≈0.11 ≥ 阈值）；
+> Layer C `ImportError: cannot import name '_IMPORTANCE_AMBIT'`。绿后全量 `.venv/bin/pytest -q` ⇒ **2052 passed**
+> （基线 **2031**，**+21**：A 10 用例 + B 5 + C 6）。
+> **降层可撤销语义**：`EffectTracker.rollback` 按**逆序**撤销 ⇒ 降层**不得同 trace**（否则先迁回再**删除**）；
+> 实现为「先按意向层 `write`（条目自身 trace）再 `migrate(→L4, trace_id=f"gate.<id>")`」两步**双 trace**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0168 行（闸门不区分来源 / 抛错降级放行 / 阈值为常量
+> 启发式 / 复用计数为进程内 / 上限 16 封顶 / 留痕只报 id）。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

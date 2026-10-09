@@ -124,11 +124,14 @@ MemoryStore
   `coeffect:` 形态）。⇒ 方向恒为 **over-redact**（拿不准即多脱敏）。**先脱敏后截断**（截断不得使明文逃逸）。
   `ref` 形态判据 `_is_coeffect_ref` 一并**覆盖**了旧的「像密钥的 `ref` 弃用」（密钥形态必然不满足
   `coeffect:` 形态）⇒ 一条判据两义。
-- **有界**：单次条数 `MAX_KEY_FACTS_PER_COMPACT`(8)；`entity` / `ref` 长度 `_MAX_FACT_CHARS`(200)
-  头部截断，`value` 超长时**首尾保留**（头 / 尾各半、中以 `…` 连接，总长仍 ≤ 上限；取值常
-  「头定名、尾定值」—— change `0172`）。**同批同 slug 归并**：一批内 `slug_entity` 相同者归并为
-  一条、**只留首条**（后至者不挤占额度），被归并者经 `warnings.warn` 留痕（含实体名、不含取值；
-  与因密钥丢弃的留痕各自独立）。
+- **有界**：单次条数 **自适应** `key_fact_cap(n)`（`n` = 本次压实聚合的 episodic 条数；
+  `= clamp(ceil(n × KEY_FACTS_RATIO=0.25), KEY_FACTS_MIN=8, KEY_FACTS_MAX=16)` —— change `0177`／ADR-0168）；
+  下限取**既有死值 8** ⇒ **任何会话长度下名额都不收紧、只放宽**；`MAX_KEY_FACTS_PER_COMPACT` 保留为
+  兼容别名（= 下限）。`entity` / `ref` 长度 `_MAX_FACT_CHARS`(200) 头部截断，`value` 超长时**首尾保留**
+  （头 / 尾各半、中以 `…` 连接，总长仍 ≤ 上限；取值常「头定名、尾定值」—— change `0172`）。
+  **同批同 slug 归并**：一批内 `slug_entity` 相同者归并为一条、**只留首条**（后至者不挤占额度；
+  归并后条数计额 = 本次 `cap(n)` 名额，**不重复占用**），被归并者经 `warnings.warn` 留痕（含实体名、
+  不含取值；与因密钥丢弃的留痕各自独立）。
   **整批归一化后再落库**（归一化失败 ⇒ 整批不写，不留半批）；抽取器抛错 ⇒ **降级为不抽取**（不牵连
   摘要写回与条目迁移）；返回不可解析 ⇒ 同样不抽取 + 留痕，且 `extract_with` 判据为「**有输出但无
   JSON 数组**」（合法空数组 `[]` 不告警），留痕**不含**模型输出正文（可能含明文密钥 —— change `0172`）。
@@ -161,7 +164,28 @@ MemoryStore
   列出**全部**会话，一条都不删 —— 这份备份就是整次操作的回滚面）。`doomed` 求值推迟到全部落新之后
   （`written` 跨会话累积 ⇒ 只会**更少删**、不会误删）。文件名/格式/报表字段/CLI **零改动**。
 
-### 3.5 后端可插拔
+### 3.5 记忆质量闭环（change `0177`／ADR-0168／账本 E114）
+
+补齐「**入口不筛、出口不保、容量不随规模伸缩**」三处缺口（`importance` 此前只在检索 / 遗忘评分被**消费**、
+**写入路径从不生产**）：
+
+- **写入侧重要度闸门**：`MemoryStore(importance_scorer=...)`，契约
+  `ImportanceScorer = Callable[[MemoryEntry], float]`（缺省 UNWIRED ⇒ 写入**逐字不变**）。与
+  `summarizer` / `key_fact_extractor` / `summary_promoter` 同一「缺省不启用」纪律；memory **不 import**
+  任何 LLM/rag 抽象（ADR-0045 依赖方向不变），评分器由 L5 组合根注入。三分支（阈值为常量、无 LLM
+  二次判断）：分 < `_IMPORTANCE_FLOOR`(0.2) ⇒ **拒收**（不写、无效应、`warnings.warn` 留痕，返回 `None`）；
+  `[0.2, 0.4)` ⇒ **降层 L4**；≥ `_IMPORTANCE_AMBIT`(0.4) ⇒ 按**意向层**入库并**写回** `importance`
+  （可逆）。**降层两步双 trace**：`EffectTracker.rollback` 按**逆序**撤销 ⇒ 同 trace 会先迁回再**删除**；
+  故先按意向层 `write`（条目自身 trace），再 `migrate(意向层→"L4", trace_id=f"gate.<id>")` —— 回滚
+  `gate.<id>` 即把条目**迁回原意向层**。评分器抛错 / 返回界外值 ⇒ **降级放行**（正常写入 + 留痕，
+  不牵连主流程）。留痕**只报条目 id**、绝不回显正文（密钥红线）。
+- **复用强化衰减**：遗忘评分 `store._decay_score` 的 freshness 项改
+  `freshness ** (1 / (1 + log1p(reuse_count)))`（复用越多、衰减越慢）。**调制只落 `_decay_score`** ——
+  `relevance.recency_decay` 是**检索（`rank`）与遗忘共用**的函数，若在此处调制会连带改变检索排序；
+  `recency_decay` / `rank` **逐字不动**（`reuse_count=0` 时 `pow(x,1.0)==x` 逐位相等、无需特判）。
+- **抽取上限自适应**：见 §3.4「有界」——`key_fact_cap(n)` 只放宽不收紧。
+
+### 3.6 后端可插拔
 
 - MVP：文件后端（`memory/*.md` 与 `memory/*.jsonl`），可审计、无外部依赖。
 - 未来：向量库后端（同一 `MemoryStore` 接口，`read` 换检索实现）。

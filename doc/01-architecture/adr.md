@@ -5128,6 +5128,54 @@
   **参数摘要**恰含该子串会被误判为失败（方向保守）；⑤ 只覆盖 canonical notes 这一面，memory 侧 keyfact
   抽取**不受本闸门约束**（纯读素材按设计归其沉淀）。
 
+## ADR-0168：记忆质量闭环 —— importance 写入侧闸门 + 复用强化衰减 + 自适应抽取上限（change 0177）
+
+- **背景**：`importance` 字段在检索/遗忘评分里被**消费**（乘性因子），但**写入路径从不生产它** ——
+  现有唯一产出点是**压实固化**对**存量**条目打分写回（`_score_importance` / `_write_importance`），
+  属**事后修正**而非入库门槛。同时：① 抽取条数上界是**死值** 8（`MAX_KEY_FACTS_PER_COMPACT`），
+  长会话被硬性截断；② 遗忘评分对「被检索复用过的条目」不设延缓，好条目与新条目同速衰老。
+  三处构成同一个「记忆质量闭环」缺口：**入口不筛、出口不保、容量不随规模伸缩**。
+- **决策 ①：写入侧闸门为**可选依赖注入**（`importance_scorer: ImportanceScorer | None`，缺省 UNWIRED）。**
+  与 `summarizer` / `key_fact_extractor` / `summary_promoter` 同一「缺省不启用」纪律 —— **缺省时写入
+  逐字不变**（不评分、不拒收、不降层、无留痕），由 L5 组合根注入具体评分器。memory 域**不 import**
+  任何 LLM/rag 抽象（ADR-0045 依赖方向不变），评分器签名 `(MemoryEntry) -> float` 纯函数。
+- **决策 ②：三分支阈值为常量、无 LLM 二次判断。** 分 < `_IMPORTANCE_FLOOR`(0.2) ⇒ **拒收**（不写、
+  无效应、`warnings.warn` 留痕，返回 `None`）；`[_IMPORTANCE_FLOOR, _IMPORTANCE_AMBIT)` ⇒ **降层 L4**；
+  ≥ `_IMPORTANCE_AMBIT`(0.4) ⇒ 按意向层入库并**写回** `importance`。写回走 `EffectTracker.record`
+  （可逆），`trace_id` 取**条目自身 trace** ⇒ 随条目写入一并回滚。
+- **决策 ③：降层 = 两步、双 trace（可撤销语义的硬约束）。** `EffectTracker.rollback` 按**逆序**撤销
+  ⇒ 若降层的「写入 + 迁移」**同 trace**，回滚会先 `_undo_migrate`（迁回意向层）再 `_undo_write`
+  （**删除**条目），条目消失，与「回滚即按**原意向层**恢复」不符。故：先按**意向层** `write`（条目自身
+  trace），再 `migrate(意向层→"L4", trace_id=f"gate.{id}")`（降层另记专 trace）；`rollback(f"gate.{id}")`
+  只撤销降层 ⇒ 迁回意向层。（`_persist` 从 `write` 提为独立方法，供闸门分支复用。）
+- **决策 ④：衰减调制**只**落遗忘评分 `store._decay_score`，不落**检索排序。** freshness 项改为
+  `freshness ** (1 / (1 + log1p(reuse_count)))`（复用越多，新鲜度衰减越慢）。`relevance.recency_decay`
+  是**检索**（`rank`）与**遗忘**（`_decay_score`）**共用**的函数 —— 若在此处调制会连带改变检索排序，
+  故调制必须落在 `_decay_score` **内部**，`recency_decay` / `rank` **逐字不动**。`reuse_count=0` 时
+  `1/(1+0)=1.0` ⇒ `freshness ** 1.0 == freshness`（`pow(x,1.0)==x` 逐位相等，无需特判分支）。
+- **决策 ⑤：抽取上限自适应、只放宽不收紧。** `key_fact_cap(n) = clamp(ceil(n × 0.25), 8, 16)`
+  （`n` = 本次压实聚合的 episodic 条数）。下限取**既有死值 8** ⇒ **任何会话长度下名额都不收紧**；
+  `KEY_FACTS_RATIO`/`MIN`/`MAX` 为常量、不引入 LLM 判断。实现面：`_plan_key_facts` 增 `cap` 形参，
+  两个调用点（`_extract_key_facts`、`_collect_session`）传 `key_fact_cap(len(...))`；`extract.py` 两处
+  `max_facts` 默认值与 `KEY_FACTS_MIN` 对齐；`MAX_KEY_FACTS_PER_COMPACT` 保留为**兼容别名**（语义等于下限）。
+- **红态证据（实现前）**：Layer A `ImportError: cannot import name 'KEY_FACTS_MAX'`；Layer B 两条判别性
+  用例在旧公式下**红**（99 天龄 + `reuse_count=1`：旧评分 ≈0.017 < 阈值 0.05、新评分 ≈0.11 ≥ 阈值）；
+  Layer C `ImportError: cannot import name '_IMPORTANCE_AMBIT'`。新增 14 个测试函数（A 3 定义/10 用例、
+  B 5、C 6）共 **21 用例**，全绿。
+- **规格**：`memory` **MODIFIED**「记忆遗忘」（新增 reuse 延缓衰减）+ **MODIFIED**「结构化实体抽取
+  （关键事实）」（上限自适应）+ **ADDED**「写入侧重要度闸门（importance write gate）」。
+  **「温度分层检索」不改** —— 衰减调制只作用于**遗忘评分**，检索排序公式逐字不变（决策 ④）。
+- **落点**：`src/core/memory/extract.py`（`key_fact_cap` / `KEY_FACTS_*`）、`src/core/memory/store.py`
+  （`ImportanceScorer` / `_IMPORTANCE_FLOOR` / `_IMPORTANCE_AMBIT` / `importance_scorer` 构造形参 /
+  `_gate_score` / `_persist` / `write` 闸门 / `_write_importance(*, trace_id)` / `_decay_score` 调制）、
+  `src/core/memory/__init__.py`（导出同步）。
+- **局限**：① 闸门**不区分来源** —— 内部写（摘要 / 关键事实）亦经闸门；若注入的评分器对短摘要打分偏低，
+  可能误拒内部产物（缺省 UNWIRED ⇒ 现状不受影响，但启用后需评分器覆盖内部形态）；② 评分器抛错 /
+  返回界外值 ⇒ **降级放行**（保守方向：宁写不拒），选择此方向因「写入失败」比「低质写入」更难恢复；
+  ③ 阈值为**常量启发式**（0.2 / 0.4），非数据拟合；④ 衰减调制是**进程内** `reuse_count`（检索强化不落盘
+  以避免写放大，见既有实现）⇒ 重启后复用计数归零、延缓效果随之归零；⑤ `key_fact_cap` 的 `MAX=16` 为
+  经验上界，超长会话仍受 16 条封顶；⑥ 留痕只报**条目 id**、绝不回显条目正文（密钥红线）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5290,3 +5338,4 @@
 | ADR-0165 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0166 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0167 | 02-modules/notes.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0168 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

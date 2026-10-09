@@ -7,9 +7,14 @@
 from __future__ import annotations
 
 import json
+import math
 import time
+import warnings
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal
+
+import pytest
 
 from core.judgment import DecisionPrimitive, DecisionResult
 from core.memory import (
@@ -18,8 +23,10 @@ from core.memory import (
     Layer,
     MemoryEntry,
     MemoryStore,
+    recency_decay,
 )
 from core.memory.embedding import batch_embed
+from core.memory.store import _IMPORTANCE_AMBIT, _IMPORTANCE_FLOOR, _decay_score
 from core.memory.summarize import build_prompt
 from core.plugin_registry import EffectTracker
 
@@ -597,6 +604,153 @@ def test_forget_is_reversible_by_trace() -> None:
 
     assert report.undo_failed == []
     assert dict(store.index().entries)["stale"] == "L2", "按 trace 回滚 → 迁回原层"
+
+
+# ---- 复用延缓新鲜度衰减（change 0177 / ADR-0168 / 台账 E114） ----
+
+
+def test_decay_score_unchanged_when_never_reused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`reuse_count=0` ⇒ 复用调制退化为恒等：评分与调制前公式**逐字一致**（零回归锚点）。
+
+    冻结 ``time.time`` 以消除 ``recency_decay`` 内部取时刻的抖动（否则两次调用差在微秒级）。
+    """
+    fixed = 1_700_000_000.0
+    monkeypatch.setattr(time, "time", lambda: fixed)
+    entry = _entry("e", "L2", "陈旧")
+    entry.kind = "episodic"
+    entry.ts = fixed - 30 * 86400.0
+    legacy = recency_decay(entry) * (1.0 + math.log1p(entry.reuse_count)) * (1.0 + entry.importance)
+    assert _decay_score(entry) == legacy
+
+
+def test_decay_score_rises_with_reuse() -> None:
+    """同时间戳、同 importance 下，复用过的条目评分更高（衰减被延缓）。"""
+    plain = _aged(_session_entry("plain", "陈旧", "s1"), 30)
+    reused = _aged(_session_entry("reused", "陈旧", "s1"), 30)
+    reused.reuse_count = 3
+
+    assert _decay_score(reused) > _decay_score(plain)
+
+
+def test_forget_spares_reused_entry_over_identical_plain_one() -> None:
+    """同陈旧度下未被复用的条目被归档，复用过的层级不变（Scenario「复用延缓新鲜度衰减」）。"""
+    store = MemoryStore()
+    store.write("L2", _aged(_session_entry("plain", "陈旧", "s1"), 30))
+    reused = _aged(_session_entry("reused", "陈旧", "s1"), 30)
+    reused.reuse_count = 3
+    store.write("L2", reused)
+
+    assert store.forget() == ["plain"]
+    assert dict(store.index().entries)["reused"] == "L2", "复用延缓衰减 ⇒ 未过阈值、层级不变"
+
+
+def test_decay_score_slows_freshness_decay_by_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """r>0 ⇒ 新鲜度项被**幂调制**抬高：评分**高于**旧公式「纯时间新鲜度 × 复用因子」。"""
+    fixed = 1_700_000_000.0
+    monkeypatch.setattr(time, "time", lambda: fixed)
+    entry = _entry("e", "L2", "陈旧")
+    entry.kind = "episodic"
+    entry.ts = fixed - 30 * 86400.0
+    entry.reuse_count = 3
+    old = recency_decay(entry) * (1.0 + math.log1p(entry.reuse_count)) * (1.0 + entry.importance)
+    assert _decay_score(entry) > old
+
+
+def test_forget_spares_reused_entry_that_plain_decay_would_archive() -> None:
+    """**判别性**用例：99 天陈旧 + `reuse_count=1` 在旧公式下会被归档，复用调制后越阈值留存。
+
+    纯时间新鲜度 ≈0.01 ⇒ 旧评分 ≈0.017（< 0.05 阈值）；调制后 ≈0.11（≥ 阈值）。
+    """
+    store = MemoryStore()
+    reused = _aged(_session_entry("reused", "陈旧", "s1"), 99)
+    reused.reuse_count = 1
+    store.write("L2", reused)
+
+    assert store.forget() == [], "复用延缓衰减 ⇒ 越阈值留存（旧公式会归档）"
+
+
+# ---- 写入侧重要度闸门（change 0177 / ADR-0168 / 台账 E114） ----
+
+
+def _scorer(value: float) -> Callable[[MemoryEntry], float]:
+    return lambda entry: value
+
+
+def test_gate_unwired_write_is_unchanged() -> None:
+    """未注入 scorer ⇒ 写入与现状逐字一致：不评分、不拒收、不降层、不动 importance、无留痕。"""
+    store = MemoryStore()
+    entry = _entry("e1", "L2", "事实")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert store.write("L2", entry) == "e1"
+    assert store.index().entries == [("e1", "L2")]
+    assert entry.importance == 0.0, "不写 importance"
+    assert caught == [], "无留痕"
+
+
+def test_gate_rejects_low_score_entry() -> None:
+    """低于 FLOOR ⇒ 拒收：不落库、无效应记录、留痕（Scenario「低分条目拒收」）。"""
+    tracker = EffectTracker()
+    store = MemoryStore(effect_tracker=tracker, importance_scorer=_scorer(_IMPORTANCE_FLOOR - 0.1))
+
+    with pytest.warns(RuntimeWarning, match="importance gate"):
+        assert store.write("L2", _entry("e1", "L2", "低价值")) is None
+
+    assert store.audit() == [], "不落库"
+    assert tracker.rollback().reverted == [], "无效应记录"
+
+
+def test_gate_middle_score_downgrades_to_l4_reversibly() -> None:
+    """[FLOOR, AMBIT) ⇒ 降层 L4，且回滚降层即按原意向层恢复（Scenario「中间分降层写入」）。"""
+    tracker = EffectTracker()
+    mid = (_IMPORTANCE_FLOOR + _IMPORTANCE_AMBIT) / 2
+    store = MemoryStore(effect_tracker=tracker, importance_scorer=_scorer(mid))
+    store.write("L2", _entry("e1", "L2", "中间价值"))
+
+    assert dict(store.index().entries)["e1"] == "L4", "降层归档"
+    assert tracker.rollback("gate.e1").undo_failed == []
+    assert dict(store.index().entries)["e1"] == "L2", "回滚降层 ⇒ 迁回意向层"
+
+
+def test_gate_high_score_keeps_layer_and_writes_back_importance() -> None:
+    """≥ AMBIT ⇒ 按意向层入库且 importance 写为分值；写入 + 写回两效应均可撤销。"""
+    tracker = EffectTracker()
+    high = _IMPORTANCE_AMBIT + 0.1
+    store = MemoryStore(effect_tracker=tracker, importance_scorer=_scorer(high))
+    store.write("L2", _entry("e1", "L2", "高价值"))
+
+    assert dict(store.index().entries)["e1"] == "L2"
+    assert store.audit("t")[0].importance == high, "importance 写为分值"
+
+    report = tracker.rollback("t")
+
+    assert report.undo_failed == []
+    assert len(report.reverted) == 2, "写入 + 写回两效应均可撤销"  # noqa: PLR2004
+    assert store.audit("t") == [], "回滚 ⇒ 条目移除"
+
+
+def test_gate_scorer_error_degrades_to_normal_write() -> None:
+    """scorer 抛错 ⇒ 降级放行：按意向层正常入库、留痕、不中断（Scenario「评分器抛错降级放行」）。"""
+
+    def boom(entry: MemoryEntry) -> float:
+        raise RuntimeError("scorer down")  # noqa: TRY003 — 测试替身，消息无对外契约
+
+    store = MemoryStore(importance_scorer=boom)
+    with pytest.warns(RuntimeWarning, match="scorer"):
+        assert store.write("L2", _entry("e1", "L2", "x")) == "e1"
+
+    assert dict(store.index().entries)["e1"] == "L2"
+    assert store.audit("t")[0].importance == 0.0, "不写 importance"
+
+
+def test_gate_out_of_range_score_degrades_to_normal_write() -> None:
+    """scorer 返回界外值 ⇒ 降级放行（不拒收、不降层），留痕。"""
+    store = MemoryStore(importance_scorer=_scorer(1.5))
+
+    with pytest.warns(RuntimeWarning, match="out-of-range"):
+        assert store.write("L2", _entry("e1", "L2", "x")) == "e1"
+
+    assert dict(store.index().entries)["e1"] == "L2"
 
 
 # ---- summary_for：按会话读取既有摘要（只读；change 0150 / ADR-0142 / 账本 E94）----

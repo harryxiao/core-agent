@@ -234,18 +234,76 @@ SHALL NOT 交付，压实行为**逐字不变**。钩子抛错 SHALL **降级**�
 - **THEN** 该条目 `importance` 保持原值（不被写为 0），该会话不因缺分值而被门槛拦下，
   固化流程不中断
 
+### Requirement: 写入侧重要度闸门（importance write gate）
+
+系统 SHALL 支持注入 **importance scorer**（`MemoryStore` 构造形参，契约
+`Callable[[MemoryEntry], float]`，返回 [0,1]）—— 与 `summarizer` / `embedder` /
+`key_fact_extractor` 同一依赖方向：memory SHALL NOT import 任何 LLM / rag 抽象，评分器由
+L5 组合根注入；**缺省 UNWIRED**。注入后，写入路径 SHALL 先评分再落库：
+
+- 分值低于 `IMPORTANCE_FLOOR` 的条目 SHALL **拒绝入库**（不写、无效应记录、无条目产生），
+  并 SHALL 经 `warnings.warn` 留痕（留痕 SHALL 含条目可识别摘要，SHALL NOT 泄露可能含密钥的正文全文）。
+- 分值在 `IMPORTANCE_FLOOR` 与 `IMPORTANCE_AMBIT` 之间 ⇒ 条目 SHALL **降层写入 L4 归档层**
+  （不拒收但降检索优先级），写入 SHALL 记可撤销效应。
+- 分值不低于 `IMPORTANCE_AMBIT` ⇒ 条目按原意向层正常入库，且其 `importance` SHALL 被写为分值
+  （写回 SHALL 记可撤销效应，与固化写回同口径）。
+- 评分器抛错或返回界外值 ⇒ SHALL **降级放行**（不评分、不拒收、不降层，按原意向层写入），
+  `warnings.warn` 留痕，SHALL NOT 牵连写入主流程。
+- **未注入（缺省）⇒ 写入行为 SHALL 与现状逐字一致**：不评分、不拒收、不降层、不写 `importance`。
+
+#### Scenario: 未注入评分器时写入不变
+- **GIVEN** 未注入 importance scorer 的 `MemoryStore`
+- **WHEN** 写入一条条目
+- **THEN** 落库层与内容与既有行为逐字一致，无评分留痕、无额外效应
+
+#### Scenario: 低分条目拒收
+- **GIVEN** 注入了 scorer，其对该条目返回 0.1（低于 `IMPORTANCE_FLOOR`）
+- **WHEN** 写入该条目
+- **THEN** 条目不落库（`audit()` 无变化）、无效应记录，且 `warnings.warn` 留痕
+
+#### Scenario: 中间分降层写入
+- **GIVEN** 注入了 scorer，其返回 0.3（`IMPORTANCE_FLOOR` ≤ 分 < `IMPORTANCE_AMBIT`）
+- **WHEN** 写入该条目
+- **THEN** 条目落至 L4 归档层，且该写入可撤销（回滚即按原意向层恢复）
+
+#### Scenario: 高分正常入库并写回分值
+- **GIVEN** 注入了 scorer，其返回 0.8
+- **WHEN** 写入该条目
+- **THEN** 条目按原意向层入库，`importance` 被写为 0.8，且该写回可撤销
+
+#### Scenario: 评分器抛错降级放行
+- **GIVEN** 注入的 scorer 调用时抛错
+- **WHEN** 写入一条条目
+- **THEN** 条目按原意向层正常入库，`warnings.warn` 留痕，写入主流程不中断
+
+
 ### Requirement: 记忆遗忘（forgetting）
+
 系统 SHALL 按衰减评分（新鲜度 × 复用频次 × 重要度）识别低价值记忆并**归档**：评分低于阈值的
 **L2 episodic** 条目 SHALL 迁移到 L4 归档层（**不物理删除**、`audit` 可见、检索降权），且每条
-迁移 SHALL 记录可逆效应（按 trace 回滚即迁回原层）。semantic 条目、L0 元策略与 L3 技能 SHALL
-不受遗忘影响；时间戳未知（`ts<=0`）的条目 SHALL 不被惩罚。遗忘 SHALL NOT 中断 Agent 主流程。
-遗忘 SHALL 由**维护节拍**驱动——循环收尾按维护间隔触发，或由显式维护入口一次性触发——
-而非仅依赖压实旁路；节拍只决定"何时跑"，不改上述判据、归档去向与可撤销性。
+迁移 SHALL 记录可逆效应（按 trace 回滚即迁回原层）。**新鲜度衰减 SHALL 被复用信号延缓**：
+条目的 freshness 衰减 SHALL 以 `freshness ** (1 / (1 + log1p(reuse_count)))` 调制——`reuse_count`
+为 0 时该调制 SHALL 退化为现状（零回归锚点），复用越多衰减越缓（检索命中反哺遗忘曲线）。semantic
+条目、L0 元策略与 L3 技能 SHALL 不受遗忘影响；时间戳未知（`ts<=0`）的条目 SHALL 不被惩罚。遗忘
+SHALL NOT 中断 Agent 主流程。遗忘 SHALL 由**维护节拍**驱动——循环收尾按维护间隔触发，或由显式
+维护入口一次性触发——而非仅依赖压实旁路；节拍只决定"何时跑"，不改上述判据、归档去向与可撤销性。
 
 #### Scenario: 低分条目归档
 - **GIVEN** 一条陈旧且从未复用的 L2 episodic 条目
 - **WHEN** 遗忘运行
 - **THEN** 该条目迁至 L4 归档层，`audit` 仍可见，且返回其撤销句柄
+
+#### Scenario: 复用延缓新鲜度衰减
+- **GIVEN** 两条时间戳与 `importance` 相同的 L2 episodic 条目，其一 `reuse_count=3`、另一
+  `reuse_count=0`，二者评分均接近遗忘阈值
+- **WHEN** 遗忘运行
+- **THEN** `reuse_count=0` 的条目被归档，`reuse_count=3` 的条目因衰减被延缓而评分高于阈值、
+  层级保持不变
+
+#### Scenario: 未复用条目衰减不变
+- **GIVEN** 一条 `reuse_count=0` 的 L2 episodic 条目
+- **WHEN** 遗忘运行
+- **THEN** 其遗忘评分与引入复用调制前**逐字一致**（调制退化为恒等）
 
 #### Scenario: 节拍驱动遗忘
 - **GIVEN** 距上次记忆维护已达维护间隔（或经显式维护入口触发）
@@ -390,12 +448,26 @@ L5 组合根注入。抽取材料 SHALL 是**本次压实聚合的 episodic 条�
 - 脱敏方向 SHALL 是 **over-redact**（拿不准即多脱敏，落在安全侧），SHALL NOT 出现「拿不准就保留
   明文」。
 
-抽取 SHALL **有界**：单次压实抽取条数 SHALL 有界（`MAX_KEY_FACTS_PER_COMPACT`；**同一批**内实体
+抽取 SHALL **有界**：单次压实抽取条数 SHALL 有界——上界 SHALL **随本次压实聚合的 episodic 条目数
+自适应**：`cap(n) = clamp(ceil(n × KEY_FACTS_RATIO), KEY_FACTS_MIN, KEY_FACTS_MAX)`，且
+`KEY_FACTS_MIN` SHALL NOT 低于既有固定上界 `MAX_KEY_FACTS_PER_COMPACT` 的原取值（任何会话长度下
+名额 SHALL 不收紧——自适应只放宽）（**同一批**内实体
 slug 相同者 SHALL **归并**为一条、**只留首条**落库，归并后条数计额；被归并者 SHALL 经
 `warnings.warn` 留痕（留痕含实体名、SHALL NOT 含取值）—— 同批重复是**单次模型响应内的重复枚举**，
 区别于跨压实的「重复抽取」，后者由同实体幂等覆盖处理）；`entity` / `value` 长度 SHALL 有界
 （`_MAX_FACT_CHARS`），且 SHALL **先脱敏后截断**（截断不得使明文逃逸）；其中 `value` 超长时截断
 SHALL **首尾保留**（头尾各半、中以 `…` 连接，总长 SHALL NOT 超过 `_MAX_FACT_CHARS`）。
+
+#### Scenario: 上限随会话长度自适应
+- **GIVEN** 两次压实分别聚合 20 条与 200 条 episodic 条目
+- **WHEN** keyfact 抽取落库
+- **THEN** 两次压实的条数上界按 `cap(n)` 分别计算，长会话的上界不低于短会话，且均落在
+  `[KEY_FACTS_MIN, KEY_FACTS_MAX]` 区间
+
+#### Scenario: 自适应上限不低于既有死值
+- **GIVEN** 任意聚合条数 n ≥ 0
+- **WHEN** 计算 cap(n)
+- **THEN** cap(n) ≥ 既有固定上界 `MAX_KEY_FACTS_PER_COMPACT` 的原取值（宽松化而非收紧）
 
 未注入抽取器（缺省）⇒ SHALL NOT 抽取，压实行为（摘要写回、条目迁移、评分）**逐字不变**。
 
@@ -443,16 +515,17 @@ SHALL **首尾保留**（头尾各半、中以 `…` 连接，总长 SHALL NOT �
 #### Scenario: 条数与长度有界（先脱敏后截断）
 - **GIVEN** 抽取器一次返回超过上界条数的事实，且其中一条取值超长
 - **WHEN** 压实运行
-- **THEN** 单次落库条数不超过 `MAX_KEY_FACTS_PER_COMPACT`，`entity` / `value` 长度不超过
-  `_MAX_FACT_CHARS`；**AND** 超长取值在**脱敏之后**才被截断（截断产物 SHALL NOT 使明文逃逸）
+- **THEN** 单次落库条数不超过本次 `cap(n)`（`n` 为本次压实聚合的 episodic 条数），
+  `entity` / `value` 长度不超过 `_MAX_FACT_CHARS`；**AND** 超长取值在**脱敏之后**才被截断
+  （截断产物 SHALL NOT 使明文逃逸）
 
 #### Scenario: 同批同 slug 归并（只留首条 + 留痕）
 - **GIVEN** 抽取器**单次**返回两条事实，其实体不同但 slug 相同（如 `API Key` 与 `api-key`），
   **或**两次返回同一实体的**不同取值**
 - **WHEN** 压实运行
 - **THEN** 落库为**单条** `keyfact.<slug>` 条目，其取值为**首条**的取值；**AND** 被归并者经
-  `warnings.warn` 留痕（留痕含实体名、**不含**取值）；**AND** 归并后条数计额（不重复占用
-  `MAX_KEY_FACTS_PER_COMPACT`）
+  `warnings.warn` 留痕（留痕含实体名、**不含**取值）；**AND** 归并后条数计额（不重复占用本次
+  `cap(n)` 名额）
 
 #### Scenario: 解析失败留痕且不含模型输出正文
 - **GIVEN** 抽取器返回的文本**非空**但**不含**可解析的 JSON 数组（如「解释文字 + 代码围栏」形态）
@@ -479,7 +552,6 @@ SHALL **首尾保留**（头尾各半、中以 `…` 连接，总长 SHALL NOT �
 - **WHEN** 该事实落库
 - **THEN** 该条 SHALL **不落库**（视同「无可用 `ref`」），并 SHALL 经 `warnings.warn` 留痕
   （含实体名、**不含**取值）；同批**其余**合规事实照常落库
-
 ### Requirement: 失效关键事实的运维修复
 
 系统 SHALL 提供**失效关键事实**的运维修复入口：识别**失效条目** —— `tags` 含 `ref:` 标签、该 `ref` **非** `coeffect:<名称>` 形态、且 `content` 取值为 `"<redacted>"`（change `0173` 修复前判据的产物：模型自造的出处说明被当成真引用 ⇒ 取值整条被抹 ⇒ 该条目**已不含任何可用信息**）；对**产生它的会话**（由 `session:<会话标识>` 标签溯源）用该会话的**材料**重抽关键事实 —— 材料为该会话的 episodic 条目（**含已归档 L4 的条目**），重抽 SHALL 复用「结构化实体抽取（关键事实）」的 prompt 与脱敏判据（判据**只有一处定义**，不写第二份）。

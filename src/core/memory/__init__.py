@@ -11,12 +11,16 @@ from .backend import FileBackend
 from .crystallizer import Crystallizer, PluginCandidate
 from .embedding import batch_embed
 from .extract import (
+    KEY_FACTS_MAX,
+    KEY_FACTS_MIN,
+    KEY_FACTS_RATIO,
     MAX_KEY_FACTS_PER_COMPACT,
     REDACTED,
     KeyFact,
     KeyFactExtractor,
     build_extract_prompt,
     extract_with,
+    key_fact_cap,
     looks_like_secret,
     parse_key_facts,
     redact_secrets,
@@ -25,14 +29,18 @@ from .extract import (
 )
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
 from .relevance import rank, recency_decay, relevance
-from .store import MemoryStore, RepairReport
+from .store import ImportanceScorer, MemoryStore, RepairReport
 from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter, build_prompt, summarize_with
 from .transcript import TranscriptStore
 
 __all__ = [
     "Crystallizer",
     "FileBackend",
+    "ImportanceScorer",
     "IndexEntry",
+    "KEY_FACTS_MAX",
+    "KEY_FACTS_MIN",
+    "KEY_FACTS_RATIO",
     "KeyFact",
     "KeyFactExtractor",
     "Layer",
@@ -52,6 +60,7 @@ __all__ = [
     "build_extract_prompt",
     "build_prompt",
     "extract_with",
+    "key_fact_cap",
     "looks_like_secret",
     "parse_key_facts",
     "redact_secrets",

@@ -85,6 +85,8 @@ MemoryStore(
     summarizer=None,       # Summarizer：压实时的 LLM 摘要提炼，见 §3（缺省只评分不写）
     summary_promoter=None, # SummaryPromoter：摘要首次越过 MAX_SUMMARY_CHARS 时交付 (session_id, 条目)
                            # 一次（change 0153；缺省 UNWIRED ⇒ 不交付）
+    importance_scorer=None,# ImportanceScorer：写入侧重要度闸门评分器 (MemoryEntry -> float)，
+                           # 见 §3「写入侧重要度闸门」（change 0177；缺省 UNWIRED ⇒ 写入逐字不变）
 )
 ```
 
@@ -234,11 +236,14 @@ loop 侧把行动序列写入 L2 **前**复用同一份判据 ⇒ **一处定义
 ⇒ ``value`` **一律** ``"<redacted>"``（非该形态视为无引用 ⇒ 取值回裸值判据）；③ **裸密钥无可用引用
 ⇒ 整条丢弃** + ``warnings.warn`` 留痕（含实体名、**不含**取值；「无可用引用」含空串**与**非
 ``coeffect:`` 形态）。
-方向恒为 **over-redact**。**先脱敏后截断**（``_MAX_FACT_CHARS``=200；条数上界
-``MAX_KEY_FACTS_PER_COMPACT``=8）：``entity`` / ``ref`` 头部截断，``value`` 超长时**首尾保留**
+方向恒为 **over-redact**。**先脱敏后截断**（``_MAX_FACT_CHARS``=200；条数上界**自适应**
+``key_fact_cap(n) = clamp(ceil(n × 0.25), 8, 16)``，``n`` = 本次压实聚合的 episodic 条数 ——
+change `0177`／ADR-0168；下限取既有死值 8 ⇒ **只放宽不收紧**，``MAX_KEY_FACTS_PER_COMPACT`` 保留为
+兼容别名）：``entity`` / ``ref`` 头部截断，``value`` 超长时**首尾保留**
 （头 / 尾各半、中以 ``…`` 连接，总长仍 ≤ 上限 —— 取值常「头定名、尾定值」；change `0172`）。
 **同批同 slug 归并**：同一批内 ``slug_entity(entity)`` 相同者归并为一条、**只留首条**落库（后至者
-**不**挤占额度），被归并者经 ``warnings.warn`` 留痕（含实体名、**不含**取值；与因密钥丢弃的留痕
+**不**挤占额度；归并后条数计额 = 本次 ``cap(n)`` 名额、**不重复占用**），被归并者经 ``warnings.warn``
+留痕（含实体名、**不含**取值；与因密钥丢弃的留痕
 **各自独立**）。跨压实的「重复抽取」不走此路 —— 由 ``id`` 同实体幂等覆盖处理。
 
 **降级**：抽取器抛错 / 返回不可解析 ⇒ **不抽取**（``warnings.warn`` 留痕），**不**牵连压实的摘要
@@ -303,6 +308,31 @@ CLI：``core-agent memory repair-keyfacts [--dry-run]``。
 | 返回值 | 被归档条目 id 列表（撤销句柄） |
 | 时间未知 | ``ts<=0`` 时 ``recency_decay`` 返回 1.0，不惩罚 → 不会被遗忘 |
 | 触发 | 维护节拍驱动（change `0049`）：loop 收尾按 `maintenance_interval` 触发（`_maintain`，同节拍兼触发冷路径），或经 `core-agent memory maintain` 显式触发；压实路径（``persist → compact → forget``）仍顺带 sweep。异常降级不中断主流程 |
+
+**复用延缓衰减**（change `0177`／ADR-0168）：``store._decay_score`` 的 **freshness 项**改为
+``freshness ** (1 / (1 + log1p(reuse_count)))`` —— 被检索复用越多的条目衰减越慢（同时间戳 / 同
+``importance`` 下评分**高于**未复用者）。**调制只落 ``_decay_score``**：``relevance.recency_decay``
+是**检索（``rank``）与遗忘共用**的函数，故 ``recency_decay`` / ``rank`` / §3 相关性打分公式
+**逐字不动**（``reuse_count=0`` 时 ``pow(x,1.0)==x`` 逐位相等，行为不变）。
+
+### 写入侧重要度闸门（write，change `0177`／ADR-0168）
+
+注入 ``importance_scorer``（``ImportanceScorer = Callable[[MemoryEntry], float]``，缺省 UNWIRED ⇒
+``write`` 逐字不变）后，``write`` **先评分再落库**（阈值为常量、无 LLM 二次判断）：
+
+| 分数 | 行为 |
+|---|---|
+| ``< _IMPORTANCE_FLOOR``(0.2) | **拒收**：不写、无效应记录、``warnings.warn`` 留痕、返回 ``None`` |
+| ``[_IMPORTANCE_FLOOR, _IMPORTANCE_AMBIT)`` | 按**意向层**写入后**降层 L4**（见下「降层可撤销」） |
+| ``>= _IMPORTANCE_AMBIT``(0.4) | 按**意向层**入库并**写回** ``importance``（可逆，trace 取**条目自身 trace**） |
+
+- **降层可撤销**：``EffectTracker.rollback`` 按**逆序**撤销 ⇒ 降层的「写入 + 迁移」**不得同 trace**
+  （否则先迁回再**删除**）。实现为**两步双 trace**：先 ``write(意向层, entry)``（记条目自身 trace），
+  再 ``migrate(意向层, "L4", trace_id=f"gate.<id>")`` ⇒ ``rollback(f"gate.<id>")`` 把条目**迁回原意向层**。
+- **降级放行**：评分器抛错 / 返回界外值（``not 0.0 <= score <= 1.0``）⇒ 按意向层正常写入 +
+  ``warnings.warn`` 留痕，不中断主流程。**留痕只报条目 id**、绝不回显正文（密钥红线）。
+- ``_persist(layer, entry)`` 是 ``write`` 的**无闸门主体**（落库 + 记 ``Effect(op="memory.write")``）。
+- **口径**：闸门**不区分来源** —— 内部写（摘要 / keyfact）亦经闸门（缺省 UNWIRED 时不受影响）。
 
 ---
 

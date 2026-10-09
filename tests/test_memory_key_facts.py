@@ -11,11 +11,14 @@ import warnings
 import pytest
 
 from core.memory import (
+    KEY_FACTS_MAX,
+    KEY_FACTS_MIN,
     REDACTED,
     KeyFact,
     MemoryEntry,
     MemoryStore,
     extract_with,
+    key_fact_cap,
     looks_like_secret,
     parse_key_facts,
     redact_secrets,
@@ -264,6 +267,50 @@ def test_fact_count_is_bounded() -> None:
     store.compact(session_id="s1")
 
     assert len(_facts(store)) == MAX_KEY_FACTS_PER_COMPACT
+
+
+# ---- 上限自适应（change 0177 / ADR-0168 / 台账 E114） ----
+
+
+@pytest.mark.parametrize(
+    ("aggregated", "expected"),
+    [
+        (0, KEY_FACTS_MIN),
+        (1, KEY_FACTS_MIN),
+        (20, KEY_FACTS_MIN),
+        (32, KEY_FACTS_MIN),  # ceil(32×0.25)=8=下限
+        (36, 9),  # ceil(9) 首次越过下限
+        (40, 10),
+        (64, KEY_FACTS_MAX),
+        (200, KEY_FACTS_MAX),
+    ],
+)
+def test_key_fact_cap_bounds_and_scaling(aggregated: int, expected: int) -> None:
+    """上限随聚合条数自适应且落入 [MIN, MAX]（Scenario「上限随会话长度自适应」）。"""
+    assert key_fact_cap(aggregated) == expected
+
+
+def test_key_fact_cap_never_tightens_below_legacy_value() -> None:
+    """任何会话长度下 cap(n) ≥ 既有固定上界、且单调不减（Scenario「自适应上限不低于既有死值」）。"""
+    caps = [key_fact_cap(n) for n in range(0, 300)]
+    assert all(c >= MAX_KEY_FACTS_PER_COMPACT for c in caps), "零收紧回归锚点"
+    assert all(b >= a for a, b in zip(caps, caps[1:], strict=False)), "单调不减"
+
+
+def test_fact_count_cap_adapts_to_aggregated_episodic_count() -> None:
+    """落库上界随本次压实聚合的 episodic 条数放宽（36 条 ⇒ cap 9，而非死值 8）。"""
+    many = [KeyFact(entity=f"实体{i}", value=f"值{i}") for i in range(50)]
+    store = MemoryStore(
+        summarizer=lambda entries: "摘要：事实",
+        key_fact_extractor=lambda entries: list(many),
+    )
+    for i in range(36):
+        store.write("L2", _episodic(f"e{i}", "s1"))
+
+    store.compact(session_id="s1")
+
+    assert key_fact_cap(36) == 9  # noqa: PLR2004 — 36×0.25=9（演示自适应放宽）
+    assert len(_facts(store)) == 9, "上界随聚合条数放宽（自适应只放宽）"  # noqa: PLR2004
 
 
 def test_fact_length_is_bounded() -> None:

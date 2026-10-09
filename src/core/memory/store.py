@@ -23,10 +23,10 @@ from core.plugin_registry import Effect, EffectTracker
 
 from .backend import FileBackend
 from .extract import (
-    MAX_KEY_FACTS_PER_COMPACT,
     REDACTED,
     KeyFact,
     KeyFactExtractor,
+    key_fact_cap,
     scrub_key_fact,
     slug_entity,
 )
@@ -43,13 +43,18 @@ _VEC_CACHE_MAX = 4096
 # 价值门控阈值：会话内最高分低于此值则不提炼（仅本轮取得分值时才设门槛）
 _CONSOLIDATE_THRESHOLD = 0.5
 
+# 写入侧重要度闸门阈值（change 0177 / ADR-0168）：低于 FLOOR 拒收；[FLOOR, AMBIT) 降层 L4；
+# ≥ AMBIT 按意向层入库并写回分值。缺省从不评分（scorer UNWIRED ⇒ 写入逐字不变）。
+_IMPORTANCE_FLOOR = 0.2
+_IMPORTANCE_AMBIT = 0.4
+
 # 遗忘阈值：衰减评分低于此值即归档（≈19 天零复用零重要度）
 _FORGET_THRESHOLD = 0.05
 
 # 单次压实的逐条目打分调用上界（score 原语一次只给一条目的分）
 _MAX_SCORED_PER_COMPACT = 20
 
-# 关键事实条目标签前缀（`MAX_KEY_FACTS_PER_COMPACT` 见 extract 模块）
+# 关键事实条目标签前缀（自适应上界 `key_fact_cap` 见 extract 模块）
 _KEY_FACT_TAG = "key_fact"
 
 # 出处（引用）标签前缀；`coeffect:` 形态的取值才是可用引用（change 0173 / ADR-0164）
@@ -58,6 +63,10 @@ _COEFFECT_REF_PREFIX = "coeffect:"
 
 # 会话溯源标签前缀（`_write_key_fact` 在会话非空时追加）
 _SESSION_TAG = "session:"
+
+
+# 重要度评分器契约：条目 → [0,1] 分值（缺省 UNWIRED；由 L5 组合根注入，memory 不 import 模型）
+ImportanceScorer = Callable[[MemoryEntry], float]
 
 
 def _repair_backup_path(stamp: str | None = None) -> Path:
@@ -84,8 +93,16 @@ class RepairReport:
 
 
 def _decay_score(entry: MemoryEntry) -> float:
-    """遗忘评分：新鲜度 × 复用频次 × 重要度（三者皆低才归档）。"""
-    return recency_decay(entry) * (1.0 + math.log1p(entry.reuse_count)) * (1.0 + entry.importance)
+    """遗忘评分：新鲜度 × 复用频次 × 重要度（三者皆低才归档）。
+
+    新鲜度**被复用延缓**（change 0177 / ADR-0168）：
+    ``freshness ** (1 / (1 + log1p(reuse_count)))``——``reuse_count == 0`` 时指数为 1、退化为
+    纯 ``recency_decay``（零回归锚点）；复用越多衰减越缓（检索命中反哺遗忘曲线）。调制**只落此处**
+    （遗忘评分）；``relevance.recency_decay`` / ``rank`` 不动 ⇒ 检索排序不受影响。
+    """
+    freshness = recency_decay(entry)
+    slowed = freshness ** (1.0 / (1.0 + math.log1p(entry.reuse_count)))
+    return slowed * (1.0 + math.log1p(entry.reuse_count)) * (1.0 + entry.importance)
 
 
 def _below_gate(entries: list[MemoryEntry], scores: dict[str, float]) -> bool:
@@ -98,7 +115,7 @@ def _below_gate(entries: list[MemoryEntry], scores: dict[str, float]) -> bool:
     return bool(got) and max(got) < _CONSOLIDATE_THRESHOLD
 
 
-def _plan_key_facts(raw: list[KeyFact]) -> tuple[list[KeyFact], list[str], list[str]]:
+def _plan_key_facts(raw: list[KeyFact], *, cap: int) -> tuple[list[KeyFact], list[str], list[str]]:
     """整批归一化关键事实：**脱敏 + 同批归并 + 有界**。
 
     返回（可落库事实, 因密钥丢弃的实体名, 因同批同 slug 被归并的实体名）。
@@ -106,7 +123,8 @@ def _plan_key_facts(raw: list[KeyFact]) -> tuple[list[KeyFact], list[str], list[
     脱敏由 ``scrub_key_fact`` 无条件执行（注入方不构成信任边界）；无实体 slug 者不计入落库。
     **同批**内 slug 相同者只留**首条**（change 0172）—— 同批重复是**单次模型响应内的重复枚举**，
     区别于跨压实的「重复抽取」（后者由同实体幂等覆盖处理，`_write_key_fact` 同一 `id`）。
-    归并后条数计额 ⇒ 重复项不再挤占 `MAX_KEY_FACTS_PER_COMPACT`。
+    归并后条数计额 ⇒ 重复项不再挤占名额；名额 ``cap`` 由调用点按本次聚合条数自适应给出
+    （``key_fact_cap``，change 0177 / ADR-0168）。
     """
     plan: list[KeyFact] = []
     dropped: list[str] = []
@@ -125,7 +143,7 @@ def _plan_key_facts(raw: list[KeyFact]) -> tuple[list[KeyFact], list[str], list[
             continue
         seen.add(slug)
         plan.append(cleaned)
-        if len(plan) >= MAX_KEY_FACTS_PER_COMPACT:
+        if len(plan) >= cap:
             break
     return plan, dropped, deduped
 
@@ -147,6 +165,7 @@ class MemoryStore:
         summarizer: Summarizer | None = None,
         summary_promoter: SummaryPromoter | None = None,
         key_fact_extractor: KeyFactExtractor | None = None,
+        importance_scorer: ImportanceScorer | None = None,
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
         self._tracker = effect_tracker if effect_tracker is not None else EffectTracker()
@@ -155,6 +174,7 @@ class MemoryStore:
         self._summarizer = summarizer
         self._summary_promoter = summary_promoter
         self._key_fact_extractor = key_fact_extractor
+        self._importance_scorer = importance_scorer
         self._hot: dict[str, MemoryEntry] = {}
         self._vectors: dict[str, list[float]] = {}
         self._embed_failed = False
@@ -221,8 +241,38 @@ class MemoryStore:
         return selected
 
     def write(self, layer: Layer, entry: MemoryEntry) -> MemoryId | None:
+        """按意向层写入条目（可逆）；可注入**重要度闸门**（change 0177 / ADR-0168）。
+
+        「无行动不记忆」：``source`` 或 ``trace_id`` 为空 ⇒ 拒绝（返回 ``None``、无效应）。
+        注入 ``importance_scorer`` 后**先评分再落库**（缺省 UNWIRED ⇒ 与既往逐字一致）：
+
+        - 分 < ``_IMPORTANCE_FLOOR`` ⇒ **拒收**（不写、无效应、留痕，返回 ``None``）；
+        - ``[_IMPORTANCE_FLOOR, _IMPORTANCE_AMBIT)`` ⇒ 按意向层写入后**降层 L4**
+          （降层另记 ``gate.<id>`` trace ⇒ 回滚该 trace 即迁回**原意向层**）；
+        - ≥ ``_IMPORTANCE_AMBIT`` ⇒ 按意向层入库并**写回** ``importance``（随条目 trace 撤销）；
+        - 评分器抛错 / 返回界外值 ⇒ **降级放行**（正常写入 + 留痕，不牵连主流程）。
+        """
         if not entry.source or not entry.trace_id:
             return None  # 无行动不记忆
+        score = self._gate_score(entry)
+        if score is not None and score < _IMPORTANCE_FLOOR:
+            warnings.warn(
+                f"entry rejected by importance gate "
+                f"(score {score:.3f} < {_IMPORTANCE_FLOOR}): {entry.id!r}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return None
+        self._persist(layer, entry)
+        if score is not None:
+            if score < _IMPORTANCE_AMBIT:
+                self.migrate(entry.id, layer, "L4", trace_id=f"gate.{entry.id}")
+            else:
+                self._write_importance(entry, score, trace_id=entry.trace_id)
+        return entry.id
+
+    def _persist(self, layer: Layer, entry: MemoryEntry) -> None:
+        """落库 + 记可撤销写入效应（``write`` 的**无闸门主体**）。"""
         entry.layer = layer
         if entry.ts <= 0:
             entry.ts = time.time()
@@ -239,7 +289,33 @@ class MemoryStore:
                 ts=time.time(),
             )
         )
-        return entry.id
+
+    def _gate_score(self, entry: MemoryEntry) -> float | None:
+        """闸门打分：UNWIRED ⇒ ``None``（不评分）；抛错 / 界外 ⇒ ``None``（降级放行 + 留痕）。
+
+        留痕**只报条目 id**，绝不回显条目正文（可能含明文密钥）——密钥红线。
+        """
+        scorer = self._importance_scorer
+        if scorer is None:
+            return None
+        try:
+            score = float(scorer(entry))
+        except Exception:  # noqa: BLE001 — 评分器失败降级放行，不牵连写入主流程
+            warnings.warn(
+                f"importance scorer failed for {entry.id!r}; writing without gating",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return None
+        if not 0.0 <= score <= 1.0:
+            warnings.warn(
+                f"importance scorer returned an out-of-range value for {entry.id!r}; "
+                "writing without gating",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return None
+        return score
 
     def migrate(
         self, entry_id: MemoryId, src: Layer, dst: Layer, *, trace_id: str | None = None
@@ -449,8 +525,11 @@ class MemoryStore:
             scored[entry.id] = entry.importance
         return scored
 
-    def _write_importance(self, entry: MemoryEntry, value: float) -> None:
-        """写回重要度（可逆）：与压实同 trace，回滚该轮即恢复旧值。"""
+    def _write_importance(
+        self, entry: MemoryEntry, value: float, *, trace_id: str | None = None
+    ) -> None:
+        """写回重要度（可逆）：``trace_id`` 缺省与压实同 trace（回滚该轮即恢复旧值）；
+        写入闸门传入**条目自身 trace** ⇒ 随该条目的写入一并回滚（change 0177 / ADR-0168）。"""
         previous = entry.importance
         entry.importance = value
         self._backend.put(entry)
@@ -462,7 +541,7 @@ class MemoryStore:
                 undo=lambda: self._restore_importance(entry.id, previous),
                 reversible=True,
                 coeffect=[],
-                trace_id=f"compaction.{entry.session_id or 'default'}",
+                trace_id=trace_id or f"compaction.{entry.session_id or 'default'}",
                 ts=time.time(),
             )
         )
@@ -553,7 +632,9 @@ class MemoryStore:
             return
         key = session_id or "default"
         try:
-            plan, dropped, deduped = _plan_key_facts(extractor(entries))
+            plan, dropped, deduped = _plan_key_facts(
+                extractor(entries), cap=key_fact_cap(len(entries))
+            )
         except Exception:  # noqa: BLE001 — 抽取失败降级：整批不写，不牵连压实
             warnings.warn(
                 f"key-fact extraction failed for session {key!r}; no key facts were written",
@@ -681,7 +762,8 @@ class MemoryStore:
         （fail-closed），其余会话照常。
         """
         try:
-            plan, _, _ = _plan_key_facts(extractor(self._material_for_session(session_id)))
+            material = self._material_for_session(session_id)
+            plan, _, _ = _plan_key_facts(extractor(material), cap=key_fact_cap(len(material)))
         except Exception:  # noqa: BLE001 — 重抽失败 ⇒ 该会话不落库、不删（fail-closed）
             warnings.warn(
                 f"key-fact re-extraction failed for session {session_id!r}; nothing was deleted",
