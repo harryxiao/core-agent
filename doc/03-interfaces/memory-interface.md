@@ -55,6 +55,7 @@ class MemoryStore(Plugin):
     ) -> "DecisionResult | None":
         """压实记忆：注入 summarizer 时按 ``session_id`` 聚合 L2 episodic 提炼为 semantic 摘要
         并归档原条目；注入 compactor 时逐条目打分写回 ``importance`` 并做价值门控（全部可撤销）。
+        带 ``_PRESERVE_TAGS`` 标签者**不入材料**（change `0179` / ADR-0170，见下「压实材料的排除面」）。
 
         ``session_id`` 为**聚合范围的收窄形参**（change `0131` / ADR-0124 / 账本 E66）：非空 ⇒
         只聚合**该会话**条目（SHALL NOT 跨会话提炼/迁移）；空串 ⇒ **全量**（循环内节拍压实）。
@@ -224,6 +225,16 @@ def relevance(entry, query, embedder=None) -> float:
 ``compact`` SHALL 把**既有摘要内容**与本轮新增 episodic 条目**一并**投喂摘要器，产出**融合既有
 结论与新增事实**的更新摘要——既有结论**不被静默丢弃**。滚动的是**内容**，`id` 与「每会话至多
 一条、不增长」口径**不变**；既有摘要**只被吸收进新摘要**（**不**入 L4 迁移列表）。
+
+**压实材料的排除面**（change `0179` / ADR-0170）：聚合只取 ``_episodic_groups()`` 的输出，
+而该函数 SHALL 排除带 ``_PRESERVE_TAGS``（现为 ``{"failure"}``）标签的 L2 条目 ⇒
+**摘要提炼、逐条目打分（``_score_importance``）、结构化关键事实抽取（``_extract_key_facts``）
+三者一致地看不到失败条目**（同一材料源、一处排除三处生效）。故失败条目**不被摘要吸收**、
+**不随压实迁 L4**、其 id **不入**摘要条目 ``tags`` 的 ``from:`` 出处。
+判据用 **tag** 而非 ``source``：``rank`` / ``_decay_score`` **完全不看 tags** ⇒ 零排序副作用，
+且不触碰 ``exclude_source_prefixes`` 的命名空间红线。**遗忘路径不受此豁免**：``forget``
+逐字不动 ⇒ 失败条目仍按自然衰减归档 L4（有界）。
+写入侧闸门（§3）**不改**：注入 ``importance_scorer`` 时失败条目照常受闸门约束。
 
 **上界可见性与提升钩子**（change `0153` / ADR-0145 / 路线图 G3）：滚动合并上界
 ``MAX_SUMMARY_CHARS``（公开常量，缺省 2000）是既有摘要**投喂时的节选上限** ⇒ **越界即下一轮滚合并

@@ -65,6 +65,10 @@ _COEFFECT_REF_PREFIX = "coeffect:"
 # 会话溯源标签前缀（`_write_key_fact` 在会话非空时追加）
 _SESSION_TAG = "session:"
 
+# 压实材料**不得吸收**的标签（change 0179 / ADR-0170）：带这些标签的条目既不进
+# 摘要/关键事实材料，也不随压实迁 L4。`forget` **不**看本集合 ⇒ 仍按自然衰减归档（有界）。
+_PRESERVE_TAGS = frozenset({"failure"})
+
 
 # 重要度评分器契约：条目 → [0,1] 分值（缺省 UNWIRED；由 L5 组合根注入，memory 不 import 模型）
 ImportanceScorer = Callable[[MemoryEntry], float]
@@ -601,10 +605,15 @@ class MemoryStore:
         """L2 事件条目按 ``session_id`` 分组（空会话归 ``""`` 组），保持写入序。
 
         ``session_id`` 非空 ⇒ 只收该会话的条目（分组后**唯一键**即它本身）；空串 ⇒ 全量。
+
+        带 ``_PRESERVE_TAGS`` 的条目**不入选**（压实材料排除面，change 0179 / ADR-0170）——
+        本方法即打分/摘要/关键事实抽取的**唯一材料源**，一处排除三处生效。
         """
         groups: dict[str, list[MemoryEntry]] = {}
         for entry in self._all_entries():
             if entry.kind != "episodic" or entry.layer != "L2":
+                continue
+            if _PRESERVE_TAGS.intersection(entry.tags):
                 continue
             if session_id and entry.session_id != session_id:
                 continue

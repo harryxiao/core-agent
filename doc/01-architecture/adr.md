@@ -5241,6 +5241,62 @@
   会话无关** —— 多会话进程中每节拍只有「正巧活跃」的会话被刷新（可接受）；⑧ `_should_compact` 的「轮数维度
   是死的」**仍未修**（E96 局限②）—— 本 change 走 `_maintain`，不改 `_should_compact`。
 
+## ADR-0170：失败经验的独立沉淀面 —— 轮级失败另立 L2 条目 + 压实材料排除（change 0179 / 账本 E116）
+
+- **背景**：`remember()`（`loop.default`）每轮只写两条 —— 轨迹条目（`tags=["loop","trajectory"]`，散文里
+  **含** `round N failed <error>` 行）与行动序列条目（`tags=["loop","steps"]`）。失败**没有**独立判据
+  （全 `src/` 无任何 `fail*`/`error` 标签）⇒ 「失败经验」无法作为**一类检索对象**。同时
+  `SopExtractor.observe` 对 `ok=False` **直接丢弃**、docstring 自陈「教训沉淀走 **memory/evolution 通道**」
+  —— 而该 memory 通道**从未存在**（`Crystallizer.dissolve` 的 `["dissolved","lesson"]` 条目在 `src/` 内
+  无调用方；evolution 侧对 memory **只写不读**，`Diagnoser` 只吃 `Trace.success`）。更糟的是：压实材料
+  唯一来源 `_episodic_groups()` 只按 `kind=="episodic" and layer=="L2"` 筛、**无 tags 判据** ⇒ 失败轮
+  条目必被摘要吸收，随即由 `_commit_summary` 迁 L4（检索权重 0.6 → 0.2），失败证据被**摘成中性总结**。
+- **决策 ①：另立第三条条目，既有两条逐字不变。** `failed=True` 时在 `loop.<trace>` / `loop.steps.<trace>`
+  之外写 `loop.failure.<trace_id>`（`layer="L2"` / `kind="episodic"` / `tags=["loop","failure"]` /
+  同 `trace_id` 同 `session_id` / `source=self._source`）。**另立而非合并**——同 ADR-0164（行动序列）理由：
+  抽取器对每条 L2 条目只取前 400 字符入 prompt，合并会把既有散文顶出窗口。
+- **决策 ②：范围＝轮级失败，且 `remember` 三参数**（`failed` / `reason` / `task`，均 keyword-only、缺省
+  ⇒ 逐字一致）。轮级失败＝**终止动作失败** / **轮次或 token 预算终止**（`limit_reason`）/ **推理产出不可解析**
+  （`turn_failed`）；调用点即 `failed=bool(limit_reason) or turn_failed`。**轮内自愈的工具失败不入**失败条目
+  （仍在行动序列条目里）——「失败轮」而非「失败步」是用户 2026-10-10 裁决的口径，避免 ReAct 自愈过程被记成失败。
+- **决策 ③：豁免判据落 `_episodic_groups()`，用 **tag** 而非 source 前缀。** 新增模块常量
+  `_PRESERVE_TAGS = frozenset({"failure"})` + 该函数内一处 `continue`。选此处因它是打分（`_score_importance`）、
+  摘要（`summarizer`）、关键事实抽取（`_extract_key_facts`）**三者的唯一材料源** ⇒ 一处排除三处生效。
+  选 **tag** 而非 source：`rank` / `_decay_score` **完全不看 tags** ⇒ 零排序副作用；而 `source` 是命名空间
+  （`loop` / `beast.<id>` / `pet`），动它等于动 `exclude_source_prefixes=("beast.","pet")` 红线（phase-26）。
+- **决策 ④：只豁免压实，**不**豁免遗忘（有界）。** `forget()` **逐字不动** ⇒ 失败条目仍按自然衰减
+  （`_FORGET_THRESHOLD=0.05`，零复用下 ≈19 天）归档 L4。**不新增条数上界常量**——有界性由既有遗忘曲线承担
+  （用户裁决②）。压实豁免 ≠ 遗忘豁免，二者在 `store` 内是两条互不相干的路径。
+- **决策 ⑤：注入面零改动。** 不新增 planner 块、不加上下文预算记账、不动 `_system_prompt` 次序 ——
+  失败条目靠**既有按相关度检索**命中（用户裁决③）。故本 change 不改 `context` / `LoopContext`。
+- **决策 ⑥：内容＝任务 + 原因 + 失败轮次 + 失败动作，逐行脱敏、整体有界。** 新模块级纯函数
+  `failure_digest(trajectory, steps, *, reason="", task="")`：首行 `任务：{task}`（非空才加，有界
+  `_MAX_STEP_LINE`）、次行 `失败：{reason}`（空 ⇒ 恒定兜底 `_FAILURE_REASON_FALLBACK`）、随后复用
+  `_trajectory_line` 渲染 `ok is False` 的轮次行、再追加 `steps` 中含 `_FAILURE_STEP_MARK`（`"错误："`）的行；
+  逐行 `redact_secrets`、整体截断 `_MAX_MEMORY_ENTRY`（与 `loop.steps` 条目**同源纪律**）。**`raw_output` 不入**：
+  ADR-0161 明定其 SHALL NOT 进记忆，失败条目不得成为旁路。判据用 `item.get("ok") is False`（**不是** falsy 判断）
+  —— 末条合成的 `{"reply": ...}` 无 `ok` 键，用 falsy 判断会把终止回复误当失败轮。
+- **红态证据（实现前）**：Layer A `ImportError: cannot import name 'failure_digest'`；
+  Layer B 缺失 `loop.failure.*` 条目；Layer C `test_compact_skips_failure_entries_but_archives_plain_ones`
+  在旧 `_episodic_groups` 下**红**（`seen == [['e0','loop.failure.t1']]`）。三层共 **18 用例**（A 5 / B 10 / C 3），全绿。
+- **规格**：`loop` **MODIFIED**「执行循环」（本轮失败时记忆步**再另立一条** `loop.failure.<trace_id>`；未失败 ⇒ 不写）
+  + `memory` **MODIFIED**「记忆压实」（压实材料 SHALL 排除带 `failure` 标签的条目；**遗忘路径不受此豁免**）。
+  既有 Scenario 逐字保留：loop 36 → 39、memory 记忆压实 17 → 19。`skills` **不动**——失败仍不进 SOP，
+  本 change 让 `sop.py` docstring 承诺的那条通道**第一次真实存在**。
+- **落点**：`src/core/loop/default.py`（`_FAILURE_REASON_FALLBACK` / `_FAILURE_STEP_MARK` / `failure_digest` /
+  `remember` 三参数 + 第三条写入 / 调用点传参）、`src/core/loop/protocol.py`（`LoopPlugin.remember` 签名同步）、
+  `src/core/memory/store.py`（`_PRESERVE_TAGS` + `_episodic_groups` 一处 `continue`）。
+- **局限**：① 只覆盖**轮级失败**；轮内自愈的工具失败不入失败条目（仍在 `loop.steps` 条目里）——按用户裁决；
+  ② **记忆面 → 诊断面仍无桥**：`Diagnoser` 只吃 `Trace.success`、`src/core/evolution/` 对 memory **只写不读**
+  ⇒ 失败条目目前只服务**检索/上下文**，**不驱动进化**（另立账）；③ 失败条目最终仍会被**遗忘**归档 L4
+  （`_FORGET_THRESHOLD=0.05`，衰减缓慢）；④ 用户**任务原文首次进入 L2 记忆面**（为让条目自解释、可被检索命中）；
+  与转录 / notes 同源、逐行脱敏；⑤ 若注入 `importance_scorer`（生产缺省 UNWIRED，见 `runtime.py:384-393`），
+  失败条目仍受写入侧闸门约束（可能降层/拒收）；本 change **不豁免**（不触碰 0177 的闸门语义）；
+  ⑥ 失败条目**不进摘要** ⇒ 会话整体摘要不含失败内容；失败信息仍可经**同轮的轨迹条目**进入摘要
+  （有意：摘要不该被失败噪音主导）；⑦ 跨会话「同类失败」仍只能靠语义相似命中
+  （`loop.failure.<trace_id>` 按 session 隔离读取）；⑧ 运维修复的按会话重抽材料
+  (`_material_for_session`, **全层**判据) **仍含**失败条目 ⇒ 理论上可从失败条目抽 key_fact（仅运维触发，不落常规路径）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5405,3 +5461,4 @@
 | ADR-0167 | 02-modules/notes.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0168 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0169 | 02-modules/loop.md, 02-modules/context.md, 02-modules/memory.md, 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0170 | 02-modules/loop.md, 02-modules/memory.md, 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

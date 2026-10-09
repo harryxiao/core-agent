@@ -227,6 +227,14 @@ MemoryStore
 
 **禁止**：密钥/敏感内容进入任何记忆层（只存引用）。
 
+**压实材料的排除面**（change `0179` / ADR-0170）：带 `_PRESERVE_TAGS`（现为 `{"failure"}`）标签的
+L2 条目**不入选** `_episodic_groups()` —— 该函数是打分（`_score_importance`）、摘要（`summarizer`）、
+结构化关键事实抽取（`_extract_key_facts`）**三者的唯一材料源**，故一处 `continue` 三处生效：
+失败条目**不被摘要吸收**、**不随压实迁 L4**（`_commit_summary` 的迁移列表不含它），
+其 id 也**不进**摘要条目的 `from:` 出处。判据用 **tag** 而非 `source` 前缀：`rank` / `_decay_score`
+**完全不看 tags** ⇒ 零排序副作用，且不触碰 `exclude_source_prefixes=("beast.","pet")` 命名空间红线。
+**遗忘路径不受此豁免**：`forget()` 逐字不动 ⇒ 失败条目仍按自然衰减（`_FORGET_THRESHOLD`）归档 L4（有界）。
+
 ---
 
 ## 5. 错误处理与边界

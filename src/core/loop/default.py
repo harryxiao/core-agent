@@ -75,7 +75,9 @@ _MAINTENANCE_INTERVAL_S = 900.0  # 记忆维护节拍（秒）：默认 15 分�
 _MAX_ACTION_EXCERPT = 400  # 动作事件 args/output 节选上界（事件面有界）
 _MAX_STEP_VALUE = 80  # 行动序列单参数值摘要上界（change 0171 / ADR-0162）
 _MAX_STEP_LINE = 300  # 行动序列整行上界（change 0171 / ADR-0162）
-_MAX_MEMORY_ENTRY = 2048  # 单条 L2 沉淀条目长度上界（轨迹条目与行动序列条目共用）
+_MAX_MEMORY_ENTRY = 2048  # 单条 L2 沉淀条目长度上界（轨迹/行动序列/失败三条共用）
+_FAILURE_REASON_FALLBACK = "终止动作未达成"  # 轮级失败无 `limit_reason` 时的恒定兜底文案
+_FAILURE_STEP_MARK = "错误："  # 失败动作的渲染前缀（`_summarize_result`），供失败条目筛行
 
 
 def _args_excerpt(args: dict[str, Any]) -> dict[str, Any] | str:
@@ -131,6 +133,30 @@ def _action_steps(ctx: LoopContext) -> list[str]:
         steps.append(line[:_MAX_STEP_LINE])
         index += 1
     return steps
+
+
+def failure_digest(
+    trajectory: list[Any], steps: Sequence[str], *, reason: str = "", task: str = ""
+) -> str:
+    """轮级失败的沉淀摘要（change 0179 / ADR-0170）：任务 + 原因 + 失败轮次 + 失败动作。
+
+    只为**轮级**失败服务（终止动作失败 / 预算或轮次终止 / 不可解析输出）—— 轮内自愈的工具
+    失败不入此列（判据在调用方）。逐行经 ``redact_secrets`` 脱敏（与行动序列条目**同源**、
+    方向 over-redact），整体受 ``_MAX_MEMORY_ENTRY`` 约束。``reason`` 为空（如不可解析输出轮）
+    时以恒定兜底文案补齐首行 ⇒ 产物**恒非空**。``raw_output`` **不得**经此入记忆（承 0170 /
+    ADR-0161）。
+    """
+    lines: list[str] = []
+    if task:
+        lines.append(f"任务：{task}"[:_MAX_STEP_LINE])
+    lines.append(f"失败：{reason or _FAILURE_REASON_FALLBACK}")
+    lines.extend(
+        _trajectory_line(item)
+        for item in trajectory
+        if isinstance(item, dict) and cast(dict[str, Any], item).get("ok") is False
+    )
+    lines.extend(step for step in steps if _FAILURE_STEP_MARK in step)
+    return "\n".join(redact_secrets(line) for line in lines)[:_MAX_MEMORY_ENTRY]
 
 
 def _role(message: Any) -> str:
@@ -447,6 +473,9 @@ class DefaultLoop(Plugin):
             [*ctx.trajectory, {"reply": ctx.reply}],
             session_id=session_id,
             steps=_action_steps(ctx),
+            failed=bool(limit_reason) or turn_failed,
+            reason=limit_reason,
+            task=_task_text(ctx),
         )
         # 维护节拍同样卸载：冷路径（进化 review / patch author）内含同步模型调用
         # （change 0167 / ADR-0157）。
@@ -735,13 +764,16 @@ class DefaultLoop(Plugin):
             return 0
         return value if isinstance(value, int) and value > 0 else 0
 
-    def remember(
+    def remember(  # noqa: PLR0913 — 注入面均为可选 keyword-only（缺省 ⇒ 逐字一致）
         self,
         trace_id: str,
         trajectory: list[Any],
         *,
         session_id: str = "",
         steps: Sequence[str] = (),
+        failed: bool = False,
+        reason: str = "",
+        task: str = "",
     ) -> None:
         """把本轮轨迹沉淀为 L2 记忆（无行动不记忆）。
 
@@ -754,6 +786,11 @@ class DefaultLoop(Plugin):
         只取前 ``extract._MAX_ENTRY_CHARS``(400) 字符入 prompt，而 keyfact 的实体历来产自轨迹条目的
         **散文** ⇒ 合并会把散文顶出窗口。序列逐行经 ``redact_secrets`` 脱敏（判据与关键事实抽取
         **同源**，方向 over-redact）⇒ 密钥只引用不读取、绝不进记忆。缺省空 ⇒ 行为与变更前逐字一致。
+
+        ``failed``（change 0179 / ADR-0170）为真时**再另立一条** ``loop.failure.<trace_id>``
+        （``tags=["loop","failure"]``）承载轮级失败（任务 + ``reason`` + 失败轮次与失败动作）；
+        该标签使压实材料**排除**它（见 ``memory.store._PRESERVE_TAGS``）⇒ 失败证据不被摘成中性
+        总结、不被迁 L4。三个参数缺省 ⇒ 行为与变更前**逐字一致**（成功轮不写该条目）。
         """
         if not trajectory or self._memory is None:
             return
@@ -784,6 +821,20 @@ class DefaultLoop(Plugin):
                     source=self._source,
                     trace_id=trace_id,
                     session_id=session_id,
+                ),
+            )
+        if failed:
+            self._memory.write(
+                "L2",
+                MemoryEntry(
+                    id=f"loop.failure.{trace_id}",
+                    layer="L2",
+                    content=failure_digest(trajectory, steps, reason=reason, task=task),
+                    tags=["loop", "failure"],
+                    source=self._source,
+                    trace_id=trace_id,
+                    session_id=session_id,
+                    kind="episodic",
                 ),
             )
 

@@ -261,6 +261,22 @@ SHALL NOT 交付，压实行为**逐字不变**。钩子抛错 SHALL **降级**�
 - **WHEN** `mid_summary_for(<该会话>)`
 - **THEN** 返回该中期摘要条目；`mid_summary_for(<他会话>)` ⇒ `None`；且调用前后 `audit()` 快照与
   效应追踪面**逐字不变**
+
+压实（含摘要提炼与关键事实抽取）的**材料** SHALL **排除**带 `failure` 标签的条目：这类条目
+SHALL NOT 被摘要提炼或关键事实抽取吸收，SHALL NOT 被迁至 L4（保留于 L2 供按相关度检索）；其**遗忘**
+路径 SHALL **不受**此豁免（遗忘语义**逐字不变**）。
+
+#### Scenario: 失败条目不被压实吸收
+
+- **GIVEN** 同一会话下既有若干普通 L2 episodic 条目，又有一条带 `failure` 标签的 L2 episodic 条目，且注入了摘要器
+- **WHEN** 压实运行
+- **THEN** 摘要条目的 `tags` **不含**该失败条目的 id；该失败条目**仍在 L2**（未被迁至 L4）；同批普通条目照常迁至 L4
+
+#### Scenario: 失败条目仍可被遗忘
+
+- **GIVEN** 一条带 `failure` 标签的 L2 episodic 条目已衰减至遗忘阈值以下
+- **WHEN** 遗忘运行
+- **THEN** 该条目照常被迁至 L4（失败标签**不豁免**遗忘）
 ### Requirement: 记忆固化（consolidation）
 系统 SHALL 对会话内 episodic 条目**自动打分**并据此**门控固化**：注入 scorer（judgment `score`
 原语，JEV 优先、低置信/不可达回退主 LLM）时，SHALL 将分值写回条目的 `importance`（写入可撤销，

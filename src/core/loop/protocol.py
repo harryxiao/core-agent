@@ -167,18 +167,25 @@ class LoopPlugin(Protocol):
         """把动作结果写回上下文，推进循环。"""
         ...
 
-    def remember(
+    def remember(  # noqa: PLR0913 — 注入面均为可选 keyword-only（缺省 ⇒ 逐字一致）
         self,
         trace_id: str,
         trajectory: list[Any],
         *,
         session_id: str = "",
         steps: Sequence[str] = (),
+        failed: bool = False,
+        reason: str = "",
+        task: str = "",
     ) -> None:
         """写本轮轨迹/教训入 L2/L3（每轮必做，无行动不记忆），条目带会话归属。
 
         ``steps`` 非空 ⇒ **另立一条**条目承载本轮行动与结果序列（change 0173），
         轨迹条目内容逐字不变；缺省空 ⇒ 行为与变更前逐字一致。
+
+        ``failed`` 为真 ⇒ **再另立一条** ``loop.failure.<trace_id>`` 承载**轮级**失败
+        （任务 + ``reason`` + 失败轮次与失败动作；change 0179）；该条目带 ``failure`` 标签，
+        压实材料据此**排除**它。三者缺省 ⇒ 行为与变更前逐字一致。
         """
         ...
 

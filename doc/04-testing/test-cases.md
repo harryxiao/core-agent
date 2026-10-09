@@ -1607,6 +1607,44 @@
 > CJK 欠估不修 / 中带原文进 LLM 的密钥面 / 热路径两次全库扫描 / 中层产物与「相关事实」块可能重复暴露 /
 > 节拍实例级会话无关 / `_should_compact` 轮数维度未修）。
 
+## 92. 失败经验的独立沉淀面：轮级失败另立 L2 条目 + 压实材料排除（TC-FAILMEM，change `0179`／ADR-0170，台账 E116）
+
+> **背景取证**（用户 2026-10-10 复盘四类记忆「会话滑窗 / 语义=notes / 程序=技能 / 情景=错误与成功经验」问
+> 「是否有遗漏」）：① `remember()` 每轮只写两条（轨迹散文**含** `round N failed <error>` 行 + 行动序列），
+> 全 `src/` **无任何** `fail*`/`error` 标签 ⇒ 失败无法作为**一类检索对象**；② `SopExtractor.observe` 对
+> `ok=False` **直接丢弃**、docstring 自陈「教训沉淀走 memory/evolution 通道」，而该通道**从未存在**
+> （`Crystallizer.dissolve` 的 `["dissolved","lesson"]` 在 `src/` 内无调用方；evolution 侧对 memory
+> **只写不读**）；③ 压实材料唯一来源 `_episodic_groups()` **无 tags 判据** ⇒ 失败轮条目必被摘要吸收、
+> 随即迁 L4（检索权重 0.6 → 0.2），失败证据被**摘成中性总结**。三者合成「情景记忆里的失败没有独立沉淀面」。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-FAILMEM-01 | loop/spec.md「执行循环」Scenario「失败轮另立一条 L2 条目」 | `failure_digest(轨迹, steps, reason=…, task=…)` | 行序 = **任务 → 失败：原因 → 失败轮行（`round N failed <error>`，复用 `_trajectory_line`）→ 失败步行（含 `错误：`）**；末条合成 `{"reply": …}`（**无 `ok` 键**）**不入**（判据 `ok is False` 而非 falsy）（锚点：`tests/test_loop_failure_memory.py::test_failure_digest_renders_task_reason_rounds_and_steps`） |
+| TC-FAILMEM-02 | 同 Scenario（`reason` 缺省 / 无失败轮） | `failure_digest([], [], reason="", task="")` | 恒为**非空**、走恒定兜底文案 `失败：<兜底>`（锚点：`...::test_failure_digest_falls_back_when_reason_missing`） |
+| TC-FAILMEM-03 | loop/spec.md「执行循环」Scenario「失败条目脱敏且有界」 | 任务 / 原因 / 失败轮 / 失败步**各含**明文密钥形态；100 条超长失败步；5000 字任务 | **逐行** `<redacted>`（四行各一）；整体 ≤ `_MAX_MEMORY_ENTRY`；任务首行 ≤ `_MAX_STEP_LINE`（锚点：`...::test_failure_digest_redacts_each_line`、`...::test_failure_digest_is_bounded`、`...::test_failure_digest_bounds_long_task`） |
+| TC-FAILMEM-04 | 同 Scenario「失败轮另立一条 L2 条目」 | `remember(..., steps=[…], failed=True, reason=…, task=…)` | **三态并存**（`loop.t*` / `loop.steps.t*` / `loop.failure.t*`）；失败条目 `layer="L2"` / `kind="episodic"` / `tags=["loop","failure"]` / 同 `trace_id` / 同 `session_id` / `source` 取注入命名空间；内容含任务与原因（锚点：`...::test_failed_turn_writes_dedicated_failure_entry`） |
+| TC-FAILMEM-05 | loop/spec.md「执行循环」Scenario「成功轮不写失败条目」 | 成功轮 `remember(..., steps=[…])`（`failed` 缺省） | **无** `loop.failure.*`；既有两条内容**逐字不变**（`{"loop.t2": "round 1 ok\n成了", "loop.steps.t2": …}`）（锚点：`...::test_success_turn_writes_no_failure_entry`） |
+| TC-FAILMEM-06 | 同 Scenario（无 `steps` / 未注入 memory） | `failed=True` 且无工具动作；`DefaultLoop().remember(..., failed=True)` | 无行动序列条目但**仍有**失败条目（`{loop.t3, loop.failure.t3}`）；未注入 memory **不抛**（既有守卫）（锚点：`...::test_failure_entry_without_steps_still_written`、`...::test_no_memory_wired_is_a_noop`） |
+| TC-FAILMEM-07 | 同 Scenario（可逆） | `EffectTracker` 注入 memory 后 `rollback("t4")` | 失败条目**消失**（`write` → `_persist` → `_tracker.record`，P2 可逆）（锚点：`...::test_failure_entry_is_reversible`） |
+| TC-FAILMEM-08 | 同 Scenario（可检索） | `read("删除生产库 权限不足", session_id="s2")` | 失败条目**被命中**（注入面零改动 ⇒ 靠既有按相关度检索）（锚点：`...::test_failure_entry_is_retrievable`） |
+| TC-FAILMEM-09 | 同 Scenario（`limit_reason` 两源） | 真 loop：`max_rounds=1`；`token_budget=1` | 失败条目内容分别含 `失败：LOOP_LIMIT_EXCEEDED` / `失败：TOKEN_BUDGET_EXCEEDED`（锚点：`...::test_round_limit_termination_writes_failure_entry`、`...::test_token_budget_termination_writes_failure_entry`） |
+| TC-FAILMEM-10 | 同 Scenario（**轮级**口径，判别性） | 真 loop：第 0 轮工具 schema 不符（该步失败）、第 1 轮正常回复收尾 | 本轮**成功** ⇒ **无**失败条目（ReAct 自愈不记失败；轮内工具失败仍在 `loop.steps` 条目里）（锚点：`...::test_tool_failure_inside_turn_does_not_write_failure_entry`） |
+| TC-FAILMEM-11 | 同 Scenario（`turn_failed` 另一源 + ADR-0161 禁入面） | 经**真实** `LLMPlanner._parse` 取「不可解析 ⇒ 失败态终止动作」后跑循环 | `result.failed is True`；写失败条目且兜底原因在内容；**`raw_output` 不入**（ADR-0161 明文禁入面，失败条目不得成为旁路）（锚点：`...::test_unparseable_output_writes_failure_entry_without_raw_output`） |
+| TC-FAILMEM-12 | memory/spec.md「记忆压实」Scenario「失败条目不被压实吸收」 | 同会话一条普通条目 + 一条 `tags=["loop","failure"]`；`compact()` | 摘要材料**只见**普通条目；失败条目 `layer` **仍 L2**、普通条目**照常迁 L4**；摘要 `tags` **不含** `from:loop.failure.*`（锚点：`tests/test_memory.py::test_compact_skips_failure_entries_but_archives_plain_ones`） |
+| TC-FAILMEM-13 | memory/spec.md「记忆压实」Scenario「失败条目仍可被遗忘」 | 失败条目回拨 30 天 + `forget()` | **仍被归档 L4**（豁免面＝压实，**不含**遗忘；有界性由既有衰减曲线承担）（锚点：`...::test_forget_does_not_spare_failure_entries`） |
+| TC-FAILMEM-14 | 同 Scenario（零排序副作用） | 失败条目 + 无关条目；`read("终止动作未达成")` | 失败条目排首位（判据用 **tag**：`rank` / `_decay_score` **完全不看 tags** ⇒ 不触 `("beast.","pet")` 命名空间红线）（锚点：`...::test_failure_entry_is_readable`） |
+
+> **红态证据**：逐层先红后绿 —— Layer A `ImportError: cannot import name 'failure_digest'`；
+> Layer B 缺 `loop.failure.*` 条目；Layer C `test_compact_skips_failure_entries_but_archives_plain_ones`
+> 在旧 `_episodic_groups` 下**红**（`seen == [['e0','loop.failure.t1']]`，判别性用例）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2119 passed**（基线 **2101**，**+18** = A 5 用例 + B 10 + C 3）。
+> **逐字兼容不变量**（I1~I9）：成功轮 ⇒ 不写失败条目且既有两条**逐字不变**；三新形参缺省 ⇒ 行为与变更前
+> 逐字一致；未注入 memory ⇒ 无写入无异常；未失败轮 / `beast.*`·`pet` 命名空间 ⇒ 既有封存语义与
+> `exclude_source_prefixes` 排除项**逐字不动**（失败条目沿用 `source=self._source`）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0170 行（只覆盖轮级失败 / 记忆面→诊断面仍无桥 /
+> 最终仍会被遗忘 / 任务原文首次进 L2 记忆面 / 注入评分器时仍受闸门约束 / 不进摘要 / 跨会话同类失败靠语义命中 /
+> 运维修复的按会话重抽材料仍含失败条目）。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

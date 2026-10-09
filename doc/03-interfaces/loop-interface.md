@@ -65,8 +65,11 @@ class DefaultLoop(Plugin):
                 self.rollback(trace_id)          # 回滚本轮
             ctx = self.observe(ctx, result)
         self.remember(
-            trace_id, [*ctx.trajectory, {"reply": ctx.reply}], session_id=session_id
-        )  # 无行动不记忆；末条 reply 供语义检索；条目带 source 命名空间与会话归属
+            trace_id, [*ctx.trajectory, {"reply": ctx.reply}], session_id=session_id,
+            steps=_action_steps(ctx),
+            failed=bool(limit_reason) or turn_failed, reason=limit_reason, task=_task_text(ctx),
+        )  # 无行动不记忆；末条 reply 供语义检索；条目带 source 命名空间与会话归属；
+           # 行动序列另立一条（0173/ADR-0164）；轮级失败再另立一条（0179/ADR-0170）
         # 收尾维护节拍：距上次维护达 maintenance_interval 才触发一次——①记忆遗忘 ②冷路径机会（各自失败降级）
         return LoopResult(reply=ctx.reply, trace_id=trace_id)
 ```
@@ -162,8 +165,12 @@ def perceive(self, user_input: str, *, session_id: str = "") -> LoopContext
 def reason(self, ctx: LoopContext) -> Action
 def act(self, action: Action, trace_id: str) -> ActionResult   # 经 EffectTracker.record
 def observe(self, ctx: LoopContext, result: ActionResult) -> LoopContext
-def remember(self, trace_id: str, trajectory: list[Step]) -> None
+def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "",
+             steps: Sequence[str] = (), failed: bool = False,
+             reason: str = "", task: str = "") -> None
     # 轨迹项 {round, ok, error} 渲染为可读行；末条 {reply} 提供可检索正文
+    # steps 非空 ⇒ 另立 `loop.steps.<trace_id>`（change 0173 / ADR-0164）
+    # failed 为真 ⇒ 再另立 `loop.failure.<trace_id>`（change 0179 / ADR-0170，见 §3.2）
 ```
 
 ---
@@ -207,6 +214,25 @@ def remember(self, trace_id: str, trajectory: list[Step]) -> None
   变的只是**成败核算**；合成文案仍进转录（既有口径），转录追加逻辑零改动。
 - **同族但不动**：审批拒绝 `decline()` 与 `pet/safety` 阻断属**审批**语义，不置 `failed`
   （不是「推理产出不可用」）。
+
+### 3.2 记忆条目的三态：轨迹 / 行动序列 / 失败（change `0173` / `0179` / ADR-0164 / ADR-0170）
+
+`remember` 一轮**至多**写三条 L2 条目，同 `trace_id`、同 `session_id`、同 `source`（一并可逆、归组一致）：
+
+| 条目 | 触发 | `tags` | 内容 |
+|---|---|---|---|
+| `loop.<trace_id>` | 每轮（有轨迹行） | `["loop","trajectory"]` | 轨迹项渲染的散文（**含** `round N failed <error>` 行） |
+| `loop.steps.<trace_id>` | `steps` 非空（本轮有工具动作） | `["loop","steps"]` | 行动与结果序列（每工具一行） |
+| `loop.failure.<trace_id>` | `failed=True` | `["loop","failure"]` | 任务 + 原因 + 失败轮次 + 失败动作（`failure_digest`） |
+
+- **轮级失败的判据**：`failed=bool(limit_reason) or turn_failed` —— 终止动作失败（`Action.failed`，
+  见 §2 与 change 0166 / ADR-0156）、轮次或 token 预算终止（`limit_reason`）、推理产出不可解析。
+  **轮内**自愈的工具失败**不**入（仍在 `loop.steps` 条目里）；**未失败 ⇒ 不写该条**（成功轮零扰动）。
+- **内容纪律**：`failure_digest` 逐行 `redact_secrets`、整体 ≤`_MAX_MEMORY_ENTRY`(2048)，
+  首行 `任务：` 有界 `_MAX_STEP_LINE`；`reason` 空 ⇒ 恒定兜底文案。
+  **`LoopResult.raw_output` 不入**本条（ADR-0161 明文禁入面，失败条目不得成为旁路）。
+- **下游语义**：`failure` 标签使**压实材料排除**该条（见 `memory-interface.md`）⇒ 不被摘成中性总结、
+  不被迁 L4；但**遗忘不豁免**（仍按自然衰减归档，有界）。注入面**零改动**：失败条目靠既有按相关度检索命中。
 
 ---
 

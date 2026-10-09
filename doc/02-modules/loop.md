@@ -83,6 +83,14 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
   写入前**逐行**经 `redact_secrets` 脱敏（判据与关键事实抽取**同源**、方向 over-redact），
   与轨迹条目**同 trace / 同 session**（一并可逆、归组口径一致）。**无工具调用 ⇒ 不写该条目**；
   `remember(steps=…)` 缺省空 ⇒ 行为与变更前逐字一致。
+- **轮级失败再另立一条 L2 条目**（change `0179` / ADR-0170）：本轮**失败**时，除上述两条外
+  写第三条 `loop.failure.<trace_id>`（`tags=["loop","failure"]`、`kind="episodic"`、与二者并存、
+  同 trace / 同 session）。内容＝`failure_digest`＝任务 + 失败原因 + 失败轮次 + 失败动作，
+  **逐行** `redact_secrets`、整体 ≤`_MAX_MEMORY_ENTRY`。**范围＝轮级失败** ——
+  `failed=bool(limit_reason) or turn_failed`（终止动作失败 / 轮次·token 预算终止 / 推理产出不可解析）；
+  轮内自愈的工具失败**不入**（仍在 `loop.steps` 条目里）。**未失败 ⇒ 不写**；三参数缺省 ⇒ 逐字一致。
+  该标签使**压实材料排除**它（见 `02-modules/memory.md` §4）⇒ 失败证据不被摘成中性总结、不被迁 L4。
+  `raw_output` **不入**本条（ADR-0161 明文禁入面，失败条目不得成为旁路）。
 
 ### 3.4 推理输出可解析、失败可见（Reason 阶段，change `0166` / ADR-0156）
 

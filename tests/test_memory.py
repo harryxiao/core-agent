@@ -918,3 +918,53 @@ def test_mid_summary_for_isolated_per_session() -> None:
 
     assert store.mid_summary_for("s1") is not None
     assert store.mid_summary_for("s2") is None, "按会话隔离（他会话无中层摘要）"
+
+
+# ---- 失败经验的独立沉淀面：失败条目不被压实吸收（change 0179 / ADR-0170 / 台账 E116） ----
+
+
+def _failure_entry(entry_id: str, content: str, session_id: str) -> MemoryEntry:
+    """轮级失败条目（loop 侧写入形态：`tags=["loop","failure"]`）。"""
+    entry = _session_entry(entry_id, content, session_id)
+    entry.tags = ["loop", "failure"]
+    return entry
+
+
+def test_compact_skips_failure_entries_but_archives_plain_ones() -> None:
+    """压实材料排除带 `failure` 标签的条目：不被摘要吸收、不被迁 L4；同批普通条目照常迁 L4。"""
+    seen: list[list[str]] = []
+
+    def summarizer(entries: list[MemoryEntry]) -> str:
+        seen.append([e.id for e in entries])
+        return "摘要：" + "；".join(e.content for e in entries)
+
+    store = MemoryStore(summarizer=summarizer)
+    store.write("L2", _session_entry("e0", "普通事实", "s1"))
+    store.write("L2", _failure_entry("loop.failure.t1", "失败：LOOP_LIMIT_EXCEEDED", "s1"))
+
+    store.compact()
+
+    assert seen == [["e0"]], "失败条目不入压实材料（打分/摘要/关键事实同一材料源）"
+    layers = dict(store.index().entries)
+    assert layers["loop.failure.t1"] == "L2", "失败条目不随压实迁 L4"
+    assert layers["e0"] == "L4", "同批普通条目照常迁 L4"
+    summary = next(e for e in store.audit() if e.id == "compaction.summary.s1")
+    assert summary.tags == ["compaction", "summary", "from:e0"], "摘要 tags 不含失败条目 id"
+
+
+def test_forget_does_not_spare_failure_entries() -> None:
+    """`forget` **不豁免**失败条目：陈旧且零复用 ⇒ 仍迁 L4（失败面有界）。"""
+    store = MemoryStore()
+    store.write("L2", _aged(_failure_entry("loop.failure.t1", "失败：终止动作未达成", "s1"), 30))
+
+    assert store.forget() == ["loop.failure.t1"]
+    assert dict(store.index().entries)["loop.failure.t1"] == "L4", "压实豁免 ≠ 遗忘豁免"
+
+
+def test_failure_entry_is_readable() -> None:
+    """失败条目照常参与检索（`rank` / `_decay_score` 不看 tags ⇒ 压实豁免零排序副作用）。"""
+    store = MemoryStore()
+    store.write("L2", _failure_entry("loop.failure.t1", "失败：终止动作未达成", "s1"))
+    store.write("L2", _session_entry("e0", "今天天气不错", "s1"))
+
+    assert [e.id for e in store.read("终止动作未达成")][0] == "loop.failure.t1"
