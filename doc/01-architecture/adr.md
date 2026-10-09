@@ -5297,6 +5297,58 @@
   （`loop.failure.<trace_id>` 按 session 隔离读取）；⑧ 运维修复的按会话重抽材料
   (`_material_for_session`, **全层**判据) **仍含**失败条目 ⇒ 理论上可从失败条目抽 key_fact（仅运维触发，不落常规路径）。
 
+## ADR-0171：语义记忆去重 —— 提升产物退出 Consult 命中面（change 0180 / 账本 E117）
+
+- **背景**：**同一份会话摘要在同一次请求里经两条通道重复注入**。通道 A（记忆侧）：`loop.default` 每轮
+  `summary_for(session_id)` 读 L2 条目 `compaction.summary.<sid>`（`source="compaction"`）→ `ctx.summary_long`
+  → planner「历史摘要（长期）」块（**全文**、滚动最新）。通道 B（笔记侧）：`runtime._promote_summary`
+  （半自动唯一生产接线）→ `promote_session_summary(..., pin=False)`（`notes/promote.py`：正文即
+  `## 会话摘要（提升自会话 sid）\n\n{summary.content}`）→ canonical 笔记 `session-<slug>`
+  （`source="notes.promote"`）→ `NoteStore.digest()`（`consult()` 命中节选 + `list()` 全量清单标题）
+  → `ctx.notes` → planner「相关笔记」块。⇒ 提升产物是**摘要的副本**（同一份内容的派生），半自动路径把它当
+  「知识条目」注入 prompt，与记忆侧**当前滚动摘要**同场 —— 既重复 token，又让**陈旧冻结快照**与**最新摘要**
+  并列（语义噪声）。用户 2026-10-10 复盘选定此账为 ①。
+- **决策 ①：让位方向＝提升产物退出 Consult 命中面，记忆侧长期摘要块留任。** 两条通道都可让位，但**记忆侧**的
+  长期摘要块**每轮在场且持续滚动最新**（会话连续性的承载体，0178 三层滑窗的锚），**notes 侧**的命中面是
+  **词法触发**（任务不命中即缺席）且内容是**提升时刻的冻结快照**：让位方应是**信息更弱**的一侧（用户裁决①）。
+- **决策 ②：退出粒度＝只退「命中的笔记」节选，「笔记清单」标题保留。** 提升产物**不再**以**正文节选**进命中面，
+  但仍以**标题**在清单在场（存在性可见 ⇒ 操作者/模型仍知「本会话有留档」；digest 契约最小改）。用户裁决②。
+- **决策 ③：判据落 `source`，非 `tag`。** 新增模块常量 `_ARCHIVE_SOURCES = frozenset({PROMOTE_SOURCE})`，
+  `digest()` 命中集合加一处来源过滤（`note.source not in _ARCHIVE_SOURCES`）。选 **source** 而非 tag：source 是
+  **canonical 内持久字段**且已是**来源守护面**（`notes.turn` / `notes.promote` 的覆写判据），而 tags 是**人工可编辑**
+  的 front-matter（抹掉即排除失效）。同 0179 选 tag 的**反向**理由 —— 0179 怕动 source 触碰 `exclude_source_prefixes`
+  红线（那是 **memory** 命名空间），此处 source 是 **notes** 内自有字段，无此耦合。
+- **决策 ④：排除只落在 `digest` 注入面；`consult` / `search` / `list` / `pinned_digest` 口径逐字不变。**
+  `digest` 是**注入**面（进 prompt），`consult`/`search` 是**检索**面（CLI `notes search` 仍须搜得到）。
+  ⇒ 「排除仅落在 digest」（不变量 I4）。**显式**提升路径（CLI `notes promote`、缺省 `pin=True`）**正文仍每轮
+  经常驻块在场**（`notes.md` §3.5.1 红线：操作者须 review 后再提升；跨会话语义所需）——本 change 只去掉其
+  **节选**重复，正文不动（局限①）。
+- **决策 ⑤：loop / memory 零改动。** 去重完全落在 notes 的注入面：`default.py` / `planner.py` / `protocol.py` 与
+  `memory/` 逐字不动。⇒ 会话侧结构保证「历史摘要（长期）」块仍是该会话摘要的**唯一 prompt 通道**（不变量 I6）。
+- **决策 ⑥：为何不做会话级去重（只在本会话内排除）。** notes 层**不得**接受会话维度 —— 这是红线，且
+  `tests/test_session_isolation.py` 参数化盖住 `digest`/`pinned`/`pinned_digest`/`pinned_overflow`/`set_pinned`
+  ⇒ 去重只能按**类别**（来源）而非按会话。「本会话的提升产物、在他会话仍作为命中节选在场」在类别判据下**不成立**
+  —— 任一会话的提升产物一律不进命中面（是**更保守**的排除面）。
+- **红态证据（实现前）**：`test_store_digest_excludes_archived_source_from_hits` /
+  `..._even_when_pinned` 在旧 `digest` 下红（命中节选仍含提升正文「先备份再滚动更新」）；
+  `test_notes_loop` / `test_memory_summary_promotion` 端到端红（`ctx.notes` / `digest` 含提升正文）。
+  **`test_..._consult_search_list_unchanged...` 生而绿**（守不变量 I4，非驱动变更）。三层共 **6 用例**（A 3 / B 2 / C 1），
+  全绿；全量基线 **2119 → 2125**。
+- **规格**：`notes` **MODIFIED**「Consult → Build → Update 循环纪律」（Consult 的**命中节选面** SHALL 排除**归档
+  来源**笔记；此类 SHALL 只以**清单标题**在场，正文 SHALL 不注入；`consult`/`search`/`list` 检索语义 SHALL 逐字不变）
+  + `notes` **MODIFIED**「会话摘要提升（promotion）」（半自动产出定位＝**归档留档物**，正文不进 prompt 命中节选，
+  仅以清单标题在场，可经操作者**显式 `pin`** 后由常驻通道在场；显式路径 `pin=True` 语义不变）。既有 Scenario 逐字
+  保留：notes 39 → 42（+3 Scenario）。`memory` / `loop` **不动**（契约无变化）。
+- **落点**：`src/core/notes/store.py`（`PROMOTE_SOURCE` 公开常量 + `_ARCHIVE_SOURCES` + `digest()` 一处过滤）、
+  `src/core/notes/promote.py`（`from .store import PROMOTE_SOURCE`，删本地字面量 `_PROMOTE_SOURCE`，两处引用替换
+  —— 单一真源，无环：promote → store 单向）。
+- **局限**：① **显式**提升仍存在「本会话内」双在场：常驻块（冻结全文，跨会话语义所需，规格明文授权）与
+  「历史摘要（长期）」块（滚动最新）并列 —— 本 change 只去掉其**节选**重复，不去正文（去正文＝拆掉显式路径的
+  跨会话用途）；② 提升产物仍以**标题**占 `_MAX_DIGEST_CHARS`(1200) 预算（用户裁决②：存在性保留）；
+  ③ 判据依赖 canonical 内 `- source:` 行：操作者手工删该行即排除失效（canonical 可编辑的固有面）；
+  ④ 未做「同源去重」的一般化：`key_fact` vs 笔记结论（②）、`observe_turn` 写回 vs `loop.<trace>` 条目（③）仍属另账
+  —— 本 change 只闭 ①。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5462,3 +5514,4 @@
 | ADR-0168 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0169 | 02-modules/loop.md, 02-modules/context.md, 02-modules/memory.md, 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0170 | 02-modules/loop.md, 02-modules/memory.md, 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0171 | 02-modules/notes.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

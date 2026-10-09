@@ -132,3 +132,25 @@ def test_end_to_end_semi_auto_promotion_lands_canonical_not_pinned(tmp_path) -> 
 
     assert len(list((tmp_path / "notes").glob("session-*.md"))) == 1, "幂等：仍单条"
     assert notes.get("session-s1").pinned is False
+
+
+def test_semi_auto_promotion_leaves_digest_hit_surface(tmp_path) -> None:
+    """真实链路：半自动提升落地后，其正文**不进** Consult 命中节选（只以清单标题在场）。
+
+    change 0180 / ADR-0171：该摘要正文已由 loop「历史摘要（长期）」块承载，digest 不再重复注入。
+    """
+    notes = NoteStore(path=tmp_path / "notes")
+
+    def _promote(session_id: str, summary: MemoryEntry) -> object:
+        return promote_session_summary(notes, summary, session_id=session_id, pin=False)
+
+    store = MemoryStore(summarizer=lambda entries: _LONG, summary_promoter=_promote)
+    store.write("L2", _episodic("e0", "s1"))
+    store.compact(session_id="s1")
+
+    assert [note.note_id for note in notes.consult("会话摘要")] == ["session-s1"], (
+        "检索面不变（仍是命中）"
+    )
+    digest = notes.digest("会话摘要")
+    assert "session-s1" in digest, "提升产物仍以清单标题在场（存在性可见）"
+    assert "结论" not in digest, "提升产物正文不进命中节选（免与长期摘要块重复注入）"

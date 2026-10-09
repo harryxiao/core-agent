@@ -44,6 +44,15 @@ _WRITE_EFFECT_TOOLS = frozenset(
 )
 _ERROR_MARKER = "错误："  # `loop._summarize_result` 对失败观察渲染的前缀
 
+# 提升产物的来源标记（唯一真源：`notes/promote.py` 写入、本模块据此识别归档来源）。
+PROMOTE_SOURCE = "notes.promote"
+
+# 归档来源排除面（change 0180 / ADR-0171）：正文**源自 memory 会话摘要**的留档物 ——
+# 该摘要已由 loop「历史摘要（长期）」块每轮注入 ⇒ 其**节选** SHALL NOT 再进 Consult 命中面
+# （同源内容免二次注入）。只约束 `digest` 注入面：
+# `consult`/`search`/`list`/`pinned_digest` 口径逐字不变。
+_ARCHIVE_SOURCES = frozenset({PROMOTE_SOURCE})
+
 
 def _tool_of_step(step: str) -> str:
     """行动序列行 → 工具名（行首至首个 ``（``）；非该形态 ⇒ 整行（⇒ 匹配不到已知工具名）。"""
@@ -174,9 +183,14 @@ class NoteStore(Plugin):
     # ---- 循环纪律接缝 ----
 
     def digest(self, query: str) -> str:
-        """确定性摘要：命中笔记节选 + 笔记清单（供 loop 注入，**不自动全量注入正文**）。"""
+        """确定性摘要：命中笔记节选 + 笔记清单（供 loop 注入，**不自动全量注入正文**）。
+
+        命中节选 SHALL 排除**归档来源**笔记（``_ARCHIVE_SOURCES``，如提升产物）：其正文源自 memory
+        会话摘要、已由 loop「历史摘要（长期）」块每轮注入 ⇒ 此处不再重复；此类笔记仍以**清单标题**
+        在场（存在性可见）。``consult`` / ``search`` / ``list`` 的检索语义不受此排除影响。
+        """
         sections: list[str] = []
-        hits = self.consult(query)
+        hits = [note for note in self.consult(query) if note.source not in _ARCHIVE_SOURCES]
         if hits:
             sections.append(
                 "命中的笔记：\n"

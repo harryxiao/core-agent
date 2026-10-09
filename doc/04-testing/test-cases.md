@@ -1645,6 +1645,39 @@
 > 最终仍会被遗忘 / 任务原文首次进 L2 记忆面 / 注入评分器时仍受闸门约束 / 不进摘要 / 跨会话同类失败靠语义命中 /
 > 运维修复的按会话重抽材料仍含失败条目）。
 
+## 93. 语义记忆去重：提升产物退出 Consult 命中面（TC-ARCHIVE-DEDUP，change `0180`／ADR-0171，台账 E117）
+
+> **背景取证**（用户 2026-10-10 复盘「语义记忆--笔记提取重要内容归档，这个和哪一个重复了?」）：同一份
+> 会话摘要在同一次请求里经**两条通道**重复注入 —— 通道 A（记忆侧）：`loop.default` 每轮
+> `summary_for(session_id)` 读 L2 `compaction.summary.<sid>` → `ctx.summary_long` → planner
+> 「历史摘要（长期）」块（**全文**、滚动最新）；通道 B（笔记侧）：`runtime._promote_summary`（半自动
+> 唯一生产接线）→ `promote_session_summary(..., pin=False)`（正文即会话摘要副本）→ canonical 笔记
+> `session-<slug>`（`source="notes.promote"`）→ `NoteStore.digest()` 命中节选 → `ctx.notes` → planner
+> 「相关笔记」块。⇒ 提升产物是摘要的**副本**，与记忆侧**当前滚动摘要**同场（重复 token + **陈旧冻结快照**
+> 与**最新摘要**并列的语义噪声）。用户裁决 ① 让位方向＝**提升产物退出 Consult 命中面**（记忆侧长期摘要块
+> 留任）、② 退出粒度＝**只退命中节选、清单标题保留**。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-ARCHIVE-DEDUP-01 | notes/spec.md「Consult → Build → Update 循环纪律」Scenario「命中面排除归档来源（提升产物以清单标题在场）」 | 一篇 `source="notes.promote"` 的提升产物（词法可命中）+ 一篇普通笔记，`digest(query)` | 提升产物**无**节选（正文**恰一次**在场，非两次）；普通笔记节选**照常**；提升产物仍在「笔记清单」标题（存在性可见）（锚点：`tests/test_notes.py::test_store_digest_excludes_archived_source_from_hits`） |
+| TC-ARCHIVE-DEDUP-02 | notes/spec.md「会话摘要提升（promotion）」Scenario「提升产物置常驻也不进命中节选（通道分列）」 | 同一提升产物**置常驻**（`pinned=True`），`digest()` + `pinned_digest()` | 命中节选**仍不给**其正文；`pinned_digest()` **完整**含其正文（两通道分列、同篇不重复）（锚点：`tests/test_notes.py::test_store_digest_excludes_archived_source_even_when_pinned`） |
+| TC-ARCHIVE-DEDUP-03 | notes/spec.md 两 Requirement（不变量 I4：排除仅落 `digest`） | 提升产物 + `consult` / `search` / `list` | 三者对提升产物**逐字不变**（检索语义不动 ⇒ CLI `notes search` 仍搜得到）（锚点：`tests/test_notes.py::test_store_consult_search_list_unchanged_for_archived_source`） |
+| TC-ARCHIVE-DEDUP-04 | notes/spec.md「Consult → Build → Update 循环纪律」Scenario「命中面排除归档来源」+ 真实 loop 接线 | 真 `DefaultLoop`（`notes_consult=store.digest` / `pinned_notes_consult=store.pinned_digest`）+ 提升产物 + 普通笔记 | `ctx.notes` **不含**提升产物节选、**含**普通命中、仍以 `session-*` 标题在场；`ctx.pinned_notes == ""`（半自动不占常驻预算）（锚点：`tests/test_notes_loop.py::test_loop_notes_block_excludes_promoted_summary`） |
+| TC-ARCHIVE-DEDUP-05 | notes/spec.md「会话摘要提升（promotion）」Scenario「提升产物置常驻也不进命中节选（通道分列）」+ 真实 loop 接线 | 真 `DefaultLoop` + **置常驻**提升产物 | `ctx.notes` 无其节选 **且** `ctx.pinned_notes` 含其**完整**正文（通道分列）（锚点：`tests/test_notes_loop.py::test_loop_promoted_note_pinned_stays_in_single_channel`） |
+| TC-ARCHIVE-DEDUP-06 | notes/spec.md「会话摘要提升（promotion）」Scenario「半自动提升产物不进命中节选（只以清单标题在场）」+ 真实链路 | 真 `MemoryStore`（`_LONG` 摘要 + 提升钩子 → `NoteStore(pin=False)`）越界半自动提升后，以命中 query 取 `digest()` | `consult("会话摘要") == ["session-s1"]`（检索面**不变**）但 `digest` **含** `session-s1` 标题、**不含**摘要正文（锚点：`tests/test_memory_summary_promotion.py::test_semi_auto_promotion_leaves_digest_hit_surface`） |
+
+> **红态证据**：逐层先红后绿 —— Layer A `test_store_digest_excludes_archived_source_from_hits` /
+> `..._even_when_pinned` 在旧 `digest` 下**红**（命中节选仍含提升正文「先备份再滚动更新」）；
+> Layer B 端到端 `test_loop_notes_block_excludes_promoted_summary` **红**（`ctx.notes` 含提升正文）；
+> Layer C `test_semi_auto_promotion_leaves_digest_hit_surface` **红**。`..._consult_search_list_unchanged...`
+> **生而绿**（守不变量 I4，非驱动变更）。绿后全量 `.venv/bin/pytest -q` ⇒ **2125 passed**
+> （基线 **2119**，**+6** = A 3 用例 + B 2 + C 1）。
+> **逐字兼容不变量**（I1~I7）：无提升笔记的语料 ⇒ `digest()` 输出**逐字不变**（零扰动）；`consult` /
+> `search` / `list` / `pinned_digest` 口径**逐字不动**；`loop` / `memory` **零改动** ⇒「历史摘要（长期）」
+> 块仍是该会话摘要的**唯一** prompt 通道；判据落 **source**（canonical 内持久、来源守护面）而非 tag。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0171 行（显式提升仍存在本会话内双在场 / 提升产物仍以
+> 标题占 digest 预算 / 判据依赖 canonical `- source:` 行 / 未做同源去重的一般化）。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

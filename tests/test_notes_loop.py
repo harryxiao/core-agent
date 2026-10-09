@@ -150,6 +150,65 @@ def test_loop_consult_failure_degrades_and_does_not_change_outcome() -> None:
     assert "notes_consult_failed" in tracer.kinds, "降级留痕"
 
 
+# ---- 归档来源排除面：提升产物不进 Consult 命中节选（change 0180 / ADR-0171 / 账本 E117） ----
+
+
+def _promoted_note(*, pinned: bool = False) -> NoteEntry:
+    """提升产物：`source="notes.promote"`、正文即会话摘要（词法可命中）。"""
+    return NoteEntry(
+        note_id="session-s1",
+        title="会话摘要 s1",
+        content="部署流程：先备份再滚动更新",
+        tags=["promotion", "summary"],
+        source="notes.promote",
+        search_queries=["部署流程"],
+        pinned=pinned,
+    )
+
+
+def test_loop_notes_block_excludes_promoted_summary(tmp_path) -> None:
+    """端到端：提升产物的正文不进「相关笔记」块，普通命中照常。"""
+    store = _store(tmp_path)
+    store.update(_promoted_note())
+    store.update(NoteEntry(note_id="deploy", title="部署流程手册", content="先备份再滚动更新"))
+    captured: list[tuple[str, str]] = []
+
+    loop = DefaultLoop(
+        planner=lambda ctx: (
+            captured.append((ctx.notes, ctx.pinned_notes)) or Action(args={"reply": "done"})
+        ),
+        notes_consult=store.digest,
+        pinned_notes_consult=store.pinned_digest,
+    )
+    loop.run("部署流程怎么走")
+
+    notes, pinned = captured[0]
+    assert "先备份再滚动更新" in notes, "普通笔记命中照常注入"
+    assert "session-s1" in notes, "提升产物仍以清单标题在场"
+    assert "会话摘要 s1（session-s1）" not in notes, "提升产物不进命中节选（免与长期摘要块重复）"
+    assert pinned == "", "半自动提升不占常驻预算"
+
+
+def test_loop_promoted_note_pinned_stays_in_single_channel(tmp_path) -> None:
+    """置常驻的提升产物只经「常驻笔记」块在场：命中面不再重复同一篇。"""
+    store = _store(tmp_path)
+    store.update(_promoted_note(pinned=True))
+    captured: list[tuple[str, str]] = []
+
+    loop = DefaultLoop(
+        planner=lambda ctx: (
+            captured.append((ctx.notes, ctx.pinned_notes)) or Action(args={"reply": "done"})
+        ),
+        notes_consult=store.digest,
+        pinned_notes_consult=store.pinned_digest,
+    )
+    loop.run("部署流程怎么走")
+
+    notes, pinned = captured[0]
+    assert "先备份再滚动更新" not in notes, "常驻版提升产物不进命中节选"
+    assert "先备份再滚动更新" in pinned, "正文经常驻通道完整在场（通道分列）"
+
+
 # ---- 任务后 Update ----
 
 

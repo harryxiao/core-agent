@@ -250,6 +250,55 @@ def test_store_digest_carries_hits_and_catalog(tmp_path) -> None:
     assert "other" in digest  # 笔记清单（全量标题，不含正文）
 
 
+# ---- 归档来源排除面：提升产物不进 Consult 命中节选（change 0180 / ADR-0171 / 账本 E117） ----
+
+
+def _promoted(note_id: str = "session-s1", *, pinned: bool = False) -> NoteEntry:
+    """提升产物：`source="notes.promote"`、正文即会话摘要（词法可命中）。"""
+    return NoteEntry(
+        note_id=note_id,
+        title=f"会话摘要 {note_id}",
+        content="部署流程：先备份再滚动更新",
+        tags=["promotion", "summary"],
+        source="notes.promote",
+        search_queries=["部署流程"],
+        pinned=pinned,
+    )
+
+
+def test_store_digest_excludes_archived_source_from_hits(tmp_path) -> None:
+    """提升产物正文**不进**命中节选（免与「历史摘要（长期）」块重复注入），但仍在笔记清单。"""
+    store = NoteStore(path=tmp_path)
+    store.update(_promoted())
+    store.update(NoteEntry(note_id="deploy", title="部署流程手册", content="先备份再滚动更新"))
+
+    digest = store.digest("部署流程")
+
+    assert "先备份再滚动更新" in digest, "普通笔记的命中节选照常在（回归锚）"
+    assert "session-s1" in digest, "提升产物仍以清单标题在场（存在性可见）"
+    assert digest.count("先备份再滚动更新") == 1, "提升产物的节选不进命中面（正文只出现一次）"
+    assert "会话摘要 session-s1（session-s1）" not in digest, "提升产物不出现在「命中的笔记」节选中"
+
+
+def test_store_digest_excludes_archived_source_even_when_pinned(tmp_path) -> None:
+    """置常驻（显式提升）也不进命中节选：同一篇 SHALL NOT 同时在两条通道出现。"""
+    store = NoteStore(path=tmp_path)
+    store.update(_promoted(pinned=True))
+
+    assert "先备份再滚动更新" not in store.digest("部署流程"), "常驻版提升产物不进命中节选"
+    assert "先备份再滚动更新" in store.pinned_digest(), "正文经常驻通道完整在场（通道分列）"
+
+
+def test_store_consult_search_list_unchanged_for_archived_source(tmp_path) -> None:
+    """排除**只**落在 `digest` 注入面：`consult` / `search` / `list` 对提升产物逐字不变。"""
+    store = NoteStore(path=tmp_path)
+    store.update(_promoted())
+
+    assert [note.note_id for note in store.consult("部署流程")] == ["session-s1"]
+    assert [note.note_id for note in store.search("部署流程")] == ["session-s1"]
+    assert [note.note_id for note in store.list()] == ["session-s1"]
+
+
 # ---- 常驻（pinned）笔记（change 0149 / ADR-0141 / 账本 E93） ----
 
 

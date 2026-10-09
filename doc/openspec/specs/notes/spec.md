@@ -58,6 +58,15 @@ note + `NoteStore.list()` 清单，作为「相关笔记」块注入本轮推理
 **成功轮**把新结论**覆盖式**写回对应主题的 canonical 文件。loop SHALL NOT import `notes`（架构红线），
 两枚钩子 SHALL 由组合根注入。
 
+Consult 的**命中节选面** SHALL 排除**归档来源**笔记（`source` 属归档来源集合，当前为提升产物
+`notes.promote`，见 Requirement「会话摘要提升（promotion）」）：此类笔记 SHALL NOT 出现在「命中的笔记」
+节选中——其正文**已由**记忆侧「历史摘要（长期）」块（`memory`「记忆压实」的会话摘要）每轮注入，
+同一份内容 SHALL NOT 经两条通道重复注入同一次请求。归档来源笔记 SHALL 仍以**「笔记清单」标题 + `note_id`**
+在场（存在性可见）；其正文 SHALL 只经**显式常驻通道**（`pinned=True`，承 Requirement「常驻（pinned）笔记」）
+或 canonical 真相层（人工 `notes show` / 编辑）触达。该排除 SHALL **只**落在 `digest` 注入面：
+`consult` / `search` / `list` 的检索语义 SHALL **逐字不变**（CLI `notes search` 仍可检索到归档来源笔记）；
+**非**归档来源笔记的命中节选 SHALL 逐字不变。
+
 笔记层 SHALL 是**全局文档层**，SHALL NOT 参与会话隔离：Consult 与写入面 SHALL NOT 接受会话维度，
 同一 query 在任意会话下的命中集 SHALL 相同——笔记是**被有意文档化的知识库**（刻意知识），
 不是某一轮对话的残留，故按设计进全局层、跨会话共享。
@@ -150,6 +159,14 @@ SHALL **不落盘**（返回空），SHALL NOT 为该轮创建或覆写任何笔
   （如 `file_write` / `code_run` 成功 / `gate_run` 通过）
 - **WHEN** 收尾钩子触发任务后写回
 - **THEN** 写回落盘（覆盖式，来源守护与派生主题逻辑**逐字不变**），正文含本轮行动序列
+
+#### Scenario: 命中面排除归档来源（提升产物以清单标题在场）
+- **GIVEN** canonical 目录含一篇提升产物（`source == "notes.promote"`）与一篇普通笔记
+  （`source == "notes"`），二者正文都与本轮任务词法相关
+- **WHEN** loop 装配「相关笔记」块（`digest`）
+- **THEN** 「命中的笔记」节选**只含普通笔记**的节选；提升产物**不进**命中节选（其正文不注入本轮请求），
+  但**仍在**「笔记清单」中以标题 + `note_id` 在场；**AND** 同一 query 下
+  `consult()` / `search()` / `list()` 对提升产物的结果**逐字不变**（排除只在 `digest` 注入面）
 
 ### Requirement: 结构化错误码与既有链路不变
 
@@ -313,9 +330,17 @@ SHALL NOT 产生第二条；SHALL 复用**既有唯一写路径** `NoteStore.upd
 
 提升产出的 note SHALL 置 `pinned=True`（每轮无条件注入；承 Requirement「常驻（pinned）笔记」）——
 该**自动置常驻**语义 SHALL **仅**适用于**显式路径**；**半自动路径** SHALL 以 `pin=False` 提升、SHALL NOT
-自动置常驻（半自动产出是**普通** canonical 笔记：只经 Consult 命中面与 digest 注入，**不**占常驻预算）。
-提升的 note SHALL 属**全局文档层**，SHALL NOT 参与会话隔离——`session_id` 仅是 **`note_id` 的派生输入**与
-来源标注，**不是**隔离维度。提升写入 SHALL **不接** `EffectTracker`（承 canonical 文档层既有取舍）。
+自动置常驻（半自动产出的定位是**归档留档物**：其正文 SHALL NOT 注入 prompt —— 不进 Consult 命中节选
+（承 Requirement「Consult → Build → Update 循环纪律」的**归档来源排除面**），只以「笔记清单」标题在场、
+**不**占常驻预算；正文经 canonical 真相层（人工 `notes show` / 编辑）触达，操作者**显式** `pin` 后
+可由常驻通道在场）。提升的 note SHALL 属**全局文档层**，SHALL NOT 参与会话隔离——`session_id` 仅是
+**`note_id` 的派生输入**与来源标注，**不是**隔离维度。提升写入 SHALL **不接** `EffectTracker`
+（承 canonical 文档层既有取舍）。
+
+提升产出的注入面 SHALL 为**单通道**：置常驻者只经「常驻笔记」块（**完整正文**）、不置常驻者**不经**
+prompt 正文——**无论** `pinned` 与否，提升产物 SHALL NOT 进 Consult 命中节选（同一篇 SHALL NOT 同时
+在两条通道出现）；该会话的摘要正文在 prompt 侧的**承载者** SHALL 为记忆侧「历史摘要（长期）」块
+（`memory`「记忆压实」），本路径 SHALL NOT 引入第二条正文通道。
 
 **半自动触发的判据与频次** SHALL 严格限定：仅当 **memory 压实**发现该会话摘要**首次越过**滚动上界
 （既有摘要长度 ≤ 上界而本次产出摘要长度 > 上界；见 `memory`「记忆压实」）时，由 memory 侧**注入的提升
@@ -376,3 +401,16 @@ CLI SHALL 暴露 `notes promote <session-id> [--as <note_id>] [--title <title>]`
 - **THEN** **不写任何文件**（该笔记正文与标题逐字不变）、退出码非零
 - **AND GIVEN** 同样情形但**显式给出** `--as <note_id>`
 - **THEN** 视为显式授权，照常覆写为提升产出（`source == "notes.promote"`、`pinned == True`）
+
+#### Scenario: 半自动提升产物不进命中节选（只以清单标题在场）
+- **GIVEN** 半自动提升落下一篇该会话 note（`source == "notes.promote"`、`pinned is False`），
+  且其正文与某任务词法相关
+- **WHEN** 该任务轮装配「相关笔记」块（`digest`）
+- **THEN** 「命中的笔记」节选**不含**其正文；其标题 + `note_id` **仍在**「笔记清单」中；
+  **AND** 该会话摘要的 prompt 正文**仍由**「历史摘要（长期）」块承载（唯一正文通道，逐字不变）
+
+#### Scenario: 提升产物置常驻也不进命中节选（通道分列）
+- **GIVEN** 一篇提升产物已置常驻（`pinned=True`），其正文长于 `_MAX_EXCERPT_CHARS`(200)
+- **WHEN** 装配本轮推理上下文
+- **THEN** 「常驻笔记（任务级硬约束…）」块含其**完整正文**，而「相关笔记」块**不含**其节选——
+  同一篇提升产物 SHALL NOT 同时在两条通道出现

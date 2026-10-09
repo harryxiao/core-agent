@@ -120,6 +120,10 @@ class NoteStore(Plugin):
 - `ensure` = 幂等 get-or-create（**不**因已存在而报 `TOPIC_EXISTS`）；`create` 是显式创建、已存在即拒。
 - `digest(query)`：`consult(query)` 命中项渲染为「- 标题（note_id）：正文节选」+ `list()` 标题清单；
   总长有界（供 loop 直接注入，不自动全量注入正文）。
+  **归档来源排除面**（change 0180 / ADR-0171 / 账本 E117）：命中**节选** SHALL 排除 `source ∈`
+  `_ARCHIVE_SOURCES`（＝提升产物 `notes.promote`）的笔记 —— 其正文源自 memory 会话摘要、已由 loop
+  「历史摘要（长期）」块每轮注入，同源内容免二次注入；此类仍以**清单标题**在场。**排除仅落在
+  `digest` 注入面**：`consult` / `search` / `list` / `pinned_digest` 口径**逐字不变**。
 - `observe_turn`：成功轮把「解决过程」覆盖式写回 `slug_topic(task)` 主题的 canonical 文件；`ok=False`
   或 slug 为空 ⇒ `None`（不写盘）。写回**原样携带**既有 `pinned` 标记（逐轮写回不抹除常驻）。
   **来源守护**（change 0151 / ADR-0143）：撞上来源**非** `notes.turn` 的既有笔记 ⇒ **不覆写**该主题，
@@ -172,6 +176,10 @@ def promote_session_summary(
   （`session_id` 仅是 id 派生输入与来源标注，**不是**隔离维度）。**置常驻分路径**：显式路径 `pin=True`
   ⇒ `pinned=True`（每轮无条件注入）；半自动路径 `pin=False` ⇒ **普通** canonical 笔记（不占常驻预算、
   不以硬约束身份逐轮进场；承 ADR-0142 局限①）。
+- **注入面单通道**（change 0180 / ADR-0171）：产出 `source="notes.promote"` ⇒ 其**正文不进** Consult
+  命中节选（`digest` 的归档来源排除面，见 §3），只以**清单标题**在场 —— 摘要正文已由 loop
+  「历史摘要（长期）」块承载（**单通道**，免同源二次注入）。**显式**路径的 `pin=True` 常驻注入**语义
+  不变**（跨会话用途所需），仅其节选不再重复进命中面。检索面（`consult`/`search`/`list`）**不变**。
 - **来源守护**（change 0151 / ADR-0143）：目标 `note_id` 撞来源**非** `notes.promote` 的既有笔记且未给
   显式 `as_note_id` ⇒ 返回 `None`、**不写盘**、CLI 非零退出；显式 `as_note_id` ⇒ 视为**显式授权**、照常覆写。
 - 写入**不接** `EffectTracker`（承 canonical 文档层既有取舍，与 `pin/unpin`/`observe_turn` 一致）。

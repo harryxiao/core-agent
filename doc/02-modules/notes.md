@@ -94,6 +94,11 @@ canonical 目录缺省 `$CORE_STATE_DIR/notes`（未设则 `~/.core/state/notes`
   `LLMPlanner._system_prompt` 渲染为「相关笔记」块（排在宪法/事实之后、技能/工具之前）。
 - **不自动全量注入正文**：digest = 命中笔记节选（每篇 ≤200 字符）+ 全量**标题清单**，
   总量 ≤1200 字符 ⇒ token 有界。
+- **归档来源排除面**（change 0180／ADR-0171／账本 E117）：命中**节选** SHALL 排除**归档来源**笔记
+  （`source ∈ _ARCHIVE_SOURCES`，即提升产物 `notes.promote`）—— 其正文**源自 memory 会话摘要**、
+  已由 loop「历史摘要（长期）」块每轮注入 ⇒ 同源内容免二次注入；此类笔记仍以**清单标题**在场
+  （存在性可见）。**排除仅落在 `digest` 注入面**：`consult` / `search` / `list`（检索语义）与
+  `pinned_digest`（常驻通道）**逐字不变** ⇒ CLI `notes search` 仍搜得到提升产物。
 - 钩子抛错**只降级留痕**（`notes_consult_failed`），`ctx.notes` 置空，**不改本轮结局**。
 
 ### 3.4.1 常驻（pinned）：任务级硬约束锚（与 Consult **分列**的两条通道）
@@ -151,9 +156,14 @@ canonical 目录缺省 `$CORE_STATE_DIR/notes`（未设则 `~/.core/state/notes`
   **不增长**；写回复用**唯一**写路径 `NoteStore.update()`（不另开第二写路径）。
 - **置常驻分路径**：**显式**提升产出 `pinned=True`（承 §3.4.1）⇒ 摘要正文**每轮无条件注入**（受
   `_MAX_PINNED_CHARS` 与既有常驻笔记共享的预算约束）；**半自动**提升以 `pin=False`（承 ADR-0142 局限①）
-  产出**普通** canonical 笔记 —— 只经 Consult 命中面与 digest 注入，**不**占常驻预算、**不**以硬约束身份
-  逐轮进场。⚠️ **红线**：显式提升正文每轮进模型上下文 ⇒ 操作者须在提升前 **review 摘要**，**绝不**提升
-  含密钥 / 凭据的摘要。
+  产出**普通** canonical 笔记 —— 定位＝**归档留档物**（canonical 真相层、人工可读/可编辑），
+  **不**占常驻预算、**不**以硬约束身份逐轮进场。⚠️ **红线**：显式提升正文每轮进模型上下文 ⇒ 操作者须在
+  提升前 **review 摘要**，**绝不**提升含密钥 / 凭据的摘要。
+- **正文不进 prompt 命中节选**（change 0180／ADR-0171／账本 E117）：提升产物的正文**源自 memory 会话摘要**，
+  该摘要已由 loop「历史摘要（长期）」块每轮承载 ⇒ 其**节选** SHALL NOT 再进 Consult 命中面（同源内容免二次
+  注入，见 §3.4 归档来源排除面）。**只退节选、清单标题保留**（存在性可见）。**显式**路径的 `pin=True`
+  每轮常驻注入**语义不变**（跨会话用途所需），仅其**节选**不再重复进命中面（局限①：本会话内正文仍双在场
+  ——常驻块＋长期摘要块，去重不及正文）。
 - `session_id` 仅是 `note_id` 的**派生输入**与来源标注（`tags` 含 `session:<sid>`），**不是**隔离维度 ——
   产出属**全局文档层**（承「刻意知识不参与会话隔离」）。空 slug 且未给显式 id ⇒ 返回 `None`、不写盘。
 - **来源守护**（change 0151／ADR-0143）：目标 `note_id` 撞上来源**非** `notes.promote` 的既有笔记
@@ -170,7 +180,8 @@ canonical 目录缺省 `$CORE_STATE_DIR/notes`（未设则 `~/.core/state/notes`
 - **接线（组合根）**：`runtime` 把 `NoteStore` 构造**上移**至 `MemoryStore` 之前，注入闭包
   `_promote_summary(session_id, summary) -> promote_session_summary(note_store, summary, session_id, pin=False)`。
   ⇒ 依赖方向 `notes → core.memory` 维持，memory **不** import notes。半自动产出的 note **不**置常驻
-  （§3.5.1），属全局文档层、经 Consult 命中面与 digest 注入。
+  （§3.5.1），属全局文档层，定位＝**归档留档物**：**正文不进** Consult 命中面（§3.4 归档来源排除面 /
+  change 0180／ADR-0171），仅以**清单标题**在场；`consult`/`search`/`list` 检索面**不变**。
 
 ### 3.6 循环技能由组合根构造
 

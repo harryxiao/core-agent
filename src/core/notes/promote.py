@@ -15,10 +15,9 @@ from core.memory import MemoryEntry
 
 from .errors import NoteError
 from .models import NoteEntry, slug_topic
-from .store import NoteStore
+from .store import PROMOTE_SOURCE, NoteStore
 
 _PROMOTE_PREFIX = "session-"
-_PROMOTE_SOURCE = "notes.promote"
 
 
 def promote_session_summary(  # noqa: PLR0913 — 注入面皆可选（as_note_id/title/pin）
@@ -55,7 +54,7 @@ def promote_session_summary(  # noqa: PLR0913 — 注入面皆可选（as_note_i
     except NoteError:
         existing = None
 
-    if existing is not None and existing.source != _PROMOTE_SOURCE and as_note_id is None:
+    if existing is not None and existing.source != PROMOTE_SOURCE and as_note_id is None:
         return None
 
     body = f"## 会话摘要（提升自会话 {session_id}）\n\n{summary.content.strip()}"
@@ -72,7 +71,7 @@ def promote_session_summary(  # noqa: PLR0913 — 注入面皆可选（as_note_i
             title=resolved_title,
             content=body,
             tags=tags,
-            source=_PROMOTE_SOURCE,
+            source=PROMOTE_SOURCE,
             pinned=pin,
         )
     )
