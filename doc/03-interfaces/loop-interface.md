@@ -109,6 +109,10 @@ class LoopContext:
                                 # 本会话**既往**轮次的 (user, assistant) 对（转录回灌；缺省空 ⇒ 不回灌）
                                 # **独立字段**：SHALL NOT 前置进 ``messages``——后者首位被四处 accessor
                                 # 当「本轮任务」（change 0115 / ADR-0108 决策③）
+    summary_long: str = ""      # 分层历史的**长期**摘要（会话整体摘要；缺省空 ⇒ 不注入）
+                                # **独立字段**：SHALL NOT 折入 ``messages`` / ``history``（change 0178 / ADR-0169）
+    summary_mid: str = ""       # 分层历史的**中期**摘要（中带滚动摘要；缺省空 ⇒ 不注入）
+                                # 注入次序：常驻笔记 → 历史摘要（长期）→ 历史摘要（中期）→ 相关事实…
 
     def done(self) -> bool:
         """推理判定可结束本轮时返回 True。"""

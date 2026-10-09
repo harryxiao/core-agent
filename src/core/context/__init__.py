@@ -12,6 +12,7 @@ from .compactor import Compactor
 from .errors import ContextError, ContextErrorCode
 from .info_map import InfoMap
 from .models import Compaction, ContextPack, MapEntry, Pointer
+from .window import WindowPlan, plan_window
 
 __all__ = [
     "BudgetManager",
@@ -24,5 +25,7 @@ __all__ = [
     "InfoMap",
     "MapEntry",
     "Pointer",
+    "WindowPlan",
     "estimate_tokens",
+    "plan_window",
 ]

@@ -52,6 +52,17 @@ ContextBuilder（L3 输入侧）
 - 产物按**本轮会话**归属（`persist(session_id=…)`），条目 id 带会话键（缺省 `default`）
   ⇒ 跨会话不再同名覆盖（change `0114`／ADR-0107）。
 
+### 3.4 三层窗口比例分配（change `0178`／ADR-0169）
+
+- **策略纯函数**：`core.context.plan_window(history_turns, history_budget, *, tiered) -> WindowPlan`
+  —— 只依赖 stdlib、**零 I/O、零模型调用**，把会话历史回灌的分层策略收敛为确定性配额。
+- **份额**：短 `0.5` / 中 `0.3` / 长 `0.2`，为**模块常量**（不新增配置键，与 `_ROUND_THRESHOLD` /
+  `MAX_SUMMARY_CHARS` 同纪律）；`history_budget = token_budget // 2`（沿用既有 `_load_history` 口径）。
+- **配额**：`short_turns` / `mid_turns` / `short_tokens`（短层 token 上界）/ `mid_chars`（中层摘要字符上界）；
+  clamp —— 轮数或预算非正 ⇒ **全零**（关闭回灌）；非分层 ⇒ 「短层 = 全部 `history_turns` + 全部预算、中层零」，
+  与既有双重上界**逐字等价**；分层时 `short ≥ 1`、`short + mid ≤ history_turns`、配额随总量**单调不减**。
+- **LLM 压缩不在此层新开调用点**：本模块只**分配**，摘要由记忆的压实通道统一产出（`summarize_slice`）。
+
 ---
 
 ## 4. 与记忆/约束的分工

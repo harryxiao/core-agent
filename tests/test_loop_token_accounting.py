@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import asyncio
 
+from core.context import estimate_tokens
 from core.llm_provider import LLMRequest, LLMResponse, TokenUsage
 from core.loop import Action, DefaultLoop, LLMPlanner, LoopContext
+from core.memory import MemoryEntry, MemoryStore, TranscriptStore
 from core.tools import Tool, ToolDef, ToolProvider
 
 # ---- 替身 ----
@@ -175,3 +177,77 @@ def test_planner_probe_counts_tool_schemas() -> None:
     tools_tokens = with_tools.last_prompt_tokens()
 
     assert tools_tokens > bare_tokens
+
+
+# ---- 分层摘要计入预算记账（change 0178 / ADR-0169 / 台账 E115） ----
+
+
+def _summary_memory(
+    session_id: str, *, long: str = "长期要点", mid: str = "中期要点"
+) -> MemoryStore:
+    memory = MemoryStore()
+    for suffix, content in (("summary", long), ("mid", mid)):
+        memory.write(
+            "L2",
+            MemoryEntry(
+                id=f"compaction.{suffix}.{session_id}",
+                layer="L2",
+                content=content,
+                tags=["compaction"],
+                source="compaction",
+                trace_id=f"compaction.{suffix}.{session_id}",
+                session_id=session_id,
+                kind="semantic",
+            ),
+        )
+    return memory
+
+
+def _store_with_turn() -> TranscriptStore:
+    store = TranscriptStore()
+    store.append("s1", "user", "旧问")
+    store.append("s1", "assistant", "旧答")
+    return store
+
+
+def test_layered_summary_tokens_counted_into_budget() -> None:
+    """无探针 planner 时，两层摘要的 token 亦计入 `token_used`（同历史下纯增量）。"""
+    seen: list[int] = []
+
+    def planner(ctx: LoopContext) -> Action:
+        seen.append(ctx.token_used)
+        return Action(args={"reply": "ok"})
+
+    DefaultLoop(
+        planner=planner, transcript=_store_with_turn(), memory=MemoryStore(), token_budget=100_000
+    ).run("hi", session_id="s1")
+    plain = seen[-1]
+
+    layered = DefaultLoop(
+        planner=planner,
+        transcript=_store_with_turn(),  # 各自全新转录（run 会把本轮也追加进去）
+        memory=_summary_memory("s1"),
+        token_budget=100_000,
+    )
+    layered.run("hi", session_id="s1")
+    layered_tokens = seen[-1]
+
+    assert layered_tokens - plain == estimate_tokens("长期要点") + estimate_tokens("中期要点")
+
+
+def test_empty_summary_fields_add_zero_tokens() -> None:
+    """I10：摘要字段为空 ⇒ 零增量（守护 `estimate_tokens("") == 1` 陷阱）。"""
+    seen: list[int] = []
+
+    def planner(ctx: LoopContext) -> Action:
+        seen.append(ctx.token_used)
+        return Action(args={"reply": "ok"})
+
+    loop = DefaultLoop(
+        planner=planner, transcript=_store_with_turn(), memory=MemoryStore(), token_budget=100_000
+    )
+    loop.run("hi", session_id="s1")
+
+    assert seen == [
+        estimate_tokens("旧问") + estimate_tokens("旧答") + estimate_tokens("hi")
+    ]  # 两个空摘要字段零增量

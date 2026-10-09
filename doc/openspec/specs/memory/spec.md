@@ -210,6 +210,57 @@ SHALL NOT 交付，压实行为**逐字不变**。钩子抛错 SHALL **降级**�
 - **WHEN** 压实流程运行时存在并发读写
 - **THEN** 通过加锁/事务保证压实不产生数据竞争，并发读写等待或走一致性快照，不丢失条目
 
+`MemoryStore` SHALL 另提供**中期摘要**的产出与读取（会话滑窗「中带」的物化）：
+`summarize_slice(session_id, entries, *, max_chars) -> str | None` SHALL 把一段**会话原文**
+（`entries` 为上层从转录切出的**临时桩**，**不在库中**；本方法**只读它们、SHALL NOT 将其落库**）
+经**既有摘要器**滚合并为**一条** `kind="semantic"` 条目，其 `id` 与 `trace_id` SHALL 分别为
+`compaction.mid.<key>` 与 `compaction.mid.<key>`（`key = session_id or "default"`），`source` 为
+`compaction`。该产出 SHALL 遵守：
+
+- **滚动合并**：该会话已存在中期摘要时 SHALL 把**既有中期摘要内容**作为材料**首条**一并投喂摘要器；
+- **有界 + 脱敏**：写库前 SHALL 无条件执行**密钥形态脱敏**（与关键事实抽取**同源**、方向 over-redact），
+  并 SHALL 截断至 `max_chars`（越界即丢弃尾部，不再累积增长）；
+- **不迁移来源**：SHALL NOT 迁移任何来源条目的层级（与压实迁移原条目相异 —— 来源为转录桩、本就不在库）；
+- **可撤销**：该写入 SHALL 记可撤销效应，按 `trace_id` 回滚即移除该中期摘要条目；
+- **降级**：摘要器 UNWIRED、`entries` 为空、或 `max_chars` 非正 ⇒ SHALL 返回 `None` 且**零写入零效应**。
+
+`MemoryStore` SHALL 另提供**只读**访问器 `mid_summary_for(session_id) -> MemoryEntry | None`：按
+`session_id` 取回该会话既有中期摘要（`id == f"compaction.mid.{session_id or 'default'}"`），无则
+`None`；SHALL NOT 产生任何写入或效应记录，SHALL NOT 变更条目的
+`reuse_count` / `importance` / `updated_at`。
+
+#### Scenario: 中期摘要滚动合并既有内容
+
+- **GIVEN** 某会话已存在一条中期摘要条目，其后又切出新增的中带原文桩
+- **WHEN** `summarize_slice` 被调用
+- **THEN** 投喂摘要器的材料**首条**为既有中期摘要、其后为新增桩；产出仍为**该会话唯一**的中期摘要
+  （id 不变、条目不增长）
+
+#### Scenario: 未注入摘要器时中期摘要零写入
+
+- **GIVEN** 记忆存储未注入摘要器（或桩为空 / `max_chars` 非正）
+- **WHEN** `summarize_slice` 被调用
+- **THEN** 返回 `None`，不写任何条目、不记任何效应
+
+#### Scenario: 中期摘要有界且脱敏且不迁移来源
+
+- **GIVEN** 摘要器产出的文本含**明文密钥形态**字符串且超长，且材料中含已在库的来源条目
+- **WHEN** `summarize_slice` 被调用
+- **THEN** 落库内容**不含**该明文（脱敏为 `<redacted>`）且长度不超过 `max_chars`；来源条目的层级
+  **逐字不变**（不被迁移）
+
+#### Scenario: 中期摘要可撤销
+
+- **GIVEN** 已产出某会话的中期摘要
+- **WHEN** 按 `trace_id=f"compaction.mid.<key>"` 回滚效应
+- **THEN** 该中期摘要条目被移除
+
+#### Scenario: 按会话读取既有中期摘要（只读）
+
+- **GIVEN** 某会话已产出中期摘要
+- **WHEN** `mid_summary_for(<该会话>)`
+- **THEN** 返回该中期摘要条目；`mid_summary_for(<他会话>)` ⇒ `None`；且调用前后 `audit()` 快照与
+  效应追踪面**逐字不变**
 ### Requirement: 记忆固化（consolidation）
 系统 SHALL 对会话内 episodic 条目**自动打分**并据此**门控固化**：注入 scorer（judgment `score`
 原语，JEV 优先、低置信/不可达回退主 LLM）时，SHALL 将分值写回条目的 `importance`（写入可撤销，
@@ -375,6 +426,35 @@ SHALL NOT 中断 Agent 主流程。遗忘 SHALL 由**维护节拍**驱动——�
 - **WHEN** 读取转录
 - **THEN** 缺失按空转录处理、坏行被跳过，读取不抛错、不阻断主流程
 
+系统 SHALL 支持**三层滑窗的切分读取**：一次读取 SHALL 同时给出**短带原文**与**中带原文** ——
+短带为最近 `short_turns` 轮（沿用既有「按 token 从新到旧截断 + 丢弃开头孤儿 assistant 行」语义），
+中带为紧邻短带之前的 `mid_turns` 轮（**不**按 token 截断，其内容由中层摘要承接）。两带 SHALL
+**不重叠**；轮数不足时短带吃满、中带为空；`short_turns` 非正 ⇒ 两带皆空。该切分 SHALL 只做一次
+转录读取（不重复全量解析）。
+
+#### Scenario: 切分短带与中带且不重叠
+
+- **GIVEN** 某会话已有若干轮转录
+- **WHEN** 以短层轮数与中层轮数切分读取
+- **THEN** 短带 = 末 `short_turns` 轮原文、中带 = 其前 `mid_turns` 轮原文，两带**无交集**
+
+#### Scenario: 短带沿用 token 截断与孤儿行丢弃
+
+- **GIVEN** 短带原文的 token 超过短层 token 上界
+- **WHEN** 切分读取
+- **THEN** 短带按 token 从新到旧截断、丢弃开头的孤儿 assistant 行；中带**不**截断
+
+#### Scenario: 轮数不足时中带为空
+
+- **GIVEN** 会话轮数少于短层与中层轮数之和
+- **WHEN** 切分读取
+- **THEN** 短带取尽可用轮次，中带为空（无更旧内容可摘）
+
+#### Scenario: 关闭短层时两带皆空
+
+- **GIVEN** 短层轮数非正
+- **WHEN** 切分读取
+- **THEN** 短带与中带皆为空
 ### Requirement: 来源前缀排除与放行（读取面）
 
 系统 SHALL 在记忆检索的读取面支持**来源前缀排除**：`source` 前缀命中 `exclude_source_prefixes` 的条目

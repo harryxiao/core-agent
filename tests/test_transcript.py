@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from core.memory import TranscriptStore
 
 
@@ -116,6 +118,82 @@ def test_tail_token_bound_never_starts_mid_round() -> None:
 
     # 35 token：末三行（b/c/d）在界内，但 b 是被截断轮的答复 ⇒ 结果自 c 起
     assert [e["content"] for e in store.tail("s", 99, max_tokens=35)] == ["c" * 40, "d" * 40]
+
+
+# ---- window：三层滑窗的短/中带切分（change 0178 / ADR-0169） ----
+
+
+def _eight_turns() -> TranscriptStore:
+    store = TranscriptStore()
+    for i in range(8):
+        store.append("s", "user", f"q{i}")
+        store.append("s", "assistant", f"a{i}")
+    return store
+
+
+def test_window_splits_short_and_mid_bands() -> None:
+    """短带 = 末 `short_turns` 轮、中带 = 其前 `mid_turns` 轮，两带**不重叠**。"""
+    short, mid = _eight_turns().window("s", short_turns=2, mid_turns=3, short_tokens=0)
+
+    assert [e["content"] for e in short] == ["q6", "a6", "q7", "a7"]
+    assert [e["content"] for e in mid] == ["q3", "a3", "q4", "a4", "q5", "a5"]
+    assert {e["content"] for e in short}.isdisjoint({e["content"] for e in mid})
+
+
+def test_window_short_band_truncated_by_short_tokens() -> None:
+    """短带按 `short_tokens` 从新到旧截断（丢最旧），中带**不**截断。"""
+    store = TranscriptStore()
+    for i in range(5):
+        store.append("s", "user", chr(ord("a") + i) * 160)  # 40 token
+        store.append("s", "assistant", chr(ord("A") + i) * 160)
+
+    short, _ = store.window("s", short_turns=5, mid_turns=0, short_tokens=100)
+
+    assert [e["content"] for e in short] == ["e" * 160, "E" * 160]
+
+
+def test_window_short_band_drops_leading_orphan_assistant() -> None:
+    """短带 token 切片截在轮中间 ⇒ 丢弃开头的孤儿 assistant（承 `tail` 语义）。"""
+    store = TranscriptStore()
+    store.append("s", "user", "a" * 40)  # 10 token
+    store.append("s", "assistant", "b" * 40)
+    store.append("s", "user", "c" * 40)
+    store.append("s", "assistant", "d" * 40)
+
+    short, _ = store.window("s", short_turns=99, mid_turns=0, short_tokens=35)
+
+    assert [e["content"] for e in short] == ["c" * 40, "d" * 40]
+
+
+def test_window_insufficient_turns_leaves_mid_empty() -> None:
+    """会话轮数不足 ⇒ 短带吃满、中带为空（无更旧内容可摘）。"""
+    store = TranscriptStore()
+    store.append("s", "user", "q0")
+    store.append("s", "assistant", "a0")
+
+    short, mid = store.window("s", short_turns=10, mid_turns=6, short_tokens=0)
+
+    assert [e["content"] for e in short] == ["q0", "a0"]
+    assert mid == []
+
+
+@pytest.mark.parametrize("short_turns", [0, -1])
+def test_window_zero_or_negative_short_turns_returns_empty(short_turns: int) -> None:
+    assert _eight_turns().window("s", short_turns=short_turns, mid_turns=3, short_tokens=0) == (
+        [],
+        [],
+    )
+
+
+def test_window_untiered_equivalent_to_tail() -> None:
+    """非分层等价锚：`window(N, 0, B)` ≡ `tail(N, max_tokens=B)`（同一 token 截断语义）。"""
+    store = _eight_turns()
+
+    short, mid = store.window("s", short_turns=3, mid_turns=0, short_tokens=1000)
+    tail = store.tail("s", 3, max_tokens=1000)
+
+    assert short == tail
+    assert mid == []
 
 
 # ---- 降级 ----

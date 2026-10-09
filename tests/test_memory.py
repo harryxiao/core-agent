@@ -805,3 +805,116 @@ def test_summary_for_none_without_summarizer() -> None:
     store.compact()
 
     assert store.summary_for("s1") is None, "未注入摘要器 ⇒ 未写摘要 ⇒ None"
+
+
+# ---- 中层摘要：会话滑窗的中带物化（change 0178 / ADR-0169 / 台账 E115） ----
+
+
+def _stub(entry_id: str, content: str, session_id: str = "s1") -> MemoryEntry:
+    """中带**转录桩**：prompt-only 的临时条目（不进库、不当来源迁移）。"""
+    return _session_entry(entry_id, content, session_id)
+
+
+def test_summarize_slice_rolls_merge_prior_mid_summary() -> None:
+    """滚动合并：既有中层摘要作材料**首条**（同 `_summarize_sessions` 形态）。"""
+    seen: list[list[str]] = []
+
+    def summarizer(entries: list[MemoryEntry]) -> str:
+        seen.append([e.id for e in entries])
+        return "中层摘要：" + "；".join(e.content for e in entries)
+
+    store = MemoryStore(summarizer=summarizer)
+    store.summarize_slice("s1", [_stub("t0", "转录零")], max_chars=1000)
+    store.summarize_slice("s1", [_stub("t1", "转录一")], max_chars=1000)
+
+    assert seen[0] == ["t0"], "首批材料无既有中层摘要"
+    assert seen[1] == ["compaction.mid.s1", "t1"], "既有中层摘要作首条材料滚合并"
+
+
+def test_summarize_slice_unwired_summarizer_returns_none_and_writes_nothing() -> None:
+    """摘要器 UNWIRED ⇒ ``None``、零写入、零效应。"""
+    tracker = EffectTracker()
+    store = MemoryStore(effect_tracker=tracker)
+
+    result = store.summarize_slice("s1", [_stub("t0", "转录零")], max_chars=1000)
+
+    assert result is None
+    assert store.audit() == [], "未注入摘要器 ⇒ 无写入"
+    assert tracker.audit("compaction.mid.s1") == [], "未注入摘要器 ⇒ 无效应"
+
+
+@pytest.mark.parametrize("max_chars", [0, -1])
+def test_summarize_slice_nonpositive_max_chars_returns_none(max_chars: int) -> None:
+    store = MemoryStore(summarizer=lambda entries: "中层摘要")
+    assert store.summarize_slice("s1", [_stub("t0", "转录零")], max_chars=max_chars) is None
+
+
+def test_summarize_slice_empty_entries_returns_none() -> None:
+    store = MemoryStore(summarizer=lambda entries: "中层摘要")
+    assert store.summarize_slice("s1", [], max_chars=1000) is None
+
+
+def test_summarize_slice_does_not_migrate_source_entries() -> None:
+    """**不迁移**：来源条目层级逐字不变（与 `_commit_summary` 相异）。"""
+    store = MemoryStore(summarizer=lambda entries: "中层摘要")
+    source = _session_entry("e0", "事实零", "s1")
+    store.write("L2", source)
+
+    store.summarize_slice("s1", [source], max_chars=1000)
+
+    layers = dict(store.index().entries)
+    assert layers["e0"] == "L2", "中层摘要 SHALL NOT 迁移来源条目"
+    assert layers["compaction.mid.s1"] == "L2"
+
+
+def test_summarize_slice_bounded_by_max_chars_and_redacted() -> None:
+    """产物有界于 ``max_chars`` 且写前 ``redact_secrets``（密钥形态不落库）。"""
+    secret = "sk-" + "a" * 20
+    store = MemoryStore(summarizer=lambda entries: f"用 {secret} 走过 " + "长" * 500)
+
+    content = store.summarize_slice("s1", [_stub("t0", "转录零")], max_chars=50)
+
+    assert content is not None
+    assert len(content) <= 50, "产物受 `max_chars` 有界"  # noqa: PLR2004 — 即传入的 max_chars
+    assert secret not in content, "写前脱敏：密钥形态不落库"
+    assert "<redacted>" in content
+    assert store.mid_summary_for("s1").content == content  # type: ignore[union-attr]
+
+
+def test_summarize_slice_reversible_by_trace() -> None:
+    """效应 ``trace_id=f"compaction.mid.<key>"`` ⇒ 可整条回滚。"""
+    tracker = EffectTracker()
+    store = MemoryStore(effect_tracker=tracker, summarizer=lambda entries: "中层摘要")
+    store.summarize_slice("s1", [_stub("t0", "转录零")], max_chars=1000)
+    assert "compaction.mid.s1" in dict(store.index().entries)
+
+    report = tracker.rollback("compaction.mid.s1")
+
+    assert report.undo_failed == []
+    assert "compaction.mid.s1" not in dict(store.index().entries), "回滚 → 中层摘要条目被移除"
+
+
+def test_mid_summary_for_is_read_only() -> None:
+    """读取不改条目、不记效应（口径同 `summary_for`）。"""
+    tracker = EffectTracker()
+    store = MemoryStore(effect_tracker=tracker, summarizer=lambda entries: "中层摘要")
+    store.summarize_slice("s1", [_stub("t0", "转录零")], max_chars=1000)
+
+    before = [(e.id, e.layer, e.reuse_count, e.importance) for e in store.audit()]
+    effects_before = len(tracker.audit("compaction.mid.s1"))
+
+    first = store.mid_summary_for("s1")
+    second = store.mid_summary_for("s1")
+
+    after = [(e.id, e.layer, e.reuse_count, e.importance) for e in store.audit()]
+    assert before == after, "读取不改条目"
+    assert len(tracker.audit("compaction.mid.s1")) == effects_before, "读取不记效应"
+    assert first is not None and second is not None and first.id == second.id
+
+
+def test_mid_summary_for_isolated_per_session() -> None:
+    store = MemoryStore(summarizer=lambda entries: "中层摘要")
+    store.summarize_slice("s1", [_stub("t0", "转录零")], max_chars=1000)
+
+    assert store.mid_summary_for("s1") is not None
+    assert store.mid_summary_for("s2") is None, "按会话隔离（他会话无中层摘要）"

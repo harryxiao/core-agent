@@ -53,6 +53,11 @@ class LoopContext:
     # 本会话最近历史对话（「用户原话 / 最终回复」成对；缺省空 ⇒ 不回灌）。
     # **独立字段**：不得前置进 `messages` —— 后者首条被当「本轮任务」、其后被当动作序列。
     history: list[Any] = field(default_factory=list[Any])
+    # 分层历史的**长期摘要**（会话整体摘要；缺省空 ⇒ 不注入）。见 change 0178 / ADR-0169。
+    # **独立字段**：不得折入 `history` / `messages` —— 摘要是压缩产物，非原文回灌。
+    summary_long: str = ""
+    # 分层历史的**中期摘要**（紧邻短带之前的中带滚动摘要；缺省空 ⇒ 不注入）。
+    summary_mid: str = ""
     _done: bool = field(default=False, repr=False)
 
     def done(self) -> bool:

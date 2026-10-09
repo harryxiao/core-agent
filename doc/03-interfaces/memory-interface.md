@@ -72,6 +72,25 @@ class MemoryStore(Plugin):
         id 口径与压实写入**同一**（``compaction.summary.<session_id or 'default'>``）；无则 ``None``。
         SHALL NOT 产生任何写入 / 效应记录，SHALL NOT 变更条目的 ``reuse_count`` / ``importance`` /
         ``updated_at`` —— 供上层（如 CLI ``notes promote``）取数。"""
+
+    def mid_summary_for(self, session_id: str) -> MemoryEntry | None:
+        """按会话取回既有**中期**摘要条目（**只读**；change 0178 / ADR-0169 / 账本 E115）。
+
+        id = ``compaction.mid.<session_id or 'default'>``；无则 ``None``。只读语义与
+        ``summary_for`` **完全同形**（不写、不记效应、不变更 ``reuse_count``/``importance``/``updated_at``）。"""
+
+    def summarize_slice(
+        self, session_id: str, entries: list[MemoryEntry], *, max_chars: int
+    ) -> str | None:
+        """把一段**会话原文桩**滚合并为该会话的**中期**摘要（change 0178 / ADR-0169 / 账本 E115）。
+
+        ``entries`` 为上层从转录切出的**临时桩**（``source="transcript"``，**不在库中**）——
+        本方法**只读它们、SHALL NOT 将其落库**。产出为**一条** ``kind="semantic"`` 条目
+        （``source="compaction"``，``id``/``trace_id`` = ``compaction.mid.<key>``）；
+        已有中期摘要时把其内容作为材料**首条**一并投喂（滚动合并）；写前 ``redact_secrets``、
+        截断至 ``max_chars``；**不 migrate** 任何来源；写入可撤销（按 trace_id 回滚即移除）。
+
+        摘要器 UNWIRED / ``entries`` 为空 / ``max_chars`` 非正 ⇒ ``None`` 且**零写入零效应**。"""
 ```
 
 **构造注入点**（均为可选依赖注入，缺省不启用）：
@@ -108,6 +127,13 @@ TranscriptStore(path: Path | None = None)      # path=None ⇒ 纯内存（测�
     def tail(session_id: str, turns: int, *, max_tokens: int = 0) -> list[dict]
         # 最近 turns 轮（轮 = 一条 user 提问及其答复）；max_tokens > 0 时再按 token
         # 从新到旧截断，截断后若开头剩孤儿 assistant 行则一并丢弃；turns <= 0 ⇒ 空
+
+    def window(session_id: str, *, short_turns: int, mid_turns: int,
+               short_tokens: int) -> tuple[list[dict], list[dict]]
+        # **分层切分读取（一次 read()）**：返回 (短带原文, 中带原文)。短带 = 末 short_turns 轮
+        # （按 short_tokens 从新到旧截断 + 丢开头孤儿 assistant 行，同 tail）；中带 = 其前 mid_turns
+        # 轮（**不**按 token 截断）。两带**不重叠**；轮数不足 ⇒ 短带吃满、中带为空；
+        # short_turns <= 0 ⇒ ([], [])（change 0178 / ADR-0169）
 
     def summaries() -> dict[str, dict]          # {session_id: {title, updated_at}}（排除未归属）
         # title = 该会话**首条用户消息**压平换行后截断 30 字（超长补「…」），无 user 行 ⇒ 空串

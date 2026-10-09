@@ -292,6 +292,12 @@ class LLMPlanner:
             blocks.append(
                 "常驻笔记（任务级硬约束，逐轮生效，勿违背）：\n" + ctx.pinned_notes.strip()
             )
+        # 分层历史摘要：**独立块**（不折入「相关事实」/历史消息），长层先于中层（change 0178）。
+        # 空字段不产块 ⇒ 未分层时 prompt 逐字不变。
+        if ctx.summary_long.strip():
+            blocks.append("历史摘要（长期）：\n" + ctx.summary_long.strip())
+        if ctx.summary_mid.strip():
+            blocks.append("历史摘要（中期）：\n" + ctx.summary_mid.strip())
         if pack is not None and pack.facts:
             blocks.append(
                 "相关事实：\n" + "\n".join(f"- [{f['source']}] {f['content']}" for f in pack.facts)

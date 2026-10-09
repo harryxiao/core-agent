@@ -1565,6 +1565,48 @@
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0168 行（闸门不区分来源 / 抛错降级放行 / 阈值为常量
 > 启发式 / 复用计数为进程内 / 上限 16 封顶 / 留痕只报 id）。
 
+## 91. 三层会话滑窗：短 / 中 / 长 + 动态按比例压缩（TC-WINDOW，change `0178`／ADR-0169，台账 E115）
+
+> **背景取证**（用户 2026-10-09「日常会话记忆，交互中/短/长滑窗动态按比例压缩」）：① 会话摘要
+> `summary_for` 唯一调用者是 CLI ⇒ **摘要从不进任何 prompt**；② 日常会话路径**根本不产摘要**
+> （`memory.compact()` 在无工具的日常聊天里从不触发）；③ `_load_history` 单层切片超限时**静默丢最旧、
+> 无摘要替换**；④ 单条固定 `history_turns=20`、**无分层**。四者合成「日常会话越聊越失忆」。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-WINDOW-01 | context/spec.md「三层窗口比例分配」Scenario「非分层等价既有双重上界」 | `plan_window(turns, budget, tiered=False)` | 短层 = 全部 `turns` + 全部 `budget`、中层零 —— 与既有双重上界**逐字等价**（锚点：`tests/test_context_window.py::test_plan_window_untiered_equals_legacy_bounds`） |
+| TC-WINDOW-02 | 同 Scenario「分层按固定份额切分」 | `plan_window(20, 32768, tiered=True)` | 短 10 / 中 6、短层 token = 16384（`0.5`）※（锚点：`...::test_plan_window_tiered_splits_by_ratio`） |
+| TC-WINDOW-03 | 同 Scenario「关闭回灌的零守卫」 | 表驱动 `turns ≤ 0` 或 `budget ≤ 0` | 配额**全零**（锚点：`...::test_plan_window_recovers_zero_guards`） |
+| TC-WINDOW-04 | 同 Scenario「短层恒不低于一轮且短中不超总量」 | 表驱动 `turns ∈ {1,2,3,20,100}` | `short ≥ 1` 且 `short + mid ≤ turns`（锚点：`...::test_plan_window_short_band_never_below_one_turn`、`...::test_plan_window_mid_never_exceeds_remaining`） |
+| TC-WINDOW-05 | 同 Scenario「配额随总量单调」 | 逐值递增 `turns` | 短层与中层轮数**单调不减**（锚点：`...::test_plan_window_monotone_in_turns`） |
+| TC-WINDOW-06 | memory/spec.md「对话转录持久化」Scenario「切分短带与中带且不重叠」 | `TranscriptStore.window(sid, short_turns=2, mid_turns=2, ...)` | 短带 = 末 2 轮、中带 = 其前 2 轮，两带无交集（锚点：`tests/test_transcript.py::test_window_splits_short_and_mid_bands`） |
+| TC-WINDOW-07 | 同 Scenario「短带沿用 token 截断与孤儿行丢弃」 | 短带超 `short_tokens` / 截断后开头剩孤儿 assistant | 短带按 token 从新到旧截断 + 丢孤儿行；中带**不**截断（锚点：`...::test_window_short_band_truncated_by_short_tokens`、`...::test_window_short_band_drops_leading_orphan_assistant`） |
+| TC-WINDOW-08 | 同 Scenario「轮数不足时中带为空」/「关闭短层时两带皆空」 | 会话轮数 < short+mid；`short_turns ≤ 0`（表驱动 0 / -1） | 中带空；短层非正 ⇒ `([], [])`（锚点：`...::test_window_insufficient_turns_leaves_mid_empty`、`...::test_window_zero_or_negative_short_turns_returns_empty`）；非分层等价锚 `window(N,0,B) ≡ tail(N,max_tokens=B)`（锚点：`...::test_window_untiered_equivalent_to_tail`） |
+| TC-WINDOW-09 | memory/spec.md「记忆压实」Scenario「中期摘要滚动合并既有内容」/「按会话读取既有中期摘要（只读）」 | 已有 `compaction.mid.s1` + 新增桩；`mid_summary_for` 调用前后 `audit()` 快照 | 材料**首条**为既有中期摘要、产出仍为**唯一**一条；读取**只读**且按会话隔离（锚点：`tests/test_memory.py::test_summarize_slice_rolls_merge_prior_mid_summary`、`...::test_mid_summary_for_is_read_only`、`...::test_mid_summary_for_isolated_per_session`） |
+| TC-WINDOW-10 | 同 Scenario「未注入摘要器时中期摘要零写入」 | 摘要器 UNWIRED / 桩为空 / `max_chars ∈ {0,-5}`（表驱动） | 返回 `None`、**零写入零效应**（锚点：`...::test_summarize_slice_unwired_summarizer_returns_none_and_writes_nothing`、`...::test_summarize_slice_nonpositive_max_chars_returns_none`、`...::test_summarize_slice_empty_entries_returns_none`） |
+| TC-WINDOW-11 | 同 Scenario「中期摘要有界且脱敏且不迁移来源」 | 摘要器产出含明文密钥形态且超长；材料含**已在库**来源条目 | 落库**不含**明文（`<redacted>`）、长度 ≤ `max_chars`、来源条目层级**逐字不变**（锚点：`...::test_summarize_slice_bounded_by_max_chars_and_redacted`、`...::test_summarize_slice_does_not_migrate_source_entries`） |
+| TC-WINDOW-12 | 同 Scenario「中期摘要可撤销」 | `rollback("compaction.mid.<key>")` | 中期摘要条目被移除（锚点：`...::test_summarize_slice_reversible_by_trace`） |
+| TC-WINDOW-13 | loop/spec.md「执行循环」Scenario「冷会话退化为纯回灌」 | 无摘要 + 既有转录 + 真 loop | 请求**逐字 = 今天**（`["system","user","assistant","user"]`，**无**摘要块）（锚点：`tests/test_history_replay.py::test_cold_session_request_verbatim_without_summaries`） |
+| TC-WINDOW-14 | 同 Scenario「分层摘要作为独立系统块注入」/「分层后短层收窄且更旧轮不再回灌原文」 | 预置长/中期摘要；`history_turns=4`、8 轮转录 | 两摘要各为**独立系统块**（次序：常驻笔记 → 长期 → 中期）；短带 = 末 2 轮原文、更旧轮**不进原文**（锚点：`...::test_layered_summaries_injected_as_system_blocks`、`...::test_long_before_mid_and_after_pinned_notes`、`...::test_tiered_short_band_narrows_and_drops_older_turns`） |
+| TC-WINDOW-15 | 同 Scenario（独立字段不折入） | `perceive` 后检查 `history` / `messages` | 摘要**不折入** `history` / `messages`（锚点：`...::test_summaries_not_folded_into_history_or_messages`） |
+| TC-WINDOW-16 | 同 Scenario（门控与回灌同形） | 表驱动 `turns=0` / `session_id=""` / 未注入转录 | 摘要亦**不读不注入**（锚点：`...::test_summaries_gated_like_history`） |
+| TC-WINDOW-17 | 同 Scenario「维护节拍产出会话摘要与中期摘要」 | 冻结时钟 + 一次维护节拍（`_maintain("t-1","s1")`） | `summary_for` 与 `mid_summary_for` **均已产出**（锚点：`...::test_maintain_materializes_long_and_mid_summaries`） |
+| TC-WINDOW-18 | 同 Scenario「摘要读取失败降级」/「维护节拍会话级两步失败不中断本轮」 | 替身 `summarize_slice` / `mid_summary_for` / `compact` 抛错 | 降级为空、留痕、**不抛**、本轮结局与事件序不变（锚点：`...::test_maintain_mid_failure_degrades_without_raising`、`...::test_load_summaries_failure_degrades_to_empty`） |
+| TC-WINDOW-19 | loop/spec.md「错误与预算控制」记账口径（分层摘要计入） | 无探针 planner，对比「无摘要」与「两层摘要」两次运行 | `token_used` 增量 == `estimate_tokens(长期) + estimate_tokens(中期)`；**空字段零增量**（锚点：`tests/test_loop_token_accounting.py::test_layered_summary_tokens_counted_into_budget`、`...::test_empty_summary_fields_add_zero_tokens`） |
+
+※ TC-WINDOW-02 断言值（10 / 6 / 16384）为 `# noqa: PLR2004` 标注的常量锚。
+
+> **红态证据**：逐层先红后绿 —— Layer A `ImportError: cannot import name 'plan_window'`；Layer B
+> `AttributeError: 'TranscriptStore' object has no attribute 'window'`；Layer C `AttributeError:
+> 'MemoryStore' object has no attribute 'summarize_slice'`（**10 failed / 50 passed**）；Layer D 两条判别性
+> 用例红（① 摘要未门控 ⇒ 未注入转录时仍注入；② 复用同一转录导致第二次运行回放首轮）。绿后全量
+> `.venv/bin/pytest -q` ⇒ **2101 passed**（基线 **2052**，**+49** = A 19 用例 + B 7 + C 10 + D 13）。
+> **逐字兼容不变量**（I1~I10）：关回灌 / 空标识 / 未注入转录 / 未注入记忆或摘要器 / 冷会话 ⇒ 请求与记账
+> **逐字不变**；某轮维护失败 ⇒ 本轮结局、事件序、转录、终止语义不变；分层产物凭 `trace_id` 可整体回滚。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0169 行（每节拍额外模型调用成本 / 短层分层时收窄 /
+> CJK 欠估不修 / 中带原文进 LLM 的密钥面 / 热路径两次全库扫描 / 中层产物与「相关事实」块可能重复暴露 /
+> 节拍实例级会话无关 / `_should_compact` 轮数维度未修）。
+
 ## 关联
 
 - 测试计划：`doc/04-testing/test-plan.md`

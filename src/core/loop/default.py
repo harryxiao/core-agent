@@ -19,7 +19,7 @@ import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence, Sized
 from typing import Any, cast
 
-from core.context import Compactor, ContextError, estimate_tokens
+from core.context import Compactor, ContextError, WindowPlan, estimate_tokens, plan_window
 from core.judgment import DecisionResult, DecisionRouter
 from core.memory import MemoryEntry, MemoryStore, TranscriptStore, redact_secrets
 from core.observability import TraceEvent, TraceLogger, Tracer
@@ -211,17 +211,24 @@ def _output_excerpt(value: Any) -> str:
 
 
 def _context_tokens(ctx: LoopContext) -> int:
-    """记账口径：**装配进本轮提示词的全量内容**（回灌历史 + 本轮消息）。
+    """记账口径：**装配进本轮提示词的全量内容**（回灌历史 + 本轮消息 + 分层摘要）。
 
     口径同共享估计器 ``context.estimate_tokens``（跨条累计、每条至少 1）。planner 另行装配的
     系统提示与工具 schema 不在 ``ctx`` 内，由 :meth:`DefaultLoop._reported_prompt_tokens` 以
     **下界**补足（见 change 0152 / 账本 E96）。
+
+    分层摘要住 system prompt（planner 装配），此处补足记账（change 0178 / ADR-0169）。
+    **必须守卫空值**：``estimate_tokens("") == 1`` ⇒ 不守卫会给空字段记 1 token。
     """
-    return sum(
+    total = sum(
         estimate_tokens(str(cast("dict[str, Any]", message).get("content", "")))
         for message in (*ctx.history, *ctx.messages)
         if isinstance(message, dict)
     )
+    for text in (ctx.summary_long, ctx.summary_mid):
+        if text.strip():
+            total += estimate_tokens(text)
+    return total
 
 
 class DefaultLoop(Plugin):
@@ -443,7 +450,7 @@ class DefaultLoop(Plugin):
         )
         # 维护节拍同样卸载：冷路径（进化 review / patch author）内含同步模型调用
         # （change 0167 / ADR-0157）。
-        await asyncio.to_thread(self._maintain, trace_id)
+        await asyncio.to_thread(self._maintain, trace_id, session_id)
         self._trace(
             trace_id,
             "loop_finished",
@@ -523,11 +530,13 @@ class DefaultLoop(Plugin):
         except Exception as err:  # noqa: BLE001 — 登记失败降级，不影响本轮结果
             self._trace(trace_id, "trace_observer_failed", {"error": str(err)})
 
-    def _maintain(self, trace_id: str) -> None:
-        """收尾维护节拍：距上次维护达间隔才触发一次（含①记忆遗忘 ②冷路径机会），各自失败降级。
+    def _maintain(self, trace_id: str, session_id: str = "") -> None:
+        """收尾维护节拍：距上次维护达间隔才触发一次，各自失败降级（change 0178 扩为四步）。
 
-        间隔 ``<=0`` 关闭节拍；时钟经构造注入（可测）。维护作用于整个存储 / 冷路径状态，
-        与会话无关，故节拍状态驻留实例（多会话共享一个节拍）。两件事**各自失败降级、不中断本轮**。
+        节拍含：①会话级记忆压实（产会话整体摘要）②中期摘要物化（中带 → 中层摘要）
+        ③记忆遗忘 ④冷路径机会。``session_id`` 为**本轮**会话（缺省空串 ⇒ 跳过会话级两步）。
+        间隔 ``<=0`` 关闭节拍；时钟经构造注入（可测）。节拍状态驻留实例（多会话共享一个节拍
+        ⇒ 只有「正巧活跃」的会话被刷新）。四件事**各自失败降级、不中断本轮**。
         """
         if self._maintenance_interval <= 0:
             return
@@ -536,6 +545,15 @@ class DefaultLoop(Plugin):
             return
         self._last_maintenance = now
         if self._memory is not None:
+            if session_id:
+                try:
+                    self._memory.compact(session_id=session_id)
+                except Exception as err:  # noqa: BLE001 — 会话压实失败降级，本轮继续
+                    self._trace(trace_id, "maintenance_failed", {"error": str(err)})
+                try:
+                    self._materialize_mid(session_id)
+                except Exception as err:  # noqa: BLE001 — 中层摘要失败降级，本轮继续
+                    self._trace(trace_id, "maintenance_failed", {"error": str(err)})
             try:
                 self._memory.forget()
             except Exception as err:  # noqa: BLE001 — 遗忘失败降级，本轮继续
@@ -545,6 +563,41 @@ class DefaultLoop(Plugin):
                 self._cold_path()
             except Exception as err:  # noqa: BLE001 — 冷路径失败降级，本轮继续
                 self._trace(trace_id, "cold_path_failed", {"error": str(err)})
+
+    def _materialize_mid(self, session_id: str) -> None:
+        """物化会话滑窗「中带」的中期摘要（change 0178 / ADR-0169）。
+
+        读转录切中带 → 空则**不调用**（幂等闸门）→ 包 prompt-only **桩**（``transcript.<i>``，
+        **绝不落库**）→ ``memory.summarize_slice``。未注入转录 / 未注入 memory / ``session_id``
+        为空 / 无中带 ⇒ 直接返回（零写入零效应）。
+        """
+        if self._transcript is None or self._memory is None or not session_id:
+            return
+        plan = self._window_plan(tiered=True)
+        if plan.mid_turns <= 0:
+            return
+        _, mid_rows = self._transcript.window(
+            session_id,
+            short_turns=plan.short_turns,
+            mid_turns=plan.mid_turns,
+            short_tokens=plan.short_tokens,
+        )
+        if not mid_rows:
+            return
+        stubs = [
+            MemoryEntry(
+                id=f"transcript.{index}",
+                layer="L2",
+                content=f"{row.get('role', '')}: {row.get('content', '')}",
+                tags=[],
+                source="transcript",
+                trace_id=f"compaction.mid.{session_id}",
+                session_id=session_id,
+                kind="episodic",
+            )
+            for index, row in enumerate(mid_rows)
+        ]
+        self._memory.summarize_slice(session_id, stubs, max_chars=plan.mid_chars)
 
     def _should_compact(self, ctx: LoopContext) -> bool:
         """轮数或 token 预算达阈值即触发压实（未注入压实器则永不触发）。
@@ -591,12 +644,17 @@ class DefaultLoop(Plugin):
         # ``session_id`` 只装入上下文包（供推理期检索/技能路由归属），不驻留循环实例。
         tools = self._tools.active_tools() if self._tools is not None else []
         # 次序不可颠倒：先取历史（不含本轮），再落本轮 user 行 —— 否则本轮被回灌两遍。
-        history = self._load_history(session_id)
+        # 分层：**先**读摘要定 `tiered`（有摘要才分层），再按配额切短带（change 0178）。
+        summary_long, summary_mid = self._load_summaries(session_id)
+        plan = self._window_plan(tiered=bool(summary_long or summary_mid))
+        history = self._load_history(session_id, plan=plan)
         ctx = LoopContext(
             messages=[{"role": "user", "content": user_input}],
             tools=tools,
             session_id=session_id,
             history=history,
+            summary_long=summary_long,
+            summary_mid=summary_mid,
         )
         ctx.token_used = _context_tokens(ctx)
         self._append_transcript(session_id, "user", user_input)
@@ -748,21 +806,67 @@ class DefaultLoop(Plugin):
             content = str(first)
         return f"已完成：{content}"
 
-    def _load_history(self, session_id: str) -> list[Any]:
-        """本会话最近历史（双重上界：`history_turns` 轮 + 独立 token 切片）。
+    def _window_plan(self, *, tiered: bool) -> WindowPlan:
+        """三层滑窗配额（承 ``context.plan_window``；change 0178 / ADR-0169）。
 
-        空标识 / 未注入转录 / 关闭回灌（`history_turns <= 0`）⇒ 空。
+        预算关闭（``token_budget <= 0``）⇒ 只按 ``history_turns`` 上界（``short_tokens=0`` 即
+        「不按 token 截断」，逐字既有语义），不套用 ``plan_window`` 的「预算非正 ⇒ 关闭回灌」
+        缺省 —— 否则预算关闭会误关回灌。
+        """
+        if self._token_budget > 0:
+            return plan_window(self._history_turns, self._token_budget // 2, tiered=tiered)
+        return WindowPlan(max(0, self._history_turns), 0, 0, 0)
+
+    def _load_summaries(self, session_id: str) -> tuple[str, str]:
+        """本会话的（长期摘要, 中期摘要）文本（缺省空 ⇒ 不注入；change 0178 / ADR-0169）。
+
+        门控与 `_load_history` **完全同形**：未注入转录 / 未注入 memory / 空标识 /
+        关闭回灌 ⇒ ``("", "")``。读取失败降级为空（不回灌摘要），不阻断本轮。
+        """
+        if (
+            self._transcript is None
+            or self._memory is None
+            or not session_id
+            or self._history_turns <= 0
+        ):
+            return "", ""
+        try:
+            long_entry = self._memory.summary_for(session_id)
+            mid_entry = self._memory.mid_summary_for(session_id)
+        except Exception as err:  # noqa: BLE001 — 摘要读失败降级，本轮不回灌摘要
+            warnings.warn(f"摘要读取失败，本轮不回灌摘要: {err}", RuntimeWarning, stacklevel=2)
+            return "", ""
+        return (
+            long_entry.content if long_entry is not None else "",
+            mid_entry.content if mid_entry is not None else "",
+        )
+
+    def _load_history(self, session_id: str, *, plan: WindowPlan) -> list[Any]:
+        """本会话最近历史 —— 三层滑窗的**短带**（change 0178 / ADR-0169）。
+
+        ``plan.mid_turns <= 0`` ⇒ 与既有「双重上界」（`history_turns` 轮 + 独立 token 切片）
+        **逐字等价**（走 `tail`）；分层激活时改走 `window()` 取短带原文，中带由中期摘要承接。
+        空标识 / 未注入转录 / 关闭回灌（`plan.short_turns <= 0`）⇒ 空。
         转录异常一律降级为空历史（不回灌），不阻断本轮。
         """
-        if self._transcript is None or not session_id or self._history_turns <= 0:
+        if self._transcript is None or not session_id or plan.short_turns <= 0:
             return []
         try:
-            return self._transcript.tail(
-                session_id, self._history_turns, max_tokens=self._token_budget // 2
-            )
+            if plan.mid_turns <= 0:
+                rows = self._transcript.tail(
+                    session_id, plan.short_turns, max_tokens=plan.short_tokens
+                )
+            else:
+                rows, _ = self._transcript.window(
+                    session_id,
+                    short_turns=plan.short_turns,
+                    mid_turns=plan.mid_turns,
+                    short_tokens=plan.short_tokens,
+                )
         except Exception as err:  # noqa: BLE001 — 转录读失败降级，本轮不回灌
             warnings.warn(f"转录读取失败，本轮不回灌历史: {err}", RuntimeWarning, stacklevel=2)
             return []
+        return rows
 
     def _append_transcript(self, session_id: str, role: str, content: str) -> None:
         """追加一条转录；空标识 / 未注入转录 ⇒ 不落盘。

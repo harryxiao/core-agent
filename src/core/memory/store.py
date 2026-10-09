@@ -27,6 +27,7 @@ from .extract import (
     KeyFact,
     KeyFactExtractor,
     key_fact_cap,
+    redact_secrets,
     scrub_key_fact,
     slug_entity,
 )
@@ -362,6 +363,15 @@ class MemoryStore:
         """
         return self._existing_summary(session_id)
 
+    def mid_summary_for(self, session_id: str) -> MemoryEntry | None:
+        """按会话取回既有**中层摘要**条目（**只读**；无则 ``None``）。
+
+        中层摘要 = 会话滑窗「中带」的模型滚动摘要（change 0178 / ADR-0169），
+        id 口径 ``compaction.mid.<key>``、``key = session_id or "default"``
+        （同 `summarize_slice`）。零写入 / 零效应、不变更条目字段；供上层取数注入。
+        """
+        return self._entry_by_id(f"compaction.mid.{session_id or 'default'}")
+
     def compact(
         self, query: str = "", budget: int = 4096, *, session_id: str = ""
     ) -> DecisionResult | None:
@@ -402,6 +412,47 @@ class MemoryStore:
         if self._summarizer is not None or self._key_fact_extractor is not None:
             self._summarize_sessions(session_id)
         return decision
+
+    def summarize_slice(
+        self, session_id: str, entries: list[MemoryEntry], *, max_chars: int
+    ) -> str | None:
+        """把一段**会话原文**（中带）滚合并为中层摘要条目（change 0178 / ADR-0169）。
+
+        会话滑窗「中带」的物化：``entries`` 是上层从**转录**切出的 prompt-only **桩**
+        （``id=f"transcript.<i>"``，**不在库中**），本方法**只读它们、绝不落库**。
+
+        - 摘要器 UNWIRED / ``entries`` 为空 / ``max_chars <= 0`` ⇒ ``None``、**零写入零效应**；
+        - 既有中层摘要（``compaction.mid.<key>``，``key = session_id or "default"``）作材料**首条**
+          滚合并（同 `_summarize_sessions`）；产物即持久化的最新中层摘要；
+        - 写前 ``redact_secrets``（承「密钥只引用不读取」红线）+ 截断至 ``max_chars``（有界）；
+        - **不迁移任何来源条目**（与 `_commit_summary` 相异：来源是转录桩、本就不在库）；
+        - 效应 ``trace_id=f"compaction.mid.<key>"`` ⇒ 可整条回滚。
+        返回落库后的**脱敏有界**内容（未写 ⇒ ``None``）。
+        """
+        summarizer = self._summarizer
+        if summarizer is None or not entries or max_chars <= 0:
+            return None
+        key = session_id or "default"
+        prior = self.mid_summary_for(session_id)
+        material = [prior, *entries] if prior is not None else entries
+        summary = summarizer(material)
+        if not summary:
+            return None
+        content = redact_secrets(summary)[:max_chars]
+        written = self.write(
+            "L2",
+            MemoryEntry(
+                id=f"compaction.mid.{key}",
+                layer="L2",
+                content=content,
+                tags=["compaction", "mid"],
+                source="compaction",
+                trace_id=f"compaction.mid.{key}",
+                session_id=session_id,
+                kind="semantic",
+            ),
+        )
+        return content if written is not None else None
 
     def forget(self, *, threshold: float = _FORGET_THRESHOLD) -> list[MemoryId]:
         """遗忘：衰减评分低于 ``threshold`` 的 **L2 episodic** 条目迁 L4 归档（可逆）。
@@ -560,14 +611,17 @@ class MemoryStore:
             groups.setdefault(entry.session_id, []).append(entry)
         return groups
 
+    def _entry_by_id(self, entry_id: str) -> MemoryEntry | None:
+        """按 id 取条目（无则 ``None``）——「id 约定」单一真源，四处读取共用。"""
+        return next((entry for entry in self._all_entries() if entry.id == entry_id), None)
+
     def _existing_summary(self, session_id: str) -> MemoryEntry | None:
         """该会话既有摘要条目（无则 ``None``）——滚动合并的「现有摘要」输入。
 
         id 口径与 ``_commit_summary`` **同一**（``compaction.summary.<key>``，
         ``key = session_id or "default"``）。既有摘要**只被吸收进新摘要**，**不**入迁移列表。
         """
-        target = f"compaction.summary.{session_id or 'default'}"
-        return next((entry for entry in self._all_entries() if entry.id == target), None)
+        return self._entry_by_id(f"compaction.summary.{session_id or 'default'}")
 
     def _commit_summary(self, session_id: str, entries: list[MemoryEntry], summary: str) -> None:
         """写摘要条目（tags 带原条目 id 出处）并把原条目迁 L4，同一 trace 可回滚。"""

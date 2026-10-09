@@ -5176,6 +5176,71 @@
   以避免写放大，见既有实现）⇒ 重启后复用计数归零、延缓效果随之归零；⑤ `key_fact_cap` 的 `MAX=16` 为
   经验上界，超长会话仍受 16 条封顶；⑥ 留痕只报**条目 id**、绝不回显条目正文（密钥红线）。
 
+## ADR-0169：三层会话滑窗 —— 短（原文）/ 中（滚动摘要）/ 长（会话摘要）按比例压缩（change 0178 / 账本 E115）
+
+- **背景**：日常会话记忆有两个**并存**缺陷。① **摘要从不进 prompt**：`MemoryStore.summary_for` 唯一
+  调用者是 CLI（`entry.py`），会话摘要产出了也**从不注入任何 LLM 请求**；`planner._system_prompt` 没有
+  「历史摘要」块。② **日常会话根本不产摘要**：`_maintain` 只做 `forget()` + 冷路径，`memory.compact()`
+  的三处调用者（CLI / Web「压缩本会话」/ loop `_compact`）在无工具的日常聊天里**恒不触发**（`_should_compact`
+  的轮数维度取自**每轮工具步计数** `ctx.rounds`）。③ **窗口静默截断无补偿**：`_load_history` →
+  `transcript.tail(sid, history_turns, max_tokens=token_budget//2)` 从新到旧累计、超预算即 `break` ⇒
+  **丢最旧、无摘要替换** ⇒ 超 `history_turns` 轮即失忆。④ **无分层**：单条固定 `history_turns=20` + 单个
+  `token_budget//2` 切片。
+- **决策 ①：三层语义与归属。** 短层 = 最近 `short_turns` 轮**原文逐字**（转录行）；中层 = 紧随其前的
+  `mid_turns` 轮 → **模型滚动摘要**（既有 `Summarizer` 通道，产物 `compaction.mid.<session>`）；长层 =
+  **会话整体摘要**（既有 `compaction.summary.<session>`，**不新增产物**）。中层材料取**转录**而非 L2 轨迹
+  条目 —— 轨迹行只含 `round N ok/failed` + 回复散文、**不含用户提问**，且 `_commit_summary` 会把来源迁 L4。
+- **决策 ②：策略与机制分离。** 配额（纯函数）落新模块 `src/core/context/window.py`
+  （`WindowPlan` + `plan_window`，只依赖 stdlib、零 I/O、零模型调用）；切分（机制）落
+  `TranscriptStore.window()`。方向由依赖规则决定：`context/compactor.py` 已 import `core.memory`，
+  `memory.transcript` **不得**反向 import `core.context`（ADR-0045）⇒ `window()` 只收**裸 int**，
+  解包由 `default.py` 做。
+- **决策 ③：比例配额为常量、不新增配置键。** 短 / 中 / 长 = `0.5 / 0.3 / 0.2`（模块常量
+  `_SHORT_SHARE` / `_MID_SHARE` / `_LONG_SHARE`，与 `_ROUND_THRESHOLD` / `MAX_SUMMARY_CHARS` 同纪律）；
+  历史预算沿用既有 `token_budget // 2` 口径。clamp：轮数或预算非正 ⇒ **全零**（关闭回灌）；分层时
+  `short ≥ 1`、`short + mid ≤ history_turns`、配额随总量**单调不减**。`loop.history_turns` 仍是**唯一**
+  用户可调旋钮（三层配比随之等比缩放）。
+- **决策 ④：中层物化 = 只读转录桩 → 既有摘要通道。** `MemoryStore.summarize_slice(session_id, entries,
+  *, max_chars)` 收**临时桩**（不在库中，**绝不落库**），经**既有摘要器**滚合并为**一条**
+  `compaction.mid.<session>`（`source="compaction"`、`kind="semantic"`、`trace_id` 同 id）；写前无条件
+  `redact_secrets`、有界 `max_chars`；**不 migrate** 任何来源（区别 `_commit_summary`）。`build_prompt`
+  （「现有摘要」槽 + 逐条复述）**零改动**即复用 ⇒ 满足「复用既有 summarize 通道、不新造 prompt/格式」。
+  未注入摘要器 / 桩为空 / `max_chars` 非正 ⇒ 返回 `None`、**零写入零效应**。
+- **决策 ⑤：触发点 = 既有 off-loop 维护节拍加会话参数。** `_maintain(trace_id, session_id="")` 四步、
+  各自 `try/except` 降级留痕（`maintenance_failed`）：① `compact(session_id=…)`（仅 `session_id` 非空；
+  **首次**让日常会话路径产出 `compaction.summary.<sid>`）② `_materialize_mid(session_id)` ③ 既有
+  `forget()` ④ 既有冷路径。调用点改 `asyncio.to_thread(self._maintain, trace_id, ctx.session_id)`
+  （仍 off-loop，承 ADR-0157）。**不改** `_should_compact`（其轮数维度是死的属既有账 E96 局限）。
+- **决策 ⑥：摘要作为独立系统块注入，不折入 `history` / `messages`。** `LoopContext` 增两个独立字段
+  `summary_long` / `summary_mid`（承 notes / pinned_notes 的分列先例）；`_system_prompt` 块次序：
+  系统提示 → 宪法规则 → 常驻笔记 → **历史摘要（长期）** → **历史摘要（中期）** → 相关事实 → …；
+  `.strip()` 非空才加块 ⇒ 空时 prompt **逐字不变**。token 计入 `_context_tokens`（**非空守卫**，
+  守护 `estimate_tokens("") == 1` 陷阱）⇒ 无探针的纯 callable planner 亦可见；与探针 `max()` 取大、**不双计**。
+- **冷会话逐字兼容（硬约束）**：`tiered = bool(summary_long or summary_mid)` ⇒ 冷会话
+  `plan_window(tiered=False)` 返回「短层 = 全部 `history_turns` + 全部预算、中层零」⇒ 请求**逐字等于今天**。
+  门控与 `_load_history` **完全同形**：`history_turns<=0` / `session_id==""` / 未注入 `transcript` ⇒
+  不读摘要、不注入。
+- **落点**：`src/core/context/window.py`（新增）、`src/core/context/__init__.py`（导出）、
+  `src/core/memory/transcript.py`（`_truncate_newest` 提取 + `window()`）、`src/core/memory/store.py`
+  （`_entry_by_id` / `mid_summary_for` / `summarize_slice`）、`src/core/memory/protocol.py`（Protocol 同步）、
+  `src/core/loop/protocol.py`（两字段）、`src/core/loop/planner.py`（两条件块）、`src/core/loop/default.py`
+  （`_window_plan` / `_load_summaries` / `_load_history` / `_materialize_mid` / `_maintain` / `_context_tokens`）。
+- **规格**：`loop` **MODIFIED**「执行循环」（窗口条款 → 三层滑窗；维护节拍条款 → 四步）；
+  `context` **ADDED**「三层窗口比例分配」；`memory` **MODIFIED**「记忆压实」+ **MODIFIED**「对话转录持久化
+  （非记忆层级）」。既有 Scenario 全部逐字保留。
+- **局限**：① **成本** —— 日常会话路径每节拍（既有 900s 节流）最多 ~2–3 次额外模型调用（会话压实 +
+  中层摘要），是「摘要从不进 prompt」修复的必然代价，由节流 + **中带为空即不调用**缓解；② **短层在分层
+  激活时收窄**（缺省 20 → 短 10 轮原文，有意：预算有限，更老原文由摘要承接）；③ **CJK 欠估不修**
+  （`estimate_tokens = len//4`，承 ADR-0144 明文的「不改编、另议」+ 账 E96/E97）⇒ 短带实际容纳原文偏多、
+  整轮预算闸门偏晚；④ **密钥面** —— 中层摘要输入是会话原文（可能含密钥），产物写回 L2 前 `redact_secrets`
+  （方向 over-redact）；「对话原文进 LLM 请求」是既有面（ADR-0147 局限④）；⑤ **热路径读放大** ——
+  `perceive` 每轮新增两次全库扫描（`summary_for` / `mid_summary_for`），与既有 `read()` 同量级，且仅在
+  `history_turns>0 ∧ session_id ∧ transcript ∧ memory` 时才读；⑥ **重复暴露** —— 中层产物会同时经
+  `read()` 进「相关事实」块，与新增「历史摘要（中期）」块**可能重复**，本 change **不去重**（若实测明显另立
+  账「压缩产物从事实检索面排除」，参照 `exclude_source_prefixes`，`("beast.",)` 红线不动）；⑦ **节拍实例级、
+  会话无关** —— 多会话进程中每节拍只有「正巧活跃」的会话被刷新（可接受）；⑧ `_should_compact` 的「轮数维度
+  是死的」**仍未修**（E96 局限②）—— 本 change 走 `_maintain`，不改 `_should_compact`。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5339,3 +5404,4 @@
 | ADR-0166 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0167 | 02-modules/notes.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0168 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0169 | 02-modules/loop.md, 02-modules/context.md, 02-modules/memory.md, 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

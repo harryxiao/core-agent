@@ -89,6 +89,11 @@ MemoryStore
 - **只存 (user 原话, 最终回复)**：不存 `ctx.messages` —— 后者含 `role="tool"` 观察，回放给
   OpenAI 兼容端点大概率 400（wire 格式），且体积与标题抽取都更差。
 - **未归属（`session_id == ""`）不落盘**：避免所有无会话调用挤进同一个 `""` 桶变成幻影会话。
+- **分层切分读取**（change `0178`／ADR-0169）：`TranscriptStore.window(session_id, *, short_turns,
+  mid_turns, short_tokens)` **一次** `read()` 同时返回**短带原文**（末 `short_turns` 轮，沿用既有
+  「按 token 从新到旧截断 + 丢弃开头孤儿 assistant 行」语义）与**中带原文**（其前 `mid_turns` 轮，
+  **不**按 token 截断）；两带**不重叠**；`short_turns <= 0` ⇒ 两带皆空。切分**只读不写**、不经
+  `MemoryStore`（转录不是记忆层级）。
 - 细节见 `03-interfaces/memory-interface.md` §1.1。
 
 ### 3.3 结晶与溶解（与 L4 进化联动）
@@ -185,7 +190,26 @@ MemoryStore
   `recency_decay` / `rank` **逐字不动**（`reuse_count=0` 时 `pow(x,1.0)==x` 逐位相等、无需特判）。
 - **抽取上限自适应**：见 §3.4「有界」——`key_fact_cap(n)` 只放宽不收紧。
 
-### 3.6 后端可插拔
+### 3.6 三层会话滑窗的记忆面（change `0178`／ADR-0169／账本 E115）
+
+会话历史的三层滑窗（短 = 转录原文 / 中 = 滚动摘要 / 长 = 会话整体摘要）在记忆侧只新增**一条**产物 ——
+**中期摘要**，并由既有压实通道产出：
+
+- **`summarize_slice(session_id, entries, *, max_chars) -> str | None`**：收上层从转录切出的**临时桩**
+  `MemoryEntry`（`id=f"transcript.{i}"`、`source="transcript"`、**不在库中**），经**既有摘要器**滚合并为
+  **一条** `kind="semantic"` 条目，id 与 `trace_id` 均为 `compaction.mid.<key>`（`key = session_id or
+  "default"`）、`source="compaction"`。**只读桩、绝不落库**；**不 migrate** 任何来源（区别
+  `_commit_summary` 把来源迁 L4）。写前无条件 `redact_secrets`（与关键事实抽取**同源**、方向 over-redact），
+  并按 `max_chars` 截断（越界丢尾、不再累积增长）。**滚动合并**：该会话已有中期摘要时，把**既有中期摘要
+  内容**作为材料**首条**一并投喂摘要器（同 `_summarize_sessions` 形态）。**降级**：摘要器 UNWIRED /
+  桩为空 / `max_chars` 非正 ⇒ 返回 `None`、**零写入零效应**。写入走 `EffectTracker.record`（可撤销）。
+- **`mid_summary_for(session_id) -> MemoryEntry | None`**：按会话**只读**取回既有中期摘要，无则 `None`；
+  **不**产生写入或效应，**不**变更 `reuse_count` / `importance` / `updated_at`。
+- **长层不新增产物**：直接复用既有只读 `summary_for(session_id)`（`compaction.summary.<session>`）。
+- **`_entry_by_id(entry_id)`**：把「按 id 取条目」提为单一实现，`summary_for` / `mid_summary_for` /
+  `_existing_summary` 共用（id 约定单一真源）。
+
+### 3.7 后端可插拔
 
 - MVP：文件后端（`memory/*.md` 与 `memory/*.jsonl`），可审计、无外部依赖。
 - 未来：向量库后端（同一 `MemoryStore` 接口，`read` 换检索实现）。

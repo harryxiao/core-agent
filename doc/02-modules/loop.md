@@ -49,6 +49,22 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
   且**终止轮不落 reply**（此时 `ctx.reply` 是合成串，落盘即谎报模型原话）。
 - **不变量**：`session_id == ""` / 未注入转录 / `history_turns == 0` ⇒ 零写入零回灌（逐字向后兼容）。
 
+### 3.1.2 三层会话滑窗：短 / 中 / 长（change `0178`／ADR-0169）
+
+- **动机**：单层「双重上界」切片在超限时**静默丢最旧**、无摘要替换 ⇒ 超 `history_turns` 轮即失忆；
+  且会话摘要**从不进 prompt**、日常会话**根本不产摘要**。三层滑窗把「原文 + 摘要」按比例混合。
+- **三层语义**：短层 = 最近 `short_turns` 轮**原文逐字**；中层 = 紧随其前的 `mid_turns` 轮 → **模型滚动
+  摘要**（`compaction.mid.<session>`）；长层 = **会话整体摘要**（`compaction.summary.<session>`，既有产物）。
+- **比例配额**：短 / 中 / 长 = `0.5 / 0.3 / 0.2`（模块常量），历史预算沿用 `token_budget // 2`；
+  配额由 `core.context.plan_window`（纯函数、零 I/O）给出，切分由 `TranscriptStore.window()` 执行。
+  `loop.history_turns` 仍是**唯一**用户可调旋钮（三层配比随之等比缩放）。
+- **注入面**：两层摘要作**独立系统块**（顺序：常驻笔记 → 历史摘要（长期）→ 历史摘要（中期））注入
+  `_system_prompt`，**绝不折入** `history` / `messages`；token 计入 `token_used`（非空守卫）。
+- **物化点**：`_maintain(trace_id, session_id)` 会话感知，四步各自降级：①会话级记忆压实
+  ②中期摘要物化（读转录中带 → 只读桩 → 既有摘要通道）③遗忘 ④冷路径；仍 off-loop（承 ADR-0157）。
+- **冷会话逐字兼容**：无任何摘要 ⇒ `tiered=False` ⇒ 短层吃满 `history_turns` 与全部预算、中层零 ⇒
+  请求**逐字等于今天**；门控与 `_load_history` 完全同形（关回灌 / 空标识 / 未注入转录 ⇒ 摘要亦不读不注入）。
+
 ### 3.2 行动可回滚（Act 阶段）
 
 - 每个 action 经 `EffectTracker.record` 落 undo 栈。

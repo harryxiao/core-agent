@@ -87,6 +87,19 @@ class MemoryStore(Protocol):
         """按会话取回既有摘要条目（只读；无则 ``None``）。"""
         ...
 
+    def mid_summary_for(self, session_id: str) -> Any:
+        """按会话取回既有**中层摘要**条目（只读；无则 ``None``）。"""
+        ...
+
+    def summarize_slice(
+        self, session_id: str, entries: list[MemoryEntry], *, max_chars: int
+    ) -> str | None:
+        """把中带会话原文（prompt-only 桩）滚合并为中层摘要条目（不迁移来源，可撤销）。
+
+        摘要器 UNWIRED / 无材料 / ``max_chars <= 0`` ⇒ ``None``、零写入。
+        """
+        ...
+
     def forget(self, *, threshold: float = 0.0) -> list[MemoryId]:
         """遗忘：衰减评分低于阈值的 L2 episodic 条目迁 L4 归档（可撤销，不物理删除）。"""
         ...
