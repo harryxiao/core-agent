@@ -285,6 +285,29 @@ def _pet_notification_sink(message: str) -> None:
 # 子 Agent 委托运行完整子循环（多次 LLM 往返 + 工具轮），远超 ToolDef 默认 30s
 _DELEGATE_TIMEOUT_S = 600.0
 
+
+def _failure_lookup(backend: MemoryBackend) -> Callable[[str], str | None]:
+    """失败摘要查询接缝（change 0188 / ADR-0179）：按 id 取 `loop.failure.<trace_id>` 正文。
+
+    走 `MemoryBackend.search("")`（**不**经 `MemoryStore.read`）⇒ **零写入、零效应**（不强化
+    `reuse_count`、不落盘），且**层无关** —— 条目被 `forget` 迁 L4 后**仍可读**（失败证据不应
+    因归档而从诊断面消失）。按 **id 精确**取：同一 trace 还可能有轨迹 `loop.<trace_id>` 与步序
+    `loop.steps.<trace_id>`，三者 `source` 同为 `"loop"`（见 change 0186）。
+
+    `Diagnoser` 只依赖注入的可调用体、**不** import memory（依赖倒置，同 `review_with(_llm_text)`
+    的接缝纪律）；本闭包即组合根（L5）的接线。
+    """
+
+    def lookup(trace_id: str) -> str | None:
+        wanted = f"loop.failure.{trace_id}"
+        for entry in backend.search(""):
+            if entry.id == wanted:
+                return entry.content
+        return None
+
+    return lookup
+
+
 # 信息地图的长文档源（change 0140 / 账本 E77）：Core.md「## 项目信息」段为启动期唯一
 # 长文档，建索引后由装配器注入**目录层**（指针，非全文）、由 `tools.context_read` 取详情。
 _CORE_PROFILE_DOC_ID = "core-profile"
@@ -652,7 +675,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         # 与评测器共用**同一**实例（各持一份 ⇒ 注册的基准对评测不可见）。
         benchmarks = BenchmarkRegistry(path=_skill_state_path("evolution-benchmarks.json"))
         evolution_engine = EvolutionEngine(
-            diagnoser=Diagnoser(),
+            # 记忆面 → 诊断面桥（change 0188 / ADR-0179）：注入失败摘要查询接缝（依赖倒置，
+            # Diagnoser 不 import memory）⇒ 已沉淀的 `loop.failure.<trace_id>` 并入诊断报告。
+            diagnoser=Diagnoser(failure_lookup=_failure_lookup(backend)),
             proposer=Proposer(),
             # 结晶面门的**判定面**（0120）：review 接组合根模型接缝 `_llm_text`（与摘要/补丁同一
             # 依赖方向：evolution 不 import LLM 抽象），运行时测试跑**按标记派生**的结晶面门禁

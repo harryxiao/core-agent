@@ -20,9 +20,11 @@ from core.evolution import (
     EvolutionEngine,
     EvolutionWorker,
     Proposer,
+    Trace,
     Validator,
 )
 from core.loop import Action, DefaultLoop
+from core.memory import MemoryEntry
 from core.observability import Tracer
 from core.runtime import build_runtime
 
@@ -119,3 +121,48 @@ def test_successful_loop_produces_no_defect_evidence() -> None:
     outcome = worker.maybe_run()
 
     assert outcome is None, "无证据 ⇒ 冷路径不运行（阈值门与 run_cycle 均不触发）"
+
+
+# ---- 记忆面 → 诊断面桥（change 0188 / ADR-0179 / 台账 E125） ----
+
+
+def test_composition_root_wires_failure_lookup(api_key, tmp_path) -> None:
+    """组合根注入失败摘要接缝：已沉淀的 `loop.failure.<id>` 经诊断器可取回并入报告。
+
+    端到端（离线）：`runtime.memory` 写一条失败条目 ⇒ 接缝按 id 取正文 ⇒ `diagnose` 的报告
+    `failure_notes` 含该摘要，而**归因判定**不变。未沉淀的 trace ⇒ `None`（不伪造证据）。
+    """
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+    runtime.memory.write(
+        "L2",
+        MemoryEntry(
+            id="loop.failure.T1",
+            layer="L2",
+            content="失败：终止动作未达成",
+            tags=["loop", "failure"],
+            source="loop",
+            trace_id="T1",
+        ),
+    )
+    assert runtime.evolution is not None
+    diagnoser = runtime.evolution.engine._diagnoser  # noqa: SLF001
+
+    assert diagnoser._failure_lookup is not None, "组合根必须接线"  # noqa: SLF001
+    assert diagnoser._failure_lookup("T1") == "失败：终止动作未达成"  # noqa: SLF001
+    assert diagnoser._failure_lookup("未沉淀") is None  # noqa: SLF001
+
+    report = diagnoser.diagnose(  # noqa: SLF001
+        [
+            Trace(
+                trace_id="T1",
+                task_type="loop",
+                action={"event": "loop_finished"},
+                result={"failed": True},
+                success=False,
+                plugin_id="loop.default",
+            )
+        ]
+    )
+
+    assert report.failure_notes == ["失败：终止动作未达成"]
+    assert report.target_plugin == "loop.default", "归因判定不变（桥只增补证据面）"

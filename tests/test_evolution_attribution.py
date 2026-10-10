@@ -187,3 +187,80 @@ def test_unconfirmed_candidate_yields_no_publish_outcome() -> None:
     with pytest.raises(EvolutionError) as exc_info:
         engine.crystallize(candidate)
     assert exc_info.value.code is EvolutionErrorCode.CANDIDATE_PENDING
+
+
+# ---- 失败摘要桥（change 0188 / ADR-0179 / 台账 E125） ----
+
+
+def _failure_trace(trace_id: str, plugin_id: str | None = None) -> Trace:
+    """一条失败 trace（归因线索可空 —— 本桥不看归因，只看失败与否）。"""
+    return Trace(
+        trace_id=trace_id,
+        task_type="loop",
+        action={"event": "loop_finished"},
+        result={"failed": True},
+        success=False,
+        plugin_id=plugin_id,
+    )
+
+
+def _ok_trace(trace_id: str) -> Trace:
+    return Trace(trace_id=trace_id, task_type="loop", action={}, result={"ok": True}, success=True)
+
+
+def test_diagnosis_report_new_field_defaults_to_empty() -> None:
+    """新增字段缺省空 ⇒ 既有构造与相等语义逐字不变（回归锚）。"""
+    assert DiagnosisReport(target_plugin=None, issue="x") == DiagnosisReport(
+        target_plugin=None, issue="x", failure_notes=[]
+    )
+
+
+def test_diagnoser_without_lookup_leaves_failure_notes_empty() -> None:
+    """未接线 ⇒ 报告与既往逐字一致（`failure_notes` 恒空、归因判定不动）。"""
+    report = Diagnoser().diagnose([_failure_trace("t1", "loop.default")])
+
+    assert report.failure_notes == []
+    assert report.target_plugin == "loop.default"
+    assert report.confidence == 1.0
+    assert report.issue == "缺陷归因于插件 loop.default"
+    assert [e.trace_id for e in report.evidence] == ["t1"]
+
+
+def test_diagnoser_attaches_sedimented_failure_notes() -> None:
+    """接线后：**只**对失败 trace 取回并并入摘要（成功 trace 不查）；归因判定不变。"""
+    seen: list[str] = []
+
+    def lookup(trace_id: str) -> str | None:
+        seen.append(trace_id)
+        return {"t1": "失败：终止动作未达成"}.get(trace_id)
+
+    report = Diagnoser(failure_lookup=lookup).diagnose(
+        [_failure_trace("t1", "loop.default"), _ok_trace("t2")]
+    )
+
+    assert report.failure_notes == ["失败：终止动作未达成"]
+    assert seen == ["t1"], "只查失败 trace"
+    assert report.target_plugin == "loop.default", "归因判定不变"
+
+
+def test_diagnoser_lookup_error_degrades_silently() -> None:
+    """查询抛错 ⇒ 降级（该 trace 无摘要），诊断照常产出、判定不受影响。"""
+
+    def boom(trace_id: str) -> str | None:
+        raise RuntimeError(f"记忆后端不可用：{trace_id}")
+
+    report = Diagnoser(failure_lookup=boom).diagnose([_failure_trace("t1", "loop.default")])
+
+    assert report.failure_notes == []
+    assert report.target_plugin == "loop.default"
+    assert report.confidence == 1.0
+
+
+def test_diagnoser_failure_notes_are_bounded() -> None:
+    """有界：单条截断 + 总数封顶（超出即停取）。"""
+    report = Diagnoser(failure_lookup=lambda trace_id: "失" * 500).diagnose(
+        [_failure_trace(f"t{i}", "loop.default") for i in range(5)]
+    )
+
+    assert len(report.failure_notes) == 3  # noqa: PLR2004 — 总数封顶
+    assert all(len(note) == 400 for note in report.failure_notes)  # noqa: PLR2004 — 单条截断

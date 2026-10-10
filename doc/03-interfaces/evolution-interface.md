@@ -9,8 +9,21 @@
 ```python
 class Diagnoser(Plugin):
     plugin_id = "evolution.diagnoser"
+    def __init__(
+        self,
+        plugin_signals: dict[str, float] | None = None,
+        failure_lookup: Callable[[str], str | None] | None = None,
+    ) -> None:
+        """``failure_lookup``：**可选**的失败摘要查询接缝（change `0188`／ADR-0179，
+        **依赖倒置**注入 —— 本单元不 import memory）。缺省 ``None``（未接线）⇒ 报告
+        ``failure_notes`` 恒空、诊断与既往**逐字一致**；查询抛错 ⇒ 降级（该 trace 无摘要），
+        归因判定不受牵连。"""
     def diagnose(self, traces: list[Trace]) -> DiagnosisReport:
-        """定位缺陷到单个插件级别。"""
+        """定位缺陷到单个插件级别；**可用时**把已沉淀的轮级失败摘要
+        （``loop.failure.<trace_id>``）并入 ``DiagnosisReport.failure_notes``
+        （**有界**：单条 400 字符截断、总数封顶 3 条）。**归因判定**
+        （``target_plugin`` / ``confidence`` / ``evidence`` / ``issue``）**逐字不变** ——
+        桥只增补证据面（change `0188`／ADR-0179）。"""
 
 class Proposer(Plugin):
     plugin_id = "evolution.proposer"
@@ -104,6 +117,7 @@ class DiagnosisReport:
     issue: str
     evidence: list[TraceRef]
     confidence: float
+    failure_notes: list[str] = []   # 已沉淀的轮级失败摘要（change 0188；缺省空 ⇒ 逐字兼容）
 
 @dataclass
 class GenerationCandidate:

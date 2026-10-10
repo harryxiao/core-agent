@@ -24,7 +24,7 @@ L4 让 CORE **会进化**。它只读地观测 L3 循环的运行轨迹，通过
 
 | 阶段 | 插件 | 职责 | 产出 |
 |---|---|---|---|
-| **诊断 Diagnose** | Diagnoser | 从轨迹找重复模式、缺陷、失效点，**归因到单个插件** | 诊断报告 |
+| **诊断 Diagnose** | Diagnoser | 从轨迹找重复模式、缺陷、失效点，**归因到单个插件**；**可用时**并入已沉淀的轮级失败摘要（change `0188`／ADR-0179：经**注入的**查询接缝取 `loop.failure.<trace_id>`，有界 + fail-open；**不**改归因判定） | 诊断报告（`failure_notes`） |
 | **提案 Propose** | Proposer | 生成世代化产物（新技能/插件补丁 + delta） | 世代候选 |
 | **验证 Validate** | Validator | review + 运行时测试，过验证门 | gate 报告 |
 | **评测 Evaluate** | Evaluator | 留出集评测，防过拟合/防退化 | 评测报告 |
@@ -116,6 +116,21 @@ L4 让 CORE **会进化**。它只读地观测 L3 循环的运行轨迹，通过
   非待确认态（不存在 / 已确认 / 已拒绝）一律反馈 + 非零退出，**不得复活**。
 
 ---
+
+### 3.7 记忆面 → 诊断面桥（change `0188`／ADR-0179／账本 E125）
+
+- **缺口**：轮级失败已沉淀为 L2 条目 `loop.failure.<trace_id>`（`loop` 写入侧，`failure_digest` 正文），
+  但 `evolution` 对 memory **只写不读** ⇒ 诊断报告（进化闭环起点）**看不到**那份人类可读的失败叙述。
+- **接法（依赖倒置）**：`Diagnoser.__init__` 收可选 `failure_lookup: Callable[[str], str \| None] | None`
+  —— 与 `summarize_with(llm)` / `review_with(llm)` **同一接缝纪律**：单元**不** import 另一端能力包，
+  由组合根（L5）注入具体实现（`runtime._failure_lookup(backend)`）。
+- **并入面**：`DiagnosisReport.failure_notes: list[str]`（**新增可选字段**，缺省空 ⇒ 既有构造 / 相等 /
+  消费面逐字不变）。**不改** `issue`（它是判定叙述，且被 `Proposer` 原样带进候选 `delta`）。
+- **有界 + fail-open**：单条截断 400 字符、总数封顶 3 条（保留**先到**的失败证据）；查询抛错 ⇒ 吞掉、
+  诊断照常。**归因判定（`target_plugin` / `confidence` / `evidence` / `issue`）逐字不变** —— 桥只增补证据面。
+- **读取面零副作用**：组合根闭包走 `MemoryBackend.search("")`（**不**经 `MemoryStore.read`）⇒ 不强化
+  `reuse_count`、不落盘（与 change `0187` 的「有副作用但有界」读取面**划清**）；按 **id 精确**取（同 trace
+  的轨迹 / 步序条目 `source` 同为 `"loop"`）；**层无关** ⇒ 迁 L4 后仍可读。
 
 ## 4. 触发时机（异步、低优先级）
 

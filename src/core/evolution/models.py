@@ -51,6 +51,9 @@ class DiagnosisReport:
     issue: str
     evidence: list[TraceRef] = field(default_factory=list[TraceRef])
     confidence: float = 0.0
+    # 已沉淀的轮级失败摘要（change 0188 / ADR-0179）：归因**判定**不看它 —— 桥只增补证据面。
+    # 缺省空 ⇒ 既有构造 / 相等 / 消费面（proposer 取 `issue`）逐字不变。
+    failure_notes: list[str] = field(default_factory=list[str])
 
 
 @dataclass

@@ -5748,6 +5748,65 @@ canonical：`memory` 721 → **734** 行，**13 req 不变**，scen 89 → **90*
   与 undo）；③ **不改 `_hot` 的既有填充面**（决策 ①）：故 `audit()` 与磁盘在**读路径**上仍可能有
   「`_hot` 中对象被外部就地改动」的窗口 —— 本 change 只保证 `read()` 自己的写回成对（内存 + 磁盘）。
 
+## ADR-0179：记忆面 → 诊断面桥（change 0188 / 账本 E125）
+
+**背景 —— 失败摘要「已沉淀、无人读」。** 轮级失败已由 `loop` 另立为 L2 条目
+`loop.failure.<trace_id>`（`src/core/loop/default.py:833-846`，`tags=["loop","failure"]`，正文来自
+`failure_digest(...)`：任务 + 失败原因 + 失败轮次与失败动作），但**没有任何读者**：
+`Diagnoser.diagnose(traces, prior)`（`src/core/evolution/diagnoser.py`）只看 `Trace.success` 与
+`Trace.plugin_id` —— 归因线索**只有结构化面**；`src/core/evolution/` 对 memory 是**只写不读**
+（`engine.py` 只用 `memory` / `memory_crystallizer` 做回写）。⇒ 系统**已经**沉淀了人类可读的失败
+叙述，而进化闭环的起点（缺陷定位）看不到它：**归因报告与失败摘要之间缺一条读取桥**。
+
+- **决策 ①：依赖倒置注入 reader（**不** import memory）。** `Diagnoser.__init__` 增**可选**接缝
+  `failure_lookup: Callable[[str], str | None] | None = None`，与 `summarize_with(llm)` /
+  `extract_with(llm)`（memory 侧）/ `review_with(llm)`（evolution 侧）**同一接缝纪律**。
+  注：`evolution → memory` 在 ADR-0045 下**本就允许**，且 `EvolutionEngine` 已持 `memory=backend`
+  ⇒ 注入**不是**为绕方向限制，而是因为 `Diagnoser` 是**纯归因单元**（无状态、可单测）—— 把后端塞进
+  它会扩大其依赖面、使单测必须造后端；注入一个 `Callable` 把「取回摘要」的**机制**留在组合根。
+- **决策 ②：新增可选字段，**不**动 `issue`。** `DiagnosisReport` 增
+  `failure_notes: list[str] = field(default_factory=list[str])`。不改 `issue` 的理由：它是**判定叙述**
+  且被 `Proposer.propose` 原样带进候选 `delta={"issue": …}` ⇒ 往它追加摘要会改既有字段语义、
+  并改候选载荷（范围外）。新增字段 ⇒ 既有构造 / `==` 比较 / 消费面**逐字不变**。
+- **决策 ③：有界 + fail-open。** 每条**失败** trace 至多取回一条；单条截断 `_MAX_NOTE_CHARS`(400)、
+  总数封顶 `_MAX_FAILURE_NOTES`(3)（截断保留**先到**的失败证据，比后到可预期）。查询抛错 ⇒ **吞掉**
+  （该 trace 无 note），诊断照常 —— 与 embedder 降级 / 摘要器不可用降级**同纪律**。空白 / `None`
+  **不**入列（不留空串占位）。**归因判定（`target_plugin` / `confidence` / `evidence` / `issue`）
+  逐字不变**：桥只**增补**证据面。
+- **决策 ④：组合根 lookup 走 `MemoryBackend.search("")`，**不**走 `MemoryStore.read`。**
+  `read` 是**语义检索**（相关性排序 + 预算 + 复用强化），且 change `0187` 后**带写副作用** ——
+  用「按 id 精确取一条失败摘要」去驱动诊断，语义上就不该借道检索面、更不该借道产生副作用。
+  `search("")` 无查询词 ⇒ 纯枚举、**零写入零效应**。**按 id 精确**（`loop.failure.<trace_id>` 是
+  `loop` 侧显式 id 约定）：同一 trace 还可能有轨迹 `loop.<trace_id>` 与步序 `loop.steps.<trace_id>`，
+  三者 `source` **同为** `"loop"`（见 0186）⇒ 按 source/tag 取「第一条」不成立。**层无关** ⇒ 条目被
+  `forget` 迁 L4 后**仍可读**（L4 是层级，不是墓碑）。
+
+**被改写的规格条款。** `evolution/spec.md`「对比诊断」**MODIFIED**（非新增）：保留原 3 条 bullet 全文 +
+追加「已沉淀失败摘要 SHALL 可用时并入报告 …… 依赖倒置注入的可调用体（**非** import）…… 按
+`loop.failure.<trace_id>` 取回并并入 `DiagnosisReport.failure_notes` …… SHALL **有界**（单条截断、
+总数封顶）且 SHALL NOT 改变 `target_plugin` / `confidence` / `evidence` / `issue` 的判定 —— 桥只增补
+证据面 …… 缺省未接线 ⇒ `failure_notes` 恒空、诊断与既往**逐字一致**；查询抛错 ⇒ 降级」+
+**1 新 Scenario**「已沉淀失败摘要并入诊断报告」。canonical：`evolution` 657 → **668** 行，**16 req 不变**，
+scen 83 → **84**。**既有 Requirement / Scenario 标题零丢失**（归档脚本 4 断言 + 块内逐行子序列断言全过）。
+
+- **落点**：`src/core/evolution/models.py`（`DiagnosisReport.failure_notes`）、
+  `src/core/evolution/diagnoser.py`（`failure_lookup` 接缝 + `_with_failure_notes` 私有助手 +
+  四个返回分支统一经它挂摘要）、`src/core/runtime.py`（模块级 `_failure_lookup(backend)` 闭包 +
+  `Diagnoser(failure_lookup=…)`）。`memory` / `context` / `loop` **零改动**。
+- **测试**（+6）：`DiagnosisReport` 新字段缺省 ⇒ 相等语义不变（回归锚）/ 未接线 ⇒ `failure_notes` 恒空
+  且归因判定逐字不变（回归锚）/ 接线后并入摘要且**只查失败** trace（spy 记录入参）/ 查询抛错降级
+  （判定不变）/ 有界（500 字截断至 400、5 条封顶 3 条）/ 组合根接线端到端（`runtime.memory` 写
+  `loop.failure.T1` ⇒ 接缝取回正文 ⇒ `diagnose` 报告含该摘要且归因不变；未沉淀 ⇒ `None`）。
+  基线 **2200 → 2206**（**+6**）。归档后 `openspec validate --all` **31 passed / 0 failed**。
+- **局限**：① **摘要未进候选载荷** —— `failure_notes` 只落在 `DiagnosisReport`（经
+  `EvolutionOutcome.diagnosis` 对运维/观测可见），而 `Proposer.propose` 仍只取 `issue` 组 `delta`
+  ⇒ 摘要**暂不驱动**候选内容（消费面另议）；② **归因算法未用摘要** —— 桥**不**参与分数竞争
+  （仍是「证据计 1.0 + 先验破并列」）⇒ 摘要眼下是**诊断面可读性/可归因性**的增强，而非判定输入；
+  ③ **只覆盖 `Diagnoser` 通道** —— `engine._diagnose` 的**显式目标**路径直接构造报告、不经
+  `Diagnoser` ⇒ 该路径无 `failure_notes`（它本就不看失败证据）；④ **按 id 约定耦合** ——
+  `loop.failure.<trace_id>` 这一构造在 `loop`（写入侧）与 `runtime`（读取侧）各出现一次，
+  无单一真源常量守护（若 `loop` 侧改约定，桥**静默**取不到 ⇒ 退化为「无 note」，不报错）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5921,3 +5980,4 @@ canonical：`memory` 721 → **734** 行，**13 req 不变**，scen 89 → **90*
 | ADR-0176 | 02-modules/context.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0177 | 02-modules/context.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0178 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0179 | 02-modules/evolution.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

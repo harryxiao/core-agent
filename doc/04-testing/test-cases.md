@@ -1937,3 +1937,32 @@
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0178 行（**写放大仍在** —— 每次命中都对每个选中
 > 条目**整文件重写**、有意不加节流 / **还原面是值不是事件** —— 并发交错下可能落在中间值、不引入锁 /
 > **不改 `_hot` 的既有填充面**）。
+
+## 101. 记忆面 → 诊断面桥（TC-FAIL-LOOKUP，change `0188`／ADR-0179，台账 E125）
+
+> **背景取证**：轮级失败已由 `loop` 另立为 L2 条目 `loop.failure.<trace_id>`
+> （`default.py:833-846`，`tags=["loop","failure"]`，正文 `failure_digest(...)`），但
+> `Diagnoser.diagnose(traces, prior)`（`diagnoser.py`）只看 `Trace.success` / `plugin_id`，且
+> `src/core/evolution/` 对 memory **只写不读** ⇒ 已沉淀的失败叙述**不驱动进化**（ADR-0170 局限②）。
+> **接法**：依赖倒置注入查询接缝（`Callable`，**非** import）；组合根闭包走
+> `MemoryBackend.search("")`（**不**经 `MemoryStore.read`）⇒ **零写入零效应**、按 id 精确、层无关。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-FAIL-LOOKUP-01 | evolution/spec.md「对比诊断」（新增字段缺省）—— **回归锚** | `DiagnosisReport(target_plugin=None, issue="x")` vs 显式带 `failure_notes=[]` | 两者**相等** —— 新字段缺省不破既有构造 / 相等语义（锚点：`tests/test_evolution_attribution.py::test_diagnosis_report_new_field_defaults_to_empty`） |
+| TC-FAIL-LOOKUP-02 | 同 Requirement（**未接线逐字一致**）—— **回归锚** | `Diagnoser().diagnose([失败 trace(plugin=loop.default)])` | `failure_notes == []` 且 `target_plugin` / `confidence` / `issue` / `evidence` 逐字不变（锚点：`...::test_diagnoser_without_lookup_leaves_failure_notes_empty`） |
+| TC-FAIL-LOOKUP-03 | Scenario「已沉淀失败摘要并入诊断报告」 | 接线 lookup（spy 记录入参），输入 1 失败 + 1 成功 trace | `failure_notes == [摘要]`；spy **只见失败** trace 的 id（成功 trace 不查）；`target_plugin` 不变（锚点：`...::test_diagnoser_attaches_sedimented_failure_notes`） |
+| TC-FAIL-LOOKUP-04 | 同 Requirement（**fail-open**） | lookup 抛 `RuntimeError` | `failure_notes == []`，而 `target_plugin` / `confidence` 与未接线**一致** —— 查询失败不牵连判定（锚点：`...::test_diagnoser_lookup_error_degrades_silently`） |
+| TC-FAIL-LOOKUP-05 | 同 Requirement（**有界**） | lookup 恒返 500 字摘要；输入 5 条失败 trace | `len(failure_notes) == 3`（总数封顶）且每条 `len == 400`（单条截断）（锚点：`...::test_diagnoser_failure_notes_are_bounded`） |
+| TC-FAIL-LOOKUP-06 | 组合根接线（端到端，离线） | `build_runtime(ConfigManager(yaml_path=…))` + `runtime.memory.write("L2", MemoryEntry(id="loop.failure.T1", …))` ⇒ 取 `runtime.evolution.engine._diagnoser` | 接缝**非 None**；`lookup("T1")` 返回该正文、`lookup("未沉淀")` 返回 `None`；`diagnose([失败 trace T1])` 报告 `failure_notes == [正文]` **且** `target_plugin == "loop.default"`（锚点：`tests/test_evolution_wiring.py::test_composition_root_wires_failure_lookup`） |
+
+> **红态证据**：5 条单元用例 **红**（`Diagnoser.__init__() got an unexpected keyword argument
+> 'failure_lookup'` 与 `DiagnosisReport` 无 `failure_notes` 字段）。绿后全量 `.venv/bin/pytest -q` ⇒
+> **2206 passed**（基线 **2200**，**+6** = 回归锚 2 + 并入 1 + fail-open 1 + 有界 1 + 组合根接线 1）。
+> **逐字兼容不变量**：未接线 ⇒ `failure_notes` 恒空、报告与既往**逐字一致**；`target_plugin` /
+> `confidence` / `evidence` / `issue` 的判定**逐字不变**（桥只增补字段）；查询抛错 ⇒ 降级不中断；
+> 只查**失败** trace；组合根 lookup 走 `search("")` ⇒ **零写入零效应**（不强化 `reuse_count`、
+> 不落盘 —— 与 change `0187` 的有副作用读取面**划清**）；`evolution` 不新增 import 方向，
+> `memory` / `context` / `loop` 零改动；无新依赖、无新配置键。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0179 行（**摘要未进候选载荷** / **归因算法未用摘要** /
+> **只覆盖 `Diagnoser` 通道**（显式目标路径不构造它）/ **按 id 约定耦合**、无单一真源常量守护）。
