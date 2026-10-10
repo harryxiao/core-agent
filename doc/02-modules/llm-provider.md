@@ -53,6 +53,10 @@ L3 Loop ──► LLMProvider（抽象接口）──► StdlibLLMProvider（默
 ### 3.5 模型调用审计
 
 - 复用 observability 链路，标注 provider / model 与调用结果，任意一次模型调用可追溯。
+- **标签真实性**（change `0184`／ADR-0175）：`LLMResponse.provider` **不是**硬编码常量 ——
+  `StdlibLLMProvider(provider=…)` 构造期接受注入（组合根按 `llm.provider` 注入），`_map_response`
+  用实例值标注 ⇒ **响应面所见即配置面所见**。注入值为空（未提供）⇒ 回落实现自身身份 `"stdlib"`
+  （裸构造 / 测试替身行为**逐字不变**）。`provider or "stdlib"` 的自守使空串不会写进审计。
 
 ### 3.6 连接复用（change `0066`）
 

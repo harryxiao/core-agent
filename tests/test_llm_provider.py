@@ -618,3 +618,63 @@ def test_stream_mid_transport_error_surfaces_partial_then_raises() -> None:
     with pytest.raises(LLMNetworkError):
         asyncio.run(_run())
     assert got == ["a"]
+
+
+# ---- provider 审计标签（change 0184 / ADR-0175 / 账本 E121）----
+# 规格「模型调用审计」：`LLMResponse.provider` 须反映**实际使用的 provider 标识**，
+# 由组合根按 `llm.provider` 构造期注入；未注入时回落实现自身身份（"stdlib"）。
+# 此前 `_map_response` 硬编码 `"stdlib"` ⇒ 配置面写什么都没用（死标签）。
+
+
+def test_response_provider_label_reflects_configuration() -> None:
+    """注入 provider 名 ⇒ 响应标签即为该名（配置面所见 = 响应面所见）。"""
+    payload = {
+        "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+    }
+    provider = StdlibLLMProvider(
+        api_key="k",
+        base_url="https://example.com/v1",
+        model="m",
+        provider="litellm",
+        transport=_FakeTransport(_fake_json_response(payload)),
+    )
+    result = asyncio.run(
+        provider.acompletion(LLMRequest(messages=[Message("user", "hi")], model="m"))
+    )
+
+    assert result.provider == "litellm"
+
+
+def test_response_provider_defaults_to_identity() -> None:
+    """未注入 provider（裸构造 / 测试替身）⇒ 回落实现自身身份，与既有行为**逐字一致**。"""
+    payload = {
+        "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+    }
+    provider = _make_provider(_FakeTransport(_fake_json_response(payload)))
+    result = asyncio.run(
+        provider.acompletion(LLMRequest(messages=[Message("user", "hi")], model="m"))
+    )
+
+    assert result.provider == "stdlib"
+
+
+def test_response_provider_blank_falls_back_to_identity() -> None:
+    """空串（配置面不该出现，但接口面必须自守）⇒ 不把空标签写进审计。"""
+    payload = {
+        "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+    }
+    provider = StdlibLLMProvider(
+        api_key="k",
+        base_url="https://example.com/v1",
+        model="m",
+        provider="",
+        transport=_FakeTransport(_fake_json_response(payload)),
+    )
+    result = asyncio.run(
+        provider.acompletion(LLMRequest(messages=[Message("user", "hi")], model="m"))
+    )
+
+    assert result.provider == "stdlib"

@@ -713,7 +713,9 @@ def _fake_provider_cls(constructed: list[tuple[str, str | None]], *, fail: bool 
     """假 provider 类：记录 (model, base_url)，embedding 返回定长向量或抛错（不触网）。"""
 
     class _FakeProvider:
-        def __init__(self, *, api_key: str, base_url: str | None, model: str) -> None:
+        def __init__(
+            self, *, api_key: str, base_url: str | None, model: str, provider: str = ""
+        ) -> None:
             constructed.append((model, base_url))
 
         def embedding(self, texts: list[str]) -> list[Embedding]:

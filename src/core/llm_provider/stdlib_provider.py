@@ -103,10 +103,15 @@ class StdlibLLMProvider(LLMProvider):
         fallback_models: list[str] | None = None,
         audit: Callable[[str, LLMResponse], None] | None = None,
         transport: HTTPTransport | None = None,
+        # 审计标签（change 0184 / ADR-0175）：组合根按 `llm.provider` 注入 ⇒ `LLMResponse.provider`
+        # 反映**实际使用的 provider 标识**，不再是与配置无关的硬编码常量。空（未注入）⇒ 回落
+        # 实现自身身份 `"stdlib"`（裸构造 / 测试替身的行为逐字不变）。
+        provider: str = "stdlib",
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url
         self._model = model
+        self._provider = provider or "stdlib"
         self._timeout = timeout
         self._max_retries = max_retries
         self._fallback = fallback_models if fallback_models is not None else []
@@ -254,7 +259,7 @@ class StdlibLLMProvider(LLMProvider):
                 completion_tokens=int(usage.get("completion_tokens", 0)),
             ),
             finish_reason=str(choice.get("finish_reason") or "stop"),
-            provider="stdlib",
+            provider=self._provider,
             model=model,
             tool_calls=self._map_tool_calls(message.get("tool_calls")),
             thinking=_thinking_text(message),

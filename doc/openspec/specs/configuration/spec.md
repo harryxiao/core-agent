@@ -54,12 +54,18 @@
 启动并报明确错误；并 SHALL 支持**可选**子项 `embedding_model`（复用 `endpoint` 与密钥
 引用）用于记忆检索的向量化，未设置或不可达时记忆检索回退词法，不影响启动；并 SHALL 支持
 **可选**子项 `context_window`（模型上下文窗口，正整数，`0` = 未配置）作为 token 预算的派生来源
-（派生口径见 loop「错误与预算控制」），未配置时回落内置缺省，不影响启动；并 SHALL 支持
+（派生口径见 loop「错误与预算控制」），未配置时 SHALL **按 `model` 从内置已知模型窗口表推导**
+（子串匹配，大小写不敏感），表中未命中 SHALL 回落内置缺省，不影响启动；并 SHALL 支持
 **可选**子项 `show_thinking`（思考回显开关，**缺省 `false`**）：取值口径与 feature flag
 **同集**（原生布尔与 `true/false`·`yes/no`·`on/off`·`1/0`，大小写不敏感、忽略首尾空白），
 其余取值 SHALL **在校验期拒绝并阻断启动**（错误信息指明键名与合法取值），SHALL NOT 静默强转。
 开启后方经事件面外发思考原文（口径见 llm-provider「默认实现与配置归一化」与 loop「异步流式执行」）；
 关闭时系统 SHALL NOT 产出思考事件、三端 SHALL NOT 呈现思考块（行为与既有缺省逐字一致）。
+
+窗口来源的**优先级** SHALL 为：`llm.context_window`（显式配置，`> 0`）**优先于**内置表推导；
+显式配置 SHALL NOT 被表值覆盖（用户显式声明永远胜出）。内置表 SHALL 只覆盖**有据可查**的常见模型族
+（每项为「模型名子串 → 窗口」并附来源口径），SHALL NOT 猜测未收录模型；表自身 SHALL NOT 引入配置键
+（不新增 CLI / env / yaml 面，SHALL NOT 成为第二真源）。
 
 #### Scenario: 缺失 LLM 配置阻断启动
 - **GIVEN** config.yaml 缺少 llm 段或 api_key 未解析
@@ -91,6 +97,23 @@
 - **WHEN** 系统做 schema 校验
 - **THEN** 校验失败并阻断启动，错误信息指明键名与合法取值（`0` 或 ≥1 的整数）
 
+#### Scenario: 未配置窗口时按模型推导
+- **GIVEN** llm 段未配置 `context_window`（`0`），`model` 为内置表收录的模型族（如 `gpt-4o`
+  或 `claude-*`）
+- **WHEN** 系统派生 token 预算
+- **THEN** 窗口取自内置表（该模型族的实际上下文窗口）⇒ 预算为「推导窗口 − 输出预留」，
+  **不再**恒等于内置缺省 `65536`
+
+#### Scenario: 未命中内置表回落缺省
+- **GIVEN** llm 段未配置 `context_window`，`model` 不在内置表内
+- **WHEN** 系统派生 token 预算
+- **THEN** 窗口回落内置缺省 ⇒ 预算与变更前**逐字一致**（`65536`）
+
+#### Scenario: 显式窗口优先于表推导
+- **GIVEN** llm 段配置 `context_window: 32768`，`model` 为内置表收录且表值不同
+- **WHEN** 系统派生 token 预算
+- **THEN** 窗口取显式值 `32768`（**优先于**表推导），预算为 `32768 − output_reserve`
+
 #### Scenario: show_thinking 缺省关
 - **GIVEN** llm 段未声明 `show_thinking`（或整段缺省）
 - **WHEN** 系统加载配置并装配循环
@@ -100,7 +123,6 @@
 - **GIVEN** `llm.show_thinking` 取值为原生布尔、`true/false`、`yes/no`、`on/off`、`1/0`（大小写不敏感）
 - **WHEN** 系统加载配置
 - **THEN** 归一为**开**（真值）或**关**（假值）—— 不得因 `bool("<非空字符串>")` 为真而被当作开启；取值为 `maybe` / 空串 / 映射时校验失败并阻断启动，错误信息指明键名与合法取值
-
 ### Requirement: 循环预算配置
 系统 SHALL 将执行循环的预算参数纳入 ConfigSpec 单一真源：`loop.max_rounds`（单任务最大循环次数，
 默认 `10`）与 `loop.output_reserve`（输出预留 token，默认 `8192`）与 `loop.history_turns`（回灌最近 N 轮对话历史，默认 `20`，`0` 表示关闭回灌）与 `loop.compact_steps`（**本轮工具步数**达此值触发上下文压实，默认 `6`）。四项 SHALL 经 CLI flag / env /

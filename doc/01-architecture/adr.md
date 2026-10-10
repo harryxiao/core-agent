@@ -5521,6 +5521,58 @@
   成本核算（观测面有值、无出口）；④ 用量只取**末块**：若端点逐块上报累计用量，本实现只认最后一个
   （`max` 抬升使之无害，但中间值不落）；⑤ `_last_prompt_tokens` 仍是**单轮**观测量，无跨轮累计。
 
+## ADR-0175：已知模型窗口表与 provider 审计标签（change 0184 / 账本 E121）
+
+**背景 —— 两个「配置面说了、系统不听」的缺口**（同批用户裁决「E97 余项 = 全做」，与 `0183` 同源）。
+① `llm.context_window` 缺省 `0` 时 `loop_limits()` **直接回落常量 `65536`** ⇒ 跑 `gpt-4o`（128k）
+与跑 `claude-*`（200k）拿到同一份预算，用户不显式配窗口就永远用不到模型真实窗口（闸门**偏早**，
+偏保守但白扔窗口）；② `LLMResponse.provider` 在 `_map_response` **硬编码 `"stdlib"`**、组合根构造
+`StdlibLLMProvider` **不传** provider ⇒ 即便 `llm.provider: litellm`（该键**必填**、校验非空），
+审计标签仍是 `"stdlib"` —— 规格「模型调用审计」要求「标注 provider / model」，**标注与实际不符**。
+
+- **决策 ①：窗口表是「有序子串表 + 未命中返回 0」的纯常量/纯函数。** 新模块
+  `src/core/configuration/model_windows.py`：`_KNOWN_CONTEXT_WINDOWS: tuple[tuple[str, int], ...]`
+  + `known_window(model) -> int`。用 **tuple 而非 dict**：**顺序即特异性**（更具体的前缀须排在更笼统
+  的前缀之前，首个命中胜出），dict 不表达优先级。返回 `0` 而非「随便给个数」—— `0` 是「**不知道**」的
+  诚实表达，由调用方统一回落既有缺省，不为未收录模型编造数字。
+- **决策 ②：窗口来源三态且**显式优先**，只留一处减法。** `loop_limits()` 改为：`llm.context_window > 0`
+  优先；否则 `known_window(llm.model)`；两者皆 `≤ 0` ⇒ **不做窗口派生**，回落常量预算 `65536`。
+  归一后再统一 `window - output_reserve` ⇒ **减法只有一处**（原 `if/else` 双分支各自返回，口径分散）。
+  三条路径中**只有**「表命中且未显式配置」是**有意的**行为变更，另两条**逐字兼容**。
+- **决策 ③：`_window_reserve_errors` 不动。** 它校验的是**显式配置**的窗口（`llm.context_window > 0`）；
+  表推导出的窗口是我们自己的常量、不经用户配置面 ⇒ 无需再过「窗口 > 预留」闸门（局限见下）。
+- **决策 ④：表不引入配置键（不是第二真源）。** 无新 ConfigSpec / CLI / env / yaml 面；表是 `llm.context_window`
+  的**推导来源**，不是与之并列的第二个配置入口。规格明文写死这条纪律与优先级。
+- **决策 ⑤：provider 标签改在**生产点**，而非 runtime 事后改写。** `StdlibLLMProvider(provider="stdlib")`
+  构造参数 + `self._provider = provider or "stdlib"`；`_map_response` 用 `self._provider`。`LLMResponse`
+  由 provider 产出、经 `_audit` 回调与调用方消费 ⇒ **生产点说谎则下游全在说谎**，只有改生产点能保证
+  「响应面所见即配置面所见」。`provider or "stdlib"`（而非裸 `provider`）：`llm.provider` 虽必填，但
+  `StdlibLLMProvider()` 的**裸构造**（registry `default()`、测试替身）不传该参，空串同理 ⇒ 必须自守，
+  不把空标签写进审计。缺省值 `"stdlib"` 使**未注入的构造点行为逐字不变**。
+- **被改写的规格条款。** 两处 **MODIFIED**（非新增）：`configuration`「LLM 提供商配置（必选）」
+  改写 `context_window` 句为「未配置时 SHALL 按 `model` 从内置表推导（子串匹配，大小写不敏感），
+  未命中 SHALL 回落内置缺省」+ 新增一段（优先级：显式 > 表 > 缺省；表纪律：只收录有据模型 / 不新增配置键
+  / 非第二真源）+ **3 新 Scenario**；`llm-provider`「模型调用审计」补「`LLMResponse.provider` SHALL 反映
+  **实际使用的 provider 标识**：接受构造期注入、SHALL NOT 硬编码；注入为空时回落自身身份」+ **1 新 Scenario**。
+  canonical：`configuration` 53 → **56** scen（10 req 不变）；`llm-provider` 24 → **25** scen（10 req 不变）。
+  **既有 Requirement / Scenario 标题零丢失**（归档脚本断言）。
+- **落点**：`src/core/configuration/model_windows.py`（新）、`src/core/configuration/manager.py`
+  （`loop_limits()` 窗口三态 + import）、`src/core/llm_provider/stdlib_provider.py`（`provider` 构造参数 +
+  `self._provider` + `_map_response`）、`src/core/runtime.py`（主 provider 注入 `app.llm.provider`）。
+- **测试**：表面 2（族命中 / 未收录返回 0）、预算面 3（按模型推导 / 显式优先 / 未命中回落）、
+  provider 面 3（注入反映配置 / 缺省回落身份 / 空串回落身份）、组合根接线 1。
+  基线 **2176 → 2185**（**+9**）。归档后 `openspec validate --all` **31 passed / 0 failed**。
+- **局限**：① **表是静态常量、不随端点能力自更新** —— 新模型族需改代码（无「按端点 `/models` 探测」
+  机制；那会引入网络依赖与启动期不确定性）；② 子串匹配**无边界语义**：模型名里恰好含 `claude` / `gpt-4o`
+  等子串的**非该族**模型会被误纳入（如自建 `my-gpt-4o-clone`）—— 表「小而实」使风险有界，但存在；
+  ③ 表推导出的窗口**不过** `_window_reserve_errors` 闸门：若用户配了**荒谬的大** `output_reserve`
+  （大于表推导窗口），派生预算会 `≤ 0`（在 `DefaultLoop` 侧语义是「关闭 token 维度」）⇒ **静默关闸**。
+  显式配窗口时该情形被校验期拒绝，表推导路径**无此保护**；④ 本 change **不**按模型推导**输出上限**
+  （ADR-0174 局限②留的坑仍在）：`max_tokens` 仍取 `loop.output_reserve` 常数；⑤ 表只覆盖
+  `context_window` 一项，`embedding_model` 等其他模型相关面不参与；⑥ provider 标签只改
+  `StdlibLLMProvider` —— 第三方 `LLMProvider` 实现若自产 `LLMResponse` 且自有硬编码标签，本 change
+  **管不到**（规格只约束「实际使用的 provider 标识」，实现自证）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5690,3 +5742,4 @@
 | ADR-0172 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0173 | 02-modules/context.md, 02-modules/configuration.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0174 | 02-modules/llm-provider.md, 02-modules/configuration.md, 02-modules/loop.md, 03-interfaces/llm-provider-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0175 | 02-modules/configuration.md, 02-modules/llm-provider.md, 03-interfaces/configuration-interface.md, 03-interfaces/llm-provider-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

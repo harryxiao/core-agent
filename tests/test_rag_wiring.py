@@ -34,7 +34,14 @@ from core.runtime import build_runtime
 class _StubProvider(LLMProvider):
     """替代 `StdlibLLMProvider` 的桩：构造签名兼容组合根调用点，调用期不出网。"""
 
-    def __init__(self, *, api_key: str = "", base_url: str | None = None, model: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str = "",
+        base_url: str | None = None,
+        model: str = "",
+        provider: str = "",
+    ) -> None:
         self.api_key = api_key
         self.base_url = base_url
         self.model = model

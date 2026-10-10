@@ -1789,3 +1789,43 @@
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0174 行（拒绝 `stream_options` 的端点流式报错、无首轮探测
 > 降级 / `max_tokens` 默认生效且未按模型推导输出上限 / `completion_tokens` 无消费者 / 只认末块用量 /
 > 观测为单轮量无跨轮累计）。
+
+---
+
+## 97. 已知模型窗口表与 provider 审计标签（TC-MODEL-WINDOW，change `0184`／ADR-0175，台账 E121）
+
+> **背景取证**：① `llm.context_window` 未配置（缺省 `0`）时 `loop_limits()`
+> （`configuration/manager.py`）**直接回落常量 `65536`** ⇒ 不论跑 `gpt-4o`（128k）还是 `claude-*`（200k），
+> token 预算恒为 `65536 − 8192`，用户不显式配窗口就永远拿不到模型真实窗口（闸门**偏早**，保守但白扔窗口）。
+> ② `LLMResponse.provider` 在 `_map_response`（`llm_provider/stdlib_provider.py`）**硬编码 `"stdlib"`**、
+> 组合根构造 `StdlibLLMProvider`（`runtime.py`）**不传** provider ⇒ 即便 `llm.provider: litellm`
+> （该键**必填**、校验非空），响应上的审计标签仍是 `"stdlib"` —— 规格「模型调用审计」要求标注 provider，
+> **标注与实际不符**（死标签）。本 change：内置有序窗口表 + 构造注入审计标签。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-MODEL-WINDOW-01 | configuration/spec.md「LLM 提供商配置（必选）」Scenario「未配置窗口时按模型推导」 | `known_window("gpt-4o-2024-08-06")` / `("anthropic/claude-sonnet-4")` / `("deepseek-chat")` / `("GPT-4O")` | 分别为 `128000` / `200000` / `65536` / `128000` —— **子串**匹配且**大小写不敏感**（锚点：`tests/test_loop_budget_config.py::test_known_window_matches_model_families`） |
+| TC-MODEL-WINDOW-02 | 同 Requirement（未收录 ⇒ 不猜测） | `known_window("my-local-model")` / `known_window("")` | 均 `0`（=「不知道」的诚实表达，由调用方统一回落缺省）（锚点：`...::test_known_window_unknown_model_is_zero`） |
+| TC-MODEL-WINDOW-03 | 同 Requirement Scenario「未配置窗口时按模型推导」 | `model: gpt-4o`、无 `context_window` ⇒ `loop_limits()` | `(10, 128000 − 8192)` —— 窗口取自表、**不再**恒 `65536`（锚点：`...::test_loop_limits_derives_window_from_model`） |
+| TC-MODEL-WINDOW-04 | 同 Requirement Scenario「显式窗口优先于表推导」 | `context_window: 32768` + `model: gpt-4o` ⇒ `loop_limits()` | `(10, 32768 − 8192)` —— 显式值**胜出**（`gpt-4o` 表值 `128000` 被忽略）；**回归锚**（变更前后同值）（锚点：`...::test_loop_limits_explicit_window_wins`） |
+| TC-MODEL-WINDOW-05 | 同 Requirement Scenario「未命中内置表回落缺省」 | `model: my-local-model`、无 `context_window` ⇒ `loop_limits()` | `(10, 65536)` —— 不做窗口派生、回落常量预算，**与变更前逐字一致**（回归锚）（锚点：`...::test_loop_limits_unknown_model_falls_back`） |
+| TC-MODEL-WINDOW-06 | llm-provider/spec.md「模型调用审计」Scenario「审计标签反映配置的 provider」 | `StdlibLLMProvider(..., provider="litellm")` 完成一次补全 | `LLMResponse.provider == "litellm"`（配置面所见即响应面所见）（锚点：`tests/test_llm_provider.py::test_response_provider_label_reflects_configuration`） |
+| TC-MODEL-WINDOW-07 | 同 Requirement（未注入 ⇒ 自身身份） | 裸构造（不传 `provider`）完成一次补全 | `LLMResponse.provider == "stdlib"` —— 与既有行为**逐字一致**（回归锚）（锚点：`...::test_response_provider_defaults_to_identity`） |
+| TC-MODEL-WINDOW-08 | 同 Requirement（空标签自守） | `StdlibLLMProvider(..., provider="")` | `LLMResponse.provider == "stdlib"` —— 不把空串写进审计（锚点：`...::test_response_provider_blank_falls_back_to_identity`） |
+| TC-MODEL-WINDOW-09 | 组合根接线（审计标签按配置注入） | `build_runtime`（`llm.provider: litellm`） | 主 loop planner 的 provider `_provider == "litellm"`（锚点：`tests/test_loop_budget_config.py::test_build_runtime_labels_provider_from_config`） |
+| TC-MODEL-WINDOW-10 | 逐字兼容不变量（窗口减法一处） | 归一后统一 `window − output_reserve`；显式 / 表未命中两路径 | 显式路径与未命中路径的返回值与变更前**逐字相同**；`loop_limits()` arity 与 `(max_rounds, token_budget)` 解包断言不变（锚点：TC-MODEL-WINDOW-04/05 两条回归锚 + 既有预算用例全绿） |
+
+> **红态证据**：`test_known_window_*` / `test_loop_limits_derives_window_from_model`
+> **红**（`core.configuration.model_windows` 模块不存在）；`test_build_runtime_labels_provider_from_config`
+> **红**（`StdlibLLMProvider.__init__() got an unexpected keyword argument 'provider'`）；
+> `test_response_provider_label_reflects_configuration` / `test_response_provider_blank_falls_back_to_identity`
+> **红**（同上 `TypeError`）。绿后全量 `.venv/bin/pytest -q` ⇒ **2185 passed**（基线 **2176**，**+9** =
+> 表面 2 + 预算面 3 + provider 面 3 + 接线 1）。
+> **逐字兼容不变量**：显式 `context_window > 0` ⇒ 预算派生与变更前**逐字相同**；表未命中 ⇒ 回落 `65536`，
+> **逐字相同**；`provider` 未注入 ⇒ 标签仍 `"stdlib"`，**逐字相同**；表是**纯常量 + 纯函数**，
+> **不**新增 ConfigSpec / CLI / env / yaml 面（**不是**第二真源）；无新第三方依赖、无 import 方向变化；
+> `exclude_source_prefixes=("beast.","pet")` 主方向封存红线（`runtime.py`）**逐字不动**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0175 行（静态表不自更新 / 子串无边界语义 /
+> 表推导窗口**不过** `_window_reserve_errors` 闸门 ⇒ 荒谬大 `output_reserve` 可静默关闸 /
+> 本 change **不**按模型推导**输出上限**（ADR-0174 局限②留坑仍在）/ 表只覆盖 `context_window` /
+> 第三方 `LLMProvider` 自产硬编码标签管不到）。

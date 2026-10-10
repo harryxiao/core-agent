@@ -58,7 +58,7 @@ class LLMResponse:
     content: str
     usage: TokenUsage
     finish_reason: str
-    provider: str        # 审计标注：实际响应的 provider
+    provider: str        # 审计标注：实际响应的 provider（由构造注入，见 §2.4）
     model: str           # 审计标注：实际使用的 model
     tool_calls: list[ToolCall] | None = None  # 原生 function call（缺失走 content 协议）
     thinking: str = ""                        # 推理原文（归一化后；缺省空串，见 §2.1）
@@ -71,6 +71,20 @@ class LLMChunk:
     finish_reason: str = ""                   # 终止原因（该块未携带时为空串，见 §2.2）
     usage: TokenUsage | None = None           # 令牌用量（该块未携带时为 None，见 §2.3）
 ```
+
+### 2.4 provider 审计标签的真实性（change `0184` / ADR-0175 / 账本 E121）
+
+`LLMResponse.provider` 此前在 `_map_response` **硬编码 `"stdlib"`**、组合根构造 `StdlibLLMProvider`
+**不传** provider ⇒ 即便 `llm.provider: litellm`（该键**必填**），审计标签仍是 `"stdlib"` ——
+规格「模型调用审计」要求标注 provider，**标注与实际不符**（死标签）。
+
+- **构造注入**：`StdlibLLMProvider(..., provider: str = "stdlib")`；`self._provider = provider or "stdlib"`，
+  `_map_response` 以 `provider=self._provider` 标注。组合根按 `app.llm.provider` 注入。
+- **为什么改生产点**：`LLMResponse` 由 provider 产出、经 `_audit` 回调与调用方消费 ⇒ 生产点说谎则
+  下游全在说谎；**只有**改生产点能保证「响应面所见即配置面所见」（runtime 事后改写不做）。
+- **自守**：`provider or "stdlib"` —— 裸构造（registry `default()` / 测试替身）不传该参、配置面理论上
+  不会给空串，但接口面**不**把空标签写进审计。缺省值使未注入的构造点行为**逐字不变**。
+- **不变量**：未注入 provider ⇒ `LLMResponse.provider == "stdlib"`（与既有行为**逐字一致**）。
 
 ### 2.3 流式令牌用量与请求侧输出上限（change `0183` / ADR-0174 / 账本 E120）
 
@@ -147,6 +161,10 @@ class StdlibLLMProvider(LLMProvider):
 ```
 
 - 配置归一化：任意 OpenAI 兼容 API Key + Base URL（含 /v1）配置即路由到对应端点。
+- **审计标签构造注入**（change `0184`／ADR-0175）：
+  `StdlibLLMProvider(..., provider: str = "stdlib")` —— 组合根按 `llm.provider` 注入，`_map_response`
+  以此为 `LLMResponse.provider`。空（未注入）⇒ `provider or "stdlib"` 回落实现自身身份
+  ⇒ 裸构造 / 测试替身**逐字不变**。此前是硬编码 `"stdlib"`（配置面说什么都不听）—— 见 §2.4。
 
 ### 3.1 传输层与连接复用（change `0066`）
 

@@ -20,6 +20,7 @@ from typing import Any, cast
 from core.plugin_registry import CoeffectResolver, Effect, EffectTracker
 
 from .errors import ConfigurationError
+from .model_windows import known_window
 from .models import (
     AppConfig,
     ConfigExposure,
@@ -492,10 +493,11 @@ class ConfigManager:
         """循环预算上限查询 → ``(max_rounds, token_budget)``。
 
         对齐 loop「错误与预算控制」：`max_rounds` 缺省 ``10``；`token_budget` 由模型上下文窗口
-        **派生** —— ``llm.context_window > 0`` 时取 ``context_window - output_reserve``
-        （``output_reserve`` 缺省 ``8192``），未配置窗口时回落内置缺省 ``65536``
-        （与变更前逐位一致）。
-        取值已过校验（整数、窗口大于预留），故此处只做 env/CLI 字符串归一，不设二次兜底。
+        **派生** —— 窗口取 ``llm.context_window``（显式配置，``> 0``）；未配置时按 ``llm.model``
+        从内置已知模型窗口表**推导**（change 0184 / ADR-0175，见 `model_windows.known_window`）；
+        两者皆无 ⇒ 回落内置缺省 ``65536``（与变更前逐位一致）。窗口既得后取
+        ``window - output_reserve``（``output_reserve`` 缺省 ``8192``）。
+        取值已过校验（整数、显式窗口大于预留），故此处只做 env/CLI 字符串归一，不设二次兜底。
         """
         if self._config is None:
             return _DEFAULT_MAX_ROUNDS, _DEFAULT_TOKEN_BUDGET
@@ -504,9 +506,11 @@ class ConfigManager:
         reserve = _parse_int(raw.get("output_reserve", _DEFAULT_OUTPUT_RESERVE))
         max_rounds = _DEFAULT_MAX_ROUNDS if rounds is None else rounds
         window = self._config.llm.context_window
-        if window > 0:
-            return max_rounds, window - (_DEFAULT_OUTPUT_RESERVE if reserve is None else reserve)
-        return max_rounds, _DEFAULT_TOKEN_BUDGET
+        if window <= 0:  # 未显式配置 ⇒ 按模型推导（表未命中返回 0，即「不知道」）
+            window = known_window(self._config.llm.model)
+        if window <= 0:  # 显式与表皆无 ⇒ 不做窗口派生，回落常量预算（逐字兼容）
+            return max_rounds, _DEFAULT_TOKEN_BUDGET
+        return max_rounds, window - (_DEFAULT_OUTPUT_RESERVE if reserve is None else reserve)
 
     def history_turns(self) -> int:
         """会话历史回灌轮数（缺省 ``20``，``0`` = 关闭回灌；change `0115`）。

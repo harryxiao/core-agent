@@ -274,6 +274,7 @@ CLI 面 `--feature <模块>[=<布尔>]` 由 `entry._cli_overrides` 收进覆盖�
   `token_budget = context_window - output_reserve`（当 `context_window > 0`），否则回落内置缺省 `65536`
   （**与变更前逐位一致**）；`max_rounds` 独立取 `loop.max_rounds`。**不**新开显式 `loop.token_budget` 键 ——
   用户选的是「由窗口派生」，派生式即机制（少一层会与窗口矛盾的开关）。取舍详见 ADR-0091。
+  窗口来源的完整三态（显式 > 内置模型窗口表 > 缺省）见 §2.10（change `0184`／ADR-0175）。
 - **校验期拒绝（不静默兜底）**：`llm.context_window` 非 `0`/≥1 整数（含 `bool`）、`loop.output_reserve`
   非 ≥0 整数、`loop.max_rounds` 非 ≥1 整数、`loop.history_turns` 非 ≥0 整数（含 `bool`），
   均在 `validate_schema` 判为错误、**阻断启动**；**交叉校验** `context_window > output_reserve`，
@@ -335,3 +336,31 @@ CLI 面 `--feature <模块>[=<布尔>]` 由 `entry._cli_overrides` 收进覆盖�
   该命令会**明确报「暂不支持键」**（不静默成功、不假装生效；如需三面齐备可后续按 §2.7 先例补白名单）。
 - 口径来源：`doc/openspec/specs/configuration/spec.md`「编排调度配置」（**ADDED**）与
   `doc/openspec/specs/orchestration/spec.md`「难易度感知的调度策略」（**ADDED**）。
+
+### 2.10 已知模型窗口表（change `0184` / ADR-0175，账本 E121）
+
+`llm.context_window` 缺省 `0` 时窗口**恒**回落常量 `65536` ⇒ 模型换了窗口却不随动（§2.7 派生口径的
+上游来源只有一个）。本项新增**内置已知模型窗口表**作为中间来源：
+
+```
+llm.context_window > 0  ──►  显式值（优先，逐字兼容）
+        │ 否
+        ▼
+known_window(llm.model)  ──►  表命中 ⇒ 该族真实窗口（本 change 唯一的有意行为变更）
+        │ 未命中（返回 0 = 不知道）
+        ▼
+内置缺省 65536（不做窗口派生，回落常量预算 —— 逐字兼容）
+```
+
+- **模块**：`src/core/configuration/model_windows.py` —— `_KNOWN_CONTEXT_WINDOWS: tuple[tuple[str, int], ...]`
+  + `known_window(model: str) -> int`。**有序**表（**顺序即特异性**：更具体的前缀须排在更笼统的前缀之前，
+  首个命中胜出）+ **子串匹配**（大小写不敏感、忽略首尾空白）⇒ 命名空间/版本后缀（`openai/gpt-4.1-mini`、
+  `gpt-4o-2024-08-06`）都能命中。未命中返回 `0`（「不知道」的诚实表达），由 `loop_limits()` 统一回落。
+- **无新配置面**：表是**纯常量 + 纯函数**，**不**引入 ConfigSpec / CLI flag / env / yaml 键 ⇒
+  **不是**第二真源，只是 `llm.context_window` 的**推导来源**。
+- **消费方**：`ConfigManager.loop_limits()`（`window <= 0` 时调 `known_window`），其余口径（`max_rounds`、
+  减法位置、arity）**逐字不变** ⇒ 既有 `(max_rounds, token_budget)` 解包断言不受影响。
+- **不变量**：① 显式窗口 ⇒ 预算与变更前**逐字相同**；② 表未命中 ⇒ 回落 `65536`，与变更前**逐字相同**；
+  ③ 减法只有一处（归一窗口后统一 `window − output_reserve`）。
+- 已知局限（不过 `_window_reserve_errors` 闸门 / 子串无边界语义 / 静态表不自更新）见 ADR-0175。
+- 口径来源：`doc/openspec/specs/configuration/spec.md`「LLM 提供商配置（必选）」（**MODIFIED**）。

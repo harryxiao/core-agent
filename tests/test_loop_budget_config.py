@@ -19,6 +19,7 @@ from typing import cast
 import pytest
 
 from core.configuration import ConfigManager, ConfigurationError, config_specs
+from core.configuration.model_windows import known_window
 from core.context import Compactor
 from core.entry import _key_to_patch
 from core.loop import Action, DefaultLoop
@@ -442,3 +443,79 @@ def test_build_runtime_injects_output_reserve_as_max_tokens(
     )
     planner = _main_loop(runtime)._planner  # noqa: SLF001 — 接线断言
     assert planner._max_tokens == reserve  # noqa: SLF001 — 接线断言
+
+
+# ---- 已知模型窗口表与 provider 审计标签（change 0184 / ADR-0175 / 账本 E121）----
+
+# 内置表口径（configuration/spec.md「LLM 提供商配置（必选）」）：常见模型族窗口
+_GPT4O_WINDOW = 128_000
+_CLAUDE_WINDOW = 200_000
+_DEEPSEEK_WINDOW = 65_536
+_DEFAULT_WINDOW = 65_536  # 表未命中 ⇒ 回落内置缺省（与变更前逐字一致）
+
+
+def _llm_section(model: str, extra: str = "") -> str:
+    """按给定模型名拼 llm 段（其余键与原用例同形）。"""
+    return (
+        "llm:\n"
+        "  provider: litellm\n"
+        f"  model: {model}\n"
+        "  endpoint: https://example.com/v1\n"
+        "  api_key: ${OPENAI_API_KEY}\n"
+        f"{extra}"
+    )
+
+
+def _manager_for_model(
+    tmp_path: Path, model: str, llm_extra: str = "", extra: str = ""
+) -> ConfigManager:
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(_llm_section(model, llm_extra) + extra, encoding="utf-8")
+    manager = ConfigManager(yaml_path=str(cfg), environ={"OPENAI_API_KEY": "sk-test"})
+    manager.load()
+    return manager
+
+
+def test_known_window_matches_model_families() -> None:
+    """表按**子串**匹配（大小写不敏感）：命中收录族返回该族窗口。"""
+    assert known_window("gpt-4o-2024-08-06") == _GPT4O_WINDOW
+    assert known_window("anthropic/claude-sonnet-4") == _CLAUDE_WINDOW
+    assert known_window("deepseek-chat") == _DEEPSEEK_WINDOW
+    assert known_window("GPT-4O") == _GPT4O_WINDOW  # 大小写不敏感
+
+
+def test_known_window_unknown_model_is_zero() -> None:
+    """未收录模型 ⇒ ``0``（「不知道」的诚实表达，由调用方统一回落缺省）。"""
+    assert known_window("my-local-model") == 0
+    assert known_window("") == 0
+
+
+def test_loop_limits_derives_window_from_model(tmp_path: Path) -> None:
+    """未配置 `context_window` 且模型在表内 ⇒ 预算按**推导窗口**派生（不再恒 65536）。"""
+    manager = _manager_for_model(tmp_path, "gpt-4o")
+    assert manager.loop_limits() == (10, _GPT4O_WINDOW - _DEFAULT_OUTPUT_RESERVE)
+
+
+def test_loop_limits_explicit_window_wins(tmp_path: Path) -> None:
+    """显式 `context_window` **优先于**表推导（用户显式声明永远胜出）。"""
+    manager = _manager_for_model(tmp_path, "gpt-4o", "  context_window: 32768\n")
+    assert manager.loop_limits() == (10, 32768 - _DEFAULT_OUTPUT_RESERVE)
+
+
+def test_loop_limits_unknown_model_falls_back(tmp_path: Path) -> None:
+    """表未命中 ⇒ 预算回落内置缺省，与变更前**逐字一致**（回归锚）。"""
+    manager = _manager_for_model(tmp_path, "my-local-model")
+    assert manager.loop_limits() == (10, _DEFAULT_WINDOW)
+
+
+def test_build_runtime_labels_provider_from_config(tmp_path: Path, state_dir: Path) -> None:
+    """组合根按 `llm.provider` 注入 provider ⇒ 审计标签与配置面所见一致。"""
+    runtime = build_runtime(
+        ConfigManager(
+            yaml_path=_write_config(tmp_path),
+            environ={"OPENAI_API_KEY": "sk-test"},
+        )
+    )
+    planner = _main_loop(runtime)._planner  # noqa: SLF001 — 接线断言
+    provider = planner._llm  # noqa: SLF001 — 接线断言
+    assert provider._provider == "litellm"  # noqa: SLF001 — 接线断言
