@@ -36,6 +36,14 @@
 **可注入 embedder**（缺省词法、可远端向量化）计算，并对检索 query 与未变条目向量做**缓存**
 （每次检索 query 至多向量化一次）。
 
+命中条目的复用强化 SHALL **落盘持久化**：`reuse_count` 的递增 SHALL 写入持久后端
+（SHALL NOT 只存在于进程内）—— 因该计数经 `1 + log1p(reuse_count)` 与
+`freshness ** (1 / (1 + log1p(reuse_count)))` 参与排序与**遗忘曲线**调制，跨会话丢失强化会使
+「反复被召回的条目」在重启后退化为从未复用 ⇒ 衰减不再被延缓。写回 SHALL **只**覆盖本次检索
+**选中**（进入结果预算）的条目（非选中候选 SHALL NOT 被写、SHALL NOT 被强化 —— 与既有语义
+逐字一致）⇒ 写放大有界于选中集。每条写回 SHALL 记录**可撤销效应**（按 trace 回滚即把
+`reuse_count` 还原为强化前的值）。
+
 #### Scenario: 热数据即时返回
 - **GIVEN** 一个高频使用的 SOP
 - **WHEN** 检索该 SOP
@@ -56,6 +64,12 @@
 - **WHEN** 检索器排序候选
 - **THEN** `importance` 更高或 `reuse_count` 更多的条目排在更前；命中条目的 `reuse_count` 递增
 
+#### Scenario: 复用强化跨会话持久
+- **GIVEN** 一条命中的记忆条目，其 `reuse_count` 在检索后递增并按预算落盘
+- **WHEN** 以**同一持久后端**重新装载记忆（模拟进程重启 / 跨会话）
+- **THEN** 该条目的 `reuse_count` 保持强化后的值（SHALL NOT 退回 0）；且该次写回 SHALL 可经
+  trace 回滚而还原为强化前的值
+
 #### Scenario: 语义相似经 embedder
 - **GIVEN** 注入了 embedder
 - **WHEN** 检索一个语义相近但词面不重叠的查询
@@ -65,7 +79,6 @@
 - **GIVEN** 未注入 embedder，或 embedder 调用抛错
 - **WHEN** 检索器计算相似度
 - **THEN** 降级为词法相似，检索不中断
-
 ### Requirement: 按会话隔离的检索
 系统 SHALL 使记忆检索接受可选的**调用方会话标识** `session_id`（缺省空串 = 未归属调用者）。
 标识**非空**时，检索结果 SHALL **只含**两类条目：① 归属该会话（`session_id` 等于该标识）的条目；

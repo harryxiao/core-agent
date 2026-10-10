@@ -196,6 +196,13 @@ MemoryStore
   `freshness ** (1 / (1 + log1p(reuse_count)))`（复用越多、衰减越慢）。**调制只落 `_decay_score`** ——
   `relevance.recency_decay` 是**检索（`rank`）与遗忘共用**的函数，若在此处调制会连带改变检索排序；
   `recency_decay` / `rank` **逐字不动**（`reuse_count=0` 时 `pow(x,1.0)==x` 逐位相等、无需特判）。
+- **复用强化落盘**（change `0187`／ADR-0178／账本 E124）：命中条目的 `reuse_count` 递增**写回持久后端**
+  （`read()` 末尾 `_reinforce(selected)`：自增 → `_backend.put` → 记可撤销效应 `trace=reuse.<id>`）。
+  原实现只改内存对象（`FileBackend.search` 返回**同引用**、从不 `_persist()`）⇒ 磁盘 JSONL 恒为旧值、
+  跨会话强化全丢、遗忘曲线重启后退化。**写回只覆盖 `_truncate` 选中**的条目 ⇒ 写放大有界于选中集
+  （非选中候选**不**写、**不**强化，原语义逐字不变）；undo 把 `reuse_count` **还原为强化前的值**
+  （幂等，非 `-= 1`）。**不**把读条目插入 `_hot`（避免读路径使热字典无界增长）。`summary_for` /
+  `mid_summary_for` 是**不同的**只读取数面（不经 `read()`）⇒ 其零写入 / 零效应契约逐字不动。
 - **抽取上限自适应**：见 §3.4「有界」——`key_fact_cap(n)` 只放宽不收紧。
 
 ### 3.6 三层会话滑窗的记忆面（change `0178`／ADR-0169／账本 E115）

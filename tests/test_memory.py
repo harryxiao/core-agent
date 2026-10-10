@@ -12,6 +12,7 @@ import time
 import warnings
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Literal
 
 import pytest
@@ -1006,3 +1007,81 @@ def test_failure_entry_is_readable() -> None:
     store.write("L2", _session_entry("e0", "今天天气不错", "s1"))
 
     assert [e.id for e in store.read("终止动作未达成")][0] == "loop.failure.t1"
+
+
+# ---------------------------------------------------------------------------
+# 复用强化落盘（change 0187 / ADR-0178 / 台账 E124）
+# ---------------------------------------------------------------------------
+
+
+class _PutCountingBackend(FileBackend):
+    """计数 ``put`` 的 ``FileBackend``（``path=None`` ⇒ 纯内存，无磁盘副作用）。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.puts: list[str] = []
+
+    def put(self, entry: MemoryEntry) -> str:
+        self.puts.append(entry.id)
+        return super().put(entry)
+
+
+def test_reuse_reinforcement_survives_reload(tmp_path: Path) -> None:
+    """命中强化**落盘**：同一后端重装（模拟进程重启）后 `reuse_count` 保持强化值。"""
+    path = tmp_path / "mem.jsonl"
+    store = MemoryStore(backend=FileBackend(path))
+    store.write("L2", _entry("e1", "L2", "hello"))
+
+    store.read("hello", budget=100)
+
+    reloaded = MemoryStore(backend=FileBackend(path))
+    assert reloaded.audit()[0].reuse_count == 1, "跨会话保留强化（非退回 0）"
+
+
+def test_read_without_hit_records_no_write() -> None:
+    """**未命中**不写（回归锚）：无候选 ⇒ 零 `put`、零效应 —— 强化只发生在命中路径上。"""
+    tracker = EffectTracker()
+    backend = _PutCountingBackend()
+    store = MemoryStore(backend=backend, effect_tracker=tracker)
+
+    assert store.read("什么都没有", budget=100) == []
+    assert backend.puts == [], "未命中不落盘"
+    assert tracker.rollback().reverted == [], "未命中不记效应"
+
+
+def test_reuse_writeback_is_reversible(tmp_path: Path) -> None:
+    """写回记**可撤销效应**：`rollback("reuse.<id>")` ⇒ 还原为强化**前**的值（非自减）。"""
+    path = tmp_path / "mem.jsonl"
+    tracker = EffectTracker()
+    backend = FileBackend(path)
+    store = MemoryStore(backend=backend, effect_tracker=tracker)
+    store.write("L2", _entry("e1", "L2", "hello"))
+    store.read("hello", budget=100)
+    store.read("hello", budget=100)
+    assert backend.search("")[0].reuse_count == 2  # noqa: PLR2004 — 两次 read 各强化一次
+
+    report = tracker.rollback("reuse.e1")
+
+    assert report.undo_failed == []
+    assert backend.search("")[0].reuse_count == 0, "还原为强化前的值"
+    assert FileBackend(path).search("")[0].reuse_count == 0, "还原同样落盘"
+
+
+def test_only_selected_entries_are_reinforced(tmp_path: Path) -> None:
+    """写放大**有界**：预算只容一条 ⇒ 仅被 `_truncate` 选中的条目落盘强化，落选候选不变。"""
+    tracker = EffectTracker()
+    backend = FileBackend(tmp_path / "mem.jsonl")
+    store = MemoryStore(backend=backend, effect_tracker=tracker)
+    store.write("L2", _entry("hot", "L2", "alpha " * 50))
+    store.write("L2", _entry("cold", "L2", "beta " * 50))
+
+    selected = store.read("alpha beta", budget=60)
+
+    assert len(selected) == 1, "预算只容一条（两条各 75 token，第二条被跳过）"
+    chosen = selected[0].id
+    other = "cold" if chosen == "hot" else "hot"
+    counts = {e.id: e.reuse_count for e in backend.search("")}
+    assert counts[chosen] == 1, "选中条目被强化"
+    assert counts[other] == 0, "落选候选不被强化（写放大有界）"
+    assert len(tracker.audit(f"reuse.{chosen}")) == 1
+    assert tracker.audit(f"reuse.{other}") == []

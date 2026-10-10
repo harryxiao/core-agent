@@ -194,6 +194,13 @@ def relevance(entry, query, embedder=None) -> float:
   ``Embedder.embed``）经 ``memory/embedding.py::batch_embed`` 适配；memory **不依赖 rag**。
 - **向量缓存**：``read`` 对 query **至多向量化一次**；条目按 ``content`` 哈希缓存向量，
   内容未变即复用；缓存**进程内易失**（不落盘）。
+- **复用强化**：命中条目 ``reuse_count`` 递增并**写回持久后端**（change 0187 / ADR-0178）——
+  ``read`` 是**有副作用的读**（副作用**有界**：只覆盖进入预算的**选中**条目；非选中候选不写、不强化），
+  每条写回记**可撤销效应**（``op="memory.reuse"``，``trace_id="reuse.<entry_id>"``，undo **还原**
+  强化前的值、幂等非自减）。跨会话 / 进程重启后强化保持 ⇒ 遗忘曲线（``_decay_score`` 的
+  ``freshness ** (1/(1+log1p(reuse_count)))`` 项）连续。``summary_for`` / ``mid_summary_for``
+  **不经** ``read`` ⇒ 其「零写入 / 零效应」契约**不受影响**（逐字不变）。
+
 - **摘要契约（Summarizer）**：``Summarizer = Callable[[list[MemoryEntry]], str]`` —— 同一会话的
   episodic 条目 → 一段提炼事实。prompt 文本属 memory 域（``memory/summarize.py::build_prompt``），
   模型调用经 ``summarize_with(llm)`` 适配；memory **不 import LLM/rag 抽象**（同 ``batch_embed``

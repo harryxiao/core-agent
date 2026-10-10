@@ -1905,3 +1905,35 @@
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0177 行（**预算近似** —— 被挡条目已消耗配额、
 > 不回收 / **标签是自律声明**、无强制门禁（别的条目打 `steps` 标签会被顺带挡掉）/ **不处理 notes 侧**
 > 同源对账 / `key_fact` vs 笔记结论记为**设计上非重复**、不引入跨模块匹配）。
+
+## 100. 复用强化落盘（TC-REUSE-PERSIST，change `0187`／ADR-0178，台账 E124）
+
+> **背景取证**：`read()` 命中条目时 `entry.reuse_count += 1`，原注释自陈「复用即强化（**进程内强化，
+> 不落盘避免写放大**）」；但 `FileBackend.search`（`backend.py:45-62`）返回的是 `self._entries.values()`
+> 的**同一批对象引用**（非副本）⇒ 那行自增**就地改了后端内存对象**、只是**没有** `_persist()`。后果：
+> 同进程内 `audit()`（走 `_backend.search("")`）**能**看到新值（故既有
+> `test_read_reinforces_reuse_count` 一直绿），**磁盘 JSONL 却始终是旧值** ⇒ 进程结束即丢。而该计数
+> **不止**用于当场排序：`_decay_score`（`store.py:105-115`）以
+> `freshness ** (1 / (1 + log1p(reuse_count)))` 调制遗忘曲线 ⇒ 跨会话强化全丢、**最该留的先被归档**。
+> **判据错位**：旧判据选在**进程内可见性**上，契约要的是**跨会话持久性** —— 「测试绿、语义错」的典型。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-REUSE-PERSIST-01 | memory/spec.md「温度分层检索」Scenario「复用强化跨会话持久」 | `FileBackend(tmp_path/"mem.jsonl")` 写 `e1` ⇒ `read("hello")` ⇒ 以 **同一 path 的新 `FileBackend`** 新建 `MemoryStore`（模拟进程重启） | 新 store `audit()[0].reuse_count == 1` —— 强化**落盘**、**非**退回 0（锚点：`tests/test_memory.py::test_reuse_reinforcement_survives_reload`） |
+| TC-REUSE-PERSIST-02 | 同 Requirement（**未命中不写**）—— **回归锚** | 计数 `put` 的 `_PutCountingBackend`（纯内存）+ 空 store ⇒ `read("什么都没有", budget=100)` | 返回 `[]`、`backend.puts == []`、全局 `rollback().reverted == []` —— 强化**只**发生在命中路径上（锚点：`...::test_read_without_hit_records_no_write`） |
+| TC-REUSE-PERSIST-03 | 同 Requirement（写回**可撤销**、undo **还原原值**） | `read("hello")` ×2（`reuse_count` = 2）⇒ `tracker.rollback("reuse.e1")` | `undo_failed == []`；后端 `reuse_count` 回到 **0**，且**重新装载的磁盘文件**亦为 0 —— 还原**同样落盘**（锚点：`...::test_reuse_writeback_is_reversible`） |
+| TC-REUSE-PERSIST-04 | 同 Requirement（写放大**有界**：只写**选中**） | 两条各 `"alpha " * 50`（75 token）的候选 + `budget=60` ⇒ `read("alpha beta")` | 恰 1 条被选中；**选中**者 `reuse_count == 1` 且 `audit("reuse.<chosen>")` 长 1；**落选**者 `reuse_count == 0`、`audit("reuse.<other>") == []`（锚点：`...::test_only_selected_entries_are_reinforced`） |
+
+> **红态证据**：`test_reuse_reinforcement_survives_reload`（新 store 读到 `reuse_count == 0`）、
+> `test_reuse_writeback_is_reversible`（`rollback("reuse.e1")` 无效应可撤 ⇒ 后端仍为 2）、
+> `test_only_selected_entries_are_reinforced`（落选者同样被强化）**红**；
+> `test_read_without_hit_records_no_write` 自然绿（空 store 本就不进强化路径 —— 作为**回归锚**保留）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2200 passed**（基线 **2196**，**+4** = 跨会话保持 1 + 未命中不写 1 +
+> 可回滚 1 + 有界 1）。既有 `test_read_reinforces_reuse_count` **继续绿**（回归锚：强化语义本身未变）。
+> **逐字兼容不变量**：排序 / 预算 / 会话过滤 / 来源排除面语义**逐字不变**（只在末尾多一次落盘）；
+> 非选中候选**不**写、**不**强化（原语义）；`summary_for` / `mid_summary_for`（**不同**只读取数面、
+> 不经 `read()`）的「零写入 / 零效应」契约**逐字不动**（既有测试继续守护）；**不**把读条目插入 `_hot`
+> （不引入隐式缓存）；无新配置键、无新第三方依赖、无 import 方向变化。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0178 行（**写放大仍在** —— 每次命中都对每个选中
+> 条目**整文件重写**、有意不加节流 / **还原面是值不是事件** —— 并发交错下可能落在中间值、不引入锁 /
+> **不改 `_hot` 的既有填充面**）。

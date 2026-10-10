@@ -246,9 +246,33 @@ class MemoryStore:
             reverse=True,
         )
         selected = self._truncate(ranked, budget)
-        for entry in selected:
-            entry.reuse_count += 1  # 复用即强化（进程内强化，不落盘避免写放大）
+        self._reinforce(selected)
         return selected
+
+    def _reinforce(self, entries: list[MemoryEntry]) -> None:
+        """复用即强化（**落盘**，change 0187 / ADR-0178）：自增 + 写回 + 记可撤销效应。
+
+        只作用于本次检索**选中**（进入预算）的条目 ⇒ 写放大有界于选中集。写回经
+        ``_backend.put`` 持久化（后端 ``search`` 返回同引用，故此处只是「同一对象 + 触发落盘」）；
+        **不**把条目插入 ``_hot``（``_hot`` 是写入侧热字典，读路径填充会使其无界增长）。
+        """
+        for entry in entries:
+            previous = entry.reuse_count
+            entry.reuse_count = previous + 1
+            self._backend.put(entry)
+            self._tracker.record(
+                Effect(
+                    op="memory.reuse",
+                    target=entry.id,
+                    undo=lambda entry_id=entry.id, layer=entry.layer, value=previous: (
+                        self._undo_reuse(entry_id, layer, value)
+                    ),
+                    reversible=True,
+                    coeffect=[],
+                    trace_id=f"reuse.{entry.id}",
+                    ts=time.time(),
+                )
+            )
 
     def write(self, layer: Layer, entry: MemoryEntry) -> MemoryId | None:
         """按意向层写入条目（可逆）；可注入**重要度闸门**（change 0177 / ADR-0168）。
@@ -941,6 +965,19 @@ class MemoryStore:
         if entry is None:
             return
         entry.importance = value
+        self._backend.put(entry)
+
+    def _undo_reuse(self, entry_id: str, layer: Layer, value: int) -> None:
+        """复用强化的 undo：把 ``reuse_count`` 还原为强化**前**的值（幂等，非自减）。
+
+        查表顺序照 ``_undo_migrate``：``_hot`` → ``_backend``；两处都无（条目已被删除）⇒ 静默返回。
+        """
+        entry = self._hot.get(entry_id)
+        if entry is None:
+            entry = self._backend.get(layer, entry_id)
+        if entry is None:
+            return
+        entry.reuse_count = value
         self._backend.put(entry)
 
     def _undo_migrate(self, entry_id: str, from_layer: Layer, to_layer: Layer) -> None:

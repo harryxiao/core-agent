@@ -5686,6 +5686,68 @@ scen 22 → **23**。**既有 Requirement / Scenario 标题零丢失**（归档�
   本 change 只处理事实注入面一侧，「同源一致性」不引入跨模块匹配；④ **不**处理 `key_fact` vs 笔记结论
   （记为设计上非重复，见 ③）。
 
+## ADR-0178：`reuse_count` 落盘持久化（change 0187 / 账本 E124）
+
+**背景 —— 「测试绿、语义错」：判据选在了进程内可见性上。** `MemoryStore.read()` 命中条目时
+`entry.reuse_count += 1`，原注释自陈「复用即强化（**进程内强化，不落盘避免写放大**）」。但
+`FileBackend.search`（`backend.py:45-62`）返回的是 `self._entries.values()` 的**同一批对象引用**
+（非副本）⇒ 那行自增**就地改了后端的内存对象**，只是**没有** `_persist()`。后果：同进程内
+`audit()`（走 `_backend.search("")`）**能**看到新值（故既有 `test_read_reinforces_reuse_count` 一直绿），
+**磁盘 JSONL 却始终是旧值** ⇒ 进程结束即丢。而该计数**不止**用于当场排序：`_decay_score`
+（`store.py:105-115`）以 `freshness ** (1 / (1 + log1p(reuse_count)))` 调制遗忘曲线
+（`memory` 规格明文「复用越多衰减越缓」）⇒ **跨会话复用强化全部丢失**：一条真正被反复召回的记忆，
+重启后 `reuse_count` 回到 0、衰减不再被延缓，**最该留的东西反而先被归档** —— 与「记忆即进化轨迹」
+的中心隐喻直接相悖。
+
+- **决策 ①：落盘只加一处 `put`，**不**碰 `_hot`。** 新增私有 `_reinforce(selected)` 取代 `read()` 末尾的
+  裸循环：对**选中**条目 `self._backend.put(entry)`。**不**把条目插入 `self._hot` —— `_hot` 是**写入侧**
+  热字典（`_persist` / `_migrate` / `write` 等五处写入），若读路径也填充，`_hot` 会随**每个被读到的
+  条目**无界增长 ⇒ 把「读」变成「隐式缓存」，超出本 change 意图（不变量 I6）。
+  *对象同一性*：因后端 `search` 返回同引用，`put(entry)` 只是「同一对象 + 触发 `_persist()`」，
+  无序列化往返；`_hot` 中若有同一 id 的对象，也是**同一对象**，不存在两处状态分叉。
+- **决策 ②：undo 还原**原值**（非 `-= 1`）。** 每条记
+  `Effect(op="memory.reuse", target=entry.id, trace_id=f"reuse.{entry.id}")`，undo 取**还原为捕获的
+  `previous`**：若同一 trace 已被回滚、或并发下有多次强化，「还原原值」是**幂等**的、不会把计数
+  打成负数（`-= 1` 在重复回滚下会**过减**）。查表顺序照 `_undo_migrate`：`_hot.get(id)` →
+  `_backend.get(layer, id)` → 都没有（条目已被删除）⇒ **静默返回**。闭包以**默认参数**绑定
+  `entry_id` / `layer` / `value`（避免 ruff `B023` 循环变量晚绑定）。
+- **决策 ③：有界批量 —— 只写 `_truncate` 选中的条目。** `read()` 末尾的循环本就只遍历 `selected`
+  （非选中候选**从不**自增）⇒ 本 change **不扩大**写入面，只把「已自增」这件事持久化。写放大上界 =
+  每次读取的选中条目数（由 `budget` 决定）。
+- **决策 ④：规格落 `memory`（**是** `memory`，与 0185/0186 不同）。** `0185`/`0186` 改的是**装配面的
+  注入步骤**（故落 `context`）；本 change 改的是 **`MemoryStore.read` 自身**的语义（「复用强化」由
+  进程内变持久）⇒ 规格该写在**行为发生变化**的能力 `memory`「温度分层检索」。`context` 侧零改动。
+- **显式不做：不加节流 / 批合并配置键。** 写放大已被决策 ③ 限定在选中集内，加配置是**投机性可配置性**
+  （违反「最小」）；若将来实测到热点，再以独立 change 引入（并附度量证据）。亦**不改** `summary_for` /
+  `mid_summary_for` —— 它们是**不同的**只读取数面（不经 `read()`），其「零写入 / 零效应」契约逐字不动
+  （既有测试继续守护）。
+
+**被改写的规格条款。** `memory/spec.md`「温度分层检索」**MODIFIED**（非新增）：保留原条款全文 + 追加
+「命中条目的复用强化 SHALL **落盘持久化** …… `reuse_count` 的递增 SHALL 写入持久后端（SHALL NOT 只
+存在于进程内）…… 写回 SHALL **只**覆盖本次检索**选中**（进入结果预算）的条目（非选中候选 SHALL NOT
+被写、SHALL NOT 被强化 —— 与既有语义逐字一致）⇒ 写放大有界于选中集。每条写回 SHALL 记录**可撤销
+效应**（按 trace 回滚即把 `reuse_count` 还原为强化前的值）」+ **1 新 Scenario**「复用强化跨会话持久」。
+canonical：`memory` 721 → **734** 行，**13 req 不变**，scen 89 → **90**。**既有 Requirement / Scenario
+标题零丢失**（归档脚本 4 断言全过）。
+
+- **落点**：`src/core/memory/store.py`（`read()` 末尾裸循环 → `self._reinforce(selected)`；
+  新私有 `_reinforce`（`store.py:252`）+ `_undo_reuse`（`store.py:970`，形状照 `_undo_migrate`））。
+  `src/core/context/` / `src/core/runtime.py` / 后端**零改动**。
+- **测试**（+4，`tests/test_memory.py`）：跨会话保持（同 backend 新建 store ⇒ `reuse_count` 仍为强化值，
+  **非**退回 0）/ 未命中不写（回归锚：无候选 ⇒ 零 `put`、零效应 —— 计数 `put` 的 `_PutCountingBackend`）/
+  写回可回滚（`rollback("reuse.e1")` ⇒ 后端**与重新装载的磁盘文件**皆还原为 0）/ 有界（预算只容一条、
+  两条候选 ⇒ 仅选中者被强化，落选者 `reuse_count` 不变、无 `reuse.*` 效应）。
+  既有 `test_read_reinforces_reuse_count` 继续绿（回归锚）。基线 **2196 → 2200**（**+4**）。
+  归档后 `openspec validate --all` **31 passed / 0 failed**。
+- **局限**：① **写放大仍在**（本 change 有意接受）—— 每次命中检索都对每个选中条目**整文件重写**
+  （`FileBackend._persist` 序列化全部条目）⇒ 读密集场景下磁盘 IO 随检索次数线性增长；当前**不加**节流
+  （见「显式不做」），若实测成热点需另立 change 引入批合并 / 脏标记；② **还原面是值不是事件** ——
+  undo 记录的是**前值**而非「减一」：并发（多线程同 id 命中）下若先记 A(0→1) 再记 B(1→2)，回滚 B 得 1、
+  回滚 A 得 0（正确）；但若**交错**记录（A 捕 0、B 捕 0、A 写 1、B 写 1 覆盖），回滚后可能落在 1 而非 0 ⇒
+  强一致需外部串行化，本 change **不**引入锁（`FileBackend.put` 自身有 `RLock`，但读-改-写横跨 `read()`
+  与 undo）；③ **不改 `_hot` 的既有填充面**（决策 ①）：故 `audit()` 与磁盘在**读路径**上仍可能有
+  「`_hot` 中对象被外部就地改动」的窗口 —— 本 change 只保证 `read()` 自己的写回成对（内存 + 磁盘）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5858,3 +5920,4 @@ scen 22 → **23**。**既有 Requirement / Scenario 标题零丢失**（归档�
 | ADR-0175 | 02-modules/configuration.md, 02-modules/llm-provider.md, 03-interfaces/configuration-interface.md, 03-interfaces/llm-provider-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0176 | 02-modules/context.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0177 | 02-modules/context.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0178 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
