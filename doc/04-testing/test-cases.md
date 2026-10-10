@@ -1868,3 +1868,40 @@
 > 已消耗配额、本 change 不回收 / `session_id` 为空时「专块取不到 + 事实面已排除」的**窄缝** /
 > 前缀语义无边界 ⇒ 未来新 `compaction*` source 会被顺带挡掉 / 本 change **不**处理
 > `loop.steps.<trace>` 的同型问题 —— 另立 `0186`）。
+
+---
+
+## 99. 原始步序素材退出事实注入面（TC-STEP-EXCLUDE，change `0186`／ADR-0177，台账 E123）
+
+> **背景取证**：`loop.steps.<trace_id>`（`loop/default.py:819-831`）是每轮「工具动作（参数）→ 结果节选」
+> 的**原始行动序列**，**声明角色**是**抽取器素材**（`_write_trajectory` docstring 明文：另立该条是为让
+> 抽取器仍能看到原始序列）；但它的 `source` 与轨迹（`loop.<trace_id>`）、失败摘要（`loop.failure.<trace_id>`）
+> **同为** `"loop"` ⇒ 检索命中即被当「相关事实」**注入 prompt**，而信息**已由**同轮轨迹 +（失败时）失败摘要
+> 承载 ⇒ 同一份材料在两个面各出现一次、其中一次是**噪声**。
+> **轴选**：三者 `source` **逐字相同** ⇒ 来源面（`exclude_fact_sources`，change `0185`）**天然不可分**
+> （传 `("loop",)` 会连轨迹与失败摘要一起**过挡**）⇒ 区分判据只 `id` 前缀或 `tags`；取 **tags**
+> （显式分类声明，且与 `memory._PRESERVE_TAGS` 同为标签面惯用法）。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-STEP-EXCLUDE-01 | context/spec.md「动态上下文构建」Scenario「原始步序素材不进事实面」 | 假 store 返 原始步序（`tags=["loop","steps"]`）/ 轨迹（`["loop","trajectory"]`）/ 失败摘要（`["loop","failure"]`）；`exclude_fact_tags=frozenset({"steps"})` ⇒ `build()` | `facts` 含 **轨迹 + 失败摘要**、**无**原始步序（锚点：`tests/test_context.py::test_fact_tag_exclusion_drops_step_entries`） |
+| TC-STEP-EXCLUDE-02 | 同 Requirement（缺省逐字一致）—— **回归锚** | 同假 store；**不传** `exclude_fact_tags` ⇒ `build()` | 三条**全在**（顺序 `原始步序 / 轨迹 / 失败摘要`），与变更前**逐字一致**（锚点：`...::test_fact_tag_exclusion_default_is_verbatim`） |
+| TC-STEP-EXCLUDE-03 | 同 Requirement（**交集**语义 / **非**前缀） | 三条目：`["loop","steps","extra"]` / `[]` / `["steps2"]`；`exclude_fact_tags=frozenset({"steps"})` | 只剩 `[]` 与 `["steps2"]` —— 多标签**任一**命中即挡、空标签不挡、`steps2` **不**被前缀误挡（锚点：`...::test_fact_tag_exclusion_is_intersection_based`） |
+| TC-STEP-EXCLUDE-04 | 同 Requirement（排除**只**落注入步骤）—— **回归锚** | 真 `MemoryStore` 写 `tags=["loop","steps"]` 的 `loop.steps.t1` ⇒ `store.read("原始步序正文")` | 仍**取回**该条 —— **抽取器素材角色**不受影响（`read` 语义 / 排序 / 预算 / 复用强化逐字不变）（锚点：`...::test_step_sequence_stays_readable_through_memory_read`） |
+| TC-STEP-EXCLUDE-05 | 组合根接线（三面并存、逐字不动） | `build_runtime(ConfigManager(yaml_path=…))` | 主 loop 装配器 `_exclude_fact_tags == frozenset({"steps"})` **且** `_exclude_fact_sources == ("compaction",)` **且** `_exclude_source_prefixes == ("beast.", "pet")` 逐字不动（锚点：`...::test_build_runtime_excludes_steps_from_fact_face`） |
+
+> **红态证据**：`test_fact_tag_exclusion_drops_step_entries` / `test_fact_tag_exclusion_is_intersection_based` /
+> `test_build_runtime_excludes_steps_from_fact_face` **红**（`DynamicAssembler.__init__() got an unexpected
+> keyword argument 'exclude_fact_tags'` 与 `AttributeError: _exclude_fact_tags`）。绿后全量
+> `.venv/bin/pytest -q` ⇒ **2196 passed**（基线 **2191**，**+5** = 排除面 1 + 缺省回归 1 + 交集语义 1
+> + 检索语义回归 1 + 组合根接线 1）。
+> **附带修复**：`0185` 的 `_fact_spy` 假条目补 `tags` 字段 —— 原 double 缺 `MemoryEntry` 的**必填**字段，
+> 新过滤面使该缺漏**暴露**为 `AttributeError`；补全后双重**忠实**（非放宽生产代码）。
+> **逐字兼容不变量**：`exclude_fact_tags` 缺省 `frozenset()` ⇒ 过滤子句恒假、装配结果与变更前**逐字相同**；
+> 过滤落**读后** ⇒ `MemoryStore.read` 语义 / 排序 / 预算 / 复用强化**逐字不变**；`exclude_fact_sources`
+> （`0185`）与封存元组 `("beast.","pet")`（`runtime.py`）**逐字不动**；`exclude_source_prefixes` /
+> `allow_source_prefixes` 的检索侧语义**逐字不变**；无新配置键（排除面由组合根**硬接线**）、
+> 无新第三方依赖、无 import 方向变化。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0177 行（**预算近似** —— 被挡条目已消耗配额、
+> 不回收 / **标签是自律声明**、无强制门禁（别的条目打 `steps` 标签会被顺带挡掉）/ **不处理 notes 侧**
+> 同源对账 / `key_fact` vs 笔记结论记为**设计上非重复**、不引入跨模块匹配）。

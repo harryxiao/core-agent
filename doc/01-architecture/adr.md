@@ -5625,6 +5625,67 @@
   改其 source）—— 表「小而实」使风险有界，但存在；④ 本 change **不**处理 `loop.steps.<trace>` 原始步序
   的同型问题（其 `source` 不同、动因不同）—— 另立 `0186`。
 
+## ADR-0177：原始步序素材退出事实注入面（change 0186 / 账本 E123）
+
+**背景 —— 声明角色与消费面不符。** `loop.steps.<trace_id>`（`src/core/loop/default.py:819-831`）是每轮
+「工具动作（参数）→ 结果节选」的**原始行动序列**，其**声明角色**是**抽取器素材**（`_write_trajectory`
+docstring 明文：另立该条是为让抽取器仍能看到原始序列 —— 抽取器对每条 L2 条目只取前
+`extract._MAX_ENTRY_CHARS`(400) 字符）。但它的 `source` 与 `loop.<trace_id>`（轨迹）、
+`loop.failure.<trace_id>`（失败摘要）**同为** `"loop"` ⇒ 只要与任务检索命中，这条**未消化的原料**
+就会被 `DynamicAssembler._gather_facts` 当「相关事实」**注入 prompt**，而它的信息**已由**同轮轨迹条目
+（+ 可检索 `reply`）与（失败时）失败摘要承载 ⇒ 同一份材料在两个面各出现一次、且其中一次是**噪声**。
+
+- **决策 ①：轴取 `MemoryEntry.tags`（**不**取 `source`，也**不**取 `id`）。** 三个 `loop.*` 条目的
+  `source` **逐字相同**（`source=self._source == "loop"`）⇒ **来源面天然不可分**：沿用 `0185` 的
+  `exclude_fact_sources` 无论传什么前缀都会**要么全挡要么全不挡**（传 `("loop",)` 会把轨迹与失败摘要
+  一起杀掉 —— **过挡**）。区分判据只有 `id` 前缀（`loop.steps.`）或标签（`"steps"`，`default.py:827`）。
+  取 **tags**：它是条目的**显式分类声明**、比 id 命名约定更表意，且与 `memory._PRESERVE_TAGS`
+  （同为 tags 面排除，change `0179`／ADR-0170）**同型** ⇒ 装配面由此**同时镜像 memory 的两条既有
+  排除惯用法**：来源面 ← `_ARCHIVE_SOURCES`（change `0180`）、标签面 ← `_PRESERVE_TAGS`。
+- **决策 ②：并列新轴，不并入 `exclude_fact_sources`。** 两参数**判据与理由皆不同**（来源命名空间
+  vs 条目分类标签），且轴**互不覆盖**（见 ①）。合成一条会让两面的语义纠缠、断言不可分。构造器已有
+  `exclude_source_prefixes` / `allow_source_prefixes` 的并列先例（`PLR0913` 豁免即为此设）。
+- **决策 ③：交集语义。** `exclude_fact_tags` 为 `frozenset[str]`，命中判据是 `entry.tags` 与之**有交集**
+  （**整体相等**比较，非前缀 —— 与来源面前缀语义**不同**，故独立模块级 helper `_shares_any_tag`，
+  与 `_matches_any` 并列）。空标签永不命中；多标签条目**任一**命中即挡。
+- **决策 ④：过滤落**读后**（与 `0185` 同构）。** 排除是**装配面注入步骤**的关注点，非**检索语义**：
+  `MemoryStore.read` 的排名 / 预算 / 复用强化对**其他**消费者 —— 尤其**声明消费者**关键事实**抽取器** ——
+  必须逐字不变 ⇒ `loop.steps.*` 经 `read()` **仍可召回**。代价与 `0185` 同：被挡条目已吃掉事实面预算
+  （有界：每轮至多一条），见局限①。
+- **决策 ⑤：缺省空 ⇒ 逐字不变；派生装配器继承。** `frozenset()` 时过滤子句恒假 ⇒ 返回与既往逐字相同；
+  `with_allow_source_prefixes` 派生装配器**继承**（与 `0185` 的 `exclude_fact_sources` 继承同构）。
+- **决策 ⑥：规格落 `context`（**不**落 `memory`）。** 被改的是**装配面的注入步骤**；`memory` 的 `read`
+  契约与「条目角色」定义**均未动**（`loop.steps.*` 的素材角色是 `loop` 侧 docstring 的既有声明）。
+  ⇒ 写在行为实际发生变化的能力上：`context`「动态上下文构建」**MODIFIED**（与 `0185` **同一**
+  Requirement 追加**标签**面条款）。`memory` 的两条惯用法在规格与 ADR 中**交叉引用**、其文本不改。
+- **（③）`key_fact` vs 笔记结论记为**设计上非重复**（本 change **不**引入跨模块匹配）：`key_fact` 是
+  **结构化实体**（`entity:` 面）、笔记结论是**规范散文知识**（canonical Markdown 真相层）—— 不同面、
+  不同消费方式，重复不成立。仅登记结论。
+
+**被改写的规格条款。** `context/spec.md`「动态上下文构建」**MODIFIED**（非新增）：追加第二事实面排除面
+「`exclude_fact_tags`（按 `tags` **交集**；缺省空 ⇒ 逐字一致）…… 声明角色为**素材**的条目 SHALL NOT 进
+注入面 —— 原始行动序列（`tags` 含 `steps`）SHALL NOT 被注入 prompt，其信息 SHALL 由同轮轨迹 / 失败摘要
+承载 …… 该排除**只**落注入步骤：`read` 语义 / 排序 / 预算 / 复用强化 SHALL 逐字不变（抽取器仍可见）」
++ **1 新 Scenario**「原始步序素材不进事实面」。canonical：`context` 177 → **196** 行，**6 req 不变**，
+scen 22 → **23**。**既有 Requirement / Scenario 标题零丢失**（归档脚本 5 断言全过）。
+
+- **落点**：`src/core/context/assembler.py`（模块级 `_shares_any_tag` + 构造参数 `exclude_fact_tags`
+  + `self._exclude_fact_tags` + 派生继承 + `_gather_facts` 读后交集过滤，与来源面**同一**过滤语句）、
+  `src/core/runtime.py`（主装配器 `exclude_fact_tags=frozenset({"steps"})`；来源面 / 封存面逐字不动）。
+- **测试**（+5，`tests/test_context.py`）：排除生效（原始步序退出、轨迹 / 失败摘要留存）/
+  缺省逐字一致（回归锚）/ **交集**语义（多标签任一命中即挡、空标签不挡、`steps2` 不挡 —— **非前缀**）/
+  `read()` 仍可取回原始步序（抽取器素材回归锚）/ 组合根接线（`_exclude_fact_tags == frozenset({"steps"})`
+  **且** `_exclude_fact_sources == ("compaction",)` **且** 封存元组逐字不动）。
+  **附带**：`0185` 的 `_fact_spy` 假条目补 `tags` 字段（原 double 缺 `MemoryEntry` 的必填字段，
+  新过滤面使该缺漏**暴露**为 `AttributeError`）—— 双重现在是**忠实**的。
+  基线 **2191 → 2196**（**+5**）。归档后 `openspec validate --all` **31 passed / 0 failed**。
+- **局限**：① **预算近似** —— 被挡条目在 `read()` 内已消耗事实面配额、本 change **不**回收（每轮至多
+  一条 ⇒ 有界）；② **标签是自律声明** —— `"steps"` 由 `loop` 写入侧赋予、**无强制门禁**：将来若有
+  **别的**条目也打 `"steps"` 标签而**应**进事实面，会被顺带挡掉（判据是**标签**，非条目身份）；
+  ③ **不处理 notes 侧**：`observe_turn` 写回与 `loop.steps.*` 同源（皆 `_action_steps(ctx)`）却无对账 ——
+  本 change 只处理事实注入面一侧，「同源一致性」不引入跨模块匹配；④ **不**处理 `key_fact` vs 笔记结论
+  （记为设计上非重复，见 ③）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5796,3 +5857,4 @@
 | ADR-0174 | 02-modules/llm-provider.md, 02-modules/configuration.md, 02-modules/loop.md, 03-interfaces/llm-provider-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0175 | 02-modules/configuration.md, 02-modules/llm-provider.md, 03-interfaces/configuration-interface.md, 03-interfaces/llm-provider-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0176 | 02-modules/context.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0177 | 02-modules/context.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

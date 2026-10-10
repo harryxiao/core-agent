@@ -267,7 +267,7 @@ def _fact_spy() -> Any:
     """假 MemoryStore：返回两条压缩产物（`compaction`）+ 两条压缩派生物（`context`）。"""
 
     def _entry(entry_id: str, source: str, content: str) -> SimpleNamespace:
-        return SimpleNamespace(id=entry_id, source=source, content=content)
+        return SimpleNamespace(id=entry_id, source=source, content=content, tags=["compaction"])
 
     class _SpyMemory:
         def read(self, query: str, budget: int = 0) -> list[SimpleNamespace]:
@@ -339,4 +339,95 @@ def test_build_runtime_excludes_compaction_from_fact_face(tmp_path, state_dir) -
     runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
     assembler = runtime.loop._planner._assembler  # noqa: SLF001 — 主 loop 的真实装配器
     assert assembler._exclude_fact_sources == ("compaction",)  # noqa: SLF001 — 接线断言
+    assert assembler._exclude_source_prefixes == ("beast.", "pet")  # noqa: SLF001 — 封存红线逐字不动
+
+
+# ---- 原始步序素材退出事实注入面（change 0186 / ADR-0177 / 账本 E123）----
+# 规格「动态上下文构建」：声明角色为**抽取器素材**的原始行动序列（`loop.steps.<trace>`，
+# `tags` 含 `steps`）SHALL NOT 进入「相关事实」注入面 —— 其信息已由同轮轨迹条目
+# （`loop.<trace>`）与（失败时）失败摘要（`loop.failure.<trace>`）承载。三者的 `source`
+# **同为** `"loop"` ⇒ 来源面天然不可分（这正是 `exclude_fact_sources` 在此够不着的原因），
+# 区分判据只有 `tags`（`loop` / `steps` / `trajectory` / `failure`）。`read()` 语义不变
+# ⇒ 抽取器素材角色不受影响。
+
+
+def _steps_spy() -> Any:
+    """假 MemoryStore：返原始步序（含 `steps` 标签）+ 轨迹 + 失败摘要（皆不含 `steps`）。"""
+
+    def _entry(entry_id: str, source: str, tags: list[str], content: str) -> SimpleNamespace:
+        return SimpleNamespace(id=entry_id, source=source, tags=tags, content=content)
+
+    class _SpyMemory:
+        def read(self, query: str, budget: int = 0) -> list[SimpleNamespace]:
+            return [
+                _entry("loop.steps.t1", "loop", ["loop", "steps"], "原始步序"),
+                _entry("loop.t1", "loop", ["loop", "trajectory"], "轨迹"),
+                _entry("loop.failure.t1", "loop", ["loop", "failure"], "失败摘要"),
+            ]
+
+    return _SpyMemory()
+
+
+def test_fact_tag_exclusion_drops_step_entries() -> None:
+    """排除面 `{"steps"}` ⇒ 原始步序不进 `facts`（**标签交集**匹配），轨迹 / 失败摘要仍在。"""
+    assembler = DynamicAssembler(memory=_steps_spy(), exclude_fact_tags=frozenset({"steps"}))
+    pack = assembler.build("t", "s", budget=4096)
+
+    ids = [f["content"] for f in pack.facts]
+    assert "原始步序" not in ids, "声明角色为素材的原始步序不得进事实面"
+    assert ids == ["轨迹", "失败摘要"], "轨迹与失败摘要（无 steps 标签）不受影响"
+
+
+def test_fact_tag_exclusion_default_is_verbatim() -> None:
+    """缺省**空**排除面 ⇒ 不建过滤、装配结果与既往**逐字一致**（三条全在）。"""
+    assembler = DynamicAssembler(memory=_steps_spy())
+    pack = assembler.build("t", "s", budget=4096)
+
+    assert [f["content"] for f in pack.facts] == ["原始步序", "轨迹", "失败摘要"]
+
+
+def test_fact_tag_exclusion_is_intersection_based() -> None:
+    """**交集**语义：条目多标签**任一**命中即挡；空标签永不挡；排除面**字面**比较（非前缀）。"""
+
+    def _entry(entry_id: str, tags: list[str]) -> SimpleNamespace:
+        return SimpleNamespace(id=entry_id, source="loop", tags=tags, content=entry_id)
+
+    class _SpyMemory:
+        def read(self, query: str, budget: int = 0) -> list[SimpleNamespace]:
+            return [
+                _entry("multi", ["loop", "steps", "extra"]),
+                _entry("no-tags", []),
+                _entry("near-miss", ["steps2"]),
+            ]
+
+    assembler = DynamicAssembler(memory=_SpyMemory(), exclude_fact_tags=frozenset({"steps"}))
+    assert [f["content"] for f in assembler.build("t", "s", budget=4096).facts] == [
+        "no-tags",
+        "near-miss",
+    ]
+
+
+def test_step_sequence_stays_readable_through_memory_read() -> None:
+    """排除**只**落注入步骤：`MemoryStore.read` 仍能取回原始步序（抽取器素材角色不变）。"""
+    store = MemoryStore()
+    store.write(
+        "L2",
+        MemoryEntry(
+            id="loop.steps.t1",
+            layer="L2",
+            content="原始步序正文",
+            tags=["loop", "steps"],
+            source="loop",
+            trace_id="t1",
+        ),
+    )
+    assert [e.id for e in store.read("原始步序正文")] == ["loop.steps.t1"]
+
+
+def test_build_runtime_excludes_steps_from_fact_face(tmp_path, state_dir) -> None:
+    """组合根装配的主装配器真的带上**标签**排除面，且既有两面（来源 / 封存）逐字不动。"""
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+    assembler = runtime.loop._planner._assembler  # noqa: SLF001 — 主 loop 的真实装配器
+    assert assembler._exclude_fact_tags == frozenset({"steps"})  # noqa: SLF001 — 接线断言
+    assert assembler._exclude_fact_sources == ("compaction",)  # noqa: SLF001 — 来源面逐字不动
     assert assembler._exclude_source_prefixes == ("beast.", "pet")  # noqa: SLF001 — 封存红线逐字不动

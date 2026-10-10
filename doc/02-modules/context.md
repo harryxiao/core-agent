@@ -44,6 +44,14 @@ ContextBuilder（L3 输入侧）
   `MemoryStore.read` 的检索语义 / 排序 / 预算 / 复用强化**逐字不变**（`compaction.*` 条目对其他消费者仍
   可见）；与 `exclude_source_prefixes`（**封存**面）**不同理由、不合并**，封存元组字面不动。
   派生装配器 `with_allow_source_prefixes` **继承**本排除面（放行面是封存面的例外面，与之无关）。
+- **事实面标签排除面** `exclude_fact_tags`（change `0186`／ADR-0177）：按 `MemoryEntry.tags` **交集**
+  把**声明角色为素材**的条目挡在「相关事实」注入面之外 —— 本轮**原始行动序列**（`loop.steps.<trace_id>`，
+  `tags` 含 `steps`）的声明角色是**抽取器素材**，其信息已由同轮轨迹（`loop.<trace_id>`）与（失败时）
+  失败摘要（`loop.failure.<trace_id>`）承载 ⇒ 不再进 prompt。三个 `loop.*` 条目的 `source`
+  **同为** `"loop"` ⇒ 来源面天然不可分（这正是 `exclude_fact_sources` 在此**够不着**的原因），
+  故取 **tags** 轴（与 `memory._PRESERVE_TAGS` 同为标签面惯用法；装配面由此同时镜像 memory 的
+  `_ARCHIVE_SOURCES` 来源面与 `_PRESERVE_TAGS` 标签面两条惯用法）。缺省空 ⇒ 逐字不变；过滤落**读后**
+  ⇒ `read()` 语义逐字不变（**抽取器素材角色**不受影响）；派生装配器**继承**本排除面。
 
 ### 3.2 信息地图机制
 

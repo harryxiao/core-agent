@@ -18,6 +18,17 @@
 预算与复用强化 SHALL **逐字不变**（`compaction.*` 条目对其他消费者 —— 抽取素材、检索素材、CLI 查询 ——
 仍可见）；**无**专块承载的压缩产出（`source` 为 `context`，如压缩产出的事实 / 未决事项）SHALL **不受影响**。
 
+装配 SHALL 另支持**可选的第二事实面排除面** `exclude_fact_tags`（按 `MemoryEntry.tags` **交集**匹配 ——
+`tags` 与排除面有交集即排除；缺省空 ⇒ **不含排除**、装配结果与既往**逐字一致**）：**声明角色为素材**
+（非注入面事实）的条目 SHALL NOT 进入「相关事实」注入面 —— 本轮**原始行动序列**
+（`loop.steps.<trace_id>`，`tags` 含 `steps`，其声明角色为**抽取器素材**）SHALL NOT 被注入 prompt，
+其信息 SHALL 由同轮轨迹条目（`loop.<trace_id>`）与（失败时）失败摘要（`loop.failure.<trace_id>`）承载；
+同型的**标签**面排除纪律在 `memory` 侧已有先例（`_PRESERVE_TAGS`，见 `memory`「压实」），本条款是其在
+**装配面**的对应。该排除同样 SHALL **只**落在装配面的**注入步骤**：`MemoryStore.read` 的检索语义、排序、
+预算与复用强化 SHALL **逐字不变**（`loop.steps.*` 条目对其声明消费者 —— 关键事实**抽取器** —— 仍可见）；
+**无** `steps` 标签的条目（`loop.<trace_id>` / `loop.failure.<trace_id>` / 压缩产物 / 关键事实）SHALL
+**不受影响**。
+
 #### Scenario: 按需加载与预算控制
 - **GIVEN** 一个任务处于某阶段
 - **WHEN** 上下文装配器构建上下文
@@ -40,6 +51,14 @@
 - **THEN** 长期 / 中期摘要**不出现**在 `facts` 中（其正文仍经「历史摘要」专块每轮注入 ⇒ 可见性不变、
   通道从二变一），而 `source` 为 `context` 的条目**仍在** `facts` 中；**未**传排除面时两者**都在**
   `facts` 中（与既往**逐字一致**）
+
+#### Scenario: 原始步序素材不进事实面
+- **GIVEN** 库中含本轮原始行动序列（`loop.steps.<trace_id>`，`tags` 含 `steps`）与同轮轨迹条目
+  （`loop.<trace_id>`，`tags` 为 `loop` / `trajectory`），二者内容均与当前任务检索命中
+- **WHEN** 装配器以排除面 `exclude_fact_tags=frozenset({"steps"})` 构建上下文
+- **THEN** 原始行动序列**不出现**在 `facts` 中（其声明角色为抽取器素材，经 `MemoryStore.read` **仍可召回**
+  ⇒ 抽取面不受影响），而同轮**轨迹**条目**仍在** `facts` 中；**未**传排除面时两者**都在** `facts` 中
+  （与既往**逐字一致**）
 
 #### Scenario: 超预算裁剪保留关键
 - **GIVEN** 装配结果 token 超预算

@@ -23,6 +23,11 @@ def _matches_any(value: str, prefixes: tuple[str, ...]) -> bool:
     return any(value.startswith(prefix) for prefix in prefixes)
 
 
+def _shares_any_tag(tags: list[str], excluded: frozenset[str]) -> bool:
+    """``tags`` 是否与 ``excluded`` 有交集（**标签**语义，整体相等比较、非前缀）。"""
+    return any(tag in excluded for tag in tags)
+
+
 class DynamicAssembler:
     """上下文装配器：按需加载 + 预算控制 + 地图取详情。"""
 
@@ -41,6 +46,13 @@ class DynamicAssembler:
         # 装配结果与既往**逐字一致**；与 `exclude_source_prefixes`（**封存**面）
         # **不同理由、不合并**。
         exclude_fact_sources: tuple[str, ...] = (),
+        # 事实面**标签**排除面（change 0186 / ADR-0177）：按 `MemoryEntry.tags` **交集**把条目挡在
+        # 「相关事实」注入面之外 —— 用于**声明角色为素材**的条目（本轮原始行动序列
+        # `loop.steps.<trace>`，`tags` 含 `steps`），其信息已由同轮轨迹 / 失败摘要承载，**不**再进
+        # prompt。三者 `source` 同为 `"loop"` ⇒ 来源面（`exclude_fact_sources`）在此**不可分**，
+        # 故本轴取 tags（与 `memory._PRESERVE_TAGS` 同为标签面惯用法）。缺省空 ⇒ 不建过滤、
+        # 装配结果逐字一致。
+        exclude_fact_tags: frozenset[str] = frozenset(),
     ) -> None:
         self._memory = memory
         self._info_map = info_map if info_map is not None else InfoMap()
@@ -49,6 +61,7 @@ class DynamicAssembler:
         self._exclude_source_prefixes = tuple(exclude_source_prefixes)
         self._allow_source_prefixes = tuple(allow_source_prefixes)
         self._exclude_fact_sources = tuple(exclude_fact_sources)
+        self._exclude_fact_tags = frozenset(exclude_fact_tags)
 
     def with_allow_source_prefixes(self, *prefixes: str) -> DynamicAssembler:
         """派生装配器：**排除面逐字继承**，放行面替换为给定前缀（排除面的例外面）。
@@ -65,6 +78,7 @@ class DynamicAssembler:
             exclude_source_prefixes=self._exclude_source_prefixes,
             allow_source_prefixes=tuple(prefixes),
             exclude_fact_sources=self._exclude_fact_sources,
+            exclude_fact_tags=self._exclude_fact_tags,
         )
 
     def build(self, task: str, stage: str, *, budget: int, session_id: str = "") -> ContextPack:
@@ -129,6 +143,12 @@ class DynamicAssembler:
         本参数是**去重**面（「已由专块注入，故不重复」）。缺省空 ⇒ **不建过滤**、返回路径与既往
         **逐字相同**。代价：被挡条目已吃掉事实面预算 —— 有界（每会话长期/中期各一条），
         见 ADR-0176 局限①。
+
+        ``exclude_fact_tags``（change `0186` / ADR-0177）为**事实面标签排除面**：`e.tags` 与排除面
+        **有交集**即挡（**标签**语义，整体相等比较）—— 用于**声明角色为素材**的条目（原始行动序列
+        `loop.steps.<trace>`，`tags` 含 `steps`）：其 `source` 与轨迹 / 失败摘要**同为** `"loop"`
+        ⇒ 来源面在此不可分，故取 tags 轴（与 `memory._PRESERVE_TAGS` 同为标签面惯用法）。同样落在
+        读**后**（`read()` 语义逐字不变 ⇒ 抽取器素材角色不受影响）。缺省空 ⇒ 逐字不变。
         """
         if self._memory is None:
             return []
@@ -142,6 +162,11 @@ class DynamicAssembler:
             )
         else:
             entries = self._memory.read(query, budget)  # 未启用排除 ⇒ 调用形态与既往逐字一致
-        if self._exclude_fact_sources:
-            entries = [e for e in entries if not _matches_any(e.source, self._exclude_fact_sources)]
+        if self._exclude_fact_sources or self._exclude_fact_tags:
+            entries = [
+                e
+                for e in entries
+                if not _matches_any(e.source, self._exclude_fact_sources)
+                and not _shares_any_tag(e.tags, self._exclude_fact_tags)
+            ]
         return [{"source": e.source, "content": e.content} for e in entries]

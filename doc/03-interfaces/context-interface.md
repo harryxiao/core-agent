@@ -33,6 +33,7 @@ class DynamicAssembler:
         exclude_source_prefixes: tuple[str, ...] = (),
         allow_source_prefixes: tuple[str, ...] = (),
         exclude_fact_sources: tuple[str, ...] = (),
+        exclude_fact_tags: frozenset[str] = frozenset(),
     ) -> None:
         """``exclude_source_prefixes`` 透传记忆检索的**来源排除**（缺省空 ⇒ 不含排除）。
 
@@ -48,6 +49,13 @@ class DynamicAssembler:
         重复进事实面。缺省空 ⇒ **不建过滤**、装配结果与既往**逐字一致**。与
         ``exclude_source_prefixes``（**封存**面）**不同理由、不合并**：前者「永不可见」、
         本参数「已由别处注入」。过滤落在**读后** ⇒ ``MemoryStore.read`` 语义逐字不变。
+
+        ``exclude_fact_tags``（change 0186 / ADR-0177）为**事实面标签排除面**：按
+        ``MemoryEntry.tags`` **交集**匹配（有交集即挡，**整体相等**比较、非前缀）—— 组合根传
+        ``frozenset({"steps"})`` ⇒ 本轮**原始行动序列**（``loop.steps.<trace>``，声明角色为
+        **抽取器素材**）不再进事实面（其信息由同轮轨迹 / 失败摘要承载）。取 **tags** 轴之故：
+        三个 ``loop.*`` 条目的 ``source`` **同为** ``"loop"`` ⇒ 来源面不可分。缺省空 ⇒ **不建过滤**、
+        逐字一致；过滤落**读后** ⇒ ``MemoryStore.read`` 语义逐字不变（抽取器仍可召回）。
         """
 
     def with_allow_source_prefixes(self, *prefixes: str) -> DynamicAssembler:
@@ -56,8 +64,8 @@ class DynamicAssembler:
         神兽用例：主 Agent 侧的封存不变、放行**自身** ``beast.<agent_id>`` ⇒ 兽可召回自己
         的过往经验，他兽仍被排除（beast-mode spec「Independent Sub-Agent」）。
         **派生而非原地改**：主 loop 与神兽共用一份配置，原地改会波及主 loop（封存红线）。
-        **事实面排除面 ``exclude_fact_sources`` 逐字继承**（放行面是封存面的例外面，与事实面去重无关；
-        change 0185 / ADR-0176）。
+        **事实面排除面 ``exclude_fact_sources`` / ``exclude_fact_tags`` 逐字继承**（放行面是封存面的
+        例外面，与事实面去重无关；change 0185 / ADR-0176、change 0186 / ADR-0177）。
         """
 
     def build(self, task: str, stage: str, *, budget: int, session_id: str = "") -> ContextPack:

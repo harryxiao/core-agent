@@ -614,6 +614,11 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             # ⇒ 不再重复进「相关事实」块。
             # 压缩产出的事实/未决（`source="context"`）无专块承载，仍在事实面。
             exclude_fact_sources=("compaction",),
+            # 原始步序素材退出事实面（change 0186 / ADR-0177）：`loop.steps.<trace>`（`tags` 含
+            # `steps`）的声明角色是**抽取器素材**（其信息已由同轮轨迹 / 失败摘要承载）
+            # ⇒ 不进 prompt。
+            # 三者 `source` 同为 `"loop"` ⇒ 来源面不可分，故按 **tags** 排除。
+            exclude_fact_tags=frozenset({"steps"}),
         )
     # 取详情的消费面（change 0140）：模型经工具面按指针取片段，不由全文顶替。
     # 注入装配器时同样接线（装配面由调用方给定，消费面不在其管辖内）。
