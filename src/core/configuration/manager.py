@@ -227,6 +227,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         map_to="orchestration.max_concurrency",
         exposure=ConfigExposure.ADVANCED,
     ),
+    ConfigSpec(
+        "memory.importance_gate",
+        "--memory-importance-gate",
+        "CORE_MEMORY_IMPORTANCE_GATE",
+        default=False,
+        map_to="memory.importance_gate",
+        exposure=ConfigExposure.ADVANCED,
+    ),
 ]
 
 _FEATURE_ENV_PREFIX = "CORE_FEATURES_"
@@ -498,6 +506,22 @@ class ConfigManager:
         raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
         turns = _parse_int(raw.get("history_turns", _DEFAULT_HISTORY_TURNS))
         return _DEFAULT_HISTORY_TURNS if turns is None else turns
+
+    def importance_gate(self) -> bool:
+        """写入侧重要度闸门开关（缺省 ``False`` = 不评分；change 0181 / ADR-0172）。
+
+        **独立访问器**（同 `history_turns()` 先例）：与预算/上限无语义关系。
+        取值归一与 feature flag 同集（原生布尔 / `true`·`false`·`yes`·`no`·`on`·`off`·`1`·`0`，
+        大小写不敏感）；`memory` 为非结构化段（不阻断启动）⇒ 集合外取值归一为**关闭**
+        （方向恒为「不评分」，不会把笔误静默当作开启）。
+        """
+        if self._config is None:
+            return False
+        raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
+        value = raw.get("importance_gate", False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in _FEATURE_TRUE
 
     def orchestration_difficulty_policy(self) -> str:
         """同波次调度策略（缺省 ``off`` = 不启用难易度策略；见规格「难易度感知的调度策略」）。

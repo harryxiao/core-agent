@@ -74,6 +74,7 @@ from core.memory import (
     TranscriptStore,
     batch_embed,
     extract_with,
+    score_with,
     summarize_with,
 )
 from core.notes import NoteStore, promote_session_summary
@@ -390,6 +391,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         summary_promoter=_promote_summary,
         # 结构化关键事实抽取（0155 / 路线图 G4）：同一 `_llm_text` 接缝；脱敏在 store 侧无条件执行。
         key_fact_extractor=extract_with(_llm_text),
+        # 写入侧重要度闸门（0181 / ADR-0172）：缺省不评分（逐字不变）；显式开启才构造评分器。
+        # 同一 `_llm_text` 接缝；系统管道派生产物（compaction/context/extraction）在 store 侧豁免。
+        importance_scorer=score_with(_llm_text) if config.importance_gate() else None,
     )
     # 上下文压实接线（0041）：多轮历史 → persist 落 L2；此前 context.Compactor 与
     # memory.compact 都无生产调用方（死路径），现由 loop 的轮数/预算阈值触发。

@@ -49,6 +49,11 @@ _CONSOLIDATE_THRESHOLD = 0.5
 _IMPORTANCE_FLOOR = 0.2
 _IMPORTANCE_AMBIT = 0.4
 
+# 闸门**豁免面**（change 0181 / ADR-0172）：来源属此面的条目**不经评分** —— 它们皆由系统管道
+# 从**已准入**的材料派生（会话摘要与中层摘要 `compaction` / 压实产物 `context` / 结构化关键事实
+# `extraction`），派生结论不得因评分而丢失或降层。新增派生来源须同步登记。
+_GATE_EXEMPT_SOURCES = frozenset({"compaction", "context", "extraction"})
+
 # 遗忘阈值：衰减评分低于此值即归档（≈19 天零复用零重要度）
 _FORGET_THRESHOLD = 0.05
 
@@ -256,10 +261,13 @@ class MemoryStore:
           （降层另记 ``gate.<id>`` trace ⇒ 回滚该 trace 即迁回**原意向层**）；
         - ≥ ``_IMPORTANCE_AMBIT`` ⇒ 按意向层入库并**写回** ``importance``（随条目 trace 撤销）；
         - 评分器抛错 / 返回界外值 ⇒ **降级放行**（正常写入 + 留痕，不牵连主流程）。
+
+        来源属**豁免面**（``_GATE_EXEMPT_SOURCES``：系统管道派生产物）⇒ 与未注入评分器**逐字
+        同路径**（不评分、不拒收、不降层、不写 ``importance``，无留痕）。
         """
         if not entry.source or not entry.trace_id:
             return None  # 无行动不记忆
-        score = self._gate_score(entry)
+        score = None if entry.source in _GATE_EXEMPT_SOURCES else self._gate_score(entry)
         if score is not None and score < _IMPORTANCE_FLOOR:
             warnings.warn(
                 f"entry rejected by importance gate "

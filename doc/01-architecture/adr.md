@@ -5349,6 +5349,61 @@
   ④ 未做「同源去重」的一般化：`key_fact` vs 笔记结论（②）、`observe_turn` 写回 vs `loop.<trace>` 条目（③）仍属另账
   —— 本 change 只闭 ①。
 
+## ADR-0172：写入侧重要度闸门的生产接线与内部产物豁免面（change 0181 / 账本 E118）
+
+- **背景**：写入侧重要度闸门的**契约与实现齐备** —— `ImportanceScorer` 契约（`memory/store.py:74`）、
+  构造形参（`:173`/`:182`）、闸门（`write()` 先评分再落库）与 `_gate_score`（UNWIRED / 抛错 / 界外三态降级）
+  全在，但 **`runtime.py` 构造 `MemoryStore` 时无 `importance_scorer=` 实参** ⇒ 生产环境该闸门**永远**走
+  「UNWIRED ⇒ 不评分」路径（同 `summarizer` / `key_fact_extractor` 早已组合根注入相对照，这是**唯一**漏接的
+  记忆接缝）。同时闸门**对全部经 `write()` 的条目评分**，而**内部派生产物**同样过闸门：会话摘要与中层摘要
+  （`source="compaction"`）、上下文压实产物（`source="context"`）、结构化关键事实（`source="extraction"`）
+  —— 一旦注入 LLM 评分器，一条**由系统管道从已准入材料派生**的摘要就可能被判低价值而拒收/降层 ⇒
+  ADR-0168 局限①由「理论风险」变为**真实路径**。
+- **决策 ①：评分器经工厂注入，接缝与 `summarize_with` / `extract_with` 同形。** 新模块
+  `src/core/memory/importance.py` 提供 `score_with(llm: Callable[[str], str]) -> ImportanceScorer` —— memory
+  **不 import 任何 LLM / rag 抽象**（ADR-0045 单向），prompt 文本属 memory 域，模型调用由 L5 组合根注入
+  （复用既有 `_llm_text` 闭包，摘要/抽取/补丁/评分**四条** DI 接缝同一来源）。
+- **决策 ②：失败方向恒为放行 —— 工厂不兜底、不 clamp。** 输出无可用数值 ⇒ 抛 `ValueError`（交闸门既有异常
+  路径降级放行）；界外值 ⇒ **原样返回**（交闸门既有界外路径）。工厂内 clamp/兜底会把「模型没给分」静默成
+  「给了 0 分」而**误杀**条目 —— 与 `_gate_score` 的「界外/异常 ⇒ 不评分」口径一致。异常消息**只含输出长度**，
+  绝不回显正文（密钥红线）。
+- **决策 ③：豁免面按 `source` 判据，与 `_ARCHIVE_SOURCES` / `_PRESERVE_TAGS` 同一「模块常量排除面」惯用法。**
+  `_GATE_EXEMPT_SOURCES = frozenset({"compaction", "context", "extraction"})`。选 **source** 而非 kind：误杀
+  风险来自「**谁**产生了它」（系统管道派生 vs 有机写入），而 `kind`（episodic/semantic）是**内容分类**——
+  摘要/中层摘要/关键事实皆 semantic，若豁免 semantic 则未来**有机** semantic 写入（人工/导入）也被豁免。
+- **决策 ④：豁免 = 只缩小评分面，不引入新分支。** `write()` 单行：
+  `score = None if entry.source in _GATE_EXEMPT_SOURCES else self._gate_score(entry)`。`score is None` 已由既有
+  路径处理为「不评分、不拒收、不降层、不写 `importance`」（与 UNWIRED 逐字同路径）⇒ 零新增行为分支。
+  `_gate_score` / 阈值常量 / 迁移与写回路径**逐字不动**（豁免在**调用点**短路，不进打分器）。
+- **决策 ⑤：配置开关缺省关，接线零扰动。** 新键 `memory.importance_gate`（`ConfigSpec`，default=False，
+  ADVANCED，`map_to="memory.importance_gate"`）；`_KNOWN_EXTRA_SECTIONS` **不动** —— `_known_sections()`
+  已并入「ConfigSpec 声明段的 `map_to` 前缀」，声明段自动进白名单，故 `memory:` 段不报「未知配置段」。
+  独立访问器 `importance_gate()`（同 `history_turns()` 先例），取值归一与 feature flag 同集、集合外归一为
+  **关闭**（非结构化段不阻断启动 ⇒ 方向恒为「不评分」）。`runtime`：`importance_scorer=score_with(_llm_text)
+  if config.importance_gate() else None` ⇒ 缺省与变更前**逐字一致**。
+- **决策 ⑥：loop / context / notes / evolution 零改动。** 豁免面与接线只落 memory 与组合根；
+  `evolution` 经 `MemoryBackend.put` 直写、`notes` 走独立存储 ⇒ 二者既不被本闸门评分、也不受豁免面影响。
+- **红态证据（实现前）**：`test_gate_exempts_internal_derived_sources`（3 参数）在旧 `write()` 下红
+  （恒低分 ⇒ 派生条目被拒收/降层）；`tests/test_memory_importance.py` 全文件导入即红（模块不存在）；
+  `test_spec_declares_importance_gate` / `test_build_runtime_wires_scorer_when_enabled` 在旧配置面下红
+  （`importance_gate` 属性不存在 / 组合根不注入）。**`test_gate_exempt_face_does_not_cover_organic_writes`
+  生而绿**（守豁免面不覆盖有机写入，非驱动变更）。三层共 **21 用例**（A 5 / B 9 / C 7），全绿；
+  全量基线 **2125 → 2146**。
+- **规格**：`memory` **MODIFIED**「写入侧重要度闸门」—— 追加「**内部/派生产物豁免**：条目 `source` 属豁免面
+  ⇒ SHALL NOT 经评分（不拒收、不降层、不写 `importance`），其写入 SHALL 与该条目不注入评分器时逐字一致」
+  + 2 Scenario（内部派生产物豁免评分 / 非豁免来源仍受评分）。既有 6 Scenario 逐字保留：memory 87 → 89
+  （+2 Scenario）。`loop` / `context` / `notes` / `configuration` **不动**（配置键属接线细节，归本 ADR）。
+- **落点**：`src/core/memory/importance.py`（新：`score_with` + `build_score_prompt` + 首个数值解析）、
+  `memory/store.py`（`_GATE_EXEMPT_SOURCES` + `write()` 一处短路 + docstring）、`memory/__init__.py`（导出）、
+  `configuration/manager.py`（`ConfigSpec` + `importance_gate()`）、`runtime.py`（接线 + import `score_with`）。
+- **局限**：① 豁免面按 `source` 判据 —— **新增派生来源须同步登记**（漏登记 ⇔ 该来源被评分），
+  由 `test_gate_exempt_face_is_the_pipeline_sources` 钉住常量内容以制造同步摩擦；② 评分器为**逐条目** LLM 调用
+  ⇒ 开启后写入延迟随条目数上升（受 `_MAX_SCORED_PER_COMPACT`=20 口径约束于压实路径，**不**含通用 `write()` 面）；
+  ③ `evolution`（`MemoryBackend.put` 直写）**不**过闸门 ⇒ 既不被评分，也不受豁免面保护（其写入无评分语义）；
+  ④ 开关为**生产缺省关**：本 change 只闭「接线缺口」，闸门在生产是否常开属运行策略（LLM 成本 vs 记忆质量的
+  权衡），未在本 change 决策；⑤ `_flag` 归一为**宽松**（集合外 ⇒ 关闭而非阻断启动）：与非结构化段「未做校验」
+  口径一致，代价是 `memory.importance_gate: maybe` 这类笔误**静默关闭**（方向落在安全侧：不评分）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5515,3 +5570,4 @@
 | ADR-0169 | 02-modules/loop.md, 02-modules/context.md, 02-modules/memory.md, 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0170 | 02-modules/loop.md, 02-modules/memory.md, 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0171 | 02-modules/notes.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0172 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

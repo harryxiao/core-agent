@@ -317,6 +317,10 @@ L5 组合根注入；**缺省 UNWIRED**。注入后，写入路径 SHALL 先评�
 - 评分器抛错或返回界外值 ⇒ SHALL **降级放行**（不评分、不拒收、不降层，按原意向层写入），
   `warnings.warn` 留痕，SHALL NOT 牵连写入主流程。
 - **未注入（缺省）⇒ 写入行为 SHALL 与现状逐字一致**：不评分、不拒收、不降层、不写 `importance`。
+- **内部/派生产物豁免**：条目 `source` 属**豁免面**（`compaction` / `context` / `extraction` —— 分别
+  对应会话摘要与中层摘要、上下文压实产物、结构化关键事实，皆由系统管道从**已准入**的材料派生）
+  ⇒ 条目 SHALL NOT 经评分（不拒收、不降层、不写 `importance`），其写入 SHALL 与该条目不注入评分器时
+  **逐字一致**（派生结论 SHALL NOT 因评分而丢失或降层）。
 
 #### Scenario: 未注入评分器时写入不变
 - **GIVEN** 未注入 importance scorer 的 `MemoryStore`
@@ -342,6 +346,16 @@ L5 组合根注入；**缺省 UNWIRED**。注入后，写入路径 SHALL 先评�
 - **GIVEN** 注入的 scorer 调用时抛错
 - **WHEN** 写入一条条目
 - **THEN** 条目按原意向层正常入库，`warnings.warn` 留痕，写入主流程不中断
+
+#### Scenario: 内部派生产物豁免评分
+- **GIVEN** 注入了 scorer，其对任何条目返回 0.1（低于 `IMPORTANCE_FLOOR`）
+- **WHEN** 写入一条来源属豁免面（如 `source="compaction"` 的会话摘要 / 中层摘要）的派生条目
+- **THEN** 条目按原意向层入库、不降层、不写 `importance`，且**无**评分留痕（派生结论不因评分而丢失）
+
+#### Scenario: 非豁免来源（loop）仍受评分
+- **GIVEN** 注入了 scorer，其对任何条目返回 0.1
+- **WHEN** 写入一条来源**非**豁免面的条目（如 `source="loop"` 的轨迹条目）
+- **THEN** 条目被**拒收**（不落库）、`warnings.warn` 留痕 —— 豁免面只覆盖系统派生产物
 
 
 ### Requirement: 记忆遗忘（forgetting）

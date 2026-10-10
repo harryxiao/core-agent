@@ -1683,3 +1683,37 @@
 - 测试计划：`doc/04-testing/test-plan.md`
 - 需求：`doc/00-product/requirements.md`
 - 规格：`doc/openspec/specs/*`
+
+## 94. 写入侧重要度闸门的生产接线与内部产物豁免面（TC-MEM-GATE-WIRE，change `0181`／ADR-0172，台账 E118）
+
+> **背景取证**：写入侧重要度闸门的契约与实现齐备（`ImportanceScorer` 契约 `memory/store.py:74`、构造形参
+> `:173`/`:182`、闸门 `write()` 先评分再落库、`_gate_score` 三态降级全在），但 `runtime.py` 构造
+> `MemoryStore` 时**无** `importance_scorer=` 实参 ⇒ 生产环境该闸门**永远**走「UNWIRED ⇒ 不评分」路径
+> （同 `summarizer` / `key_fact_extractor` 早已组合根注入相对照 —— 唯一漏接的记忆接缝）。同一条 `write()`
+> 上，**内部派生产物**亦过闸门：会话摘要与中层摘要（`source="compaction"`）、压实产物（`source="context"`）、
+> 结构化关键事实（`source="extraction"`）—— 一经注入评分器，**由系统管道从已准入材料派生**的结论就可能
+> 被判低价值而拒收/降层（ADR-0168 局限①由理论风险变为真实路径）。本 change：**补接**生产接线（新键
+> `memory.importance_gate`，**缺省 false** ⇒ 行为逐字不变），并同时在闸门内加**内部派生产物豁免面**。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-MEM-GATE-WIRE-01 | memory/spec.md「写入侧重要度闸门」新条款「内部/派生产物豁免」Scenario「内部派生产物豁免评分」 | scorer 恒返 `_IMPORTANCE_FLOOR - 0.1`（低分）+ 来源∈豁免面（`compaction` / `context` / `extraction` 各一）的条目 | 条目**按意向层入库**、**不**降层、`importance` 保持 0.0、**无** `warnings` 留痕（派生结论不因评分而丢失）（锚点：`tests/test_memory.py::test_gate_exempts_internal_derived_sources`） |
+| TC-MEM-GATE-WIRE-02 | 同新条款 + 不变式 I2（豁免面**不**覆盖有机写入） | 同一低分 scorer + 来源**非**豁免面（`source="loop"`）的条目 | 条目**被拒收**（`write` 返回 `None`、`audit()` 为空）+ `warnings.warn` 留痕（豁免面只覆盖系统派生产物）（锚点：`tests/test_memory.py::test_gate_exempt_face_does_not_cover_organic_writes`） |
+| TC-MEM-GATE-WIRE-03 | 不变式「新增派生来源须同步登记」 | 断言 `_GATE_EXEMPT_SOURCES` 常量内容 | 恰为 `{"compaction", "context", "extraction"}` —— 常量变更即测试红（同步摩擦）（锚点：`tests/test_memory.py::test_gate_exempt_face_is_the_pipeline_sources`） |
+| TC-MEM-GATE-WIRE-04 | memory/spec.md「写入侧重要度闸门」（评分器工厂接缝） | `score_with(λ→"0.8")` / 散文包裹 `0.35` / 无数值 / `1.7` | 依次：0.8；0.35（取**首个**数值）；抛 `ValueError`；**原样** 1.7（不 clamp）（锚点：`tests/test_memory_importance.py::test_score_with_*`） |
+| TC-MEM-GATE-WIRE-05 | 不变式「失败方向恒为放行」+ 端到端接线 | `MemoryStore(importance_scorer=score_with(λ→无法解析))` / `score_with(λ→低分)` 各写一条 | 前者**降级放行**（入库 + `warnings` 留痕、`importance` 保持 0.0）；后者经闸门**拒收**（锚点：`tests/test_memory_importance.py::test_score_with_unparseable_output_degrades_gate_to_normal_write` / `..._low_score_rejects_via_gate`） |
+| TC-MEM-GATE-WIRE-06 | 架构不变量（ADR-0045 单向依赖） | AST 走查 `src/core/memory/importance.py` 的 import | **无** `core.llm_provider` / `core.rag` 导入（工厂只吃 `str→str` 调用，prompt 文本属 memory 域）（锚点：`tests/test_memory_importance.py::test_importance_module_imports_no_llm_or_rag`） |
+| TC-MEM-GATE-WIRE-07 | configuration（新键单一真源 + 段白名单） | `config_specs()` / yaml / env / 「未知配置段」告警 | 键 `memory.importance_gate` 三面齐备（`--memory-importance-gate` / `CORE_MEMORY_IMPORTANCE_GATE` / 缺省 `False`）；`memory:` 段**不**报未知段（声明段自动进白名单）（锚点：`tests/test_memory_config.py::test_spec_declares_importance_gate` / `..._section_is_not_reported_unknown`） |
+| TC-MEM-GATE-WIRE-08 | 组合根接线（缺省零扰动 / 开启即注入） | `build_runtime` 缺省 / `memory.importance_gate: true` | 缺省 ⇒ `_importance_scorer is None`（写入逐字不变）；true ⇒ 注入 `score_with(_llm_text)` 产物（锚点：`tests/test_memory_config.py::test_build_runtime_default_wires_no_scorer` / `..._wires_scorer_when_enabled`） |
+
+> **红态证据**：逐层先红后绿 —— Layer A `test_gate_exempts_internal_derived_sources`（3 参数）在旧
+> `write()` 下**红**（恒低分 ⇒ 派生条目被拒收/降层）；Layer B `tests/test_memory_importance.py` 全文件
+> **导入即红**（`memory/importance.py` 不存在）；Layer C `test_spec_declares_importance_gate` /
+> `test_build_runtime_wires_scorer_when_enabled` **红**（`importance_gate` 属性缺失 / 组合根不注入）。
+> `test_gate_exempt_face_does_not_cover_organic_writes` **生而绿**（守豁免面不覆盖有机写入，非驱动变更）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2146 passed**（基线 **2125**，**+21** = A 5 用例 + B 9 + C 7）。
+> **逐字兼容不变量**：缺省 false ⇒ 组合根**不**注入评分器、`write()` 与变更前**逐字一致**（既有 6 个闸门
+> 用例全绿，零回归）；豁免面**只缩小**评分面（不扩大）；`_gate_score` / 阈值常量 / 迁移与写回路径**逐字不动**
+> （豁免在**调用点**短路）；`loop` / `context` / `notes` / `evolution` **零改动**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0172 行（豁免面按 `source` 判据须同步登记 / 逐条目 LLM
+> 调用开销 / `evolution` 直写不过闸门 / 生产缺省关属运行策略 / 宽松归一使笔误静默关闭）。

@@ -26,7 +26,12 @@ from core.memory import (
     recency_decay,
 )
 from core.memory.embedding import batch_embed
-from core.memory.store import _IMPORTANCE_AMBIT, _IMPORTANCE_FLOOR, _decay_score
+from core.memory.store import (
+    _GATE_EXEMPT_SOURCES,
+    _IMPORTANCE_AMBIT,
+    _IMPORTANCE_FLOOR,
+    _decay_score,
+)
 from core.memory.summarize import build_prompt
 from core.plugin_registry import EffectTracker
 
@@ -751,6 +756,39 @@ def test_gate_out_of_range_score_degrades_to_normal_write() -> None:
         assert store.write("L2", _entry("e1", "L2", "x")) == "e1"
 
     assert dict(store.index().entries)["e1"] == "L2"
+
+
+# ---- 闸门内部产物豁免面（change 0181 / ADR-0172 / 台账 E118） ----
+
+
+def test_gate_exempt_face_is_the_pipeline_sources() -> None:
+    """豁免面即三个系统管道来源 —— 新增派生来源须同步登记（漏登记 ⇔ 该来源被评分）。"""
+    assert frozenset({"compaction", "context", "extraction"}) == _GATE_EXEMPT_SOURCES
+
+
+@pytest.mark.parametrize("source", sorted(_GATE_EXEMPT_SOURCES))
+def test_gate_exempts_internal_derived_sources(source: str) -> None:
+    """派生/内部产物不经评分：恒低分下仍按意向层入库、不降层、不写 importance、无留痕。"""
+    store = MemoryStore(importance_scorer=_scorer(_IMPORTANCE_FLOOR - 0.1))
+    entry = _entry("e1", "L2", "派生结论", source=source)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert store.write("L2", entry) == "e1"
+
+    assert dict(store.index().entries)["e1"] == "L2", "不降层"
+    assert entry.importance == 0.0, "不写 importance"
+    assert caught == [], "豁免 ⇒ 无评分留痕"
+
+
+def test_gate_exempt_face_does_not_cover_organic_writes() -> None:
+    """豁免面只覆盖系统派生产物：来源非豁免面（loop）仍受评分 ⇒ 恒低分下拒收 + 留痕。"""
+    store = MemoryStore(importance_scorer=_scorer(_IMPORTANCE_FLOOR - 0.1))
+
+    with pytest.warns(RuntimeWarning, match="importance gate"):
+        assert store.write("L2", _entry("e1", "L2", "轨迹", source="loop")) is None
+
+    assert store.audit() == []
 
 
 # ---- summary_for：按会话读取既有摘要（只读；change 0150 / ADR-0142 / 账本 E94）----

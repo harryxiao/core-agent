@@ -27,6 +27,7 @@ from .extract import (
     scrub_key_fact,
     slug_entity,
 )
+from .importance import build_score_prompt, score_with
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
 from .relevance import rank, recency_decay, relevance
 from .store import ImportanceScorer, MemoryStore, RepairReport
@@ -59,6 +60,7 @@ __all__ = [
     "batch_embed",
     "build_extract_prompt",
     "build_prompt",
+    "build_score_prompt",
     "extract_with",
     "key_fact_cap",
     "looks_like_secret",
@@ -67,6 +69,7 @@ __all__ = [
     "rank",
     "recency_decay",
     "relevance",
+    "score_with",
     "scrub_key_fact",
     "slug_entity",
     "summarize_with",

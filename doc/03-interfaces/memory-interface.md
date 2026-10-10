@@ -352,7 +352,7 @@ CLI：``core-agent memory repair-keyfacts [--dry-run]``。
 是**检索（``rank``）与遗忘共用**的函数，故 ``recency_decay`` / ``rank`` / §3 相关性打分公式
 **逐字不动**（``reuse_count=0`` 时 ``pow(x,1.0)==x`` 逐位相等，行为不变）。
 
-### 写入侧重要度闸门（write，change `0177`／ADR-0168）
+### 写入侧重要度闸门（write，change `0177`／ADR-0168，接线与豁免面 change `0181`／ADR-0172）
 
 注入 ``importance_scorer``（``ImportanceScorer = Callable[[MemoryEntry], float]``，缺省 UNWIRED ⇒
 ``write`` 逐字不变）后，``write`` **先评分再落库**（阈值为常量、无 LLM 二次判断）：
@@ -369,7 +369,17 @@ CLI：``core-agent memory repair-keyfacts [--dry-run]``。
 - **降级放行**：评分器抛错 / 返回界外值（``not 0.0 <= score <= 1.0``）⇒ 按意向层正常写入 +
   ``warnings.warn`` 留痕，不中断主流程。**留痕只报条目 id**、绝不回显正文（密钥红线）。
 - ``_persist(layer, entry)`` 是 ``write`` 的**无闸门主体**（落库 + 记 ``Effect(op="memory.write")``）。
-- **口径**：闸门**不区分来源** —— 内部写（摘要 / keyfact）亦经闸门（缺省 UNWIRED 时不受影响）。
+- **豁免面**（change `0181`／ADR-0172）：条目 ``source`` 属 ``_GATE_EXEMPT_SOURCES``（``compaction`` /
+  ``context`` / ``extraction``）⇒ **不经评分**、与 UNWIRED **逐字同路径**（不拒收、不降层、不写
+  ``importance``、无留痕）。判据落 ``source``（「**谁**产生」）而非 ``kind``（内容分类）—— 许可未来**有机**
+  semantic 写入仍受评分。豁免在 ``write`` **调用点**短路，``_gate_score`` 与阈值常量逐字不动。
+  **口径**：非豁免来源不分内外 —— 内部写（如 ``loop.<trace>``）与有机写同样经闸门。
+- **工厂**：``memory.importance.score_with(llm)``（同一 ``str→str`` 接缝）把「prompt → 文本」适配为
+  ``ImportanceScorer``；解析不出数值 ⇒ 抛 ``ValueError``、界外值 ⇒ 原样返回（**均**交闸门既有降级路径，
+  方向恒为**放行**）。异常消息只含输出长度，不回显正文（密钥红线）。
+- **配置键**：``memory.importance_gate``（bool，缺省 ``false``；``--memory-importance-gate`` /
+  ``CORE_MEMORY_IMPORTANCE_GATE`` / yaml ``memory: importance_gate``）—— 组合根为 true 时注入
+  ``score_with(_llm_text)``，否则 ``None``（缺省 ⇒ 与变更前逐字一致）。
 
 ---
 

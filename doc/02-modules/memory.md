@@ -184,6 +184,14 @@ MemoryStore
   故先按意向层 `write`（条目自身 trace），再 `migrate(意向层→"L4", trace_id=f"gate.<id>")` —— 回滚
   `gate.<id>` 即把条目**迁回原意向层**。评分器抛错 / 返回界外值 ⇒ **降级放行**（正常写入 + 留痕，
   不牵连主流程）。留痕**只报条目 id**、绝不回显正文（密钥红线）。
+  **生产接线 + 内部产物豁免面**（change `0181`／ADR-0172／账本 E118）：评分器经新模块
+  `memory/importance.py` 的 `score_with(llm)` 构造（与 `summarize_with` / `extract_with` **同一** `str→str`
+  接缝，memory 不 import LLM 抽象）；**失败方向恒为放行** —— 无可用数值抛 `ValueError`（交闸门异常路径）、
+  界外值**原样返回**（交闸门界外路径），工厂**不**兜底/不 clamp（静默成 0 分会误杀）。豁免面
+  `_GATE_EXEMPT_SOURCES = frozenset({"compaction", "context", "extraction"})`（系统管道派生产物：会话摘要与
+  中层摘要 / 压实产物 / 结构化关键事实）⇒ `write()` 在**调用点短路**（`score = None if source in 豁免面
+  else self._gate_score(entry)`），与 UNWIRED **逐字同路径**；`_gate_score` / 阈值常量**逐字不动**。配置键
+  `memory.importance_gate`（缺省 **false** ⇒ 行为逐字不变），组合根在 true 时注入 `score_with(_llm_text)`。
 - **复用强化衰减**：遗忘评分 `store._decay_score` 的 freshness 项改
   `freshness ** (1 / (1 + log1p(reuse_count)))`（复用越多、衰减越慢）。**调制只落 `_decay_score`** ——
   `relevance.recency_decay` 是**检索（`rank`）与遗忘共用**的函数，若在此处调制会连带改变检索排序；
