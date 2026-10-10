@@ -215,6 +215,9 @@ class StdlibLLMProvider(LLMProvider):
             body["reasoning_effort"] = request.reasoning_effort
         if stream:
             body["stream"] = True
+            # 要求端点在**末块**上报用量（change 0183 / ADR-0174）：非流式响应本就携带 `usage`，
+            # 故该字段**只**下发给流式请求（不支持的端点会响亮报错，非静默降级）。
+            body["stream_options"] = {"include_usage": True}
         return body
 
     def _make_request(self, body: dict[str, Any], path: str) -> urllib.request.Request:
@@ -260,7 +263,9 @@ class StdlibLLMProvider(LLMProvider):
     def _map_chunk(self, part: Any) -> LLMChunk:
         choices = cast(list[Any], part.get("choices", []))
         if not choices:
-            return LLMChunk(content="")
+            # 用量末块在此形态（change 0183 / ADR-0174）：端点上报用量时，末块**只报账**、
+            # `choices` 为空数组 ⇒ 必须在早返**之前**取用量，否则该数字永远丢失。
+            return LLMChunk(content="", usage=self._map_usage(part))
         choice = cast(dict[str, Any], choices[0]) or {}
         delta = cast(dict[str, Any], choice.get("delta")) or {}
         return LLMChunk(
@@ -269,6 +274,23 @@ class StdlibLLMProvider(LLMProvider):
             thinking=_thinking_text(delta),
             # 终止原因通常只在末块携带（缺省块为空串）⇒ 归因「被截断」的权威信号（change 0170）。
             finish_reason=str(choice.get("finish_reason") or ""),
+            usage=self._map_usage(part),
+        )
+
+    @staticmethod
+    def _map_usage(part: Any) -> TokenUsage | None:
+        """流式增量顶层 `usage` → 统一 TokenUsage；未携带（缺键 / `null`）⇒ ``None``。
+
+        **不**造零值：``None`` 意为「该块未报用量」（端点未开启上报），与「端点报零」
+        在观测面必须可分辨（见 change 0183 / ADR-0174）。
+        """
+        usage = cast(dict[str, Any], part).get("usage")
+        if not isinstance(usage, dict):
+            return None
+        fields = cast(dict[str, Any], usage)
+        return TokenUsage(
+            prompt_tokens=int(fields.get("prompt_tokens", 0)),
+            completion_tokens=int(fields.get("completion_tokens", 0)),
         )
 
     @staticmethod

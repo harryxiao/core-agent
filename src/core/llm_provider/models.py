@@ -85,3 +85,6 @@ class LLMChunk:
     # 终止原因（归一化后；该块未携带时为空串）。OpenAI 兼容端点通常在**末块**携带
     # （如 `stop` / `length`）；供消费方归因输出是否被截断（见 change 0170 / ADR-0161）。
     finish_reason: str = ""
+    # 令牌用量（归一化后；该增量块**未携带**时为 ``None``，不以零值冒充实报）。OpenAI 兼容
+    # 端点在开启用量上报时于**末块**携带（其 ``choices`` 可为空数组）—— change 0183 / ADR-0174。
+    usage: TokenUsage | None = None

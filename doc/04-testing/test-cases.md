@@ -1750,3 +1750,42 @@
 > `exclude_source_prefixes=("beast.","pet")` 主方向封存红线（`runtime.py:603`）**逐字不动**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0173 行（`LoopContext.rounds` 仍为历史名 / 缺省 `6`
 > 为启发式 / 阈值 ≥ 上限时静默退化 / 「至多一次」为每用户轮粒度 / 仍只有轮级触发无内容判据）。
+
+---
+
+## 96. 流式令牌用量与请求侧输出上限（TC-LLM-USAGE，change `0183`／ADR-0174，台账 E120）
+
+> **背景取证**：`LLMChunk`（`llm_provider/models.py`）**无** `usage` 字段、`_map_chunk`
+> （`stdlib_provider.py`）从不解析顶层 `usage`；而**流式是默认推理路径**（`LLMPlanner.astream`
+> 优先，非流式只在 provider 缺 `astream` 时退化）⇒ `_last_prompt_tokens` 在流式下**只有装配估算、
+> 从不被端点实报抬升**，两路径记账口径不一致；流式请求体也不要求端点上报用量。同时
+> `LLMRequest.max_tokens` 是**死字段**（`_build_body` 支持下发、无调用方填）⇒ 配置项
+> `loop.output_reserve` 只是**记账假设**（预算派生 `窗口 − 预留`），模型侧无上界。
+> **键位陷阱**：OpenAI 兼容端点在开启用量上报时把 `usage` 放在**末块**，而该末块 `choices` 是**空数组**
+> ⇒ 必须在该早返分支**之前**取用量，否则数字永远丢失。本 change：用量字段 + 末块解析 + 请求侧
+> `stream_options` + 消费方抬升下界 / 记录完成量 + `max_tokens` 构造期注入。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-LLM-USAGE-01 | llm-provider/spec.md「流式增量携带令牌用量」末块形态 | 流式一行 `{"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":34}}` | 该块 `usage == TokenUsage(120, 34)` 且 `content == ""` —— **不因 `choices` 空而丢弃**（锚点：`tests/test_llm_provider.py::test_chunk_maps_usage_from_empty_choices_end_block`） |
+| TC-LLM-USAGE-02 | 同 Requirement（未携带 ⇒ `None`） | 块不含 `usage` 键 / `usage: null` | `LLMChunk.usage is None`（不报错、**不以 `TokenUsage(0,0)` 冒充**），其余字段解析逐字一致（锚点：`...::test_chunk_usage_none_when_absent`） |
+| TC-LLM-USAGE-03 | 同 Requirement Scenario「流式请求要求端点上报用量」 | 流式调用后读请求体 | `stream is True` 且 `stream_options == {"include_usage": True}`（锚点：`...::test_stream_body_requests_include_usage`） |
+| TC-LLM-USAGE-04 | 同 Requirement（非流式不发该字段） | 非流式 `acompletion` 后读请求体 | **不含** `stream_options`、**不含** `stream`（既有形状逐字保留）（锚点：`...::test_body_omits_stream_options_when_non_streaming`） |
+| TC-LLM-USAGE-05 | 同 Requirement Scenario「消费方以实报抬升提示词下界」 | 流式末块实报 `prompt_tokens = 999` | `last_prompt_tokens() == max(估算, 999)` —— 实报为**下界**、只抬升；消费在 `content` 空判**之前**故末块用量不被跳过（锚点：`tests/test_loop_token_accounting.py::test_planner_stream_raises_prompt_floor_from_usage`） |
+| TC-LLM-USAGE-06 | 同 Requirement（完成量仅观测） | 末块 `completion_tokens = 7` / 未上报 | `last_completion_tokens() == 7` / `== 0`；**不**改终止语义与预算闸门（锚点：`...::test_planner_records_completion_tokens_as_observation`） |
+| TC-LLM-USAGE-07 | llm-provider/spec.md「请求侧输出上限按预留注入」Scenario「注入正预留即下发」 | `LLMPlanner(max_tokens=8192)` | 请求 `max_tokens == 8192`（锚点：`...::test_planner_injects_max_tokens`） |
+| TC-LLM-USAGE-08 | 同 Requirement Scenario「未注入或非正预留不下发」 | `max_tokens` 取 `None` / `0` / `-1` | 请求 `max_tokens is None` ⇒ body 无该键（既有形状逐字不变）（锚点：`...::test_planner_omits_max_tokens_when_non_positive`） |
+| TC-LLM-USAGE-09 | 组合根接线（既有键、独立访问器） | `output_reserve()` 缺省 / yaml 配置 / `loop_limits()` arity | 缺省 `8192`；配置 `4096` ⇒ 访问器 `4096`；`loop_limits()` 仍为二元组（未配窗口时预算仍回落 `65536`）（锚点：`tests/test_loop_budget_config.py::test_output_reserve_accessor_*`） |
+| TC-LLM-USAGE-10 | 端到端：预留从记账假设变为端点上界 | `build_runtime` 注入 `loop.output_reserve: 4096` | 主 loop planner 的 `_max_tokens == 4096`（四个 loop 的 planner 同源同参）（锚点：`tests/test_loop_budget_config.py::test_build_runtime_injects_output_reserve_as_max_tokens`） |
+
+> **红态证据**：`test_chunk_maps_usage_from_empty_choices_end_block` / `test_chunk_usage_none_when_absent`
+> **红**（`LLMChunk.usage` 不存在）；`test_stream_body_requests_include_usage` **红**（`KeyError:
+> 'stream_options'`）；planner 面 4 组 **红**（`_max_tokens` / `last_completion_tokens` 不存在）；
+> `test_output_reserve_accessor_*` / 组合根接线 **红**（访问器与注入点缺失）。绿后全量
+> `.venv/bin/pytest -q` ⇒ **2176 passed**（基线 **2163**，**+13** = provider 面 4 + planner 面 6 + 配置与接线 3）。
+> **逐字兼容不变量**：非流式 `LLMResponse.usage` 解析与请求体形状**逐字不变**；`max_tokens` 未注入 ⇒
+> `LLMRequest.max_tokens is None` ⇒ body 无该键；`completion_tokens` 不入任何判定；`finish_reason`
+> 既有 `getattr` 处置不变；`exclude_source_prefixes=("beast.","pet")` 主方向封存红线（`runtime.py:603`）**逐字不动**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0174 行（拒绝 `stream_options` 的端点流式报错、无首轮探测
+> 降级 / `max_tokens` 默认生效且未按模型推导输出上限 / `completion_tokens` 无消费者 / 只认末块用量 /
+> 观测为单轮量无跨轮累计）。

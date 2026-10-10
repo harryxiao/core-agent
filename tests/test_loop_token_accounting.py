@@ -15,9 +15,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+
+import pytest
 
 from core.context import estimate_tokens
-from core.llm_provider import LLMRequest, LLMResponse, TokenUsage
+from core.llm_provider import LLMChunk, LLMRequest, LLMResponse, TokenUsage
 from core.loop import Action, DefaultLoop, LLMPlanner, LoopContext
 from core.memory import MemoryEntry, MemoryStore, TranscriptStore
 from core.tools import Tool, ToolDef, ToolProvider
@@ -65,6 +68,29 @@ class _StubLLM:
 
     async def acompletion(self, request: LLMRequest) -> LLMResponse:
         return self._response
+
+
+class _StreamingLLM:
+    """duck-typed 流式 LLM：按序产出预置增量块（含可选用量末块）。"""
+
+    def __init__(self, chunks: list[LLMChunk]) -> None:
+        self._chunks = chunks
+
+    async def astream(self, request: LLMRequest) -> AsyncIterator[LLMChunk]:
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _CapturingLLM(_StubLLM):
+    """非流式替身 + 记录请求（观测 `max_tokens` 是否下发）。"""
+
+    def __init__(self, response: LLMResponse) -> None:
+        super().__init__(response)
+        self.requests: list[LLMRequest] = []
+
+    async def acompletion(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        return await super().acompletion(request)
 
 
 def _response(prompt_tokens: int) -> LLMResponse:
@@ -177,6 +203,76 @@ def test_planner_probe_counts_tool_schemas() -> None:
     tools_tokens = with_tools.last_prompt_tokens()
 
     assert tools_tokens > bare_tokens
+
+
+# ---- 流式用量消费与请求侧输出上限（change 0183 / ADR-0174 / 账本 E120）----
+
+_OUTPUT_RESERVE = 8192  # 输出预留哨兵（组合根注入值）
+
+
+async def _drain_stream(planner: LLMPlanner, ctx: LoopContext) -> None:
+    async for _ in planner.astream(ctx):
+        pass
+
+
+def test_planner_stream_raises_prompt_floor_from_usage() -> None:
+    """流式末块实报 `prompt_tokens` ⇒ 抬升记账下界（与非流式同口径：取较大者）。"""
+    ctx = LoopContext(messages=[{"role": "user", "content": "hi"}])
+    plain = LLMPlanner(_StreamingLLM([LLMChunk(content="ok")]))  # type: ignore[arg-type]
+    asyncio.run(_drain_stream(plain, ctx))
+    estimate = plain.last_prompt_tokens()
+
+    reporting = LLMPlanner(  # type: ignore[arg-type]
+        _StreamingLLM(
+            [
+                LLMChunk(content="ok"),
+                LLMChunk(content="", usage=TokenUsage(_REPORTED_TOKENS, 7)),
+            ]
+        )
+    )
+    asyncio.run(_drain_stream(reporting, ctx))
+
+    assert reporting.last_prompt_tokens() == max(estimate, _REPORTED_TOKENS)
+    assert reporting.last_prompt_tokens() >= _REPORTED_TOKENS
+
+
+def test_planner_records_completion_tokens_as_observation() -> None:
+    """`completion_tokens` 仅入观测面：可经探针读取，未上报时为 0。"""
+    ctx = LoopContext(messages=[{"role": "user", "content": "hi"}])
+    silent = LLMPlanner(_StreamingLLM([LLMChunk(content="ok")]))  # type: ignore[arg-type]
+    asyncio.run(_drain_stream(silent, ctx))
+    assert silent.last_completion_tokens() == 0
+
+    reported_completion = 7
+
+    reporting = LLMPlanner(  # type: ignore[arg-type]
+        _StreamingLLM([LLMChunk(content="ok", usage=TokenUsage(5, reported_completion))])
+    )
+    asyncio.run(_drain_stream(reporting, ctx))
+    assert reporting.last_completion_tokens() == reported_completion
+
+
+def test_planner_injects_max_tokens() -> None:
+    """构造注入正预留 ⇒ 每次请求携带 `max_tokens`（预留从记账假设变为端点上界）。"""
+    llm = _CapturingLLM(_response(0))
+    ctx = LoopContext(messages=[{"role": "user", "content": "hi"}])
+    planner = LLMPlanner(llm, max_tokens=_OUTPUT_RESERVE)  # type: ignore[arg-type]
+
+    asyncio.run(planner(ctx))
+
+    assert llm.requests[-1].max_tokens == _OUTPUT_RESERVE
+
+
+@pytest.mark.parametrize("value", [None, 0, -1])
+def test_planner_omits_max_tokens_when_non_positive(value: int | None) -> None:
+    """未注入（`None`）或非正预留 ⇒ 请求 `max_tokens` 为 `None`（请求形状逐字不变）。"""
+    llm = _CapturingLLM(_response(0))
+    ctx = LoopContext(messages=[{"role": "user", "content": "hi"}])
+    planner = LLMPlanner(llm, max_tokens=value)  # type: ignore[arg-type]
+
+    asyncio.run(planner(ctx))
+
+    assert llm.requests[-1].max_tokens is None
 
 
 # ---- 分层摘要计入预算记账（change 0178 / ADR-0169 / 台账 E115） ----

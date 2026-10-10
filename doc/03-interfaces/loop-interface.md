@@ -300,6 +300,13 @@ def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "
   `usage.prompt_tokens`（实测权威作**下界**；不可用 —— 如流式响应不携带用量 —— 时按装配全量估算）。
   口径 SHALL NOT 改变阈值语义（预算终止与压实同取 `token_budget`）与窗口派生规则，且不引入
   第三方 tokenizer。见 ADR-0144。
+  **流式路径同口径**（change 0183 / ADR-0174）：provider 在流式**末块**上报用量时，`astream`
+  在循环体首行消费（早于 `content` 空判 —— 用量块 `content` 为空）并取**较大者**抬升下界；若端点
+  未上报（`LLMChunk.usage is None`）则维持估算。`completion_tokens` 经 `last_completion_tokens()`
+  同型探针暴露，**仅观测**、不参与任何判定。
+- 请求侧输出上限（change 0183 / ADR-0174）：`LLMPlanner(max_tokens=…)` 为构造期注入点，由组合根按
+  `loop.output_reserve` 注入；`> 0` ⇒ 每次请求携带 `LLMRequest.max_tokens`（provider 下发
+  `max_tokens`），`None` / `≤ 0` ⇒ 不下发（请求形状逐字不变）。
 
 ---
 

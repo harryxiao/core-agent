@@ -71,6 +71,10 @@ Configuration（横切）
   **≥1 的整数**、`loop.output_reserve` 与 `loop.history_turns` 须为 **≥0 的整数**（`bool` 一律非法），
   非法即阻断启动；`loop.compact_steps` **不做**「≤ max_rounds」跨键校验 —— 阈值达上限是**合法退化配置**
   （语义仍是「至少压实一次」，只不再提前触发）。
+- **loop 段独立访问器**（change `0182`／ADR-0173、change `0183`／ADR-0174）：`compact_steps()` 与
+  `output_reserve()` 各读一个既有/新增键，**不**并入 `loop_limits()` 二元组（其 arity 被多处解包断言
+  钉死）；`output_reserve()` 与预算派生**同源**（预算 = 窗口 − 预留），组合根据此注入 planner 的
+  请求侧输出上限 ⇒ 预留从**记账假设**变为**端点上界**（无新配置键、无规格变更）。
 - 变更即生效；写入失败时回滚到变更前完整配置，不留半写状态，并记录告警。
 - **写回是可逆效应（change `0130` / ADR-0123）**：变更作用于**内存 + yaml 文件**两处，`apply_change`
   与 `write_patch` 记在**同一 trace**（`"config"`）⇒ 按该 trace 回滚时磁盘态与内存态**一并回退**；

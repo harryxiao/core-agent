@@ -610,6 +610,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     # 取详情的消费面（change 0140）：模型经工具面按指针取片段，不由全文顶替。
     # 注入装配器时同样接线（装配面由调用方给定，消费面不在其管辖内）。
     tools.register(context_read(fetch_detail=assembler.fetch_detail))
+    # 请求侧输出上限（change 0183 / ADR-0174）：注入**四个 loop** 的全部 planner —— 与
+    # `token_budget` 派生同源（预算 = 窗口 − 预留），使「预留」从记账假设变为端点上界。
+    max_tokens = config.output_reserve()
     planner = LLMPlanner(
         llm,
         model=app.llm.model,
@@ -620,6 +623,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         assembler=assembler,
         skill_router=loop_hints,
         tools=tools,
+        max_tokens=max_tokens,
     )
     # 门控（0067）：evolution 关闭 ⇒ 引擎/worker 不建，loop 冷路径与 trace 完成回调一并置 None
     # （不为「未装配」造空转闭包 —— DefaultLoop 本就接受 cold_path / trace_observer =None）。
@@ -741,6 +745,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             assembler=assembler,
             skill_router=agent_hints,
             tools=provider,
+            max_tokens=max_tokens,
         )
         return cast(
             LoopPlugin,
@@ -781,6 +786,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             assembler=assembler.with_allow_source_prefixes(beast.agent_id),
             skill_router=beast_hints,
             tools=provider,
+            max_tokens=max_tokens,
         )
         return cast(
             LoopPlugin,
@@ -980,6 +986,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                         reasoning_effort=app.llm.reasoning_effort,
                         assembler=assembler.with_allow_source_prefixes("pet"),
                         tools=provider,
+                        max_tokens=max_tokens,
                     ),
                     memory=memory,
                     tools=provider,

@@ -520,6 +520,20 @@ class ConfigManager:
         turns = _parse_int(raw.get("history_turns", _DEFAULT_HISTORY_TURNS))
         return _DEFAULT_HISTORY_TURNS if turns is None else turns
 
+    def output_reserve(self) -> int:
+        """输出预留（缺省 ``8192``；change `0183` / ADR-0174）。
+
+        与 ``loop_limits()`` 的 token 预算派生**同源**（预算 = 窗口 − 预留）：组合根把它注入
+        ``LLMPlanner`` 作为请求侧 ``max_tokens`` ⇒ 预留从**记账假设**变为**端点上界**。
+
+        **独立访问器**：`(max_rounds, token_budget)` 二元组的解包断言已钉死，不合并。
+        """
+        if self._config is None:
+            return _DEFAULT_OUTPUT_RESERVE
+        raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
+        reserve = _parse_int(raw.get("output_reserve", _DEFAULT_OUTPUT_RESERVE))
+        return _DEFAULT_OUTPUT_RESERVE if reserve is None else reserve
+
     def compact_steps(self) -> int:
         """上下文压实的**本轮工具步数**阈值（缺省 ``6``；change 0182 / ADR-0173）。
 

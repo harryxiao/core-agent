@@ -327,6 +327,57 @@ def test_chunk_maps_finish_reason() -> None:
     assert chunks[0].thinking == "" and chunks[0].tool_calls is None
 
 
+# ---- 流式令牌用量与请求侧输出上限（change 0183 / ADR-0174 / 账本 E120）----
+
+
+def test_chunk_maps_usage_from_empty_choices_end_block() -> None:
+    """流式末块 `choices` 为空数组但顶层带 `usage` ⇒ **仍**产出用量块（不因 choices 空而丢弃）。"""
+    chunks = _chunks(
+        _sse_lines(
+            '{"choices":[{"delta":{"content":"甲"}}]}',
+            '{"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":34}}',
+        )
+    )
+    assert [c.usage for c in chunks] == [None, TokenUsage(prompt_tokens=120, completion_tokens=34)]
+    assert [c.content for c in chunks] == ["甲", ""]  # 其余字段逐字不受影响
+
+
+def test_chunk_usage_none_when_absent() -> None:
+    """未携带用量（无 `usage` 键 / 值为 `null`）⇒ `usage` 为 `None`（不报错、不以零值冒充）。"""
+    chunks = _chunks(
+        _sse_lines(
+            '{"choices":[{"delta":{"content":"甲"}}]}',
+            '{"choices":[{"delta":{"content":"乙"}}],"usage":null}',
+        )
+    )
+    assert [c.usage for c in chunks] == [None, None]
+    assert [c.content for c in chunks] == ["甲", "乙"]
+
+
+def test_stream_body_requests_include_usage() -> None:
+    """流式请求体要求端点上报用量（`stream_options.include_usage`），`stream` 与既有形状不变。"""
+    lines = [b'data: {"choices":[{"delta":{"content":"x"}}]}\n', b"data: [DONE]\n"]
+    transport = _FakeTransport(_stream_response(lines))
+    provider = _make_provider(transport)
+    asyncio.run(_collect_stream(provider, LLMRequest(messages=[Message("user", "hi")], model="m")))
+
+    body = json.loads(transport.last.data.decode("utf-8"))
+    assert body["stream"] is True
+    assert body["stream_options"] == {"include_usage": True}
+
+
+def test_body_omits_stream_options_when_non_streaming() -> None:
+    """非流式请求体**不含** `stream_options`（其响应本就携带 `usage`；既有形状逐字保留）。"""
+    payload = {"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]}
+    transport = _FakeTransport(_fake_json_response(payload))
+    provider = _make_provider(transport)
+    asyncio.run(provider.acompletion(LLMRequest(messages=[Message("user", "hi")], model="m")))
+
+    body = json.loads(transport.last.data.decode("utf-8"))
+    assert "stream_options" not in body
+    assert "stream" not in body
+
+
 def test_response_maps_native_tool_calls() -> None:
     """非流式：message.tool_calls 归一为 ToolCall（原生 function call 协议）。"""
     provider = _make_provider()

@@ -406,3 +406,39 @@ def test_build_runtime_injects_configured_compact_steps(tmp_path: Path, state_di
     compactor = _main_loop(runtime)._compactor  # noqa: SLF001 — 接线断言
     assert isinstance(compactor, Compactor)
     assert compactor._step_threshold == configured  # noqa: SLF001 — 接线断言
+
+
+# ---- 输出上限注入（change 0183 / ADR-0174 / 账本 E120）----
+
+# 规格缺省：输出预留 8192（configuration/spec.md「循环预算配置」）
+_DEFAULT_OUTPUT_RESERVE = 8192
+
+
+def test_output_reserve_accessor_defaults(tmp_path: Path) -> None:
+    """既有键走**独立访问器**：未配置 ⇒ 缺省 8192，`loop_limits()` 二元组逐字不变。"""
+    manager = _manager(tmp_path)
+    assert manager.output_reserve() == _DEFAULT_OUTPUT_RESERVE
+    assert manager.loop_limits() == (10, 65536)
+
+
+def test_output_reserve_accessor_from_yaml(tmp_path: Path) -> None:
+    """访问器读同一键：配置 4096 ⇒ 访问器 4096；未配置窗口 ⇒ 预算仍回落缺省（逐字不变）。"""
+    reserve = 4096
+    manager = _manager(tmp_path, f"loop:\n  output_reserve: {reserve}\n")
+    assert manager.output_reserve() == reserve
+    assert manager.loop_limits() == (10, 65536)
+
+
+def test_build_runtime_injects_output_reserve_as_max_tokens(
+    tmp_path: Path, state_dir: Path
+) -> None:
+    """组合根把既有 `loop.output_reserve` 注入 planner ⇒ 请求侧输出上限与预算派生同源。"""
+    reserve = 4096
+    runtime = build_runtime(
+        ConfigManager(
+            yaml_path=_write_config(tmp_path, f"loop:\n  output_reserve: {reserve}\n"),
+            environ={"OPENAI_API_KEY": "sk-test"},
+        )
+    )
+    planner = _main_loop(runtime)._planner  # noqa: SLF001 — 接线断言
+    assert planner._max_tokens == reserve  # noqa: SLF001 — 接线断言

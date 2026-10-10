@@ -69,7 +69,25 @@ class LLMChunk:
     tool_calls: list[ToolCall] | None = None  # delta.tool_calls 增量片段（index 分组）
     thinking: str = ""                        # 推理原文增量（归一化后；缺省空串，见 §2.1）
     finish_reason: str = ""                   # 终止原因（该块未携带时为空串，见 §2.2）
+    usage: TokenUsage | None = None           # 令牌用量（该块未携带时为 None，见 §2.3）
 ```
+
+### 2.3 流式令牌用量与请求侧输出上限（change `0183` / ADR-0174 / 账本 E120）
+
+流式是**默认推理路径** ⇒ 端点实报的用量此前进不了内核，记账下界只有装配估算。本 change 补上两件事：
+
+- **`LLMChunk.usage`**：取增量块**顶层** `usage` 对象；**该块未携带时为 `None`**（SHALL NOT 以
+  `TokenUsage(0, 0)` 冒充实报 —— 「端点未上报」与「端点报零」在观测面必须可分辨）。**键位陷阱**：
+  OpenAI 兼容端点在开启用量上报时把 `usage` 放在**末块**，而该末块 `choices` 是**空数组** ⇒
+  provider 在 `choices` 为空的早返分支**之前**取用量，此类块 `content` 仍为空串（事件面零变化）。
+- **请求侧**：流式请求体带 `stream_options: {"include_usage": true}`（要求端点上报）；**非流式**
+  请求体**不含**该字段（其响应本就携带 `usage`）。
+- **`LLMRequest.max_tokens`**：由组合根按**输出预留**（`loop.output_reserve`）注入 `LLMPlanner`
+  的构造期注入点 ⇒ `> 0` 时填入每次请求（provider 据此下发 `max_tokens`），`None` 或 `≤ 0` 时
+  **不**下发（请求形状逐字不变）。该注入使「预留」从**记账假设**变为**端点上界**（预算派生
+  `窗口 − 预留` 本已假设输出至多占预留这么多）。
+- **消费面**（`LLMPlanner`）：`prompt_tokens` 与装配估算取**较大者**为记账下界（与非流式同口径），
+  `completion_tokens` **仅**记观测（`last_completion_tokens()`），**不参与**任何判定。
 
 ### 2.2 流式增量的终止原因（`finish_reason`，change `0170` / ADR-0161）
 

@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 
 from core.context import DynamicAssembler, estimate_tokens
-from core.llm_provider import LLMError, LLMProvider, LLMRequest, Message, ToolCall
+from core.llm_provider import LLMError, LLMProvider, LLMRequest, Message, TokenUsage, ToolCall
 from core.tools import ToolProvider
 
 from .protocol import Action, LoopContext, Thinking
@@ -144,6 +144,10 @@ class LLMPlanner:
         # 技能路由：``(task, session_id)``——既有 1 参闭包/替身仍可赋值（可选第二实参）
         skill_router: Callable[..., list[SkillHint]] | None = None,
         tools: ToolProvider | None = None,
+        # 请求侧输出上限（由组合根按**输出预留** `loop.output_reserve` 注入 —— change 0183 /
+        # ADR-0174）。`None` 或 `≤ 0` ⇒ **不**下发（请求形状逐字不变）；`> 0` ⇒ 从「记账假设」
+        # 变为**端点上界**（预算派生本已假设输出至多占预留这么多）。
+        max_tokens: int | None = None,
     ) -> None:
         self._llm = llm
         self._model = model
@@ -152,9 +156,13 @@ class LLMPlanner:
         self._assembler = assembler
         self._skill_router = skill_router
         self._tools = tools
+        self._max_tokens = max_tokens if (max_tokens is not None and max_tokens > 0) else None
         # 最近一次装配的提示 token 观测（记账下界）：由 `last_prompt_tokens()` 对外暴露，
         # 供 loop 侧以 duck-typing 探针消费（见 change 0152 / 账本 E96）。
         self._last_prompt_tokens = 0
+        # 最近一次流式响应实报的**完成**用量（纯观测面：不参与终止语义与预算闸门 ——
+        # 本轮已花出的量无可行动作；见 change 0183 / ADR-0174）。
+        self._last_completion_tokens = 0
 
     async def __call__(self, ctx: LoopContext) -> Action:
         action, _ = await self._complete(ctx)
@@ -208,6 +216,9 @@ class LLMPlanner:
         finish_reason = ""
         try:
             async for chunk in self._llm.astream(request):
+                # 用量消费**早于** `continue` 闸门：端点把用量放在 `content` 为空的末块上
+                # （change 0183 / ADR-0174）⇒ 放在 `if not chunk.content: continue` 之后会漏掉。
+                self._observe_usage(getattr(chunk, "usage", None))
                 finish_reason = getattr(chunk, "finish_reason", "") or finish_reason
                 for fragment in chunk.tool_calls or []:
                     native_tool = True
@@ -249,6 +260,25 @@ class LLMPlanner:
         """
         return self._last_prompt_tokens
 
+    def last_completion_tokens(self) -> int:
+        """最近一次响应实报的**完成** token 数（**观测面**；未上报时为 0）。
+
+        与 ``last_prompt_tokens()`` 同型 duck-typing 探针。**不参与**任何判定 —— 预算闸门看的是
+        下一轮的提示词占用，本轮已花出的完成量无可行动作（见 change 0183 / ADR-0174）。
+        """
+        return self._last_completion_tokens
+
+    def _observe_usage(self, usage: TokenUsage | None) -> None:
+        """消费一次实报用量：提示词占用取**较大者**（下界只抬升、从不压低），完成量记观测。
+
+        ``None``（该块未报用量）⇒ 原样返回（第三方 provider 产出自有形块时不破，与
+        ``finish_reason`` 的 ``getattr`` 处置同型）。
+        """
+        if usage is None:
+            return
+        self._last_prompt_tokens = max(self._last_prompt_tokens, usage.prompt_tokens)
+        self._last_completion_tokens = usage.completion_tokens
+
     @staticmethod
     def _estimate_prompt(request: LLMRequest) -> int:
         """装配全量估算：全部消息内容 + 工具 schema 序列化。
@@ -268,6 +298,7 @@ class LLMPlanner:
         return LLMRequest(
             messages=messages,
             model=self._model or "",
+            max_tokens=self._max_tokens,
             tools=self._tool_schemas(),
             reasoning_effort=self._reasoning_effort,
         )

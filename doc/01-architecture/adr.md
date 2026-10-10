@@ -5464,6 +5464,63 @@
   粒度 —— 跨轮（同一会话连续两轮）各自可压实一次，本 change 未限制 ✓；⑤ 压实仍**只有轮级触发**：
   无「关键信息密度」类内容判据（沿用既有的 token/步数双阀）。
 
+### ADR-0174：流式令牌用量与请求侧输出上限（change 0183）
+
+**背景。** `known-risk.md` §1 E97 余项之一：`LLMChunk` 无 `usage` 字段、`_map_chunk` 从不解析；
+而**流式是默认推理路径**（`planner.astream` 优先），非流式只在 provider 缺 `astream` 时退化 ⇒
+`_last_prompt_tokens` 在流式下**只有装配估算、从不被端点实报抬升**，两条路径记账口径不一致。
+同时 `LLMRequest.max_tokens` 是死字段（`_build_body` 支持下发、无调用方填）⇒ 配置项
+`loop.output_reserve` 只是**记账假设**（预算派生 `窗口 − 预留`），模型侧无上界。
+
+- **决策 ①：`LLMChunk.usage: TokenUsage | None = None`，未携带时 `None` 而非零值。** 零值会被读成
+  「提示词 0 token」并在观测面与「端点未上报」不可分辨。新字段带缺省值 ⇒ 所有既有构造点零改动。
+- **决策 ②：解析点在 `choices` 早返**之前**（本 change 唯一的实现陷阱）。** OpenAI 兼容端点把用量
+  放在**末块**，而该末块 `choices` 是**空数组**（只报账、不产内容）；照现状早返则用量永远丢失。
+  故新增 `_map_usage` 并**两处**调用（早返分支与正常分支），早返分支 `content=""` 逐字不变 ⇒
+  **事件面零变化**，只是这类块开始携带用量。规格明文写死这一形态（「SHALL NOT 因 `choices` 为空而丢弃」）。
+- **决策 ③：非流式那条路径逐字保留。** `_map_response` 的 `usage.get(..., 0)` 零值口径、请求体形状
+  均不动；规格明文「SHALL NOT 改变非流式 `LLMResponse.usage` 的既有解析」。`_map_usage` 与
+  `_map_response` 取值同源但**不共用**：前者必须能表达「未上报」。
+- **决策 ④：`stream_options={"include_usage": True}` 只下发给流式请求。** 非流式响应本就带 `usage`
+  ⇒ 多发该字段无意义（规格 Scenario 明文「非流式请求体不含 `stream_options`」）。已知局限见下。
+- **决策 ⑤：消费方实报**抬升下界**（`max`），完成量**纯观测**。** `astream` 循环体**首行**消费 ——
+  必须早于 `if not chunk.content: continue`，否则末块（`content=""`）的用量被跳过。
+  `_last_prompt_tokens = max(估算, prompt_tokens)` 与 `_complete` 的既有句式是同一句话的两种到达方式
+  （一次性 vs 增量）⇒ 合并后两路径**同一语义**。`completion_tokens` 记入 `_last_completion_tokens` +
+  新增同型 duck-typing 探针 `last_completion_tokens()`，**不参与**任何判定：预算闸门看的是**下一轮**的
+  提示词占用，本轮已花出的完成量无可行动作。`getattr(chunk, "usage", None)` ⇒ 第三方替身（自有形块、
+  无该字段）不破，与既有 `finish_reason` 的 `getattr` 处置同型。
+- **决策 ⑥：`max_tokens` 构造期注入点，`> 0` 才下发（`≤ 0` 与 `None` 同义）。** 归一在构造期完成，
+  调用方无需判空。`≤ 0` 是配置面能写出的合法值，语义上「上界为 0」使模型无法产出 ⇒ 视为未注入比
+  「下发 `max_tokens: 0` 让端点 400」更诚实。缺省 `None` ⇒ 请求形状**逐字不变**。
+  **为什么 `> 0` 就下发是安全的**：`loop.output_reserve` 已是预算派生的**同一个量**，派生本已假设
+  「输出至多占预留这么多」，下发只是把**记账假设**变成**端点上界**；配置错时端点是**响亮 400**，
+  且该配置本已使预算派生错误 ⇒ 本条让配置错误**提前暴露**而非引入新风险。
+- **决策 ⑦：组合根注入 + 独立访问器（无新配置键、无 configuration 规格变更）。**
+  `ConfigurationManager.output_reserve()` 读既有键 `loop.output_reserve`（缺省 `8192`），
+  **不**加 ConfigSpec、**不**改 `loop_limits()` 的 arity（其二元组解包断言被多处钉死）——
+  同 `history_turns()`（0115）/ `compact_steps()`（0182）的纪律。`runtime.py` 注入**四个 loop**
+  的全部 planner（主 / 子 agent / 神兽 / 宠物）—— 它们本就同源同参（共享 `max_rounds` / `token_budget`），
+  预留是 loop 级量 ⇒ 只注主 planner 会使同配置下四条链路请求形状不一致。
+- **被改写的规格条款。** `llm-provider` **新增**两条 Requirement（「流式增量携带令牌用量」4 Scenario +
+  「请求侧输出上限按预留注入」2 Scenario）—— canonical 8 req / 18 scen ⇒ **10 req / 24 scen**
+  （既有标题零丢失）。本 change **不**改 `configuration` 规格（无新键）。
+- **落点**：`src/core/llm_provider/models.py`（`LLMChunk.usage`）、
+  `src/core/llm_provider/stdlib_provider.py`（`_map_usage` + 早返前解析 + `stream_options`）、
+  `src/core/loop/planner.py`（`max_tokens` 注入点 + `_observe_usage` + `_last_completion_tokens` +
+  `last_completion_tokens()` + `astream` 首行消费）、`src/core/configuration/manager.py`
+  （`output_reserve()`）、`src/core/runtime.py`（四处 planner 注入）。
+- **测试**：provider 面 4（用量三态 + 请求体两态）、planner 面 6（实报抬升 / 未上报不抬升 /
+  完成量观测 / 注入下发 / 非正不下发 ×3）、配置与接线 3（访问器缺省 / 读同一键 / 组合根注入）。
+  基线 **2163 → 2176**（**+13**）。
+- **局限**：① **拒绝 `stream_options` 的端点会在流式路径报错**（走既有 `LLMError` 路径，响亮失败、
+  非静默降级）—— 该字段不在 OpenAI 规范的早期版本里，非 OpenAI 兼容的自研端点可能不识；无「首轮探测
+  后降级」机制，亦即**无自动回退**；② `max_tokens` 注入**默认生效**（缺省预留 `8192`）：模型输出上限
+  **低于**预留值的端点会 400 —— 本 change 未内置「按模型推导输出上限」（那是 `0184` 的 known-model 面，
+  且只覆盖 `context_window`）；③ `completion_tokens` 只是**记下来**，无消费者 —— 未接入 metrics /
+  成本核算（观测面有值、无出口）；④ 用量只取**末块**：若端点逐块上报累计用量，本实现只认最后一个
+  （`max` 抬升使之无害，但中间值不落）；⑤ `_last_prompt_tokens` 仍是**单轮**观测量，无跨轮累计。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5632,3 +5689,4 @@
 | ADR-0171 | 02-modules/notes.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0172 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0173 | 02-modules/context.md, 02-modules/configuration.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0174 | 02-modules/llm-provider.md, 02-modules/configuration.md, 02-modules/loop.md, 03-interfaces/llm-provider-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

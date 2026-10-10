@@ -61,6 +61,15 @@ L3 Loop ──► LLMProvider（抽象接口）──► StdlibLLMProvider（默
 - 代理环境或 3xx 重定向回落 `urlopen`（保 stdlib 语义）；未读尽的响应（如 SSE 中途停止）连接关闭丢弃，不回池。
 - 注入接缝：`StdlibLLMProvider(transport=...)`，换传输策略不改 provider（ADR-0064）。
 
+### 3.7 流式令牌用量与请求侧输出上限（change `0183` / ADR-0174 / 账本 E120）
+
+- **用量归一**：`LLMChunk.usage: TokenUsage | None`（未携带 ⇒ `None`，不以零值冒充实报）。**键位陷阱**：
+  端点在开启上报时把 `usage` 放在 `choices` 为**空数组**的**末块** ⇒ `_map_chunk` 在早返**之前**取用量，
+  此类块 `content` 仍为空串（事件面零变化）。非流式 `LLMResponse.usage` 解析**逐字不动**。
+- **请求侧形状**：流式请求体增 `stream_options: {"include_usage": true}`；**非流式不含**该字段。
+  `LLMRequest.max_tokens` 由组合根按输出预留注入 ⇒ `> 0` 才下发（见 §3.2 的请求体构建）。
+- 无新增三方依赖（仍 `urllib` 直连 + 手写 SSE）。
+
 ---
 
 ## 4. 错误处理
