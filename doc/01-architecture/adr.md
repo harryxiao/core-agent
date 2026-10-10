@@ -4303,6 +4303,26 @@
   `02-modules/rag.md` §1.1、`03-interfaces/rag-interface.md` §0、测试面 `04-testing/test-cases.md`
   §19（TC-RAG-14）、守护 `tests/test_architecture.py`、台账 `coding-plan/known-risk.md`（§3）。
 
+### ADR-0148 附记（change `0189` / 台账 E126）：**另一侧**门禁 —— memory / notes 不得兼做知识文档检索
+
+- **补（本 ADR 局限② 收口）**：局限②「定位另一侧无守护」由 `tests/test_architecture.py::
+  test_memory_notes_api_excludes_document_corpus_dimension` 补上 —— `memory` / `notes` 的**公开面**
+  （公开函数 / 方法 / 类名 ＋ 形参名）经 stdlib `ast` 走查后，**不得**出现「外部文档语料」词元
+  （`document(s)` / `doc(s)` / `chunk(s)` / `corpus` / `ingest` / `pdf` / `retrieve` / `rag`；
+  `snake_case` / `camelCase` 均切分）—— 知识文档检索面归 `rag`（本 ADR 决策①）。另以
+  `test_rag_guard_chain_covers_corpus_free_faces` 钉住「两面仍在决策② 的守护链 `_REFERENCE_CHAIN`
+  内」：否则摘掉一个面即可让两侧守护**同时**失效。
+- **局限收窄**：② ⇒ 收窄为「**间接路径**（共享工具转发 / 动态 `importlib`）与**非公开面**（局部变量 /
+  私有名）不察」；③ ⇒ 由「门槛靠人守」改为「**门槛靠人守 ＋ 一条最小机器绊线**」—— 越界的**直接退化**
+  必触门禁，指向决策③（**先改 ADR、再开规格变更**）。①④ 逐字不变。
+- **刻意不收录 `vector` / `embed`**：`memory` 的语义记忆面**合法**使用嵌入（`_vectors` 缓存 /
+  `HashEmbedder` / `LLMEmbedder`），那**不是**「外部文档语料」维度；收录会把既有合法面判红
+  （见 change `0189` design.md D3）。**不重复**既有两条守护（决策② 的 rag 侧守护 ＋
+  `tests/test_session_isolation.py::test_notes_api_has_no_session_dimension` 的会话维度侧）。
+- **规格**：**无**（规格中性，`skip_specs: true`）；**零 `src/` 改动**。改动面
+  `tests/test_architecture.py`、`04-testing/test-cases.md` §102、`coding-plan/known-risk.md`
+  （§1 `E126` 已闭 ＋ §3）。
+
 ## ADR-0149：TUI 续聊转录按 Markdown 渲染（change 0157 / 账本 E98）
 
 - **背景**：用户 2026-10-07 实测 —— TUI（`core-agent` 直接跑）里 agent 输出带代码围栏的 demo，

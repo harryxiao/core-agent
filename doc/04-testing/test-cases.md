@@ -1966,3 +1966,26 @@
 > `memory` / `context` / `loop` 零改动；无新依赖、无新配置键。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0179 行（**摘要未进候选载荷** / **归因算法未用摘要** /
 > **只覆盖 `Diagnoser` 通道**（显式目标路径不构造它）/ **按 id 约定耦合**、无单一真源常量守护）。
+
+## 102. 三面边界**另一侧**门禁（TC-BOUNDARY，change `0189`／ADR-0148 附，台账 E126）
+
+**行为规格锚点**：**无**（规格中性，`.openspec.yaml` `skip_specs: true`）—— 本 change 只加**结构门禁**，
+**零 `src/` 改动**。守护对象是 ADR-0148「已知局限」②（`memory` / `notes` 越界「兼做知识文档检索」无门禁）
+与③（门槛靠人守）。
+
+| 用例 | 锚点 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-BOUNDARY-01 | ADR-0148 决策② 守护**链成员** | 读 `_CORPUS_FREE_FACES` 与 `_REFERENCE_CHAIN` 两个模块常量 | `{"memory","notes"} ⊆ {"loop","context","memory","notes"}` —— 摘掉一个面即红（锚点：`tests/test_architecture.py::test_rag_guard_chain_covers_corpus_free_faces`） |
+| TC-BOUNDARY-02 | ADR-0148 局限②（**当前即绿**） | `ast` 走查 `src/core/memory` ＋ `src/core/notes` 全部 `*.py` 的**公开面**（公开函数 / 方法 / 类名 ＋ 形参名），词元化后与语料词表求交 | 走查**非空**（防空过）**且**零命中（锚点：`...::test_memory_notes_api_excludes_document_corpus_dimension`） |
+| TC-BOUNDARY-03 | 同前（**红态证据**，人工植入、不保留） | 向 `src/core/notes/store.py` 临时追加公开函数 `ingest_document(path: str, chunks: list[str])` | 门禁**变红**且**指名** `notes/store.py:<行> ingest_document -> ['document','ingest']` 与 `chunks -> ['chunks']`；`git checkout` 撤销后回绿 |
+| TC-RAG-14（**回归锚**） | ADR-0148 决策② | `chain` 由局部字面量改为常量 `_REFERENCE_CHAIN` 后重跑既有守护 | 断言**逐字不变**、仍绿 —— 本 change 未放宽 rag 侧（锚点：`...::test_rag_not_imported_by_reference_chain`） |
+
+> **红态证据**：TC-BOUNDARY-01/02 现状**绿**（规格中性 ⇒ 沿 change `0156` 先例，红态由**人工植入**
+> `loop`/`notes` 侧的越界签名确认，见 TC-BOUNDARY-03；植入已撤销，`src/` 最终**零改动**）。绿后全量
+> `.venv/bin/pytest -q` ⇒ **2208 passed**（基线 **2206**，**+2** = 链成员 1 ＋ 语料维度 1）。
+> **不动面**：`test_rag_not_imported_by_reference_chain`（断言逐字不变）、
+> `test_session_isolation.py::test_notes_api_has_no_session_dimension`（**已存在**的会话维度锚 ⇒
+> **不重复**）、`memory` / `notes` / `context` / `loop` 的 `src/` 代码；无新依赖（stdlib `ast` / `re`）、
+> 无新配置键。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0148 行（收窄后的 ②③：间接路径 / 非公开面不察；
+> 门槛仍**靠人守 ＋ 最小绊线**），以及 ④「三面边界表是当前分工」逐字不变。

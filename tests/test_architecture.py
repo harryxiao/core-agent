@@ -323,6 +323,9 @@ def test_phase4_orchestration_rag_no_reverse_dependency() -> None:
 
 # ---- 主题 9（G5 补充）：RAG 定位 —— 辅助本地知识库，不注入主链路（ADR-0097 ⑥ / ADR-0148） ----
 
+# 主链路 + 三面兄弟：SHALL NOT import ``core.rag``（仅 ``runtime`` / ``entry`` 例外）。
+_REFERENCE_CHAIN = frozenset({"loop", "context", "memory", "notes"})
+
 
 def test_rag_not_imported_by_reference_chain() -> None:
     """RAG 是辅助本地知识库，经 CLI 一次性驱动，**不**注入 loop 主链路。
@@ -332,7 +335,7 @@ def test_rag_not_imported_by_reference_chain() -> None:
     （要令 RAG 参与 loop 上下文，须**先改 ADR-0097 ⑥**、再经组合根 ``runtime`` 注入，而非让
     主链路直接 import rag）。``runtime``（组合根）与 ``entry``（CLI）是仅有的例外。
     """
-    chain = {"loop", "context", "memory", "notes"}
+    chain = _REFERENCE_CHAIN
     offenders: list[str] = []
     for pkg in sorted(chain):
         for path in (SRC / pkg).rglob("*.py"):
@@ -342,6 +345,102 @@ def test_rag_not_imported_by_reference_chain() -> None:
                 if sub == "rag"
             )
     assert not offenders, f"主链路 / 三面兄弟反向 import core.rag（ADR-0097 ⑥）: {offenders}"
+
+
+# ---- 主题 9（change 0189）：三面边界**另一侧** —— memory / notes 不得兼做知识文档检索 ----
+#
+# ADR-0148 局限②：「另一侧」无守护 —— 上面只护 rag 一侧；memory / notes 是否越界「兼做知识文档
+# 检索」无自动门禁。此处把该侧固化为**结构锚**：① 两面必须仍留在 `_REFERENCE_CHAIN` 内；
+# ② 两面的**公开面**不得出现「外部文档语料」维度词汇（知识文档检索面归 `rag`，ADR-0148 决策①）。
+
+# 三面分工中「知识文档检索」**不**可落的面（`memory` 经验轨迹 + 关键事实 / `notes` 主题文档）。
+_CORPUS_FREE_FACES = frozenset({"memory", "notes"})
+
+# 「外部文档语料」维度词元：在两面公开面出现即意味着边界被无声合并。
+# 刻意**不含** `vector` / `embed` —— memory 的语义记忆面合法使用嵌入（ADR-0148 决策①：知识文档
+# 的嵌入归 rag，二者同名不同面）；收录它们会把既有合法面判红（见 design.md D3）。
+_CORPUS_DIMENSION_TOKENS = frozenset(
+    {
+        "document",
+        "documents",
+        "doc",
+        "docs",
+        "chunk",
+        "chunks",
+        "corpus",
+        "ingest",
+        "pdf",
+        "retrieve",
+        "rag",
+    }
+)
+
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _identifier_tokens(name: str) -> set[str]:
+    """标识符 → 小写词元集（`snake_case` 与 `camelCase` 皆切分）。
+
+    切分而非子串比对 ⇒ `fragment` 不命中 `rag`、`documentation` 不命中 `document`。
+    """
+    tokens: set[str] = set()
+    for part in name.split("_"):
+        tokens.update(t for t in _CAMEL_BOUNDARY.split(part) if t)
+    return {t.lower() for t in tokens}
+
+
+def _public_api_identifiers(path: pathlib.Path) -> list[tuple[int, list[str]]]:
+    """返回文件中**公开** API 的 ``(行号, 标识符)``：函数 / 方法名 + 形参名 + 类名。
+
+    私有名（``_`` 前缀）不计 —— 守护只钉**公开面**（越界面必经之路）。
+    """
+    found: list[tuple[int, list[str]]] = []
+    for node in ast.walk(_parse(path)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name.startswith("_"):
+                continue
+            args = node.args
+            names = [node.name]
+            names += [a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
+            names += [a.arg for a in (args.vararg, args.kwarg) if a is not None]
+        elif isinstance(node, ast.ClassDef):
+            if node.name.startswith("_"):
+                continue
+            names = [node.name]
+        else:
+            continue
+        found.append((node.lineno, names))
+    return found
+
+
+def test_rag_guard_chain_covers_corpus_free_faces() -> None:
+    """两侧**同集**：rag 侧守护的链不得把 memory / notes 悄悄摘出去。
+
+    摘掉一个面即可让「主链路不得 import rag」与「不得兼做知识文档检索」两侧**同时**失守 ——
+    本断言钉住链的成员（ADR-0148 局限② 的门禁不得被单方面削弱）。
+    """
+    missing = sorted(_CORPUS_FREE_FACES - _REFERENCE_CHAIN)
+    assert not missing, f"三面守护链缺面: {missing}"
+
+
+def test_memory_notes_api_excludes_document_corpus_dimension() -> None:
+    """memory / notes 的**公开面**不得出现「外部文档语料」维度（ADR-0148 局限② / 决策①）。
+
+    知识文档检索（ingest 外部文档 / 分块 / 语料）归 ``rag``；两面越界即在此触门禁 ⇒ 指向
+    ADR-0148 决策③：**先改 ADR、再开规格变更**，而非顺手补签名。
+    """
+    offenders: list[str] = []
+    seen = 0
+    for face in sorted(_CORPUS_FREE_FACES):
+        for path in sorted((SRC / face).rglob("*.py")):
+            for lineno, names in _public_api_identifiers(path):
+                seen += 1
+                for name in names:
+                    hits = _identifier_tokens(name) & _CORPUS_DIMENSION_TOKENS
+                    if hits:
+                        offenders.append(f"{face}/{path.name}:{lineno} {name} -> {sorted(hits)}")
+    assert seen, "AST 走查未收集到任何公开 API（门禁形同虚设）"
+    assert not offenders, f"三面边界失守：memory / notes 公开面出现外部文档语料维度: {offenders}"
 
 
 def test_phase5_evolution_no_reverse_dependency() -> None:
