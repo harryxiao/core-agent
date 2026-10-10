@@ -18,6 +18,11 @@ from .models import ContextPack
 _MAX_POINTERS_PER_DOC = 8
 
 
+def _matches_any(value: str, prefixes: tuple[str, ...]) -> bool:
+    """``value`` 是否以 ``prefixes`` 中任一前缀开头（**前缀**语义，非子串）。"""
+    return any(value.startswith(prefix) for prefix in prefixes)
+
+
 class DynamicAssembler:
     """上下文装配器：按需加载 + 预算控制 + 地图取详情。"""
 
@@ -30,6 +35,12 @@ class DynamicAssembler:
         project_info: list[str] | None = None,
         exclude_source_prefixes: tuple[str, ...] = (),
         allow_source_prefixes: tuple[str, ...] = (),
+        # 事实面排除面（change 0185 / ADR-0176）：按 `MemoryEntry.source` **前缀**把条目挡在
+        # 「相关事实」注入面之外 —— 用于**已由专块注入**的压缩产物（会话长期/中期摘要，
+        # `source="compaction"`），避免同一份正文经两条通道重复注入。缺省空 ⇒ 不建过滤、
+        # 装配结果与既往**逐字一致**；与 `exclude_source_prefixes`（**封存**面）
+        # **不同理由、不合并**。
+        exclude_fact_sources: tuple[str, ...] = (),
     ) -> None:
         self._memory = memory
         self._info_map = info_map if info_map is not None else InfoMap()
@@ -37,6 +48,7 @@ class DynamicAssembler:
         self._project_info = list(project_info or [])
         self._exclude_source_prefixes = tuple(exclude_source_prefixes)
         self._allow_source_prefixes = tuple(allow_source_prefixes)
+        self._exclude_fact_sources = tuple(exclude_fact_sources)
 
     def with_allow_source_prefixes(self, *prefixes: str) -> DynamicAssembler:
         """派生装配器：**排除面逐字继承**，放行面替换为给定前缀（排除面的例外面）。
@@ -52,6 +64,7 @@ class DynamicAssembler:
             project_info=list(self._project_info),
             exclude_source_prefixes=self._exclude_source_prefixes,
             allow_source_prefixes=tuple(prefixes),
+            exclude_fact_sources=self._exclude_fact_sources,
         )
 
     def build(self, task: str, stage: str, *, budget: int, session_id: str = "") -> ContextPack:
@@ -109,6 +122,13 @@ class DynamicAssembler:
 
         ``exclude_source_prefixes`` 为装配级配置（缺省空 ⇒ 不含排除）；``session_id`` 为调用方
         会话标识（缺省空串 ⇒ 不过滤）。两者皆缺省时调用形态与既往逐字一致。
+
+        ``exclude_fact_sources``（change `0185` / ADR-0176）为**事实面排除面**：命中 `e.source`
+        前缀的条目被挡在注入**步骤**（读**后**过滤）—— 与 `exclude_source_prefixes` 的分工：
+        后者是**封存**面（先于排名/预算过滤，语义是「该命名空间对本 agent 永不可见」），
+        本参数是**去重**面（「已由专块注入，故不重复」）。缺省空 ⇒ **不建过滤**、返回路径与既往
+        **逐字相同**。代价：被挡条目已吃掉事实面预算 —— 有界（每会话长期/中期各一条），
+        见 ADR-0176 局限①。
         """
         if self._memory is None:
             return []
@@ -122,4 +142,6 @@ class DynamicAssembler:
             )
         else:
             entries = self._memory.read(query, budget)  # 未启用排除 ⇒ 调用形态与既往逐字一致
+        if self._exclude_fact_sources:
+            entries = [e for e in entries if not _matches_any(e.source, self._exclude_fact_sources)]
         return [{"source": e.source, "content": e.content} for e in entries]

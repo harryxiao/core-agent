@@ -6,10 +6,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
+from core.configuration import ConfigManager
 from core.context import (
     BudgetManager,
     Compactor,
@@ -20,7 +23,8 @@ from core.context import (
     InfoMap,
 )
 from core.context.compactor import _STEP_THRESHOLD
-from core.memory import MemoryStore
+from core.memory import MemoryEntry, MemoryStore
+from core.runtime import build_runtime
 
 # ---- 预算控制 ----
 
@@ -229,3 +233,110 @@ def test_assembler_recalls_facts_by_task() -> None:
     pack = assembler.build("部署流水线", "reason", budget=1000)
     assert spy.queries == ["部署流水线"], "应以任务为目标 query 检索，而非阶段名"
     assert any(f["content"] == "fact:部署流水线" for f in pack.facts)
+
+
+@pytest.fixture
+def state_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path / "state"))
+    return tmp_path / "state"
+
+
+def _write_config(tmp_path: Any) -> str:
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "llm:\n"
+        "  provider: litellm\n"
+        "  model: test-model\n"
+        "  endpoint: https://example.com/v1\n"
+        "  api_key: ${OPENAI_API_KEY}\n"
+        "  reasoning_effort: low\n",
+        encoding="utf-8",
+    )
+    return str(cfg)
+
+
+# ---- 压缩产物退出事实注入面（change 0185 / ADR-0176 / 账本 E122）----
+# 规格「动态上下文构建」：已由专块（「历史摘要（长期）/（中期）」）每轮注入的压缩产物
+# （会话长期 / 中期摘要，`source == "compaction"`）SHALL NOT 再次进入「相关事实」注入面 ——
+# 同一份正文两条通道是纯浪费预算，且会被读成两条独立证据。无专块承载的压缩产出
+# （`source == "context"`，压缩产出的事实 / 未决）不受影响。
+
+
+def _fact_spy() -> Any:
+    """假 MemoryStore：返回两条压缩产物（`compaction`）+ 两条压缩派生物（`context`）。"""
+
+    def _entry(entry_id: str, source: str, content: str) -> SimpleNamespace:
+        return SimpleNamespace(id=entry_id, source=source, content=content)
+
+    class _SpyMemory:
+        def read(self, query: str, budget: int = 0) -> list[SimpleNamespace]:
+            return [
+                _entry("compaction.summary.default", "compaction", "长期摘要"),
+                _entry("compaction.mid.default", "compaction", "中期摘要"),
+                _entry("compaction.fact.default.0", "context", "事实"),
+                _entry("compaction.open.default.0", "context", "未决"),
+            ]
+
+    return _SpyMemory()
+
+
+def test_fact_source_exclusion_drops_compaction_entries() -> None:
+    """排除面 `("compaction",)` ⇒ 长期 / 中期摘要不进 `facts`（前缀匹配 `MemoryEntry.source`）。"""
+    assembler = DynamicAssembler(memory=_fact_spy(), exclude_fact_sources=("compaction",))
+    pack = assembler.build("t", "s", budget=4096)
+
+    sources = [f["source"] for f in pack.facts]
+    assert "compaction" not in sources, "已由专块注入的压缩产物不得再进事实面"
+    assert sources == ["context", "context"], "压缩派生物（source=context）不受影响"
+
+
+def test_fact_source_exclusion_default_is_verbatim() -> None:
+    """缺省**空**排除面 ⇒ 不建过滤、装配结果与既往**逐字一致**（四条全在）。"""
+    assembler = DynamicAssembler(memory=_fact_spy())
+    pack = assembler.build("t", "s", budget=4096)
+
+    assert [f["source"] for f in pack.facts] == ["compaction", "compaction", "context", "context"]
+
+
+def test_fact_source_exclusion_is_prefix_based() -> None:
+    """前缀语义：`("compaction.",)`（带点）匹配不到裸 `compaction` ⇒ 排除面按前缀**字面**生效。"""
+    assembler = DynamicAssembler(memory=_fact_spy(), exclude_fact_sources=("compaction.",))
+    pack = assembler.build("t", "s", budget=4096)
+
+    assert [f["source"] for f in pack.facts] == ["compaction", "compaction", "context", "context"]
+
+
+def test_fact_source_exclusion_survives_namespace_derivation() -> None:
+    """`with_allow_source_prefixes` 派生装配器**继承**事实面排除面（放行面不与之纠缠）。"""
+    sealed = DynamicAssembler(memory=_fact_spy(), exclude_fact_sources=("compaction",))
+    derived = sealed.with_allow_source_prefixes("beast.qinglong")
+
+    assert derived._exclude_fact_sources == ("compaction",)  # noqa: SLF001 — 派生继承断言
+    facts = derived.build("t", "s", budget=4096).facts
+    assert [f["source"] for f in facts] == ["context", "context"]
+
+
+def test_summary_stays_readable_through_memory_read() -> None:
+    """排除**只**落在装配面的注入步骤：`MemoryStore.read` 仍能取回摘要（检索语义逐字不变）。"""
+    store = MemoryStore()
+    store.write(
+        "L2",
+        MemoryEntry(
+            id="compaction.mid.default",
+            layer="L2",
+            content="中期摘要正文",
+            tags=["compaction", "mid"],
+            source="compaction",
+            trace_id="compaction.mid.default",
+        ),
+    )
+    assert [e.id for e in store.read("中期摘要正文")] == ["compaction.mid.default"]
+
+
+def test_build_runtime_excludes_compaction_from_fact_face(tmp_path, state_dir) -> None:
+    """组合根装配的主装配器真的带上排除面（接线，非仅接口存在）。"""
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+    assembler = runtime.loop._planner._assembler  # noqa: SLF001 — 主 loop 的真实装配器
+    assert assembler._exclude_fact_sources == ("compaction",)  # noqa: SLF001 — 接线断言
+    assert assembler._exclude_source_prefixes == ("beast.", "pet")  # noqa: SLF001 — 封存红线逐字不动

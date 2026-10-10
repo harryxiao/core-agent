@@ -5573,6 +5573,58 @@
   `StdlibLLMProvider` —— 第三方 `LLMProvider` 实现若自产 `LLMResponse` 且自有硬编码标签，本 change
   **管不到**（规格只约束「实际使用的 provider 标识」，实现自证）。
 
+## ADR-0176：压缩产物退出事实注入面（change 0185 / 账本 E122）
+
+**背景 —— 同一份正文经两条通道进场。** 会话长期摘要（`source="compaction"`，`store.py:655`）与
+中层摘要（`store.py:461`）的正文，已由 `planner.py:326-331` 的「历史摘要（长期）/（中期）」**专块**
+每轮注入一次；但两者 `source` 不在装配器的排除面内 ⇒ `_gather_facts` 又经「相关事实」面**再注入一次**。
+后果有二：① **预算浪费**（同一份正文吃掉两份事实面配额）；② 语义上更坏的 **虚假置信** —— 同一内容以
+两条独立条目出现，读者会读成「两条彼此印证的证据」。`notes` 规格（`notes/spec.md:58-70`）早有同型纪律
+「同一份内容 SHALL NOT 经两条通道重复注入同一次请求」，本 change 是把该纪律**推广到压缩产物面**。
+
+- **决策 ①：轴选 `MemoryEntry.source`（**不是** `id`）。** 计划稿给的实参是
+  `("compaction.summary.", "compaction.mid.")` —— 那是 **id** 前缀；而排除面的比较对象是 `entry.source`
+  ⇒ 传 id 前缀**一条都匹配不上**，change 会**静默变成空操作**（「绿灯的无操作」是最坏的回归形态）。
+  核实：树中 `source == "compaction"` 的条目**恰好两条**（mid `store.py:461`、summary `store.py:655`），
+  而压实产出的事实 / 未决是 `source == "context"`（`compactor.py:101/115`）⇒ `("compaction",)` 是
+  **可证正确且最小**的选择器，且恰好就是计划稿想划的**那条分界线**（「有专块承载的」vs「无专块承载的」）。
+- **决策 ②：新增**独立参数**，不往既有封存元组里塞第三项。** `exclude_source_prefixes`（封存面）与
+  本排除面**理由不同**：前者是「该命名空间对本 agent **永不可见**」（phase-26 红线），后者是
+  「**已由别处注入**，故此处不重复」。合并会让 `with_allow_source_prefixes` 的派生继承**纠缠**神兽放行语义，
+  且会让 phase-26 红线元组**不再逐字**。分参 ⇒ 封存元组**字面不动**，两类排除各自可断言、可回滚。
+- **决策 ③：过滤落在**读后**（`read()` 结果上），不推进 `read()` 内部。** 排除是**装配面**的关注点，
+  不是**检索语义**：`MemoryStore.read` 的排名 / 预算 / 复用强化对**其他**消费者（抽取素材、检索素材、
+  CLI 查询）必须逐字不变 —— `compaction.*` 条目仍须可被 `read()` 取回。代价：被挡条目**已吃掉事实面预算**
+  （有界：每会话长期 / 中期各一条），见局限①。
+- **决策 ④：缺省空 ⇒ 不建过滤、路径逐字不变。** `self._exclude_fact_sources = ()` 时
+  `_gather_facts` 走**原返回**语句（无新分支进入）；`with_allow_source_prefixes` 派生装配器**继承**本排除面
+  （放行面是封存面的例外面，与事实面去重无关，故不参与）。
+- **决策 ⑤：规格落 `context`（MODIFIED ×1），不落 `memory`。** 被改的是**装配面的注入步骤**，
+  `memory` 的 `read` 契约**未动** —— 规格该写在行为实际发生变化的能力上。
+
+**被改写的规格条款。** `context/spec.md`「动态上下文构建」**MODIFIED**（非新增）：追加「装配 SHALL 另支持
+可选的事实面排除面 `exclude_fact_sources`（按 `source` 前缀；缺省空 ⇒ 逐字一致）…… 该排除 SHALL **只**落在
+注入步骤：`read` 的检索语义 / 排序 / 预算 / 复用强化 SHALL 逐字不变 …… 无专块承载的压缩产出（`source`
+为 `context`）SHALL 不受影响」+ **1 新 Scenario**「压缩产物不进事实面」。canonical：`context` 162 → **177** 行，
+**6 req 不变**，scen 21 → **22**。**既有 Requirement / Scenario 标题零丢失**（归档脚本断言 5 条全过）。
+
+- **落点**：`src/core/context/assembler.py`（模块级 `_matches_any` + `exclude_fact_sources` 构造参数 +
+  `self._exclude_fact_sources` + 派生继承 + `_gather_facts` 读后前缀过滤）、
+  `src/core/runtime.py`（主装配器 `exclude_fact_sources=("compaction",)`；**封存元组逐字不动**）。
+- **测试**（+6，`tests/test_context.py`）：排除生效（长期 / 中期摘要退出事实面、`context` 派生物留下）/
+  缺省逐字一致（回归锚）/ **前缀**语义（`("compaction.",)` 带点匹配不到裸 `compaction`）/ 派生继承 /
+  `read()` 仍可取回摘要（检索语义回归锚）/ 组合根接线（`_exclude_fact_sources == ("compaction",)`
+  **且** `_exclude_source_prefixes == ("beast.", "pet")` 逐字不动）。基线 **2185 → 2191**（**+6**）。
+  归档后 `openspec validate --all` **31 passed / 0 failed**。
+- **局限**：① **预算近似** —— 被挡条目在 `read()` 内**已消耗**事实面配额（过滤发生在读后）：本 change
+  **不**回收那份预算，只是不把它注入 prompt。因每会话长期 / 中期摘要**各至多一条**，浪费有界；
+  ② **仍可能要两次**：`session_id` 为空时「历史摘要」专块的键与事实面条目键不同源（专块按当前会话键取，
+  若条目属他会话则专块取不到、事实面又已排除）⇒ 理论上存在**两边都不显示**的窄缝 —— 需 `session_id`
+  非空才成立，属既有会话维度设计的边缘；③ **前缀语义无边界**：`("compaction",)` 也会挡掉未来任何以
+  `compaction` 开头的**新** source（若将来引入「**未**由专块承载的 compaction 产物」，须显式改排除面或
+  改其 source）—— 表「小而实」使风险有界，但存在；④ 本 change **不**处理 `loop.steps.<trace>` 原始步序
+  的同型问题（其 `source` 不同、动因不同）—— 另立 `0186`。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5743,3 +5795,4 @@
 | ADR-0173 | 02-modules/context.md, 02-modules/configuration.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0174 | 02-modules/llm-provider.md, 02-modules/configuration.md, 02-modules/loop.md, 03-interfaces/llm-provider-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0175 | 02-modules/configuration.md, 02-modules/llm-provider.md, 03-interfaces/configuration-interface.md, 03-interfaces/llm-provider-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0176 | 02-modules/context.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -609,6 +609,11 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             # 宠物命名空间封存（pet-mode：「Pet Session Runtime Wiring」）：主 loop 装配不命中 `pet`
             # —— `session_id` 为空时（未带会话）会话面不过滤，此处是唯一防线（见 `_pet_loop`）
             exclude_source_prefixes=("beast.", "pet"),
+            # 压缩产物退出事实面（change 0185 / ADR-0176）：会话长期/中期摘要
+            # （`source="compaction"`）的正文已由「历史摘要（长期）/（中期）」专块每轮注入
+            # ⇒ 不再重复进「相关事实」块。
+            # 压缩产出的事实/未决（`source="context"`）无专块承载，仍在事实面。
+            exclude_fact_sources=("compaction",),
         )
     # 取详情的消费面（change 0140）：模型经工具面按指针取片段，不由全文顶替。
     # 注入装配器时同样接线（装配面由调用方给定，消费面不在其管辖内）。

@@ -1829,3 +1829,42 @@
 > 表推导窗口**不过** `_window_reserve_errors` 闸门 ⇒ 荒谬大 `output_reserve` 可静默关闸 /
 > 本 change **不**按模型推导**输出上限**（ADR-0174 局限②留坑仍在）/ 表只覆盖 `context_window` /
 > 第三方 `LLMProvider` 自产硬编码标签管不到）。
+
+---
+
+## 98. 压缩产物退出事实注入面（TC-FACT-EXCLUDE，change `0185`／ADR-0176，台账 E122）
+
+> **背景取证**：会话长期摘要（`source="compaction"`，`memory/store.py:655`）与中层摘要
+> （`store.py:461`）的正文，**已由** `loop/default.py`（planner 侧「历史摘要（长期）/（中期）」块）
+> **每轮专块注入一次**；但两者 `source` 不在装配器 `exclude_source_prefixes` 内 ⇒ `_gather_facts`
+> 又经「相关事实」面**再注入一次**。① **预算浪费**（同一份正文吃两份配额）；② 更坏的 **虚假置信**
+> —— 同一内容以两条独立条目出现，被读成「两条彼此印证的证据」。`notes` 规格早有同型纪律
+> 「同一份内容 SHALL NOT 经两条通道重复注入同一次请求」，本 change 把该纪律**推广到压缩产物面**。
+> **轴订正**：计划稿给的实参是 **id** 前缀 `("compaction.summary.", "compaction.mid.")`，
+> 而排除面的比较对象是 `entry.source` ⇒ 传 id 前缀**一条都匹配不上**（**静默空操作**）。
+> 树中 `source == "compaction"` 的条目**恰好两条**（mid / summary），压实产出的**事实 / 未决**是
+> `source == "context"`（`compactor.py:101/115`）⇒ `("compaction",)` 是**可证正确且最小**的轴。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-FACT-EXCLUDE-01 | context/spec.md「动态上下文构建」Scenario「压缩产物不进事实面」 | 假 MemoryStore 返 2 条 `compaction`（长期 / 中期摘要）+ 2 条 `context`（事实 / 未决）；`exclude_fact_sources=("compaction",)` ⇒ `build()` | `facts` 的 source 序列 == `["context", "context"]` —— 摘要**退出**事实面、`context` 派生物**留下**（锚点：`tests/test_context.py::test_fact_source_exclusion_drops_compaction_entries`） |
+| TC-FACT-EXCLUDE-02 | 同 Requirement（缺省逐字一致）—— **回归锚** | 同假 store；**不传** `exclude_fact_sources` ⇒ `build()` | source 序列 == `["compaction", "compaction", "context", "context"]` —— 四条**全在**，与变更前**逐字一致**（锚点：`...::test_fact_source_exclusion_default_is_verbatim`） |
+| TC-FACT-EXCLUDE-03 | 同 Requirement（**前缀**语义，非子串 / 非 id） | `exclude_fact_sources=("compaction.",)`（**带点**）⇒ `build()` | 四条**全在** —— 裸 `compaction` **不**以 `compaction.` 开头 ⇒ 前缀按**字面**生效（id 前缀式的实参会**静默空操作**，本用例即其守卫）（锚点：`...::test_fact_source_exclusion_is_prefix_based`） |
+| TC-FACT-EXCLUDE-04 | 同 Requirement（派生装配器继承） | `sealed.with_allow_source_prefixes("beast.qinglong")` ⇒ 派生装配器 `build()` | `derived._exclude_fact_sources == ("compaction",)` **且** `facts` source == `["context", "context"]` —— 放行面替换**不**冲掉事实面排除面（锚点：`...::test_fact_source_exclusion_survives_namespace_derivation`） |
+| TC-FACT-EXCLUDE-05 | 同 Requirement（排除**只**落注入步骤）—— **回归锚** | 真 `MemoryStore` 写一条 `source="compaction"` 的 `compaction.mid.default` ⇒ `store.read("中期摘要正文")` | 仍**取回**该条 —— `read` 的检索语义 / 排序 / 预算 / 复用强化**逐字不变**（`compaction.*` 对抽取素材 / 检索素材 / CLI 查询仍可见）（锚点：`...::test_summary_stays_readable_through_memory_read`） |
+| TC-FACT-EXCLUDE-06 | 组合根接线（真装配器带排除面） | `build_runtime(ConfigManager(yaml_path=…))` | 主 loop 装配器 `_exclude_fact_sources == ("compaction",)` **且** `_exclude_source_prefixes == ("beast.", "pet")` —— 排除面**真的接上**、封存红线**逐字不动**（锚点：`tests/test_context.py::test_build_runtime_excludes_compaction_from_fact_face`） |
+
+> **红态证据**：`test_fact_source_exclusion_*` **红**（`DynamicAssembler.__init__() got an unexpected
+> keyword argument 'exclude_fact_sources'` 与 `AttributeError: _exclude_fact_sources`）；
+> `test_build_runtime_excludes_compaction_from_fact_face` **红**（同上构造 `TypeError`）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2191 passed**（基线 **2185**，**+6** = 排除面 4 + 检索语义回归 1
+> + 组合根接线 1）。
+> **逐字兼容不变量**：`exclude_fact_sources` 缺省空 ⇒ `_gather_facts` 走**原返回**语句（无新分支进入）、
+> 装配结果与变更前**逐字相同**；过滤落在**读后** ⇒ `MemoryStore.read` 语义 / 排序 / 预算 / 复用强化
+> **逐字不变**；`exclude_source_prefixes=("beast.","pet")` 主方向封存红线（`runtime.py`）**逐字不动**；
+> 派生装配器 `with_allow_source_prefixes` 的封存继承语义**逐字不变**（新增仅事实面排除面的继承）；
+> 无新配置键（排除面由组合根**硬接线**）、无新第三方依赖、无 import 方向变化。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0176 行（**预算近似** —— 被挡条目在 `read()` 内
+> 已消耗配额、本 change 不回收 / `session_id` 为空时「专块取不到 + 事实面已排除」的**窄缝** /
+> 前缀语义无边界 ⇒ 未来新 `compaction*` source 会被顺带挡掉 / 本 change **不**处理
+> `loop.steps.<trace>` 的同型问题 —— 另立 `0186`）。

@@ -37,6 +37,13 @@ ContextBuilder（L3 输入侧）
 - 构造参数 `exclude_source_prefixes` / `allow_source_prefixes` 透传至同一次检索（排除面 + 其
   **例外面**，change `0117`／ADR-0110）；`with_allow_source_prefixes(*prefixes)` 派生**新**装配器
   （排除面逐字继承、放行面替换）—— 主 loop 与神兽共用一份配置，派生而非原地改（封存红线）。
+- **事实面排除面** `exclude_fact_sources`（change `0185`／ADR-0176）：按 `MemoryEntry.source` **前缀**
+  把「**已由专块注入**」的条目挡在「相关事实」注入面之外 —— 会话长期 / 中期摘要（`source="compaction"`）
+  的正文已由「历史摘要（长期）/（中期）」专块每轮注入 ⇒ 不再重复进事实面（对齐 `notes`「同一份内容
+  SHALL NOT 经两条通道重复注入」的同型纪律）。缺省空 ⇒ 逐字不变；过滤落在**读后** ⇒
+  `MemoryStore.read` 的检索语义 / 排序 / 预算 / 复用强化**逐字不变**（`compaction.*` 条目对其他消费者仍
+  可见）；与 `exclude_source_prefixes`（**封存**面）**不同理由、不合并**，封存元组字面不动。
+  派生装配器 `with_allow_source_prefixes` **继承**本排除面（放行面是封存面的例外面，与之无关）。
 
 ### 3.2 信息地图机制
 
