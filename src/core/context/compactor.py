@@ -17,7 +17,7 @@ from core.memory import MemoryEntry, MemoryStore
 from .errors import ContextError, ContextErrorCode
 from .models import Compaction
 
-_ROUND_THRESHOLD = 10
+_STEP_THRESHOLD = 6
 _CONCLUSION_HINTS = ("结论", "完成", "结果")
 _DECISION_HINTS = ("决定", "选择", "采用")
 _OPEN_HINTS = ("待", "TODO", "未决", "下一步")
@@ -27,14 +27,19 @@ class Compactor:
     """多轮上下文压实：摘要关键信息并写回记忆。"""
 
     def __init__(
-        self, memory: MemoryStore | None = None, *, round_threshold: int = _ROUND_THRESHOLD
+        self, memory: MemoryStore | None = None, *, step_threshold: int = _STEP_THRESHOLD
     ) -> None:
         self._memory = memory
-        self._round_threshold = round_threshold
+        self._step_threshold = step_threshold
 
-    def should_compact(self, rounds: int, token_used: int, budget: int) -> bool:
-        """轮数或 token 达到阈值时触发压实。"""
-        return rounds >= self._round_threshold or token_used >= budget
+    def should_compact(self, steps: int, token_used: int, budget: int) -> bool:
+        """**本轮工具步数**或 token 达到阈值时触发压实。
+
+        ``steps`` 是本轮内已记账的工具动作步数（`LoopContext.rounds`，每用户轮自 ``0``
+        起算），**非**对话轮数（change 0182 / ADR-0173 诚实化）。触发后是否**重复**压实
+        由调用方（`DefaultLoop.astream` 的本轮标记）把关 —— 本方法是**纯判据**。
+        """
+        return steps >= self._step_threshold or token_used >= budget
 
     def compact(self, history: list[dict[str, Any]]) -> Compaction:
         """从多轮历史提取结论/决策/未决事项，标记被清理冗余。"""

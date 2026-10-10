@@ -105,8 +105,16 @@ class Pointer:
 
 ```python
 class Compactor:
-    def should_compact(self, rounds: int, token_used: int, budget: int) -> bool:
-        """判断是否触发压实（轮数/token 阈值/子任务切换）。"""
+    def __init__(self, memory: MemoryStore | None = None, *, step_threshold: int = 6) -> None:
+        """``step_threshold``：**本轮工具步数**阈值（缺省 ``6``；组合根按 ``loop.compact_steps`` 注入）。"""
+
+    def should_compact(self, steps: int, token_used: int, budget: int) -> bool:
+        """判断是否触发压实（**本轮工具步数**/token 阈值）。
+
+        ``steps`` 是本轮内已记账的工具动作步数（``LoopContext.rounds``，每用户轮自 ``0`` 起算），
+        **非**对话轮数（change 0182 / ADR-0173）。本方法是**纯判据**：同轮**至多压实一次**
+        由调用方（``DefaultLoop.astream`` 的本轮标记）把关。
+        """
 
     def compact(self, history: list[dict]) -> Compaction:
         """多轮关键信息摘要沉淀，保证关键信息不丢失。"""

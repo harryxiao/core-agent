@@ -455,7 +455,7 @@ def test_loop_compaction_below_bound_does_not_promote(tmp_path) -> None:
         planner=_tool_then_reply(reply="done"),
         tools=provider,
         memory=memory,
-        compactor=Compactor(memory=memory, round_threshold=0),
+        compactor=Compactor(memory=memory, step_threshold=0),
         max_rounds=3,
         notes_consult=store.digest,
         turn_observer=lambda task, steps, ok: store.observe_turn(task, steps, ok=ok),

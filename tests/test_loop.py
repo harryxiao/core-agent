@@ -583,7 +583,7 @@ def _compacting_loop(memory: MemoryStore, compactor: Compactor, **kwargs: object
 def test_loop_compaction_persists_history_and_summarizes_prior_memory() -> None:
     memory = _summary_memory()
     memory.write("L2", _prior_entry())
-    loop = _compacting_loop(memory, Compactor(memory=memory, round_threshold=1))
+    loop = _compacting_loop(memory, Compactor(memory=memory, step_threshold=1))
 
     loop.run("hi")
 
@@ -599,7 +599,7 @@ def test_loop_compaction_persists_history_and_summarizes_prior_memory() -> None:
 def test_loop_compaction_triggers_on_token_budget_and_still_terminates() -> None:
     memory = _summary_memory()
     memory.write("L2", _prior_entry())
-    loop = _compacting_loop(memory, Compactor(memory=memory, round_threshold=100), token_budget=1)
+    loop = _compacting_loop(memory, Compactor(memory=memory, step_threshold=100), token_budget=1)
 
     result = loop.run("hi")
 
@@ -626,7 +626,7 @@ def test_loop_compaction_not_triggered_when_budget_disabled() -> None:
     """token 预算关闭（<=0）时不因 token 维度触发，仅轮数维度有效。"""
     memory = _summary_memory()
     memory.write("L2", _prior_entry())
-    loop = _compacting_loop(memory, Compactor(memory=memory, round_threshold=100), token_budget=0)
+    loop = _compacting_loop(memory, Compactor(memory=memory, step_threshold=100), token_budget=0)
 
     loop.run("hi")
 
@@ -644,7 +644,7 @@ def test_loop_forgetting_archives_stale_entries_on_compaction() -> None:
     warm.reuse_count = 10
     memory.write("L2", stale)
     memory.write("L2", warm)
-    loop = _compacting_loop(memory, Compactor(memory=memory, round_threshold=1))
+    loop = _compacting_loop(memory, Compactor(memory=memory, step_threshold=1))
 
     loop.run("hi")
 

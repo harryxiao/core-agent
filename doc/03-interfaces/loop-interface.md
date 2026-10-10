@@ -243,10 +243,12 @@ def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "
 - 不可逆/高风险操作（rm、写系统、杀进程、支付）→ 触发 `ask_user` 确认门，拒绝则改写安全动作或终止。
 - 可观测：每轮生成 `trace_id`，单轮可复现（NFR-OBS2）。
 - 连续 N 轮失败 → 触发 L4 诊断钩子，暂停并请求人工介入。
-- 预算/轮数达阈值 → 触发压实（注入 `context.Compactor` 时）：多轮历史提炼沉淀（`persist`）
+- 预算/**工具步数**达阈值 → 触发压实（注入 `context.Compactor` 时）：多轮历史提炼沉淀（`persist`）
   → 记忆固化（`memory.compact`：打分写回 + 价值门控 + 会话摘要归档）→ 遗忘（`memory.forget`：
   低分条目迁 L4 归档）；任一步失败降级不中断本轮（记 `maintenance_failed`），**终止语义不变**
-  （仍按既有预算/轮数条件终止，不因压实而续跑）。
+  （仍按既有预算/轮数条件终止，不因压实而续跑）。压实触发口径（change 0182 / ADR-0173）：
+  第一维度是**本轮工具步数**（`ctx.rounds`，每用户轮自 `0` 起算，**非**对话轮数）达
+  `loop.compact_steps`（缺省 `6`），第二维度是 token 达预算；**每轮至多压实一次**（本轮标记）。
 - 收尾/维护的执行线程（change 0167 / ADR-0157）：**轮内压实**、**收尾钩子**（`turn_observer`）、
   **维护节拍**（含 `cold_path`）三段工作 SHALL 在**事件循环之外**执行（循环以 `asyncio.to_thread`
   卸载并 `await` 其完成），SHALL NOT 在事件循环线程上同步执行 —— 这三段可能含**同步模型调用**

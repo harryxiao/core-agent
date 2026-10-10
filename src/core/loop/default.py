@@ -397,6 +397,10 @@ class DefaultLoop(Plugin):
         # 本轮循环是否已流式外发**回复**增量（避免终态重复全文）。判据**只认** `reply_delta`：
         # 思考回显事件（`loop.reasoning`）与回复增量同形相异类，计入会吞掉终态补发。
         streamed = False
+        # 本轮是否已压实（change 0182 / ADR-0173）：步数阈值小于轮数上限时，「步数 ≥ 阈值」
+        # 在阈值步之后**步步为真**，若无此闸门则一轮内重复压实（每次含模型调用）。
+        # 标记为本轮**执行态**（非上下文事实）⇒ 置于 `astream` 局部变量，随轮自然重置。
+        compacted = False
         while not ctx.done():
             if ctx.rounds >= self._max_rounds:
                 limit_reason = "LOOP_LIMIT_EXCEEDED"
@@ -447,11 +451,12 @@ class DefaultLoop(Plugin):
             ctx = self.observe(ctx, result)
             yield LoopEvent("step_completed", {"round": ctx.rounds, "failed": result.failed})
             self._trace(trace_id, "step_completed", {"round": ctx.rounds, "failed": result.failed})
-            if self._should_compact(ctx):
+            if not compacted and self._should_compact(ctx):
                 # 卸载到工作线程：压实含**同步**模型调用（摘要 / 关键事实抽取）——`completion()`
                 # 是 `asyncio.run` 薄壳，在事件循环线程上必抛；且其耗时为模型网络往返，
                 # 在循环线程上执行会阻塞其余任务（change 0167 / ADR-0157）。
                 await asyncio.to_thread(self._compact, ctx, trace_id)
+                compacted = True
             if self._token_budget > 0 and ctx.token_used >= self._token_budget:
                 limit_reason = "TOKEN_BUDGET_EXCEEDED"
                 break
@@ -629,9 +634,11 @@ class DefaultLoop(Plugin):
         self._memory.summarize_slice(session_id, stubs, max_chars=plan.mid_chars)
 
     def _should_compact(self, ctx: LoopContext) -> bool:
-        """轮数或 token 预算达阈值即触发压实（未注入压实器则永不触发）。
+        """**本轮工具步数**或 token 预算达阈值即触发压实（未注入压实器则永不触发）。
 
-        预算关闭（``token_budget <= 0``）时只按轮数维度判定，避免 ``token_used >= 0``
+        ``ctx.rounds`` 是本轮内已记账的工具动作步数（每用户轮自 ``0`` 起算），**非**对话轮数：
+        步数阈值须小于 ``max_rounds`` 才可能在本轮内提前触发（change 0182 / ADR-0173）。
+        预算关闭（``token_budget <= 0``）时只按步数维度判定，避免 ``token_used >= 0``
         恒真导致每轮压实。
         """
         if self._compactor is None:

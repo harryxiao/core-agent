@@ -396,8 +396,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         importance_scorer=score_with(_llm_text) if config.importance_gate() else None,
     )
     # 上下文压实接线（0041）：多轮历史 → persist 落 L2；此前 context.Compactor 与
-    # memory.compact 都无生产调用方（死路径），现由 loop 的轮数/预算阈值触发。
-    context_compactor = ContextCompactor(memory=memory)
+    # memory.compact 都无生产调用方（死路径），现由 loop 的**工具步数**/预算阈值触发。
+    # 步数阈值经配置注入（0182 / ADR-0173）：缺省 6 < `max_rounds` 缺省 10 ⇒ 该维度可提前触发。
+    context_compactor = ContextCompactor(memory=memory, step_threshold=config.compact_steps())
     # rag 主链路装配（0104）：落盘索引 + 语义优先 / 离线降级的 embedding + 生成融合，
     # 由 RagService 门面收口（CLI / 宿主只调用门面，不各自拼四个对象）。
     rag = RagService(

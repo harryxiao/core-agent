@@ -19,6 +19,7 @@ from typing import cast
 import pytest
 
 from core.configuration import ConfigManager, ConfigurationError, config_specs
+from core.context import Compactor
 from core.entry import _key_to_patch
 from core.loop import Action, DefaultLoop
 from core.runtime import build_runtime
@@ -332,3 +333,76 @@ def test_invalid_history_turns_blocks_startup(tmp_path: Path, value: str) -> Non
 def test_history_turns_keeps_loop_limits_arity(tmp_path: Path) -> None:
     """新键走**独立访问器** ⇒ `loop_limits()` 仍是 (max_rounds, token_budget) 二元组。"""
     assert _manager(tmp_path, "loop:\n  history_turns: 5\n").loop_limits() == (10, 65536)
+
+
+# ---- 压实步数阈值（change 0182 / ADR-0173）----
+
+# 规格缺省：本轮工具步数达 6 触发上下文压实（configuration/spec.md「循环预算配置」）
+_DEFAULT_COMPACT_STEPS = 6
+
+
+def test_compact_steps_spec_declared() -> None:
+    """新键经 ConfigSpec 单一真源声明 ⇒ 三面齐备（不走 `loop_limits()` 元组）。"""
+    spec = {spec.key: spec for spec in config_specs()}["loop.compact_steps"]
+    assert (spec.cli_flag, spec.env_var, spec.default, spec.map_to) == (
+        "--loop.compact-steps",
+        "CORE_LOOP_COMPACT_STEPS",
+        _DEFAULT_COMPACT_STEPS,
+        "loop.compact_steps",
+    )
+
+
+def test_compact_steps_default(tmp_path: Path) -> None:
+    assert _manager(tmp_path).compact_steps() == _DEFAULT_COMPACT_STEPS
+
+
+def test_compact_steps_from_yaml(tmp_path: Path) -> None:
+    steps = 3
+    assert _manager(tmp_path, f"loop:\n  compact_steps: {steps}\n").compact_steps() == steps
+
+
+def test_compact_steps_env_overrides_yaml(tmp_path: Path) -> None:
+    env_steps = 5
+    manager = _manager(
+        tmp_path,
+        "loop:\n  compact_steps: 3\n",
+        environ={"CORE_LOOP_COMPACT_STEPS": str(env_steps)},
+    )
+    assert manager.compact_steps() == env_steps
+
+
+def test_compact_steps_cli_overrides_env_and_yaml(tmp_path: Path) -> None:
+    cli_steps = 7
+    manager = _manager(
+        tmp_path,
+        "loop:\n  compact_steps: 3\n",
+        environ={"CORE_LOOP_COMPACT_STEPS": "4"},
+        cli={"loop.compact_steps": str(cli_steps)},
+    )
+    assert manager.compact_steps() == cli_steps
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "2.5", "abc", "true"])
+def test_invalid_compact_steps_blocks_startup(tmp_path: Path, value: str) -> None:
+    """步数阈值须为 ≥1 的整数：0 / 负数 / 小数 / 非数值 / 布尔一律阻断启动。"""
+    with pytest.raises(ConfigurationError, match="非法压实步数阈值"):
+        _manager(tmp_path, f"loop:\n  compact_steps: {value}\n")
+
+
+def test_compact_steps_keeps_loop_limits_arity(tmp_path: Path) -> None:
+    """新键走**独立访问器** ⇒ `loop_limits()` 仍是 (max_rounds, token_budget) 二元组。"""
+    assert _manager(tmp_path, "loop:\n  compact_steps: 3\n").loop_limits() == (10, 65536)
+
+
+def test_build_runtime_injects_configured_compact_steps(tmp_path: Path, state_dir: Path) -> None:
+    """组合根按配置值注入压实器（缺省 `6` ⇒ 与压实器模块缺省同值、行为逐字一致）。"""
+    configured = 3
+    runtime = build_runtime(
+        ConfigManager(
+            yaml_path=_write_config(tmp_path, f"loop:\n  compact_steps: {configured}\n"),
+            environ={"OPENAI_API_KEY": "sk-test"},
+        )
+    )
+    compactor = _main_loop(runtime)._compactor  # noqa: SLF001 — 接线断言
+    assert isinstance(compactor, Compactor)
+    assert compactor._step_threshold == configured  # noqa: SLF001 — 接线断言

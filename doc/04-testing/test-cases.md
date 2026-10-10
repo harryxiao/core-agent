@@ -1717,3 +1717,36 @@
 > （豁免在**调用点**短路）；`loop` / `context` / `notes` / `evolution` **零改动**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0172 行（豁免面按 `source` 判据须同步登记 / 逐条目 LLM
 > 调用开销 / `evolution` 直写不过闸门 / 生产缺省关属运行策略 / 宽松归一使笔误静默关闭）。
+
+## 95. 压实触发的诚实化与配置注入（TC-COMPACT-TRIGGER，change `0182`／ADR-0173，台账 E119）
+
+> **背景取证**：`Compactor.should_compact(self, rounds, token_used, budget)`（`context/compactor.py`）参数
+> 写作 `rounds`、判据写作「轮数达到阈值」，但实参是 `ctx.rounds`（`loop/default.py` 触发点），而它是
+> **本轮内已记账的工具动作步数**（`observe()` 内自增；`perceive()` 每用户轮重造 `LoopContext` ⇒ 每轮自 `0`
+> 起算）。更实质：`_ROUND_THRESHOLD = 10` 与 `loop.max_rounds` 缺省 `10` **恰好相等**，而循环顶在
+> `ctx.rounds >= max_rounds` 时先 `break` ⇒ 触发检查点**永远等不到** `rounds == 10`，**该维度事实上是死的**，
+> 唯一活触发是 token 阀；且阈值是模块常量、**无配置键**（用户无法调到上限以下让它生效）。本 change：
+> **诚实化**（形参/常量/kwarg/文案改口「工具步数」）＋ **配置注入**（新键 `loop.compact_steps`，缺省 `6`）
+> ＋ **每轮至多一次**压实（步数阈值小于上限时 `步数 ≥ 阈值` 步步为真 ⇒ 无闸门则同轮多次模型调用）。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-COMPACT-TRIGGER-01 | context/spec.md「上下文自动压实」触发判据（工具步数维度） | `Compactor()` 缺省，`should_compact(5, 0, 大预算)` / `should_compact(6, 0, 大预算)` | 前者 `False`、后者 `True` —— 默认步数阈值 `6` 边界正确、该维度**活着**（锚点：`tests/test_context_compaction.py::test_default_step_threshold_boundary`） |
+| TC-COMPACT-TRIGGER-02 | 缺省值单一真源（两地同值） | 断言 `configuration.manager._DEFAULT_COMPACT_STEPS` 与 `context.compactor._STEP_THRESHOLD` | **同值** —— `configuration` 不 import `context`（分层方向）⇒ 用测试把「两地」钉成**受门禁约束的两地**（锚点：`tests/test_context_compaction.py::test_config_default_matches_compactor_default`） |
+| TC-COMPACT-TRIGGER-03 | 规格 Scenario「工具步数阈值可在本轮内触发且每轮至多一次」 | 阈值 `2`、`max_rounds=5`、非终止工具链；逐 `step_completed` 事件观察压实计数 | 第 1 步 `0`、**第 3 步时已为 `1`**（早于第 5 步终止）⇒ 提前触发**确已发生**（锚点：`tests/test_context_compaction.py::test_loop_step_threshold_triggers_before_limit`） |
+| TC-COMPACT-TRIGGER-04 | 同 Scenario（**每轮至多一次**） | 阈值 `2`、`max_rounds=6`（阈值步后 `步数 ≥ 2` 步步为真） | `compacted == 1` —— 同轮多次满足判据**不重复**压实（改前为最多 5 次）（锚点：`tests/test_context_compaction.py::test_loop_compacts_at_most_once_per_turn`） |
+| TC-COMPACT-TRIGGER-05 | 规格 Scenario「步数阈值达上限时不再重复压实」+ token 维度回归 | 缺省装配（阈值 `6`、上限 `10`）非终止动作连跑 | 压实恰 **1** 次且由 `LOOP_LIMIT_EXCEEDED` 终止（锚点：`tests/test_context_compaction.py::test_loop_default_wiring_compacts_exactly_once`）；`should_compact(0, 预算−1/预算, 预算)` ⇒ `False`/`True`（token 路径逐字不变，锚点：`...::test_default_token_budget_boundary`） |
+| TC-COMPACT-TRIGGER-06 | configuration/spec.md「循环预算配置」第四键（单一真源） | `config_specs()` / yaml / env / CLI / 缺省 | 键 `loop.compact_steps` 三面齐备（`--loop.compact-steps` / `CORE_LOOP_COMPACT_STEPS` / 缺省 `6`），优先级链 CLI > env > yaml 生效，且 `loop_limits()` 仍为二元组（独立访问器）（锚点：`tests/test_loop_budget_config.py::test_compact_steps_*`） |
+| TC-COMPACT-TRIGGER-07 | 同 Requirement Scenario「压实步数阈值经 ConfigSpec 声明且受校验」 | `loop.compact_steps` 取 `0` / `-1` / `2.5` / `abc` / `true` | 校验失败**阻断启动**，错误信息指明键名与合法取值（不静默兜底）（锚点：`tests/test_loop_budget_config.py::test_invalid_compact_steps_blocks_startup`） |
+| TC-COMPACT-TRIGGER-08 | 组合根接线 | `build_runtime` 注入 `loop.compact_steps: 3` | 主 loop 的压实器 `_step_threshold == 3`（缺省 `6` ⇒ 与模块缺省同值、行为逐字一致）（锚点：`tests/test_loop_budget_config.py::test_build_runtime_injects_configured_compact_steps`） |
+
+> **红态证据**：`tests/test_context_compaction.py` **导入即红**（`_DEFAULT_COMPACT_STEPS` 尚不存在）；
+> `test_step_threshold_is_injectable` / `test_loop_compacts_at_most_once_per_turn` **红**
+> （`step_threshold` 形参缺失 / 旧码同轮多次压实）；`test_compact_steps_*`
+> **红**（`compact_steps` 访问器与 ConfigSpec 缺失）。绿后全量 `.venv/bin/pytest -q` ⇒ **2163 passed**
+> （基线 **2146**，**+17** = 压实面 9 用例 + 配置面 8 用例）。
+> **逐字兼容不变量**：`token` 触发路径与终止语义（`TOKEN_BUDGET_EXCEEDED` / `LOOP_LIMIT_EXCEEDED`）
+> **逐字不变**；无压实器 ⇒ 永不压实；「每轮至多一次」标记为本轮**执行态**局部变量（随轮自然重置）；
+> `exclude_source_prefixes=("beast.","pet")` 主方向封存红线（`runtime.py:603`）**逐字不动**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0173 行（`LoopContext.rounds` 仍为历史名 / 缺省 `6`
+> 为启发式 / 阈值 ≥ 上限时静默退化 / 「至多一次」为每用户轮粒度 / 仍只有轮级触发无内容判据）。

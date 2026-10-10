@@ -42,6 +42,11 @@ _DEFAULT_OUTPUT_RESERVE = 8192
 _DEFAULT_TOKEN_BUDGET = 65536
 # 回灌轮数缺省口径来源：doc/openspec/specs/configuration/spec.md「循环预算配置」
 _DEFAULT_HISTORY_TURNS = 20
+# 压实步数阈值缺省口径来源：同规格「循环预算配置」（change 0182 / ADR-0173）。
+# 与 `context.compactor._STEP_THRESHOLD` **同值两地**（configuration 不 import context —— 分层
+# 方向；先例 `_DEFAULT_PERMISSION_MODE`）。一致性由 `test_config_default_matches_compactor_default`
+# 钉住；缺省 **6 < `max_rounds` 缺省 10** ⇒ 步数维度可真正提前触发。
+_DEFAULT_COMPACT_STEPS = 6
 
 # 编排调度缺省口径来源：doc/openspec/specs/configuration/spec.md「编排调度配置」
 # （change 0123）。`_DEFAULT_ORCHESTRATION_POLICY = "off"` ⇒ 缺省**不启用**难易度策略，
@@ -209,6 +214,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_LOOP_HISTORY_TURNS",
         default=_DEFAULT_HISTORY_TURNS,
         map_to="loop.history_turns",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "loop.compact_steps",
+        "--loop.compact-steps",
+        "CORE_LOOP_COMPACT_STEPS",
+        default=_DEFAULT_COMPACT_STEPS,
+        map_to="loop.compact_steps",
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
@@ -507,6 +520,19 @@ class ConfigManager:
         turns = _parse_int(raw.get("history_turns", _DEFAULT_HISTORY_TURNS))
         return _DEFAULT_HISTORY_TURNS if turns is None else turns
 
+    def compact_steps(self) -> int:
+        """上下文压实的**本轮工具步数**阈值（缺省 ``6``；change 0182 / ADR-0173）。
+
+        **独立访问器**（同 `history_turns()` 先例）：与预算/上限无语义关系，不并入
+        ``loop_limits()`` 二元组（其 arity 被多处解包断言钉死）。取值已过校验（≥1 的整数），
+        故此处只做 env/CLI 字符串归一，不设二次兜底。
+        """
+        if self._config is None:
+            return _DEFAULT_COMPACT_STEPS
+        raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
+        steps = _parse_int(raw.get("compact_steps", _DEFAULT_COMPACT_STEPS))
+        return _DEFAULT_COMPACT_STEPS if steps is None else steps
+
     def importance_gate(self) -> bool:
         """写入侧重要度闸门开关（缺省 ``False`` = 不评分；change 0181 / ADR-0172）。
 
@@ -785,8 +811,10 @@ def _llm_show_thinking(raw: dict[str, Any]) -> bool:
 def _loop_errors(raw: dict[str, Any]) -> list[str]:
     """循环预算取值校验（对齐 loop「错误与预算控制」）。
 
-    轮数上限须为 **≥1 的整数**、输出预留与回灌轮数须为 **≥0 的整数**；``bool`` 视作非法
-    （``true`` 不是次数）。非法取值**阻断启动**：静默兜底会把配置错误变成运行时的诡异行为。
+    轮数上限与压实步数阈值须为 **≥1 的整数**、输出预留与回灌轮数须为 **≥0 的整数**；``bool``
+    视作非法（``true`` 不是次数）。非法取值**阻断启动**：静默兜底会把配置错误变成运行时的
+    诡异行为。压实步数阈值**不做**「≤ max_rounds」跨键校验 —— 阈值达上限是**合法退化配置**
+    （语义仍是「至少压实一次」，只不再提前；change 0182 / ADR-0173）。
     """
     errors: list[str] = []
     rounds = _parse_int(raw.get("max_rounds", _DEFAULT_MAX_ROUNDS))
@@ -803,6 +831,11 @@ def _loop_errors(raw: dict[str, Any]) -> list[str]:
     if turns is None or turns < 0:
         errors.append(
             f"非法回灌轮数: loop.history_turns={raw.get('history_turns')}（须为 ≥0 的整数）"
+        )
+    steps = _parse_int(raw.get("compact_steps", _DEFAULT_COMPACT_STEPS))
+    if steps is None or steps < 1:
+        errors.append(
+            f"非法压实步数阈值: loop.compact_steps={raw.get('compact_steps')}（须为 ≥1 的整数）"
         )
     return errors
 

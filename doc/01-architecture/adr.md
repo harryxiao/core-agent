@@ -5404,6 +5404,66 @@
   权衡），未在本 change 决策；⑤ `_flag` 归一为**宽松**（集合外 ⇒ 关闭而非阻断启动）：与非结构化段「未做校验」
   口径一致，代价是 `memory.importance_gate: maybe` 这类笔误**静默关闭**（方向落在安全侧：不评分）。
 
+## ADR-0173：压实触发的诚实化与配置注入（change 0182 / 账本 E119）
+
+- **背景**：`Compactor.should_compact(self, rounds, token_used, budget)`（`context/compactor.py`）参数写作
+  `rounds`、判据写作「轮数达到阈值」，但实参是 `ctx.rounds`（`loop/default.py:452` 触发点），而
+  `LoopContext.rounds` 是**本轮内已记账的工具动作步数**（`observe()` 内自增；`perceive()` 每用户轮重造
+  `LoopContext` ⇒ 每轮自 `0` 起算）。两个后果：① **命名撒谎** —— 读者据「轮数」推断，会误判触发时机与
+  `loop.max_rounds` 的关系（`known-risk.md` E96 另注即此）；② **该维度事实上是死的** ——
+  `_ROUND_THRESHOLD = 10` 与 `loop.max_rounds` 缺省 `10` **恰好相等**，而循环顶在
+  `ctx.rounds >= max_rounds` 时先 `break` ⇒ 触发检查点**永远等不到** `rounds == 10`，唯一活维度只剩 token
+  预算；且阈值是模块常量、**无配置键** ⇒ 用户无法把它调到上限以下让该维度生效。
+- **决策 ①：诚实化止于「触发面」，`LoopContext.rounds` 不改名。** 压实器侧一律改口「工具步数」：
+  形参 `rounds` → `steps`、常量 `_ROUND_THRESHOLD` → `_STEP_THRESHOLD`、构造 kwarg
+  `round_threshold` → `step_threshold`、docstring/异常文案同步。**不**改 `LoopContext.rounds` 字段名：
+  它是公开 dataclass 字段，被 planner 提示装配、事件载荷（`step_completed.round`）、观测面与多处断言引用，
+  改名是**跨模块重命名**、超出本条 change 的局部化边界（P3）。该事实**写进规格条款**
+  （「`ctx.rounds` —— 每轮自 `0` 起算，**非**对话轮数」）而非留在代码注释 ⇒ 下一位读者在规格上就能看到。
+- **决策 ②：阈值默认 `6`，让步数维度**能**提前触发。** 触发检查在 `observe()` 之后（此时 `ctx.rounds >= 1`），
+  终止判据是 `ctx.rounds >= max_rounds`（缺省 `10`）⇒ 阈值**必须严格小于**上限才可能提前触发；缺省 `6`
+  相对 `10` 留 4 步余量：长工具链任务能在中途压实，短任务（步数 < 6）不被拖进压实（每次压实含 LLM 摘要，
+  有真实成本）。阈值 `>= max_rounds` 是**合法退化配置**（语义仍是「至少压实一次」，只不再提前），故
+  **不**做跨键校验 —— 该退化行为写进规格 Scenario，不留暗坑（与同段三键「非法即阻断」口径的**有意不同**：
+  这里没有「非法」，只有「不提前」）。
+- **决策 ③：默认值两地各一份 + 测试钉住一致性。** `configuration` 不得 import `context`（分层方向），
+  反向 import 只为拿一个默认值不划算 ⇒ `_DEFAULT_COMPACT_STEPS = 6`（`manager.py`）与 `_STEP_THRESHOLD = 6`
+  （`compactor.py`）**同值两地**，先例 `_DEFAULT_PERMISSION_MODE` / `_DEFAULT_HISTORY_TURNS`。
+  以 `test_config_default_matches_compactor_default` 把它钉成**受门禁约束的两地**（而非侥幸同值）。
+- **决策 ④：每轮至多压实一次 —— 执行态标记置于 `astream` 局部，不进 `LoopContext`。** 阈值小于上限时
+  `步数 >= 阈值` 在阈值步之后**步步为真** ⇒ 无闸门则一轮内最多 `max_rounds - threshold + 1` 次 `_compact`
+  （每次含 LLM 摘要 + 关键事实抽取）—— 成本放大且语义重复（同轮同份历史被反复摘要）。故
+  `astream()` 循环外置局部 `compacted = False`，触发点改 `if not compacted and self._should_compact(ctx)`，
+  压实后置真。**不进 `LoopContext`**：它是本轮**调度决策**（执行态），非上下文事实；放进公开数据契约会污染
+  语义，且 `observe()` 造新 ctx 时需额外搬运。`astream()` 是唯一循环体（`run()` 委托它）⇒ 一处覆盖全路径；
+  局部变量随轮自然重置（I4）。这一改动让既有
+  `test_loop_default_wiring_compacts_exactly_once_at_round_ten` 的「恰好一次」由**巧合**（阈值 == 上限）
+  变为**规格保证**。
+- **决策 ⑤：配置键与访问器。** `ConfigSpec("loop.compact_steps", "--loop.compact-steps",
+  "CORE_LOOP_COMPACT_STEPS", default=6, map_to="loop.compact_steps", exposure=ADVANCED)` ⇒ 三面齐备、入优先级链；
+  `loop` 段已在 `_known_sections()` 白名单内（`map_to` 前缀合并）⇒ `_KNOWN_EXTRA_SECTIONS` **不动**。
+  独立访问器 `compact_steps()`（同 `history_turns()` 先例）：**不**并入 `loop_limits()` 二元组（其 arity 被多处
+  解包断言钉死）；取值已过校验 ⇒ 只做 env/CLI 字符串归一、不设二次兜底。`_loop_errors` 增一条「须为 ≥1 的
+  整数」，`bool` 非法，**阻断启动**（静默兜底会把配置错误变成运行时的诡异行为）。
+- **决策 ⑥：组合根注入，缺省零扰动。** `runtime.py`：`ContextCompactor(memory=memory,
+  step_threshold=config.compact_steps())`；`config is None` 时访问器回落 `6` ⇒ 构造值等于模块缺省 ⇒
+  与「不注入」**逐字一致**。
+- **被改写的规格条款（有意，见 design.md）**：`context`「上下文自动压实」canonical **无触发判据句** ⇒ delta
+  **新增**一段（工具步数 or token、每轮至多一次）并把首个 Scenario 的 GIVEN 由「轮数」改为「**工具步数**」
+  （措辞诚实化，场景语义不变）；「三层窗口比例分配」括注「不新增配置键」写于**配额分配面**，改为「本**配额
+  分配面**不新增配置键 —— 压实**触发**阈值是另一面」，**消除字面冲突**、行为条款逐字保留；`configuration`
+  「循环预算配置」由「三项」改「四项」并在同句追加默认值与校验口径（同 Requirement 条款增补，非新需求）。
+- **落点**：`src/core/context/compactor.py`（常量与形参更名 + 判据 docstring）、
+  `src/core/loop/default.py`（`compacted` 标记 + 触发点短路 + `_should_compact` 文案）、
+  `src/core/configuration/manager.py`（`_DEFAULT_COMPACT_STEPS` + `ConfigSpec` + `compact_steps()` +
+  `_loop_errors` 一条）、`src/core/runtime.py`（构造实参）。
+- **局限**：① `LoopContext.rounds` 仍是「工具步数」的**历史名**（决策①）—— 诚实化只覆盖压实触发面与配置面；
+  ② 缺省 `6` 是**启发式**取值（非实测调优）：过小 ⇒ 短工具链任务也压实（模型成本），过大 ⇒ 接近上限后
+  退回「不提前」，与 token 维度的**相对权重**未做评测；③ 阈值 `>= max_rounds` 时该维度**静默退化**为
+  「与终止同刻」，无告警（有意：合法配置，但用户可能以为它仍会提前）；④ 「每轮至多一次」是**每用户轮**
+  粒度 —— 跨轮（同一会话连续两轮）各自可压实一次，本 change 未限制 ✓；⑤ 压实仍**只有轮级触发**：
+  无「关键信息密度」类内容判据（沿用既有的 token/步数双阀）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -5571,3 +5631,4 @@
 | ADR-0170 | 02-modules/loop.md, 02-modules/memory.md, 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0171 | 02-modules/notes.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0172 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0173 | 02-modules/context.md, 02-modules/configuration.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

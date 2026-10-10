@@ -183,7 +183,7 @@ def test_event_loop_not_blocked_during_compaction() -> None:
                 ticks += 1
 
         task = asyncio.create_task(ticker())
-        loop = _reply_loop(memory=memory, compactor=Compactor(memory=memory, round_threshold=1))
+        loop = _reply_loop(memory=memory, compactor=Compactor(memory=memory, step_threshold=1))
         async for _ in loop.astream("hi"):
             pass
         task.cancel()
@@ -204,7 +204,7 @@ def test_summary_written_with_sync_llm_bridge() -> None:
     provider = _SyncBridgeProvider()
     memory = MemoryStore(summarizer=summarize_with(_sync_bridge(provider)))
     memory.write("L2", _prior_entry())
-    loop = _reply_loop(memory=memory, compactor=Compactor(memory=memory, round_threshold=1))
+    loop = _reply_loop(memory=memory, compactor=Compactor(memory=memory, step_threshold=1))
 
     loop.run("hi")
 

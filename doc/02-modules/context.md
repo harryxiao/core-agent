@@ -48,7 +48,11 @@ ContextBuilder（L3 输入侧）
 
 - 对多轮对话的关键信息自动摘要沉淀：已完成子任务的结论、关键决策、未决事项。
 - 沉淀产物写回 MemoryStore（L2 事实 / L3 技能），避免重复传递冗余内容。
-- 压实触发时机：轮数阈值 / token 接近上限 / 子任务切换时。
+- 压实触发时机（change `0182`／ADR-0173 诚实化）：**本轮工具步数**达 `loop.compact_steps`（缺省 `6`）
+  **或** token 用量达 token 预算。工具步数是本轮内已记账的工具动作步数（`LoopContext.rounds`，
+  每用户轮自 `0` 起算，**非**对话轮数）⇒ 阈值须小于 `loop.max_rounds` 才可能提前触发。
+  压实**每轮至多触发一次**（守卫在 `DefaultLoop.astream` 的本轮标记）。
+- 阈值来源：`Compactor(step_threshold=…)` 由组合根按 `loop.compact_steps` 注入；未注入 ⇒ 模块缺省 `6`。
 - 产物按**本轮会话**归属（`persist(session_id=…)`），条目 id 带会话键（缺省 `default`）
   ⇒ 跨会话不再同名覆盖（change `0114`／ADR-0107）。
 
@@ -56,8 +60,9 @@ ContextBuilder（L3 输入侧）
 
 - **策略纯函数**：`core.context.plan_window(history_turns, history_budget, *, tiered) -> WindowPlan`
   —— 只依赖 stdlib、**零 I/O、零模型调用**，把会话历史回灌的分层策略收敛为确定性配额。
-- **份额**：短 `0.5` / 中 `0.3` / 长 `0.2`，为**模块常量**（不新增配置键，与 `_ROUND_THRESHOLD` /
-  `MAX_SUMMARY_CHARS` 同纪律）；`history_budget = token_budget // 2`（沿用既有 `_load_history` 口径）。
+- **份额**：短 `0.5` / 中 `0.3` / 长 `0.2`，为**模块常量**（本**配额分配面**不新增配置键，与
+  `_STEP_THRESHOLD` / `MAX_SUMMARY_CHARS` 同纪律；压实**触发**阈值是另一面，自 change `0182` 起可经
+  `loop.compact_steps` 配置）；`history_budget = token_budget // 2`（沿用既有 `_load_history` 口径）。
 - **配额**：`short_turns` / `mid_turns` / `short_tokens`（短层 token 上界）/ `mid_chars`（中层摘要字符上界）；
   clamp —— 轮数或预算非正 ⇒ **全零**（关闭回灌）；非分层 ⇒ 「短层 = 全部 `history_turns` + 全部预算、中层零」，
   与既有双重上界**逐字等价**；分层时 `short ≥ 1`、`short + mid ≤ history_turns`、配额随总量**单调不减**。

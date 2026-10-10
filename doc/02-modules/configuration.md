@@ -67,6 +67,10 @@ Configuration（横切）
 ### 3.5 校验、生效与回滚
 
 - 配置做 schema 校验，**校验通过才生效**，否则拒绝并报错误。
+- **loop 段四键校验**（change `0182`／ADR-0173）：`loop.max_rounds` 与 `loop.compact_steps` 须为
+  **≥1 的整数**、`loop.output_reserve` 与 `loop.history_turns` 须为 **≥0 的整数**（`bool` 一律非法），
+  非法即阻断启动；`loop.compact_steps` **不做**「≤ max_rounds」跨键校验 —— 阈值达上限是**合法退化配置**
+  （语义仍是「至少压实一次」，只不再提前触发）。
 - 变更即生效；写入失败时回滚到变更前完整配置，不留半写状态，并记录告警。
 - **写回是可逆效应（change `0130` / ADR-0123）**：变更作用于**内存 + yaml 文件**两处，`apply_change`
   与 `write_patch` 记在**同一 trace**（`"config"`）⇒ 按该 trace 回滚时磁盘态与内存态**一并回退**；

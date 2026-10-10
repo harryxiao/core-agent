@@ -19,6 +19,7 @@ from core.context import (
     DynamicAssembler,
     InfoMap,
 )
+from core.context.compactor import _STEP_THRESHOLD
 from core.memory import MemoryStore
 
 # ---- 预算控制 ----
@@ -116,10 +117,11 @@ def test_info_map_documents_lists_registered_ids() -> None:
 
 
 def test_compactor_should_compact_threshold() -> None:
+    """首参为**本轮工具步数**（阈值缺省 6），与 token 维度取或（change 0182 诚实化）。"""
     c = Compactor()
-    assert c.should_compact(10, 0, 100) is True
-    assert c.should_compact(5, 200, 100) is True
-    assert c.should_compact(5, 50, 100) is False
+    assert c.should_compact(_STEP_THRESHOLD, 0, 100) is True, "步数达阈值即触发"
+    assert c.should_compact(_STEP_THRESHOLD - 1, 200, 100) is True, "token 达预算亦触发"
+    assert c.should_compact(_STEP_THRESHOLD - 1, 50, 100) is False, "两维度均未达 ⇒ 不触发"
 
 
 def test_compactor_extracts_key_info() -> None:
