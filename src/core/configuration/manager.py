@@ -314,6 +314,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "memory.episodic_extract",
+        "--memory-episodic-extract",
+        "CORE_MEMORY_EPISODIC_EXTRACT",
+        default=False,
+        map_to="memory.episodic_extract",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "memory.semantic_forgetting",
         "--memory-semantic-forgetting",
         "CORE_MEMORY_SEMANTIC_FORGETTING",
@@ -795,6 +803,25 @@ class ConfigManager:
             return False
         raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
         value = raw.get("relation_extract", False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in _FEATURE_TRUE
+
+    def episodic_extract(self) -> bool:
+        """情景归纳开关（缺省 ``False`` = 不接线归纳器；change 0218 / ADR-0208）。
+
+        **独立访问器**（同 `relation_extract()` 先例）：取值归一与 feature flag 同集；`memory`
+        为**非结构化段**（同 `importance_gate`，非法取值不阻断启动）⇒ 集合外取值归一为**关闭**
+        （方向恒为「不归纳」，无配置 ⇒ 既有路径逐字不变）。
+
+        关闭 ⇒ 组合根**不构造**归纳器（`episodic_extractor=None`）⇒ 压实逐字不变；开启 ⇒ 以
+        `consolidate_with(_llm_text)` 接线，对**同一批**被压实的 episodic 条目产出「目标 / 经过 /
+        结果 / 教训」结论快照（落 `source="episodic"` 的 L2 semantic 条目，脱敏 ＋ 有界）。
+        """
+        if self._config is None:
+            return False
+        raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
+        value = raw.get("episodic_extract", False)
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in _FEATURE_TRUE

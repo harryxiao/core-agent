@@ -359,6 +359,43 @@ MemoryStore
 - **已知局限**：`.tmp` 残骸不清理（同 CheckpointStore 口径）；告警每次构造后端一次、不去重；
   坏行寿命 = 到下次写为止（任一写即以完好集合覆盖）。详见 `coding-plan/known-risk.md` §3 ADR-0196 行。
 
+### 3.12 失败教训只读读面（change `0217`／ADR-0207／台账 E154）
+
+- 新**零效应只读** `MemoryStore.failure_lessons(session_id, *, limit=5) -> list[MemoryEntry]`：
+  只收 `tags` 含 `failure` 的条目（本仓该标签**唯一**生产者是 loop 的轮级失败条目
+  `loop.failure.<trace_id>`，见 §3.10 同源判据），`ts` **降序**、**至多 `limit` 条**（产物有界）；
+  `session_id` 缺省空串 ⇒ 不按会话过滤（口径同 `session_chain`）。
+- **层无关**：失败条目**仍走遗忘**（`_PRESERVE_TAGS` 只豁免**压实**、不豁免遗忘）⇒ 会迁 L4；本读面
+  **不按层过滤** —— 否则「教训已积累但被归档」的会话恰在最需要时看不见自己的教训。
+- **绝不走 `read()`**：后者命中即经 `_reinforce` **+1 `reuse_count` 并落盘可撤销效应**（§3.5 同源）；
+  本读面**每轮推理都跑**（供 loop 的「既往失败教训」块）⇒ 必须零效应、且**不变更**任何条目字段。
+- 消费面：组合根闭包渲染为有界块（每条折叠一行、不暴露条目 id）→ `loop.failure_lessons_consult`
+  （见 `doc/02-modules/loop.md` §3.6.1）。
+
+### 3.13 情景归纳（episodic consolidation，change `0218`／ADR-0208／台账 E155）
+
+三类记忆的专属沉淀 prompt 里**情景类**长期缺位（复用通用**会话摘要** prompt）⇒ 材料口径 /
+副作用 / 产物去向三重不同的两路被同一文本压平、无法各自演进。本 change 给它独立接缝：
+
+- **新模块** `core.memory.episodic`（镜像 `extract.py` 三段式、契约返回**文本**同 `summarize_with`）：
+  `EpisodicExtractor = Callable[[list[MemoryEntry]], str]`、`_PROMPT_HEAD`（四段：目标 / 经过 /
+  结果 / 教训）、`build_episodic_prompt`、`consolidate_with`。memory 依旧**不 import** LLM / rag 抽象。
+- **接缝** `MemoryStore.episodic_extractor`（缺省 UNWIRED），挂进 `_summarize_sessions` 的会话循环
+  ⇒ 与摘要 / 关键事实 / 关系**同材料、同价值门控、同 trace**（`compact()` 守卫同步纳入）。
+- **条目形状**：`id=episodic.<key>`（`key = session_id or "default"`）⇒ **每会话至多一条**、同 id
+  **覆盖式**更新（条目不增长）；`source="episodic"`；`tags=["episodic","session:<key>"]`；
+  `session_id=""`（全局层，同关键事实 / 关系）；`trace_id=compaction.<key>`（随压实回滚）。
+- **`kind="semantic"` 是承重设计**（非标签选择）：`_episodic_groups`（§3.4 / §3.6 的材料源）入选判据是
+  `kind == "episodic"` ⇒ 归纳产物**结构性**地**不进**压实材料、**不回喂**摘要器 —— 否则形成
+  「摘要 → 归纳 → 摘要」**自激环**。`tags` 里的 `episodic` 只是**人读标签**、不承担机制。
+- **脱敏在 store 侧无条件**（承 `extract` 红线）：注入的归纳器**不构成信任边界**（输出可能夹带模型
+  **复述**的明文密钥）⇒ 落库前 `redact_secrets` ＋ 截断 `MAX_EPISODIC_CHARS`；失败 / 空文本 ⇒
+  整条不写、留痕**只报会话键**。
+- **缺省关**（`episodic_extractor=None`）⇒ 压实**逐字不变**；组合根键 `memory.episodic_extract`。
+- **已知局限**：新 `source="episodic"` **未**登记 `_GATE_EXEMPT_SOURCES` / `_FORGETTABLE_SEMANTIC_SOURCES`
+  ⇒ 与 `importance_gate` 同开时会**过闸**且**恒豁免遗忘**（登记为后续候选）；归纳文本**自由不可机读**；
+  每会话一条 ⇒ 超长会话早期结论被后续**覆盖稀释**。详见 `coding-plan/known-risk.md` §3 ADR-0208 行。
+
 ---
 
 ## 4. 记忆写入规范（"无行动不记忆"的落地）

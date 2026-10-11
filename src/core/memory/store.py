@@ -22,6 +22,7 @@ from core.judgment import Compactor, DecisionResult
 from core.plugin_registry import Effect, EffectTracker
 
 from .backend import FileBackend
+from .episodic import MAX_EPISODIC_CHARS, EpisodicExtractor
 from .extract import (
     REDACTED,
     KeyFact,
@@ -260,6 +261,7 @@ class MemoryStore:
         key_fact_extractor: KeyFactExtractor | None = None,
         relation_extractor: RelationExtractor | None = None,
         importance_scorer: ImportanceScorer | None = None,
+        episodic_extractor: EpisodicExtractor | None = None,
         semantic_forgetting: bool = False,
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
@@ -271,6 +273,7 @@ class MemoryStore:
         self._key_fact_extractor = key_fact_extractor
         self._relation_extractor = relation_extractor
         self._importance_scorer = importance_scorer
+        self._episodic_extractor = episodic_extractor
         self._semantic_forgetting = semantic_forgetting
         self._hot: dict[str, MemoryEntry] = {}
         self._vectors: dict[str, list[float]] = {}
@@ -583,6 +586,11 @@ class MemoryStore:
         注入 ``key_fact_extractor``（结构化抽取器，change 0155 / 路线图 G4）时，对**同一批**被聚合的
         episodic 条目抽取「实体 → 取值」关键事实，落为 ``semantic`` 条目（脱敏后）。缺省 UNWIRED ⇒
         不抽取、行为逐字不变。**抽取不依赖摘要器**：两者独立注入、独立生效。
+
+        注入 ``episodic_extractor``（情景归纳器，change 0218 / ADR-0208）时，对**同一批**被聚合的
+        episodic 条目产出「目标 / 经过 / 结果 / 教训」情景归纳文本，落为 ``kind="semantic"`` 的
+        **全局层**条目（脱敏 ＋ 有界）。缺省 UNWIRED ⇒ 不归纳、行为逐字不变。归纳产物因
+        ``kind`` 不是 ``episodic`` 而**不进压实材料** ⇒ 不回喂摘要器（无自激环）。
         """
         decision: DecisionResult | None = None
         if self._compactor is not None:
@@ -598,6 +606,7 @@ class MemoryStore:
             self._summarizer is not None
             or self._key_fact_extractor is not None
             or self._relation_extractor is not None
+            or self._episodic_extractor is not None
         ):
             self._summarize_sessions(session_id)
         return decision
@@ -753,6 +762,7 @@ class MemoryStore:
                     self._deliver_promotion(sid, prior, summary)
             self._extract_key_facts(sid, entries)
             self._extract_relations(sid, entries)
+            self._consolidate_episodic(sid, entries)
 
     def _score_importance(self, entries: list[MemoryEntry]) -> dict[str, float]:
         """逐条目 importance 打分（judgment ``score`` 原语）并写回（可逆）。
@@ -939,6 +949,51 @@ class MemoryStore:
                 content=f"{fact.entity}: {fact.value}",
                 tags=tags,
                 source="extraction",
+                trace_id=f"compaction.{key}",
+                session_id="",
+                kind="semantic",
+            ),
+        )
+
+    def _consolidate_episodic(self, session_id: str, entries: list[MemoryEntry]) -> None:
+        """情景归纳（change 0218 / ADR-0208）：把一批会话事件归纳为一条结论快照。
+
+        与摘要 / 关键事实 / 关系**同材料、同门控、同 trace**；``session_id`` 空串归 ``"default"``。
+        条目形状：``id=episodic.<key>``（**每会话至多一条**、同 id **覆盖式**更新 ⇒ 条目不增长）、
+        ``source="episodic"``、``tags=["episodic", "session:<key>"]``、``session_id=""``（全局层，
+        同关键事实 / 关系，产生它的会话经 tags 溯源）、``trace_id=compaction.<key>``（随压实回滚）。
+
+        **``kind="semantic"`` 是承重设计**（非标签选择）：``_episodic_groups`` 的入选判据是
+        ``kind == "episodic"`` ⇒ 归纳产物**结构性**地**不进**压实材料，**不回喂**摘要器 /
+        关键事实抽取器 —— 否则形成「摘要 → 归纳 → 摘要」自激环。
+
+        **脱敏在 store 侧无条件执行**（`redact_secrets` ＋ 截断至 ``MAX_EPISODIC_CHARS``）：
+        注入的归纳器**不构成信任边界**，其输出可能夹带模型复述的明文密钥。
+        归纳失败 / 空文本 ⇒ 整条不写、留痕（只报**会话键**，绝不回显正文），**不牵连**压实主流程。
+        """
+        extractor = self._episodic_extractor
+        if extractor is None or not entries:
+            return
+        key = session_id or "default"
+        try:
+            text = extractor(entries)
+        except Exception:  # noqa: BLE001 — 归纳失败降级：整条不写，不牵连压实
+            warnings.warn(
+                f"episodic consolidation failed for session {key!r}; no episodic entry was written",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return
+        if not text or not text.strip():
+            return
+        self.write(
+            "L2",
+            MemoryEntry(
+                id=f"episodic.{key}",
+                layer="L2",
+                content=redact_secrets(text)[:MAX_EPISODIC_CHARS],
+                tags=["episodic", f"{_SESSION_TAG}{key}"],
+                source="episodic",
                 trace_id=f"compaction.{key}",
                 session_id="",
                 kind="semantic",

@@ -2816,3 +2816,44 @@ Requirement 做全量替换）。
 > 新 **(h)** 只读失败教训读面；既有 7 Scenario 逐字保留 ＋ **ADD Scenario ×3**）；`loop` **MODIFIED**
 > 「执行循环」（块句，既有 41 Scenario 逐字保留 ＋ **ADD Scenario ×2**）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0207 行。
+
+## 131. 情景归纳（TC-EPISODIC，change `0218`／ADR-0208，台账 E155）
+
+专属 prompt ＋ 独立接缝 `episodic_extractor` ＋ 全局层 `semantic` 归纳条目 ＋ **不回喂摘要器**（`kind` 承重）（键 `memory.episodic_extract`，**缺省关**）。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-EPISODIC-01 | prompt 四段结构 | `build_episodic_prompt([...])` | 含「情景归纳」＋ 目标/经过/结果/教训四段（`tests/test_memory_episodic.py::test_prompt_head_declares_four_sections`） |
+| TC-EPISODIC-02 | 逐条有界渲染 | 两条事件（其一带 900 字正文） | `- ` 行数 == 条数、每行 ≤ 402、原长正文不出现（`...::test_build_prompt_renders_bounded_entry_lines`） |
+| TC-EPISODIC-03 | 工厂桥接 | `consolidate_with(fake_llm)` | 调模型一次、首尾空白剥除、prompt 含「会话事件：」（`...::test_consolidate_with_calls_llm_and_strips`） |
+| TC-EPISODIC-04 | 缺省 UNWIRED | `MemoryStore()` | `_episodic_extractor is None`（`...::test_default_store_has_no_extractor`） |
+| TC-EPISODIC-05 | **逐字锚**：门只切归纳 | 未注入 vs 注入「恒返回空白」 | 两态产物**逐字相同**、均无 `episodic.` 条目（`...::test_disabled_only_switches_consolidation`） |
+| TC-EPISODIC-06 | 条目形状六项 | 注入归纳器压实一次 | `source="episodic"`、`kind="semantic"`、`layer="L2"`、`tags==["episodic","session:s1"]`、`trace_id=="compaction.s1"`、`session_id==""`（`...::test_consolidated_entry_shape`） |
+| TC-EPISODIC-07 | 每会话一条、覆盖式 | 同会话再压实 | 内容更新而 id 仍只有 `episodic.s1`（`...::test_one_entry_per_session_and_overwrite`） |
+| TC-EPISODIC-08 | 会话隔离 | s1 / s2 各一条 | `episodic.s1` / `episodic.s2` 各自独立、内容不串（`...::test_entries_are_per_session`） |
+| TC-EPISODIC-09 | **承重锚**：不回喂摘要器 | 全量 `compact()`（**非**会话收窄） | 归纳产物**逐组全查**不出现在摘要材料中；新事件 `e1` 仍在（`...::test_not_fed_back_to_summarizer`） |
+| TC-EPISODIC-10 | 脱敏 ＋ 有界 | 含 `sk-…` ＋ 三倍超长正文 | 明文密钥不落库、含 `<redacted>`、长度 ≤ `MAX_EPISODIC_CHARS`（`...::test_content_redacted_and_bounded`） |
+| TC-EPISODIC-11 | 脱敏原语同源 | `redact_secrets("key sk-…")` | 明文不出现（改一处即两处变）（`...::test_redact_secrets_is_the_boundary`） |
+| TC-EPISODIC-12 | 失败降级 | 归纳器抛错 | 无归纳条目、告警**含会话键**且**不回显正文**、摘要**照常完成**（`...::test_error_degrades_without_warning_leak`） |
+| TC-EPISODIC-13 | 守卫含归纳器 | 只注入归纳器（无摘要器） | 压实仍真的跑、条目落地（`...::test_consolidation_runs_without_summarizer`） |
+| TC-EPISODIC-14 | 无条目不调用 | 空库全量压实 | 归纳器**零次**调用、零写入（`...::test_untouched_when_no_entries`） |
+| TC-EPISODIC-15 | 单一真源三面齐备 | `config_specs()` | `(--memory-episodic-extract, CORE_MEMORY_EPISODIC_EXTRACT, False, memory.episodic_extract)`（`...::test_spec_declares_episodic_extract`） |
+| TC-EPISODIC-16 | 缺省关 | `ConfigManager` 缺省 | `episodic_extract() is False`（`...::test_default_off`） |
+| TC-EPISODIC-17 | yaml / env 开 | yaml `true` / env `on` | 两态均 `True`；`memory:` 已声明 ⇒ 不报「未知配置段」（`...::test_yaml_and_env_enable`） |
+| TC-EPISODIC-18 | 非法取值归一关 | `episodic_extract: maybe` | `False`（方向恒为「不归纳」）（`...::test_unknown_value_falls_back_off`） |
+| TC-EPISODIC-19 | 组合根接线两态 | `build_runtime` 缺省 / 置 true | `_episodic_extractor` 为 `None` / 非空（`...::test_runtime_wiring_two_states`） |
+
+> **反证（实测三组）**：(A) 摘 `_summarize_sessions` 的归纳调用 ⇒ **`6 failed, 13 passed`**；
+> (B) 归纳条目 `kind` 改 `"episodic"`（材料判据命中 ⇒ 回喂）⇒ **`2 failed, 17 passed`**
+> （TC-EPISODIC-09 承重锚 ＋ TC-EPISODIC-06 形状锚）；(C) 摘 `redact_secrets` ⇒ **`1 failed, 18 passed`**
+> （TC-EPISODIC-10）。三次复原 ⇒ 五个 `src/` 改动文件 `md5sum` **逐个相同**，复测 **19 passed**。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2479 passed**（基线 **2460**，**+19**，与用例数一致）。
+> **两条反证教训**（ADR-0208 已记）：① TC-EPISODIC-09 **必须走全量压实**且**逐组全查** ——
+> 会话收窄路径按 `session_id` 过滤（归纳条目 `session_id=""`）⇒ 用 `compact(session_id="s1")`
+> 测「不回喂」**恒绿**；`seen[-1]` 只覆盖最后一组，归纳产物若入选自成 `""` 组而漏检。
+> ② 批量替换须锚定**唯一**子串 —— `kind="semantic",` 在 `store.py` 出现 **3 次**（`_commit_summary` /
+> `summarize_slice` / `_consolidate_episodic`），按「首次出现」替换会**静默改错对象**（反证 B 首跑
+> 19 绿即此故，已改带前导行锚定 ＋ 断言命中数 `== 1`）。
+> **规格**：`memory` **ADDED**「情景归纳（episodic consolidation）」＋ **Scenario ×6**（**既有 16
+> Requirement 逐字保留**）⇒ canonical memory **16 → 17** req / **122 → 128（+6）** scen。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0208 行。

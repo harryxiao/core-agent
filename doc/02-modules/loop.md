@@ -154,6 +154,17 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
   经私有 `_mark_turn`；`astream` 无 `try/finally` ⇒ 轮内异常 / 被杀**天然**留 `done=False`（镜像波次语义）。
 - **缺省 `None`** ⇒ `_mark_turn` 首行短路 ⇒ **零写入**、既有路径逐字不变；`goal` 由 `_task_text(ctx)` 取。
 
+### 3.6.1 既往失败教训注入块（change `0217` / ADR-0207 / 台账 E154）
+
+- 新可选构造参 `failure_lessons_consult: Callable[[str], str] | None`（**入参 = 本轮会话标识**）——
+  **闭包注入**（loop 不 import memory 语义面，沿 `turn_observer` / `turn_checkpoint` 先例）。
+- `astream` 轮首经 `_load_failure_lessons` 写入 `LoopContext.failure_lessons`；**抛错降级**：置空该字段
+  ＋ trace `failure_lessons_consult_failed`，**不改变本轮结局**（同 `_consult_notes` / `_load_pinned_notes`）。
+- 推理规划器把非空该字段以**独立系统块**（「既往失败教训：」）注入 —— **不折入**「相关事实」（后者按
+  预算截断会静默丢弃）或「相关笔记」（语义不同）。
+- **缺省 `None`** ⇒ 首行短路 ⇒ 该字段恒空 ⇒ **提示词逐字不变**；**只接主 loop**（子 Agent / 神兽 /
+  宠物 loop 不接，同 `transcript` / `turn_checkpoint` 注入面）。
+
 ### 3.7 可观测
 
 - 每轮生成 `trace_id`，贯穿日志/效应/记忆写入，单轮可复现（NFR-OBS2）。

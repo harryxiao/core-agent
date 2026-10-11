@@ -10,6 +10,12 @@ L0-L4 分层记忆、热/冷温度检索、无行动不记忆、结晶/溶解、
 from .backend import FileBackend
 from .crystallizer import Crystallizer, PluginCandidate
 from .embedding import batch_embed
+from .episodic import (
+    MAX_EPISODIC_CHARS,
+    EpisodicExtractor,
+    build_episodic_prompt,
+    consolidate_with,
+)
 from .extract import (
     KEY_FACTS_MAX,
     KEY_FACTS_MIN,
@@ -45,6 +51,7 @@ from .transcript import TranscriptStore
 
 __all__ = [
     "Crystallizer",
+    "EpisodicExtractor",
     "FileBackend",
     "ImportanceScorer",
     "IndexEntry",
@@ -54,6 +61,7 @@ __all__ = [
     "KeyFact",
     "KeyFactExtractor",
     "Layer",
+    "MAX_EPISODIC_CHARS",
     "MAX_KEY_FACTS_PER_COMPACT",
     "MAX_SUMMARY_CHARS",
     "RELATION_PREDICATES",
@@ -71,10 +79,12 @@ __all__ = [
     "SummaryPromoter",
     "TranscriptStore",
     "batch_embed",
+    "build_episodic_prompt",
     "build_extract_prompt",
     "build_prompt",
     "build_relation_prompt",
     "build_score_prompt",
+    "consolidate_with",
     "extract_relations_with",
     "extract_with",
     "key_fact_cap",

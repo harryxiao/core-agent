@@ -7273,6 +7273,64 @@ False 等于**静默删除一个在用能力**（非缺陷修复），方向与�
   （未改 `pyproject` lint 配置）。
 - 来源另见 `doc/openspec/changes/archive/2026-10-11-0217-failure-lessons-block/design.md`。
 
+## ADR-0208：情景归纳 —— 独立接缝 ＋ `kind="semantic"` 的结构性隔离（change 0218 / 台账 E155）
+
+**背景 —— 情景类「无专属沉淀 prompt」。** 四类记忆里程序类有 `sop.build_sop_prompt`、语义类有
+`extract.build_extract_prompt` / `build_relation_prompt`，唯**情景类**复用通用**会话摘要** prompt
+（`summarize._PROMPT_HEAD`）。复用不是「少一段提示词」，而是**两路语义被同一文本压平**：材料口径
+不同（摘要器把「现有摘要」当**滚动合并**输入；归纳器只看本批事件）、副作用不同（摘要器**迁移**来源
+条目至 L4；归纳器**不迁移**）、产物去向不同（摘要进事实面并被滚动覆盖；归纳是**面向会话的结论快照**）。
+任何一处措辞调整会**同时**改两路行为 ⇒ 无法为情景类单独演进（违 P3 可归因）。
+
+**D1 独立接缝，不改造摘要 prompt（用户裁决）。** 新增 `MemoryStore.episodic_extractor`
+（`EpisodicExtractor = Callable[[list[MemoryEntry]], str]`，缺省 UNWIRED）＋ 新模块
+`core.memory.episodic`（镜像 `extract.py` 三段式：契约别名 / `_PROMPT_HEAD` / `build_episodic_prompt` /
+`consolidate_with`）。与 `key_fact_extractor` / `relation_extractor` 并列 —— 合并任一路即改其 prompt
+**字节**（`0203` / ADR-0193 已立此口径）。memory 依旧**不 import** 任何 LLM / rag 抽象（ADR-0045）。
+
+**D2 契约返回文本、不引入新 dataclass（YAGNI）。** 归纳产物是给人读 / 供注入的结论快照，**没有**
+机读下游消费者（关键事实必须结构化才有 `keyfact.<slug>` 实体幂等键，关系必须有谓词白名单）。故契约
+取 `Callable[[list[MemoryEntry]], str]`（同 `Summarizer`），不造为不存在的消费者服务的抽象
+（CLAUDE.md §2）。
+
+**D3 `kind="semantic"` 是**承重**设计，不是标签选择。** `_episodic_groups`（打分 / 摘要 / 关键事实 /
+关系 / 本次归纳的**唯一材料源**）的入选判据是 `kind == "episodic" and layer == "L2"`。归纳产物若取
+`kind="episodic"`，下一轮压实即把它当材料**回喂**摘要器 ⇒「摘要 → 归纳 → 摘要」**自激环**，且每轮
+放大一次。取 `kind="semantic"` ⇒ **结构性**排除（而非靠标签 / 来源串的约定）。`tags` 里的 `episodic`
+只是**人读标签**、不承担任何机制（`_PRESERVE_TAGS` / `_GATE_EXEMPT_SOURCES` 均不看它）。
+
+**D4 每会话一条、覆盖式（不是累积）。** 归纳语义 =「这段会话到目前做成了什么」⇒ 旧结论被新结论
+**取代**。`id=episodic.<key>` 走 `write()` 既有幂等覆写 ⇒ 条目不增长（P5 token 有界）。不建多版本：
+**没有**消费者需要历史版本，且压实产物已可由 `trace_id` 回滚。
+
+**D5 `session_id=""`（全局层）＋ `tags` 溯源。** 归纳结论跨会话可见（同关键事实 / 关系）——「上次这个
+任务怎么收的」不该被会话边界锁住；产生它的会话经 `session:<key>` 溯源。`id` 带 `key` ⇒ 会话间**不互相
+覆盖**。
+
+**D6 脱敏在 store 侧无条件（承 `extract` 红线）。** 注入的归纳器**不构成信任边界** —— 其输出可能夹带
+模型**复述**的材料中明文密钥。故落库前 `redact_secrets` ＋ 截断至 `MAX_EPISODIC_CHARS`，方向恒
+over-redact；失败 / 空文本 ⇒ 整条不写、留痕**只报会话键**（绝不回显正文）。
+
+- **规格**：`memory` **ADDED**「情景归纳（episodic consolidation）」＋ 6 Scenario（**既有 16
+  Requirement 逐字保留**）。
+- **反证（三组，实测）**：(A) 摘 `_summarize_sessions` 的归纳调用 ⇒ `6 failed, 13 passed`；
+  (B) 归纳条目的 `kind` 改 `"episodic"`（材料判据命中 ⇒ 回喂）⇒ `2 failed, 17 passed`
+  （承重锚 `test_not_fed_back_to_summarizer` ＋ 形状锚 `test_consolidated_entry_shape`）；
+  (C) 摘 `redact_secrets` ⇒ `1 failed, 18 passed`（`test_content_redacted_and_bounded`）。
+  三次复原 ⇒ 五个 `src/` 改动文件 `md5sum` **逐个相同**；复测 **19 绿**。测试 **+19**（2460 → **2479**）。
+- **两条教训（反证自身会失真，必须验证反证真的红了）**：① **承重锚不能走会话收窄路径** —— 归纳条目
+  `session_id=""`，而 `_episodic_groups` 在 `session_id` 非空时按会话过滤 ⇒ 用 `compact(session_id="s1")`
+  测「不回喂」**无论如何都通过**（挡它的是会话过滤、不是 `kind`）；必须走**全量** `compact()`，且断言要
+  **逐组全查**（`seen[-1]` 只覆盖最后一组，归纳产物若入选会自成 `""` 组而漏检）。② **批量替换必须锚定唯一
+  子串** —— `kind="semantic",` 在 `store.py` 出现 **3 次**（`_commit_summary` / `summarize_slice` /
+  `_consolidate_episodic`），按「首次出现」替换会**静默改错对象**（反证 B 首跑 19 绿即此故）；
+  须带前导行（`source="episodic",`）锚定并断言命中数 `== 1`。
+- **局限**：① 新 `source="episodic"` **未**登记 `_GATE_EXEMPT_SOURCES` / `_FORGETTABLE_SEMANTIC_SOURCES`
+  ⇒ 与 `importance_gate` 同开时该条目会**过闸**（可能被拒收 / 降层），且**恒豁免遗忘**（长期驻留）——
+  登记为后续候选（本轮保最小爆炸半径）；② 归纳文本**自由不可机读**，检索只能靠词法 / 语义相似；
+  ③ 每会话仅一条 ⇒ 超长会话的早期结论被后续**覆盖稀释**（结论快照语义的固有代价）。
+- 来源另见 `doc/openspec/changes/archive/2026-10-11-0218-episodic-consolidator/design.md`。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7475,3 +7533,4 @@ False 等于**静默删除一个在用能力**（非缺陷修复），方向与�
 | ADR-0205 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0206 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0207 | 02-modules/memory.md, 02-modules/loop.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0208 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
