@@ -69,7 +69,12 @@ ContextBuilder（L3 输入侧）
   压实**每轮至多触发一次**（守卫在 `DefaultLoop.astream` 的本轮标记）。
 - 阈值来源：`Compactor(step_threshold=…)` 由组合根按 `loop.compact_steps` 注入；未注入 ⇒ 模块缺省 `6`。
 - 产物按**本轮会话**归属（`persist(session_id=…)`），条目 id 带会话键（缺省 `default`）
-  ⇒ 跨会话不再同名覆盖（change `0114`／ADR-0107）。
+  ⇒ 跨会话不再同名覆盖（change `0114`／ADR-0107）；产物 `trace_id` 亦带会话键
+  `compaction.<key>`（change `0192`／ADR-0182），与记忆侧其他压实 trace（会话摘要 / 关键事实 /
+  中期摘要）**同口径** ⇒ 回滚按会话细化归因、与同会话其他压实产物共组；此前为**常量** `compaction`。
+- 压实器输入是**本轮**消息 + 工具 I/O（`ctx.messages`），**非**多轮历史（多轮历史由三层滑窗
+  `0178` 与记忆压实承载）：`Compactor.compact` docstring 自 change `0192` 起诚实化。`from:<id>`
+  出处面为**死面**（本轮消息条目无 `id` ⇒ 恒不触发），**只注记不活化**。
 
 ### 3.4 三层窗口比例分配（change `0178`／ADR-0169）
 

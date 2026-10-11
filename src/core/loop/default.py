@@ -648,10 +648,14 @@ class DefaultLoop(Plugin):
         return self._compactor.should_compact(ctx.rounds, ctx.token_used, self._token_budget)
 
     def _compact(self, ctx: LoopContext, trace_id: str) -> None:
-        """压实：多轮历史提炼沉淀（persist）→ 记忆固化（打分 + 会话摘要）→ 遗忘归档。
+        """压实：**本轮**消息 + 工具 I/O 提炼沉淀（persist）→ 记忆固化（打分 + 摘要）→ 遗忘归档。
 
-        三步共用一次触发、任一步**降级不中断本轮**（原记忆保持不变，失败经观测通道
-        记 ``maintenance_failed`` 留痕）；终止语义不变：压实后仍按既有预算/轮数条件终止。
+        输入是 ``ctx.messages``（**仅本轮**，多轮历史由三层滑窗 change 0178 与记忆压实承载 ——
+        本方法不折入历史）。三步共用一次触发、任一步**降级不中断本轮**（原记忆保持不变，失败经
+        观测通道记 ``maintenance_failed`` 留痕）；终止语义不变：压实后仍按既有预算/轮数条件终止。
+
+        记忆固化**按本轮会话标识收窄聚合范围**（与维护节拍 ``_maintain`` 同口径，change 0192）：
+        仅聚合该会话的 L2 episodic 条目，SHALL NOT 顺手提炼他会话条目；标识为空串时按全量聚合。
         """
         assert self._compactor is not None  # noqa: S101 — 调用点已判空
         try:
@@ -665,7 +669,7 @@ class DefaultLoop(Plugin):
         if self._memory is None:
             return
         try:
-            self._memory.compact()
+            self._memory.compact(session_id=ctx.session_id)
         except Exception as err:  # noqa: BLE001 — 打分/摘要失败降级，原记忆不丢
             self._trace(trace_id, "maintenance_failed", {"error": str(err)})
         try:

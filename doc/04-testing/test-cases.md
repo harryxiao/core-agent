@@ -2038,3 +2038,25 @@
 > 入口（不传 `surface_recovery` ⇒ 输出面逐字不变）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0181 行（呈现为提示非托管 / 无独立只读命令 /
 > 扫描全量无索引 / `RestoreHandle` 破坏性变更 / 跨进程 undo 承 ADR-0136）。
+
+## 105. 轮内压实会话化 + trace 会话键（TC-COMPACT-SCOPE，change `0192`／ADR-0182，台账 E129）
+
+**行为规格锚点**：`loop/spec.md`「执行循环」（轮内压实的记忆固化步骤按本轮会话收窄）；`memory/spec.md`
+「记忆压实」（空串全量语义保留给显式调用、循环内路径一律会话化）；`context/spec.md`「上下文自动压实」
+（产物 `trace_id` 携带会话键）。
+
+| 用例 | 锚点 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-COMPACT-SCOPE-01 | loop Scenario「轮内压实按会话收窄聚合」 | 会话 `s1`/`s2` 各一条 L2 episodic 条目，`loop.run("hi", session_id="s1")` 触发压实 | `s1` 条目迁 L4（被聚合归档）、`s2` 条目仍 L2（SHALL NOT 顺手聚合；变更前为跨会话串扰）（锚点：`tests/test_loop.py::test_loop_compaction_scopes_memory_to_round_session`） |
+| TC-COMPACT-SCOPE-02 | context Scenario「压实产物 trace 携带会话键」 | `loop.run("hi", session_id="s1")` 触发压实 | 产物条目 `trace_id == "compaction.s1"`（非常量 `"compaction"`）（锚点：`...::test_loop_compaction_persist_trace_is_session_keyed`） |
+| TC-COMPACT-SCOPE-03 | context Scenario「压实产物 trace 携带会话键」（单元） | `Compactor.persist(c, session_id="")` 与 `session_id="s7"` | `compaction.fact.default.0.trace_id == "compaction.default"`、`compaction.fact.s7.0.trace_id == "compaction.s7"`（锚点：`tests/test_context_compaction.py::test_persist_trace_is_session_keyed`） |
+| TC-COMPACT-SCOPE-04 | 诚实化文案 | 读 `Compactor.compact.__doc__` / `DefaultLoop._compact.__doc__` | 不含「从多轮历史」、含「本轮」（`...::test_compaction_docstrings_state_round_scope`） |
+
+> **红态证据**：01/02 在 `_compact` 传 `session_id` / persist trace 会话键化前**红**（他会话条目被顺手归档；
+> trace 为常量 `"compaction"`）；03 在 trace 键化前**红**（均为 `"compaction"`）；04 在 docstring 诚实化前**红**
+> （含「从多轮历史」）。绿后全量 `.venv/bin/pytest -q` ⇒ **2223 passed**（基线 **2219**，**+4 新增**）。
+> **不动面**：`MemoryStore.compact` 的空串全量**实现**（逐字保留）；`_maintain`（本已会话化）；
+> `summarize_slice` / `_summarize_sessions` / 关键事实抽取（trace 早已会话键化）；空会话轮行为逐字不变
+> （`compact(session_id="")` ≡ 裸调）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0182 行（provenance 死面只注记不活化 / 空会话轮仍全量 /
+> `_maintain` 多会话公平性承 ADR-0169⑦）。

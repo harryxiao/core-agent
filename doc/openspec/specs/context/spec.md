@@ -81,14 +81,12 @@
 - **GIVEN** 地图索引失效且增量重建失败，全文检索同样不可用或超预算
 - **WHEN** 模型仍需获取文档细节
 - **THEN** 降级为对原始文档的受控分段线性扫描并逐段命中，任务不中断，不因索引不可用而失败
-
-
 ### Requirement: 上下文自动压实
 系统 SHALL 对多轮关键信息自动摘要沉淀，写回记忆，避免重复传递冗余内容；沉淀产物 SHALL 为
 `kind="semantic"` 的记忆条目，且 SHALL 标注来源出处（`tags` 携带被沉淀历史的原始 id），
 使「沉淀」可追溯到原文而非匿名条目。压实产物 SHALL 以**本轮会话标识**归属写回（缺省空串 = 未归属，
 归全局层），且产物条目的 id SHALL 携带**会话键**（`session_id` 非空取自身，否则取缺省键），
-以免不同会话的压实产物互相覆盖。本压实器为**启发式降级路径**（关键词识别结论/决策/未决
+以免不同会话的压实产物互相覆盖。产物条目的 `trace_id` SHALL 亦携带**会话键**（`compaction.<key>`，`key = session_id or "default"`），与记忆侧其他压实 trace（会话摘要 / 关键事实 / 中期摘要）**同口径** ⇒ 回滚可按会话细化归因；SHALL NOT 使用**不区分会话**的常量 trace。本压实器为**启发式降级路径**（关键词识别结论/决策/未决
 事项）：LLM 提炼统一由记忆压实通道承担，此处不新增模型调用。
 
 压实**触发判据** SHALL 为：本轮**工具步数**达到 `loop.compact_steps`（缺省 `6`）**或** token 用量
@@ -129,6 +127,10 @@
 - **THEN** 压实至多在终止步触发一次，且本轮已因 `LOOP_LIMIT_EXCEEDED` 终止 —— 触发与终止同刻，
   该阈值**不能**让压实提前于终止发生
 
+#### Scenario: 压实产物 trace 携带会话键
+- **GIVEN** 某会话（标识非空）的多轮消息触发上下文压实
+- **WHEN** 沉淀写回
+- **THEN** 产物条目的 `trace_id` 为 `compaction.<该会话键>`（与其他压实 trace 同口径），按该 trace 回滚即整批撤销本会话压实产物
 ### Requirement: 宪法约束注入
 系统 SHALL 将 Core Profile 的「宪法与全局规则」分区作为 constitution:v1 coeffect 注入上下文，作为必保约束参与执行。
 
@@ -136,7 +138,6 @@
 - **GIVEN** 全局 Core.md 含「宪法与全局规则」分区
 - **WHEN** 上下文装配器构建上下文
 - **THEN** 该分区内容作为 constitution:v1 coeffect 注入，并作为必保约束保留
-
 ### Requirement: 项目信息注入
 系统 SHALL 在载入项目时由 ContextEngine 按 cwd 向上查找项目级 Core.md，将其内容作为项目信息注入上下文窗口。
 
@@ -149,7 +150,6 @@
 - **GIVEN** 从 cwd 向上至文件系统根均未发现项目级 Core.md
 - **WHEN** ContextEngine 查找失败
 - **THEN** 静默降级，不注入项目信息，不影响任务执行
-
 ### Requirement: 三层窗口比例分配
 系统 SHALL 把会话历史回灌的**分层策略**收敛为**确定性纯函数**（零 I/O、零模型调用）：给定
 `loop.history_turns`（三层轮数总量）与历史预算（`token_budget // 2`），算出短层轮数、中层轮数、

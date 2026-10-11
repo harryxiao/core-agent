@@ -27,7 +27,6 @@
 - **GIVEN** 一个查询命中 L1 索引
 - **WHEN** 检索器解析索引
 - **THEN** 按热度路由到 L2/L3/L4 取详情，而非全库扫描
-
 ### Requirement: 温度分层检索
 系统 SHALL 提供**热/冷两档**检索，热数据常驻内存，冷数据按需加载；检索结果 SHALL 按
 **多因子得分**排序——语义相似 × 层结构权重（加性）再经 新鲜度衰减、复用频次
@@ -116,7 +115,6 @@ SHALL NOT 被复用计数（`reuse_count`）强化，与既有来源前缀排除
 - **GIVEN** 同时给出会话标识与来源前缀排除项
 - **WHEN** 检索
 - **THEN** 两类过滤同时生效（命中任一排除条件的条目都不出现）
-
 ### Requirement: 无行动不记忆
 系统 SHALL 只沉淀"行动与结果"产生的经验，不记录未经验证的空想。
 
@@ -124,7 +122,6 @@ SHALL NOT 被复用计数（`reuse_count`）强化，与既有来源前缀排除
 - **GIVEN** 模型产出一条未经执行验证的主张
 - **WHEN** 尝试写入长期记忆
 - **THEN** 被拒绝，需先有行动结果作为证据
-
 ### Requirement: 记忆压实
 系统 SHALL 定期压实记忆，合并重复条目、归档过期会话、保持 L1 索引最小；并 SHALL 在注入摘要器
 （`summarizer`）时，按会话（`session_id`）聚合 episodic 条目、提炼为**一条** `kind="semantic"`
@@ -135,7 +132,7 @@ SHALL 不做摘要提炼：不写摘要条目、不改动原始条目层级。�
 
 压实的**聚合范围** SHALL 可**按会话收窄**：`compact` SHALL 接受可选 `session_id` —— **非空**时
 SHALL 只聚合**该会话**的 L2 episodic 条目（含其重要度打分写回），SHALL NOT 跨会话提炼或迁移
-他会话条目；**空串**时 SHALL 保持**全量**语义（逐字与既有行为一致，供循环内节拍压实使用）。
+他会话条目；**空串**时 SHALL 保持**全量**语义（逐字与既有行为一致）—— 该全量语义 SHALL **保留给显式调用**（CLI / 运维命令面），**循环内路径**（轮内压实与维护节拍）SHALL **一律以本轮会话标识聚合**（标识为空串时按上句全量语义聚合，与既往一致）。
 
 摘要 SHALL 为**滚动合并**而非覆盖重写：当该会话已存在摘要条目时，系统 SHALL 把**既有摘要内容**
 与本次新增 episodic 条目**一并**投喂摘要器，产出**融合既有结论与新增事实**的摘要；系统 SHALL NOT
@@ -290,6 +287,12 @@ SHALL NOT 被摘要提炼或关键事实抽取吸收，SHALL NOT 被迁至 L4（
 - **GIVEN** 一条带 `failure` 标签的 L2 episodic 条目已衰减至遗忘阈值以下
 - **WHEN** 遗忘运行
 - **THEN** 该条目照常被迁至 L4（失败标签**不豁免**遗忘）
+
+#### Scenario: 循环内压实一律按本轮会话聚合
+- **GIVEN** 一次携带会话标识的循环轮触发轮内压实
+- **WHEN** 记忆固化执行
+- **THEN** 聚合范围收窄至该会话（不聚合他会话条目），产物归该会话；全量聚合语义仅由不带会话
+  标识的**显式调用**触发
 ### Requirement: 记忆固化（consolidation）
 系统 SHALL 对会话内 episodic 条目**自动打分**并据此**门控固化**：注入 scorer（judgment `score`
 原语，JEV 优先、低置信/不可达回退主 LLM）时，SHALL 将分值写回条目的 `importance`（写入可撤销，
@@ -313,7 +316,6 @@ SHALL NOT 被摘要提炼或关键事实抽取吸收，SHALL NOT 被迁至 L4（
 - **WHEN** 固化尝试打分
 - **THEN** 该条目 `importance` 保持原值（不被写为 0），该会话不因缺分值而被门槛拦下，
   固化流程不中断
-
 ### Requirement: 写入侧重要度闸门（importance write gate）
 
 系统 SHALL 支持注入 **importance scorer**（`MemoryStore` 构造形参，契约
@@ -369,8 +371,6 @@ L5 组合根注入；**缺省 UNWIRED**。注入后，写入路径 SHALL 先评�
 - **GIVEN** 注入了 scorer，其对任何条目返回 0.1
 - **WHEN** 写入一条来源**非**豁免面的条目（如 `source="loop"` 的轨迹条目）
 - **THEN** 条目被**拒收**（不落库）、`warnings.warn` 留痕 —— 豁免面只覆盖系统派生产物
-
-
 ### Requirement: 记忆遗忘（forgetting）
 
 系统 SHALL 按衰减评分（新鲜度 × 复用频次 × 重要度）识别低价值记忆并**归档**：评分低于阈值的
@@ -418,7 +418,6 @@ SHALL NOT 中断 Agent 主流程。遗忘 SHALL 由**维护节拍**驱动——�
 - **GIVEN** 某条目已被遗忘归档
 - **WHEN** 按该条目的遗忘 trace 回滚效应
 - **THEN** 条目迁回 L2 原层
-
 ### Requirement: Core Profile 人格注入
 系统 SHALL 将 Core Profile 的「人格」分区作为 L0 元策略写入记忆，承载 Agent 的行为特色预设。
 
@@ -426,7 +425,6 @@ SHALL NOT 中断 Agent 主流程。遗忘 SHALL 由**维护节拍**驱动——�
 - **GIVEN** 全局 Core.md 含「人格」分区
 - **WHEN** Agent 启动读取 Core Profile
 - **THEN** 该分区内容作为 L0 元策略写入记忆，塑造 Agent 行为特色
-
 ### Requirement: 对话转录持久化（非记忆层级）
 
 系统 SHALL 以**按轮追加**（append-only）的方式持久化对话转录：每一条 SHALL 携带 `session_id`、
@@ -529,7 +527,6 @@ SHALL 在**排名与预算之前**剔除 —— 被剔除项 SHALL NOT 占用 to
 - **GIVEN** 既有调用方不传排除面与放行面
 - **WHEN** 检索
 - **THEN** 行为与引入该能力之前**逐字一致**（两参数缺省为空元组）
-
 ### Requirement: 结构化实体抽取（关键事实）
 
 系统 SHALL 提供**结构化关键事实抽取**：在记忆压实时，从**被聚合的 episodic 条目**中抽取

@@ -135,13 +135,19 @@ class Compactor:
         """
 
     def compact(self, history: list[dict]) -> Compaction:
-        """多轮关键信息摘要沉淀，保证关键信息不丢失。"""
+        """从**本轮**消息（+ 工具 I/O）摘要沉淀，保证关键信息不丢失。
+
+        输入是调用点传入的 ``ctx.messages``（**仅本轮**，change 0192 诚实化）—— 多轮历史由
+        三层滑窗（change 0178）与记忆压实承载。``from:<id>`` 出处面为**死面**（本轮消息条目
+        无 ``id`` ⇒ 恒不触发），只注记不活化。
+        """
 
     def persist(self, c: Compaction, *, session_id: str = "") -> None:
         """沉淀产物写回 MemoryStore（L2 提炼事实）：kind="semantic"，tags 带原始 id 出处。
 
-        产物按**本轮会话**归属（缺省空串 = 未归属），条目 id 带会话键（缺省 ``default``）
-        ⇒ 跨会话不再同名覆盖（见 change 0114 / ADR-0107）。
+        产物按**本轮会话**归属（缺省空串 = 未归属），条目 id **与 ``trace_id``** 均带会话键
+        （缺省 ``default``）⇒ 跨会话不再同名覆盖（见 change 0114 / ADR-0107），
+        且回滚按 ``compaction.<key>`` 细化归因、与同会话其他压实产物共组（change 0192 / ADR-0182）。
         """
 
 @dataclass
@@ -154,9 +160,10 @@ class Compaction:
 ```
 
 **降级路径声明**：本压实器是**启发式**降级路径（关键词识别结论/决策/未决事项），其输入是
-多轮 ``history``（自由文本）；LLM 提炼统一由记忆压实通道（``MemoryStore.summarizer``，
-见 memory-interface §3）承担，此处**不新增模型调用点**。触发点由 loop 接线：轮数达阈值或
-token 预算超限时 ``persist`` → ``memory.compact``，终止语义不变。
+**本轮** ``history``（``ctx.messages``，自由文本）；LLM 提炼统一由记忆压实通道
+（``MemoryStore.summarizer``，见 memory-interface §3）承担，此处**不新增模型调用点**。
+触发点由 loop 接线：**本轮工具步数**达阈值或 token 预算超限时 ``persist`` →
+``memory.compact``（**按本轮会话收窄**，change `0192` / ADR-0182），终止语义不变。
 
 ---
 

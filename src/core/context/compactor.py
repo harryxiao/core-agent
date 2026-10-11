@@ -42,7 +42,13 @@ class Compactor:
         return steps >= self._step_threshold or token_used >= budget
 
     def compact(self, history: list[dict[str, Any]]) -> Compaction:
-        """从多轮历史提取结论/决策/未决事项，标记被清理冗余。"""
+        """从**本轮**消息（+ 工具 I/O）提取结论/决策/未决事项，标记被清理冗余。
+
+        ``history`` 是调用点（``DefaultLoop._compact``）传入的 ``ctx.messages`` —— **仅本轮**；
+        多轮历史由三层滑窗（change 0178）与记忆压实承载，本方法**不**折入（change 0192 诚实化）。
+        ``from:<id>`` 出处面为**死面**：本轮消息条目无 ``id`` ⇒ ``source_ids`` 恒空、provenance
+        恒不触发（仅测试以手造 ``{"id": …}`` 激活），本方法**不**扩输入面（显式不做）。
+        """
         conclusions: list[str] = []
         decisions: list[str] = []
         open_items: list[str] = []
@@ -81,15 +87,17 @@ class Compactor:
         产物为 `kind="semantic"`（提炼事实，非事件），`tags` 携带贡献历史的原始 id
         （`from:<id>`）——沉淀不再是无出处的匿名条目。
 
-        产物按**本轮会话**归属（``session_id``，缺省空串 = 未归属），条目 id 带会话键
-        （缺省 ``default``，沿用 store 内既有 ``session_id or "default"`` 口径）⇒ 跨会话
-        不再同名覆盖。
+        产物按**本轮会话**归属（``session_id``，缺省空串 = 未归属），条目 id 与 ``trace_id`` 均带
+        会话键（缺省 ``default``，沿用 store 内既有 ``session_id or "default"`` 口径）⇒ 跨会话
+        不再同名覆盖，且回滚按 ``compaction.<key>`` 细化归因、与同会话其他压实产物共组
+        （change 0192，与 store 内会话摘要 / 关键事实 / 中期摘要的 trace 口径**逐字一致**）。
         """
         self._guard(c)
         if self._memory is None:
             return
         provenance = [f"from:{source_id}" for source_id in c.source_ids]
         key = session_id or "default"
+        trace_id = f"compaction.{key}"
         for i, line in enumerate(c.conclusions + c.decisions):
             self._memory.write(
                 "L2",
@@ -99,7 +107,7 @@ class Compactor:
                     content=line,
                     tags=["compaction", "fact", *provenance],
                     source="context",
-                    trace_id="compaction",
+                    trace_id=trace_id,
                     session_id=session_id,
                     kind="semantic",
                 ),
@@ -113,7 +121,7 @@ class Compactor:
                     content=item,
                     tags=["compaction", "open", *provenance],
                     source="context",
-                    trace_id="compaction",
+                    trace_id=trace_id,
                     session_id=session_id,
                     kind="semantic",
                 ),

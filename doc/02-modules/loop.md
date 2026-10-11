@@ -66,6 +66,10 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
   `_system_prompt`，**绝不折入** `history` / `messages`；token 计入 `token_used`（非空守卫）。
 - **物化点**：`_maintain(trace_id, session_id)` 会话感知，四步各自降级：①会话级记忆压实
   ②中期摘要物化（读转录中带 → 只读桩 → 既有摘要通道）③遗忘 ④冷路径；仍 off-loop（承 ADR-0157）。
+- **轮内压实的记忆固化**（change `0192`／ADR-0182）：`_compact` 的记忆固化步骤改传
+  `session_id=ctx.session_id`，与维护节拍①**同口径**（仅聚合本轮会话的 L2 episodic 条目，
+  SHALL NOT 顺手提炼他会话条目）；此前裸调 `compact()` = **全量聚合**（跨会话串扰）。空会话轮
+  `compact(session_id="")` ≡ 裸调（全量），行为**逐字不变**；全量语义保留给显式调用（CLI / 运维）。
 - **冷会话逐字兼容**：无任何摘要 ⇒ `tiered=False` ⇒ 短层吃满 `history_turns` 与全部预算、中层零 ⇒
   请求**逐字等于今天**；门控与 `_load_history` 完全同形（关回灌 / 空标识 / 未注入转录 ⇒ 摘要亦不读不注入）。
 

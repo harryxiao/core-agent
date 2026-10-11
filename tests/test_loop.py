@@ -607,6 +607,46 @@ def test_loop_compaction_triggers_on_token_budget_and_still_terminates() -> None
     assert "compaction.summary.s1" in {e.id for e in memory.audit() if e.kind == "semantic"}
 
 
+def _round_episodic(entry_id: str, session: str) -> MemoryEntry:
+    """本轮 L2 事件条目（含结论提示词 ⇒ 会被压实聚合）。"""
+    return MemoryEntry(
+        id=entry_id,
+        layer="L2",
+        content=f"{entry_id} 结论 完成",
+        tags=["loop"],
+        source="loop",
+        trace_id="prior",
+        session_id=session,
+        kind="episodic",
+    )
+
+
+def test_loop_compaction_scopes_memory_to_round_session() -> None:
+    """轮内压实的记忆固化按本轮会话收窄：他会话条目层级不变（change 0192）。"""
+    memory = _summary_memory()
+    memory.write("L2", _round_episodic("a.0", "s1"))
+    memory.write("L2", _round_episodic("b.0", "s2"))
+    loop = _compacting_loop(memory, Compactor(memory=memory, step_threshold=1))
+
+    loop.run("hi", session_id="s1")
+
+    index = dict(memory.index().entries)
+    assert index["a.0"] == "L4", "本轮会话条目被聚合归档"
+    assert index["b.0"] == "L2", "他会话条目 SHALL NOT 被顺手聚合（变更前为跨会话串扰）"
+
+
+def test_loop_compaction_persist_trace_is_session_keyed() -> None:
+    """轮内压实产物 trace 携带会话键（change 0192）：非常量 `compaction`。"""
+    memory = _summary_memory()
+    loop = _compacting_loop(memory, Compactor(memory=memory, step_threshold=1))
+
+    loop.run("hi", session_id="s1")
+
+    facts = [e for e in memory.audit() if e.id.startswith("compaction.fact.")]
+    assert facts, "本轮含结论提示词 ⇒ 上下文压实产生产物"
+    assert {e.trace_id for e in facts} == {"compaction.s1"}, "产物 trace SHALL 携带会话键"
+
+
 def test_loop_without_compactor_does_not_compact() -> None:
     memory = _summary_memory()
     memory.write("L2", _prior_entry())

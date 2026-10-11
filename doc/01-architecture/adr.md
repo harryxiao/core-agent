@@ -5928,6 +5928,57 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
   （消费面出现时再加）；③ **`recover()` 的检查点扫描为全量** —— 无索引 / 无缓存（任务规模上限内
   可接受）；④ 跨进程撤销 / trace_ids 消费面承 ADR-0136 既有局限，不在本 change。
 
+## ADR-0182：轮内压实会话化 —— 同一循环消除双口径、trace 归因按会话（change 0192 / 账本 E129）
+
+**背景 —— 同一条循环里两套压实口径。** 2026-10-11 长任务评估取证：① `DefaultLoop._compact`
+裸调 `self._memory.compact()`（`src/core/loop/default.py:668`）⇒ 空 `session_id` = **全量聚合**，
+把**所有会话**的 L2 episodic 条目一并提炼归档；而同循环的维护节拍 `_maintain`
+（`default.py:584`）却**会话化**（`compact(session_id=session_id)`）⇒ 同实例两条路径**口径相反**，
+一个正在跑的长任务会话触发轮内压实会**顺手提炼他会话条目**（跨会话串扰）；② `store.py:421-424`
+的 `compact` 契约注称「空串……供**循环内节拍压实**使用」，但节拍路径**其实传 session**
+（`default.py:584`）⇒ justification **失真**；③ `Compactor.persist` 用**常量** `trace_id="compaction"`
+（`compactor.py:102/:116`），而记忆侧其他压实 trace 恒为 `f"compaction.<key>"`
+（`store.py:670`/`:773`/`:486`/`:631`）⇒ 回滚归因过粗、且与同会话其他压实产物**不共组**（违反 P3）；
+④ `_compact`（`default.py:651`）与 `ContextCompactor.compact`（`compactor.py:44`）docstring 称
+「**多轮历史**提炼」，实输入却是 `ctx.messages`（**仅本轮**，`protocol.py:54` 明禁折入 history）。
+
+- **决策 ①：轮内压实会话化（只改调用面）。** `_compact` 第 668 行改
+  `self._memory.compact(session_id=ctx.session_id)` ⇒ 与维护节拍**同口径**。`MemoryStore.compact`
+  的**空串全量实现逐字不动**：空会话轮（`session_id=""`）`compact(session_id="")` ≡ 裸调
+  `compact()` ⇒ 既有行为**逐字不变**（`test_loop.py:583` 无会话压实测试不受影响）；全量语义
+  **保留给显式调用**（CLI / 运维命令面）。修的是「循环内顺手提炼他会话」这一串扰缺陷。
+- **决策 ②：persist trace 会话键化。** `key = session_id or "default"`（compactor `:92` 已有）
+  ⇒ persist 两处常量改 `f"compaction.{key}"`，与 store 既有口径**逐字一致**。回滚按
+  `compaction.<sid>` 即撤销该会话的压实产物、并与同会话会话摘要 / 关键事实**共组**（一次回滚
+  整批撤销同一压实波次）。**消费面核对**：time-travel 撤销集取自检查点 `state["trace_ids"]`
+  （`entry.py:865` / `manager.py:147`，运行期遇到即记），**不硬编码**该常量；全仓**无测试**断言
+  persist `trace_id == "compaction"`（断言的是条目 **id** 与 store 侧 trace）⇒ 零消费面被打破。
+- **决策 ③：诚实化（沿 `0182` 先例）。** `_compact` / `ContextCompactor.compact` docstring 改
+  「**本轮**消息 + 工具 I/O 提炼；**多轮历史**由**三层滑窗**（change 0178）与记忆压实承载」；
+  `store.py:422-423` 契约注改「空串全量语义保留给**显式调用**（CLI / 运维）」。
+- **决策 ④：provenance 死面只注记不活化（显式不做）。** `compact` 读 `entry.get("id")` 产
+  `source_ids` → `persist` 写 `from:<id>` tag；但 `ctx.messages` 条目**无 `id`**
+  （`{"role","content"}`）⇒ 循环内 `source_ids` **恒空**、`from:<id>` **恒不触发**（仅测试手造
+  `{"id":…}` 激活）。**注记**该事实，**不**扩输入面为多轮历史（扩面 = 多轮 token 成本 + 去重
+  新决策，Non-goal；多轮历史已由三层滑窗 `0178` + 记忆压实承载）。
+
+**被改写的规格条款。** `memory/spec.md`「记忆压实」**MODIFIED**（归约范围口径：空串全量保留给
+**显式调用**、**循环内路径**一律会话化 + 1 Scenario「循环内压实一律按本轮会话聚合」）。
+`loop/spec.md`「执行循环」**MODIFIED**（轮内压实的**记忆固化步骤**按本轮会话收窄 + 1 Scenario
+「轮内压实按会话收窄聚合」）。`context/spec.md`「上下文自动压实」**MODIFIED**（产物 `trace_id`
+携带会话键 + 1 Scenario「压实产物 trace 携带会话键」）。既有 Requirement / Scenario 标题**零丢失**。
+
+- **落点**：`src/core/loop/default.py`（`_compact` 传 `session_id` + docstring）、
+  `src/core/context/compactor.py`（`trace_id` 会话键化 + docstring + provenance 注记）、
+  `src/core/memory/store.py`（仅契约注）。`MemoryStore.compact` 实现 / `_maintain` /
+  `summarize_slice` / key-fact 抽取**零改动**。
+- **测试**（+5 新增，另 1 处既有用例改口径）：轮内压实只聚合本轮会话（他会话条目层级 / 内容不变）、
+  空会话轮全量回归、persist `trace_id` 会话键（空 / 非空）、docstring 诚实化文案。
+- **局限**：① **provenance（`from:<id>`）仍为死面** —— `ctx.messages` 无 `id`，循环内恒不触发
+  （只注记，活化需扩输入面，另批）；② **空会话轮仍是全量聚合** —— 诚实保留（显式调用语义），
+  非本 change 修复对象；③ **`_maintain` 的多会话公平性**承 ADR-0169⑦ 既有局限（节拍状态驻留实例、
+  只有「正巧活跃」的会话被刷新），不在本 change。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6104,3 +6155,4 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
 | ADR-0179 | 02-modules/evolution.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/phase-35.md |
 | ADR-0180 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 02-modules/cli-ops.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0181 | 03-interfaces/durability-interface.md, 02-modules/cli-ops.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0182 | 02-modules/loop.md, 02-modules/memory.md, 02-modules/context.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

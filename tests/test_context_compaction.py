@@ -20,6 +20,7 @@ from core.configuration.manager import _DEFAULT_COMPACT_STEPS
 from core.context import Compactor
 from core.context.compactor import _STEP_THRESHOLD
 from core.loop import Action, DefaultLoop
+from core.memory import MemoryStore
 
 _DEFAULT_STEPS = 6
 _DEFAULT_BUDGET = 65536
@@ -124,3 +125,27 @@ def test_loop_compacts_at_most_once_per_turn() -> None:
 
     assert rec.compacted == 1, "同轮多次满足判据不得重复压实（避免同轮多次模型调用）"
     assert "LOOP_LIMIT_EXCEEDED" in result.reply
+
+
+def test_persist_trace_is_session_keyed() -> None:
+    """产物 trace 携带会话键（change 0192）：空会话 ⇒ `compaction.default`，非空 ⇒ 会话键。"""
+    memory = MemoryStore()
+    compactor = Compactor(memory=memory)
+    c = compactor.compact([{"role": "user", "content": "结论：完成"}])
+
+    compactor.persist(c, session_id="")
+    compactor.persist(c, session_id="s7")
+
+    entries = {e.id: e for e in memory.audit()}
+    assert entries["compaction.fact.default.0"].trace_id == "compaction.default"
+    assert entries["compaction.fact.s7.0"].trace_id == "compaction.s7"
+
+
+def test_compaction_docstrings_state_round_scope() -> None:
+    """docstring 诚实化（change 0192）：明示输入为**本轮**消息，不再称「**从多轮历史**提取」。"""
+    ctx_doc = Compactor.compact.__doc__ or ""
+    loop_doc = DefaultLoop._compact.__doc__ or ""  # noqa: SLF001 — 文案门禁，按私有方法取值
+    assert "从多轮历史" not in ctx_doc, "压实器输入是本轮消息，非从多轮历史提取"
+    assert "本轮" in ctx_doc
+    assert "从多轮历史" not in loop_doc, "轮内压实输入是本轮消息，非从多轮历史提取"
+    assert "本轮" in loop_doc
