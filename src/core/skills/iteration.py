@@ -15,7 +15,9 @@ A/B 定夺：提升落地新版本，退化丢弃草稿（**技能本身不弃�
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 
+from core.memory import redact_secrets
 from core.plugin_registry import Effect, EffectTracker
 
 from .feedback import SkillFeedback, SkillStats
@@ -37,6 +39,10 @@ RETIRE_AFTER_DEGRADATIONS = 3
 # 落地效应按此 trace 登记（回滚即恢复原版本与原 instructions）
 _ITERATE_TRACE = "skills.iterate"
 
+# 失败实况注入上界：末尾至多 N 步 × 单步至多 M 字（token 有界，非信息完整；change 0223）
+_MAX_FAILURE_STEPS = 5
+_MAX_FAILURE_STEP_CHARS = 200
+
 _PROMPT_HEAD = (
     "你是技能迭代器。下面是某技能的现行标准作业步骤与最近的实际执行情况。"
     "请针对失败给出更稳健的改进版步骤：只输出编号步骤清单，不要复述原文、不要解释理由。"
@@ -45,21 +51,40 @@ _PROMPT_HEAD = (
 )
 
 
-def build_iterate_prompt(skill: Skill, stats: SkillStats) -> str:
-    """把「现行步骤 + 执行统计」渲染为改写 prompt。"""
+def build_iterate_prompt(
+    skill: Skill, stats: SkillStats, *, failure_steps: Sequence[str] = ()
+) -> str:
+    """把「现行步骤 + 执行统计（+ 失败实况）」渲染为改写 prompt。
+
+    ``failure_steps`` 是本轮失败的实际执行步骤（change 0223）：非空时多一节交给模型定位失败，
+    使 ``_PROMPT_HEAD`` 自设的「写明防的是哪一类失败」有据可依；空 ⇒ 产物**逐字不变**。
+    """
     task_types = "、".join(skill.task_types) or "（未声明）"
-    return "\n".join(
-        [
-            _PROMPT_HEAD,
-            "",
-            f"技能：{skill.skill_id}（{skill.description}）",
-            f"适用任务：{task_types}",
-            f"执行情况：{stats.total} 次，失败 {stats.fail} 次（失败率 {stats.failure_rate:.0%}）",
-            "",
-            "现行步骤：",
-            skill.instructions or "（空）",
-        ]
-    )
+    lines = [
+        _PROMPT_HEAD,
+        "",
+        f"技能：{skill.skill_id}（{skill.description}）",
+        f"适用任务：{task_types}",
+        f"执行情况：{stats.total} 次，失败 {stats.fail} 次（失败率 {stats.failure_rate:.0%}）",
+    ]
+    block = _failure_steps_block(failure_steps)
+    if block:
+        lines += ["", "最近一次失败的实际执行步骤：", block]
+    lines += ["", "现行步骤：", skill.instructions or "（空）"]
+    return "\n".join(lines)
+
+
+def _failure_steps_block(failure_steps: Sequence[str]) -> str:
+    """失败步序 ⇒ **有界 + 行内脱敏**的文本块；无有效步序 ⇒ 空串（调用点据此跳过整块）。
+
+    先 ``redact_secrets``（与 loop 的 ``failure_digest`` 同口径：只抹密钥子串、保留工具名/路径）
+    再截断 —— 顺序即安全，避免密钥跨截断边界泄漏；只取**末尾** ``_MAX_FAILURE_STEPS`` 步
+    （失败通常落在序列尾部）。上限的意义是 token 有界，而非信息完整。
+    """
+    cleaned = [
+        redact_secrets(step)[:_MAX_FAILURE_STEP_CHARS] for step in failure_steps if step.strip()
+    ]
+    return "\n".join(f"- {step}" for step in cleaned[-_MAX_FAILURE_STEPS:])
 
 
 def _next_version(version: str) -> str:
@@ -112,15 +137,19 @@ class SkillIterator:
         drafted = self._drafts.get(skill.skill_id, {})
         return version, drafted.get(version, skill.instructions)
 
-    def consider(self, skill: Skill) -> str | None:
-        """反馈不达标 → 生成下一版草稿并灰度，返回草稿版本号；否则返回 None（不改任何状态）。"""
+    def consider(self, skill: Skill, *, failure_steps: Sequence[str] = ()) -> str | None:
+        """反馈不达标 → 生成下一版草稿并灰度，返回草稿版本号；否则返回 None（不改任何状态）。
+
+        ``failure_steps`` 是本轮失败的实际执行步骤（change 0223）：透传给改写 prompt 供模型定位
+        失败；空 ⇒ prompt **逐字不变**。
+        """
         if self._writer is None or self._min_samples <= 0:
             return None
         stats = self._feedback.stats(skill.skill_id)
         if stats.total < self._min_samples or stats.failure_rate < self._threshold:
             return None
         draft = _next_version(skill.version)
-        text = self._writer(build_iterate_prompt(skill, stats))
+        text = self._writer(build_iterate_prompt(skill, stats, failure_steps=failure_steps))
         if not text.strip():
             return None  # 空改写不入草稿（不写半成品）
         drafts = self._drafts.setdefault(skill.skill_id, {})

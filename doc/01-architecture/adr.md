@@ -7451,6 +7451,47 @@ JSON。根治须放弃边出边流（产品级取舍），单独立项（PA-01 �
   ② 流式泄漏未修（单独立项）；③ 多个动作对象取「任一命中即失败」，不辨「哪个是真动作」。
 - 来源另见 `doc/openspec/changes/archive/…-0222-loop-embedded-action/design.md`、`coding-plan/Pending-Arbitration.md` PA-01。
 
+## ADR-0213：技能迭代注入「失败实况」—— 从「只有计数」到「有材料」（change 0223 / 台账 E160）
+
+**背景**：`SkillIterator.consider` 的改写 prompt（`build_iterate_prompt`）只给模型**计数**（`N 次，
+失败 M 次，失败率 x%`）与**现行步骤**，不给失败现场。而 `_PROMPT_HEAD` 自己要求「新增的防护步骤要
+写明它防的是**哪一类**失败」—— 没有材料即无法兑现，模型只能编造失败类别（PA-02）。
+
+**关键事实**：失败实况**已在手** —— 同一条 `on_turn` 收尾钩子里，本轮 `steps` 已被
+`sop_extractor.observe` / `note_store.observe_turn` 消费，**唯独技能迭代这条路丢掉它**。故此非
+「新增数据源」，而是「补一条被漏掉的转交」。
+
+**D1 材料注入（不改措辞）。** `build_iterate_prompt` / `consider` 各增**可选** `failure_steps`；非空
+⇒ 在「执行情况」与「现行步骤」之间插一节「最近一次失败的实际执行步骤：」，逐条 `- ` 回灌。
+**不改** `_PROMPT_HEAD` 一字（它是 pin + `prompts.md` 镜像的逐字锚，改一词即三处同改，与本 change
+目标无关；且该措辞在**拿到材料后恰好成立**）。
+
+**D2 落在 skills 侧、组合根只传参。** 依赖方向照 `sop.py` 先例：`runtime._loop_hooks().on_turn` 在
+失败轮把 `steps` 传给 `consider`（与 `sop_extractor.observe(task, steps, ok=ok)` 同型），prompt 由
+`skills` 侧自建 —— `loop` 不 import `skills`，`skills` 也不被反向注入 prompt 文本。
+
+**D3 有界 + 行内脱敏，顺序即安全。** `steps`（`loop._action_steps` 产出）**未脱敏**，本 change 让这批
+文本**首次**进改写 prompt ⇒ 在迭代器内两道处理：① `redact_secrets` 先行（`core.memory` 的 pure
+helper；`skills/router.py`、`crystallizer.py` 已 import `core.memory` ⇒ **无新依赖方向、无环**），与
+`loop` 的 `failure_digest` **同口径**（抹密钥子串、留工具名/路径）；② 再截断（末尾至多
+`_MAX_FAILURE_STEPS=5` 步 × 单步 `_MAX_FAILURE_STEP_CHARS=200` 字）。**先脱敏后截断** ⇒ 密钥不跨
+截断边界泄漏。上限意义 = **token 有界**，非信息完整。**取末尾**（失败通常落在序列尾部）。
+
+**D4 缺省空 ⇒ 逐字不变。** `failure_steps=()` 是可选入参，既有调用点（含测试替身）不传 ⇒ 不产块 ⇒
+与今日产物逐字节相同（全批纪律「缺省关 ⇒ 逐字不变」）。
+
+- **规格**：**规格中性**（`skip_specs: true`）。`skills` spec「技能迭代闭环」只规定触发 / 灰度 / 定夺 /
+  可逆四件事，**未约束 prompt 的输入材料**（属实现细节，沿 `0215`/`0219` 判据）⇒ 0 Requirement /
+  0 Scenario 变动。
+- **反证（实测）**：(A) 摘组合根 `failure_steps=steps` ⇒ `test_phase13` **1 failed**；(B) 摘
+  `build_iterate_prompt` 的块 ⇒ `test_skills` **4 failed, 1 passed**；复原 ⇒ `md5sum` **逐字节相同**、
+  目标 6 例全绿。
+- **局限**：① 只注入**触发那一轮**的失败步骤（不做跨轮失败轨迹聚合 —— 轨迹级诊断属 evolution 维度2）；
+  ② **SOP 路径同源暴露未修（登记）**：`sop.py::observe` 把同一批**未脱敏** `steps` 喂给
+  `build_sop_prompt`，系**既有**行为、非本 change 引入，统一脱敏不在 PA-02 范围；③ 成功轮不触发
+  `consider` ⇒ 不会误把成功步骤当失败材料（既有语义，本 change 未改）。
+- 来源另见 `doc/openspec/changes/…-0223-skill-iteration-failure-steps/design.md`、`coding-plan/Pending-Arbitration.md` PA-02。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7658,3 +7699,4 @@ JSON。根治须放弃边出边流（产品级取舍），单独立项（PA-01 �
 | ADR-0210 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0211 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0212 | 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
+| ADR-0213 | 03-interfaces/skills-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |

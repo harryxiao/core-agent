@@ -22,8 +22,10 @@ from core.skills import (
     SkillIterator,
     SkillLibrary,
     SkillRouter,
+    SkillStats,
     SopExtractor,
     VersionManager,
+    build_iterate_prompt,
     skill_hint,
 )
 
@@ -705,6 +707,82 @@ def test_iterator_consider_empty_text_not_drafted() -> None:
 
     assert it.consider(lib.lookup(_SID)) is None, "空改写文本不入草稿"
     assert it.resolve(lib.lookup(_SID)) == ("v1", "1. 读输入\n2. 输出摘要")
+
+
+# ---- 0223 迭代注入失败实况 ----
+
+_STEP_HEADER = "最近一次失败的实际执行步骤："
+
+
+def test_iterate_prompt_includes_failure_steps() -> None:
+    """失败实况非空 ⇒ prompt 多一节「最近一次失败的实际执行步骤」，逐条回灌（0223）。"""
+    skill = _sop_library().lookup(_SID)
+    stats = SkillStats(hits=3, ok=0, fail=3)
+    prompt = build_iterate_prompt(
+        skill, stats, failure_steps=["code_run（pytest -q）→ 3 failed", "file_read（a.py）→ 未找到"]
+    )
+
+    assert _STEP_HEADER in prompt
+    assert "- code_run（pytest -q）→ 3 failed" in prompt
+    assert "- file_read（a.py）→ 未找到" in prompt
+    head, _, tail = build_iterate_prompt(skill, stats).partition("\n\n现行步骤：")
+    assert prompt.startswith(head), "头与统计各节逐字保留"
+    assert prompt.endswith(f"\n\n现行步骤：{tail}"), "现行步骤段落于块后、逐字保留"
+
+
+def test_iterate_prompt_without_failure_steps_is_verbatim() -> None:
+    """缺省/空 ⇒ 不产块 ⇒ 与旧签名产物**逐字相同**（缺省关的字节保证）。"""
+    skill = _sop_library().lookup(_SID)
+    stats = SkillStats(hits=3, ok=0, fail=3)
+
+    assert build_iterate_prompt(skill, stats, failure_steps=[]) == build_iterate_prompt(
+        skill, stats
+    )
+    assert _STEP_HEADER not in build_iterate_prompt(skill, stats)
+    assert build_iterate_prompt(skill, stats, failure_steps=["   "]) == build_iterate_prompt(
+        skill, stats
+    ), "全空白步序 ⇒ 视同未提供"
+
+
+def test_iterate_prompt_failure_steps_are_bounded() -> None:
+    """有界：只取**末尾** 5 步、单步截断至 200 字（token 有界，非信息完整）。"""
+    skill = _sop_library().lookup(_SID)
+    stats = SkillStats(hits=9, ok=0, fail=9)
+    prompt = build_iterate_prompt(skill, stats, failure_steps=[f"step-{i}" for i in range(10)])
+
+    assert "step-4" not in prompt, "早于末 5 步的丢弃"
+    assert "step-5" in prompt and "step-9" in prompt
+
+    long_step = "长" * 500
+    bounded = build_iterate_prompt(skill, stats, failure_steps=[long_step])
+    assert "长" * 200 in bounded and "长" * 201 not in bounded, "单步截断至 200"
+
+
+def test_iterate_prompt_failure_steps_are_redacted() -> None:
+    """注入前**行内脱敏**（与 loop `failure_digest` 同口径）：密钥形态替换为 `<redacted>`。"""
+    skill = _sop_library().lookup(_SID)
+    stats = SkillStats(hits=3, ok=0, fail=3)
+    secret = "sk-abcdefghijklmnop"
+    prompt = build_iterate_prompt(
+        skill, stats, failure_steps=[f"web_fetch（Authorization: {secret}）→ 401"]
+    )
+
+    assert secret not in prompt, "密钥形态绝不进 prompt"
+    assert "<redacted>" in prompt
+    assert "web_fetch" in prompt, "只抹密钥子串，工具名/结构保留"
+
+
+def test_iterator_consider_forwards_failure_steps() -> None:
+    """`consider` 把失败实况透传给改写器 prompt。"""
+    lib = _sop_library()
+    feedback = SkillFeedback()
+    for _ in range(3):
+        feedback.record_outcome(_SID, version="v1", ok=False)
+    seen: list[str] = []
+    it = _iterator(lib, feedback, writer=lambda prompt: seen.append(prompt) or "1. 改进步骤")
+
+    assert it.consider(lib.lookup(_SID), failure_steps=["code_run → 超时"]) == "v2"
+    assert len(seen) == 1 and "code_run → 超时" in seen[0]
 
 
 def test_iterator_resolve_splits_by_gray_ratio() -> None:

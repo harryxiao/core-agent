@@ -158,25 +158,37 @@ class SkillFeedback:
 
 class SkillIterator:
     def resolve(self, skill: Skill) -> tuple[str, str]:   # (版本, instructions)
-    def consider(self, skill: Skill) -> str | None:       # 不达标 → 草稿 + 灰度
+    def consider(
+        self, skill: Skill, *, failure_steps: Sequence[str] = ()
+    ) -> str | None:                                      # 不达标 → 草稿 + 灰度
     def decide(self, skill: Skill) -> ABResult | None:    # 双版本样本齐 → A/B 定夺
 
-def build_iterate_prompt(skill: Skill, stats: SkillStats) -> str: ...
+def build_iterate_prompt(
+    skill: Skill, stats: SkillStats, *, failure_steps: Sequence[str] = ()
+) -> str: ...
 ```
+
+**失败实况（change 0223）**：`failure_steps` 是**触发迭代那一轮**的实际执行步骤（组合根
+`runtime._loop_hooks().on_turn` 在失败轮把本轮 `steps` 传入）。非空时 prompt 在「执行情况」与
+「现行步骤」之间多一节「最近一次失败的实际执行步骤：」，逐条 `- ` 回灌 —— 使 `_PROMPT_HEAD` 自设的
+「写明防的是哪一类失败」有据可依（此前只有计数 ⇒ 模型只能猜）。注入前在**迭代器内**做两件事：
+`redact_secrets` **行内脱敏**（与 loop `failure_digest` 同口径：抹密钥子串、留工具名/路径）→ 再截断
+（末尾至多 5 步 × 单步 200 字，token 有界）。`failure_steps` 缺省空 ⇒ prompt **逐字不变**。
 
 | 维度 | 口径 |
 |---|---|
 | **命中口径** | 技能进入 prompt 的那一轮记一次命中；结果按该轮**实际注入的版本**记成功/失败（版本维是 A/B 的前提） |
 | **反馈存储** | 缺省仅进程内（不写记忆）；注入 `path` 时落盘 `$CORE_STATE_DIR/skill-feedback.json` 并在启动恢复（0050，见 §7）。不影响本轮推理结果与终止语义；未注入记录器 → 零行为变化 |
 | **触发门** | 样本数 ≥ `_ITERATE_MIN_SAMPLES`(3) **且** 失败率 ≥ `_ITERATE_FAILURE_RATE`(0.5)，且已注入 writer，且改写文本非空——任一不满足即不迭代（零额外模型调用） |
+| **失败实况** | 仅在**失败轮**（`ok=False`）触发迭代时注入本轮 `steps`；成功轮不触发 `consider`（沿既有语义）⇒ 不会把成功轮的步骤当失败材料 |
 | **灰度** | 草稿以 `_GRAY_RATIO`(0.3) 比例分流：`resolve` 按 `VersionManager.select` 返回版本，其余任务仍用原版本 |
 | **定夺** | 两版本样本各 ≥ 下限才 `ab_test`；胜者为草稿则落地（版本号 + `instructions` 一并写回），否则**只丢草稿**——草稿版本非库中 `Skill.version`，`_deprecate` 自然 no-op，**技能不被误标 deprecated** |
 | **可逆** | 落地登记 `Effect(op="skills.iterate", undo=恢复原版本与原 instructions)`（`trace_id="skills.iterate"`）；已被后续迭代覆盖则不回溯（幂等） |
 | **接线** | `build_runtime`：命中钩子（路由 → 版本解析 → 记命中/快照）与收尾钩子（记结果 → `decide` → 失败再 `consider` → 转交 SOP 观察者）**每 loop 一组闭包**，状态不跨 loop 共享 |
 
-已知缺口（如实记录）：改写 prompt 无失败轨迹（只有现行 steps + 计数，轨迹级诊断属 evolution 维度2）；
-草稿被丢弃后需重新累计样本（无 cooldown）；成功率只区分成败，不检测 `instructions` 是否被模型实际采纳；
-反馈/样本/灰度状态虽已落盘（0050），但**不做跨进程并发写入的合并**（沿用整文件覆盖语义）。
+已知缺口（如实记录）：改写 prompt 只含**触发那一轮**的失败步骤（不做跨轮失败轨迹聚合，轨迹级诊断属
+evolution 维度2）；草稿被丢弃后需重新累计样本（无 cooldown）；成功率只区分成败，不检测 `instructions`
+是否被模型实际采纳；反馈/样本/灰度状态虽已落盘（0050），但**不做跨进程并发写入的合并**（沿用整文件覆盖语义）。
 
 ---
 

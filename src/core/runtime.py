@@ -743,7 +743,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 skill_feedback.record_outcome(skill.skill_id, version=version, ok=ok)
                 skill_iterator.decide(skill)  # 两版本样本齐备 → A/B 定夺
                 if not ok:
-                    skill_iterator.consider(skill)  # 失败轮触发迭代（阈值门在迭代器内）
+                    # 失败轮触发迭代（阈值门在迭代器内）；把本轮实际步骤作为失败实况一并交给
+                    # 改写 prompt（change 0223 —— 迭代器内做有界 + 脱敏）。
+                    skill_iterator.consider(skill, failure_steps=steps)
             surfaced.clear()
             sop_extractor.observe(task, steps, ok=ok)
             note_store.observe_turn(task, steps, ok=ok)  # 任务后 Update：成功轮覆盖式写回笔记

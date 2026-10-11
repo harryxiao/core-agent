@@ -913,3 +913,30 @@ def test_build_runtime_wires_skill_iteration(monkeypatch, tmp_path) -> None:
     assert result is not None and result.decision == "promote", "A/B 指标接的是反馈成功率"
     assert library.lookup("skills.sop.x").version == "v2"
     assert library.lookup("skills.sop.x").instructions == "1. 改进步骤"
+
+
+def test_build_runtime_forwards_failure_steps_to_iterator(monkeypatch, tmp_path) -> None:
+    """0223：失败轮把**本轮实际步骤**交给迭代器改写器（凭材料而非仅计数）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+
+    library = runtime.skill_router._library
+    library.register(
+        Skill(
+            skill_id="skills.sop.x",
+            description="SOP：summarize report",
+            task_types=["summarize report"],
+            instructions="1. 读输入",
+            status="active",
+        )
+    )
+    planner_router = runtime.loop._planner._skill_router
+    seen: list[str] = []
+    runtime.skill_iterator._writer = lambda prompt: seen.append(prompt) or "1. 改进步骤"
+    for _ in range(3):
+        planner_router("summarize report")
+        runtime.loop._turn_observer("summarize report", ["code_run（pytest -q）→ 3 failed"], False)
+
+    assert seen, "失败率达阈值 → 已触发改写"
+    assert "最近一次失败的实际执行步骤：" in seen[0]
+    assert "- code_run（pytest -q）→ 3 failed" in seen[0], "失败现场逐条注入"

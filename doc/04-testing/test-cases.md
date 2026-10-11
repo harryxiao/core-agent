@@ -2947,3 +2947,29 @@ Scenario ＋ ADDED 1 Scenario；既有其余 7 Scenario 逐字保留）。承 `0
 > **既有 7 Scenario 逐字保留**（混写正文 / 围栏 / 非动作 JSON / 解析失败 / 纯 JSON 零回归 / 未闭合 /
 > 有界原始产出 / 截断区分成因）；**零回归面**：形态 3（尾部动作）、形态 4（未闭合）判据逐字不变。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0212 行。
+
+## 136. 技能迭代注入「失败实况」（TC-ITERFAIL，change `0223`／ADR-0213，台账 E160）
+
+**capability `skills`**：**规格中性**（`skip_specs: true`）—— 「技能迭代闭环」只规定触发 / 灰度 /
+定夺 / 可逆四件事，**未约束 prompt 的输入材料**（实现细节）。承 PA-02：改写 prompt 此前只有**计数**
+（`N 次，失败 M 次，失败率 x%`）＋ 现行步骤，**无失败现场** ⇒ `_PROMPT_HEAD` 自设的「写明防的是哪一类
+失败」无法兑现。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-ITERFAIL-01 | 失败实况在场 | `build_iterate_prompt(skill, stats, failure_steps=[...])` | 含「最近一次失败的实际执行步骤：」＋ 逐条 `- `；头/统计节逐字保留、现行步骤段落在块后（`tests/test_skills.py::test_iterate_prompt_includes_failure_steps`） |
+| TC-ITERFAIL-02 | 缺省逐字不变 | `failure_steps=[]` / `["   "]` / 不传 | 三者产物**逐字相同**、无块头（`...::test_iterate_prompt_without_failure_steps_is_verbatim`） |
+| TC-ITERFAIL-03 | 有界 | 传 10 步 / 单步 500 字 | 只取**末尾** 5 步（`step-4` 不在、`step-5..9` 在）；单步截断至 200 字（`...::test_iterate_prompt_failure_steps_are_bounded`） |
+| TC-ITERFAIL-04 | 行内脱敏 | 步序含 `sk-abcdefghijklmnop` | 明文**不出现**、呈 `<redacted>`、工具名/结构保留（`...::test_iterate_prompt_failure_steps_are_redacted`） |
+| TC-ITERFAIL-05 | `consider` 透传 | `consider(skill, failure_steps=["code_run → 超时"])` | 改写器收到的 prompt 含该步（`...::test_iterator_consider_forwards_failure_steps`） |
+| TC-ITERFAIL-06 | 组合根接线 | 失败轮 `on_turn(task, ["code_run（pytest -q）→ 3 failed"], False)` ×3 | 改写器 prompt 含块头与该步（`tests/test_phase13.py::test_build_runtime_forwards_failure_steps_to_iterator`） |
+
+> **反证（实测）**：(A) 摘组合根 `failure_steps=steps` ⇒ `tests/test_phase13.py` **`1 failed, 38 deselected`**；
+> (B) 摘 `build_iterate_prompt` 的块 ⇒ `tests/test_skills.py`（该 -k 组）**`4 failed, 1 passed`**；
+> 复原 ⇒ `src/core/runtime.py` / `src/core/skills/iteration.py` **`md5sum` 逐字节相同**、目标 6 例全绿。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2513 passed**（基线 **2507**，**+6**，与用例数一致）。
+> **规格**：无 delta（`skip_specs: true`）⇒ canonical `skills` **11 req / 55 scen 不变**；
+> `openspec validate --all` 32 passed（31 canonical ＋ 1 change）→ 归档后 **31 passed**。
+> **零回归面**：`failure_steps` 缺省空 ⇒ 所有既有调用点（含 `_drafted` 等测试替身）产物**逐字不变**；
+> `_PROMPT_HEAD` 未动 ⇒ `test_prompt_pinning.py::test_iteration_head_verbatim` 与 `prompts.md` ⑨ 不受影响。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0213 行。
