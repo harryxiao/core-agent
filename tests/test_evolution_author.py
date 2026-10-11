@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from core.evolution import INTERNAL_PLUGIN_IDS, GenerationCandidate
-from core.evolution.author import patch_author_with
+from core.evolution.author import patch_author_with, strip_fence
 from core.evolution.plugin_ids import module_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -91,3 +91,34 @@ def test_module_path_is_stable_for_all_ids(pid: str) -> None:
     """逐个 id 的参数化版本（失败时直接点名是哪个 id 的约定断了）。"""
     assert module_path(pid).startswith("src/core/")
     assert module_path(pid).endswith(".py")
+
+
+def test_strip_fence_returns_text_when_no_fence() -> None:
+    """无围栏 ⇒ 原样返回（不擅自改写模型输出 —— 既有语义，须保持）。"""
+    assert strip_fence("def run() -> None:\n    return 1\n") == "def run() -> None:\n    return 1\n"
+
+
+def test_strip_fence_takes_last_block_when_prose_precedes() -> None:
+    """「说明 + 围栏」形态：整体匹配失败时取**最后一个**围栏块，说明文字不得写进源码。"""
+    text = "这是修补后的文件：\n\n```python\ndef run() -> None:\n    return 1\n```\n"
+    assert strip_fence(text) == "def run() -> None:\n    return 1\n"
+
+
+def test_strip_fence_takes_last_block_among_several() -> None:
+    """说明 + 多块 ⇒ 取**末**块（与「只认尾部」同型：末块即模型最终给出的内容）。
+
+    注意整串若**以围栏起首**则由 `_FENCE` 接管（锚定匹配，跨到末个围栏）—— 本兜底只在
+    串首不是围栏时生效，故此处让说明文字打头。
+    """
+    text = "先说明\n```\n旧的\n```\n再补一句\n```\n新的\n```\n"
+    assert strip_fence(text) == "新的\n"
+
+
+def test_author_strips_fence_with_leading_prose() -> None:
+    """接缝级反证：模型「先说一句 + 再给围栏」时，产物是纯源码（不含说明文字）。"""
+    author = patch_author_with(
+        lambda _: "这是修补后的文件：\n\n```python\ndef run() -> None:\n    return 1\n```\n",
+        read_source=lambda _: "def run() -> None:\n    return 0\n",
+    )
+
+    assert author(_candidate()).content == "def run() -> None:\n    return 1\n"

@@ -7372,6 +7372,29 @@ pin」须逐个 `grep`，**无集中查阅面**。
   节选等）由结构不变量与既有单测覆盖，本表只做**描述**。
 - 来源另见 `doc/openspec/changes/archive/2026-10-11-0219-prompt-catalog/design.md`。
 
+## ADR-0210：提词收紧轮低风险收口 —— strip_fence 兜底 / 镜像门禁 / ⑧ 微调（change 0220 / 台账 E157）
+
+**背景 —— 提词收紧轮（`1f93b88`）的三项收尾。** 见 `coding-plan/Pending-Arbitration.md`：PA-04
+（`strip_fence` 只剥整体围栏）、PA-05（镜像无自动校验）、PA-06（⑧ 教训段易成空话）。
+
+**D1 PA-04 = 兜底取末块，非语法自检。** `strip_fence` 整体匹配失败时取**最后一个**围栏块（同
+`planner._trailing_json_object`「只认尾部」）；**不选** `ast.parse` 自检（属验证门职责）。整串以
+围栏起首仍由既有 `_FENCE` 接管 —— 兜底只覆盖「说明 + 围栏」。
+
+**D2 PA-05 = 核对落成测试，非反向生成。** 新 `tests/test_prompt_mirror.py` 断言模块常量的每一非空行
+出现在镜像；**不选**脚本反向生成（镜像含解释性旁注，生成器须重排结构）。⑤⑥ 去 `.format()` 转义
+取渲染形态（仅当含 `{{` 时），① 的 `{"args": {...}}` 是字面双 `}`、不受影响。
+
+**D3 PA-06 = 只改 ⑧，动 ⑦ 待分布证据。** ⑧ 教训段（会被「既往失败教训」块直接注入规划器）加
+「须写成可复用的判据」；⑦ 牵动 `W_IMPORTANCE` 权重分布 ⇒ 保留。
+
+- **规格（规格中性）**：无 spec delta；`skip_specs: true`。
+- **反证（三组，实测）**：摘兜底 ⇒ 3 failed, 20 passed；还原 ⑧ ⇒ 2 failed, 29 passed；改 ④ 常量
+  ⇒ 1 failed, 13 passed；三文件 `md5sum` 复原后逐个相同。
+- **局限**：① 多围栏块取末块理论上可误取（倾向低，已显式记录语义）；② 镜像门禁不查多余行；
+  ③ ⑦ 未动。
+- 来源另见 `doc/openspec/changes/archive/…-0219-prompt-catalog/design.md`、`coding-plan/Pending-Arbitration.md`。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7576,3 +7599,4 @@ pin」须逐个 `grep`，**无集中查阅面**。
 | ADR-0207 | 02-modules/memory.md, 02-modules/loop.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0208 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0209 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0210 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |

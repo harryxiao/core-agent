@@ -40,6 +40,10 @@ _PROMPT_HEAD = (
 
 # 模型爱把整份源码裹进 ```python 围栏：围栏必须剥掉，否则会被原样写进源码文件。
 _FENCE = re.compile(r"^```[^\n]*\n(?P<body>.*?)\n?```\s*$", re.DOTALL)
+# 兜底：整串非「整体被包裹」（模型常在块前加一句说明，如「这是修补后的文件：」）时，
+# 取**最后一个**围栏块 —— 末块即模型最终给出的文件内容（同 `planner._trailing_json_object`
+# 的「只认尾部」思路，避免把块前的说明文字写进 `.py`）。
+_FENCE_ANY = re.compile(r"```[^\n]*\n(?P<body>.*?)\n?```", re.DOTALL)
 
 
 def build_prompt(candidate: GenerationCandidate, source: str | None) -> str:
@@ -59,9 +63,19 @@ def build_prompt(candidate: GenerationCandidate, source: str | None) -> str:
 
 
 def strip_fence(text: str) -> str:
-    """剥掉 Markdown 代码围栏（无围栏则原样返回，不擅自改写模型输出）。"""
-    match = _FENCE.match(text.strip())
-    return f"{match.group('body').rstrip()}\n" if match else text
+    """剥掉 Markdown 代码围栏（无围栏则原样返回，不擅自改写模型输出）。
+
+    两道：① 整串恰为一个围栏块 ⇒ 取该块块体；② 否则取**最后一个**围栏块（覆盖「说明 +
+    围栏」形态 —— 块前的说明文字若被一并写进 `.py` 是语法错误）。两道都不匹配 ⇒ 原样返回。
+    """
+    stripped = text.strip()
+    match = _FENCE.match(stripped)
+    if match:
+        return f"{match.group('body').rstrip()}\n"
+    blocks = list(_FENCE_ANY.finditer(stripped))
+    if blocks:
+        return f"{blocks[-1].group('body').rstrip()}\n"
+    return text
 
 
 def patch_author_with(llm: Callable[[str], str], *, read_source: SourceReader) -> PatchAuthor:

@@ -2882,3 +2882,27 @@ Requirement 做全量替换）。
 > **文档诚实性**：`doc/03-interfaces/prompts.md` 明写「**镜像是非真源**」—— 改一条 prompt 须**三处**
 > 同改（模块常量 → pin 副本 → 本表）；**pin 拦代码、不拦文档漂移**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0209 行。
+
+## 133. 提词收紧轮低风险收口（TC-LOWRISK，change `0220`／ADR-0210，台账 E157）
+
+**规格中性**：`skip_specs: true`。承提词收紧轮提交 `1f93b88` 的 `coding-plan/Pending-Arbitration.md`
+`PA-04`/`PA-05`/`PA-06` 三项（`PA-01`/`PA-02`/`PA-03`/`PA-07` 另走 change）。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-LOWRISK-01 | 无围栏原样返回 | `author.strip_fence("def run():\n    return 1\n")` | `== 输入`（不擅自改写模型输出）（`tests/test_evolution_author.py::test_strip_fence_returns_text_when_no_fence`） |
+| TC-LOWRISK-02 | 说明 ＋ 围栏取块体 | `author.strip_fence("这是修补后的文件：\n\n```python\n…\n```\n")` | `== "def run() -> None:\n    return 1\n"`（兜底：整体匹配失败 ⇒ 取末块，说明文字不入 `.py`）（`...::test_strip_fence_takes_last_block_when_prose_precedes`） |
+| TC-LOWRISK-03 | 多围栏块取**末**块 | `author.strip_fence("先说明\n```\n旧的\n```\n再补一句\n```\n新的\n```\n")` | `== "新的\n"`（末块 = 模型最终文件内容；显式记录该语义）（`...::test_strip_fence_takes_last_block_among_several`） |
+| TC-LOWRISK-04 | 接缝级剥围栏 | `patch_author_with(llm, read_source=…)`，llm 返回「说明 ＋ 围栏」 | `PatchProposal.content` 不含围栏与说明（`...::test_author_strips_fence_with_leading_prose`） |
+| TC-LOWRISK-05 | 镜像逐行一致 | 13 条模块常量（`_PROMPT_CONSTANTS`） | 每条**每一非空行**出现在 `doc/03-interfaces/prompts.md`（⑤⑥ 去 `.format()` 转义取渲染形态）（`tests/test_prompt_mirror.py::test_prompt_mirror_matches_constant_line_by_line`，13 参数化） |
+| TC-LOWRISK-06 | 镜像登记 ⑬⑭ | `prompts.md` 文本 | 含「⑬ 宠物人格」「⑭ 文档摘要器」（动态拼接无稳定锚 ⇒ 只断言**在镜像登记**）（`...::test_mirror_registers_persona_and_doc_summary`） |
+
+> **反证（实测三组）**：(A) 摘 `strip_fence` 兜底分支（`if blocks:`→`if False:`）⇒
+> `tests/test_evolution_author.py` **`3 failed, 20 passed`**；(B) 还原 ⑧ 教训措辞（去「可复用的判据」）⇒
+> `test_prompt_pinning` ＋ `test_prompt_mirror` **`2 failed, 29 passed`**；(C) 只改 ④ 常量、不动镜像 ⇒
+> `test_prompt_mirror` **`1 failed, 13 passed`**。三次复原 ⇒ `author.py` / `episodic.py` /
+> `test_prompt_pinning.py` 三文件 `md5sum` **逐个相同**。绿后全量 `.venv/bin/pytest -q` ⇒ **2505 passed**
+> （基线 **2487**，**+18**，与用例数一致）。
+> **规格中性**：`openspec validate --all` 32 passed（31 canonical ＋ 1 change）→ 归档后 **31 passed**，
+> canonical 计数**不变**。**零回归**：`git diff --stat src/` 仅 `author.py`/`episodic.py` 两文件。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0210 行。
