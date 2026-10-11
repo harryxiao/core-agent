@@ -144,6 +144,42 @@ def test_doc_summary_note_empty_slug_returns_none(tmp_path: Path) -> None:
     assert list(tmp_path.glob("*.md")) == [], "不产生任何 canonical 文件"
 
 
+def test_doc_summary_note_redacts_secret_shapes(tmp_path: Path) -> None:
+    """落盘前**无条件**脱敏：密钥形态子串 → `<redacted>`，原文不出现、结构保留（change 0224）。"""
+    store = NoteStore(path=tmp_path)
+    secret = "sk-abcdefghijklmnop"
+    summary = f"部署要点：调用 tools.web_fetch，Authorization: {secret}，其余照旧。"
+
+    note = _doc_summary_note(store, doc_id="deploy", summary=summary)
+
+    assert note is not None
+    assert secret not in note.content, "密钥形态绝不进结论笔记"
+    assert "<redacted>" in note.content
+    assert "tools.web_fetch" in note.content, "只抹密钥子串，工具名/结构保留"
+    assert not (tmp_path / "doc-deploy.md").read_text().count(secret), "真源落盘同样脱敏"
+
+
+def test_doc_summary_note_without_secret_is_verbatim(tmp_path: Path) -> None:
+    """无密钥形态 ⇒ `redact_secrets` 不改一字（既有语义零回归）。"""
+    store = NoteStore(path=tmp_path)
+
+    note = _doc_summary_note(store, doc_id="d1", summary=_QUANT)
+
+    assert note is not None and note.content.endswith(_QUANT), "无命中 ⇒ 正文逐字不变"
+
+
+def test_doc_summary_note_redaction_preserves_idempotence(tmp_path: Path) -> None:
+    """脱敏只作用于正文，不碰派生键 ⇒ 幂等覆盖语义不变（同 `doc_id` 仍单篇刷新）。"""
+    store = NoteStore(path=tmp_path)
+    _doc_summary_note(store, doc_id="d1", summary="key: sk-abcdefghijklmnop")
+    _doc_summary_note(store, doc_id="d1", summary="refresh: sk-zyxwvutsrqponmlk")
+
+    notes = [n for n in NoteStore(path=tmp_path).list() if n.note_id.startswith("doc-")]
+
+    assert len(notes) == 1 and notes[0].note_id == "doc-d1", "脱敏不影响派生确定性"
+    assert "refresh" in notes[0].content and "sk-zyxwvutsrqponmlk" not in notes[0].content
+
+
 # ---- 2. 双守护：摘要笔记不被逐轮写回 / 提升覆写 ----
 
 

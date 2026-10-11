@@ -2973,3 +2973,27 @@ Scenario ＋ ADDED 1 Scenario；既有其余 7 Scenario 逐字保留）。承 `0
 > **零回归面**：`failure_steps` 缺省空 ⇒ 所有既有调用点（含 `_drafted` 等测试替身）产物**逐字不变**；
 > `_PROMPT_HEAD` 未动 ⇒ `test_prompt_pinning.py::test_iteration_head_verbatim` 与 `prompts.md` ⑨ 不受影响。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0213 行。
+
+## 137. 文档摘要落盘前无条件脱敏（TC-DOCREDACT，change `0224`／ADR-0214，台账 E161）
+
+**capability `notes`**：规格 delta = MODIFIED「文档摘要笔记（notes.rag）」（Requirement 正文增一段
+「落盘前无条件脱敏」＋ ADDED 1 Scenario；**既有 4 Scenario 逐字保留**）；`rag` 规格**不动**（不改
+送模型的材料）。承 PA-03：`rag ingest --summarize` 的产物落 canonical **长期可检索**笔记，此前
+写入侧（`notes` 无 `redact_secrets`）与提示侧**皆无**脱敏。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-DOCREDACT-01 | 落盘前无条件脱敏 | `_doc_summary_note(store, doc_id="deploy", summary="… Authorization: sk-abcdefghijklmnop …")` | 正文含 `<redacted>`、**原文形态不出现**、工具名（`tools.web_fetch`）保留；**真源 `.md` 落盘同脱敏**（`tests/test_rag_summary.py::test_doc_summary_note_redacts_secret_shapes`） |
+| TC-DOCREDACT-02 | 无密钥 ⇒ 逐字不变 | `summary="量化结论：风险中性"` | 正文以原文结尾（`redact_secrets` 无命中不改一字）（`...::test_doc_summary_note_without_secret_is_verbatim`） |
+| TC-DOCREDACT-03 | 脱敏不破坏幂等 | 同 `doc_id` 两次落含密钥摘要 | 仍**单篇** `doc-d1`（派生病键未被波及）＋ 正文为**最新**摘要且已脱敏（`...::test_doc_summary_note_redaction_preserves_idempotence`） |
+
+> **反证（实测）**：摘 `redact_secrets` ⇒ `tests/test_rag_summary.py -k redact` **`2 failed`**
+> （TC-DOCREDACT-01/03）；另改 `_DOC_SUMMARY_PROMPT` 未同步镜像 ⇒ `tests/test_prompt_mirror.py`
+> **`1 failed`**（逐行核对生效，非空跑）；复原 ⇒ `src/core/entry.py` `md5sum` **逐字节相同**、
+> 11 passed。绿后全量 `.venv/bin/pytest -q` ⇒ **2516 passed**（基线 **2513**，**+3**，与用例数一致）。
+> **规格**：`notes` **MODIFIED**「文档摘要笔记（notes.rag）」＋ ADDED 1 Scenario ⇒ canonical `notes`
+> Requirement **数不变**／Scenario **＋1**；`rag` 无 delta。`openspec validate --all` 32 passed
+> （31 canonical ＋ 1 change）→ 归档后 **31 passed**。
+> **零回归面**：无密钥形态的摘要在 `redact_secrets` 下**逐字不变**（只替换命中子串）⇒ 既有 4
+> Scenario（source/tags/pinned / 幂等覆盖 / 双守护 / digest 命中节选）全绿。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0214 行。

@@ -7492,6 +7492,45 @@ helper；`skills/router.py`、`crystallizer.py` 已 import `core.memory` ⇒ **�
   `consider` ⇒ 不会误把成功步骤当失败材料（既有语义，本 change 未改）。
 - 来源另见 `doc/openspec/changes/…-0223-skill-iteration-failure-steps/design.md`、`coding-plan/Pending-Arbitration.md` PA-02。
 
+## ADR-0214：文档摘要落盘前无条件脱敏 —— 写入侧为信任边界（change 0224 / 台账 E161）
+
+**背景**：`rag ingest --summarize` 把文档**全文**交一次模型调用产摘要，产物经
+`entry._doc_summary_note` 落成 canonical **结论笔记**（**长期可检索**）。此前两条路径**皆无**脱敏：
+① 写入侧 —— `notes` 包**无** `redact_secrets`（`memory` 侧有），模型输出原样进正文；② 提示侧 ——
+`_DOC_SUMMARY_PROMPT` 只要求「总结核心结论」，未禁写密钥。⇒ 文档含密钥形态子串时，明文可能经摘要
+进入长期可检索的笔记，冲突红线「密钥只引用不读取、绝不进日志/记忆」（PA-03）。
+
+**D1 写入侧脱敏为**承重**防线（信任边界在写入者）。** 沿 `0155`（结构化抽取）的判据：「靠 prompt
+让模型别写密钥」**不可审计** —— 模型是否照办无从保证、亦无从测试。故确定性一侧必须兜底：
+`_doc_summary_note` 写盘前**无条件** `redact_secrets`。
+
+**D2 复用 `core.memory.redact_secrets`（不新写）。** 口径须与仓内其余持久面**一致**
+（`loop.failure_digest`、`memory` 抽取/情境链均走它）—— 新写一份只会引入形态漂移。依赖方向无新意：
+`entry.py` **已** `from core.memory import …`（只多引一符号）；且它非 LLM/rag 抽象 ⇒ 不触 ADR-0048。
+
+**D3 脱敏**只作用于正文**（不碰 `note_id` / `title`）。** 二者由 `doc_id` 确定性派生、是**幂等覆盖
+的键**；若脱敏波及键，同 `doc_id` 两次落盘会得到不同 `note_id` ⇒ 破坏幂等。故边界严格限于模型产出
+的 `summary`。
+
+**D4 提示措辞（C）为纵深、非防线。** `_DOC_SUMMARY_PROMPT` 补「不要输出任何密钥…」；它无法被测试
+证明「模型照办」⇒ 不计入防线（与 `0155` 同纪律）。镜像 `prompts.md` ⑭ 同步（`test_prompt_mirror`
+逐行核对会拦漂移）。
+
+**D5 `rag` 规格**不动。** 其「把文档**全文**交给一次模型调用」为既有承诺 —— 本 change **不改**送
+模型的材料（送进去仍是全文），只脱敏**产物**。
+
+- **规格**：`notes` **MODIFIED**「文档摘要笔记（notes.rag）」—— Requirement 正文增一段「落盘前
+  无条件脱敏」，ADDED 1 Scenario「摘要正文落盘前无条件脱敏」；**既有 4 Scenario 逐字保留**。
+  canonical `notes`：Requirement 数不变，Scenario **＋1**。
+- **反证（实测）**：摘 `redact_secrets` ⇒ `tests/test_rag_summary.py` **2 failed**（`-k redact`）；
+  复原 ⇒ `md5sum` **逐字节相同**、11 passed。另：改 `_DOC_SUMMARY_PROMPT` 未同步镜像 ⇒
+  `test_prompt_mirror` **1 failed**（逐行核对生效，非空跑）。
+- **局限**：① `redact_secrets` 是**形态匹配 + over-redact**，只覆盖 `_SECRET_PATTERNS` 所列形态与
+  「长随机串兜底」，**不保证**捕获无固定形态的业务密文 —— 与仓内其余脱敏面**同一天花板**；② 提示
+  措辞不可测「模型照办」（故不计防线）；③ `sop.py::observe` 未脱敏喂 `build_sop_prompt` 的**既有**
+  暴露面不在本 change（见 ADR-0213 局限②）。
+- 来源另见 `doc/openspec/changes/…-0224-doc-summary-redact/design.md`、`coding-plan/Pending-Arbitration.md` PA-03。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7700,3 +7739,4 @@ helper；`skills/router.py`、`crystallizer.py` 已 import `core.memory` ⇒ **�
 | ADR-0211 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0212 | 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0213 | 03-interfaces/skills-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
+| ADR-0214 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |

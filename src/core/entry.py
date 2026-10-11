@@ -64,7 +64,7 @@ from core.mcp import (
     default_endpoint_name,
     mcp_endpoints_path,
 )
-from core.memory import FileBackend, MemoryEntry, MemoryStore, TranscriptStore
+from core.memory import FileBackend, MemoryEntry, MemoryStore, TranscriptStore, redact_secrets
 from core.notes import (
     NoteEntry,
     NoteError,
@@ -1678,7 +1678,8 @@ def _rag_ingest(runtime: Any, args: argparse.Namespace) -> int:
 #: 文档摘要提示词（single-shot：全文 → 结论摘要；入口侧接缝，非会话压实形状）。
 _DOC_SUMMARY_PROMPT = (
     "请用简洁的中文总结下面这份文档的核心结论与关键要点，"
-    "直接输出摘要正文，不要前言与客套：\n\n{text}"
+    "直接输出摘要正文，不要前言与客套。"
+    "不要输出任何密钥、口令、令牌等敏感值（如遇敏感信息，略过或写成「已省略」）：\n\n{text}"
 )
 
 #: 文档摘要笔记的来源标记（canonical 真相层第三条写路径；与 `notes.promote` / `notes.turn` 并列）。
@@ -1692,6 +1693,10 @@ def _doc_summary_note(store: NoteStore, *, doc_id: str, summary: str) -> NoteEnt
     —— ADR-0148 三面边界由 `tests/test_architecture.py:426` 的结构门禁钉死 ⇒ 本函数落在
     `entry`（`test_rag_not_imported_by_reference_chain` 明列的两个 rag 例外之一），直接复用
     `NoteStore.update`（**唯一**写路径，与 `promote.py` 同纪律）。`pinned=False` 不占常驻预算。
+
+    摘要正文 SHALL 落盘前**无条件** `redact_secrets`（change 0224）：文档全文经模型产出的摘要可能
+    夹带密钥形态子串，而本笔记**长期可检索** ⇒ 信任边界在**写入侧**，不依赖提示词自律。脱敏**只
+    作用于正文**，不碰 `note_id` / `title`（派生键 ⇒ 保幂等覆盖）。
     """
     derived = slug_topic(doc_id)
     if not derived:
@@ -1701,7 +1706,7 @@ def _doc_summary_note(store: NoteStore, *, doc_id: str, summary: str) -> NoteEnt
         existing: NoteEntry | None = store.get(note_id)
     except NoteError:
         existing = None
-    body = f"## 文档摘要（{doc_id}）\n\n{summary.strip()}"
+    body = f"## 文档摘要（{doc_id}）\n\n{redact_secrets(summary.strip())}"
     title = (existing.title if existing is not None else "") or f"文档摘要 {doc_id}"
     return store.update(
         NoteEntry(
