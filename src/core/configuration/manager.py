@@ -186,6 +186,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         map_to="constraints.cooldown_s",
     ),
     ConfigSpec(
+        "constraints.retry_attempts",
+        "--constraints.retry-attempts",
+        "CORE_CONSTRAINTS_RETRY_ATTEMPTS",
+        default=None,
+        map_to="constraints.retry_attempts",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "llm.context_window",
         "--llm.context-window",
         "CORE_LLM_CONTEXT_WINDOW",
@@ -439,6 +447,7 @@ class ConfigManager:
         errors.extend(_sandbox_errors(perm))
         cons = cast("dict[str, Any]", config.extra.get("constraints") or {})
         errors.extend(_circuit_breaker_errors(cons))
+        errors.extend(_retry_errors(cons))
         loop_raw = cast("dict[str, Any]", config.extra.get("loop") or {})
         errors.extend(_loop_errors(loop_raw))
         errors.extend(_window_reserve_errors(config.llm.context_window, loop_raw))
@@ -546,6 +555,18 @@ class ConfigManager:
             int(raw.get("failure_threshold", _DEFAULT_FAILURE_THRESHOLD)),
             float(raw.get("cooldown_s", _DEFAULT_COOLDOWN_S)),
         )
+
+    def retry_attempts(self) -> int:
+        """重试尝试次数上界查询（含首次调用；缺省 ``0`` = 关闭重试）。
+
+        对齐 constraints「容错中间件」；返回**原始整数**（`RetryPolicy` 由组合根装配 ——
+        `configuration` 是底座模块，不得 import 能力层 `constraints`）。取值已过校验（≥0 的整数），
+        故此处只做 env/CLI 字符串归一（`_parse_int`），不设二次兜底。
+        """
+        if self._config is None:
+            return 0
+        raw = cast("dict[str, Any]", self._config.extra.get("constraints") or {})
+        return _parse_int(raw.get("retry_attempts")) or 0
 
     def loop_limits(self) -> tuple[int, int]:
         """循环预算上限查询 → ``(max_rounds, token_budget)``。
@@ -940,6 +961,23 @@ def _circuit_breaker_errors(raw: dict[str, Any]) -> list[str]:
             f"非法熔断冷却: constraints.cooldown_s={raw.get('cooldown_s')}（须为 ≥0 的数值）"
         )
     return errors
+
+
+def _retry_errors(raw: dict[str, Any]) -> list[str]:
+    """重试尝试次数校验（对齐 constraints「容错中间件」）。
+
+    `retry_attempts` 须为 **≥0 的整数**（`bool` / 负数 / 非数值一律非法）；缺省（键不存在）合法
+    （= 关闭重试）。非法取值**阻断启动**：静默兜底会把配置错误变成运行时的诡异行为。
+    """
+    if "retry_attempts" not in raw:
+        return []
+    attempts = _parse_int(raw.get("retry_attempts"))
+    if attempts is None or attempts < 0:
+        return [
+            f"非法重试次数: constraints.retry_attempts={raw.get('retry_attempts')}"
+            "（须为 ≥0 的整数）"
+        ]
+    return []
 
 
 def _parse_int(value: Any) -> int | None:

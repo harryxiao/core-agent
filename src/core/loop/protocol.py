@@ -118,6 +118,16 @@ class ActionResult:
     error: str = ""
 
 
+class ActFn(Protocol):
+    """动作执行接缝（`DefaultLoop.act` 可被可选 wrapper 包裹；change 0209 / ADR-0199）。"""
+
+    async def __call__(
+        self, action: Action, trace_id: str, *, approved: bool = False
+    ) -> ActionResult:
+        """执行一个动作，返回结构化结果。"""
+        ...
+
+
 class LoopPlugin(Protocol):
     """Loop 插件接口（策略替换点：ReAct / Plan-Execute / 自定义）。
 

@@ -27,6 +27,7 @@ from core.plugin_registry import Plugin
 from core.tools import SafetyGate, ToolProvider
 
 from .protocol import (
+    ActFn,
     Action,
     ActionResult,
     LoopContext,
@@ -294,6 +295,9 @@ class DefaultLoop(Plugin):
         # 条目的 `tags` 增 `after:<同会话上一已记忆轮>`；关闭 ⇒ 失败条目**逐字不变**。
         # 前序取自**进程内**按会话表 `_last_trace`（零记忆读 ⇒ 零新副作用）。
         causal_links: bool = False,
+        # 执行接缝包装器（change 0209 / ADR-0199，缺省 `None`）。注入 ⇒ 包裹 `self.act`
+        # （容错重试）；`None` ⇒ `self._act is self.act`，既有路径**逐字不变**。
+        act_wrapper: Callable[[ActFn], ActFn] | None = None,
     ) -> None:
         self._planner = planner
         self._memory = memory
@@ -327,6 +331,8 @@ class DefaultLoop(Plugin):
         # 跨进程重启、以及三路 loop 实例之间**链路会断**（已登记为局限）。零 I/O、零效应，
         # 故**不受开关门控**（开关只门控标注的**写入**）⇒ 会话中途开启亦立即可用。
         self._last_trace: dict[str, str] = {}
+        # 执行接缝：缺省即 `self.act` 本身（`act_wrapper` 为 None ⇒ **逐字不变**）；注入 ⇒ 包裹。
+        self._act: ActFn = act_wrapper(self.act) if act_wrapper is not None else self.act
 
     # ---- Plugin 生命周期 ----
 
@@ -434,7 +440,7 @@ class DefaultLoop(Plugin):
                     },
                 )
             act_t0 = time.monotonic()
-            result = await self.act(action, trace_id, approved=approved)
+            result = await self._act(action, trace_id, approved=approved)
             if action.is_terminal and result.failed:
                 turn_failed = True  # 终止动作的失败态（工具动作失败不入此列：ReAct 多轮自愈）
                 raw_output = action.raw_output  # 不可解析原始产出：另路留存，不进回复正文

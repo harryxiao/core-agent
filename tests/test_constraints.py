@@ -15,6 +15,9 @@ from core.constraints import (
     ContextCompressor,
     ExecContext,
     ExecRequest,
+    ExecResponse,
+    Fallback,
+    Pipeline,
     RetryPolicy,
     Rollback,
     Validator,
@@ -131,6 +134,84 @@ def test_rollback_on_failure() -> None:
     resp = rollback.on_failure(_ctx("t1"), _req(), RuntimeError("boom"))
     assert resp.ok is False
     assert undone == ["f.txt"]
+
+
+# ---- 降级与洋葱管道（change 0209：走出零测试状态，库能力边界） ----
+
+
+def test_fallback_on_failure_produces_response() -> None:
+    """降级：核心抛异常时 `on_failure` 经备用路径产出响应（不改写为异常）。"""
+    fallback = Fallback(lambda ctx, req: ExecResponse(ok=True, data="degraded"))
+    resp = fallback.on_failure(_ctx(), _req(), RuntimeError("boom"))
+    assert resp.ok is True
+    assert resp.data == "degraded"
+
+
+def test_pipeline_onion_order_and_reverse_after() -> None:
+    """Pipeline：before 顺序、after 逆序（洋葱模型）。"""
+    order: list[str] = []
+
+    class _Tag:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def before(self, ctx: ExecContext, req: ExecRequest) -> ExecRequest:
+            order.append(f"before:{self.name}")
+            return req
+
+        def after(self, ctx: ExecContext, resp: ExecResponse) -> ExecResponse:
+            order.append(f"after:{self.name}")
+            return resp
+
+    pipeline = Pipeline()
+    resp = pipeline.execute(
+        _ctx(), _req(), [_Tag("a"), _Tag("b")], lambda ctx, req: ExecResponse(ok=True)
+    )
+    assert resp.ok is True
+    assert order == ["before:a", "before:b", "after:b", "after:a"]
+
+
+def test_pipeline_failure_triggers_reverse_on_failure_short_circuit() -> None:
+    """核心抛异常：逆序触发 `on_failure`，首个非 None 响应短路后续中间件。"""
+    called: list[str] = []
+
+    class _Fallback:
+        def __init__(self, name: str, resp: ExecResponse | None) -> None:
+            self.name = name
+            self._resp = resp
+
+        def before(self, ctx: ExecContext, req: ExecRequest) -> ExecRequest:
+            return req
+
+        def after(self, ctx: ExecContext, resp: ExecResponse) -> ExecResponse:
+            return resp
+
+        def on_failure(
+            self, ctx: ExecContext, req: ExecRequest, error: Exception
+        ) -> ExecResponse | None:
+            called.append(self.name)
+            return self._resp
+
+    def _boom(ctx: ExecContext, req: ExecRequest) -> ExecResponse:
+        raise RuntimeError("boom")
+
+    # 逆序：outer 先被问，outer 有值 ⇒ 短路，inner 不再被问
+    pipeline = Pipeline()
+    resp = pipeline.execute(
+        _ctx(),
+        _req(),
+        [_Fallback("inner", None), _Fallback("outer", ExecResponse(ok=True, data="handled"))],
+        _boom,
+    )
+    assert resp.ok is True
+    assert resp.data == "handled"
+    assert called == ["outer"]  # inner 未被触发（短路）
+
+    # 无中间件提供降级 ⇒ 原异常透出
+    called.clear()
+    with pytest.raises(RuntimeError):
+        pipeline.execute(_ctx(), _req(), [_Fallback("inner", None)], _boom)
+    assert called == ["inner"]
 
 
 # ---- 上下文压缩 ----

@@ -73,7 +73,9 @@ from core.judgment import (
 from core.llm_provider import LLMProvider, LLMRequest, Message, StdlibLLMProvider
 from core.loop import Approver, DefaultLoop, LoopPlugin, TurnObserver
 from core.loop.constraints_adapter import build_constraints_chain
+from core.loop.fault_adapter import build_fault_chain
 from core.loop.planner import LLMPlanner, SkillHint
+from core.loop.protocol import ActFn
 from core.mcp import MCPClient, MCPEndpointRegistry, mcp_endpoints_path
 from core.memory import (
     Crystallizer,
@@ -833,6 +835,17 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         failure_threshold=failure_threshold, cooldown_s=cooldown_s
     )
 
+    # 容错重试链（change 0209 / ADR-0199）：`constraints.retry_attempts` 缺省 `0` ⇒ 不构造
+    # （`_fault_wrapper` 返回 None ⇒ `act_wrapper=None` ⇒ 既有路径逐字不变）。**按 provider 建**
+    # （可逆集合按 provider 的工具面算）；**宠物 loop 不接**（沿 `:1146` 隔离注记 —— 宠物流量
+    # 不应污染主线/神兽的容错态）。
+    retry_attempts = config.retry_attempts()
+
+    def _fault_wrapper(provider: ToolProvider) -> Callable[[ActFn], ActFn] | None:
+        if retry_attempts <= 0:
+            return None
+        return build_fault_chain(provider, max_attempts=retry_attempts).wrap
+
     # 循环预算上限（change 0098）：可经配置链设定，token 预算由 llm.context_window 派生
     # （窗口 - 输出预留；未配窗口回落缺省 65536）。四个 loop（主 / 子 agent / 神兽 / 宠物）
     # 同源同参。
@@ -863,6 +876,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         token_budget=token_budget,
         transcript=transcript,
         history_turns=config.history_turns(),
+        act_wrapper=_fault_wrapper(tools),
     )
 
     # 子 Agent 独立 loop：各自 ToolProvider（不含 tools.delegate，结构上杜绝再委托），
@@ -906,6 +920,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 action_observers=[constraints_chain.observe_result],
                 max_rounds=max_rounds,
                 token_budget=token_budget,
+                act_wrapper=_fault_wrapper(provider),
             ),
         )
 
@@ -950,6 +965,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 source=beast.agent_id,
                 max_rounds=max_rounds,
                 token_budget=token_budget,
+                act_wrapper=_fault_wrapper(provider),
             ),
         )
 

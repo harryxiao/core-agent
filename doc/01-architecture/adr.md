@@ -6749,6 +6749,72 @@ change 不越界。
   （`store.delete` 直接落盘，与既有 `RetentionManager` 行为一致 —— 保留策略是**生命周期管理**而非
   用户数据的可撤销操作，规格未要求可逆）。
 
+## ADR-0199：容错件接线 —— Retry 进生产、Fallback/Pipeline 留库（change 0209 / 台账 E146）
+
+**背景 —— 四件有规格、生产零调用、两件连测试都没有。** `constraints/spec.md`「容错中间件」点名
+熔断 / 降级 / 重试 / 回滚四件；`fault_tolerance.py` 四件齐备、`middleware.py` 的 `Pipeline` 齐备，
+但 `RetryPolicy` / `Fallback` / `Rollback` / `Pipeline` **生产零调用**，其中 `Fallback` / `Pipeline`
+**零测试**。熔断早已接线（change 0052），其余三件是死代码。本 change 把**重试**接进生产、给
+`Fallback` / `Pipeline` 补首测、并把**回滚维持既有单一路径**。
+
+**D1 只接 Retry，理由是形状与语义。** `Pipeline` / `Fallback` 的失败面是**异常形状**（核心抛异常 →
+逆序 `on_failure`），而 `DefaultLoop.act` 是**结果形状**（返回 `ActionResult(failed=...)`，不抛）。
+硬接需人为把结果翻译成异常再翻回来 —— 且 `Fallback` 的降级回复会（a）**静默抑制**
+`default.py:458-459` 的 trace 回滚（该回滚以 `result.failed` 为触发）、（b）**终结 loop 杀死 ReAct
+自愈**（注释 `:439` 明写工具失败不判轮失败）。故 `Fallback` / `Pipeline` 为**保留库能力**（接口齐备
++ 首测覆盖），**不接生产**。降级回复上线若需要，另立 change。
+
+**D2 注入方式 = `act_wrapper` 构造参，包裹 `act` 本体。** 重试是**在同一动作上重复尝试**，语义上
+包 `act` 而非绕行事件流 —— `action_started` / `action_completed` 仍按**单次 `_act` 调用**各记一条
+（重试不额外发事件），`middlewares` / `action_observers` 在 loop 侧逐次生效、语义不变。
+`DefaultLoop.__init__` 里 `self._act = act_wrapper(self.act) if act_wrapper else self.act`；
+`None` ⇒ `self._act is self.act` ⇒ 既有路径**逐字不变**。
+
+**D3 显式白名单 + 仅可逆工具 + 惰性查表。** 只有 `{TIMEOUT, EXECUTION_FAILED}` 重试（未来错误码
+**fail-closed**）；策略性拒绝（`INVALID_ARGS` / `COEFFECT_MISSING` / `GATE_DENIED` /
+`IRREVERSIBLE_BLOCKED` / `NO_TOOL_PROVIDER`）天然不在白名单 ⇒ 不重试。**仅可逆工具**重试：不可逆
+工具的「部分外写」被重试会放大 → 封死。可逆集合**惰性**从 `provider.active_tools()`
+（`provider.py:77-79`，`ToolDef.reversible`）建 frozenset，**只在失败路径**算一次并缓存。
+
+**D4 耗尽原样返回 —— 不降级、不改码。** 判停复用 `RetryPolicy.should_retry`（次数上界**单一真源**，
+适配层不复制该逻辑）；适配层传一个非 `ConstraintError` 的轻量异常 `RetriableToolFailureError` 承载
+失败码（`should_retry` 对 `ConstraintError` 恒 False，故不能用它）。耗尽时**返回最后一次失败结果
+原样** ⇒ 保住 `:458-459` 回滚与 `:439`「工具失败不判轮失败」。`RETRY_EXHAUSTED` 码仍不使用。
+
+**D5 重复副作用已核 —— 效应只在成功后记。** `provider.ainvoke` 的 `tracker.record`
+（`provider.py:136-149`）在 `_call` **成功之后**才执行 ⇒ 重试期间失败的尝试**不记效应**，不会双
+记账。测试断言「flaky 第 2 次成功 ⇒ `rollback().reverted == 1`」。
+
+**D6 访问器返回原始整数 —— 守底座边界。** `configuration` 是底座模块（`BASE_MODULES`）⇒ 不得
+import 能力层 `constraints`。故 `retry_attempts() -> int`（缺省 `0` = 关）；`RetryPolicy` 由组合根
+装配（同 `retention_limits()` 先例）。键 `constraints.retry_attempts`（`--constraints.retry-attempts`
+/ `CORE_CONSTRAINTS_RETRY_ATTEMPTS`，ADVANCED 暴露面）。
+
+**D7 Rollback 不重复接入 —— 单一路径。** 规格「失败回滚」Scenario 已由 loop 级 `rollback(trace_id)`
+（`default.py:458-459`，以 `result.failed` 触发、撤销本轮 trace 下全部可逆副作用）满足。再经
+`constraints.Rollback` 接一次是**第二条路径**（同语义两处实现 ⇒ 双撤销风险）。故 `Rollback` 留库
+能力、不接。
+
+**D8 宠物不接。** 沿 `runtime.py:1146` 隔离注记（宠物流量不应污染主线/神兽的容错态），三 loop
+（主 / 子 / 神兽）接、宠物不接 —— 与熔断链同口径。
+
+- **落点**：`src/core/loop/fault_adapter.py`（新：`FaultChain` / `build_fault_chain` /
+  `RetriableToolFailureError`）、`src/core/loop/protocol.py`（`ActFn` Protocol）、
+  `src/core/loop/default.py`（`act_wrapper` 参 + `self._act` + `:437`）、
+  `src/core/configuration/manager.py`（ConfigSpec + `retry_attempts()` + `_retry_errors`）、
+  `src/core/runtime.py`（`_fault_wrapper` + 三 loop 注入）、`tests/test_fault_wiring.py`（新）、
+  `tests/test_constraints.py`（Fallback/Pipeline 首测）、`doc/04-testing/test-cases.md` §122、
+  `coding-plan/known-risk.md`、`doc/02-modules/constraints.md`、`doc/02-modules/loop.md`。
+- **规格**：`constraints` **MODIFIED**「容错中间件」（全量替换 narrative + **ADD** Scenario ×5；
+  既有 7 Scenario 逐字保留）—— canonical req **不变**（MODIFIED 不增）/ scen **+5**。
+- **反证**：摘 `_wrapped` 内重试循环（只留首次调用）⇒ `test_reversible_flaky_retries_then_succeeds`
+  / `test_execution_failure_retries_then_succeeds` / `test_exhausted_returns_last_failure_as_is` 红；
+  摘可逆门（`action.tool_id not in self._reversible_ids()` 恒假）⇒ `test_irreversible_tool_not_retried` 红。
+- **局限**：① 遥测 `duration_ms`（`default.py:442`）跨整个 `_act` ⇒ **含退避时长**（语义为端到端
+  耗时）；② `TIMEOUT` 的**部分外写**既有风险被重试放大 —— **只对可逆工具重试**即缓解（不可逆不重试）；
+  ③ `RETRY_EXHAUSTED` 码仍不使用（D4 原样返回语义无需改码）；④ 重试不重发 `action_*` 事件 ⇒ 观测面
+  只见一条「动作耗时较长」；⑤ `retry_attempts` 语义为**尝试次数上界含首次**（= `RetryPolicy.max_attempts`）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6942,3 +7008,4 @@ change 不越界。
 | ADR-0196 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0197 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/cli-ops.md, 02-modules/durability.md |
 | ADR-0198 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/durability.md, 02-modules/configuration.md |
+| ADR-0199 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/constraints.md, 02-modules/loop.md |

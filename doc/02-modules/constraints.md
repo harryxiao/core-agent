@@ -50,8 +50,8 @@ MiddlewareChain（横切，洋葱模型）
 | 中间件 | 行为 |
 |---|---|
 | CircuitBreaker | 连续 N 次失败 → 打开（快速失败）→ 冷却期后半开试探；**N 与冷却期可经配置覆盖**（`constraints.failure_threshold` / `constraints.cooldown_s`，change `0068` / 账本 E15） |
-| RetryPolicy | 指数退避重试，幂等操作才重试，避免重复副作用 |
-| Fallback | 失败降级：备用工具 / 简化路径 / 转人工 |
+| RetryPolicy | 指数退避重试，幂等操作才重试，避免重复副作用；**生产已接线**（change `0209` / ADR-0199，见 §4） |
+| Fallback | 失败降级：备用工具 / 简化路径 / 转人工（**库能力 ＋ 单测覆盖，生产未接**——降级回复会静默抑制 trace 回滚并终结 ReAct 自愈） |
 | Rollback | 单步失败回滚本轮 effect，不拖垮整个任务 |
 
 ### 3.3 上下文压缩中间件
@@ -75,9 +75,15 @@ MiddlewareChain（横切，洋葱模型）
 ① **动作前链**（loop `middlewares`）：`CircuitBreaker`（**按 `tool_id` 隔离**）的 `before` 命中 OPEN
 即转「终止 Action」短路本轮；② **结果侧观察者**（loop `action_observers`）：动作完成后回灌 `record_result`
 （**只计执行类失败**，策略性拒绝不计入）。校验由工具层 `ToolProvider._validate_args` **委托本模块 `Validator`** 承担（change `0059`）、上下文压缩由
-`core.context.Compactor` 承担（语义等价/同构，均在本模块之外）；`RetryPolicy` 与 `Fallback` 为库能力、
-**生产未接线**（副作用幂等风险 / 无生产 `fallback_fn`）。完整洋葱（`Pipeline.execute` 的逆序 `after`）
-为可插拔能力，生产接缝按需使用；适配层 `src/core/loop/constraints_adapter.py`。
+`core.context.Compactor` 承担（语义等价/同构，均在本模块之外）。**③ 重试接缝**（change `0209` / ADR-0199、
+台账 E146）：`src/core/loop/fault_adapter.py` 的 `FaultChain.wrap` 包裹 loop 的 `act`——工具**执行类**
+失败（`TIMEOUT` / `EXECUTION_FAILED`，**显式白名单**，未来错误码 fail-closed）且 `tool_id` **可逆**时按
+`RetryPolicy` 退避重试；**耗尽原样返回最后一次失败结果**（不降级、不改码）。仅可逆工具（避免部分外写被
+重试放大）；效应只在成功后记 ⇒ 重试**不双记账**；缺省 `constraints.retry_attempts=0` ⇒ 不包裹接缝、既有
+路径逐字不变（主/子/神兽 loop 注入，**宠物不接**）。
+`Fallback` **生产未接**（降级回复会抑制 loop 的 trace 回滚并终结 ReAct 自愈）、`Pipeline` 为可插拔能力，
+二者走出零测试状态（**库能力 ＋ 单测覆盖**）；`Rollback` 维持 loop 级既有路径（`rollback(trace_id)` 已满足
+规格「失败回滚」Scenario，**单一路径**）。适配层 `src/core/loop/constraints_adapter.py`。
 熔断阈值/冷却由 `ConfigManager.circuit_breaker()` 经 `ConfigSpec` **单一真源**读出后注入适配层
 （change `0068` / 账本 E15；缺省 `5` / `30.0` 秒，非法取值校验期拒绝并阻断启动）。
 
@@ -89,7 +95,7 @@ MiddlewareChain（横切，洋葱模型）
 |---|---|
 | 输出解析失败 | 不执行工具，以解析失败 reply 收尾 → 失败原因回灌下一轮请求模型修正（生产实现：`LLMPlanner._parse`） |
 | 熔断器打开 | 快速失败，短路后续调用，冷却后自动半开 |
-| 重试超过上限 | 触发 Fallback → 仍失败则 Rollback + 转人工 |
+| 重试超过上限 | **原样返回最后一次失败结果**（不降级、不改码）⇒ 失败致本轮 trace 回滚、工具失败不判轮失败（change `0209` / ADR-0199；`Fallback` 生产未接，设计意图中的「转人工」未实现） |
 | 回滚失败 | 进入 QUARANTINE（对齐 plugin-registry） |
 
 ---

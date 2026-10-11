@@ -83,6 +83,14 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
 - 每个 action 经 `EffectTracker.record` 落 undo 栈。
 - 一轮内某 action 失败 → 自动执行该轮 undo 回滚，并把失败原因写入记忆（供 L4 诊断）。
 - 不可逆/高风险操作（rm、写系统、杀进程、支付）→ 触发 `ask_user` 确认门。
+- **执行接缝可包裹**（change `0209` / ADR-0199）：`DefaultLoop` 新可选参
+  `act_wrapper: Callable[[ActFn], ActFn] | None`（缺省 `None`）——`__init__` 里
+  `self._act = act_wrapper(self.act) if act_wrapper is not None else self.act`，`astream` 经
+  `self._act(...)` 调动作。组合根用 `core.loop.fault_adapter.FaultChain` 注入容错重试（详见
+  `02-modules/constraints.md` §4）；`None` ⇒ `self._act is self.act` ⇒ 既有路径**逐字不变**。
+  适配层落 loop 侧（`fault_adapter` 在 `core/loop/` 内、import `core.constraints`）：`loop → constraints`
+  是合法依赖方向，`constraints → loop` 才是红线（`tests/test_architecture.py` 守护）。`ActFn` 协议在
+  `core/loop/protocol.py`。
 
 ### 3.3 无行动不记忆（Remember 阶段）
 

@@ -2507,3 +2507,38 @@ Requirement 做全量替换）。
 > **规格**：`durability` **MODIFIED**「生命周期与保留策略」（全量替换 + **ADD** Scenario ×3）—— canonical
 > **4 → 4** req / **14 → 17（+3）** scen。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0198 行。
+
+## 122. 容错件接线（TC-RETRY／TC-FAULT-LIB，change `0209`／ADR-0199，台账 E146）
+
+**能力**：`RetryPolicy` 经 `FaultChain` 适配器接到 loop 执行接缝（此前生产零调用）；`Fallback`/`Pipeline` 走出零测试状态。
+
+**入口**：`src/core/loop/fault_adapter.py`（新，`FaultChain`＋`build_fault_chain`＋`RetriableToolFailureError`）、`src/core/loop/protocol.py`（`ActFn`）、`src/core/loop/default.py`（`act_wrapper` 参 ＋ `self._act`）、`src/core/configuration/manager.py`（`constraints.retry_attempts` Spec ＋ `retry_attempts()` ＋ `_retry_errors`）、`src/core/runtime.py`（`_fault_wrapper` ＋ 主/子/神兽三 loop 注入，**宠物不接**）。
+
+| 用例 | 场景 | 触发 | 断言（`tests/test_fault_wiring.py`） |
+|---|---|---|---|
+| TC-RETRY-01 | 可逆工具超时重试成功 | flaky handler 首次 `TimeoutError` | 调用 2 次、`failed is False`、`rollback().reverted == 1`（**不双记账**）（`...::test_reversible_flaky_retries_then_succeeds`） |
+| TC-RETRY-02 | 经 loop 端到端（planner→astream） | `max_attempts=2`，首次超时 | 调用 2 次、`result.failed is False`（`...::test_reversible_flaky_e2e_through_loop`） |
+| TC-RETRY-03 | 执行异常同在白名单 | 首次 `RuntimeError` ⇒ `EXECUTION_FAILED` | 调用 2 次、成功（`...::test_execution_failure_retries_then_succeeds`） |
+| TC-RETRY-04 | **不可逆工具不重试** | `reversible=False` ＋ 恒超时 | 调用 **1** 次、`failed is True`、`error == "TIMEOUT"`（原样透出）（`...::test_irreversible_tool_not_retried`） |
+| TC-RETRY-05 | 策略拒绝不重试 | 未知工具 ⇒ `INVALID_ARGS`（非白名单） | handler **零调用**、`error == "INVALID_ARGS"`（`...::test_policy_denial_not_retried`） |
+| TC-RETRY-06 | 耗尽**原样返回** | 恒 `RuntimeError`、`max_attempts=3` | 调用 3 次（上界含首次）、`failed is True`、`error == "EXECUTION_FAILED"`（**不改码不降级**）（`...::test_exhausted_returns_last_failure_as_is`） |
+| TC-RETRY-07 | 缺省关（**零回归锚**） | `act_wrapper=None` ＋ 恒失败 | 调用 **1** 次、`failed is True`（`...::test_no_wrapper_calls_once_byte_identical`） |
+| TC-RETRY-08 | 组合根缺省关 | 无 constraints 配置 ⇒ `build_runtime` | `getattr(loop._act, "__func__", None) is DefaultLoop.act`（**未包裹**）（`...::test_composition_default_off_leaves_act_unwrapped`） |
+| TC-RETRY-09 | 组合根旗开 | `retry_attempts: 2` ⇒ `build_runtime` | `... is not DefaultLoop.act`（被 `FaultChain` 包裹）（`...::test_composition_enabled_wraps_act`） |
+| TC-RETRY-10 | 三面解析 | spec 声明（key/cli_flag/env_var/map_to） | `constraints.retry_attempts` 在 `config_specs()`（`...::test_spec_declares_retry_key`） |
+| TC-RETRY-11 | 缺省/yaml/env | 无配置 / yaml `3` / env `5` | `0` / `3` / `5`（`...::test_config_default_is_zero` / `...::test_config_yaml_enables` / `...::test_config_env_overrides`） |
+| TC-RETRY-12 | 非法值阻断启动（4 参例） | `-1`/`True`/`"abc"`/`1.5` | `ConfigurationError`（`...::test_illegal_retry_value_blocks_startup[...]`） |
+| TC-FAULT-LIB-01 | `Fallback.on_failure` 产响应 | 异常形状失败 | 返降级响应（`tests/test_constraints.py::test_fallback_on_failure_produces_response`） |
+| TC-FAULT-LIB-02 | `Pipeline` 洋葱序 ＋ 逆序 on_failure | 三层中间件 | 正序进入、`on_failure` 逆序（`...::test_pipeline_onion_order_and_reverse_after`） |
+| TC-FAULT-LIB-03 | `Pipeline` 短路 | 中层失败、`on_failure=True` | 外层不再执行、逆序 on_failure 触发（`...::test_pipeline_failure_triggers_reverse_on_failure_short_circuit`） |
+
+> **反证（逐字锚非恒真，实测记录）**：摘 `_wrapped` 的重试 `while` 循环 ⇒ TC-RETRY-01/-02/-03/-06 **红**（实测
+> `4 failed, 13 passed`）；复原后改摘 `action.tool_id not in self._reversible_ids()` 可逆门 ⇒ TC-RETRY-04 **红**
+> （实测 `1 failed, 16 passed`）；两次复原 ⇒ 17 passed。
+> TC-RETRY-07/-08（缺省关）在接线缺失时**恒绿** ⇒ 单独不构成证据，其价值在**与 01~06 成对**（防「缺省即重试」）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2371 passed**（基线 **2351**，**+20**，与用例数一致：12 重试/配置 + 3 库能力单测 + 2 组合根注入）。
+> **零回归**：`retry_attempts` 缺省 `0` ⇒ `_fault_wrapper` 返 `None` ⇒ `act_wrapper=None` ⇒
+> `self._act is self.act` ⇒ 既有执行路径**逐字不变**；`middlewares`/`action_observers` 在 loop 侧逐次生效，语义不变。
+> **规格**：`constraints` **MODIFIED**「容错中间件」（全量替换 7 Scenario 逐字 ＋ **ADD** Scenario ×5 ＋ 库能力边界段）——
+> canonical **3 → 3** req / **11 → 16（+5）** scen。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0199 行。
