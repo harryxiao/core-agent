@@ -7016,6 +7016,79 @@ scorer 语义**（`evaluator.py:239-244`）：`result.failed` ⇒ `None`（完�
   逐字节相同（`diff -q` vs 备份，"RESTORED-OK"）并复测 10 passed。
 - **局限**：见 D6。来源另见 `doc/openspec/changes/archive/2026-10-11-0212-evolution-crystallize-path/design.md`。
 
+## ADR-0203：文档→摘要 —— 入口侧桥 / 显式旗即 opt-in / 双守护免费获得（change 0213 / 台账 E150）
+
+**背景 —— 「原始文档 → 可持久化摘要」没有入口。** 六能力走查确认：`rag ingest`（`entry.py`）
+只做「分块 → embedding → 落索引」，`rag ask` 是**一次性**问答、**不落盘**；系统里的「总结」**全是
+会话结晶**（记忆压实 / 提升）。目录层（`0210` 的 InfoMap）答「有哪些文档」、检索层（rag）答
+「哪段相关」，唯独**「这份文档讲了什么」**这一**结论层**缺失 —— 每次都要重新 `ask`（烧 token、
+零沉淀）。本 change 补该入口（用户裁决：「③ 落点 = **notes 结论层**」）。
+
+**D1 落点 = notes 结论层（**不**回写 rag 语料面）。** 「文档 → 摘要」两条可选落点：**rag 库**
+（把摘要当又一块 chunk 存回向量库）或 **notes**（canonical 结论层）。裁决落 **notes**：
+(a) rag 是**检索**面，把摘要塞回 chunk 面会**污染检索语料**（摘要与原文重复入场）；
+(b) notes 是**真相 / 结论**面 —— `digest` 会按 Consult 命中注入推理上下文，正是「这份文档讲了
+什么」该在的位置。
+
+**D2 显式旗即 opt-in，无配置键。** `--summarize` 是**一次性的显式意图**（「这次摄取顺便总结」）
+⇒ 无需 `features.*` / `rag.*` 配置键，也**无环境行为**（不带旗 ⇒ 逐字不变）。与「缺省关的新行为」
+纪律**不冲突**：此处不是**隐藏的缺省行为**，而是**显式的每命令参数**；除 canonical 笔记外
+**不落新的运行时态**。
+
+**D3 摘要调用 = 入口侧复刻 `_llm_text` 4 行接缝。** 组合根的 `_llm_text` 是**闭包**、不可外部
+取用；而入口侧 `_rag_ingest` **已有** `runtime` ⇒ 直接 `runtime.llm.completion(LLMRequest(...,
+model=runtime.app.llm.model))` 复刻同一 4 行形状。**不复用** `memory/summarize.py`（那是**会话
+压实**形状：多轮 `MemoryEntry` 列表 → 摘要；此处是**单文档全文 → 摘要**，形状不同）。
+
+**D4 落点订正（实施期）—— 桥搭在 `entry`，不落 `notes` 包。** 初版拟新增
+`src/core/notes/rag_summary.py::write_doc_summary`，被本仓 **ADR-0148 三面边界**的结构门禁
+`tests/test_architecture.py::test_memory_notes_api_excludes_document_corpus_dimension`
+（change `0189` / E126 立）**判红**：该门禁以 AST 抽出 `notes` **公开面**的函数名 / 形参名，
+凡命中 `_CORPUS_DIMENSION_TOKENS`（含 `doc` / `document` / `rag` / `corpus` …）即失败；实测
+offender 为 `write_doc_summary -> ['doc']`、`doc_id -> ['doc']`。门禁 docstring 明写：「先改
+ADR、再开规格变更，而非顺手补签名」—— 本 change 的规格/裁决**不含**「放开 notes 包承载文档
+语料」，故**不退门禁**、改**落点**：桥移到 **`entry`**（`test_rag_not_imported_by_reference_chain`
+明列的**两个 rag 例外**之一），直接调用**公开** `NoteStore.update`（**唯一**写路径，与
+`promote.py` 同纪律）⇒ **`notes` 包零改动**。行为与初版**逐字相同**。桥的两端（rag 全文 / notes
+写盘）都在入口侧 —— 恰是 D1「落笔记在入口侧、守三面边界」的**贯彻**，非权宜。
+
+**D5 「双守护」是免费获得、非新机制。** `notes.rag` **不进**任何覆写路径的目标：
+(a) `observe_turn`（`store.py`）只覆写 `source == notes.turn` 的笔记 ⇒ 撞上 `notes.rag` 走
+`<topic>-<n>` 回落；
+(b) `promote_session_summary`（`promote.py`）撞上非 `notes.promote` 的既有笔记且未显式
+`as_note_id` ⇒ 返回 `None`、**不写盘**。
+⇒ 本 change **零改动**这两条路径，摘要笔记天然受保护（`test_rag_summary.py` 以锚点证明）。
+
+**D6 进 digest 命中节选（刻意不入 `_ARCHIVE_SOURCES`）。** `_ARCHIVE_SOURCES = frozenset(
+{PROMOTE_SOURCE})`（`store.py:54`）的存在理由是「提升产物正文源自 memory 会话摘要、已由 loop
+『历史摘要』块每轮注入，避免**重复**」。文档摘要**无**此重复来源 ⇒ **不入**归档来源 ⇒ 进 digest
+的「命中的笔记」**节选**块。这是**目的**（结论层要在上下文可见），**非**疏漏 —— 本 change 不动
+`_ARCHIVE_SOURCES`。
+
+**D7 失败不阻断摄取。** 摘要（模型调用 / 落盘）失败**不**回退已完成的摄取、**不**使命令非零退出
+（摄取已是既成事实）；失败告警落 **stderr**、**只报 `doc_id`**（**绝不回显正文 / 摘要正文 /
+任何密钥**）。
+
+**D8 已知局限。** ① **摘要质量无门** —— 一次性 LLM 调用，无 JEV 质量门（如需另立 change）；
+② **大文档全文直喂** —— 无分段 / 递归摘要（超出模型窗口由调用方自理）；③ **重摄取才刷新** ——
+摘要与文档内容绑定于摄取时刻，源文档改了但未重摄取 ⇒ 摘要是旧的（与 rag 索引同生命周期）；
+④ **CLI 专属入口** —— 无 Agent 工具 / 无 API 触发摘要（摄取本就是 CLI 一次性动作）。
+
+- **落点**：`src/core/entry.py`（`_SUMMARY_NOTE_SOURCE` / `_doc_summary_note` / `_DOC_SUMMARY_PROMPT` /
+  `_write_doc_summary_note`、`_add_rag_parser` 的 `ingest --summarize`、`_rag_ingest` 分支、`_RAG_USAGE`）、
+  `tests/test_rag_summary.py`（新 ×8）、`doc/04-testing/test-cases.md` §126、`coding-plan/known-risk.md`、
+  `doc/02-modules/notes.md` / `rag.md`、`doc/03-interfaces/notes-interface.md`。
+  **`src/core/notes/` 与 `src/core/rag/` 零改动**。
+- **规格**：`rag` **MODIFIED**「文档摄取与分块」（全量替换；narrative 补「可选摘要」/「摘要失败不
+  阻断」两 bullets，＋ **ADD** Scenario「摄取可选摘要落结论笔记」；既有 3 Scenarios **逐字保留**）＋
+  `notes` **ADDED**「文档摘要笔记（notes.rag）」＋ Scenario ×4 —— canonical: rag **7 → 7** req /
+  **15 → 16** scen（「文档摄取与分块」条内 3 → 4）；notes **5 → 6** req / **42 → 46** scen。
+- **反证**：**两组**，(A) `_rag_ingest` 摘要分支强制关（`if False and args.summarize`）⇒
+  `1 failed, 7 passed`（`test_cli_ingest_summarize_writes_note` 红）；(B) `_ARCHIVE_SOURCES` 加上
+  `"notes.rag"` ⇒ `1 failed, 7 passed`（`test_doc_summary_note_enters_digest_excerpt` 红）；
+  两次复原 ⇒ **md5 逐字节相同**（`ENTRY-RESTORED-OK` / `STORE-RESTORED-OK`）并复测 8 passed。
+- **局限**：见 D8。来源另见 `doc/openspec/changes/archive/2026-10-11-0213-rag-doc-summary-notes/design.md`。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7213,3 +7286,4 @@ scorer 语义**（`evaluator.py:239-244`）：`result.failed` ⇒ `None`（完�
 | ADR-0200 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/rag.md, 02-modules/context.md |
 | ADR-0201 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md, 03-interfaces/ui-interface.md |
 | ADR-0202 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/evolution.md, 03-interfaces/evolution-interface.md |
+| ADR-0203 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/notes.md, 02-modules/rag.md, 03-interfaces/notes-interface.md |

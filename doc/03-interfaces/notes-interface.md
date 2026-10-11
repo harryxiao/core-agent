@@ -237,4 +237,9 @@ PinnedNotesConsult = Callable[[], str]   # **零参** → 常驻注入块（签�
 | `notes pinned` | 列出常驻笔记：`note_id` / 标题 / 优先级 / **是否进场**（超预算篇目报为未进场，change 0154） |
 | `notes promote <session-id> [--as NOTE_ID] [--title TITLE]` | 会话摘要 → canonical 常驻笔记（显式提升；幂等覆盖；会话无摘要 / 派生 id 为空 / 撞非 promotion 来源且未给 `--as` ⇒ 非零退出、不写盘） |
 
+**入口侧写路径（非 `notes` 命令）**：`rag ingest <path> --doc-id ID --summarize`（change `0213`／
+ADR-0203）⇒ 文档摘要落 `doc-<slug(doc_id)>`、`source="notes.rag"`、**恒非 pinned**（幂等覆盖；
+受双守护：不被逐轮写回 / 提升覆写；**进 digest 命中节选**）。桥在 `entry._doc_summary_note`（调
+**公开** `NoteStore.update`）—— **`notes` 包公开面无改动**（ADR-0148 边界；详见 ADR-0203 D4）。
+
 一次 `notes` 命令 = 一次性进程；canonical 目录是**落盘真源** ⇒ 一次写入在后续进程可见。

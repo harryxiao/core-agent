@@ -2635,3 +2635,37 @@ Requirement 做全量替换）。
 > canonical **16 → 16** req / **84 → 87（+3）** scen（「评测基建」条内 6 → 9）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0202 行。
 
+## 126. 文档→摘要：`rag ingest --summarize` 落 `notes.rag` 结论笔记（TC-RAGSUM，change `0213`／ADR-0203，台账 E150）
+
+**能力**：补「**原始文档 → 可持久化摘要**」入口 —— `rag ingest <path> --doc-id ID --summarize` 摄取成功后把**全文**交一次模型调用产摘要、落 canonical 结论笔记（`source="notes.rag"`，幂等覆盖、受双守护、进 digest 命中节选）。
+
+**入口**：`src/core/entry.py`（`_SUMMARY_NOTE_SOURCE`／`_doc_summary_note`／`_DOC_SUMMARY_PROMPT`／`_write_doc_summary_note`、`_add_rag_parser` 的 `ingest --summarize`、`_rag_ingest` 分支、`_RAG_USAGE`）。**`src/core/notes/` 与 `src/core/rag/` 零改动**（落点订正见 ADR-0203 D4）。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-RAGSUM-01 | 落盘真源：source／tags／pinned 正确 | `_doc_summary_note(store, doc_id="d1", summary=…)` + 新实例读回 | `note_id == "doc-d1"`、`source == "notes.rag"`、`{"rag","doc:d1","summary"} ⊆ tags`、`pinned is False`（**不占常驻预算**）、正文含摘要（`tests/test_rag_summary.py::test_doc_summary_note_creates_conclusion_note`） |
+| TC-RAGSUM-02 | 幂等覆盖（重摄取不增长） | 预置 `doc-d1`，再落同 `doc_id` | 命中**同一** note、`doc-` 前缀笔记数 == 1、正文为**最新**摘要（`...::test_doc_summary_note_is_idempotent_overwrite`） |
+| TC-RAGSUM-03 | 空 slug 守卫 | `doc_id="..."` | 返回 `None`、`tmp_path` 零 `.md`（不写盘，与 `promote_session_summary` 同口径）（`...::test_doc_summary_note_empty_slug_returns_none`） |
+| TC-RAGSUM-04 | **守护①** 不被逐轮写回覆写 | `store.observe_turn("doc-deploy", [成功写效应步], ok=True)` | `doc-deploy` 仍 `source=="notes.rag"` 且摘要正文**逐字不变**、`doc-deploy-2` 存在（**撞名回落派生主题**）（`...::test_doc_summary_note_survives_turn_writeback`） |
+| TC-RAGSUM-05 | **守护②** 不被提升覆写 | `promote_session_summary(store, …, session_id="deploy")` | `doc-deploy.source == "notes.rag"`（来源不变）、`session-deploy` 落**自己**命名空间（`...::test_doc_summary_note_untouched_by_promotion`） |
+| TC-RAGSUM-06 | **进 digest 命中节选**（非仅清单标题） | `store.digest("量化结论")` | `"命中的笔记：" in digest` 且摘要正文可见 ⇒ **不入** `_ARCHIVE_SOURCES`（`...::test_doc_summary_note_enters_digest_excerpt`） |
+| TC-RAGSUM-07 | CLI 端到端：带旗 ⇒ 落笔记 | `main([...,"rag","ingest",doc,"--doc-id","d1","--summarize"])`（离线桩 provider） | 退出 0、`NoteStore.get("doc-d1")` 非空、`source == "notes.rag"`、**桩摘要正文在笔记里**（`...::test_cli_ingest_summarize_writes_note`） |
+| TC-RAGSUM-08 | CLI 端到端：**无旗 ⇒ 零笔记**（零回归锚） | `main([...,"rag","ingest",doc,"--doc-id","d1"])` | 退出 0、`NoteStore.list() == []`（既有摄取行为**逐字不变**）（`...::test_cli_ingest_without_summarize_writes_no_note`） |
+
+> **反证（逐字锚非恒真，实测记录，两组）**：(A) `_rag_ingest` 摘要分支强制关（`if False and args.summarize`）
+> ⇒ TC-RAGSUM-07 **红**（实测 `1 failed, 7 passed`）；(B) `_ARCHIVE_SOURCES` 加上 `"notes.rag"`
+> ⇒ TC-RAGSUM-06 **红**（实测 `1 failed, 7 passed`）；两次复原 ⇒ `src/core/entry.py`／
+> `src/core/notes/store.py` **md5 逐字节相同**（`ENTRY-RESTORED-OK`／`STORE-RESTORED-OK`）并复测 **8 passed**。
+> TC-RAGSUM-07 与 TC-RAGSUM-08 成对 ⇒ 缺一即「旗要么恒开要么恒关」的证据缺口；
+> TC-RAGSUM-06 与 (B) 成对 ⇒ 缺一即「进节选」的断言可能是恒真的证据缺口。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2403 passed**（基线 **2395**，**+8**，与用例数一致）。
+> **零回归**：无旗 ⇒ 摄取路径逐字不变（`_rag_ingest` 仅在 `args.summarize` 为真时多走一步）；
+> `notes` 包与 `rag` 包**零改动** ⇒ `observe_turn`／`promote_session_summary`／`digest` 语义逐字不变；
+> 全量门禁须含 `tests/test_architecture.py::test_memory_notes_api_excludes_document_corpus_dimension`
+> **绿**（落点订正后的**不变量** —— 桥在 `entry`，不在 `notes` 公开面）。
+> **规格**：`rag` **MODIFIED**「文档摄取与分块」（全量替换；补 2 bullets ＋ **ADD** Scenario ×1）＋
+> `notes` **ADDED**「文档摘要笔记（notes.rag）」＋ Scenario ×4 —— canonical rag **7 → 7** req /
+> **15 → 16（+1）** scen（「文档摄取与分块」条内 3 → 4）；notes **5 → 6（+1）** req /
+> **42 → 46（+4）** scen。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0203 行。
+

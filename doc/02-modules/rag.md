@@ -84,6 +84,20 @@ RAG（L3）
 - `RagGenerator.generate`：检索片段经 **context 装配器按预算裁剪**后注入提示词 → llm-provider 生成。
 - 检索无结果时**降级纯 LLM 生成**，不阻断流程。
 
+### 3.6 摄取的**可选**摘要（`--summarize`，change `0213`／ADR-0203／台账 E150）
+
+`rag ingest <path> --doc-id ID` 加 `--summarize` 旗：摄取**成功后**，入口侧把**全文**交一次模型调用
+产摘要、落 canonical 结论笔记（`notes.rag`）。**显式旗即 opt-in** —— 无配置键、无环境行为，不带旗
+⇒ 既有摄取行为**逐字不变**、**零笔记**。
+
+**本包零改动**：摘要调用在 `entry._rag_ingest`（复刻组合根 `_llm_text` 4 行接缝）、落盘在
+`entry._doc_summary_note`（调**公开** `NoteStore.update`）—— rag 包**不感知 notes**，守 **RAG 三面
+边界**（ADR-0097⑥ / ADR-0148；`entry` 是 `test_rag_not_imported_by_reference_chain` 明列的 rag
+例外）。摘要是**结论层**，**不**回写 chunk 面（避免摘要与原文在检索语料里重复入场）。
+
+**失败不阻断**：摘要（模型调用 / 落盘）失败**不**回退摄取、**不**改退出码（摄取已是既成事实），
+告警落 stderr 且**只报 `doc_id`**（绝不回显正文）。
+
 ---
 
 ## 4. 与 codebase-memory-mcp 的分工

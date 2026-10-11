@@ -197,6 +197,24 @@ canonical 目录缺省 `$CORE_STATE_DIR/notes`（未设则 `~/.core/state/notes`
 使其缺陷归因为**架构级**（走人工审批）而非技能级。常驻注入（§3.4.1）同属**组合根注入闭包**
 （`Runtime.build_runtime` 的 `_pinned_notes`）⇒ notes 仍恒装配、仍不入 `GATABLE_MODULES`。
 
+### 3.8 文档摘要笔记（`notes.rag`，change `0213`／ADR-0203／台账 E150）
+
+**第三条写路径**（与 `notes.turn` 逐轮沉淀 §3.5、`notes.promote` 会话提升 §3.5.1 并列），
+由 `rag ingest --summarize` 产生：一份知识文档的**结论摘要**落 `doc-<slug(doc_id)>`，
+`source="notes.rag"`、`tags=["rag", "doc:<id>", "summary"]`、**恒 `pinned=False`**（不占常驻预算）。
+**幂等覆盖**（重摄取刷新同一 note、不增长）⇒ 与 rag 索引**同生命周期**（改内容须重摄取）。
+
+**桥搭在入口侧、不在本包**（ADR-0203 D4）：`entry._doc_summary_note` 调**公开** `NoteStore.update`
+（唯一写路径，与 `promote.py` 同纪律）—— `notes` 包**零改动**。原因是本包的**公开面**受
+**ADR-0148 三面边界**的结构门禁约束（`test_memory_notes_api_excludes_document_corpus_dimension`
+以 AST 抽公开函数名 / 形参名，命中 `doc`／`rag`／`corpus` 等语料词元即判红）⇒ 「文档语料」维度
+不得渗进本包公开面，`entry` 是明列的 rag 例外。
+
+**双守护免费获得**（本 change 零改动两路）：`observe_turn` 只覆写 `notes.turn` ⇒ 撞上 `notes.rag`
+走 `<topic>-<n>` 回落（§5 表既有行）；`promote_session_summary` 撞非 `notes.promote` 且无 `as_note_id`
+⇒ 返 `None` 不写盘。**进 digest 命中节选**（刻意**不**入 `_ARCHIVE_SOURCES` —— 文档摘要**无**
+「已由 loop 每轮注入」的重复来源，正是结论层要在上下文可见的目的）。
+
 ---
 
 ## 4. 与相邻模块的分工

@@ -52,6 +52,7 @@ from core.diagnostics import (
 from core.durability import DurabilityError
 from core.evolution import Benchmark, BenchmarkRegistry, EvolutionError, GenerationCandidate
 from core.evolution.executor import COMMIT_TRACE, IMPLEMENT_OP
+from core.llm_provider import LLMRequest, Message
 from core.loop import LoopPlugin
 from core.mcp import (
     EndpointRecord,
@@ -64,7 +65,14 @@ from core.mcp import (
     mcp_endpoints_path,
 )
 from core.memory import FileBackend, MemoryEntry, MemoryStore, TranscriptStore
-from core.notes import NoteError, NoteStore, promote_session_summary, render_note
+from core.notes import (
+    NoteEntry,
+    NoteError,
+    NoteStore,
+    promote_session_summary,
+    render_note,
+    slug_topic,
+)
 from core.orchestration import Plan, TaskScheduler, plan_from_dict
 from core.permission import (
     ApprovalChannel,
@@ -263,6 +271,11 @@ def _add_rag_parser(sub: Any) -> None:
     ingest = rag_sub.add_parser("ingest", help="摄取知识文档建索引（一次性）")
     ingest.add_argument("path", help="知识文档文件路径")
     ingest.add_argument("--doc-id", required=True, metavar="ID", help="文档唯一 id")
+    ingest.add_argument(
+        "--summarize",
+        action="store_true",
+        help="摄取后把全文交模型总结，落 canonical 结论笔记（notes.rag；缺省不落）",
+    )
     search = rag_sub.add_parser("search", help="语义检索 top-k 片段（不调用生成）")
     search.add_argument("query", help="查询语句")
     search.add_argument("--top-k", type=int, default=5, metavar="N", help="返回片段数")
@@ -1588,7 +1601,9 @@ def _benchmark_list(args: argparse.Namespace) -> int:
     return 0
 
 
-_RAG_USAGE = "用法: core-agent rag {ingest <path> --doc-id ID|search <query>|ask <query>}"
+_RAG_USAGE = (
+    "用法: core-agent rag {ingest <path> --doc-id ID [--summarize]|search <query>|ask <query>}"
+)
 
 
 def _rag_runtime(args: argparse.Namespace) -> Any | None:
@@ -1626,17 +1641,85 @@ def _rag(args: argparse.Namespace) -> int:
 
 
 def _rag_ingest(runtime: Any, args: argparse.Namespace) -> int:
-    """`rag ingest <path> --doc-id ID`：摄取知识文档（分块 → embedding → 落盘索引）。"""
+    """`rag ingest <path> --doc-id ID [--summarize]`：摄取知识文档（分块 → embedding → 落盘索引）。
+
+    带 `--summarize` 时，摄取成功后把**全文**交一次模型调用产出摘要、落 canonical 结论笔记
+    （`notes.rag`）。摘要失败**不**回退摄取、**不**改退出码（摄取已是既成事实），只告警落 stderr
+    且**只报 `doc_id`**（绝不回显正文）。
+    """
     path = Path(args.path)
     if not path.is_file():
         print(f"知识文档不存在: {path}", file=sys.stderr)
         return 1
-    written = runtime.rag.ingest(args.doc_id, path.read_text(encoding="utf-8"))
+    text = path.read_text(encoding="utf-8")
+    written = runtime.rag.ingest(args.doc_id, text)
     if written:
         print(f"已摄取 {args.doc_id}：{written} 块")
     else:
         print(f"已摄取 {args.doc_id}：无变更（跳过重建）")
+    if args.summarize:
+        _write_doc_summary_note(runtime, doc_id=args.doc_id, text=text)
     return 0
+
+
+#: 文档摘要提示词（single-shot：全文 → 结论摘要；入口侧接缝，非会话压实形状）。
+_DOC_SUMMARY_PROMPT = (
+    "请用简洁的中文总结下面这份文档的核心结论与关键要点，"
+    "直接输出摘要正文，不要前言与客套：\n\n{text}"
+)
+
+#: 文档摘要笔记的来源标记（canonical 真相层第三条写路径；与 `notes.promote` / `notes.turn` 并列）。
+_SUMMARY_NOTE_SOURCE = "notes.rag"
+
+
+def _doc_summary_note(store: NoteStore, *, doc_id: str, summary: str) -> NoteEntry | None:
+    """一份文档摘要 → canonical 结论笔记（幂等覆盖），或 ``None``（无可派生笔记名 ⇒ 不写盘）。
+
+    **桥搭在入口侧**：`notes` 包的**公开面**不得承载「外部文档语料」维度（`doc` / `rag` …）
+    —— ADR-0148 三面边界由 `tests/test_architecture.py:426` 的结构门禁钉死 ⇒ 本函数落在
+    `entry`（`test_rag_not_imported_by_reference_chain` 明列的两个 rag 例外之一），直接复用
+    `NoteStore.update`（**唯一**写路径，与 `promote.py` 同纪律）。`pinned=False` 不占常驻预算。
+    """
+    derived = slug_topic(doc_id)
+    if not derived:
+        return None
+    note_id = f"doc-{derived}"
+    try:
+        existing: NoteEntry | None = store.get(note_id)
+    except NoteError:
+        existing = None
+    body = f"## 文档摘要（{doc_id}）\n\n{summary.strip()}"
+    title = (existing.title if existing is not None else "") or f"文档摘要 {doc_id}"
+    return store.update(
+        NoteEntry(
+            note_id=note_id,
+            title=title,
+            content=body,
+            tags=["rag", f"doc:{doc_id}", "summary"],
+            source=_SUMMARY_NOTE_SOURCE,
+            pinned=False,
+        )
+    )
+
+
+def _write_doc_summary_note(runtime: Any, *, doc_id: str, text: str) -> None:
+    """`--summarize` 副作用：一次模型调用产摘要 → `_doc_summary_note` 落结论笔记。
+
+    失败（模型调用 / 落盘）**不**冒泡（摄取已成败局已定），只告警落 stderr 且**只报 `doc_id`**。
+    """
+    try:
+        response = runtime.llm.completion(
+            LLMRequest(
+                messages=[Message(role="user", content=_DOC_SUMMARY_PROMPT.format(text=text))],
+                model=runtime.app.llm.model,
+            )
+        )
+        note = _doc_summary_note(_notes_store(), doc_id=doc_id, summary=response.content)
+    except Exception as exc:  # noqa: BLE001 — 摘要失败不阻断摄取的既有成败局
+        print(f"文档摘要失败（doc_id={doc_id}）: {type(exc).__name__}", file=sys.stderr)
+        return
+    if note is None:
+        print(f"文档摘要未落（doc_id={doc_id}：无可派生笔记名）", file=sys.stderr)
 
 
 def _rag_search(runtime: Any, args: argparse.Namespace) -> int:
