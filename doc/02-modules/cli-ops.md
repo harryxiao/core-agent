@@ -72,11 +72,15 @@ ConfigSpec ──generate_*──► CLI 参数面 / env 变量面 / yaml schema
 交互入口 `--session` 续接可用；任务续跑（`--resume`）**复用**检查点携带的既有会话（不另铸新会话，
 同一任务轨迹不分裂），检查点为旧占位值 / 未携带会话时视作未归属并提示（不迁移旧数据）。
 
-**入口启动呈现未完成任务（change `0191`／ADR-0181）**：一次性任务入口（`task <目标>`，新任务）
-与常驻服务入口（`serve`）**启动时**扫描检查点并**呈现**未完成任务 —— 告警 + 打印「N 个未完成任务：
-`task --resume <id>` 可续跑」（只报 task id，不回显任务正文）；**只呈现不重执行**（`recover()` 无
-replay 回调 = 纯扫描，守 P2 副作用不自动重放）。任务续跑（`--resume`）取**时间戳最新**检查点重建
-续跑状态（与崩溃恢复 `restore` 的 ts 序同口径）。
+**入口启动呈现未完成任务（change `0191`／ADR-0181；**全入口覆盖** change `0207`／ADR-0197）**：一次性
+任务入口（`task <目标>`，新任务）与常驻服务入口（`serve`）**启动时**扫描检查点并**呈现**未完成任务 ——
+告警 + 打印「N 个未完成任务：`task --resume <id>` 可续跑」（只报 task id，不回显任务正文）；**只呈现不
+重执行**（`recover()` 无 replay 回调 = 纯扫描，守 P2 副作用不自动重放）。**change `0207` 补全覆盖**：
+`REPL` / `run` / `app` 三入口经 `_build_ui(..., surface_recovery=True)` **一旗即成**（`0191` 已为 `serve`
+建好机制），`mcp serve` 自建 runtime（无 `UIAPILayer`）故在 `build_runtime` 后**显式**补调一次
+`_surface_incomplete` —— 五入口（`REPL`/`run`/`serve`/`app`/`mcp serve`）启动路径**全部**呈现。呈现走
+**stderr**（`mcp serve` 的 stdout 是协议流，SHALL NOT 污染）。任务续跑（`--resume`）取**时间戳最新**检查点
+重建续跑状态（与崩溃恢复 `restore` 的 ts 序同口径）。
 
 ---
 

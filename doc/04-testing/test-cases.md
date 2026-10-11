@@ -2457,3 +2457,27 @@ Requirement 做全量替换）。
 > **规格**：`memory` **ADDED**「记忆后端落盘耐久（backend durability）」+ 4 Scenario
 > （canonical 15 → 16 req / 111 → 115 scen）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0196 行。
+
+## 120. 恢复扫描入口全覆盖（TC-RECOVERYSCAN，change `0207`／ADR-0197，台账 E144）
+
+**能力**：`0191` 立的「启动扫描未完成任务并呈现」接线到**全部交互入口**（此前仅 `serve` / `task` fresh）。
+
+**入口**：`src/core/entry.py`（`_repl` `:499` / `_app` `:523` / `_run` `:1688` 三处 `_build_ui(..., surface_recovery=True)`；`_mcp_serve` `:775` 显式 `_surface_incomplete(runtime)`）。
+
+| 用例 | 场景 | 触发 | 断言（`tests/test_entry.py`） |
+|---|---|---|---|
+| TC-RECOVERYSCAN-01 | 四入口启动呈现未完成任务 | `_seed_incomplete(state_dir)` 建 `task-stale` 未完成检查点 + `CORE_STATE_DIR` 隔离 ⇒ 各入口启动 | stderr 含 `未完成任务` ＋ `task --resume task-stale`（`...::test_recovery_surface_on_all_interactive_entries[repl\|run\|app\|mcp-serve]`） |
+| TC-RECOVERYSCAN-02 | 无未完成任务 ⇒ 静默 | 空 state ⇒ `repl` / `mcp serve` 启动 | stderr **不含** `未完成任务`（`...::test_recovery_surface_silent_without_stale_tasks[repl\|mcp-serve]`） |
+
+> **反证（逐字锚非恒真，实测记录）**：摘 `repl`/`run`/`app` 三处 `surface_recovery=True` **＋** 摘
+> `mcp serve` 显式 `_surface_incomplete` 调用 ⇒ TC-RECOVERYSCAN-01 四参例（`repl`/`run`/`app`/`mcp-serve`）
+> **全红**（实测 `4 failed`，`:1611` 断言 `'未完成任务' in 'MCP server 已就绪（stdio）\n'` 失败）；复原 ⇒ 6 passed。
+> TC-RECOVERYSCAN-02（静默）在接线缺失时**恒绿** ⇒ 单独不构成证据，其价值在于**与 -01 成对**（防
+> 「呈现误加噪音」）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2338 passed**（基线 **2332**，**+6**，与用例数一致）。
+> **零回归**：接线只**增加** `_surface_incomplete` 调用面（无未完成任务时 `if not handles: return` 立即返回 ⇒
+> 正常启动零输出）；两处旧测试桩补 `recover → []`（`tests/test_entry.py` `_patch_fake_runtime`、
+> `tests/test_phase13.py` `_FakeRuntime`）—— **测试侧**补齐假 runtime 接口，非生产行为变更。
+> **规格**：`durability` **MODIFIED**「崩溃恢复」（全量替换 narrative + **ADD** Scenario
+> 「全部交互入口启动扫描呈现」）—— canonical **4 → 4** req（MODIFIED 不增）/ **13 → 14（+1）** scen。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0197 行。

@@ -1155,6 +1155,7 @@ def _patch_fake_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
         pet_manager=None,
         beast_activator=None,  # change 0137：`_build_ui` 读该字段
         transcript=None,  # change 0115：`_build_ui` 读该字段；None ⇒ 读取面逐字保持原形状
+        recover=lambda: [],  # change 0207：入口启动扫描调 `runtime.recover()`；空 ⇒ 静默
         app=SimpleNamespace(
             llm=LLMConfig(
                 provider="openai", model="gpt-4o", endpoint="https://x", api_key_ref="${K}"
@@ -1543,3 +1544,83 @@ def test_status_with_unreadable_config_still_exits_zero(
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     assert main(["--config", _write_config(tmp_path), "status"]) == 0
     assert "会话数" in capsys.readouterr().out
+
+
+# ---- 恢复扫描入口全覆盖（change 0207 / 台账 E144） ----
+
+
+def _seed_incomplete(state_dir: pathlib.Path, task_id: str = "task-stale") -> None:
+    """在隔离状态目录放一个未完成任务检查点（done=False），供恢复扫描呈现用例使用。
+
+    只写扫描读取的字段（``state["done"]``）；``restore`` 只需快照存在即可返回句柄。
+    """
+    state_dir.mkdir(parents=True, exist_ok=True)
+    CheckpointManager(CheckpointStore(state_dir / "checkpoints.jsonl")).create_checkpoint(
+        task_id, "sess-1", {"done": False}
+    )
+
+
+class _NoopCLIBridge:
+    def __init__(self, *, api=None, connect_impl=None, session_id="") -> None:
+        pass
+
+    def connect(self) -> None:
+        return None
+
+
+class _NoopDesktopBridge:
+    def __init__(self, *, api=None, start_impl=None, port=None) -> None:
+        pass
+
+    def start_sidecar(self) -> None:
+        return None
+
+
+class _NoopMCPServer:
+    def __init__(self, *, tool_provider=None, whitelist=None) -> None:
+        pass
+
+    def serve_stdio(self, endpoint) -> None:
+        return None
+
+
+async def _noop_stream(api, session_id: str, prompt: str) -> None:
+    return None
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [[], ["run", "--prompt", "hi"], ["app"], ["mcp", "serve"]],
+    ids=["repl", "run", "app", "mcp-serve"],
+)
+def test_recovery_surface_on_all_interactive_entries(
+    argv, tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """四入口启动均在 stderr 呈现未完成任务 + 续跑提示（只报 task id，change 0207）。"""
+    state_dir = tmp_path / "state"
+    _seed_incomplete(state_dir)
+    monkeypatch.setenv("CORE_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr("core.entry.CLIBridge", _NoopCLIBridge)
+    monkeypatch.setattr("core.entry.DesktopBridge", _NoopDesktopBridge)
+    monkeypatch.setattr("core.entry.MCPServer", _NoopMCPServer)
+    monkeypatch.setattr("core.entry._stream", _noop_stream)
+
+    assert main(["--config", _write_config(tmp_path), *argv]) == 0
+    err = capsys.readouterr().err
+    assert "未完成任务" in err
+    assert "task --resume task-stale" in err
+
+
+@pytest.mark.parametrize("argv", [[], ["mcp", "serve"]], ids=["repl", "mcp-serve"])
+def test_recovery_surface_silent_without_stale_tasks(
+    argv, tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """无未完成任务 ⇒ 启动静默（不打印告警；`_surface_incomplete` 提前返回）。"""
+    monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr("core.entry.CLIBridge", _NoopCLIBridge)
+    monkeypatch.setattr("core.entry.MCPServer", _NoopMCPServer)
+
+    assert main(["--config", _write_config(tmp_path), *argv]) == 0
+    assert "未完成任务" not in capsys.readouterr().err

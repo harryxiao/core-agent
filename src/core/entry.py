@@ -496,7 +496,7 @@ def _build_ui(
 
 def _repl(args: argparse.Namespace) -> int:
     """无子命令进入 Textual 交互会话循环（阻塞，退出后返回）；`--session` 续聊既有会话。"""
-    api = _build_ui(args, interactive=True)
+    api = _build_ui(args, interactive=True, surface_recovery=True)
     if api is None:
         return 1
     CLIBridge(api=api, session_id=args.session_id or "").connect()
@@ -520,7 +520,7 @@ def _serve(args: argparse.Namespace) -> int:
 
 
 def _app(args: argparse.Namespace) -> int:
-    api = _build_ui(args)
+    api = _build_ui(args, surface_recovery=True)
     if api is None:
         return 1
     DesktopBridge(api=api, port=args.port).start_sidecar()
@@ -772,6 +772,7 @@ def _mcp_serve(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
         print(f"装配失败: {exc}", file=sys.stderr)
         return 1
+    _surface_incomplete(runtime)  # 启动扫描未完成任务并呈现（只走 stderr；change 0207）
     server = MCPServer(tool_provider=runtime.tools, whitelist=_mcp_whitelist(args.whitelist))
     print("MCP server 已就绪（stdio）", file=sys.stderr)
     server.serve_stdio(MCPEndpoint(transport="stdio", session_id=args.endpoint))
@@ -1684,7 +1685,7 @@ def _run(args: argparse.Namespace) -> int:
     if prompt is None:
         print("用法: core-agent run [--prompt TEXT | --file PATH]", file=sys.stderr)
         return 1
-    api = _build_ui(args)
+    api = _build_ui(args, surface_recovery=True)
     if api is None:
         return 1
     session_id = args.session_id or api.create_session("cli")

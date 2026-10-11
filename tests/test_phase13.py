@@ -659,6 +659,9 @@ def test_entry_run_wires_runtime(monkeypatch) -> None:
             self.transcript = None  # change 0115：_build_ui 读该字段（此处不接转录）
             self.app = SimpleNamespace(llm=SimpleNamespace(api_key_ref="${KEY}"))
 
+        def recover(self):  # change 0207：`run` 入口启动扫描调 `runtime.recover()`
+            return []
+
     def _fake_build(config, **kwargs):
         calls["config"] = config
         calls["build_kwargs"] = kwargs

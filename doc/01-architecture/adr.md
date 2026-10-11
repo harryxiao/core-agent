@@ -6659,6 +6659,47 @@ change 不越界。
   「同一坏行反复出现」；③ `search("")` 的层过滤在 `MemoryStore` 侧而非 backend 侧（既有行为，
   不动）。
 
+## ADR-0197：恢复扫描入口全覆盖 —— 一旗补接线、机制不重造（change 0207 / 台账 E144）
+
+**背景 —— 能力在，接线不全（六能力走查「重启恢复」硬伤②）。** `0191`（ADR-0181）立了
+「启动扫描未完成任务并呈现」：`_surface_incomplete`（`entry.py:436-448`）调 `runtime.recover()`
+（纯扫描、无 replay ⇒ 零副作用），有未完成任务则告警 + 提示 `task --resume`，**只报 task id**。
+但 `0191` 只接了**两个**入口：`serve`（`:507`）与 `task` fresh（`:1766`）。`REPL` / `run` /
+`app` / `mcp serve` **四个入口启动时静默** ⇒ 从 REPL 或桌面壳进入的用户看不到「上次有任务没
+跑完」。这是六能力走查中「动态记忆/重启恢复」一项的硬伤②：**能力在，接线不全**。
+
+**D1 一旗补接线，不新造机制 —— `_build_ui` 的 `surface_recovery` 旗早已就位。**
+`0191` 为 `serve` 建好了机制：`_build_ui(..., surface_recovery: bool=False)`
+（`entry.py:452/:469-470` 内 `if surface_recovery: _surface_incomplete(runtime)`）。走 `_build_ui`
+的三个入口（`repl` `:499` / `run` `:1688` / `app` `:523`）**一旗即成**——本 change 是接线补全，
+**非新能力**。故规格只 **MODIFIED**「崩溃恢复」（不 ADD 新 Requirement）。
+
+**D2 `mcp serve` 显式补调，不走 `_build_ui`。** 它自建 runtime（不需求 `UIAPILayer`）⇒ 无法用
+旗；在 `build_runtime` 之后、`MCPServer(...)` 构造之前**显式**调 `_surface_incomplete(runtime)`
+（`entry.py:775`）——顺序上「呈现先于协议就绪」，用户先看到告警再进服务。
+
+**D3 呈现面 = stderr 单一，机制既有即满足协议约束。** `_surface_incomplete` 的实现已是
+`warnings.warn` + `print(..., file=sys.stderr)` ⇒ 对 `mcp serve`（stdio transport，**stdout 是
+协议流**）**零额外改动**即满足「SHALL NOT 污染 stdout」约束。呈现**只报 task id**
+（`:445-448`），不回显任务正文 / 记忆 / 密钥——密钥红线的同族纪律。
+
+**D4 仍不自动重执行 —— 守 P2 与 `0191` 纯扫描语义。** 本 change 只补「呈现覆盖面」，`recover()`
+的纯扫描语义（无 replay 回调 ⇒ 零副作用）**逐字不动**；续跑仍由用户显式 `task --resume`。
+「呈现先于协议就绪」不改变「扫描先于执行」——恰是 `0191` 的既定次序，只是入口补齐。
+
+- **落点**：`src/core/entry.py`（`_repl` `:499` / `_app` `:523` / `_run` `:1688` 三处旗 +
+  `_mcp_serve` `:775` 显式调用）、`tests/test_entry.py`（+6 用例）、`doc/04-testing/test-cases.md`
+  §120、`coding-plan/known-risk.md`、`doc/02-modules/cli-ops.md`。
+- **规格**：`durability` **MODIFIED**「崩溃恢复」（全量替换 narrative，补「全部交互入口」句 +
+  **ADD** Scenario「全部交互入口启动扫描呈现」；其余 7 Scenario 逐字保留）—— canonical
+  **4 → 4** req（MODIFIED 不增 Requirement）/ **13 → 14（+1）** scen。
+- **反证**：摘旗（`repl`/`run`/`app` 去 `surface_recovery=True`）＋摘 `mcp serve` 显式调用 ⇒
+  4 个「入口呈现」参例全红（实测 `4 failed`）；复原即 6 passed。
+- **局限**：① 测试桩 runtime 需具备 `recover()`（本 change 为旧桩 `tests/test_entry.py`
+  `_patch_fake_runtime` 与 `tests/test_phase13.py` `_FakeRuntime` 补 `recover → []`，非生产改动）；
+  ② `recover()` 扫描面仍未覆盖「轮级检查点」（`0214` 另立）；③ `serve` 既有呈现不受影响（同旗
+  同函数）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6850,3 +6891,4 @@ change 不越界。
 | ADR-0194 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md |
 | ADR-0195 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/skills.md |
 | ADR-0196 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0197 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/cli-ops.md, 02-modules/durability.md |
