@@ -7182,7 +7182,8 @@ prompt。**为何把「上界 = 400」也钉成字面量**：若测试从模块�
   400→4000 ⇒ 仅 `test_entry_excerpts_bounded` 红（字面量锚）。全部复原 ⇒
   `src/core/memory/extract.py` / `src/core/loop/planner.py` **diff -q 逐字节相同**，12 绿。
 - **局限**：① pin 的是**当前**措辞 ⇒ 有意改措辞时须**同步**改副本（这是设计意图，非缺陷）；
-  ② 只覆盖 9 条**核心**头，未覆盖 `LoopContext`/诊断/进化等次级文本与 `_system_prompt` 的块序；
+  ② 只覆盖 9 条**核心**头（**`0219`/ADR-0209 已补 ⑧ 情景归纳 / ⑪ 源码修补 / ⑫ 候选审查 至 12 条**），
+  仍未覆盖 `LoopContext`/诊断等次级文本与 `_system_prompt` 的块序；
   ③ 结构锚只钉「有界 / 前缀 / 占位符」，不钉**块拼接顺序**（归 `0201` 的 `plan_blocks` 锚域）。
 - 来源另见 `doc/openspec/changes/archive/2026-10-11-0215-prompt-text-pinning/design.md`。
 
@@ -7330,6 +7331,46 @@ over-redact；失败 / 空文本 ⇒ 整条不写、留痕**只报会话键**（
   登记为后续候选（本轮保最小爆炸半径）；② 归纳文本**自由不可机读**，检索只能靠词法 / 语义相似；
   ③ 每会话仅一条 ⇒ 超长会话的早期结论被后续**覆盖稀释**（结论快照语义的固有代价）。
 - 来源另见 `doc/openspec/changes/archive/2026-10-11-0218-episodic-consolidator/design.md`。
+
+## ADR-0209：内置提词总表 ＋ pin 补 3 条（change 0219 / 台账 E156）
+
+**背景 —— 3 条未 pin ＋ 全仓无一处集中可查。** `0215`/ADR-0205 把 9 条核心 prompt 头逐字 pin，
+并在其「局限②」登记：⑧ 情景归纳器（`0218` 才新增）、⑪ 源码修补者、⑫ 候选审查者**未纳入**；
+⑬ 宠物人格为动态拼接、未纳。同时 prompt 散在 **12 个模块**的私有常量，「写了什么／在哪／有无
+pin」须逐个 `grep`，**无集中查阅面**。
+
+**D1 落点 = 文档镜像，非代码收拢（用户裁决）。** 交付 `doc/03-interfaces/prompts.md`，**零 `src/`**。
+把 prompt 收拢进 `src/core/prompts.py` 会触及 ADR-0205「prompt 是**实现细节**、不外露」的既立口径，
+且削弱 pin 的「独立副本」价值（副本与真源同文件则改一处即同改）。故只做**镜像**。
+
+**D2 文档定位 = 现状快照，**显式**标注非真源。** 否则读者会误以为改文档即改行为。§0/§6/§7 三处
+明写「真源 = 各模块常量 ＋ `tests/test_prompt_pinning.py` 的逐字副本」「改一条 prompt = **三处**
+同改（模块常量 → pin 副本 → 本表），只改一处时 pin 测试转红」。**pin 拦不住文档漂移，只拦代码**
+（已登记为局限①）。
+
+**D3 pin 补 3 条（覆盖 9 → 12），不补 ⑬。** 新增 3 条逐字副本（⑧ 情景归纳 / ⑪ 源码修补 /
+⑫ 候选审查）＋ 1 条情景归纳 builder 的结构不变量。⑬ 宠物人格是 `render_prompt()` **动态拼接**
+（`name`/`species`/`traits`/`persona_text` 随档案变），逐字 pin 无稳定锚 —— 如将来需要，宜按
+「固定槽位结构」而非逐字全文 pin。
+
+**D4 分类口径显式声明为「解释性」。** 「控制面／数据面」在仓内另有**既定**含义（pet 控制面
+`PetControl`、分布式与进化「控制面·执行面分离」）；本表 §0 明写「控制面／数据面／进化面／人格面」
+是**本表**的归类，避免与正式术语冲突。
+
+**D5 安全承重措辞单独标注。** ⑤ 关键事实抽取 / ⑥ 关系抽取的「**绝不**输出明文 ＋ `<redacted>`
+＋ `coeffect:`」是「密钥不落记忆」的**第一道**（模型侧）防线（第二道 = store 侧无条件
+`redact_secrets`）。表格与 §7 改动指引均单列警示：改此措辞须重评安全面，必要时补反证。
+
+- **规格（规格中性）**：无 spec delta；`skip_specs: true`。`openspec validate --all` 32 passed
+  （31 canonical ＋ 1 change）→ 归档后 31 passed。canonical 规格计数**不变**。
+- **反证（三组，实测）**：① `episodic._PROMPT_HEAD` 改一字符 ⇒ `test_episodic_head_verbatim`
+  转红；② `author._PROMPT_HEAD`「完整」删 ⇒ `test_author_head_verbatim` 红；③
+  `validator._REVIEW_PROMPT_HEAD` 去「PASS/REJECT」判词句 ⇒ `test_review_head_verbatim` 红。
+  三次复原 ⇒ 三文件 `md5sum` **逐个相同**，16 绿。
+- **局限**：① **文档会漂移** —— 改 prompt 若忘同步本表，表与真源不一致（pin 只拦代码、不拦文档）；
+  ② ⑬ 仍未 pin（动态拼接）；③ 只覆盖 prompt「**头**」—— 动态块正文（① 的 11 块、④ 的既有摘要
+  节选等）由结构不变量与既有单测覆盖，本表只做**描述**。
+- 来源另见 `doc/openspec/changes/archive/2026-10-11-0219-prompt-catalog/design.md`。
 
 ## 变更追踪
 
@@ -7534,3 +7575,4 @@ over-redact；失败 / 空文本 ⇒ 整条不写、留痕**只报会话键**（
 | ADR-0206 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0207 | 02-modules/memory.md, 02-modules/loop.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0208 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0209 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -2857,3 +2857,27 @@ Requirement 做全量替换）。
 > **规格**：`memory` **ADDED**「情景归纳（episodic consolidation）」＋ **Scenario ×6**（**既有 16
 > Requirement 逐字保留**）⇒ canonical memory **16 → 17** req / **122 → 128（+6）** scen。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0208 行。
+
+## 132. 内置提词总表 ＋ pin 补 3 条（TC-PROMPTPIN2，change `0219`／ADR-0209，台账 E156）
+
+**规格中性**：零 `src/` 改动。承 §128（`0215` 立 9 条）：`tests/test_prompt_pinning.py` **12 → 16
+用例**（仓覆盖 **9 → 12** 条）＋ 新 `doc/03-interfaces/prompts.md`（13 条提词原文镜像）。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-PROMPTPIN2-01 | 情景归纳头逐字 | `episodic._PROMPT_HEAD` | `== _EPISODIC_HEAD`（四段结论快照：目标·经过·结果·教训 / 只输出归纳不复述）（`tests/test_prompt_pinning.py::test_episodic_head_verbatim`） |
+| TC-PROMPTPIN2-02 | 源码修补头逐字 | `author._PROMPT_HEAD` | `== _AUTHOR_HEAD`（只修一个模块 / 保持契约 / 只输出完整文件不围栏）（`...::test_author_head_verbatim`） |
+| TC-PROMPTPIN2-03 | 候选审查头逐字 | `validator._REVIEW_PROMPT_HEAD` | `== _REVIEW_HEAD`（只审自洽 / 不评收益 / PASS·REJECT 首行判词）（`...::test_review_head_verbatim`） |
+| TC-PROMPTPIN2-04 | 情景归纳 builder 结构 | `episodic.build_episodic_prompt` | 头恒首位、条目 `- ` 前缀、单条节选 ≤ 400（字面量）、`_MAX_ENTRY_CHARS == 400`（`...::test_episodic_builder_renders_head_and_bounded_lines`） |
+
+> **反证（逐字锚非恒真，实测记录，三组）**：(A) `episodic._PROMPT_HEAD`「结论快照」→「结论概览」
+> ⇒ TC-PROMPTPIN2-01 **红**（`1 failed, 15 passed`）；(B) `author._PROMPT_HEAD` 删「**完整**」⇒
+> TC-PROMPTPIN2-02 **红**；(C) `validator._REVIEW_PROMPT_HEAD` 去「PASS/REJECT 判词句」⇒
+> TC-PROMPTPIN2-03 **红**（各 `1 failed, 15 passed`）。三次复原 ⇒
+> `episodic.py` / `author.py` / `validator.py` / `test_prompt_pinning.py` 四文件 `md5sum` **逐个相同**，
+> 复测 **16 passed**。绿后全量 `.venv/bin/pytest -q` ⇒ **2483 passed**（基线 **2479**，**+4**，
+> 与新增用例数一致）。**零回归**：`git diff --stat src/` **为空**。**规格中性**：`openspec validate --all`
+> 32 passed（31 canonical ＋ 1 change）→ 归档后 **31 passed**，canonical 计数**不变**。
+> **文档诚实性**：`doc/03-interfaces/prompts.md` 明写「**镜像是非真源**」—— 改一条 prompt 须**三处**
+> 同改（模块常量 → pin 副本 → 本表）；**pin 拦代码、不拦文档漂移**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0209 行。

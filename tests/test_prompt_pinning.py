@@ -1,6 +1,7 @@
-"""提示词文本 pin（change 0215 / ADR-0205 / 台账 E152）。
+"""提示词文本 pin（change 0215 → 扩展 0219 / ADR-0205、ADR-0209 / 台账 E152、E156）。
 
-**规格中性**：零 `src/` 改动。本文件把 9 条核心 prompt 头的**措辞**与**渲染结构不变量**钉死，
+**规格中性**：零 `src/` 改动。本文件把 12 条核心 prompt 头的**措辞**与**渲染结构不变量**钉死
+（`0215` 立 9 条；`0219` 补情景归纳 / 源码修补 / 候选审查 3 条），
 拦截「措辞一改、模型行为静默变」的漂移 —— 承 `tests/test_memory.py` 的 `build_prompt` 内容锚先例。
 
 「头」= prompt 的**身份句**（首句「你是……器。」）＋ 该条独有的**承重措辞**（JSON 形状 / 脱敏
@@ -9,8 +10,9 @@
 
 from __future__ import annotations
 
+from core.evolution import author, validator
 from core.loop import planner as loop_planner
-from core.memory import extract, importance, summarize
+from core.memory import episodic, extract, importance, summarize
 from core.memory.protocol import MemoryEntry
 from core.orchestration import planner as orch_planner
 from core.skills import iteration, sop
@@ -77,6 +79,25 @@ _VERIFY_SYSTEM = (
     "你是验收判定器。对照验收标准判定子任务结果是否达标，"
     '仅输出 JSON：{"passed": true, "reason": "..."}。'
     "结果未提供、与标准无关或未达标准时判 false，并给出一句话理由。"
+)
+
+# ── 逐字副本（`0219` 补：情景归纳 / 源码修补 / 候选审查）────────────────────────────
+
+_EPISODIC_HEAD = (
+    "你是情景归纳器。把下面这段会话事件归纳为一段**结论快照**，四段结构依次写："
+    "目标（这段会话要做什么）、经过（实际怎么做的）、结果（最终达成了什么）、"
+    "教训（下次同类任务该注意什么）。只输出归纳本身，不要复述过程、不要罗列原始事件。"
+)
+
+_AUTHOR_HEAD = (
+    "你是核心源码修补者。只修这一个模块，保持其现有风格与对外契约不变；"
+    "只输出修补后的**完整**文件内容，不要解释、不要 diff、不要代码围栏。"
+)
+
+_REVIEW_HEAD = (
+    "你是候选变更的审查者。只审这一个候选**自身是否自洽**（候选类型 / 目标模块 / 变更内容三者"
+    "是否互相说得通、是否是真该由该目标承担的变更）；不评收益、不写实现。"
+    "第一行以 PASS 起首表示通过，以 REJECT 起首表示不通过，其后可附一句理由。"
 )
 
 
@@ -216,3 +237,34 @@ def test_entry_excerpts_bounded() -> None:
     sop_prompt = sop.build_sop_prompt("任务", [step_huge])
     assert step_huge not in sop_prompt
     assert "步" * bound in sop_prompt
+
+
+# ── 3. `0219` 补充的 3 条逐字头 ＋ 1 条结构不变量 ────────────────────────────────
+
+
+def test_episodic_head_verbatim() -> None:
+    """情景归纳头逐字钉死（四段结论快照：目标·经过·结果·教训 / 只输出归纳不复述）。"""
+    assert episodic._PROMPT_HEAD == _EPISODIC_HEAD
+
+
+def test_author_head_verbatim() -> None:
+    """源码修补头逐字钉死（只修一个模块 / 保持风格与对外契约 / 只输出完整文件、不围栏）。"""
+    assert author._PROMPT_HEAD == _AUTHOR_HEAD
+
+
+def test_review_head_verbatim() -> None:
+    """候选审查头逐字钉死（只审自身自洽 / 不评收益 / PASS·REJECT 首行判词）。"""
+    assert validator._REVIEW_PROMPT_HEAD == _REVIEW_HEAD
+
+
+def test_episodic_builder_renders_head_and_bounded_lines() -> None:
+    """情景归纳 builder：头恒首位、条目 `- ` 行、单条节选 ≤ 上界（`_MAX_ENTRY_CHARS`）。"""
+    bound = _EXCERPT_BOUND
+    huge = "长" * (bound * 10)
+    prompt = episodic.build_episodic_prompt([_entry(huge)])
+
+    assert prompt.startswith(episodic._PROMPT_HEAD)
+    assert "\n- " in prompt, "条目行须以 `- ` 前缀逐条渲染"
+    assert huge not in prompt
+    assert "长" * bound in prompt
+    assert episodic._MAX_ENTRY_CHARS == _EXCERPT_BOUND
