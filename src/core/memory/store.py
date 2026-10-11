@@ -530,6 +530,31 @@ class MemoryStore:
         nodes.sort(key=lambda node: node.ts)
         return nodes
 
+    def failure_lessons(self, session_id: str = "", *, limit: int = 5) -> list[MemoryEntry]:
+        """按会话取**失败教训**条目（**零效应只读**；change 0217 / ADR-0207）。
+
+        只收 ``tags`` 含 ``failure`` 的条目 —— 本仓该标签**唯一**生产者是 loop 的 ``remember``
+        （轮级失败条目 ``loop.failure.<trace_id>``，见 ``_PRESERVE_TAGS`` 同一判据）；
+        ``session_id`` 缺省空串 ⇒ 不按会话过滤（口径同 `session_chain`）。
+
+        **层无关**：失败条目会随遗忘迁 L4（``_PRESERVE_TAGS`` 只豁免**压实**、不豁免遗忘）——
+        已归档者**仍须可读**，否则「教训已积累但被遗忘归档」的会话恰在最需要时看不见自己的教训。
+
+        次序：``ts`` **降序**（最近者在前）、**至多 ``limit`` 条** ⇒ 产物有界。
+
+        走 ``_all_entries()``（冷区 + 热区）而**非** ``read()`` —— 后者命中即经 ``_reinforce``
+        **+1 ``reuse_count`` 并落盘一个可撤销效应**（承 ``0187`` / ADR-0178）；而本读面**每轮
+        推理都跑**（教训注入）⇒ 走 ``read()`` 会污染复用信号、堆积与用户意图无关的效应，
+        故必须零效应。亦**不变更**任何条目字段。
+        """
+        entries = [
+            entry
+            for entry in self._all_entries()
+            if "failure" in entry.tags and (not session_id or entry.session_id == session_id)
+        ]
+        entries.sort(key=lambda entry: entry.ts, reverse=True)
+        return entries[:limit]
+
     def compact(
         self, query: str = "", budget: int = 4096, *, session_id: str = ""
     ) -> DecisionResult | None:

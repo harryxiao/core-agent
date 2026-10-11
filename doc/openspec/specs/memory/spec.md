@@ -783,7 +783,8 @@ SHALL **首尾保留**（头尾各半、中以 `…` 连接，总长 SHALL NOT �
 ### Requirement: 情景链（时序相邻标注）
 
 系统 SHALL 为**情景**（`kind="episodic"` 且 `layer="L2"`）条目提供**跨轮时序结构**，
-且**只**提供两件事：轮级失败条目上的**时序相邻标注**，以及按会话的**只读链重建**。
+且**只**提供三件事：轮级失败条目上的**时序相邻标注**、按会话的**只读链重建**，
+以及按会话的**只读失败教训读面**（见 (h)）。
 
 **（a）时序相邻标注。** 轮级失败条目 SHALL 在其 `tags` 上承载一个值
 `after:<前序 trace_id>`，其中前序 SHALL 为**同一会话内上一已记忆轮**的 `trace_id`。
@@ -807,8 +808,12 @@ SHALL NOT 使用 `caused_by:` / `because:` 一类的**因果措辞**。
 开启或关闭 SHALL NOT 改变失败条目的 `id` / `content` / `source` / `kind` / `trace_id`。
 
 **（e）标注 SHALL NOT 意外遮蔽既有消费面.** 新标签 SHALL NOT 使失败条目
-i) 逃出压实材料的**排除面**（`_PRESERVE_TAGS` 按 `failure` 标签排除，该标签 SHALL 保留），
-亦 SHALL NOT 使 ii) 被挡在「相关事实」注入面之外（该面按 `steps` 标签排除，失败条目无此标签）。
+i) 逃出压实材料的**排除面**（`_PRESERVE_TAGS` 按 `failure` 标签排除，该标签 SHALL 保留）。
+失败条目与「相关事实」注入面的关系 SHALL **取决于「既往失败教训」注入块是否启用**（见 (h) 与
+loop「执行循环」）：该块**未启用**（缺省）时，失败条目 SHALL **仍在**事实面（该面按 `steps`
+标签排除，失败条目无此标签）⇒ 既有行为**逐字不变**；该块**启用**时，失败条目 SHALL **退出**
+事实面（改由教训专块承载 —— 同「压缩产物退出事实面」/「原始步序退出事实面」的
+「专块承载 ⇒ 退出事实面」口径，避免同一内容两处注入）。
 
 **（f）只读链重建.** `MemoryStore.session_chain(session_id) -> list[ChainNode]` SHALL 返回该
 会话情景条目的链，按 `ts` **主序**（同 `ts` 保持写入序）；`session_id` 缺省空串 ⇒ 不按会话过滤。
@@ -823,6 +828,14 @@ import `core.runtime` / `core.ui`），且 SHALL 只呈现 `ChainNode` **已携�
 SHALL NOT 产生写入效应、SHALL NOT 强化 `reuse_count`；呈现 SHALL **有界**（单会话至多
 `_MAX_CHAIN_ROWS` 节）。句柄未注入 / 链为空 ⇒ 视图 SHALL **如实降级**为一行结论，
 SHALL NOT 抛异常。
+
+**（h）只读失败教训读面.** `MemoryStore.failure_lessons(session_id, *, limit=5) -> list[MemoryEntry]`
+SHALL 返回该会话的**失败条目**（`tags` 含 `failure`），按 `ts` **降序**（最近者在前）、
+**至多 `limit` 条**；`session_id` 缺省空串 ⇒ 不按会话过滤。该读面 SHALL **层无关** ——
+失败条目**已归档至 L4 者 SHALL 仍可读**（失败证据不因层级迁移而失联）。该调用 SHALL 为
+**零效应**：SHALL NOT 强化 `reuse_count`、SHALL NOT 产生任何写入效应 —— 故 SHALL NOT 经
+`read()`（后者会强化 `reuse_count` 并落盘）。该读面只供**注入**消费（渲染为推理提示块，见
+loop「执行循环」），SHALL NOT 变更任何条目字段。
 
 #### Scenario: 关闭时失败条目标签逐字不变
 
@@ -867,6 +880,26 @@ SHALL NOT 抛异常。
 - **GIVEN** 诊断源**未**注入链句柄，或注入的链为空
 - **WHEN** 渲染 `render_chain`
 - **THEN** 分别得到「未接线」/「（空）」一行结论，SHALL NOT 抛异常
+
+#### Scenario: 只读失败教训按会话、有界、降序、零效应
+
+- **GIVEN** 两个会话各自写入若干失败条目（其中一条已归档至 L4），交错写入
+- **WHEN** 以其中一个会话调用 `failure_lessons(session_id, limit=2)`
+- **THEN** 只得到该会话的失败条目、按 `ts` 递减排列、至多 2 条，且已归档者也含于其中；
+  调用前后各条目的 `reuse_count` **不变**、效应追踪器**无新增记录**
+
+#### Scenario: 启用教训块时失败条目退出事实面
+
+- **GIVEN** 「既往失败教训」注入块**启用**，且某失败条目在库
+- **WHEN** 装配本轮事实（`exclude_fact_tags` 含 `failure`）
+- **THEN** 该失败条目 **SHALL NOT** 出现在「相关事实」块（其信息由教训专块承载）
+
+#### Scenario: 未启用教训块时失败条目仍在事实面
+
+- **GIVEN** 「既往失败教训」注入块**未启用**（缺省）
+- **WHEN** 装配本轮事实
+- **THEN** `exclude_fact_tags` **不含** `failure` ⇒ 失败条目**仍在**事实面，
+  行为与引入本能力前**逐字一致**
 ### Requirement: 实体关系抽取（relations）
 
 系统 SHALL 提供**实体关系抽取**：在记忆压实时，从**被聚合的 episodic 条目**中抽取

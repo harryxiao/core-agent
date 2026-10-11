@@ -324,7 +324,8 @@ class LLMPlanner:
         plan = plan_blocks(ctx.token_budget, enabled=self._block_plan)
         return plan.memory_tokens if plan is not None else _FACT_BUDGET
 
-    def _system_prompt(self, ctx: LoopContext) -> str:
+    def _system_prompt(self, ctx: LoopContext) -> str:  # noqa: C901 — 块装配多分支长管道
+        # （与 `default.py::astream` 同口径：分支数随块种类线性增长，拆函数反而割裂块装配单点）
         blocks: list[str] = [_SYSTEM_PROMPT]
         # 装配器调用提到块外：常驻笔记注入**不依赖**装配器（缺省未装装配器亦须每轮在场）
         pack = (
@@ -362,6 +363,11 @@ class LLMPlanner:
             )
         if ctx.notes.strip():
             blocks.append("相关笔记：\n" + ctx.notes.strip())
+        # 既往失败教训：本会话失败条目的**有界**注入（change 0217 / ADR-0207）—— **独立块**，
+        # 缺省空 ⇒ 不产块 ⇒ 提示词**逐字不变**。不折入「相关事实」（后者按预算截断、会静默丢弃），
+        # 也不折入「相关笔记」（语义不同）。
+        if ctx.failure_lessons.strip():
+            blocks.append("既往失败教训：\n" + ctx.failure_lessons.strip())
         skills = self._skill_hints(self._task(ctx), ctx.session_id)
         if skills:
             blocks.append("可用技能：\n" + "\n".join(_format_skill_hint(s) for s in skills))

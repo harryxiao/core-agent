@@ -7221,6 +7221,58 @@ False 等于**静默删除一个在用能力**（非缺陷修复），方向与�
   二者语义不同不可混同。
 - 来源另见 `doc/openspec/changes/archive/2026-10-11-0216-key-fact-extract-gate/design.md`。
 
+## ADR-0207：既往失败教训注入块 —— 零效应读面 ＋ 第 11 个提示词块（change 0217 / 台账 E154）
+
+**背景 —— 失败经验「有沉淀、无专属消费面」。** 四类记忆里成功经验有「可用技能」＋「相关笔记」块、
+语义事实有「相关事实」块、压缩产物有「历史摘要」块；唯**失败经验**（`loop.failure.<trace_id>`，
+`0179` / ADR-0170 已沉淀、`tags=["loop","failure"]`）**无专属注入面** —— `Diagnoser`（`0188` / ADR-0179）
+只把它喂**诊断报告**、**不回灌推理提示**，通用事实面按**相关性**排序取数（失败条目无优先权、长会话
+极易被挤出）。缺口 = 缺一个**按会话、按时间倒序**的失败教训专块。
+
+**D1 零效应读面，不走 `read()`。** `read()` 命中即经 `_reinforce` **+1 `reuse_count` 并落盘一个
+可撤销效应**（`0187` / ADR-0178）。本读面**每轮推理都跑** ⇒ 走 `read()` 会 i) 污染复用信号（教训被
+反复「使用」而虚高）、ii) 在 `EffectTracker` 堆积与用户意图无关的效应、iii) 破坏「读取面零效应」的
+既有口径（`session_chain` / `summary_for` 同律）。故新开只读快照面，走 `_all_entries()`。
+
+**D2 层无关（`failure` 标签驱动，不按层过滤）。** 失败条目**仍走遗忘**（`_PRESERVE_TAGS` 只豁免
+**压实**、不豁免遗忘 ⇒ 会迁 L4）。若读面要求 L2，则「教训已积累但被遗忘归档」的会话**恰在最需要时
+看不见自己的教训** ⇒ 故只按 `tags` 过滤。
+
+**D3 新增**第 11 个**提示词块 —— 与 ADR-0191 不冲突。** `ADR-0191`（`0201`）拒的是**重切预算份额**
+（`plan_blocks` 的五份），**不是**「块的数量」。本块与之**三项不冲突**：不改任何既有份额、不改任何
+既有块字节（缺省关 ⇒ 逐字不变）、长度**有界**（至多 `_FAILURE_LESSON_LIMIT` = 5 条）。**不折入
+「相关事实」**：事实块按「相关性 + 预算」截断 ⇒ 教训会被**静默丢弃**；独立块**无条件在场**（只判空），
+这正是失败教训要的语义。
+
+**D4 「专块承载 ⇒ 退出事实面」，条件化是最高风险点。** 块启用后失败条目会**双份注入** ⇒
+`exclude_fact_tags` 追加 `failure`（同 `0185` 压缩产物 / `0186` 原始步序口径）。**关键在条件化**：
+块**未启用**（缺省）⇒ `exclude_fact_tags` **逐字**为既有 `frozenset({"steps"})` ⇒ 事实面行为
+**逐字不变**（有专门逐字锚测试守住）。
+
+**D5 钩子 arity 由**取数维度**决定（三钩子各不相同）。** `notes_consult: (任务文本) → str`（按任务命中）、
+`pinned_notes_consult: () → str`（零参、与任务无关）、`failure_lessons_consult: (会话标识) → str`
+（**按会话**）。不强行统一 —— arity 是**契约**的组成部分。
+
+**D6 不做因果 / 归因（以 `0202` / ADR-0192 为先例）。** 仓内无确定性因果事实，模型生成的归因散文
+不可测正确性、非可逆、且是**新脱敏面**。本块只做**时序倒序的原文回顾**，SHALL NOT 推断「这次失败
+是因为上次」。教训正文**已在写入时**逐行脱敏（`0179` over-redact）⇒ 读面**不引入**新脱敏判据。
+
+- **规格**：`memory` **MODIFIED**「情景链」（首段「两件事」→「三件事」、(e) **条件化**、新 **(h)** 只读
+  失败教训读面；**既有 7 Scenario 逐字保留** ＋ ADD Scenario ×3）；`loop` **MODIFIED**「执行循环」
+  （块句 ＋ **既有 41 Scenario 逐字保留** ＋ ADD Scenario ×2）。
+- **反证（三组，实测）**：(A) 摘 `planner.py` 教训块 ⇒ `2 failed, 17 passed`（`test_planner_injects_
+  block_when_nonempty` / `test_block_precedes_skills_and_follows_notes`）；(B) 读面改回
+  `self.read("", 1 << 30)`（走强化路径）⇒ `1 failed, 18 passed`（`test_read_is_zero_effect`）；
+  (C) 摘 `runtime.py` 的 `"failure"` 条件项 ⇒ `1 failed, 18 passed`（`test_exclude_and_consult_
+  wired_when_on`）。三次复原 ⇒ 七个改动文件 `md5sum` **逐个相同**；复测 **19 绿**。
+  测试 **+19**（2441 → **2460**）。
+- **局限**：① 教训与**语义事实面**可能内容相关（如从失败抽出的 keyfact 仍在事实面）—— 二者是
+  **不同条目**、不构成重复；② 只**按会话**取，跨会话同类失败不互见（会话维度是刻意隔离口径）；
+  ③ **非因果** —— 只提供时序倒序原文，模型是否借鉴由模型自决（不可测）；④ 新增第 11 个块使
+  `_system_prompt` 复杂度越 `C901` 阈一档，按仓内既有先例（`astream`）以 `# noqa: C901` 局部放行
+  （未改 `pyproject` lint 配置）。
+- 来源另见 `doc/openspec/changes/archive/2026-10-11-0217-failure-lessons-block/design.md`。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7422,3 +7474,4 @@ False 等于**静默删除一个在用能力**（非缺陷修复），方向与�
 | ADR-0204 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/durability.md, 02-modules/loop.md, 03-interfaces/durability-interface.md |
 | ADR-0205 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0206 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0207 | 02-modules/memory.md, 02-modules/loop.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -475,6 +475,10 @@ _DELEGATE_DEPTH: ContextVar[int] = ContextVar("delegate_depth", default=0)
 _TURN_TASK_PREFIX = "turn."
 _TURN_KIND = "turn"
 
+# 「既往失败教训」注入块的**条数上界**（change 0217 / ADR-0207）：单块至多收最近 N 条失败教训
+# ⇒ 块长有界（每条正文在写入时已受单条 L2 沉淀条目长度上界约束）。
+_FAILURE_LESSON_LIMIT = 5
+
 
 def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     config: ConfigManager,
@@ -698,6 +702,16 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         """常驻注入（0149）：**零参**取常驻笔记全文块（与当轮任务无关 ⇒ 每轮无条件在场）。"""
         return note_store.pinned_digest()
 
+    def _failure_lessons(session_id: str) -> str:
+        """既往失败教训（0217）：**按会话**零效应取失败条目，渲染有界块（loop 不 import 语义面）。
+
+        走 ``MemoryStore.failure_lessons``（**零效应只读** —— 不走 ``read()``，后者会强化
+        ``reuse_count`` 并落盘效应）；**至多** `_FAILURE_LESSON_LIMIT` 条、每条**折叠为一行**
+        （正文已在写入时逐行脱敏，此处无需二次脱敏）。无教训 ⇒ 空串 ⇒ planner 不产块。
+        """
+        entries = memory.failure_lessons(session_id, limit=_FAILURE_LESSON_LIMIT)
+        return "\n".join(f"- {' '.join(entry.content.split())}" for entry in entries)
+
     def _loop_hooks(
         domain: str | None = None,
     ) -> tuple[Callable[[str], list[SkillHint]], TurnObserver]:
@@ -831,7 +845,14 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             # `steps`）的声明角色是**抽取器素材**（其信息已由同轮轨迹 / 失败摘要承载）
             # ⇒ 不进 prompt。
             # 三者 `source` 同为 `"loop"` ⇒ 来源面不可分，故按 **tags** 排除。
-            exclude_fact_tags=frozenset({"steps"}),
+            # 失败教训退出事实面（change 0217 / ADR-0207）：教训块**启用**时失败条目改由
+            # 「既往失败教训」专块承载 ⇒ 追加 `failure` 挡在事实面外（同 0185/0186 口径）。
+            # **关（缺省）⇒ 逐字为既有 `{"steps"}`** ⇒ 事实面行为**逐字不变**。
+            exclude_fact_tags=(
+                frozenset({"steps", "failure"})
+                if config.failure_lessons()
+                else frozenset({"steps"})
+            ),
         )
     # 取详情的消费面（change 0140）：模型经工具面按指针取片段，不由全文顶替。
     # 注入装配器时同样接线（装配面由调用方给定，消费面不在其管辖内）。
@@ -999,6 +1020,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         turn_observer=loop_turn,
         notes_consult=_consult_notes,
         pinned_notes_consult=_pinned_notes,
+        # 既往失败教训：**只**注入主 loop（子 Agent / 神兽 / 宠物 loop 不接 —— 教训按会话维度取用，
+        # 同 `transcript` / `turn_checkpoint` 的注入面）；门控缺省关 ⇒ `None`（逐字不变）。
+        failure_lessons_consult=_failure_lessons if config.failure_lessons() else None,
         cold_path=cold_path,
         trace_observer=trace_observer,
         middlewares=[constraints_chain.middleware],

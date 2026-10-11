@@ -274,6 +274,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "loop.failure_lessons",
+        "--loop.failure-lessons",
+        "CORE_LOOP_FAILURE_LESSONS",
+        default=False,
+        map_to="loop.failure_lessons",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "context.rag_info_map",
         "--context-rag-info-map",
         "CORE_CONTEXT_RAG_INFO_MAP",
@@ -700,6 +708,24 @@ class ConfigManager:
             return False
         raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
         value = raw.get("causal_links", False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in _FEATURE_TRUE
+
+    def failure_lessons(self) -> bool:
+        """既往失败教训注入块开关（缺省 ``False`` = 不注入；change 0217 / ADR-0207）。
+
+        **独立访问器**（同 `history_turns()` 先例）：与预算/上限无语义关系，且既有访问器的
+        返回 arity 被解包断言钉死，不合并。取值归一与 feature flag 同集；``loop`` 为**结构化段**
+        （非法取值已在校验期阻断启动，见 `_loop_errors`），故此处只做字符串归一。
+
+        关闭 ⇒ 组合根**不注入**教训钩子、`exclude_fact_tags` **逐字**为既有 `{"steps"}` ⇒
+        提示词与事实面**逐字不变**。读取面 `failure_lessons` 恒可用。
+        """
+        if self._config is None:
+            return False
+        raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
+        value = raw.get("failure_lessons", False)
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in _FEATURE_TRUE
@@ -1145,6 +1171,11 @@ def _loop_errors(raw: dict[str, Any]) -> list[str]:
         _FEATURE_TRUE | _FEATURE_FALSE
     ):
         errors.append(f"非法轮级检查点: loop.turn_checkpoint={value}（须为 true/false 之一）")
+    value = raw.get("failure_lessons", False)
+    if not isinstance(value, bool) and str(value).strip().lower() not in (
+        _FEATURE_TRUE | _FEATURE_FALSE
+    ):
+        errors.append(f"非法失败教训块开关: loop.failure_lessons={value}（须为 true/false 之一）")
     return errors
 
 

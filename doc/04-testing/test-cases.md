@@ -2778,3 +2778,41 @@ Requirement 做全量替换）。
 > **规格**：`memory` **MODIFIED**「结构化实体抽取（关键事实）」（末句扩为「未注入抽取器**或配置关闭**」，
 > 既有 15 Scenario 逐字保留）＋ **ADD Scenario ×2** ⇒ canonical memory **16 → 16** req /
 > **117 → 119（+2）** scen。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0206 行。
+
+## 130. 既往失败教训注入块（TC-FAILLESSON，change `0217`／ADR-0207，台账 E154）
+
+零效应读面 `MemoryStore.failure_lessons` ＋ 独立提示词块 ＋ 闭包注入 ＋ 事实面条件化（键 `loop.failure_lessons`，**缺省关**）。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-FAILLESSON-01 | 只收 `failure` 标签 | 一轮失败（`trajectory` ＋ `failure` 两条并存） | 只回 `loop.failure.s1-0`，`loop.s1-0`（同轮轨迹）不在（`tests/test_failure_lessons.py::test_reads_only_failure_tagged_entries`） |
+| TC-FAILLESSON-02 | `ts` 降序 ＋ 有界 | 5 条失败、`limit=2` | 取最近两条、`ts` 递减；缺省 `limit` 收全部 5（`...::test_orders_by_ts_desc_and_bounds`） |
+| TC-FAILLESSON-03 | 按会话隔离 | s1 两条、s2 三条 | `len(s1)==2`、`len(s2)==3`（`...::test_session_filter_isolates`） |
+| TC-FAILLESSON-04 | 空串不过滤 | 两会话共五条 | `len(failure_lessons())==5`（`...::test_empty_session_id_returns_all`） |
+| TC-FAILLESSON-05 | **层无关**：L4 仍可读 | 直接写 L4 失败条目 | 仍被 `failure_lessons(\"s1\")` 取到（`...::test_archived_layer_still_readable`） |
+| TC-FAILLESSON-06 | **零效应锚** | 读前后比对 | `reuse_count` **不变**、`EffectTracker` **无新增**（故不经 `read()`）（`...::test_read_is_zero_effect`） |
+| TC-FAILLESSON-07 | 新字段缺省空 | `LoopContext()` | `failure_lessons == ""`（`...::test_loop_context_defaults_empty`） |
+| TC-FAILLESSON-08 | 非空出独立块 | `ctx.failure_lessons` 非空 | 提示词含「既往失败教训：」且正文原样（`...::test_planner_injects_block_when_nonempty`） |
+| TC-FAILLESSON-09 | **逐字锚**：空不产块 | 缺席 vs 空串 | 两次 `_system_prompt` **逐字相同**；无「既往失败教训：」（`...::test_planner_omits_block_when_empty_verbatim`） |
+| TC-FAILLESSON-10 | 块顺序 | 桩技能路由 + 笔记 | 「相关笔记」<「既往失败教训」<「可用技能」（`...::test_block_precedes_skills_and_follows_notes`） |
+| TC-FAILLESSON-11 | 钩子入参＝会话标识 | `failure_lessons_consult` 记录入参 | 收到 `\"s7\"`，产物写入 `ctx.failure_lessons`（`...::test_load_failure_lessons_passes_session_id`） |
+| TC-FAILLESSON-12 | 钩子抛错降级 | 钩子抛 `RuntimeError` | 字段**置空**、trace 含 `failure_lessons_consult_failed`、**不**抛出（`...::test_load_failure_lessons_degrades_on_error`） |
+| TC-FAILLESSON-13 | 未注入不触碰 | 缺省 `DefaultLoop()` | 字段保持空（`...::test_not_injected_leaves_field_untouched`） |
+| TC-FAILLESSON-14 | 单一真源三面齐备 | `config_specs()` | `(--loop.failure-lessons, CORE_LOOP_FAILURE_LESSONS, False, loop.failure_lessons)`（`...::test_spec_declares_failure_lessons`） |
+| TC-FAILLESSON-15 | 缺省关 ＋ yaml/env 开 | 三态 | `False` / yaml `true` → `True` / env `CORE_LOOP_FAILURE_LESSONS=on` → `True`（`...::test_default_off_and_yaml_env_enable`） |
+| TC-FAILLESSON-16 | **结构化段 ⇒ 非法阻断启动** | `loop:\n  failure_lessons: maybe` | `ConfigurationError`（match「非法失败教训块开关」）（`...::test_illegal_value_blocks_startup`） |
+| TC-FAILLESSON-17 | **逐字锚**：关 ⇒ 事实面排除面逐字不变 | `build_runtime` 缺省 | `exclude_fact_tags == frozenset({\"steps\"})` 且 `_failure_lessons_consult is None`（`...::test_exclude_fact_tags_verbatim_when_off`） |
+| TC-FAILLESSON-18 | 开 ⇒ 排除面追加 `failure` ＋ 钩子接线 | `loop.failure_lessons: true` | `exclude_fact_tags == frozenset({\"steps\", \"failure\"})` 且钩子**非空**（`...::test_exclude_and_consult_wired_when_on`） |
+| TC-FAILLESSON-19 | 组合根闭包端到端有界 | 7 条失败、钩子直调 | 块恰 5 行（缺省上界）、含「失败：」、**不**暴露条目 id（`...::test_enabled_consult_renders_bounded_block`） |
+
+> **反证（实测三组）**：(A) 摘 `planner.py` 的教训块 ⇒ TC-FAILLESSON-08/10 **红**（`2 failed, 17 passed`）；
+> (B) 读面改回 `self.read("", 1 << 30)`（走 `_reinforce` 强化路径）⇒ TC-FAILLESSON-06 **红**
+> （`1 failed, 18 passed`）；(C) 摘 `runtime.py` 的 `\"failure\"` 条件项 ⇒ TC-FAILLESSON-18 **红**
+> （`1 failed, 18 passed`）。三次复原 ⇒ 七个改动文件（`store.py` / `protocol.py` / `planner.py` /
+> `default.py` / `manager.py` / `runtime.py` / 本测试文件）`md5sum` **逐个相同**，复测 **19 passed**。
+> TC-FAILLESSON-17 与 18 **成对** ⇒ 缺一即「条件化要么恒开要么恒关」的证据缺口（**最高风险点**）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2460 passed**（基线 **2441**，**+19**，与用例数一致）。
+> **规格**：`memory` **MODIFIED**「情景链（时序相邻标注）」（首段「两件事」→「三件事」、(e) **条件化**、
+> 新 **(h)** 只读失败教训读面；既有 7 Scenario 逐字保留 ＋ **ADD Scenario ×3**）；`loop` **MODIFIED**
+> 「执行循环」（块句，既有 41 Scenario 逐字保留 ＋ **ADD Scenario ×2**）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0207 行。
