@@ -816,8 +816,12 @@ def test_gate_out_of_range_score_degrades_to_normal_write() -> None:
 
 
 def test_gate_exempt_face_is_the_pipeline_sources() -> None:
-    """豁免面即三个系统管道来源 —— 新增派生来源须同步登记（漏登记 ⇔ 该来源被评分）。"""
-    assert frozenset({"compaction", "context", "extraction"}) == _GATE_EXEMPT_SOURCES
+    """豁免面即四个系统管道来源 —— 新增派生来源须同步登记（漏登记 ⇔ 该来源被评分）。
+
+    `relation` 于 change 0203 登记：关系三元组与关键事实同属压实期派生产物
+    （`source="relation"`，见「实体关系抽取（relations）」）。
+    """
+    assert frozenset({"compaction", "context", "extraction", "relation"}) == _GATE_EXEMPT_SOURCES
 
 
 @pytest.mark.parametrize("source", sorted(_GATE_EXEMPT_SOURCES))

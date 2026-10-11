@@ -26,9 +26,13 @@ from .extract import (
     REDACTED,
     KeyFact,
     KeyFactExtractor,
+    Relation,
+    RelationExtractor,
     key_fact_cap,
     redact_secrets,
+    relation_cap,
     scrub_key_fact,
+    scrub_relation,
     slug_entity,
 )
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
@@ -52,7 +56,7 @@ _IMPORTANCE_AMBIT = 0.4
 # 闸门**豁免面**（change 0181 / ADR-0172）：来源属此面的条目**不经评分** —— 它们皆由系统管道
 # 从**已准入**的材料派生（会话摘要与中层摘要 `compaction` / 压实产物 `context` / 结构化关键事实
 # `extraction`），派生结论不得因评分而丢失或降层。新增派生来源须同步登记。
-_GATE_EXEMPT_SOURCES = frozenset({"compaction", "context", "extraction"})
+_GATE_EXEMPT_SOURCES = frozenset({"compaction", "context", "extraction", "relation"})
 
 # 遗忘阈值：衰减评分低于此值即归档（≈19 天零复用零重要度）
 _FORGET_THRESHOLD = 0.05
@@ -62,6 +66,9 @@ _MAX_SCORED_PER_COMPACT = 20
 
 # 关键事实条目标签前缀（自适应上界 `key_fact_cap` 见 extract 模块）
 _KEY_FACT_TAG = "key_fact"
+
+# 关系条目标签（自适应上界 `relation_cap` 即 `key_fact_cap`，见 extract 模块）
+_RELATION_TAG = "relation"
 
 # 出处（引用）标签前缀；`coeffect:` 形态的取值才是可用引用（change 0173 / ADR-0164）
 _REF_TAG = "ref:"
@@ -177,6 +184,56 @@ def _plan_key_facts(raw: list[KeyFact], *, cap: int) -> tuple[list[KeyFact], lis
     return plan, dropped, deduped
 
 
+def _relation_label(relation: Relation) -> str:
+    """留痕用的关系标签：``head --谓词--> tail``，**三段一律先 ``redact_secrets``**。
+
+    关系与关键事实的关键差异：keyfact 的实体名**不可能**是被丢弃的原因，而关系的**实体名正是**
+    丢失原因之一（密钥形状的 head / tail）⇒ 直接回显即泄漏。故此处统一 over-redact。
+    """
+    head = redact_secrets(relation.head.strip())
+    predicate = redact_secrets(relation.predicate.strip())
+    tail = redact_secrets(relation.tail.strip())
+    return f"{head} --{predicate}--> {tail}"
+
+
+def _record_relation_drop(
+    relation: Relation, reason: str, secrets: list[str], unknown: list[str]
+) -> None:
+    """丢弃留痕分流：密钥形态 ⇒ ``secrets``；未知谓词 ⇒ ``unknown``；空实体 ⇒ **静默**。"""
+    if reason == "secret":
+        secrets.append(_relation_label(relation))
+    elif reason == "predicate":
+        unknown.append(_relation_label(relation))
+
+
+def _plan_relations(
+    raw: list[Relation], *, cap: int
+) -> tuple[list[Relation], list[str], list[str]]:
+    """整批归一化关系三元组：**脱敏 + 归一化谓词 + 同批归并 + 有界**。
+
+    返回（可落库关系, 因密钥形态丢弃的标签, 因未知谓词丢弃的标签）。空实体 ⇒ **静默跳过**
+    （与 ``_plan_key_facts`` 对空实体的处置一致）；**同批**内完整三元组相同者只留**首条**。
+    名额 ``cap`` 由调用点给出（``relation_cap`` 即 ``key_fact_cap``）。
+    """
+    plan: list[Relation] = []
+    secrets: list[str] = []
+    unknown: list[str] = []
+    seen: set[str] = set()
+    for relation in raw:
+        cleaned, reason = scrub_relation(relation)
+        if cleaned is None:
+            _record_relation_drop(relation, reason, secrets, unknown)
+            continue
+        key = f"{slug_entity(cleaned.head)}--{cleaned.predicate}--{slug_entity(cleaned.tail)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        plan.append(cleaned)
+        if len(plan) >= cap:
+            break
+    return plan, secrets, unknown
+
+
 class MemoryStore:
     """具体记忆存储：内存热字典 + 可插拔后端（MVP 为 FileBackend）。"""
 
@@ -194,6 +251,7 @@ class MemoryStore:
         summarizer: Summarizer | None = None,
         summary_promoter: SummaryPromoter | None = None,
         key_fact_extractor: KeyFactExtractor | None = None,
+        relation_extractor: RelationExtractor | None = None,
         importance_scorer: ImportanceScorer | None = None,
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
@@ -203,6 +261,7 @@ class MemoryStore:
         self._summarizer = summarizer
         self._summary_promoter = summary_promoter
         self._key_fact_extractor = key_fact_extractor
+        self._relation_extractor = relation_extractor
         self._importance_scorer = importance_scorer
         self._hot: dict[str, MemoryEntry] = {}
         self._vectors: dict[str, list[float]] = {}
@@ -501,7 +560,11 @@ class MemoryStore:
                 )
             except Exception:  # noqa: BLE001 — 决策分值是咨询性返回值（无写入副作用），
                 decision = None  # 其失败不外溢为「固化/遗忘整轮停摆」
-        if self._summarizer is not None or self._key_fact_extractor is not None:
+        if (
+            self._summarizer is not None
+            or self._key_fact_extractor is not None
+            or self._relation_extractor is not None
+        ):
             self._summarize_sessions(session_id)
         return decision
 
@@ -647,6 +710,7 @@ class MemoryStore:
                     self._commit_summary(sid, entries, summary)
                     self._deliver_promotion(sid, prior, summary)
             self._extract_key_facts(sid, entries)
+            self._extract_relations(sid, entries)
 
     def _score_importance(self, entries: list[MemoryEntry]) -> dict[str, float]:
         """逐条目 importance 打分（judgment ``score`` 原语）并写回（可逆）。
@@ -833,6 +897,70 @@ class MemoryStore:
                 content=f"{fact.entity}: {fact.value}",
                 tags=tags,
                 source="extraction",
+                trace_id=f"compaction.{key}",
+                session_id="",
+                kind="semantic",
+            ),
+        )
+
+    def _extract_relations(self, session_id: str, entries: list[MemoryEntry]) -> None:
+        """实体关系抽取（change 0203 / ADR-0193）。
+
+        与 ``_extract_key_facts`` 同材料、同 trace、同落库形状，但**独立接缝**（合并会改关键事实
+        prompt 的字节）。先**整批**归一化（脱敏 + 归一化谓词 + 同批归并 + 有界），再落库 ——
+        归一化阶段任何失败 ⇒ **整批不写**。**脱敏在 store 侧无条件执行**（抽取器不构成信任边界）。
+        条目属**全局层**（`session_id` 置空），产生它的会话经 `tags` 的 `session:<sid>` 溯源。
+        """
+        extractor = self._relation_extractor
+        if extractor is None or not entries:
+            return
+        key = session_id or "default"
+        try:
+            plan, secrets, unknown = _plan_relations(
+                extractor(entries), cap=relation_cap(len(entries))
+            )
+        except Exception:  # noqa: BLE001 — 抽取失败降级：整批不写，不牵连压实
+            warnings.warn(
+                f"relation extraction failed for session {key!r}; no relations were written",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return
+        for relation in plan:
+            self._write_relation(relation, key=key, session_id=session_id)
+        if secrets:
+            warnings.warn(
+                "relations dropped (secret-shaped entity or predicate): " + "; ".join(secrets),
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        if unknown:
+            warnings.warn(
+                "relations dropped (predicate not in the closed allowlist): " + "; ".join(unknown),
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+    def _write_relation(self, relation: Relation, *, key: str, session_id: str) -> None:
+        """落一条关系（同一三元组同一 `id` ⇒ 覆盖式更新、条目不增长）。"""
+        head = slug_entity(relation.head)
+        tail = slug_entity(relation.tail)
+        tags = [
+            _RELATION_TAG,
+            f"entity:{head}",
+            f"entity:{tail}",
+            f"predicate:{relation.predicate}",
+        ]
+        if session_id:
+            tags.append(f"session:{key}")
+        self.write(
+            "L2",
+            MemoryEntry(
+                id=f"relation.{head}--{relation.predicate}--{tail}",
+                layer="L2",
+                content=f"{relation.head} --{relation.predicate}--> {relation.tail}",
+                tags=tags,
+                source=_RELATION_TAG,
                 trace_id=f"compaction.{key}",
                 session_id="",
                 kind="semantic",

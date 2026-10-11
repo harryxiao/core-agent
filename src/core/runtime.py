@@ -80,6 +80,7 @@ from core.memory import (
     MemoryStore,
     TranscriptStore,
     batch_embed,
+    extract_relations_with,
     extract_with,
     score_with,
     summarize_with,
@@ -483,6 +484,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         summary_promoter=_promote_summary,
         # 结构化关键事实抽取（0155 / 路线图 G4）：同一 `_llm_text` 接缝；脱敏在 store 侧无条件执行。
         key_fact_extractor=extract_with(_llm_text),
+        # 实体关系抽取（0203 / ADR-0193）：**缺省不接线**（`memory.relation_extract` 缺省关）
+        # ⇒ 未配置时压实逐字不变。与关键事实**刻意分离**：合并会改 0155 的提示词字节。
+        relation_extractor=extract_relations_with(_llm_text) if config.relation_extract() else None,
         # 写入侧重要度闸门（0181 / ADR-0172）：缺省不评分（逐字不变）；显式开启才构造评分器。
         # 同一 `_llm_text` 接缝；系统管道派生产物（compaction/context/extraction）在 store 侧豁免。
         importance_scorer=score_with(_llm_text) if config.importance_gate() else None,

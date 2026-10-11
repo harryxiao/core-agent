@@ -2309,3 +2309,46 @@ bullet（缺省不启用 / 未过 ⇒ 不入库 + 清组 + 只报组键 / 判定
 > `kind="episodic"`；本 change 覆盖的**只是**该条目的 `tags` 增补与**读取面** —— 前者**不重写**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0192 行（前序表为进程内状态 ⇒ 跨进程 /
 > 三路 loop 断链 / 标注只说相邻不说因果 / `session_chain` 未进 Protocol / `Diagnoser` 前驱接线遗留）。
+
+## 116. 实体关系抽取（TC-REL，change `0203`／ADR-0193，台账 E140）
+
+**行为规格锚点**：`memory/spec.md`「实体关系抽取（relations）」（**ADDED**）。
+四面：**未接线**（缺省 ⇒ 零 `relation` 条目、压实逐字不变）、**落库形态与幂等**（复刻
+`keyfact` 形状 + 同三元组两次一条）、**脱敏 fail-closed**（密钥形状 / 空实体 / 表外谓词各自丢弃，
+留痕 over-redact）、**面与界**（不入压实材料 / 随压实回滚 / 到达事实面 / `relation_cap` 同一旋钮）。
+
+| 用例 | 锚点 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-REL-01 | **未接线 = 逐字不变** | `MemoryStore(summarizer=…)`（**缺省** `relation_extractor=None`）压实 | 无 `relation` 条目；摘要照常 ⇒ 既有路径逐字不变（`tests/test_memory_relations.py::test_unwired_extractor_changes_nothing`） |
+| TC-REL-02 | 抽取**独立于**摘要 | `MemoryStore(relation_extractor=…)`（**不注入摘要器**）压实 | 落 `relation.部署--uses--docker`；`summary_for("s1") is None` ⇒ 两条 DI 接缝各自独立（`...::test_extraction_runs_without_summarizer`） |
+| TC-REL-03 | 落库形态（**复刻 `_write_key_fact`**） | `Relation("service-a","depends_on","service-b")` 压实 | `id="relation.service-a--depends_on--service-b"`、`content="service-a --depends_on--> service-b"`、`kind="semantic"`、`source="relation"`、`session_id==""`、`trace_id=="compaction.s1"`、`tags ⊇ {relation, entity:…, predicate:depends_on, session:s1}`（`...::test_happy_path_entry_shape`） |
+| TC-REL-04 | 中文谓词**归一化** | `Relation("订单服务","依赖","支付服务")` 压实 | `id="relation.订单服务--depends_on--支付服务"`（**落库存规范英文谓词**）；`predicate:depends_on`（`...::test_chinese_predicate_normalized`） |
+| TC-REL-05 | 变体表 → 规范谓词（**参数化**） | `scrub_relation(Relation("甲", variant, "乙"))`，`variant ∈ {依赖, 属于, 导致, 使用}` | `reason == ""`；`cleaned.predicate ∈ {depends_on, part_of, causes, uses}`（`...::test_predicate_variants_map_to_canonical`） |
+| TC-REL-06 | 同三元组两次 ⇒ **一条条目** | 同一抽取结果连续 `compact(session_id="s1")` 两次 | `[e.id] == ["relation.a--uses--b"]` ⇒ 同 `id` 幂等覆盖（`...::test_same_triple_twice_is_idempotent`） |
+| TC-REL-07 | 表外谓词 ⇒ **丢弃 + 留痕** | `Relation("甲","吃掉","乙")` 压实 | `_relations(store) == []`；`warns(RuntimeWarning)` 且消息含实体名 `甲` 与**原始**谓词 `吃掉`（`...::test_unknown_predicate_dropped_and_warned`） |
+| TC-REL-08 | 密钥形状 `head` ⇒ **fail-closed** + 留痕**不回显明文** | `Relation(_SECRET,"uses","乙")` 压实 | 零条目；`warns` 且消息**不含** `_SECRET` 明文、含 `REDACTED`（`...::test_secret_shaped_entity_dropped_with_redacted_warning`） |
+| TC-REL-09 | 密钥形状 `tail` ⇒ 丢弃 | `Relation("甲","uses",_SECRET)` 压实 | 零条目（`...::test_secret_shaped_tail_dropped`） |
+| TC-REL-10 | 空实体 ⇒ 丢弃（**参数化**） | `scrub_relation(Relation(head, "uses", tail))`，`(head,tail) ∈ {("","乙"),("甲",""),("  ","乙")}` | `cleaned is None` 且 `reason == "empty"`（`...::test_empty_entity_dropped`） |
+| TC-REL-11 | 脱敏**判据一处定义** | `redact_secrets(_SECRET)` | 不含明文、含 `REDACTED` ⇒ 留痕脱敏与关键事实**同源**（`...::test_redact_secrets_is_the_single_criterion`） |
+| TC-REL-12 | 上界 = **同一把旋钮** | 一次喂 40 条关系（1 条材料）压实 | `len(_relations(store)) == relation_cap(1)`；且 `relation_cap is key_fact_cap`（**别名、非副本**）（`...::test_cap_bounds_batch_matching_key_fact_cap`） |
+| TC-REL-13 | **不入压实材料**（`kind="semantic"` 承重） | 压实后取 `store._episodic_groups("s1")`（材料源**唯一入口**） | `relation.a--uses--b` **不在**材料内 ⇒ 关系不回喂（`...::test_relations_not_in_compaction_material`） |
+| TC-REL-14 | 随压实**回滚一并撤销** | `EffectTracker` + `compact(session_id="s1")` → `tracker.rollback("compaction.s1")` | 回滚前 `[relation.a--uses--b]`；回滚后 `[]`（同 `trace_id` 连带撤销）（`...::test_relations_rollback_with_compaction`） |
+| TC-REL-15 | **到达事实面** | 真 `DynamicAssembler(memory=store, exclude_fact_sources=("compaction",))` 装配 ⇒ 取 `pack.facts` | 存在含 `"a --uses--> b"` 的事实 ⇒ `source="relation"` 未被按 `compaction` 前缀排除（`...::test_relations_reach_the_fact_face`） |
+| TC-REL-16 | 长 `id` 经 `FileBackend` **往返** | 60 字 head + 60 字 tail ⇒ `compact` → **新建实例**重载 `FileBackend` | 落盘 id 长度 > 100；重载后 `audit()` 含**同一** `id` ⇒ `id` 是 JSONL **字段**（非文件名），无路径长度约束（`...::test_long_id_round_trips_through_file_backend`） |
+| TC-REL-17 | 解析**容错**（围栏 / 坏元素） | `parse_relations` 喂 ```json 围栏 + 缺字段元素 + 非对象元素 | 只留合法三元组 `[("a","uses","b")]`；`"no json here"` ⇒ `[]`（`...::test_parse_relations_tolerates_fences_and_skips_bad_elements`） |
+| TC-REL-18 | 模型输出不可解析 ⇒ **留痕**（不含正文） | `extract_relations_with(lambda prompt: "抱歉，我无法抽取")` | `== []`；`warns` 且消息**不含**模型输出正文（只报长度）（`...::test_extract_relations_with_warns_on_unparseable_output`） |
+| TC-REL-19 | **豁免面守护同步登记** | `_GATE_EXEMPT_SOURCES`（`tests/test_memory.py`） | 恰为 `{compaction, context, extraction, relation}` ⇒ 新增派生来源须同步登记（漏登记 ⇔ 该来源被评分）（`tests/test_memory.py::test_gate_exempt_face_is_the_pipeline_sources`） |
+
+> **反证（逐字锚非恒真，实测记录）**：① 摘掉 `_summarize_sessions` 内的 `self._extract_relations(sid, entries)`
+> 调用 ⇒ **11 red**（除 TC-REL-01/11/17 外的全部关系锚）；② 摘掉 `scrub_relation` 的密钥判定
+> （`if False:`）⇒ TC-REL-08/09 **红**（`DID NOT WARN`）。**各自复原即绿**。**实测 11 red + 2 red**。
+> **实测订正（本批踩到并留痕）**：`_plan_relations` 初版用 `if/elif` 分流丢弃原因 ⇒
+> `tests/test_architecture.py::test_control_flow_nesting_max_three` **转红**（AST 口径把 `elif` 记作
+> 一层 `If` ⇒ 嵌套 4 > 3）。正解：抽 `_record_relation_drop` 把分流移出循环体。**规格零改动**。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2294 passed**（基线 **2270**，**+24**；含参数化展开，
+> 高于批次预估的 +12/+16 —— 实跑为准）。
+> **不重复**：`tests/test_memory_key_facts.py`（change `0155`）覆盖**扁平** `keyfact.<slug>` 的
+> 抽取 / 脱敏 / 有界；本 change 覆盖**边**（三元组）—— 两套类型 / 两个 DI 接缝 / 两条提示词，
+> **互不重写**（`Relation` 独立于 `KeyFact`，不给后者加字段）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0193 行（压实多一次模型调用 / 事实面三分 /
+> 长尾谓词仍会 drop / 无图存储与遍历 API / 缺省关使能力惰性）。

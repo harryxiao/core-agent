@@ -6420,6 +6420,82 @@ Requirement **逐字保留**（不做 MODIFIED）。**两处必断言的不遮�
   Protocol**（读面为具体类方法）；④ **`Diagnoser` 前驱接线未做** —— 需对 `evolution/spec.md`
   「对比诊断」做约 36 行逐字 MODIFIED（本批最高风险规格编辑）⇒ 登记为遗留，不并入本 change。
 
+## ADR-0193：实体关系抽取 —— 三元组 + 双语闭合谓词白名单（change 0203 / 账本 E140）
+
+**背景 —— 语义记忆只有「点」没有「边」。** 结构化抽取（change 0155 / 路线图 G4）落的是**扁平**
+`keyfact.<slug>`（`content="<entity>: <value>"`）—— 有**实体**、无**关系**；全仓对 `MemoryEntry`
+grep `relation/edge/triple/graph` **零命中**，`MemoryBackend` 亦只有
+`get/put/search/list_index/delete`。外来蓝图（`memory-4-layer-architecture.md` §1）的语义维要求
+「实体间可遍历的边」——这是**唯一的能力级缺口**。
+
+**D1 独立类型 `Relation(head, predicate, tail)`，不给 `KeyFact` 加字段。** `KeyFact` 是已发布契约
+（`KeyFactExtractor = Callable[..., list[KeyFact]]`）；加宽它会动摇 `parse_key_facts` /
+`scrub_key_fact` / `_plan_key_facts` 与 `test_memory_key_facts.py` 全部 30 条用例。独立类型是**加法**。
+
+**D2 谓词 = 中英双语**闭合白名单** + 归一化（用户裁决）。** 规范谓词为英文（
+`depends_on / part_of / uses / causes / blocks / owns / implements / related_to`），中文变体
+（`依赖/属于/导致/使用…`）**归一化到规范谓词**后落库。表外 ⇒ **丢弃并留痕**。理由：谓词若开放，
+则（a）「图」不可遍历；（b）成为**第四个无界自由文本字段** —— 新的密钥携带面；（c）同三元组幂等
+去重的**基数失控**。双语表是「可用」与「有界」的折中：纯中文会话 drop 率显著下降，代价是词表维护
+面翻倍、归一化规则更重（登记为局限）。
+
+**D3 脱敏 `scrub_relation` 返回原因码，且**密钥判定先于谓词归一化**。** 顺序即安全：若先归一化，
+密钥形状的**原始谓词**会走「未知谓词」分支、被**原样回显**进留痕。规则：`head`/`tail`/`predicate`
+任一 `looks_like_secret` ⇒ **整条丢弃**（`"secret"`）；空实体 ⇒ 丢弃（`"empty"`）；表外 ⇒
+丢弃（`"predicate"`）；否则头截断 `_MAX_FACT_CHARS`。**两处消费一个判据**（`extract.py` 的
+`redact_secrets` / `looks_like_secret`），沿 `loop/default.py` 复用先例。
+**留痕恒 over-redact**：`_relation_label` 对**三段一律** `redact_secrets` —— 关系与 keyfact 的
+有意不对称（keyfact 的实体名**不可能**是丢弃原因，而关系的**实体名正是**原因之一）。
+**不设 ref 逃生口** —— 关系没有 `coeffect:` 可引用之物。
+
+**D4 `relation_cap` **别名到** `key_fact_cap`（`0.25/8/16` 同形）。** 全仓**一把调参旋钮**；
+另起第二组常量会让「事实面一共能装多少」变成两个互不知情的数字。
+
+**D5 存储**完全复用 `_write_key_fact` 的形状。** `id = f"relation.{slug(head)}--{pred}--{slug(tail)}"`、
+`content = f"{head} --{pred}--> {tail}"`、`tags = ["relation", f"entity:…", f"predicate:…"]`
+（`session:<key>` 视同 keyfact）、`source="relation"`、`kind="semantic"`、`session_id=""`、
+`trace_id=f"compaction.{key}"` ⇒ **同 `id` 幂等覆盖**、同 `_GATE_EXEMPT_SOURCES` 豁免（不过
+importance 闸门）、同 `Effect(op="memory.write", trace_id="compaction.<key>", undo=…)` ⇒
+**回滚 `compaction.<key>` 连带撤销关系**，免费。必须走 `MemoryStore.write`，**不开新写入路径**。
+`kind="semantic"` 是**承重**的：`_episodic_groups` 只收 `kind=="episodic" and layer=="L2"`
+⇒ 关系**不回喂**压实材料。`id` 长度（3 × `slug(48)` ≈ 105–150 字符）已实测经 `FileBackend`
+往返 —— `id` 是 JSONL **字段**（非文件名），无路径长度约束。
+
+**D6 注入面复用既有「相关事实」块，不加第 11 个提示词块。** `_gather_facts` 以
+`exclude_fact_sources=("compaction",)` 读 L2，而关系 `source="relation"` ⇒ **自动**被检索并经
+`planner.py` 既有的「相关事实：」块渲染 —— 零管线改动、零新块序契约、与 `0201` 区块工作零冲突。
+代价：关系与关键事实**争同一份额度**，提示词中除 `-->` 渲染外不可区分。要分开就是**另一个
+change**（新块 = 提示词契约变更，且必须在 `0201` **之后**）。
+
+**D7 DI 接缝 + 配置门（用户裁决：缺省关、显式开启）。** `MemoryStore(relation_extractor=…)`，
+缺省 `None` ⇒ UNWIRED ⇒ `_extract_relations` 立即返回 ⇒ 压实**逐字不变**。与 `key_fact_extractor`
+**刻意分离**（合并会改 0155 的提示词字节）。配置 `memory.relation_extract` 缺省 `False`；组合根
+`relation_extractor=extract_relations_with(_llm_text) if config.relation_extract() else None`。
+**这刻意偏离 `0155`**（keyfact 抽取器在组合根**无条件**接线）：代价是开箱即用时该能力**惰性**；
+换来的是「无配置 ⇒ 既有路径逐字不变」这一全仓不变量。
+
+**D8 架构门禁自动覆盖。** `test_memory_notes_api_excludes_document_corpus_dimension` AST 走查
+`src/core/memory/**/*.py` 的**公开**标识符（函数/方法/参数/类名）对 `_CORPUS_DIMENSION_TOKENS`
+⇒ 新增公开名（`Relation` / `scrub_relation` / `normalize_predicate` …）**自动**受检，无相撞 ⇒
+**零新门禁测试**、零 `src/` 门禁改动。
+
+- **落点**：`src/core/memory/extract.py`（`Relation` / `RelationExtractor` / `RELATION_PREDICATES`
+  / `normalize_predicate` / `build_relation_prompt` / `parse_relations` / `scrub_relation` /
+  `extract_relations_with` / `relation_cap`）、`src/core/memory/store.py`（构造参 / `_extract_relations`
+  / `_plan_relations` / `_record_relation_drop` / `_relation_label` / `_write_relation` /
+  `_GATE_EXEMPT_SOURCES` 补 `"relation"`）、`src/core/memory/__init__.py`、`src/core/configuration/manager.py`、
+  `src/core/runtime.py`、`tests/test_memory_relations.py`（新，23 用例）、`tests/test_memory.py`
+  （豁免面守护同步登记）、`doc/04-testing/test-cases.md` §116、`coding-plan/known-risk.md`、
+  `doc/02-modules/memory.md`。
+- **测试**：+24（2270 → **2294**；含参数化展开，高于批次预估的 +12/+16）。
+- **反证**：① 摘掉 `_summarize_sessions` 里的 `_extract_relations(...)` 调用 ⇒ 11 红；② 摘掉
+  `scrub_relation` 的密钥判定 ⇒ 2 条密钥锚红（`DID NOT WARN`）。复原 ⇒ 全绿。
+- **局限**：① **每次压实多一次模型调用**（2× 抽取延迟；压实是冷路径，接受）；② **事实预算三分**
+  （关键事实 / 关系 / 摘要各争 `key_fact_cap` ⇒ 有界，但这也是未来可能需要独立块的原因）；
+  ③ **双语白名单上线初期仍会在长尾表达上 drop** —— 这正是**预期的可观测信号**（留痕带原始谓词）；
+  ④ **无图存储 / 无遍历 API**：关系以普通 L2 条目 + 标签约定承载，不做 `MemoryBackend` 扩展
+  （接口变更 + 迁移成本，且当前**零消费者**）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6607,3 +6683,4 @@ Requirement **逐字保留**（不做 MODIFIED）。**两处必断言的不遮�
 | ADR-0190 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0191 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/context.md |
 | ADR-0192 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md |
+| ADR-0193 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md |

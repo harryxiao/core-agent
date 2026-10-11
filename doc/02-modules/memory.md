@@ -265,6 +265,49 @@ MemoryStore
   **链路会断**；`Diagnoser(predecessor_lookup=…)` 接线**未做**（需对 `evolution/spec.md` 做约 36 行
   逐字 MODIFIED）⇒ 登记为遗留。详见 `coding-plan/known-risk.md` §3 ADR-0192 行。
 
+### 3.9 实体关系抽取（relations，change `0203`／ADR-0193／账本 E140）
+
+§3.4 的结构化抽取落的是**扁平** `keyfact.<slug>`（有**实体**、无**关系**）—— 语义记忆只有「点」
+没有「边」。本 change 补三元组 `Relation(head, predicate, tail)`，**独立于 `KeyFact`**（给已发布契约
+加字段会动摇 `parse_key_facts` / `scrub_key_fact` / `_plan_key_facts` 与全部关键事实用例；独立类型是
+**加法**）。
+
+- **谓词 = 中英双语闭合白名单 + 归一化**：`RELATION_PREDICATES` 的规范谓词为英文
+  （`depends_on / part_of / uses / causes / blocks / owns / implements / related_to`），中文变体
+  （`依赖 / 属于 / 导致 / 使用 …`）经 `normalize_predicate` **归一化到规范值**后落库；表外 ⇒
+  **丢弃并留痕**。谓词若开放，则（a）图不可遍历、（b）新增**第四个无界自由文本字段**（新的密钥
+  携带面）、（c）同三元组幂等去重的基数失控。
+- **脱敏 fail-closed，判据一处定义**：`scrub_relation` 复用 `extract.py` 的 `looks_like_secret` /
+  `redact_secrets` / `slug_entity`，返回原因码 `""`/`empty`/`predicate`/`secret`。**密钥判定先于
+  谓词归一化** —— 顺序即安全（否则密钥形状的**原始谓词**会走「未知谓词」分支、被原样回显进留痕）。
+  `head`/`tail`/`predicate` **任一**呈密钥形态 ⇒ **整条丢弃**（**无 ref 逃生口** —— 关系没有
+  `coeffect:` 可引用之物）。**留痕恒 over-redact**：`_relation_label` 对三段**一律** `redact_secrets`
+  —— 与 `_plan_key_facts` 的**有意不对称**（keyfact 的实体名不可能是丢弃原因，而关系的**实体名
+  正是**原因之一）。
+- **存储复用 `_write_key_fact` 形状**：`id = f"relation.{slug(head)}--{pred}--{slug(tail)}"`、
+  `content = f"{head} --{pred}--> {tail}"`、`tags = ["relation", "entity:…", "predicate:…"]`
+  （+ `session:<key>` 溯源标注）、`source="relation"`、`kind="semantic"`、`session_id=""`、
+  `trace_id=f"compaction.{key}"` ⇒ **同 `id` 幂等覆盖**、同豁免面（`_GATE_EXEMPT_SOURCES` 补
+  `"relation"`）、同 `Effect(op="memory.write", trace_id="compaction.<key>")` ⇒ **回滚压实连带
+  撤销关系**。必须走 `MemoryStore.write`，**不开新写入路径**。
+  `kind="semantic"` 是**承重**的：`_episodic_groups` 只收 `kind=="episodic" and layer=="L2"`
+  ⇒ 关系**不回喂**压实材料。
+- **有界**：`relation_cap` **别名到** `key_fact_cap`（`0.25/8/16`）⇒ 全仓**一把调参旋钮**；批内按
+  完整三元组去重、keep-first。
+- **注入面复用既有「相关事实」块**：`_gather_facts` 以 `exclude_fact_sources=("compaction",)` 读 L2，
+  关系是 `source="relation"` ⇒ **自动**被检索并经 `planner.py` 既有的「相关事实：」块渲染 ——
+  **不加第 11 个提示词块**、零管线改动。代价：关系与关键事实**争同一份额度**，提示词中除 `-->`
+  渲染外不可区分（要分开须另立 change，且应在 §3.3 区块工作**之后**）。
+- **DI 接缝 + 配置门（缺省关）**：`MemoryStore(relation_extractor=…)` 缺省 `None` ⇒ UNWIRED ⇒
+  压实**逐字不变**；配置 `memory.relation_extract` 缺省 `False`，组合根
+  `relation_extractor=extract_relations_with(_llm_text) if config.relation_extract() else None`。
+  **这刻意偏离 §3.4 的无条件接线**（`key_fact_extractor` 恒在）：代价是开箱即用时该能力**惰性**，
+  换来「无配置 ⇒ 既有路径逐字不变」。
+- **已知局限**：每次压实**多一次模型调用**（2× 抽取延迟，压实是冷路径）；事实面预算**三分**
+  （关键事实 / 关系 / 摘要各争同一 cap）；双语白名单上线初期仍会在**长尾表达**上 drop —— 这正是
+  **预期的可观测信号**；**无图存储 / 无遍历 API**（不做 `MemoryBackend` 扩展）。详见
+  `coding-plan/known-risk.md` §3 ADR-0193 行。
+
 ---
 
 ## 4. 记忆写入规范（"无行动不记忆"的落地）

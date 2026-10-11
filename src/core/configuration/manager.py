@@ -265,6 +265,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         map_to="memory.importance_gate",
         exposure=ConfigExposure.ADVANCED,
     ),
+    ConfigSpec(
+        "memory.relation_extract",
+        "--memory-relation-extract",
+        "CORE_MEMORY_RELATION_EXTRACT",
+        default=False,
+        map_to="memory.relation_extract",
+        exposure=ConfigExposure.ADVANCED,
+    ),
 ]
 
 _FEATURE_ENV_PREFIX = "CORE_FEATURES_"
@@ -613,6 +621,24 @@ class ConfigManager:
             return False
         raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
         value = raw.get("importance_gate", False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in _FEATURE_TRUE
+
+    def relation_extract(self) -> bool:
+        """实体关系抽取开关（缺省 ``False`` = 不接线抽取器；change 0203 / ADR-0193）。
+
+        **独立访问器**（同 `history_turns()` 先例）：与预算/上限无语义关系，且既有访问器的
+        返回 arity 被解包断言钉死，不合并。取值归一与 feature flag 同集；`memory` 为
+        **非结构化段**（同 `importance_gate`，非法取值不阻断启动）⇒ 集合外取值归一为**关闭**
+        （方向恒为「不抽取」，无配置 ⇒ 既有路径逐字不变）。
+
+        关闭 ⇒ 组合根**不构造**抽取器（`relation_extractor=None`）⇒ 压实逐字不变。
+        """
+        if self._config is None:
+            return False
+        raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
+        value = raw.get("relation_extract", False)
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in _FEATURE_TRUE

@@ -249,3 +249,208 @@ def extract_with(llm: Callable[[str], str], *, max_facts: int = KEY_FACTS_MIN) -
         return facts
 
     return _extract
+
+
+# --------------------------------------------------------------------------------------
+# 实体关系抽取（relations，change 0203 / ADR-0193 / 账本 E140）
+# --------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Relation:
+    """一条关系三元组：头实体 — 谓词 — 尾实体。**不携带任何取值**。
+
+    与 ``KeyFact`` 的**有意不对称**：关键事实可在「无引用 ⇒ 丢弃」与「有引用 ⇒ 抹值」之间选择；
+    关系**没有取值可抹**、也没有 ``coeffect:`` 可引用之物 ⇒ 任一侧呈密钥形态时**只能整条丢弃**
+    （fail-closed）。
+    """
+
+    head: str
+    predicate: str
+    tail: str
+
+
+# 抽取器契约：被聚合的 episodic 条目 → 关系三元组列表
+RelationExtractor = Callable[[list[MemoryEntry]], list[Relation]]
+
+# 规范谓词（落库形态恒为其中之一）
+_CANONICAL_PREDICATES: tuple[str, ...] = (
+    "depends_on",
+    "part_of",
+    "uses",
+    "causes",
+    "blocks",
+    "owns",
+    "implements",
+    "related_to",
+)
+
+# 谓词**闭合白名单**：变体（中 / 英）→ 规范英文谓词。若谓词开放，则「图」不可遍历、且新增一个
+# **无界自由文本字段**（新的密钥携带面）、幂等去重的基数失控 ⇒ 故闭合；双语是「可用」与「有界」
+# 的折中（纯中文会话的 drop 率显著下降，代价是词表维护面翻倍 —— 登记为局限）。
+_PREDICATE_VARIANTS: dict[str, str] = {
+    # depends_on
+    "依赖": "depends_on",
+    "依赖于": "depends_on",
+    "取决于": "depends_on",
+    "depend on": "depends_on",
+    "depends on": "depends_on",
+    "depends": "depends_on",
+    # part_of
+    "属于": "part_of",
+    "包含于": "part_of",
+    "组成部分": "part_of",
+    "part of": "part_of",
+    "belongs to": "part_of",
+    # uses
+    "使用": "uses",
+    "采用": "uses",
+    "调用": "uses",
+    "use": "uses",
+    "uses": "uses",
+    "utilizes": "uses",
+    "calls": "uses",
+    # causes
+    "导致": "causes",
+    "造成": "causes",
+    "引起": "causes",
+    "引发": "causes",
+    "cause": "causes",
+    "causes": "causes",
+    "leads to": "causes",
+    # blocks
+    "阻塞": "blocks",
+    "阻碍": "blocks",
+    "阻止": "blocks",
+    "block": "blocks",
+    "blocks": "blocks",
+    "prevents": "blocks",
+    # owns
+    "拥有": "owns",
+    "持有": "owns",
+    "负责": "owns",
+    "own": "owns",
+    "owns": "owns",
+    # implements
+    "实现": "implements",
+    "落实": "implements",
+    "implement": "implements",
+    "implements": "implements",
+    # related_to
+    "相关": "related_to",
+    "有关": "related_to",
+    "关联": "related_to",
+    "related to": "related_to",
+    "relates to": "related_to",
+}
+
+# 公开的闭合白名单：规范谓词自映射 + 全部变体
+RELATION_PREDICATES: dict[str, str] = {
+    **{predicate: predicate for predicate in _CANONICAL_PREDICATES},
+    **_PREDICATE_VARIANTS,
+}
+
+# 谓词两端可能带的包裹引号（模型偶尔回填带引号）
+_QUOTES = "\"'“”‘’「」"
+
+# 单次压实抽取条数上界**复用关键事实的同一把旋钮**（`relation_cap is key_fact_cap`）——
+# 刻意**不**另起第二组常量：全仓一把调参旋钮（change 0203 / ADR-0193）。
+relation_cap = key_fact_cap
+
+
+def normalize_predicate(raw: str) -> str:
+    """谓词 → 规范英文谓词；不在白名单内 ⇒ 空串（调用方据此丢弃）。
+
+    归一化：去首尾空白 → 去包裹引号 → 小写 → 内部空白折叠为单空格 → 查表。中文无大小写，
+    故小写化对中文变体无害。
+    """
+    text = " ".join(raw.strip().strip(_QUOTES).strip().lower().split())
+    return RELATION_PREDICATES.get(text, "")
+
+
+def scrub_relation(relation: Relation) -> tuple[Relation | None, str]:
+    """脱敏 + 归一化一条关系；返回 ``(可用关系 | None, 原因码)``。
+
+    原因码：``""``（可用）/ ``"empty"``（空实体）/ ``"predicate"``（未知谓词）/ ``"secret"``
+    （呈密钥形态）。**检查顺序即安全**：密钥判定**先于**谓词归一化 —— 否则密钥形状的**原始**
+    谓词会走「未知谓词」分支、被**原样回显**进留痕。密钥形态 ⇒ **整条丢弃**（无引用逃生口）。
+    """
+    head = relation.head.strip()
+    tail = relation.tail.strip()
+    predicate = relation.predicate.strip()
+    if looks_like_secret(head) or looks_like_secret(tail) or looks_like_secret(predicate):
+        return None, "secret"
+    if not head or not tail:
+        return None, "empty"
+    canonical = normalize_predicate(predicate)
+    if not canonical:
+        return None, "predicate"
+    return (
+        Relation(head=head[:_MAX_FACT_CHARS], predicate=canonical, tail=tail[:_MAX_FACT_CHARS]),
+        "",
+    )
+
+
+_RELATION_PROMPT_HEAD = (
+    "你是实体关系抽取器。从下面的会话事件中抽取「头实体 — 谓词 — 尾实体」三元组，最多 {max} 条。"
+    '只输出一个 JSON 数组，元素形如 {{"head": "头实体", "predicate": "谓词", "tail": "尾实体"}}。'
+    "谓词**必须**归入下表之一（可用中英任一变体，落库会归一化）：{predicates}。"
+    "归不入下表的关系**不要输出**。"
+    "**绝不**输出任何密钥 / 凭据 / 口令的明文（含作为实体名的情形）。不要输出解释或多余文字。"
+)
+
+
+def build_relation_prompt(
+    entries: Sequence[MemoryEntry], *, max_relations: int = KEY_FACTS_MIN
+) -> str:
+    """把会话事件条目渲染为关系抽取 prompt（逐条节选，token 有界）。"""
+    head = _RELATION_PROMPT_HEAD.format(
+        max=max_relations, predicates="、".join(_CANONICAL_PREDICATES)
+    )
+    lines = [f"- {entry.content[:_MAX_ENTRY_CHARS]}" for entry in entries]
+    return "\n".join([head, "", "会话事件：", *lines])
+
+
+def parse_relations(text: str) -> list[Relation]:
+    """容错解析模型输出：只认 JSON 数组（容忍代码围栏与前后杂文）。
+
+    **不可解析 ⇒ 空列表**；元素非对象 / 缺任一字段 / 类型不符 ⇒ **跳过该元素**。脱敏与归一化
+    **不在**此处做 —— 由 store 侧对结果无条件执行（``scrub_relation``）。
+    """
+    payload = _json_array(text)
+    if payload is None:
+        return []
+    relations: list[Relation] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        fields = cast("dict[object, object]", item)
+        head, predicate, tail = fields.get("head"), fields.get("predicate"), fields.get("tail")
+        if not isinstance(head, str) or not isinstance(predicate, str) or not isinstance(tail, str):
+            continue
+        relations.append(Relation(head=head, predicate=predicate, tail=tail))
+    return relations
+
+
+def extract_relations_with(
+    llm: Callable[[str], str], *, max_relations: int = KEY_FACTS_MIN
+) -> RelationExtractor:
+    """把「prompt → 文本」的模型调用适配为 ``MemoryStore`` 的关系抽取契约。
+
+    **解析失败可观测**（同 ``extract_with``）：有输出但无可解析 JSON 数组 ⇒ ``warnings.warn``
+    留痕（只报文本长度、**不含**输出正文）。合法空数组不告警。
+    """
+
+    def _extract(entries: list[MemoryEntry]) -> list[Relation]:
+        text = llm(build_relation_prompt(entries, max_relations=max_relations))
+        relations = parse_relations(text)
+        if not relations and text.strip() and _json_array(text) is None:
+            warnings.warn(
+                "relation extraction output was unparseable (no JSON array found; "
+                f"{len(text)} chars); no relations were extracted",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return relations
+
+    return _extract
