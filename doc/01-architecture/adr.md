@@ -6019,6 +6019,42 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
   （真实中略 = 该值 + `len(marker)`），为人类可读提示、非契约；③ **mid 层无提升通道**（有界瞬态，
   显式不做）；④ 价值闸留痕**每轮每会话一条** —— 长任务高频跳过时会刷屏（属可观测性噪音，非缺陷）。
 
+## ADR-0184：摘要注入与历史回放解耦 —— 关原文回放不再连坐关记忆注入（change 0194 / 账本 E131）
+
+**背景 —— 摘要在两种「关历史」语义下被连坐。** 2026-10-11 长任务评估取证：`DefaultLoop._load_summaries`
+（`src/core/loop/default.py:888-894`）的门控含 `self._history_turns <= 0` ⇒ 用户把 `loop.history_turns`
+设为 `0`（关闭**历史原文回放**，长任务省 token 的常见配置：只要摘要、不要原文）时，**摘要注入也被静默
+关掉** ⇒ 长任务的记忆注入**整条消失**且**无留痕**。且该门控的注释（`:885`）自称「与 `_load_history`
+**完全同形**」—— 但 `_load_history` 受 `history_turns` 管是它的**本职**（经 `_window_plan` 算出的
+`plan.short_turns`），摘要通道**不该**受此连坐：规格 `loop/spec.md`「执行循环」的 Scenario
+「分层摘要作为独立系统块注入」**不带** `history_turns` 条件 ⇒ **实现偏离规格**。
+
+- **决策 ①：门控只留本职判据。** 删去 `self._history_turns <= 0` 一项 ⇒ 剩 `transcript is None` /
+  `memory is None` / 空标识。这三项是**摘要读取**的本职前置（摘要经 memory 取、转录是滑窗载体），
+  不在解耦对象内。
+- **决策 ②：缺省行为逐字不变（兼容性红线）。** `LoopConfig.history_turns` 缺省 `20 > 0` ⇒ 被删条件
+  **恒假** ⇒ 删后门控**等价**；仅在用户**显式**设 `history_turns=0` 时行为改变（历史带空、摘要照进）
+  —— 恰是修的对象。
+- **决策 ③：两条通道各自据本职判据。** `_load_history` 仍用 `plan.short_turns <= 0` 判空，`plan` 由
+  `_window_plan` 从 `history_turns` 算出（`history_turns=0` ⇒ `short_turns=0` ⇒ 历史带**自然**为空）；
+  配额算法（`plan_window` 短 0.5 / 中 0.3 / 长 0.2）与预算记账 **零改动**。
+- **决策 ④：既有测试的错锚订正。** 既有 `test_history_replay.py::test_summaries_gated_like_history`
+  的 `(0, "s1", True)` 参数组**把实现缺陷固化为断言**（「关回放 ⇒ 摘要亦不注入」）—— 与规格 Scenario
+  相悖 ⇒ 拆为 `test_summaries_gated_on_session_and_transcript`（只留空标识 / 无转录两组）+
+  `test_summaries_injected_when_history_replay_disabled`（新行为锚）。
+
+**被改写的规格条款。** `loop/spec.md`「执行循环」**MODIFIED**（+「两层摘要注入与历史回放开关**解耦**」
+条款 + Scenario「关闭历史回放仍注入摘要」）；canonical `loop` scen **78 → 79**、**6 req 不变**。
+既有 Scenario 标题**零丢失**。
+
+- **落点**：`src/core/loop/default.py`（`_load_summaries` 门控删一项 + docstring 诚实化）。
+- **测试**（净 +2：**+3 新增** / 1 组参数拆分 **-1**，2227 → **2229**）：`history_turns=0` 摘要仍注入
+  （兼断历史带为空）/ 缺省回归逐字不变 / 空标识与无转录音仍门控 / docstring 断言。
+- **局限**：① **`_load_summaries` 仍要求转录已注入** —— 摘要读取当前以 `self._transcript` 存在性作
+  前置（属既有设计，本 change 只解耦 `history_turns`；「无转录也要摘要」是另一决策，未做）；
+  ② **`history_turns=0` 时摘要 token 仍计入预算记账**（正确但意味着纯摘要配置下预算可能被摘要吃满，
+  属既有记账口径）；③ 本 change **不**动三层滑窗配额与 `tiered` 判据。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6197,3 +6233,4 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
 | ADR-0181 | 03-interfaces/durability-interface.md, 02-modules/cli-ops.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0182 | 02-modules/loop.md, 02-modules/memory.md, 02-modules/context.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0183 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0184 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

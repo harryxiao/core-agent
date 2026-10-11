@@ -285,12 +285,15 @@ def test_summaries_not_folded_into_history_or_messages(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("turns", "sid", "with_transcript"),
-    [(0, "s1", True), (20, "", True), (20, "s1", False)],
+    [(20, "", True), (20, "s1", False)],
 )
-def test_summaries_gated_like_history(
+def test_summaries_gated_on_session_and_transcript(
     tmp_path: Path, turns: int, sid: str, with_transcript: bool
 ) -> None:
-    """I1/I2/I3：关回灌 / 空标识 / 未注入转录 ⇒ 摘要亦不读不注入。"""
+    """空标识 / 未注入转录 ⇒ 摘要不读不注入（**本职**门控，change 0194 后仍如此）。
+
+    「关历史回放」不再属此列 —— 见 `test_summaries_injected_when_history_replay_disabled`。
+    """
     store = _transcript(tmp_path, ("第一问", "第一答")) if with_transcript else None
     seen: list[tuple[str, str, list[object]]] = []
 
@@ -307,6 +310,51 @@ def test_summaries_gated_like_history(
     asyncio.run(_drain(loop.astream("第二问", session_id=sid)))
 
     assert seen == [("", "", [])]
+
+
+def test_summaries_injected_when_history_replay_disabled(tmp_path: Path) -> None:
+    """摘要注入与 `loop.history_turns` **解耦**（change 0194 / ADR-0184 / 台账 E131）。
+
+    关历史回放（`history_turns=0`）只关**原文回灌**，SHALL NOT 连坐关掉摘要注入 ——
+    变更前该会话的摘要被静默丢弃（长任务失忆来源之一）。
+    """
+    store = _transcript(tmp_path, ("第一问", "第一答"))
+    loop = DefaultLoop(
+        planner=LLMPlanner(_CapturingLLM(), model="m"),
+        transcript=store,
+        memory=_summary_memory("s1"),
+        history_turns=0,
+    )
+
+    ctx = loop.perceive("第二问", session_id="s1")
+
+    assert ctx.summary_long == "长期要点", "关回放不减摘要（长期）"
+    assert ctx.summary_mid == "中期要点", "关回放不减摘要（中期）"
+    assert ctx.history == [], "关回放 ⇒ 历史带确为空（两通道各自独立）"
+
+
+def test_history_replay_default_still_unchanged_after_decoupling(tmp_path: Path) -> None:
+    """缺省（`history_turns > 0`）⇒ 摘要与历史回灌**逐字不变**（兼容性红线）。"""
+    store = _transcript(tmp_path, ("第一问", "第一答"))
+    llm = _CapturingLLM()
+    loop = DefaultLoop(
+        planner=LLMPlanner(llm, model="m"),
+        transcript=store,
+        memory=_summary_memory("s1"),
+    )
+
+    asyncio.run(_drain(loop.astream("第二问", session_id="s1")))
+
+    system = llm.requests[0].messages[0].content
+    assert "历史摘要（长期）：\n长期要点" in system
+    assert [m.content for m in llm.requests[0].messages][1:3] == ["第一问", "第一答"]
+
+
+def test_load_summaries_docstring_states_decoupling() -> None:
+    """诚实化（change 0194）：门控注释不再称「与 `_load_history` 完全同形」。"""
+    doc = DefaultLoop._load_summaries.__doc__ or ""  # noqa: SLF001 — 文档面断言
+    assert "完全同形" not in doc
+    assert "解耦" in doc
 
 
 def test_tiered_short_band_narrows_and_drops_older_turns(tmp_path: Path) -> None:

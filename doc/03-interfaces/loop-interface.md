@@ -114,6 +114,8 @@ class LoopContext:
                                 # 当「本轮任务」（change 0115 / ADR-0108 决策③）
     summary_long: str = ""      # 分层历史的**长期**摘要（会话整体摘要；缺省空 ⇒ 不注入）
                                 # **独立字段**：SHALL NOT 折入 ``messages`` / ``history``（change 0178 / ADR-0169）
+                                # 门控**不**受 ``loop.history_turns`` 连坐：``history_turns=0``（关原文回放）
+                                # 时历史带为空，但已有摘要照常注入（change 0194 / ADR-0184 / 账本 E131）
     summary_mid: str = ""       # 分层历史的**中期**摘要（中带滚动摘要；缺省空 ⇒ 不注入）
                                 # 注入次序：常驻笔记 → 历史摘要（长期）→ 历史摘要（中期）→ 相关事实…
 

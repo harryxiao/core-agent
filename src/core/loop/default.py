@@ -882,15 +882,12 @@ class DefaultLoop(Plugin):
     def _load_summaries(self, session_id: str) -> tuple[str, str]:
         """本会话的（长期摘要, 中期摘要）文本（缺省空 ⇒ 不注入；change 0178 / ADR-0169）。
 
-        门控与 `_load_history` **完全同形**：未注入转录 / 未注入 memory / 空标识 /
-        关闭回灌 ⇒ ``("", "")``。读取失败降级为空（不回灌摘要），不阻断本轮。
+        门控只按**本职**判据：未注入转录 / 未注入 memory / 空标识 ⇒ ``("", "")``。
+        **不**受历史回放开关连坐 —— ``loop.history_turns`` 是**原文回灌**的轮数上界，
+        与摘要通道解耦（change 0194 / ADR-0184）：`history_turns=0` 时历史带为空，
+        但该会话已有的摘要 SHALL 照常注入。读取失败降级为空（不回灌摘要），不阻断本轮。
         """
-        if (
-            self._transcript is None
-            or self._memory is None
-            or not session_id
-            or self._history_turns <= 0
-        ):
+        if self._transcript is None or self._memory is None or not session_id:
             return "", ""
         try:
             long_entry = self._memory.summary_for(session_id)

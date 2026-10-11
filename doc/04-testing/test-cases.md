@@ -2083,3 +2083,26 @@
 > （mid 层 `max_chars` 预截断）/ 价值闸**判据与结果**（仅补留痕）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0183 行（中略区仍不可逆丢失 / `omitted` 为人类可读提示
 > 非契约 / mid 无提升通道显式不做 / 留痕每轮每会话一条属噪音）。
+
+## 107. 摘要注入与历史回放解耦（TC-SUMMARY-DECOUPLE，change `0194`／ADR-0184，台账 E131）
+
+**行为规格锚点**：`loop/spec.md`「执行循环」（两层摘要注入与历史回放开关**解耦**；关原文回放仍注入摘要）。
+
+| 用例 | 锚点 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-SUMMARY-DECOUPLE-01 | loop Scenario「关闭历史回放仍注入摘要」 | 会话 `s1` 有长期 + 中期摘要，`history_turns=0`（关原文回放）⇒ `perceive` | `ctx.summary_long == "长期要点"`、`ctx.summary_mid == "中期要点"`（摘要**照常注入**）且 `ctx.history == []`（历史带为空）（锚点：`tests/test_history_replay.py::test_summaries_injected_when_history_replay_disabled`） |
+| TC-SUMMARY-DECOUPLE-02 | 兼容性红线（缺省逐字不变） | 会话 `s1` 有摘要、`history_turns` 缺省（`20`）⇒ `astream` | system prompt 含两摘要块**且**历史原文「第一问 / 第一答」照常回灌（`...::test_history_replay_default_still_unchanged_after_decoupling`） |
+| TC-SUMMARY-DECOUPLE-03 | 本职门控仍守 | 空标识（`sid=""`）/ 未注入转录（`with_transcript=False`）⇒ `astream` | 摘要与历史均不读不注入（`("", "", [])`）（`...::test_summaries_gated_on_session_and_transcript`，参数 2 组） |
+| TC-SUMMARY-DECOUPLE-04 | 诚实化文案 | 读 `DefaultLoop._load_summaries.__doc__` | **不含**「完全同形」（假注释）、**含**「解耦」（`...::test_load_summaries_docstring_states_decoupling`） |
+
+> **红态证据**：01 在门控删 `history_turns <= 0` 前**红**（`_load_summaries` 返回 `("", "")` ⇒ 摘要被静默丢弃）；
+> 04 在 docstring 诚实化前**红**（含「完全同形」）。02 为**兼容性回归锚**（变更前后同绿）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2229 passed**（基线 **2227**，**净 +2** = 3 新增 − 1 参数拆分）。
+> **错锚订正**：既有 `test_summaries_gated_like_history` 的 `(0, "s1", True)` 参数组**把缺陷固化为断言**
+> （「关回放 ⇒ 摘要亦不注入」）—— 与规格 Scenario「分层摘要作为独立系统块注入」（**不带** `history_turns`
+> 条件）相悖 ⇒ 拆为 `test_summaries_gated_on_session_and_transcript`（留 2 组本职门控）+
+> `test_summaries_injected_when_history_replay_disabled`（新行为锚）。
+> **不动面**：`_load_history`（仍用 `plan.short_turns <= 0`）/ `_window_plan` / `plan_window`（短 0.5 /
+> 中 0.3 / 长 0.2 配额）/ 预算记账 / `tiered` 判据 **零改动**；缺省（`history_turns=20 > 0`）行为逐字不变。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0184 行（摘要读取仍要求转录已注入 / 纯摘要配置下
+> 摘要 token 仍计预算 / 未动滑窗配额）。
