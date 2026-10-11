@@ -112,6 +112,7 @@ class CrashRecovery:
                 continue
             return RestoreHandle(
                 handle_id=uuid.uuid4().hex,
+                task_id=task_id,
                 checkpoint_id=checkpoint.checkpoint_id,
                 resume_cursor=checkpoint.checkpoint_id,
                 degraded=degraded,

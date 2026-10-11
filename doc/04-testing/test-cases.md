@@ -2014,3 +2014,27 @@
 > （`Checkpoint.session_id` 既有字段）；`--resume` 「最新检查点」取法（文件序，ts 序对齐归 change `0191`）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0180 行（无 `--session` flag / `"default"` 归一
 > 启发式 / 会话元数据无检索面 / 跨进程 undo 承 ADR-0136）。
+
+## 104. 恢复呈现接线（TC-RECOVERY-SURFACE，change `0191`／ADR-0181，台账 E128）
+
+**行为规格锚点**：`durability/spec.md`「崩溃恢复」（纯扫描语义、降级跳过、句柄标识任务）；`cli-ops/spec.md`
+「会话命令族与交互入口续聊」（入口启动呈现、`--resume` 取 ts 最新）。
+
+| 用例 | 锚点 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-RECOVERY-SURFACE-01 | durability Scenario「启动扫描呈现未完成任务」（句柄标识任务） | `build_runtime` 后建 `todo-task` 检查点（`done=False`）跑 `runtime.recover()` | 句柄的 `task_id == "todo-task"`；`done=False` 未完成任务返回、`done=True` 不返回（锚点：`tests/test_phase15.py::test_runtime_recover_restores_incomplete_skips_done`） |
+| TC-RECOVERY-SURFACE-02 | durability Scenario「不可恢复任务不阻塞整体扫描」 | 一任务检查点全部 corrupt + 一任务有效，跑 `_recover_incomplete` | 坏任务跳过 + `UserWarning`，有效任务句柄照常返回（`[h.task_id] == ["good-task"]`；锚点：`tests/test_phase15.py::test_runtime_recover_skips_unrestorable_task`） |
+| TC-RECOVERY-SURFACE-03 | 句柄标识所属任务（跨进程） | 真进程 `SIGKILL` 后另一进程 `restore("task1")` | 句柄 `task_id == "task1"`（锚点：`tests/test_durability_crash.py::test_real_sigkill_then_restore_and_resume`） |
+| TC-RECOVERY-SURFACE-04 | cli-ops Scenario「入口启动呈现未完成任务」 | 桩 runtime（`recover` 返回 2 个句柄）跑 `task <新目标>` | stderr 打印「2 个未完成任务」+ `task --resume <id>`；`astream` **只**跑本次任务（不自动重执行）（锚点：`tests/test_entry.py::test_task_surfaces_incomplete_tasks`） |
+| TC-RECOVERY-SURFACE-05 | 同前（空库静默） | 桩 runtime（`recover` 返回空）跑 `task` | stderr **无**「未完成任务」（锚点：`...::test_task_no_incomplete_is_silent`） |
+| TC-RECOVERY-SURFACE-06 | cli-ops Scenario「续跑取时间戳最新检查点」 | `task --resume t1`：两检查点落盘序 ≠ 时间序（`cps[-1]` 为旧、`ts` 为早） | 取 `ts` 最新检查点重建目标（`astream` 收新 plan 的目标）（锚点：`...::test_task_resume_latest_by_ts`） |
+| TC-RECOVERY-SURFACE-07 | cli-ops Scenario「入口启动呈现未完成任务」（serve） | 真 runtime + 落盘 `stale-task` 检查点跑 `serve`（桩 WebBridge） | stderr 打印「未完成任务」+ `task --resume stale-task`（锚点：`...::test_serve_surfaces_incomplete_tasks`） |
+
+> **红态证据**：TC-RECOVERY-SURFACE-01/02/03 在 `RestoreHandle` 加字段 / try-except 前**红**
+> （无 `task_id` / 坏任务抛 `DurabilityError` 中断整轮扫描）；04/06/07 在入口接线与 ts 序前**红**
+> （无呈现行 / 取到旧检查点）。绿后全量 `.venv/bin/pytest -q` ⇒ **2219 passed**（基线 **2214**，
+> **+5 新增** = 坏任务跳过 1 ＋ 入口呈现 4；另 3 处既有用例补 `task_id` 断言）。
+> **不动面**：`resume()` 语义（无 replay = 纯扫描，现状诚实保留）；`scheduler`；`repl`/`app`/`run`
+> 入口（不传 `surface_recovery` ⇒ 输出面逐字不变）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0181 行（呈现为提示非托管 / 无独立只读命令 /
+> 扫描全量无索引 / `RestoreHandle` 破坏性变更 / 跨进程 undo 承 ADR-0136）。

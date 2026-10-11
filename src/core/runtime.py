@@ -1134,7 +1134,13 @@ def _recover_incomplete(
         if cp.task_id in done_tasks or cp.task_id in seen:
             continue
         seen.add(cp.task_id)
-        handle = recovery.restore(cp.task_id)
+        try:
+            handle = recovery.restore(cp.task_id)
+        except DurabilityError:
+            # 该任务检查点全无有效快照 ⇒ 降级跳过（一坏任务不炸全扫；change 0191，
+            # 与首轮 get_snapshot 对 corrupt 的捕获同口径）。只报 task id，不回显正文。
+            warnings.warn(f"任务 {cp.task_id} 无可恢复检查点，跳过", stacklevel=2)
+            continue
         recovery.resume(handle)
         handles.append(handle)
     return handles

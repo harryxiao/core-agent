@@ -39,6 +39,7 @@ class RestoreHandle:
     """恢复句柄：崩溃恢复 / 续跑时的游标载体。"""
 
     handle_id: str
+    task_id: str
     checkpoint_id: str
     resume_cursor: str
     degraded: bool = False

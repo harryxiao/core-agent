@@ -684,14 +684,21 @@ class _StreamOrchestrator:
             yield LoopEvent(kind, payload)
 
 
-def _patch_runtime(
+def _patch_runtime(  # noqa: PLR0913 — 测试桩装配参数组（checkpoints/time_travel/registry/handles）
     monkeypatch: pytest.MonkeyPatch,
     orch: _StreamOrchestrator,
     checkpoints: object,
+    *,
     time_travel: object = None,
     registry: type | None = None,
+    handles: list[object] | None = None,
 ) -> None:
-    runtime = SimpleNamespace(orchestrator=orch, checkpoints=checkpoints, time_travel=time_travel)
+    runtime = SimpleNamespace(
+        orchestrator=orch,
+        checkpoints=checkpoints,
+        time_travel=time_travel,
+        recover=lambda: handles or [],  # 启动扫描：未完成任务句柄（change 0191）
+    )
     monkeypatch.setattr("core.entry.build_runtime", lambda config: runtime)
     if registry is not None:
         monkeypatch.setattr("core.entry.SessionRegistry", registry)
@@ -776,7 +783,7 @@ def test_task_resume_rebuilds_plan_and_completed(
         waves=[["1"], ["2"]],
     )
     orch = _StreamOrchestrator([("task_started", {}), ("task_finished", {"outcomes": []})])
-    cps = [SimpleNamespace(checkpoint_id="cp1", task_id="t1", session_id="default")]
+    cps = [SimpleNamespace(checkpoint_id="cp1", task_id="t1", session_id="default", ts=1.0)]
     snapshots = {
         "cp1": SimpleNamespace(
             state={
@@ -827,7 +834,7 @@ def test_task_resume_reuses_checkpoint_session(
         subtasks=[Subtask(id="1", goal="g", acceptance="")], goal="g", order=["1"], waves=[["1"]]
     )
     orch = _StreamOrchestrator([("task_started", {}), ("task_finished", {"outcomes": []})])
-    cps = [SimpleNamespace(checkpoint_id="cp1", task_id="t1", session_id="orig-sess")]
+    cps = [SimpleNamespace(checkpoint_id="cp1", task_id="t1", session_id="orig-sess", ts=1.0)]
     snapshots = {"cp1": SimpleNamespace(state={"plan": plan_to_dict(plan), "done": False})}
     checkpoints = SimpleNamespace(
         list_checkpoints=lambda *, task_id=None: cps,
@@ -851,7 +858,7 @@ def test_task_resume_legacy_default_session_unattributed(
     plan = Plan(
         subtasks=[Subtask(id="1", goal="g", acceptance="")], goal="g", order=["1"], waves=[["1"]]
     )
-    cps = [SimpleNamespace(checkpoint_id="cp1", task_id="t1", session_id="default")]
+    cps = [SimpleNamespace(checkpoint_id="cp1", task_id="t1", session_id="default", ts=1.0)]
     snapshots = {"cp1": SimpleNamespace(state={"plan": plan_to_dict(plan), "done": False})}
     checkpoints = SimpleNamespace(
         list_checkpoints=lambda *, task_id=None: cps,
@@ -865,6 +872,103 @@ def test_task_resume_legacy_default_session_unattributed(
     assert orch.calls["session_id"] == ""
     captured = capsys.readouterr()
     assert "未携带会话" in captured.err  # 明示提示（不静默）
+
+
+# ---- task/serve 启动呈现未完成任务 + 续跑取最新检查点（change 0191 / 账本 E128）----
+
+
+def test_task_surfaces_incomplete_tasks(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """新任务启动扫描检查点 → 呈现未完成任务（只呈现不重执行）。"""
+    orch = _StreamOrchestrator([("task_started", {}), ("task_finished", {"outcomes": []})])
+    handles = [SimpleNamespace(task_id="old-task"), SimpleNamespace(task_id="old-task2")]
+    _patch_runtime(
+        monkeypatch, orch, checkpoints=None, registry=_registry_stub([]), handles=handles
+    )
+
+    rc = main(["task", "新目标", "--task-id", "t1"])
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "2 个未完成任务" in err
+    assert "task --resume old-task" in err and "task --resume old-task2" in err
+    assert orch.calls["task_id"] == "t1"  # 只执行本次请求的任务，不自动续跑未完成任务
+
+
+def test_task_no_incomplete_is_silent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """空库启动：无未完成任务 → 无呈现（静默）。"""
+    orch = _StreamOrchestrator([("task_started", {}), ("task_finished", {"outcomes": []})])
+    _patch_runtime(monkeypatch, orch, checkpoints=None, registry=_registry_stub([]), handles=[])
+
+    rc = main(["task", "g", "--task-id", "t1"])
+
+    assert rc == 0
+    assert "未完成任务" not in capsys.readouterr().err
+
+
+def test_task_resume_latest_by_ts(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """续跑取**时间戳最新**检查点（落盘序 ≠ 时间序时不取末元素）。"""
+    newer = Plan(
+        subtasks=[Subtask(id="n", goal="newer", acceptance="")],
+        goal="新",
+        order=["n"],
+        waves=[["n"]],
+    )
+    older = Plan(
+        subtasks=[Subtask(id="o", goal="older", acceptance="")],
+        goal="旧",
+        order=["o"],
+        waves=[["o"]],
+    )
+    # 落盘序：cp_old 在后（cps[-1] == cp_old），但 ts 更早 ⇒ 必须取 cp_new
+    cps = [
+        SimpleNamespace(checkpoint_id="cp_new", task_id="t1", session_id="s", ts=2.0),
+        SimpleNamespace(checkpoint_id="cp_old", task_id="t1", session_id="s", ts=1.0),
+    ]
+    snapshots = {
+        "cp_new": SimpleNamespace(state={"plan": plan_to_dict(newer), "done": False}),
+        "cp_old": SimpleNamespace(state={"plan": plan_to_dict(older), "done": False}),
+    }
+    checkpoints = SimpleNamespace(
+        list_checkpoints=lambda *, task_id=None: cps,
+        get_snapshot=lambda checkpoint_id: snapshots[checkpoint_id],
+    )
+    orch = _StreamOrchestrator([("task_started", {}), ("task_finished", {"outcomes": []})])
+    _patch_runtime(monkeypatch, orch, checkpoints=checkpoints)
+
+    rc = main(["task", "--resume", "t1"])
+
+    assert rc == 0
+    assert orch.calls["goal"] == "新"  # 取 ts 最新检查点重建的目标
+
+
+def test_serve_surfaces_incomplete_tasks(monkeypatch, tmp_path, capsys) -> None:
+    """serve 启动呈现未完成任务（真 runtime + 落盘检查点，change 0191）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    store = CheckpointStore(state_dir / "checkpoints.jsonl")
+    CheckpointManager(store).create_checkpoint("stale-task", "s", {"done": False})
+
+    captured: dict[str, object] = {}
+
+    class _FakeBridge:
+        def __init__(self, *, api=None, serve_impl=None) -> None:
+            captured["api"] = api
+
+        def serve(self, host: str, port: int) -> None:
+            return None
+
+    monkeypatch.setattr("core.entry.WebBridge", _FakeBridge)
+    assert main(["--config", _write_config(tmp_path), "serve"]) == 0
+
+    err = capsys.readouterr().err
+    assert "未完成任务" in err and "task --resume stale-task" in err
 
 
 # ---- time-travel：时间旅行回滚入口（change 0144 / 账本 E73）----

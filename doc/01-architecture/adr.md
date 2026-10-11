@@ -5878,6 +5878,56 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
   无检索面** —— `list_checkpoints` 不按 session 过滤（消费面出现时再加索引）；④ 跨进程 undo /
   trace_ids 消费面承 ADR-0136 既有局限，不在本 change。
 
+## ADR-0181：恢复呈现接线 —— 启动扫描+呈现、降级不炸全扫、续跑取最新（change 0191 / 账本 E128）
+
+**背景 —— 崩溃恢复能力齐备却无人触发。** 2026-10-11 长任务评估取证：① `Runtime.recover()`
+（`src/core/runtime.py:183-185`）**零生产调用方** —— 扫描检查点、对无 `done` 标记任务
+`restore`+`resume` 的能力齐备，但没有任何入口调用 ⇒ 未完成任务跨进程重启后无人知晓；②
+`_recover_incomplete`（`runtime.py:1133-1139`）对每个未完成任务调 `recovery.restore`，而
+`restore` 在「该任务检查点全部无有效快照」时**整体 `raise DurabilityError(CHECKPOINT_NOT_FOUND)`**
+（`manager.py:119-123`），调用点**无 try/except** ⇒ 单个不可恢复任务**中断整轮扫描**（与首轮
+`get_snapshot` 对 corrupt 的捕获口径 `runtime.py:1125-1128` **方向相反**）；③ 两种「最新检查点」
+定义并存 —— CLI `--resume` 取 `cps[-1]`**文件序**（`entry.py:1720`）vs `restore` 取 **ts 序**
+（`manager.py:102-106`）⇒ 续跑可能取到非最新检查点。
+
+- **决策 ①：呈现不重执行（守 P2）。** `resume()` 现状**无 replay 回调**时即纯扫描
+  （`manager.py:123-129`：仅把句柄记入幂等集，`replay is None` 则空转）⇒ `runtime.recover()`
+  本身零副作用。本 change **不**给 `resume()` 加 replay 面 —— 启动时调 `recover()` 后**只呈现**
+  未完成任务（告警 + 提示 `task --resume <id>`），**绝不**自动重新执行（用户裁决①：副作用不自动
+  重放；自动续跑另批，需审批面配合）。呈现只报 **task id**，不回显任务正文 / 记忆 / 密钥。
+- **决策 ②：恢复句柄携带 task id（自然载体）。** `RestoreHandle` 增 `task_id` 字段（放第 2 位，
+  紧跟 `handle_id`）⇒ 呈现「哪些任务未完成」直接取自句柄，**无需**旁路扫描 / 二次查库。构造点全仓
+  **唯一一处**（`manager.py:113`，全用关键字）⇒ 破坏性变更影响面最小。
+- **决策 ③：降级不炸全扫（对齐既有 corrupt 口径）。** `_recover_incomplete` 对 `recovery.restore`
+  包 `try/except DurabilityError` ⇒ 跳过该任务 + `warnings.warn`（只报 task id），其余任务照常返回
+  续跑句柄。与首轮 `get_snapshot` 的 corrupt 捕获**同口径**：单点损坏不阻塞恢复。
+- **决策 ④：入口接线面最小（`serve` + CLI `task`）。** CLI `task`（**新任务**路径）与 `serve`
+  启动调呈现；`serve` 经 `_build_ui(surface_recovery=True)` 传入（`repl`/`app`/`run` 不传 ⇒
+  输出面**逐字不变**）；`task --resume` **不**呈现（已是显式续跑动作，再报是噪音）。呈现只读，
+  不写检查点 / 记忆 / 注册表。
+- **决策 ⑤：「最新检查点」统一为 ts 序。** CLI `--resume`（`entry.py:1720`）由 `cps[-1]` 改
+  `max(cps, key=lambda cp: cp.ts)`，与 `CrashRecovery.restore` **同口径**。正常追加落盘时落盘序 =
+  时间序 ⇒ 行为逐字不变；仅二者不一致时**修正**为取真正最新。
+
+**被改写的规格条款。** `durability/spec.md`「崩溃恢复」**MODIFIED**（纯扫描语义 + 降级跳过 +
+句柄标识任务条款 + 2 Scenario「启动扫描呈现未完成任务」/「不可恢复任务不阻塞整体扫描」）。
+`cli-ops/spec.md`「会话命令族与交互入口续聊」**MODIFIED**（入口启动呈现 + `--resume` ts 序条款 +
+2 Scenario「入口启动呈现未完成任务」/「续跑取时间戳最新检查点」）。既有 Requirement / Scenario
+标题**零丢失**。
+
+- **落点**：`src/core/durability/models.py`（`RestoreHandle` 加字段）、`src/core/durability/manager.py`
+  （`restore` 构造补 `task_id`）、`src/core/runtime.py`（`_recover_incomplete` 包 try/except + 告警）、
+  `src/core/entry.py`（`_surface_incomplete` + `_build_ui(surface_recovery=…)` + `_serve` + `_task` +
+  `--resume` ts 序）。`scheduler` / `resume()` 语义 / `repl`/`app`/`run` 入口**零改动**。
+- **测试**（+5 新增 + 3 处既有用例补断言）：新增 `_recover_incomplete` 坏任务降级跳过（其余照常 +
+  告警）/ `task` 启动呈现 + 空库静默 + `--resume` 取 ts 最新 / `serve` 启动呈现；既有
+  `test_durability_crash` / `test_runtime_recover_restores_incomplete_skips_done` 补 `handle.task_id`
+  断言。
+- **局限**：① **呈现为「提示」而非「托管」** —— 未完成任务不被自动跟踪 / 提醒刷新（P2 下的诚实
+  取舍）；② **无 `--list-incomplete` 独立只读命令** —— 呈现只在 `serve`/`task` 启动时被动触发
+  （消费面出现时再加）；③ **`recover()` 的检查点扫描为全量** —— 无索引 / 无缓存（任务规模上限内
+  可接受）；④ 跨进程撤销 / trace_ids 消费面承 ADR-0136 既有局限，不在本 change。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6053,3 +6103,4 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
 | ADR-0178 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/phase-35.md |
 | ADR-0179 | 02-modules/evolution.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/phase-35.md |
 | ADR-0180 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 02-modules/cli-ops.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0181 | 03-interfaces/durability-interface.md, 02-modules/cli-ops.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

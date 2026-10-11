@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import uuid
+import warnings
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -432,11 +433,29 @@ def _dispatch(args: argparse.Namespace) -> int:
     return 0
 
 
-def _build_ui(args: argparse.Namespace, *, interactive: bool = False) -> UIAPILayer | None:
+def _surface_incomplete(runtime: Runtime) -> None:
+    """启动扫描未完成任务：只呈现不重执行（P2：副作用不自动重放；change 0191）。
+
+    `runtime.recover()` 无 replay 回调 ⇒ 纯扫描、零副作用。有未完成任务时告警 +
+    提示续跑命令；**只报 task id**（不回显任务正文 / 记忆 / 密钥）。
+    """
+    handles = runtime.recover()
+    if not handles:
+        return
+    tasks = sorted({h.task_id for h in handles})
+    warnings.warn(f"启动扫描发现 {len(tasks)} 个未完成任务", stacklevel=2)
+    prompt = "、".join(f"`task --resume {t}`" for t in tasks)
+    print(f"⚠ {len(tasks)} 个未完成任务：{prompt} 可续跑", file=sys.stderr)
+
+
+def _build_ui(
+    args: argparse.Namespace, *, interactive: bool = False, surface_recovery: bool = False
+) -> UIAPILayer | None:
     """装配真 runtime + UIAPILayer 并注入 LLM 配置（四入口共用）；失败返回 None。
 
     interactive=True 时创建交互审批通道：confirm 门经终端 y/n 决断；
     非交互入口无通道，高风险 fail-closed 拒绝。
+    surface_recovery=True 时启动扫描并呈现未完成任务（仅 serve 传入；change 0191）。
     """
     approval = ApprovalChannel() if interactive else None
     try:
@@ -447,6 +466,8 @@ def _build_ui(args: argparse.Namespace, *, interactive: bool = False) -> UIAPILa
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
         print(f"装配失败: {exc}", file=sys.stderr)
         return None
+    if surface_recovery:
+        _surface_incomplete(runtime)
     api = UIAPILayer(
         loop=cast(LoopPlugin, runtime.loop),
         memory=runtime.memory,
@@ -483,7 +504,7 @@ def _repl(args: argparse.Namespace) -> int:
 
 
 def _serve(args: argparse.Namespace) -> int:
-    api = _build_ui(args)
+    api = _build_ui(args, surface_recovery=True)  # 启动扫描未完成任务并呈现（change 0191）
     if api is None:
         return 1
     host = HarnessHost(path=_state_path("sessions.jsonl"))
@@ -1717,7 +1738,7 @@ def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911 — 入口校验天
         if not cps:
             print(f"未找到任务 {args.resume_id} 的检查点", file=sys.stderr)
             return 1
-        latest = cps[-1]
+        latest = max(cps, key=lambda cp: cp.ts)  # ts 序取最新（与 restore 同口径；change 0191）
         state = runtime.checkpoints.get_snapshot(latest.checkpoint_id).state
         if state.get("done"):
             print(f"[task_finished] 任务 {args.resume_id} 已完成（检查点 done）")
@@ -1742,6 +1763,7 @@ def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911 — 入口校验天
     else:
         # fresh：与 run CLI 同注册表同 mode 铸会话（session list 可见；不建 UI 装配）
         session_id = SessionRegistry(path=_state_path("conversations.json")).create("cli")
+        _surface_incomplete(runtime)  # 起新任务时呈现未完成任务（只呈现不重执行；change 0191）
     if not goal:
         print("缺少任务目标（检查点未携带且未给定 <目标>）", file=sys.stderr)
         return 1

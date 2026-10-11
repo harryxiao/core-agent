@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from core.configuration import ConfigManager
-from core.durability import CrashRecovery, TimeTravel
+from core.durability import CheckpointManager, CheckpointStore, CrashRecovery, TimeTravel
 from core.evolution import (
     Benchmark,
     BenchmarkRegistry,
@@ -47,7 +47,7 @@ from core.permission import (
     SandboxPolicy,
 )
 from core.plugin_registry import Effect
-from core.runtime import build_runtime
+from core.runtime import _recover_incomplete, build_runtime
 from core.skills import SkillLibrary
 
 
@@ -295,6 +295,23 @@ def test_runtime_recover_restores_incomplete_skips_done(monkeypatch, tmp_path) -
     handles = runtime.recover()
     assert len(handles) == 1
     assert handles[0].checkpoint_id == todo.checkpoint_id
+    assert handles[0].task_id == "todo-task"  # 句柄标识所属任务（change 0191）
+
+
+def test_runtime_recover_skips_unrestorable_task(tmp_path) -> None:
+    """坏任务（检查点全无有效快照）降级跳过、其余任务句柄照常返回 + 告警（change 0191）。"""
+    store = CheckpointStore(tmp_path / "cp.jsonl")
+    mgr = CheckpointManager(store)
+    rec = CrashRecovery(store)
+    bad = mgr.create_checkpoint("bad-task", "s", {"done": False})
+    store.corrupt(bad.checkpoint_id)  # 唯一检查点损坏 ⇒ 该任务无有效检查点、不可恢复
+    ok = mgr.create_checkpoint("good-task", "s", {"done": False})
+
+    with pytest.warns(UserWarning):
+        handles = _recover_incomplete(mgr, rec)
+
+    assert [h.task_id for h in handles] == ["good-task"]  # 坏任务被跳过、不中断整轮扫描
+    assert handles[0].checkpoint_id == ok.checkpoint_id
 
 
 def test_runtime_checkpoint_carries_initiating_session(monkeypatch, tmp_path) -> None:

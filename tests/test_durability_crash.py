@@ -99,6 +99,7 @@ def test_real_sigkill_then_restore_and_resume(tmp_path) -> None:
     snapshot = store.get_snapshot(handle.checkpoint_id)
     assert snapshot is not None and snapshot.state == {"cursor": 1}  # 最近有效 = cp2
     assert handle.degraded is False
+    assert handle.task_id == "task1"  # 句柄标识所属任务（change 0191）
 
     def replay() -> None:
         """按检查点游标续跑：只补 cursor 之后的步骤（规格分工：跨进程幂等由游标保证）。"""

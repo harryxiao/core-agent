@@ -88,6 +88,11 @@ CLI 运维命令面（cli-ops）为 core-agent 提供运维命令集与启动参
 续接可用；任务续跑（`--resume`）SHALL 复用检查点携带的既有会话（SHALL NOT 另铸新会话导致
 同一任务轨迹分裂）。
 
+一次性任务入口（`task <目标>`，新任务）与常驻**服务**入口（`serve`）**启动时** SHALL 扫描检查点并
+**呈现**未完成任务（告警 + 提示 `task --resume <id>` 可续跑），SHALL NOT 自动重新执行未完成任务
+（副作用不自动重放）；呈现 SHALL NOT 改变运行态、SHALL NOT 阻塞入口启动。任务续跑（`--resume`）
+SHALL 取**时间戳最新**的检查点重建续跑状态（与崩溃恢复取最近有效检查点同口径）。
+
 #### Scenario: 列出与查看会话转录
 - **GIVEN** 已存在一个会话且其转录含若干轮对话
 - **WHEN** 依次执行 `session list` 与 `session show <session_id>`
@@ -117,6 +122,16 @@ CLI 运维命令面（cli-ops）为 core-agent 提供运维命令集与启动参
 - **GIVEN** 操作者执行 `core-agent task <目标>`（新任务）
 - **WHEN** 任务开始执行
 - **THEN** 铸出的会话经共享注册表登记（mode `cli`），`session list` 可见；续跑 `--resume` 复用检查点既有会话而非另铸
+
+#### Scenario: 入口启动呈现未完成任务
+- **GIVEN** 存在未完成任务（检查点无 done 标记）
+- **WHEN** 启动 `task` 或 `serve` 入口
+- **THEN** 打印未完成任务标识与续跑提示（`task --resume <id>`），不自动重新执行、不阻塞入口启动
+
+#### Scenario: 续跑取时间戳最新检查点
+- **GIVEN** 同一任务的多个检查点，其落盘次序与时间戳次序不一致
+- **WHEN** 执行 `core-agent task --resume <task-id>`
+- **THEN** 取时间戳最新的检查点重建续跑状态（与崩溃恢复 restore 同口径）
 ### Requirement: 自检诊断（`doctor`）与运行状态（`status`）
 
 CLI SHALL 提供 `doctor` 与 `status` 两个**只读**运维子命令：二者 SHALL NOT 改变运行态、SHALL NOT 启动

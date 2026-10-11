@@ -29,6 +29,7 @@ class Snapshot:
 class RestoreHandle:
     """恢复句柄：崩溃恢复后的幂等续跑游标。"""
     handle_id: str
+    task_id: str                    # 句柄所属任务（change 0191：呈现「哪些任务未完成」的自然载体）
     checkpoint_id: str              # 恢复源检查点
     resume_cursor: str              # 未完成步骤续跑定位
     degraded: bool                  # 是否降级（源检查点损坏回退更早检查点）
@@ -64,6 +65,11 @@ class CrashRecovery:
     def resume(self, handle: RestoreHandle) -> None:
         """从恢复句柄续跑未完成步骤，幂等重放不重复产生副作用。"""
 ```
+
+- **纯扫描语义**（change 0191 / ADR-0181）：`resume()` 未传 `replay` 回调时**零副作用**
+  （仅把句柄记入幂等集）⇒ `Runtime.recover()` 可作为启动扫描**只呈现不重执行**。
+- **降级不炸全扫**：`Runtime.recover()` 对「检查点全无有效快照」的任务**跳过 + 告警**，
+  不因单任务不可恢复中断整轮扫描（与 `restore` 内 corrupt 回退同口径）。
 
 ---
 
