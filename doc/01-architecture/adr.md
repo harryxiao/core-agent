@@ -6226,6 +6226,48 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
   已知边界）；④ **门是单次布尔判定** —— 无评分阈值 / 无多次投票 / 无产物改写（属另立账）；
   ⑤ **告警频率** —— 每次门未过一条（长任务高频被拒时会刷屏，属可观测性噪音）。
 
+## ADR-0189：Procedural 端到端门禁 —— 「任务过程 → 技能资产」链补锚（change 0199 / 账本 E136）
+
+**背景 —— 三段各自有单元锚，但无端到端锚。** 批次 `Phase 37` 前三条各修链路一环：`0196` 只改
+完成回调的**执行线程**（锚在 `test_orchestration.py` 的线程 ident）、`0197` 新增任务级**采集面**
+（锚在 `test_task_sop.py` 的纯函数 `compose_task_steps`）、`0198` 新增**发布面**门（锚在
+`test_skills.py` 的 `SopExtractor` 门分支）。**三者之间**——「**真 `TaskScheduler` 跑完一个成功
+任务后，真组合根装配的任务级提炼器真的把 SOP 入进真技能库**」——**无任何用例断言** ⇒ 回归时
+「哪一环断了」无法从端到端视角发觉（与 ADR-0185 同型缺口）。
+
+- **决策 ①：真材实料，只桩两个外部面。** 真组合根（`build_runtime`）+ 真 `TaskScheduler`
+  （保留真注入的 `on_done=_finalize`）+ 真 `MemoryStore`（任务过程步序走 `runtime.memory.write`
+  真实写入路径）。**只桩**模型接缝（`llm.completion`）与子 Agent 执行单元（`LoopPlugin.astream`）
+  —— 二者是**链路之外**的外部面；替 `TaskScheduler._decomposer` 的 planner / `._router` 等于桩
+  模型与执行单元，**不**桩被测链路。**刻意的非桩项**恰是 `0197`/`0198` 的改动面：`_finalize`
+  闭包、任务级 `SopExtractor` 实例、`compose_task_steps`、`_steps_lookup`、`SkillLibrary`、门接线。
+- **决策 ②：四条锚（含防空过）。** ①任务过程 → 技能资产（3 次 `DONE` ⇒ 入库；**并**断言 2 次时
+  **不入库**）；②拒绝门 ⇒ 零入库 + **恰一次**留痕；③无门 ⇒ 照常入库（与 ② 成对 ⇒ 门是唯一差异）；
+  ④捕获真实投喂提炼器的 prompt ⇒ 含 `loop.steps.<trace>` 正文、**不含** `SubtaskOutcome.reply`
+  （ADR-0187 决策「读 L2 而非 reply」的**代码化**反证）。
+- **决策 ③：门禁必须能咬（反证实测）。** 逐条临时回退并记录：①`_finalize` 去 `observe` ⇒ 4 红；
+  ②任务级实例去 `namespace="task"` ⇒ **仅**锚 1 红（`task_types[0]` 无 `task::` 前缀）；③实例
+  `gate=None` ⇒ **仅**锚 2 红（`Emitted warnings: []`）；④`compose_task_steps` 读 `outcome.reply`
+  ⇒ **仅**锚 4 红（prompt 含子 Agent 回复）。复原后 4 绿 ⇒ 每条锚均咬住其目标行为。
+- **决策 ④：两处桩漂移坑（实测踩到并已解决，值得留痕）。** ⓐ **状态机身份是 `task_id`** —— 同一
+  编排器实例复用已 `DONE` 的 id 抛 `INVALID_TRANSITION: done → verifying` ⇒ 每次 `run` 用新
+  `task_id`（归组键取自**目标** `plan.goal`，与 id 无关 ⇒ 样本仍累加同组）。ⓑ **子任务 trace_id
+  需确定性** —— 桩 `LoopPlugin` 按**目标文本**映射 trace_id（`{"run alpha": "t1", …}`），与
+  `loop.steps.<trace_id>` 条目一一对应，且兼容同波次并发扇出。
+- **决策 ⑤：不重复既有锚。** `0196` 的线程 ident / 阻塞不冻结循环（`test_orchestration.py`）、
+  `0197` 的 `compose_task_steps` 边界与 `_steps_lookup` 零效应（`test_task_sop.py`）**均不重写**；
+  本 change 只补真正缺失的**端到端**四条。
+
+**规格中性判定。** 零 `src/` 改动、零行为改动 ⇒ 无 spec delta，`.openspec.yaml` `skip_specs: true`
+（沿 `0156` / `0189` / `0195` 先例）。
+
+- **落点**：`tests/test_procedural_e2e.py`（新，4 用例）；`git diff --stat src/` **为空**。
+- **测试**：+4（2249 → **2253**）。
+- **局限**：① **桩子 Agent 不真跑循环** —— 不验 `loop.steps` 的**写入**侧（已由 loop 既有用例承载），
+  只验其**回读**与装配；② **不覆盖续跑二次触发**（`0197` 已知局限：已 `DONE` 任务续跑会再提交一次
+  样本，跨进程无去重面，属另立账）；③ **进程内跑**（跨进程断点续跑仍承 `0190`/`0191` 边界）；
+  ④ **门只在任务级实例上验**（单轮面无门，承 `0198` 决策⑤ 局部化口径）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6409,3 +6451,4 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
 | ADR-0186 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0187 | 02-modules/skills.md, 03-interfaces/skills-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0188 | 02-modules/skills.md, 03-interfaces/skills-interface.md, 03-interfaces/judgment-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0189 | 04-testing/test-cases.md, coding-plan/known-risk.md |

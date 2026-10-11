@@ -2195,3 +2195,31 @@ bullet（缺省不启用 / 未过 ⇒ 不入库 + 清组 + 只报组键 / 判定
 > 绿后全量 `.venv/bin/pytest -q` ⇒ **2249 passed**（基线 **2241**，**+8**）。
 > **红线守持**：判定为**自动**（judgment noul），**无人工确认**；留痕**只报组键、绝不回显正文**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0188 行（拒即丢批 / 只挂任务级 / 路由降级算有结论等）。
+
+## 112. Procedural 端到端门禁（TC-PROCEDURAL-E2E，change `0199`／ADR-0189，台账 E136，**规格中性**）
+
+**行为规格锚点**：无 spec delta（`.openspec.yaml` `skip_specs: true`）—— 本 change **零 `src/` 改动**、
+**零行为改动**，只把批次 `Phase 37` 前三条**各自**的单元锚接成端到端锚。锚点的**行为语义**分别归属：
+`skills/spec.md`（SOP 提炼：任务级过程输入 + 自动质量门）、`orchestration/spec.md`（异步执行单元契约：
+收尾回路不阻塞）。
+
+| 用例 | 锚点归属 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-PROCEDURAL-E2E-01 | `skills` SOP 提炼（任务级过程输入） | 真组合根 `build_runtime` + 真 `TaskScheduler`（只桩模型接缝与子 Agent `LoopPlugin`）；灌入 `loop.steps.t1/t2` 步序条目 ⇒ 跑 2 次成功任务、再跑 1 次 | 2 次时**不入库**（防空过）；第 3 次 ⇒ 入库一条 `instructions` = 提炼文本、`status="active"`、`task_types[0]` 带 `task::` 命名空间前缀（`tests/test_procedural_e2e.py::test_task_done_registers_task_level_sop`） |
+| TC-PROCEDURAL-E2E-02 | `skills` SOP 提炼（自动质量门） | `judgment` 段开 JEV + `monkeypatch.setattr("core.runtime.sop_gate_with", 拒绝门)` ⇒ 跑 3 次成功任务 | 技能库**零新增**；`pytest.warns(UserWarning, match="质量门未过")` **恰一次**（清组 ⇒ 不重复触发）（`...::test_rejecting_gate_blocks_registration_in_real_chain`） |
+| TC-PROCEDURAL-E2E-03 | 同上（缺省不变；与 02 成对） | 无 `judgment` 段（`gate=None`）⇒ 跑 3 次成功任务 | 照常入库一条 ⇒ 与 02 的差异**只**在**门**（`...::test_absent_gate_publishes_unchanged`） |
+| TC-PROCEDURAL-E2E-04 | `orchestration` → `skills`（过程取材） | 捕获真实投喂提炼器的 prompt（桩 `llm.completion`）⇒ 跑 3 次 | prompt 含 `loop.steps.<trace>` 步序正文（`读取输入` / `校验结论`）、**不含** 子 Agent 回复（ADR-0187「读 L2 而非 reply」的**代码化**反证）（`...::test_sop_prompt_carries_memory_steps_not_subtask_reply`） |
+
+> **反证（门禁非空过，实测记录）**：①`runtime._finalize` 去掉 `sop_task_extractor.observe(...)` ⇒
+> **4 红**；②任务级实例去 `namespace="task"` ⇒ **仅** 01 红（`task_types[0]` = `quarterly report run`，
+> 无 `task::` 前缀）；③任务级实例 `gate=None` ⇒ **仅** 02 红（`Emitted warnings: []` ⇒ 门没跑）；
+> ④`compose_task_steps` 的 `lookup(...)` → `[outcome.reply]` ⇒ **仅** 04 红（prompt 含
+> `子任务回复-不应进提炼prompt`）。复原后 4 绿 ⇒ 每条锚**均能咬住**其目标行为。
+> **桩漂移两坑（实测踩到并留痕）**：ⓐ 状态机身份是 `task_id`（复用已 `DONE` 的 id 抛
+> `INVALID_TRANSITION: done → verifying`）⇒ 每次 `run` 用新 id（归组键取自**目标**，与 id 无关）；
+> ⓑ 桩 `LoopPlugin` 按**目标文本**映射 trace_id 以对上 `loop.steps.<trace_id>` 条目。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2253 passed**（基线 **2249**，**+4**）。`git diff --stat src/` **为空**。
+> **不重复**：`0196` 的线程 ident / 阻塞不冻结循环（`tests/test_orchestration.py`）、`0197` 的
+> `compose_task_steps` 边界与 `_steps_lookup` 零效应（`tests/test_task_sop.py`）**均不重写**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0189 行（桩子 Agent 不真跑循环 / 不覆盖续跑二次触发 /
+> 仅进程内 / 门只在任务级实例上验）。
