@@ -2906,3 +2906,21 @@ Requirement 做全量替换）。
 > **规格中性**：`openspec validate --all` 32 passed（31 canonical ＋ 1 change）→ 归档后 **31 passed**，
 > canonical 计数**不变**。**零回归**：`git diff --stat src/` 仅 `author.py`/`episodic.py` 两文件。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0210 行。
+
+## 134. 提词收紧轮登记（TC-TIGHTREG，change `0221`／ADR-0211，台账 E158）
+
+**规格中性 · 零 `src`/`tests` 改动**：本 change 只做**追溯挂账** —— 提词收紧轮已由 `1f93b88`
+提交（10 条 prompt 措辞 ＋ `parse_review` 等值 ＋ `build_sop_prompt` 轨迹分组），本 change 补挂
+change 号 / ADR / 台账。**无新增用例**：该轮自带的验收（`test_prompt_pinning` 变异反证、
+`test_sop_prompt_groups_trajectories`、`TC-PROMPTPIN-13`）已在 `1f93b88` 内随轮提交。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-TIGHTREG-01 | 未改行为的直接证据 | `git diff --stat src tests`（相对 `94c464b`…本 change） | **为空**（登记不改行为）（手工项；非 pytest 锚） |
+| TC-TIGHTREG-02 | 规格符合性（`parse_review`） | `evolution/spec.md:144-145` / Scenario `:190-192` | 既有 SHALL「非判定词表 ⇒ 未通过」**逐字未动** ⇒ 等值化是**回归**非改规格（`openspec validate --all` 31 passed 不变） |
+
+> **反证**：无 —— 本 change 零代码改动，无行为可反证；`git diff --stat src tests` **为空**即
+> 「未改行为」的直接证据（沿 `0219` 的「零 `src/` 改动」口径）。
+> **规格中性**：`openspec validate --all` **31 passed**（canonical；本 change 无 delta）→ 归档后
+> **31 passed 不变**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0211 行。

@@ -7395,6 +7395,32 @@ pin」须逐个 `grep`，**无集中查阅面**。
   ③ ⑦ 未动。
 - 来源另见 `doc/openspec/changes/archive/…-0219-prompt-catalog/design.md`、`coding-plan/Pending-Arbitration.md`。
 
+## ADR-0211：提词收紧轮登记 —— 追溯挂账 `1f93b88`（change 0221 / 台账 E158）
+
+**背景**：提词收紧轮已提交（`1f93b88`：10 条 prompt 措辞 ＋ `parse_review` 等值 ＋ `build_sop_prompt`
+轨迹分组），但未挂 change / ADR / 台账 ⇒ 追溯断点（PA-07）。本 ADR **不改任何行为**，只做登记。
+
+**D1 三处行为变更并为一个 change。** 三者同一提交、同一动机、同一验证轮；拆开会让「一个提交挂三个
+change 号」—— 追溯更乱。唯一改语义的 `parse_review` 以 **D2 独立小节**承接（不另立 change）。
+
+**D2 `parse_review` 等值化 = 规格符合性缺陷修复（非规格变更）。** `evolution/spec.md:144-145` 已 SHALL
+fail-closed（「非判定词表 ⇒ 未通过」），Scenario `:190-192` 逐字承接；旧实现 `startswith` 把「通过不了」
+「PASS 但存在问题」读成**通过** ⇒ **实现偏离既有 Requirement**。收紧为首行等值是**向规格回归**，
+**不**产生 spec delta（补 Scenario 是「无源之水」—— 规格已有该判据）。
+
+**D3 `build_sop_prompt` 轨迹分组签名 = 仓内私有适配器。** `skills/spec.md` 无「按轨迹分组」条 ⇒ 无
+Requirement 承载其形状；结构不变量由 test_prompt_pinning builder 锚 ＋ 新反证覆盖。
+
+**D4 登记不改写历史。** 不 rebase / 不 amend `1f93b88`；以新提交追溯挂账（change 号 → 提交 → 文件
+三段闭合，守 P3 可归因）。
+
+- **规格（规格中性）**：无 spec delta；`skip_specs: true`。`openspec validate --all` 31 passed → 归档后
+  31 passed **不变**。
+- **反证**：本 change **零 `src/`/`tests/` 改动** ⇒ 无行为可反证；`git diff --stat src tests` **为空**
+  即直接证据（沿 `0219` 口径）。
+- **局限**：① 挂账**不改善** `1f93b88` 提交信息（其 message 未含 change 号）；② `prompts.md` 头部
+  「本轮收紧」清单**不逐条**列全 10 条措辞 diff（正文镜像已逐字承载）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7600,3 +7626,4 @@ pin」须逐个 `grep`，**无集中查阅面**。
 | ADR-0208 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0209 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0210 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
+| ADR-0211 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
