@@ -176,6 +176,8 @@ SHALL 携带**发起方会话标识**（可选的 `session_id`，缺省空串 = 
 ### Requirement: 异步执行单元契约
 系统 SHALL 明确并行扇出的执行单元契约：扇出派发的每个执行单元复用 llm-provider 的 acompletion 与 tool-use 的 ainvoke 异步接口，支持事件循环内非阻塞与真并发执行，消除同步串行阻塞；同一波次内无依赖子任务经异步接口并发派发，不再是串行阻塞。
 
+- **收尾回路不阻塞**：任务完成回调（`on_done`）SHALL 经 `asyncio.to_thread` **卸载**至工作线程执行，SHALL NOT 在事件循环上同步阻塞 —— 回调若承载模型调用等重活，SHALL NOT 阻塞流式产出与已派发的并发。该卸载 SHALL NOT 改变回调的**调用时机与次数**（仍在 `DONE` 达成后调用一次）与终态判定。
+
 #### Scenario: 执行单元复用异步接口
 - **GIVEN** 并行扇出派发某波次内的无依赖子任务
 - **WHEN** 执行单元发起模型调用或工具调用
@@ -190,6 +192,11 @@ SHALL 携带**发起方会话标识**（可选的 `session_id`，缺省空串 = 
 - **GIVEN** 扇出执行单元与 LLMProvider / ToolProvider 异步能力之间存在契约空白
 - **WHEN** 本契约显式映射执行单元到异步接口
 - **THEN** 并行编排与异步能力之间的契约空白被闭合，扇出场景不再退化为同步串行阻塞
+
+#### Scenario: 完成回调不阻塞事件循环
+- **GIVEN** 任务达成 `DONE` 且注入了完成回调（回调内含阻塞工作）
+- **WHEN** 编排器触发完成回调
+- **THEN** 回调在**工作线程**（非事件循环线程）执行，流式产出不被同步阻塞；回调的调用时机与次数不变（`DONE` 后一次）
 ### Requirement: 任务入口与进度事件
 系统 SHALL 提供 `core-agent task <目标>` CLI 入口与 TUI REPL `/task <目标>` 命令驱动编排器：流式产出任务进度事件（task_started / plan_ready / wave_started / subtask_started / subtask_progress / subtask_completed / task_checkpoint / task_finished / task_failed），关键节点（拆解、验收、检查点、终态）写入 trace 审计；支持从检查点断点续跑（重建原计划与已完成子任务集，未完成子任务续跑，已完成子任务不重复执行）。
 

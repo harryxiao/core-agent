@@ -2129,3 +2129,20 @@
 > （change `0190`）承载 ⇒ 本文件不重写。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0185 行（不覆盖 CLI resume / 桩 provider 不模拟推理 /
 > 轮内压实走预算维度 / 仅进程内）。
+
+## 109. 任务完成回调卸载（TC-DONE-OFFLOAD，change `0196`／ADR-0186，台账 E133）
+
+**行为规格锚点**：`orchestration/spec.md`「异步执行单元契约」**MODIFIED**（+「收尾回路不阻塞」bullet
++ Scenario「完成回调不阻塞事件循环」）；canonical `orchestration` scen **49 → 50**、req **11 不变**。
+
+| 用例 | 锚点归属 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-DONE-OFFLOAD-01 | `orchestration` 异步执行单元契约 | 桩 `on_done` 记录 `threading.get_ident()`；`TaskScheduler` 跑一个成功任务（`asyncio.run`） | 回调**按 `DONE` 后一次**调用（`len(seen) == 1`），且执行线程 ident **≠** 主线程 ident（在工作线程执行；`tests/test_orchestration.py::test_scheduler_done_callback_runs_off_event_loop`） |
+| TC-DONE-OFFLOAD-02 | 同上（非阻塞） | 回调在**工作线程**等一个事件，事件由**事件循环上的**协程轮询释放 | 回调未超时（`timed_out == [False]`）—— 若回调同步跑在事件循环上，循环被冻结、释放协程永不推进 ⇒ 超时转红（`...::test_scheduler_done_callback_does_not_block_event_loop`） |
+
+> **反证（门禁非空过）**：变更前（`self._on_done(...)` 同步调用）两锚**均红** —— 01 的 ident 等于主线程、
+> 02 的释放协程被冻结 ⇒ 超时。落地 `await asyncio.to_thread(...)` 后转绿 ⇒ 两锚**均能咬住**。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2234 passed**（基线 **2232**，**+2**）。
+> **调用时机/次数/顺序/终态逐字不变**：仍在 `DONE` 达成后**一次**、`task_finished` 事件之前、检查点写入之后。
+> **不做**：`_checkpoint`（`scheduler.py:261-262`）**不**卸载（判据是「是否承载模型调用」而非「是否同步」）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0186 行。

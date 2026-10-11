@@ -69,6 +69,11 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
   `DoneFn`，第 4 参 `session_id`）携带**发起方会话标识**（空串 = 未归属照实记录，**不**写占位值）
   ⇒ 检查点的会话归属元数据与实际发起会话一致；CLI `task` 新任务经共享注册表铸会话（mode `cli`）、
   `--resume` 续跑复用检查点既有会话（同一任务跨续跑不分裂）。
+- **完成回调卸载**（change `0196`／ADR-0186）：任务**完成回调**（`on_done`）经 `asyncio.to_thread`
+  **卸载至工作线程**执行，**不**在事件循环上同步阻塞（守「异步执行单元契约」的「收尾回路不阻塞」）——
+  回调可承载模型调用等重活而不阻塞流式产出；调用时机（`DONE` 达成后**一次**）、顺序（`task_finished`
+  之前、检查点之后）与终态判定 **逐字不变**。波次检查点 `_checkpoint` **不**卸载（判据是「是否承载
+  模型调用」而非「是否同步」）。
 
 ### 3.5 目标监控（Goal / SuccessCriteria + ProgressTracker）
 

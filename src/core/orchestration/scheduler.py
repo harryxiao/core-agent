@@ -289,7 +289,9 @@ class TaskScheduler:
             return
         self._state_machine.transition(task_id, TaskState.DONE)
         if self._on_done is not None:
-            self._on_done(task_id, outcomes, plan, session_id)
+            # 完成回调卸载出事件循环（change 0196）：回调可承载模型调用等重活，
+            # 不得在事件循环上同步阻塞（先例：loop/default.py change 0167 / ADR-0157）。
+            await asyncio.to_thread(self._on_done, task_id, outcomes, plan, session_id)
         self._trace(
             task_id,
             "task_finished",

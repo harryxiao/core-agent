@@ -6091,6 +6091,34 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
   （`token_budget=1`），非步数维度 —— 步数维度的触发锚仍由 `test_loop.py` 承载；④ e2e 只在
   **进程内**跑（跨进程断点续跑仍承 `0190`/`0191` 的既有边界）。
 
+## ADR-0186：任务完成回调卸载 —— 收尾回路不阻塞事件循环（change 0196 / 账本 E133）
+
+**背景 —— 为接重活先腾出安全位置。** `TaskScheduler` 在 `astream` 协程内**同步**调用完成回调
+（`scheduler.py:290-292`）。当前无症状（`runtime._finalize` 只落一份检查点、廉价文件 IO），但
+**下一 change（0197）**要在该回调里接**任务级 SOP 提炼**（一次**模型调用**）—— 一旦如此即**精确
+复现 E103 / ADR-0157 缺陷类**：事件循环上的同步模型调用，阻塞流式产出、拖垮同波次并发，且被降级
+链静默吞掉（无留痕）。⇒ 按 **P3（进化局部化与可归因）**，把「回调在哪跑」与「回调做什么」拆成
+**两条独立 change**：0196 先只改**执行线程**，0197 再改**语义**。
+
+- **决策 ①：`asyncio.to_thread` 卸载（一处调用点）。** `DONE` 分支的 `self._on_done(...)` 改为
+  `await asyncio.to_thread(self._on_done, task_id, outcomes, plan, session_id)`。**先例**：
+  `loop/default.py:466-468` 已把每轮观察回调如此卸载（change 0167 / ADR-0157）——本 change 把同一
+  纪律补到**编排收尾回路**。调用时机与次数（`DONE` 后一次）、顺序（`task_finished` 之前、检查点
+  之后）、终态判定与事件载荷 **逐字不变**。
+- **决策 ②：** **不**卸载 `_checkpoint`（`scheduler.py:261-262`）。**判据**是「是否承载模型调用」
+  而非「是否同步」——`_checkpoint` 只做既有廉价文件 IO，改它属超范围（P3：改一条、可归因一条）。
+- **决策 ③：规格落点。** `orchestration`「异步执行单元契约」**MODIFIED**：原文段落 + 既有 3 Scenario
+  **逐字保留**，新增 bullet「收尾回路不阻塞」（回调 SHALL 经 `asyncio.to_thread` 卸载）+ Scenario
+  「完成回调不阻塞事件循环」。canonical scen **49 → 50**、req **11 不变**。
+- **落点**：`src/core/orchestration/scheduler.py`（一处调用点；`asyncio` 已 import）。
+- **测试**（+2，2232 → **2234**）：① 回调在**工作线程**执行（`threading.get_ident()` ≠ 主线程 ident，
+  红：变更前等于）；② **回调内阻塞不冻结事件循环**（回调在工作线程等一个由事件循环协程释放的事件；
+  若同步则循环冻结、释放协程永不推进 ⇒ 回调超时转红）。
+- **局限**：① `_checkpoint` 的**同步文件 IO 仍在事件循环上**（见决策 ②；廉价、未接模型调用，
+  登记为可接受）；② 卸载**不改变**回调并发度 —— 多任务并发时各回调各占一个工作线程，线程池
+  上限由 asyncio 缺省值（`min(32, cpu+4)`）约束；③ 本 change **不**引入回调超时 / 异常处理变更
+  （回调异常仍按其自身路径降级，语义不变）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6271,3 +6299,4 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
 | ADR-0183 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0184 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0185 | 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0186 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

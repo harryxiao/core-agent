@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any, cast
@@ -603,6 +604,79 @@ def test_scheduler_checkpoint_callbacks_default_session_empty() -> None:
 
     assert [o.ok for o in outcomes] == [True]
     assert seen == [""]
+
+
+def test_scheduler_done_callback_runs_off_event_loop() -> None:
+    """完成回调卸载到工作线程（change 0196：收尾回路不阻塞事件循环）。
+
+    红：变更前 `self._on_done(...)` 同步跑在事件循环（主线程）上 ⇒ ident 等于主线程 ident。
+    """
+    decomposer = SubtaskDecomposer(
+        planner=lambda goal: [Subtask(id="1", goal="t-one", acceptance="")]
+    )
+    seen: list[int] = []
+
+    def on_done(task_id, outcomes, plan, session_id):
+        seen.append(threading.get_ident())
+
+    scheduler = TaskScheduler(
+        decomposer=decomposer,
+        router=MultiAgentRouter(
+            [AgentProfile(agent_id="a", capabilities=["t"], loop=_FixedReplyLoop("ok"))]
+        ),
+        state_machine=StateMachine(),
+        on_done=on_done,
+    )
+
+    outcomes = asyncio.run(scheduler.run("task-t", "goal"))
+
+    assert [o.ok for o in outcomes] == [True]
+    assert len(seen) == 1, "完成回调仍按 DONE 后一次调用"
+    assert seen[0] != threading.main_thread().ident, "完成回调应在工作线程执行，而非事件循环线程"
+
+
+def test_scheduler_done_callback_does_not_block_event_loop() -> None:
+    """回调内阻塞不冻结事件循环（change 0196）。
+
+    结构：回调在**工作线程**上等待某事件，该事件由**事件循环上的**协程释放 —— 若回调同步
+    跑在事件循环上，循环被冻结、释放协程永不推进 ⇒ 回调超时（红）。
+    """
+    decomposer = SubtaskDecomposer(
+        planner=lambda goal: [Subtask(id="1", goal="t-one", acceptance="")]
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    timed_out: list[bool] = []
+
+    def on_done(task_id, outcomes, plan, session_id):
+        entered.set()
+        timed_out.append(not release.wait(timeout=2.0))
+
+    scheduler = TaskScheduler(
+        decomposer=decomposer,
+        router=MultiAgentRouter(
+            [AgentProfile(agent_id="a", capabilities=["t"], loop=_FixedReplyLoop("ok"))]
+        ),
+        state_machine=StateMachine(),
+        on_done=on_done,
+    )
+
+    async def _drive() -> None:
+        async def releaser() -> None:
+            for _ in range(100_000):
+                if entered.is_set():
+                    release.set()
+                    return
+                await asyncio.sleep(0)
+
+        worker = asyncio.create_task(releaser())
+        async for _ in scheduler.astream("task-b", "goal"):
+            pass
+        await worker
+
+    asyncio.run(_drive())
+
+    assert timed_out == [False], "回调阻塞不应冻结事件循环（卸载后事件循环仍可推进）"
 
 
 def test_scheduler_astream_failure_visible() -> None:
