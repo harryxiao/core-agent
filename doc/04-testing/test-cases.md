@@ -357,7 +357,7 @@
 | TC-CONF-09 | configuration/spec.md「配置校验与生效」（change `0085` 新增场景「features 段未知模块名仅告警」） | 注入已知模块名集合（组合根 `GATABLE_MODULES`）时，`features` 段含集合外子键（如拼错的 `peet`）；以及**未注入**时含任意自定义子键 | 注入时：校验通过、不阻断，产生**含子键名**的告警（疑似拼写、拼错将静默不生效）；未注入时：不校验子键、不告警（向后兼容）。作用域**仅** `features` 段（`llm.typo_key` 不告警）（锚点：`tests/test_configuration.py::test_unknown_feature_module_warns_but_does_not_block` / `::test_known_feature_module_produces_no_warning` / `::test_feature_module_not_checked_without_injection` / `::test_feature_warning_scope_only_features`；`tests/test_entry.py::test_config_validate_warns_on_unknown_feature_module`（入口注入已接线）） |
 | TC-CONF-10 | configuration/spec.md「循环预算配置」（change `0098` ADDED）+「LLM 提供商配置（必选）」（MODIFIED） | 三键（`llm.context_window` / `loop.output_reserve` / `loop.max_rounds`）分别在 CLI / env / yaml 三面取值；配了窗口与预留但 `context_window <= output_reserve`；`loop:` 段出现在 config.yaml | 三键经 `ConfigSpec` 声明 ⇒ CLI flag / env / yaml 三面齐备且**单一真源**；优先级链 CLI > env > yaml > 缺省逐层压过；`loop:` 段不触发「未知配置段」告警（ConfigSpec 声明段自动进白名单）；`config set loop.<键>` 三面可达且**落盘**（`extra.loop` 浅合并，不得静默丢弃）（锚点：`tests/test_loop_budget_config.py::test_specs_declare_loop_and_context_window_keys` / `::test_cli_overrides_env_and_yaml` / `::test_env_overrides_yaml` / `::test_loop_section_is_not_reported_unknown` / `::test_config_set_loop_key_applies_and_persists` / `::test_config_set_context_window_applies`） |
 | TC-CONF-11 | configuration/spec.md「循环预算配置」（change `0098`） | 三键分别写入非法取值（负数 / 小数 / 非数值 / `true`；`max_rounds=0`；`context_window=4096` 配 `output_reserve=8192`） | 一律在 `validate_schema` 判为错误、**阻断启动**（含 `bool` 陷阱），**不静默兜底**为缺省值；交叉校验失败报「窗口不敷输出预留」—— 因 `token_budget <= 0` 的语义是「关闭 token 维度」，静默兜底会把配置错误伪造成「预算维度失效」（锚点：`tests/test_loop_budget_config.py::test_invalid_context_window_blocks_startup`（4 面参数化）/ `::test_invalid_output_reserve_blocks_startup` / `::test_invalid_max_rounds_blocks_startup` / `::test_window_not_exceeding_reserve_blocks_startup` / `::test_invalid_value_does_not_silently_fall_back`） |
-| TC-CONF-12 | configuration/spec.md「功能开关（feature flag）」（change `0112` 新增场景「缺省关的可选能力未声明即不装配」） | 不声明 `features.evolution_executor`（缺省）、显式 `false`、显式 `true` 三态启动装配；比对两条名单与并集 | 缺省关名单内能力**未声明即不装配**（fail-closed，仅显式 `true` 装配）；`GATABLE_MODULES` 逐元素断言**不动**（缺省开口径零改动）；两极性各由**独立名单**承载、`KNOWN_FEATURE_MODULES` == 二者之并（供未知开关名告警）（锚点：`tests/test_feature_gating.py::test_opt_in_whitelist_is_evolution_executor` / `::test_two_polarities_are_carried_by_separate_lists` / `::test_known_feature_modules_is_the_union` / `::test_opt_in_module_is_off_until_explicitly_true` / `::test_gating_whitelist_is_pet_beast_evolution`；`tests/test_evolution_executor_wiring.py::test_default_does_not_assemble_executor` / `::test_explicit_true_assembles_executor` / `::test_explicit_false_does_not_assemble_executor` / `::test_executor_flag_is_a_known_feature_name`） |
+| TC-CONF-12 | configuration/spec.md「功能开关（feature flag）」（change `0112` 新增场景「缺省关的可选能力未声明即不装配」） | 不声明 `features.evolution_executor`（缺省）、显式 `false`、显式 `true` 三态启动装配；比对两条名单与并集 | 缺省关名单内能力**未声明即不装配**（fail-closed，仅显式 `true` 装配）；`GATABLE_MODULES` 逐元素断言**不动**（缺省开口径零改动）；两极性各由**独立名单**承载、`KNOWN_FEATURE_MODULES` == 二者之并（供未知开关名告警）（锚点：`tests/test_feature_gating.py::test_opt_in_whitelist_members` / `::test_two_polarities_are_carried_by_separate_lists` / `::test_known_feature_modules_is_the_union` / `::test_opt_in_module_is_off_until_explicitly_true` / `::test_gating_whitelist_is_pet_beast_evolution`；`tests/test_evolution_executor_wiring.py::test_default_does_not_assemble_executor` / `::test_explicit_true_assembles_executor` / `::test_explicit_false_does_not_assemble_executor` / `::test_executor_flag_is_a_known_feature_name`） |
 
 ## 25. 宠物模式（TC-PET）
 
@@ -2601,4 +2601,37 @@ Requirement 做全量替换）。
 > **规格**：`memory` **MODIFIED**「情景链（时序相邻标注）」（全量替换 (a)–(f) 逐字 ＋ **ADD** (g) 只读呈现面
 > ＋ **ADD** Scenario ×2）—— canonical **16 → 16** req / **115 → 117（+2）** scen（「情景链」条内 5 → 7）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0201 行。
+
+## 125. 结晶通路：真实基准执行器注入 + 基准注册操作面（TC-BENCH，change `0212`／ADR-0202，台账 E149）
+
+**能力**：`0119` 立的「数据面 / 执行面分离」的**执行面接线** —— 组合根向 `BenchmarkScorer` 注入真 `runners`（缺省关，`features.evolution_benchmark_runner`），并提供 CLI `evolve benchmark` 注册面（只写数据面）。
+
+**入口**：`src/core/runtime.py`（`OPT_IN_MODULES` 加名、`_BENCH_SESSION`／`_run_coro`／`_run_bench_sample`／`_bench_runner`、`evaluator=` 接 `runners=runners`）、`src/core/entry.py`（`_add_evolve_parser` 的 `benchmark` 子解析器、`_evolve` dispatch、`_benchmark_registry`／`_benchmark_register`／`_benchmark_set_baseline`／`_benchmark_list`）。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-BENCH-01 | 执行语义：会话隔离 + 返回回复正文 | `_run_bench_sample(_FakeLoop(), {"input":"任务"})` | 返回 `reply`（供 scorer 与 `expected` 比对）；调用参数 `session_id == "bench"`（**样本不污染全局记忆层**）（`tests/test_benchmark_runner.py::test_run_bench_sample_executes_isolated_session`） |
+| TC-BENCH-02 | 轮失败 ⇒ `None` | `_FakeLoop(failed=True)` | 返回 `None`（完成度 0），**不把失败谎报成回复**（`...::test_run_bench_sample_returns_none_on_failure`） |
+| TC-BENCH-03 | 执行器异常**冒泡** | `_FakeLoop(boom=True)` | 抛 `RuntimeError`（评测器据此判 `freeze`），**不吞成 0 分/通过**（`...::test_run_bench_sample_bubbles_exception`） |
+| TC-BENCH-04 | 门控**关（缺省）**：不注入 runner | 基准 + 基线落盘，`build_runtime` 缺省 | `scorer._runners == {}`（与未引入执行面时**逐字一致**）（`...::test_gate_off_does_not_inject_runner`） |
+| TC-BENCH-05 | 门控关仍 `freeze`（**强锚**） | 基准 + 基线都已落盘，`run_cycle([trace])` | `outcome.status == "frozen"`、`eval.verdict == "freeze"` —— **注册基准 ≠ 同意执行**（缺 runner 是唯一 freeze 因）（`...::test_gate_off_still_freezes_despite_registered_benchmark`） |
+| TC-BENCH-06 | 门控**开**：为生产 `task_type` 注入 | `features.evolution_benchmark_runner: true`，`build_runtime` | `set(scorer._runners) == {"module_health","tool_use"}`（worker 只产这两个）（`...::test_gate_on_injects_runner_for_produced_task_types`） |
+| TC-BENCH-07 | 门控开：真实执行产留出分、不再 freeze | 基准 + 基线落盘，门控开，离线桩 provider，`run_cycle([trace])` | `verdict == "publish"`、`held_out_score == 1.0`（回复与 `expected` 逐字相等 ⇒ 满分，**非常量缺省**）、`status == "pending"`（过门 ≠ 自动发布）（`...::test_gate_on_produces_held_out_score`） |
+| TC-BENCH-08 | CLI `register`/`set-baseline`/`list` 落盘往返 | 三命令依次执行 + 新构造 `BenchmarkRegistry` 读回 | `list` 输出含 `b1`／`plugin_id`／`0.7`；新实例 `benchmark_for_plugin(_TARGET) is not None`、`baseline_of(_TARGET) == 0.7`（**跨进程可读**）（`...::test_cli_register_set_baseline_then_list`） |
+| TC-BENCH-09 | CLI `--plugin-id` **必填** | `register` 缺 `--plugin-id` | `pytest.raises(SystemExit)`（未绑定目标的基准不激活任何评测）（`...::test_cli_register_requires_plugin_id`） |
+| TC-BENCH-10 | CLI 落盘缺失 ⇒ 空基准集 | `list` 于无文件状态 | 退出 0、输出不含 `b1`（**不阻断、不抛**）（`...::test_cli_list_on_missing_file_is_empty`） |
+| — | 门控名单（增补断言） | `tests/test_feature_gating.py` | `test_opt_in_whitelist_members`：`set(OPT_IN_MODULES) == {"evolution_executor","evolution_benchmark_runner"}`（原 `test_opt_in_whitelist_is_evolution_executor` 重命名 + 扩断言） |
+
+> **反证（逐字锚非恒真，实测记录，两组）**：(A) 把门控强制为开（`if True`）⇒ TC-BENCH-04/05 **红**
+> （实测 `2 failed, 8 passed`）；(B) 摘 `BenchmarkScorer(..., runners=runners)` 的 `runners=runners` 实参 ⇒
+> TC-BENCH-06/07 **红**（实测 `2 failed, 8 passed`）；两次复原 ⇒ `src/core/runtime.py` `diff -q`
+> **逐字节相同**（"RESTORED-OK"）并复测 **10 passed**。
+> TC-BENCH-05 与 TC-BENCH-07 成对 ⇒ 缺一即「门控要么恒开要么恒关」的证据缺口。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2395 passed**（基线 **2385**，**+10**，与用例数一致）。
+> **零回归**：门控**缺省关** ⇒ `runners=None` ⇒ 今日 `freeze` 判定逐字不变（即便基准已注册）；
+> `OPT_IN_MODULES` 加名不动 `GATABLE_MODULES`（缺省装配口径零改动）；CLI 新增子命令不动既有
+> `evolve run/pending/confirm/reject/implement` 输出。
+> **规格**：`evolution` **MODIFIED**「评测基建」（全量替换；补 3 bullets ＋ **ADD** Scenario ×3）——
+> canonical **16 → 16** req / **84 → 87（+3）** scen（「评测基建」条内 6 → 9）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0202 行。
 

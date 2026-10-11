@@ -9,15 +9,17 @@ Compactor / Guardrail）→ LLMPlanner → PermissionGuard → DefaultLoop，供
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from core.beast import BeastActivator, BeastManager, BeastRegistry, register_innate_skills
 from core.beast.models import Beast
@@ -155,7 +157,11 @@ GATABLE_MODULES: tuple[str, ...] = ("pet", "beast", "evolution")
 # 能力须「关得住、且是关着的」（同 `permission.mode` / `sandbox.host_allowlist` 取向），塞进
 # `GATABLE_MODULES` 会反转为缺省开 —— 故两极性各由**独立名单**承载，不共用一个名单的两种默认。
 # 两个名单之**并**即「已知模块名集合」（供 configuration 的未知开关名告警，账本 E20①）。
-OPT_IN_MODULES: tuple[str, ...] = ("evolution_executor",)
+# `evolution_benchmark_runner`（change 0212 / ADR-0202）：结晶通路的**真实基准执行器** ——
+# 注入后留出评测会**真实调用模型**跑样本（同 `evolution_executor` 的「能烧钱的自改/执行面」性质）
+# ⇒ 同极性（缺省关、显式 true 才装）。**注册基准 ≠ 同意执行**：旗关时即便基准已落盘，留出评测
+# 仍判 `freeze`（不产分数、不烧 token）。
+OPT_IN_MODULES: tuple[str, ...] = ("evolution_executor", "evolution_benchmark_runner")
 KNOWN_FEATURE_MODULES: tuple[str, ...] = GATABLE_MODULES + OPT_IN_MODULES
 
 
@@ -277,6 +283,36 @@ def _skill_state_path(name: str) -> Path:
     """
     base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
     return base / name
+
+
+#: 基准样本执行时的**会话标识**：与用户会话隔离，防 `loop.<trace>` 条目污染全局记忆层。
+_BENCH_SESSION = "bench"
+
+
+def _run_coro(coro: Coroutine[Any, Any, Any]) -> Any:
+    """在**无运行中事件循环**的线程里执行协程（评测发生在冷路径线程 / CLI 主线）。
+
+    基准执行器的调用方是**同步**的（`Runner = Callable[[dict], Any]`），而被调的是 loop 的
+    `async arun`。调用线程已在事件循环里（未来新调用方）⇒ 换一条（无循环的）工作线程执行
+    —— 免得把 ``RuntimeError: asyncio.run() cannot be called from a running event loop``
+    当成评测失败抛给 `Evaluator`。
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def _run_bench_sample(loop: LoopPlugin, sample: dict[str, Any]) -> Any:
+    """执行一个基准样本：以**会话隔离**跑一轮 loop，产出的实际结果交 scorer 与期望比对。
+
+    失败 ⇒ ``None``（scorer 语义：无产出 ⇒ 完成度 0），SHALL NOT 把失败谎报成回复。
+    异常**冒泡**（受信执行面 — 不吞成 0 分、不吞成通过），评测器据此判 `freeze`。
+    """
+    result = _run_coro(loop.arun(str(sample.get("input", "")), session_id=_BENCH_SESSION))
+    return None if result.failed else result.reply
 
 
 def _notes_path() -> Path:
@@ -815,6 +851,21 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         # 结晶面门的**数据面**（0119）：基准集与基线落盘（跨进程可读，运维/人工注册），
         # 与评测器共用**同一**实例（各持一份 ⇒ 注册的基准对评测不可见）。
         benchmarks = BenchmarkRegistry(path=_skill_state_path("evolution-benchmarks.json"))
+
+        # 结晶通路的**执行面**（change 0212 / ADR-0202）：门控开 ⇒ 为 `EvolutionWorker` 生产
+        # 产出的两个 `task_type`（`module_health` / `tool_use`，见 worker.py）注入真实执行器。
+        # 执行器跑 **`general` 兜底子 profile**（晚绑定 —— 评测只发生在 `build_runtime` 返回之后）
+        # 而**非主 loop**：子 loop 无 `cold_path` / `trace_observer` ⇒ `scorer→runner→loop→冷路径`
+        # 的**递归结构上不存在**（主 loop 会递归，今日仅靠 900s 节拍闸挡，脆）。
+        # 门控**缺省关** ⇒ `runners=None` ⇒ 今日 `freeze` 判定**逐字不变**（注册基准 ≠ 同意执行）。
+        def _bench_runner(sample: dict[str, Any]) -> Any:
+            return _run_bench_sample(cast("LoopPlugin", general_agent.loop), sample)
+
+        runners = (
+            {"module_health": _bench_runner, "tool_use": _bench_runner}
+            if config.is_enabled("evolution_benchmark_runner")
+            else None
+        )
         evolution_engine = EvolutionEngine(
             # 记忆面 → 诊断面桥（change 0188 / ADR-0179）：注入失败摘要查询接缝（依赖倒置，
             # Diagnoser 不 import memory）⇒ 已沉淀的 `loop.failure.<trace_id>` 并入诊断报告。
@@ -831,10 +882,12 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 tests=run_gate_tests(run_gate=_run_gate, gates=crystallization_gates()),
             ),
             # 留出评测接**真实打分器**（0119）：留出分由绑定基准的样本经执行器真实执行产出。
-            # 执行器映射（`task_type` → 可调用体）由组合根/运维注入，本装配**暂未接**
-            # （生产无通用任务执行器面）⇒ 产线判 `frozen`（无法评测 ⇒ 不下发、不发布），
-            # 而非旧口径的「恒 publish」。接真实执行器 = 另一 change（见 ADR-0112 已知局限①）。
-            evaluator=Evaluator(registry=benchmarks, score_fn=BenchmarkScorer(benchmarks)),
+            # 执行器映射（`task_type` → 可调用体）由组合根注入 —— **门控开**才接（change 0212 /
+            # ADR-0202，`runners` 见上）；门控关（缺省）⇒ `runners=None` ⇒ 产线仍判 `frozen`
+            # （无法评测 ⇒ 不下发、不发布），与未引入执行面时**逐字一致**。
+            evaluator=Evaluator(
+                registry=benchmarks, score_fn=BenchmarkScorer(benchmarks, runners=runners)
+            ),
             library=skill_library,
             memory=backend,
             memory_crystallizer=Crystallizer(),

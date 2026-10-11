@@ -87,9 +87,13 @@ def test_gating_whitelist_is_pet_beast_evolution() -> None:
 # ---- 第二条极性：缺省关名单（change 0112） ----
 
 
-def test_opt_in_whitelist_is_evolution_executor() -> None:
-    """缺省关名单同样是组合根单一真源（规格正文点名）。"""
-    assert set(OPT_IN_MODULES) == {"evolution_executor"}
+def test_opt_in_whitelist_members() -> None:
+    """缺省关名单同样是组合根单一真源（规格正文点名）。
+
+    `evolution_benchmark_runner`（change 0212）：结晶通路的真实基准执行器 —— 与
+    `evolution_executor` 同性质（能真实调用模型的执行面）⇒ 同极性（缺省关）。
+    """
+    assert set(OPT_IN_MODULES) == {"evolution_executor", "evolution_benchmark_runner"}
 
 
 def test_two_polarities_are_carried_by_separate_lists() -> None:

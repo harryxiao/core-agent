@@ -284,6 +284,13 @@ def reject(self, candidate: GenerationCandidate, *, reason: str | None = None) -
 | `evolve confirm <id>` | 确认并**立即结晶**（两步在一次动作内）；`risk_level="high"` 时**本命令即审批签发端**：构造 `ApprovalRequest(op="evolution.publish", target=候选目标, ...)` → `ApprovalWorkflow.approve()` → 携带获批单调 `confirm`。**结局文案按分支诚实**（change `0102`）：技能级 ⇒「已确认并发布：published」；架构级 ⇒「已批准（待人工实施）」（**不说「已发布」**） |
 | `evolve reject <id> [--note TEXT]` | 拒绝候选（不再发布，可附理由） |
 | `evolve implement <id> [--dry-run] [--approver NAME] [--note TEXT]` | 架构级候选的**原生实施**（**可选能力**，见 §3.3）：`--dry-run` = **筹备**（产出补丁 → 跑冻结门 → **回退**）并打印待复核 diff；缺省 = 复核后**永久落地**（结局 `implemented`）。**未启用执行器** ⇒ stderr 说明 + **rc 0**（能力关闭不是错误，沿 `_module_disabled` 惯例） |
+| `evolve benchmark register <id> --plugin-id <id> --task-type {module_health,tool_use} --samples <path.json>` | **基准注册操作面**（change `0212`／ADR-0202）：只写**数据面**（`$CORE_STATE_DIR/evolution-benchmarks.json`，**免 runtime**）。`--plugin-id` **必填**（绑定目标才激活评测，也是基线键）；`--samples` 为 `[{"input","expected"}]`，`expected` 须与期望回复**逐字相等**（缺省只评 completion） |
+| `evolve benchmark set-baseline <plugin_id> <score>` | 登记某 `plugin_id` 的**绝对阈值基线**（`held_out < baseline - margin` 即退化） |
+| `evolve benchmark list` | 列出已注册基准（id / 目标 / 任务类型 / 基线）；空则打印「基准集为空」 |
+
+> **执行面另由门控（缺省关）开启**（change `0212`／ADR-0202）：`features.evolution_benchmark_runner`
+> （**缺省关**，`is_enabled` 判据）⇒ 组合根**不注入**真 `runners` ⇒ 即便基准已注册也判 `freeze`
+> （**注册基准 ≠ 同意执行** —— 跑基准烧模型 token）。**注册操作面**只写数据面、不装配 runtime。
 
 - **非待确认态不得复活**：`confirm`/`reject` 对不存在或非 `pending` 的候选一律给出反馈 + 非零退出。
 - **签发端在操作面、判定仍在引擎**：操作面即「人工」这一事实的来源；引擎只收单据做判定（`confirm` 三重门语义一字不动）。

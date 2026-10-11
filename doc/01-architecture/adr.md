@@ -6948,6 +6948,74 @@ CLI 诊断源）看不到「哪些轮失败、链条怎么接的」。
   ③ **CLI 无 `chain` 子命令** —— 句柄在 CLI 入口同样被注入（`_diag_deps` 单点）⇒ 未来加子命令是
   **一行**；④ 会话分组依赖 `Deps.sessions`（注入面缺失时退化为单节不过滤）。
 
+## ADR-0202：结晶通路 —— runner 注入语义 / OPT_IN 门控 / CLI 注册面（change 0212 / 台账 E149）
+
+**背景 —— 「技能→插件」被 freeze 卡死。** change `0119`（数据面 / 执行面分离）交付了
+`BenchmarkRegistry`（基准集 + 基线，JSON 单文件落盘、跨进程可读）与 `BenchmarkScorer(benchmarks,
+runners=...)`：**接收**执行器字典，但 `runners` 是**由组合根注入**的受信代码，**不落盘**。而
+`runtime.py:837` 构造 `BenchmarkScorer(benchmarks)` 时**未传 `runners`**，且**全仓无**生产
+`register` / `set_baseline` 面 ⇒ `BenchmarkScorer.__call__` 永远在「无绑定基准 / 无样本 / 无 runner」
+三态下返 `None`（`evaluator.py:281-286`）⇒ `Evaluator` 判 `freeze` ⇒ `EvolutionEngine.crystallize`
+抛 `EVAL_FROZEN`（`engine.py:180-185`）。后果：**「技能→插件」生产不可达**，观察期回归后的自动溶解
+（`ADR-0011`）也随之不闭环 —— 六能力走查中「SOP 进化上半场通、下半场断」的那处**能力级真缺口**。
+
+**D1 runner 挂 `general` 兜底子 profile，不挂主 loop。** runner 要跑一轮真模型调用；挂**主 loop** 会
+成递归：`_maintain → _cold_path → scorer → runner → 主 loop.arun → _maintain …`（今日仅靠 900s
+节拍闸挡住，脆）。挂**子 loop**（`runtime.py:968-972` 的 `general` 兜底子 profile）⇒ 子 loop 无
+`cold_path` / `trace_observer`（`:887-906`）⇒ **无递归路径**；`transcript=None` ⇒ 样本间上下文
+**零漂移**；绕开 router 关键词路由的非确定性。**代价如实记**：测的是**子 Agent 形状**（见 D6）。
+
+**D2 门控极性 = OPT_IN（缺省关）。** 沿用第二条极性名单（`0112` 立）：`OPT_IN_MODULES +=
+("evolution_benchmark_runner",)`，访问器 `config.is_enabled(...)`（fail-closed：只有显式 `true` 才开）。
+理由 = **「注册基准 ≠ 同意执行」**：基准是数据、可被人随便写入，但**跑基准会烧模型 token** —— 故
+执行面必须**单独**显式开启。**旗关（缺省）⇒ `runners=None` ⇒ 今日 `freeze` 判定逐字不变**（即便
+基准 + 基线都已落盘：`test_gate_off_still_freezes_despite_registered_benchmark` 是**强锚**、非空转）。
+旗开 ⇒ `runners = {"module_health": _bench_runner, "tool_use": _bench_runner}`（worker 只产这两个
+`task_type`，`worker.py:109/:128`）传进 `BenchmarkScorer(benchmarks, runners=runners)`。
+
+**D3 闭包晚绑定引用 `general_agent`。** `BenchmarkScorer` 在 `runtime.py:837` 构造，而 `general_agent`
+在 ~`:1026` 才赋值 ⇒ 嵌套 `_bench_runner(sample)` **闭包**引用它（评测只发生在 build 之后，届时已绑定）。
+**已用 pyright 探针证实**（v1.1.409 对「引用后赋值的外层局部」报 0 错误）⇒ **无需**改 `BenchmarkScorer`
+API、无需可变 holder。为可测性把逻辑**拆两截**：模块级 `_run_bench_sample(loop, sample)`（可用假 loop
+单测）+ 嵌套 `_bench_runner(sample)`（补上晚绑定的 `general_agent.loop`）。
+
+**D4 `_run_coro` —— 在所有调用方的线程里跑协程。** 评测发生在**冷路径线程**（`to_thread` 内、**无**
+运行中事件循环）或 `evolve run` CLI 主线（无循环）⇒ 模块级 `_run_coro`：`get_running_loop()` 抛
+`RuntimeError` ⇒ 直接 `asyncio.run`；若**恰好**在循环里 ⇒ 单线程池兜（`ThreadPoolExecutor(1)`）。
+**全调用方已核**：今日无「循环内」调用方，兜底只为契约完整。`_run_bench_sample` 的返值**精确匹配
+scorer 语义**（`evaluator.py:239-244`）：`result.failed` ⇒ `None`（完成度 0）、否则 `reply`；异常
+**冒泡**（`evaluator.py:215` 认可的 freeze 语义，**不吞成 0 分**）。**会话隔离**：`session_id="bench"`
+防样本产物以 `loop.<trace>` 落进全局记忆层（`_BENCH_SESSION`）。
+
+**D5 CLI 注册面**。`evolve benchmark {register|set-baseline|list}`（`_add_evolve_parser` 加层）——
+**数据面免 runtime**：`BenchmarkRegistry(path=_state_path("evolution-benchmarks.json"))`，先例
+`_notes_store`。`register <benchmark_id> --plugin-id <id>`（**必填**：plugin 绑定才激活评测
+`evaluator.py:230`，也是基线键）`--task-type module_health --samples <path.json>`（`[{"input",
+"expected"}]`）；`set-baseline <plugin> <score>`；`list`。CLI help 注明 `expected` 须与期望回复
+**逐字相等**（缺省只评 completion）。
+
+**D6 已知局限。** ① **注册后运行中的 runtime 重启才见** —— registry 在构造期加载；② **样本串行跑在
+维护线程**（分钟级阻塞风险，由门控 + 小样本数兜）；③ **测的是子 profile 形状 ≠ 主 loop**（D1 的
+代价）；④ **`_crystallize_plugin` 仍只登记不产真插件**（`plugin_ids.py:11-18` 有意裁决，**不在本批**）；
+⑤ 无 runner 的 `task_type` 仍 `freeze`（fail-closed 保持）。
+
+- **落点**：`src/core/runtime.py`（`OPT_IN_MODULES` 加名、`_BENCH_SESSION` / `_run_coro` /
+  `_run_bench_sample` 模块级 helper、`_bench_runner` 闭包 + `runners` 门控、`evaluator=` 接
+  `runners=runners`）、`src/core/entry.py`（`_add_evolve_parser` 的 `benchmark` 子解析器、
+  `_evolve` dispatch、`_benchmark_registry` / `_benchmark_register` / `_benchmark_set_baseline` /
+  `_benchmark_list`）、`tests/test_benchmark_runner.py`（新 ×10）、`tests/test_feature_gating.py`
+  （`test_opt_in_whitelist_members` 重命名 + 断言扩为两成员）、`doc/04-testing/test-cases.md` §125、
+  `coding-plan/known-risk.md`、`doc/02-modules/evolution.md`。
+- **规格**：`evolution` **MODIFIED**「评测基建」（全量替换；补 3 bullets —— **执行面语义** /
+  **执行面门控（缺省关）** / **注册操作面**，＋ **ADD** Scenario ×3「执行面门控关闭时不注入（逐字回到现状）」/
+  「执行面门控开启时经真实执行产出留出分」/「CLI 注册面只写数据面且被评测可见」；既有 5 bullets 与
+  6 Scenarios **逐字保留**）—— canonical: evolution **16 → 16** req / **84 → 87** scen
+  （「评测基建」条内 6 → 9）。
+- **反证**：**两组**，(A) 门控强制为开（`if True`）⇒ `2 failed, 8 passed`（`test_gate_off_*` 两例红）；
+  (B) 摘 `runners=runners` 实参 ⇒ `2 failed, 8 passed`（`test_gate_on_*` 两例红）；两次复原 ⇒
+  逐字节相同（`diff -q` vs 备份，"RESTORED-OK"）并复测 10 passed。
+- **局限**：见 D6。来源另见 `doc/openspec/changes/archive/2026-10-11-0212-evolution-crystallize-path/design.md`。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7144,3 +7212,4 @@ CLI 诊断源）看不到「哪些轮失败、链条怎么接的」。
 | ADR-0199 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/constraints.md, 02-modules/loop.md |
 | ADR-0200 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/rag.md, 02-modules/context.md |
 | ADR-0201 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md, 03-interfaces/ui-interface.md |
+| ADR-0202 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/evolution.md, 03-interfaces/evolution-interface.md |

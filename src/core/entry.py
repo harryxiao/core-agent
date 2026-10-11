@@ -50,7 +50,7 @@ from core.diagnostics import (
     render,
 )
 from core.durability import DurabilityError
-from core.evolution import EvolutionError, GenerationCandidate
+from core.evolution import Benchmark, BenchmarkRegistry, EvolutionError, GenerationCandidate
 from core.evolution.executor import COMMIT_TRACE, IMPLEMENT_OP
 from core.loop import LoopPlugin
 from core.mcp import (
@@ -316,6 +316,32 @@ def _add_evolve_parser(sub: Any) -> None:
     reject = ev_sub.add_parser("reject", help="拒绝候选（不再发布）")
     reject.add_argument("candidate_id", help="候选身份（见 evolve pending）")
     reject.add_argument("--note", metavar="TEXT")
+    benchmark = ev_sub.add_parser(
+        "benchmark", help="基准集操作面（数据面：只写落盘、不装配运行时）"
+    )
+    bench_sub = benchmark.add_subparsers(dest="benchmark_cmd", metavar="<benchmark-cmd>")
+    bench_sub.add_parser("list", help="列出已注册基准与基线分")
+    register = bench_sub.add_parser("register", help="注册一个评测基准（绑定目标插件）")
+    register.add_argument("benchmark_id", help="基准身份")
+    register.add_argument(
+        "--plugin-id", required=True, metavar="ID", help="绑定到该归因目标（候选 target_plugin）"
+    )
+    register.add_argument(
+        "--task-type",
+        required=True,
+        choices=["module_health", "tool_use"],
+        help="样本执行器按此键选取（worker 生产产出的两类）",
+    )
+    register.add_argument(
+        "--samples",
+        required=True,
+        metavar="PATH",
+        help='JSON 文件：[{"input": ..., "expected": ...}]；expected 须与期望回复**逐字相等**'
+        "（缺省只评完成度）",
+    )
+    baseline = bench_sub.add_parser("set-baseline", help="为某归因目标设置基线分（退化绝对阈值）")
+    baseline.add_argument("plugin_id", help="归因目标（候选 target_plugin）")
+    baseline.add_argument("score", type=float, help="基线分（留出分低于它即判退化）")
 
 
 def _add_run_parser(sub: Any) -> None:
@@ -1252,18 +1278,21 @@ def _memory(args: argparse.Namespace) -> int:
 
 _EVOLVE_USAGE = (
     "用法: core-agent evolve {run [--goal ID]|pending|confirm <id>|"
-    "implement <id> [--dry-run]|reject <id>}"
+    "implement <id> [--dry-run]|reject <id>|"
+    "benchmark {register <id> --plugin-id ID --task-type T --samples PATH|"
+    "set-baseline ID SCORE|list}}"
 )
 
 
 def _evolve(args: argparse.Namespace) -> int:
-    """进化冷路径操作面：跑一轮 / 看待确认 / 确认发布 / 原生实施 / 拒绝。"""
+    """进化冷路径操作面：跑一轮 / 看待确认 / 确认发布 / 原生实施 / 拒绝 / 基准注册。"""
     handlers = {
         "run": _evolve_run,
         "pending": _evolve_pending,
         "confirm": _evolve_confirm,
         "implement": _evolve_implement,
         "reject": _evolve_reject,
+        "benchmark": _evolve_benchmark,
     }
     handler = handlers.get(args.evolve_cmd or "")
     if handler is None:
@@ -1484,6 +1513,78 @@ def _evolve_reject(args: argparse.Namespace) -> int:
         return 1
     evolution.engine.reject(candidate, reason=args.note)
     print(f"已拒绝：{candidate.target_plugin}（{candidate.candidate_id}）")
+    return 0
+
+
+def _benchmark_registry() -> BenchmarkRegistry:
+    """基准集注册表：与组合根**同源**（`runtime._skill_state_path("evolution-benchmarks.json")`）。
+
+    操作面只写**数据面**、**不装配运行时** —— 注册基准不需要模型、不需要凭据（先例
+    `_notes_store` / `_build_skill_library`），装配反而让「配置坏了就注册不了基准」的脆弱性进来
+    （同 `_diag_deps` 的免 runtime 取向）。
+    """
+    return BenchmarkRegistry(path=_state_path("evolution-benchmarks.json"))
+
+
+def _evolve_benchmark(args: argparse.Namespace) -> int:
+    """`evolve benchmark {register|set-baseline|list}`：基准集的人工注册面（数据面）。"""
+    handlers = {
+        "register": _benchmark_register,
+        "set-baseline": _benchmark_set_baseline,
+        "list": _benchmark_list,
+    }
+    handler = handlers.get(args.benchmark_cmd or "")
+    if handler is None:
+        print(_EVOLVE_USAGE, file=sys.stderr)
+        return 1
+    return handler(args)
+
+
+def _benchmark_register(args: argparse.Namespace) -> int:
+    """`evolve benchmark register <id> --plugin-id ID --task-type T --samples PATH`。"""
+    try:
+        raw: Any = json.loads(Path(args.samples).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"样本文件不可用: {exc}", file=sys.stderr)
+        return 1
+    if not isinstance(raw, list):
+        print('样本文件须是 JSON 数组：[{"input": ..., "expected": ...}]', file=sys.stderr)
+        return 1
+    samples = [cast("dict[str, Any]", s) for s in cast("list[Any]", raw) if isinstance(s, dict)]
+    registry = _benchmark_registry()
+    registry.register(
+        Benchmark(
+            benchmark_id=args.benchmark_id,
+            task_type=args.task_type,
+            samples=samples,
+            plugin_id=args.plugin_id,
+        )
+    )
+    print(f"已注册基准：{args.benchmark_id}（绑定 {args.plugin_id}，{len(samples)} 样本）")
+    return 0
+
+
+def _benchmark_set_baseline(args: argparse.Namespace) -> int:
+    """`evolve benchmark set-baseline <plugin_id> <score>`：设退化判定的绝对阈值。"""
+    _benchmark_registry().set_baseline(args.plugin_id, args.score)
+    print(f"已设基线：{args.plugin_id} = {args.score}")
+    return 0
+
+
+def _benchmark_list(args: argparse.Namespace) -> int:
+    """`evolve benchmark list`：列出已注册基准与基线分（落盘缺失 ⇒ 空清单）。"""
+    registry = _benchmark_registry()
+    benchmarks = registry.list()
+    if not benchmarks:
+        print("基准集为空")
+        return 0
+    for benchmark in benchmarks:
+        baseline = registry.baseline_of(benchmark.plugin_id or "")
+        shown = "未设" if baseline is None else str(baseline)
+        print(
+            f"  {benchmark.benchmark_id}  目标={benchmark.plugin_id or '（未绑定）'}  "
+            f"类型={benchmark.task_type}  样本={len(benchmark.samples)}  基线={shown}"
+        )
     return 0
 
 

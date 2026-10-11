@@ -132,6 +132,21 @@ L4 让 CORE **会进化**。它只读地观测 L3 循环的运行轨迹，通过
   `reuse_count`、不落盘（与 change `0187` 的「有副作用但有界」读取面**划清**）；按 **id 精确**取（同 trace
   的轨迹 / 步序条目 `source` 同为 `"loop"`）；**层无关** ⇒ 迁 L4 后仍可读。
 
+### 3.8 结晶通路：执行面接线 + 基准注册面（change `0212`／ADR-0202／台账 E149）
+
+- **缺口**：`0119` 的「数据面 / 执行面分离」只交付了**数据面**（`BenchmarkRegistry` 落盘）与
+  `BenchmarkScorer(benchmarks, runners=...)` 的**接收**面 —— `runners` 由组合根注入、不落盘，而组合根
+  **未传**、也**无**生产注册面 ⇒ 恒 `freeze` ⇒ `crystallize` 抛 `EVAL_FROZEN` ⇒ 「技能→插件」不可达。
+- **执行面注入**：`BenchmarkScorer(benchmarks, runners=runners)`，`runners = {"module_health": _bench_runner,
+  "tool_use": _bench_runner}`（worker 只产这两个 `task_type`）。runner 挂 **`general` 兜底子 profile**
+  （非主 loop —— 主 loop 会经 `_cold_path` **递归**）；会话隔离 `session_id="bench"`；失败 ⇒ `None`、
+  异常**冒泡**（精确匹配 scorer 语义）。
+- **门控极性 = OPT_IN（缺省关，`features.evolution_benchmark_runner`）**：判据「**注册基准 ≠ 同意执行**」
+  —— 跑基准烧模型 token ⇒ 执行面须**单独**显式开。旗关 ⇒ `runners=None` ⇒ 今日 `freeze` 判定逐字不变。
+- **注册操作面**：CLI `core-agent evolve benchmark {register|set-baseline|list}` —— **数据面免 runtime**
+  （`BenchmarkRegistry(path=...)`）。`register <id> --plugin-id <id> --task-type {module_health,tool_use}
+  --samples <path.json>`（`--plugin-id` **必填**：绑定目标才激活评测）；`expected` 须与期望回复**逐字相等**。
+
 ## 4. 触发时机（异步、低优先级）
 
 - 累计 N 轮轨迹后批量触发；或在连续失败/用户明确要求时触发。

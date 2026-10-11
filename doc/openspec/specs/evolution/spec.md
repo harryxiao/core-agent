@@ -49,7 +49,6 @@
 - **GIVEN** 一个技能候选生成
 - **WHEN** 入库前
 - **THEN** 进入评审队列，通过后入 skills 库（与权限审批流联动）
-
 ### Requirement: 溶解与回收
 系统 SHALL 检测退化的技能/SOP，评估后标记废弃或回收。
 
@@ -62,7 +61,6 @@
 - **GIVEN** 一个技能被判定长期失效
 - **WHEN** 溶解器运行
 - **THEN** 其有效片段回收为事实/经验，回写记忆层
-
 ### Requirement: 对比诊断
 系统 SHALL 把缺陷定位到单个插件级别，作为进化闭环的起点；SHALL 接受**可选的目标先验**
 （来自课程）作为**并列裁决**输入。
@@ -129,7 +127,6 @@
 - **GIVEN** 候选已生成
 - **WHEN** 发布前
 - **THEN** 交 Validator 验证，未过门不发布
-
 ### Requirement: 验证门
 系统 SHALL 对候选执行 review + 运行时测试，通过才允许发布。
 
@@ -212,7 +209,6 @@
 - **WHEN** 执行该门禁
 - **THEN** 经子进程运行（非进程内 import 调用）；「跑不起来」（可执行文件缺失 / 超时）与
   「跑失败」（非零退出）同样归一为**该门未通过**，SHALL NOT 使整个验证抛裸异常
-
 ### Requirement: 留出评测
 系统 SHALL 在留出集上评测候选，防止过拟合与退化。
 
@@ -250,7 +246,6 @@
 - **GIVEN** 一个候选，其 `target_plugin` **无**绑定基准（或基准无样本、或执行器未注册）
 - **WHEN** Evaluator 评测该候选
 - **THEN** `verdict="freeze"`、`passed=False`；候选**不发布**、**不**被记作退化、**不**触发回滚
-
 ### Requirement: 评测基建
 系统 SHALL 提供可落地的评测基建（基准集 + 评测运行器 + 指标对比基线），支撑验证门与留出评测的工程化执行。
 
@@ -263,6 +258,17 @@
 - **降级告警**：落盘缺失 SHALL 表现为空基准集（不阻断启动）；落盘**损坏/结构不符** SHALL 降级为空
   基准集并**告警**，SHALL NOT 静默吞掉。
 - **无副作用声明**：基准确立 SHALL **不**改任何被评对象的运行时行为（注册只是数据入库）。
+- **执行面语义**：组合根 SHALL 为**生产实际产出的** `task_type` 提供**真实执行器** —— 执行器 SHALL
+  以**子 Agent 形状**的循环执行样本输入（会话隔离，SHALL NOT 污染全局记忆层），产出非空计完成度、
+  与样本 `expected` 相等计正确性；执行器异常 SHALL **冒泡**给评测器（据此判 `freeze`），
+  SHALL NOT 吞成 0 分、SHALL NOT 吞成通过。
+- **执行面门控（缺省关）**：真实执行器 SHALL 由一显式开关（`features.evolution_benchmark_runner`，
+  缺省**关闭**）控制。关闭 ⇒ SHALL NOT 注入执行器 ⇒ 留出评测 SHALL 与既有实现**逐字一致**地判
+  `freeze`（**注册基准 ≠ 同意执行**：注册只是数据入库，注册了基准也不产出留出分、不烧模型调用）。
+  理由同 `evolution_executor`：真实执行会调用模型、产生成本，属「关得住、且是关着的」的执行面。
+- **注册操作面**：系统 SHALL 提供 CLI 操作面注册基准、设置基线、列清单（`evolve benchmark
+  {register|set-baseline|list}`）；该操作面 SHALL 只写**数据面**（与组合根**同源**的单文件落盘），
+  SHALL **不装配运行时**（免模型、免凭据），故 SHALL 可在配置不可用时照常读写基准。
 
 #### Scenario: 基准集注册
 - **GIVEN** 一个评测基准（含输入样例与期望指标）准备就绪
@@ -294,6 +300,23 @@
 - **WHEN** 留出评测试图评测
 - **THEN** 判**无法评测**（不产出分数、不判通过），SHALL NOT 以缺省分放行
 
+#### Scenario: 执行面门控关闭时不注入（逐字回到现状）
+- **GIVEN** 执行面门控**关闭**（缺省），且基准集里**已有**绑定到某 `target_plugin` 的、含样本的基准，
+  并已设置该目标的基线
+- **WHEN** Evaluator 评测该目标的候选
+- **THEN** 判 `verdict="freeze"`（执行器未注入 ⇒ 无留出分）；行为与**未引入本执行面时逐字一致**，
+  SHALL NOT 调用模型、SHALL NOT 产出分数
+
+#### Scenario: 执行面门控开启时经真实执行产出留出分
+- **GIVEN** 执行面门控**开启**，基准绑定某 `target_plugin` 且含样本，其 `task_type` 的执行器已注入
+- **WHEN** Evaluator 评测该目标的候选
+- **THEN** 留出分由**逐样本真实执行**（子 Agent 形状循环、会话隔离）与 `expected` 对比后聚合产出，
+  **而非常量缺省值**；产出的分数 SHALL 参与 `publish`/`rollback` 判定（不再 `freeze`）
+
+#### Scenario: CLI 注册面只写数据面且被评测可见
+- **GIVEN** 运维经 CLI 在**一次进程**中注册了绑定某 `target_plugin` 的基准并设置其基线（未装配运行时）
+- **WHEN** 后续进程构造组合根（同源路径）并评测该目标的候选
+- **THEN** 该基准与基线**均可见**（`benchmark_for_plugin` 命中、`baseline_of` 非 `None`）
 ### Requirement: 任务质量评测
 系统 SHALL 对任意任务提供通用质量评测，从任务完成度、正确性、轨迹质量三个维度量化任务执行质量，复用评测基建（基准集 + 评测运行器 + 指标对比基线）工程化执行。
 
@@ -311,7 +334,6 @@
 - **GIVEN** 一个任务的完整执行轨迹
 - **WHEN** 评测运行器分析轨迹
 - **THEN** 产出轨迹质量指标（无效步骤、回退次数等），供诊断与优化
-
 ### Requirement: 架构级候选强制人工审批（HITL confirm gate）
 系统 SHALL 按风险域区分候选的确认路径：世代化候选 SHALL 携带 `risk_level`（`high` 为架构级——
 `kind="plugin"`，`low` 为技能库级——`kind="skill"`）。`risk_level="high"` 的候选 SHALL 强制走
@@ -370,7 +392,6 @@
 - **GIVEN** 一个 `status="pending"` 的候选（无论 `risk_level`）
 - **WHEN** 直接调用 `crystallize`
 - **THEN** 抛 `CANDIDATE_PENDING`，不产生 `accepted` 亦不产生 `published` 结局
-
 ### Requirement: 架构级候选的原生实施（可选）
 系统 SHALL 支持把架构级候选的 `accepted` 结局**可选地**推进为**已实施**：**仅当**
 `features.evolution_executor` 显式开启时，组合根 SHALL 装配**原生执行器**（`EvolutionExecutor`）；
@@ -474,7 +495,6 @@ SHALL NOT 落地**：
 - **WHEN** 后续进程查该候选
 - **THEN** 候选状态为 `implemented`、制品（补丁与门禁报告）仍可读——实施结论 SHALL NOT 只存在于
   一次性进程的标准输出
-
 ### Requirement: 观察期回归自动溶解（auto-dissolve）
 系统 SHALL 在**结晶发布后**为该产物开启**观察期窗口**（记录发布时评测基线分），并由调用方持续
 采样发布后的回归指标：观察样本数达下限**且**观察均分低于「基线 − 容差」时 SHALL **自动溶解**
@@ -525,7 +545,6 @@ SHALL NOT 落地**：
 - **GIVEN** 一个从未结晶发布（未开窗）的目标
 - **WHEN** 调用采样
 - **THEN** 忽略该样本（不抛异常、不建窗、不溶解）
-
 ### Requirement: 自动课程（目标生成与调度）
 
 系统 SHALL 提供**课程**：从结构化信号生成**有界、有序**的迭代目标议程（agenda），作为进化冷路径
@@ -577,7 +596,6 @@ SHALL NOT 新增驱动面、SHALL NOT 常驻、SHALL NOT 给模型新增工具�
 - **GIVEN** 同一批 trace 与同一组已处理目标
 - **WHEN** 课程连续生成两次议程
 - **THEN** 两次结果逐项相同
-
 ### Requirement: 冷路径驱动（cold path driving）
 系统 SHALL 提供驱动**进化冷路径**的两个入口——①loop 收尾的维护节拍（注入冷路径回调时给出一次机会）
 与②CLI 显式入口 `evolve run`——二者 SHALL 调用 `EvolutionWorker.maybe_run`：**是否真正运行一轮
@@ -609,7 +627,6 @@ cycle 由 `EvolutionTrigger` 阈值门决定**（显式入口以 `force` 跳过�
 - **GIVEN** 本批 trace 的失败证据指向插件 B
 - **WHEN** 执行 `evolve run --goal A`
 - **THEN** 本轮目标为 A（不被证据改写），照常走提案 → 验证门 → 留出评测
-
 ### Requirement: 观察期窗口持久化（observation window persistence）
 系统 SHALL 支持把观察期窗口（基线分 / 观察样本 / 冻结截止）落盘为 JSON 并在启动时恢复；
 未注入路径时 SHALL 纯内存运行（零行为变化、不写盘）。
@@ -627,7 +644,6 @@ cycle 由 `EvolutionTrigger` 阈值门决定**（显式入口以 `force` 跳过�
 - **GIVEN** 注册表未注入路径
 - **WHEN** 开窗 / 采样 / 冻结
 - **THEN** 不产生任何落盘文件，行为与未持久化时一致
-
 ### Requirement: 人工确认队列的持久化与操作面
 系统 SHALL 让进化候选的人工确认队列**可跨进程驱动**：候选 SHALL 携带**稳定身份**（不依赖进程内对象标识），过门候选 SHALL 连同其验证门报告与留出评测报告**作为一条记录**落盘为 JSON 并在启动时恢复；未注入路径时 SHALL 纯内存运行（零行为变化、不写盘）。系统 SHALL 提供操作面以**列出**待确认候选、**确认放行**（确认后即发布结晶）与**拒绝**候选；对 `risk_level="high"` 的候选，操作面 SHALL 作为审批流的**签发端**构造目标一致的权限审批单并经人工批准后再调用 `confirm`。
 
