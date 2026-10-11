@@ -90,9 +90,36 @@ def test_fenced_trailing_action_json_is_tool_call() -> None:
     assert action.args == {"text": "hi"}
 
 
-def test_action_json_mid_text_stays_reply() -> None:
-    """正文**中间**夹带的动作 JSON（如解释协议）⇒ 仍是答复（只认尾部，宁漏勿误）。"""
+def test_action_json_mid_text_now_fails_visibly() -> None:
+    """正文中间夹带的**动作** JSON（含非空 tool_id、其后仍有正文）⇒ **可见失败**。
+
+    见 change 0222 / ADR-0212。
+
+    **取代**旧语义（change 0166 / ADR-0156「只认尾部、宁漏勿误」）：旧实现把「完整动作协议 + 尾随
+    正文」整段当最终答复 ⇒ **静默零执行**（动作丢失、记为成功、JSON 进转录与记忆）。新语义把它
+    归一为一次**可见**的解析失败 —— 代价（偶发误伤「解释协议时引用动作 JSON」的回复）低于静默丢失。
+    """
     content = "输出格式二选一：①自然语言回复；②JSON 工具调用 " + _ACTION + " —— 就这样。"
+    action = _parse(content)
+    assert action.is_terminal
+    assert action.failed is True
+    assert "LLM_PLAN_PARSE_FAILED" in action.args["reply"]
+    assert "tool_id" not in action.args["reply"]
+    assert action.raw_output == content
+
+
+def test_embedded_action_json_is_not_executed() -> None:
+    """夹带的动作 JSON **不得被执行**（形态 5 是失败态，不是工具动作）。"""
+    content = _PROSE + _ACTION + "\n我读一下这个文件。"
+    action = _parse(content)
+    assert action.tool_id == ""
+    assert action.is_terminal
+    assert action.failed is True
+
+
+def test_embedded_non_action_json_mid_text_stays_reply() -> None:
+    """正文中夹带**无** tool_id 的示例 JSON ⇒ 仍是答复（不误伤解释/示例）。"""
+    content = '配置示例：{"max_rounds": 3, "token_budget": 8000} 就这样。'
     action = _parse(content)
     assert action.is_terminal
     assert action.args["reply"] == content
@@ -238,14 +265,18 @@ def test_unclosed_action_payload_raw_output_is_bounded() -> None:
     assert 0 < len(action.raw_output) <= _RAW_OUTPUT_MAX
 
 
-def test_closed_tail_object_without_tool_id_stays_reply() -> None:
-    """形态 4 的反面守护：**闭合**的尾部对象 ⇒ 仍是答复（承 0166「只认尾部、宁漏勿误」）。"""
+def test_closed_action_object_with_trailing_prose_is_embedded_failure() -> None:
+    """形态 5 守护：**闭合**的动作对象之后仍有正文 ⇒ **可见失败**（取代 0166 的「宁漏勿误」）。
+
+    旧语义（ADR-0156）下本例整段当答复 ⇒ **静默零执行**；新语义（change 0222 / ADR-0212）归一为
+    失败态终止动作。**形态 4**（未闭合载荷）仍**不**命中**闭合**对象 —— 二者判据互斥、各有守护。
+    """
     closed = '建议这样调：\n\n{"tool_id": "tools.echo", "args": {"text": "hi"}} 就这样。'
     action = _parse(closed)
     assert action.is_terminal
-    assert action.args["reply"] == closed
-    assert action.failed is False
-    assert action.raw_output == ""
+    assert action.failed is True
+    assert "LLM_PLAN_PARSE_FAILED" in action.args["reply"]
+    assert action.raw_output == closed
 
 
 def test_unclosed_payload_finish_reason_length_distinguishes_cause() -> None:

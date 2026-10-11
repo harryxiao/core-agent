@@ -2924,3 +2924,26 @@ change 号 / ADR / 台账。**无新增用例**：该轮自带的验收（`test_
 > **规格中性**：`openspec validate --all` **31 passed**（canonical；本 change 无 delta）→ 归档后
 > **31 passed 不变**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0211 行。
+
+## 135. 夹带的动作 JSON 归一为可见失败（TC-EMBEDDED，change `0222`／ADR-0212，台账 E159）
+
+**capability `loop`**：规格 delta = MODIFIED「推理动作解析与失败可见」（四种→五种形态 ＋ MODIFIED 1
+Scenario ＋ ADDED 1 Scenario；既有其余 7 Scenario 逐字保留）。承 `0166`/ADR-0156：**取代**其「正文
+中间夹带一律按回复」子情形语义。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-EMBEDDED-01 | 夹带动作 JSON ⇒ 可见失败 | `_parse("…正文…" + _ACTION + " —— 就这样。")` | `failed=True`、`reply` 含 `LLM_PLAN_PARSE_FAILED` 且**不含** `tool_id`、`raw_output==原文`（`tests/test_loop_output_protocol.py::test_action_json_mid_text_now_fails_visibly`） |
+| TC-EMBEDDED-02 | 夹带动作**不执行** | `_parse(_PROSE + _ACTION + "\n我读一下这个文件。")` | `tool_id==""`、`is_terminal`、`failed=True`（`...::test_embedded_action_json_is_not_executed`） |
+| TC-EMBEDDED-03 | 夹带**非动作** JSON 仍回复 | `_parse('配置示例：{"max_rounds": 3} 就这样。')` | `reply==原文`、`failed=False`（不误伤示例/配置）（`...::test_embedded_non_action_json_mid_text_stays_reply`） |
+| TC-EMBEDDED-04 | 闭合动作对象 + 尾随正文 ⇒ 失败 | `_parse('建议这样调：\n\n{...tool_id...} 就这样。')` | `failed=True`、`raw_output==原文`（名实订正：原 `test_closed_tail_object_...` 实为形态 5）（`...::test_closed_action_object_with_trailing_prose_is_embedded_failure`） |
+
+> **反证（实测）**：摘掉 `_parse` 的形态 5 分支 ⇒ `tests/test_loop_output_protocol.py` **`3 failed, 17 passed`**
+> （TC-EMBEDDED-01/02/04）；复原 ⇒ `src/core/loop/planner.py` `md5sum` **相同**、复测 **20 passed**。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2507 passed**（基线 **2505**，**+2**，与用例数一致）。
+> **规格**：`loop` **MODIFIED**「推理动作解析与失败可见」⇒ canonical loop **6 → 6** req（无新增
+> Requirement）／ **81 → 82（+1）** scen。`openspec validate --all` 32 passed（31 canonical ＋ 1 change）
+> → 归档后 **31 passed**。
+> **既有 7 Scenario 逐字保留**（混写正文 / 围栏 / 非动作 JSON / 解析失败 / 纯 JSON 零回归 / 未闭合 /
+> 有界原始产出 / 截断区分成因）；**零回归面**：形态 3（尾部动作）、形态 4（未闭合）判据逐字不变。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0212 行。

@@ -7421,6 +7421,36 @@ Requirement 承载其形状；结构不变量由 test_prompt_pinning builder 锚
 - **局限**：① 挂账**不改善** `1f93b88` 提交信息（其 message 未含 change 号）；② `prompts.md` 头部
   「本轮收紧」清单**不逐条**列全 10 条措辞 diff（正文镜像已逐字承载）。
 
+## ADR-0212：夹带的动作 JSON 归一为可见失败 —— 取代 ADR-0156 子情形语义（change 0222 / 台账 E159）
+
+**背景**：`loop` 解析器对「**已闭合**的动作 JSON + 尾随正文」（动作对象**不在**文末）旧实现整段当
+答复 ⇒ **静默零执行**（动作丢失、记成功、JSON 进转录与记忆）。`0166`/ADR-0156 只堵了「正文 + **尾部**
+JSON」；提词收紧（`1f93b88`）只靠模型守规矩，不构成防线（PA-01 现象①）。
+
+**D1 新形态 5：已闭合 + 非空 `tool_id` + 其后仍有正文 ⇒ 可见失败。** `_embedded_action_payload` 逐
+`{` 试 `raw_decode`，命中闭合 dict、`tool_id` 非空、`text[end:].strip()` 非空 ⇒ True；`_parse` 返失败态
+终止动作（`_UNPARSED_EMBEDDED`，带 `raw_output`）。与形态 3（收在文末 ⇒ 工具动作）、形态 4（未闭合 ⇒
+失败）**互斥**；次序「先 3 再 4 再 5」保尾部路径零回归。
+
+**D2 取代 ADR-0156 子情形语义（静默丢失 ≫ 一次可见失败）。** 旧语义「正文中间夹带一律按回复」动机是
+「防把解释协议时引用的 JSON 示例当执行」—— 但当模型确实**发出**完整动作协议又追加正文时，旧语义造成
+**静默零执行 + 记成功 + 污染持久面**。新语义归一为**可见失败**（可观测、可恢复、不进持久面）。**ADR-0156
+作为历史记录不改写**（沿 `0219`/`0221`）。
+
+**D3 只认含非空 `tool_id` 的对象。** 夹带**无** `tool_id` 的示例/配置 JSON 仍按回复（不误伤解释）。
+
+**D4 流式泄漏（现象②）不做。** `astream` 用首个非空 chunk 首字符判形态、判为回复后原样外发 ⇒ 漏尾随
+JSON。根治须放弃边出边流（产品级取舍），单独立项（PA-01 可选项 C）。
+
+- **规格**：`loop` **MODIFIED**「推理动作解析与失败可见」（四种→五种形态、改写中间夹带句、MODIFIED 1
+  Scenario、ADDED 1 Scenario；既有其余 7 Scenario 逐字保留）⇒ canonical loop **6 → 6** req（无新增）／
+  **81 → 82（+1）** scen。
+- **反证（实测）**：摘 `_parse` 形态 5 分支 ⇒ `test_loop_output_protocol` **3 failed, 17 passed**；
+  复原 ⇒ `md5sum` 相同、20 passed。
+- **局限**：① 正文中**引用含 `tool_id` 的动作 JSON 示例**的解释型回复被判失败（取代的固有代价）；
+  ② 流式泄漏未修（单独立项）；③ 多个动作对象取「任一命中即失败」，不辨「哪个是真动作」。
+- 来源另见 `doc/openspec/changes/archive/…-0222-loop-embedded-action/design.md`、`coding-plan/Pending-Arbitration.md` PA-01。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7627,3 +7657,4 @@ Requirement 承载其形状；结构不变量由 test_prompt_pinning builder 锚
 | ADR-0209 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0210 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0211 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
+| ADR-0212 | 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |

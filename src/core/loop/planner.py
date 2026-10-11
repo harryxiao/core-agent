@@ -31,6 +31,9 @@ _UNPARSED_TRUNCATED = (
     f"{_PARSE_FAILED}: 输出被 provider 截断（finish_reason=length），工具调用 JSON 未闭合"
 )
 _UNPARSED_UNCLOSED = f"{_PARSE_FAILED}: 疑似工具调用 JSON 未闭合（输出可能被截断或写坏）"
+# 夹带的动作 JSON（change 0222 / ADR-0212）：闭合的动作对象、其后仍有正文 ⇒ 可见失败
+# （取代 0166/ADR-0156 的「正文中间夹带一律按回复」—— 那会把整段当答复、静默丢动作）。
+_UNPARSED_EMBEDDED = f"{_PARSE_FAILED}: 动作 JSON 之后仍跟有正文（形态不可用，不执行也不当回复）"
 
 # 命中技能提示：**纯数据**快照（loop 不 import skills —— 架构红线），由组合根组装
 SkillHint = dict[str, str]  # {"skill_id": ..., "version": ..., "instructions": ...}
@@ -137,6 +140,30 @@ def _unclosed_action_payload(text: str) -> bool:
         return False
     start = text.rfind("{", 0, at)
     return start >= 0 and _never_closes(text, start)
+
+
+def _embedded_action_payload(text: str) -> bool:
+    """文本中是否存在**已闭合**的 ``"tool_id"`` 动作对象、且其后仍有正文（change 0222 / ADR-0212）。
+
+    与 ``_trailing_json_object``（只认**收在文末**的动作对象）互补：本判据命中「完整动作协议之后
+    又追加了正文」的形态 —— 旧实现把它整段当最终答复（静默零执行：动作丢失、记为成功、JSON 进
+    转录与记忆）。本判据把这类输出归一为**可见失败**，与 ``_unclosed_action_payload`` 同型
+    （承 change 0166/0170；**取代** ADR-0156「正文中间夹带一律按回复」的语义）。
+    """
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            obj, end = decoder.raw_decode(text, index)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        payload = cast("dict[str, Any]", obj)
+        if payload.get("tool_id") and text[end:].strip():
+            return True
+    return False
 
 
 class LLMPlanner:
@@ -434,7 +461,9 @@ class LLMPlanner:
 
     # ---- 解析 ----
 
-    def _parse(self, content: str, *, finish_reason: str = "") -> Action:
+    def _parse(  # noqa: PLR0911 — 五种形态 + 空/首字符分支，逐形态早返更清晰
+        self, content: str, *, finish_reason: str = ""
+    ) -> Action:
         text = content.strip()
         if not text:
             return Action(args={"reply": f"{_PARSE_FAILED}: 空响应"}, failed=True)
@@ -458,6 +487,12 @@ class LLMPlanner:
         if _unclosed_action_payload(text):
             reply = _UNPARSED_TRUNCATED if finish_reason == "length" else _UNPARSED_UNCLOSED
             return Action(args={"reply": reply}, raw_output=_bounded_raw(text), failed=True)
+        # 夹带的动作 JSON（change 0222 / ADR-0212）：闭合的动作对象之后仍有正文 ⇒ 可见失败
+        # （旧实现整段当答复 ⇒ 静默零执行；本判据**取代** ADR-0156「中间夹带一律按回复」）。
+        if _embedded_action_payload(text):
+            return Action(
+                args={"reply": _UNPARSED_EMBEDDED}, raw_output=_bounded_raw(text), failed=True
+            )
         return Action(args={"reply": text})
 
     def _from_tool_calls(self, calls: list[ToolCall]) -> Action:
