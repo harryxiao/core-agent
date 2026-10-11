@@ -96,6 +96,32 @@ class SkillMatcher:
 
 ---
 
+## 4.2 SopGate 接口
+
+SOP 发布前的**自动**质量门（decision adapter，同 `SkillMatcher` 的落域口径：**只吃文本、不 import
+skills**）。「该提炼产物是否可复用 / 可执行 / 非空泛」由 **noul** 原语作答 ⇒ 守红线「维度1
+技能库/SOP **全自动**」（**不**引入人工确认）。
+
+```python
+class SopGate:
+    def __call__(self, task: str, sop: str) -> bool:
+        """(任务文本, 提炼正文) → 是否放行；判定**故障 / 缺答案 ⇒ True**（fail-open）。"""
+
+def sop_gate_with(router: DecisionRouter) -> SopGate:
+    """把 noul 原语适配为 SOP 提炼器的质量门契约（skills 侧 `SopGate = Callable[[str,str],bool]`）。"""
+```
+
+- **载荷**：`state={"task": …}`、`questions["noul"]["action"]={"kind": "publish_sop", "sop": 正文}`
+  —— 门**必须**看到正文才判得动质量；该载荷进既有 `DecisionTrace` 观测面（与 `Guardrail` 把
+  `action` 交给 trace 同口径，未新增暴露面）。
+- **fail-open**：路由抛异常 / 答案缺 `noul` 键 ⇒ **放行**（门是**新增**的刹车，判定故障不得把
+  「一直正常发布」变成**静默不发布**）。**边界**：`DecisionRouter` 自身的降级链**不冒泡** ——
+  provider 不可达即回退主 LLM，其答案（含主 LLM 亦不可用时给出的 `False`）都算**有结论** ⇒
+  该情形门**拒**（每次拒有调用方告警留痕，故不静默）。
+- **用途**：`SopExtractor(gate=…)`（见 skills-interface §6）；未配置 JEV 时不构造（`gate=None`）。
+
+---
+
 ## 5. Guardrail 接口
 
 ```python

@@ -1,7 +1,8 @@
-"""技能语义匹配（SkillMatcher）。
+"""技能语义匹配（SkillMatcher）与 SOP 自动质量门（SopGate）。
 
 以 score 原语对**候选技能**逐条打分，供技能路由在词法无命中时兜底（0044）；
-经注入的 :class:`DecisionRouter` 统一决策，不内联 JEV 调用。
+以 noul 原语判定**提炼产物是否可发布**（0198）。均经注入的 :class:`DecisionRouter`
+统一决策，不内联 JEV 调用。
 
 score 原语只给「条目集单一分数」（无 per-item 分数，见 ADR-0047 决策 ③）→ K 个候选
 即 K 次 ``decide()``。候选以 **dict 快照**传入，本模块**不 import skills**
@@ -48,3 +49,36 @@ class SkillMatcher:
             return float(self._router.decide(request).answers["score"]["score"])
         except Exception:  # noqa: BLE001 — 逐候选跳过，坏答案不污染候选集
             return 0.0
+
+
+class SopGate:
+    """SOP 发布前的**自动**质量门（0198 / ADR-0188）：noul 布尔判断。
+
+    「该提炼产物是否可复用 / 可执行 / 非空泛」由判定原语作答 ⇒ 守红线「维度1 技能库/SOP
+    **全自动**」（**不**引入人工确认）。判定**故障 / 缺答案 ⇒ 放行**（fail-open）：
+    门是**新增**的刹车，不能让一次判定故障把「此前一直正常发布」的路径变成**静默不发布**。
+    """
+
+    def __init__(self, router: DecisionRouter) -> None:
+        self._router = router
+
+    def __call__(self, task: str, sop: str) -> bool:
+        """(任务文本, 提炼正文) → 是否放行；判定故障 / 缺答案 ⇒ True（fail-open）。"""
+        request = DecisionRequest(
+            primitive=DecisionPrimitive.NOUL,
+            state={"task": task},
+            questions={
+                "noul": {"primitive": "noul", "action": {"kind": "publish_sop", "sop": sop}}
+            },
+            options=None,
+            threshold=None,
+        )
+        try:
+            return bool(self._router.decide(request).answers["noul"]["noul"])
+        except Exception:  # noqa: BLE001 — 判定故障按放行（不阻断发布）
+            return True
+
+
+def sop_gate_with(router: DecisionRouter) -> SopGate:
+    """把 noul 原语适配为 SOP 提炼器的质量门契约（`(task, sop) -> bool`）。"""
+    return SopGate(router)

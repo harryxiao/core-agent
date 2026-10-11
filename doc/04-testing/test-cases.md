@@ -2170,3 +2170,28 @@ canonical `skills` scen **45 → 47**、req **10 不变**。`orchestration` 规�
 > **单轮路径零改动**：`namespace` 缺省 `""` ⇒ `_group_key` 缺省行为、`observe` 签名、per-turn 采集路径**逐字不变**。
 > **不新增密钥暴露面**：新路径消费的 `loop.steps.<trace_id>` 条目在**写入时已** `redact_secrets`（`loop/default.py:830`）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0187 行（续跑二次触发 / 只编排路径生效 / 门属 0198 等）。
+
+## 111. SOP 自动质量门（TC-SOP-GATE，change `0198`／ADR-0188，台账 E135）
+
+**行为规格锚点**：`skills/spec.md`「SOP 提炼（skill extraction）」**MODIFIED**（+「自动质量门」
+bullet（缺省不启用 / 未过 ⇒ 不入库 + 清组 + 只报组键 / 判定故障 ⇒ fail-open / **不得引入人工确认**）
++ Scenario「质量门未过不入库」/「未注入质量门时发布行为不变」）；canonical `skills` scen
+**47 → 49**、req **10 不变**。**judgment 规格零改动**（纯消费已规格化 `noul` 原语）。
+
+| 用例 | 锚点归属 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-SOP-GATE-01 | `skills` SOP 提炼（自动质量门） | `gate=lambda *_: False`，同组样本达阈值 ⇒ 提炼产出非空文本 | 技能库**不新增**技能；该组**清空**（下一条不立即提炼）；`warnings` 恰一条且**只含组键**、**不含**提炼正文（`tests/test_skills.py::test_sop_extract_quality_gate_rejects_group_cleared_and_key_only`） |
+| TC-SOP-GATE-02 | 同上（放行） | `gate` 记录入参并返回 `True` | 照常以 `active` 入库；门拿到的正是（任务文本, 提炼正文）（`...::test_sop_extract_quality_gate_passing_publishes`） |
+| TC-SOP-GATE-03 | 同上（缺省不变） | 未注入门（`gate=None`） | 发布路径**逐字一致**（`...::test_sop_extract_without_quality_gate_publishes_unchanged`） |
+| TC-SOP-GATE-04 | 同上（**fail-open**） | `gate` 抛 `RuntimeError` | **放行** —— 判定故障不阻断发布、也不中断主流程（`...::test_sop_extract_quality_gate_failure_fails_open`） |
+| TC-SOP-GATE-05 | `judgment` SOP 质量门（noul 消费） | 真 `DecisionRouter` + 桩 provider，noul 答案真 / 假 | 真 ⇒ 放行、假 ⇒ 拒；且载荷 `state={"task": …}`、`action={"kind":"publish_sop","sop": …}`（`tests/test_judgment.py::test_sop_gate_maps_noul_answer` / `...::test_sop_gate_rejects_when_noul_false`） |
+| TC-SOP-GATE-06 | 同上（fail-open 边界） | 桩**路由层**：`decide` 抛异常 / 返回缺 `noul` 的答案 | 两者均 ⇒ **放行**（`...::test_sop_gate_fails_open_on_judgment_fault` / `...::test_sop_gate_fails_open_on_missing_answer`） |
+
+> **反证（门禁非空过）**：变更前（`SopExtractor` 无 `gate` 参数）TC-SOP-GATE-01/04 红（拒绝无从表达）；
+> 变更前（`SopGate` 无守卫）05/06 的 fail-open 两条红（异常冒泡 / `KeyError` 冒泡）。
+> **实测订正**：初版 05/06 走「provider 抛错」路径 ⇒ **转红** —— `DecisionRouter` **不冒泡**异常而是
+> **回退主 LLM**（桩回退返回空串 ⇒ `_parse_yes("")` = `False` ⇒ 门**拒**）⇒ 用例改桩**路由层**，
+> 并把该边界写入 ADR-0188 决策③（**门只看路由层之外的故障**）。**若不做该用例，此误解不会被发现**。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2249 passed**（基线 **2241**，**+8**）。
+> **红线守持**：判定为**自动**（judgment noul），**无人工确认**；留痕**只报组键、绝不回显正文**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0188 行（拒即丢批 / 只挂任务级 / 路由降级算有结论等）。

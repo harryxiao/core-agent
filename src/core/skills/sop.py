@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import time
+import warnings
 from collections.abc import Callable, Sequence
 from hashlib import blake2b
 from pathlib import Path
@@ -30,6 +31,10 @@ from .router import terms_of
 
 # 提炼器契约：prompt → SOP 文本（同 ``memory.Summarizer`` 的「prompt → 文本」方向）
 SopWriter = Callable[[str], str]
+
+# 质量门契约：(任务文本, 提炼正文) → 是否放行（0198；由 judgment 侧 noul 提供实现，
+# skills **不** import judgment，同 ``SopWriter`` 依赖方向）
+SopGate = Callable[[str, str], bool]
 
 # 同类任务累计多少条成功轨迹才提炼一次（提炼后清空该组，下批重新累积）
 _SOP_MIN_SAMPLES = 3
@@ -64,7 +69,7 @@ def sop_writer_with(llm: Callable[[str], str]) -> SopWriter:
 class SopExtractor:
     """SOP 提炼器：归组累积成功轨迹 → 达阈值提炼一条技能入库（可逆）。"""
 
-    def __init__(  # noqa: PLR0913 — 构造注入面（提炼缝 + 阈值 + 落盘 + 命名空间）
+    def __init__(  # noqa: PLR0913 — 构造注入面（提炼缝 + 裁定面 + 阈值 + 落盘 + 命名空间）
         self,
         library: SkillLibrary,
         *,
@@ -73,12 +78,16 @@ class SopExtractor:
         effect_tracker: EffectTracker | None = None,
         path: Path | None = None,
         namespace: str = "",
+        gate: SopGate | None = None,
     ) -> None:
         self._library = library
         self._writer = writer
         self._threshold = threshold
         self._tracker = effect_tracker
         self._path = path
+        # 发布前自动质量门（0198 / ADR-0188）：缺省 None ⇒ 发布路径**逐字不变**；
+        # 由组合根以 judgment 的 noul 判定注入（skills 不知道 judgment 的存在）。
+        self._gate = gate
         # 观察面命名空间（change 0197）：空 ⇒ 单轮面（逐字不变）；非空 ⇒ 组键**前缀化**，
         # 与单轮面样本隔离（不复用单轮 task_types、落不同 skill_id）。隔离是**正确性**要求 ——
         # 两步序语义不同（任务级 = 子任务骨架；单轮 = 工具调用行），混组会产出浑浊 SOP。
@@ -103,6 +112,13 @@ class SopExtractor:
         text = self._writer(build_sop_prompt(task, [step for traj in group for step in traj]))
         if not text.strip():
             return None  # 空提炼不入库（不写半成品），样本保留待下轮
+        if self._gate is not None and not self._gate_ok(task, text):
+            # 门未过 ⇒ 不发布 + **清组**（免同批样本反复触发提炼调用）+ 留痕**只报组键**。
+            # 留痕绝不回显提炼正文（密钥红线）；未入库 ⇒ 无效应可回滚。
+            warnings.warn(f"SOP 质量门未过，不入库（组键 {key}）", stacklevel=2)
+            del self._samples[key]
+            self._persist()
+            return None
         skill = Skill(
             skill_id=_skill_id_for(key),
             description=f"SOP：{key}",
@@ -149,6 +165,17 @@ class SopExtractor:
                 if self._same_namespace(task_type) and terms & set(terms_of(task_type)):
                     return task_type  # 已是同命名空间键，直接复用
         return self._apply_namespace(" ".join(sorted(terms)))
+
+    def _gate_ok(self, task: str, text: str) -> bool:
+        """过质量门；**判定故障 ⇒ 放行**（fail-open：门是注入的可调用，故障不阻断发布，
+        也不中断主流程 —— 与规格「提炼失败 SHALL NOT 中断 Agent 主流程」同向）。"""
+        gate = self._gate
+        if gate is None:
+            return True
+        try:
+            return bool(gate(task, text))
+        except Exception:  # noqa: BLE001 — 门故障按放行
+            return True
 
     def _same_namespace(self, task_type: str) -> bool:
         """该 ``task_type`` 是否属本实例命名空间（空命名空间 ⇒ 只认无前缀键）。"""

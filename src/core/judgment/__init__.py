@@ -18,7 +18,7 @@ from .models import (
 )
 from .provider import JEVProvider
 from .router import DecisionRouter
-from .skills import SkillMatcher
+from .skills import SkillMatcher, SopGate, sop_gate_with
 
 __all__ = [
     "Compactor",
@@ -32,4 +32,6 @@ __all__ = [
     "JudgmentError",
     "JudgmentErrorCode",
     "SkillMatcher",
+    "SopGate",
+    "sop_gate_with",
 ]

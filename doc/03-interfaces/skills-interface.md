@@ -202,6 +202,9 @@ class SkillCrystallizer:
 # 提炼接缝：prompt → SOP 文本（skills 不 import LLM 抽象，组合根注入模型调用）
 SopWriter = Callable[[str], str]
 
+# 质量门契约：(任务文本, 提炼正文) → 是否放行（0198；skills 不 import judgment，同 SopWriter 方向）
+SopGate = Callable[[str, str], bool]
+
 def build_sop_prompt(task: str, steps: Sequence[str]) -> str:
     """把一组成功轨迹渲染为提炼 prompt（逐条节选，token 有界）。"""
 
@@ -228,11 +231,19 @@ class SopExtractor:
 | **阈值** | 同组累计达 3 条（`_SOP_MIN_SAMPLES`）提炼一次，提炼后**清空该组**（下批重新累积） |
 | **产物** | `skill_id="skills.sop.<组键 blake2b-8hex>"`（确定性、同组重复提炼覆盖同一条）、`description="SOP：<组键>"`、`task_types=[组键]`、`instructions=<提炼文本>`、`status="active"` |
 | **发布口径** | `active`（维度1 技能库层属低风险自动发布）；`draft` 对路由不可见 → 不置 draft |
+| **质量门**（0198） | 注入 `gate` 时：非空文本先过门，未过 ⇒ 不入库 + 清组 + 留痕（只报组键）；门故障 ⇒ 放行（fail-open）；`gate=None`（缺省）⇒ 发布路径逐字不变 |
 | **降级** | 未注入 writer：不累积、不提炼（零额外模型调用）；提炼文本为空：不入库、样本保留待下轮 |
 | **可逆** | 入库登记 `Effect(op="skills.register", undo=移除)`（`trace_id="skills.extract"`）；回滚即移除，重复回滚幂等 |
 
-已知缺口（如实记录）：无 judgment 质量门（质量门与版本迭代归 Phase 18 #8）。技能库与样本
+已知缺口（如实记录）：无 judgment 质量门 —— **已闭（change `0198`／ADR-0188，见下）**。技能库与样本
 已可落盘（0050，见 §7），缺省仍纯内存——生产由 `build_runtime` 注入路径。
+
+**自动质量门（change `0198`／ADR-0188）**：发布前可注入**自动**判定闸门，守红线「维度1 技能库/SOP
+**全自动**」（**不**引入人工确认）。契约 `SopGate = Callable[[str, str], bool]`（**纯 callable**，
+skills **不** import judgment —— 与 `SopWriter` 同方向）；实现由 `judgment.SopGate` / `sop_gate_with`
+以 **noul** 原语提供，组合根注入 `gate=sop_gate_with(router) if jev is not None else None`（**仅在
+JEV 配置时启用**，缺省 ⇒ 发布路径逐字不变）。门**未过** ⇒ 不入库 + **清空该组** + 留痕
+（`warnings.warn`，**只报组键、绝不回显正文**）；门**故障 / 缺答案** ⇒ **放行**（fail-open）。
 
 **任务级过程输入（change `0197`／ADR-0187）**：长会话任务（跨多轮编排）的**任务过程**是
 SOP 的另一观察面 —— 单轮面在长任务下**每轮各自成样本、任务文本逐轮不同 ⇒ 归组键漂移 ⇒

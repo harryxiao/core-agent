@@ -59,7 +59,14 @@ from core.evolution import (
 from core.evolution.author import patch_author_with
 from core.evolution.executor import EvolutionExecutor, source_reader
 from core.evolution.validator import review_with, run_gate_tests
-from core.judgment import Compactor, DecisionRouter, Guardrail, JEVProvider, SkillMatcher
+from core.judgment import (
+    Compactor,
+    DecisionRouter,
+    Guardrail,
+    JEVProvider,
+    SkillMatcher,
+    sop_gate_with,
+)
 from core.llm_provider import LLMProvider, LLMRequest, Message, StdlibLLMProvider
 from core.loop import Approver, DefaultLoop, LoopPlugin, TurnObserver
 from core.loop.constraints_adapter import build_constraints_chain
@@ -544,6 +551,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         effect_tracker=effect_tracker,
         path=_skill_state_path("sop-task-samples.json"),
         namespace="task",
+        # 自动质量门（0198 / ADR-0188）：noul 判定「该 SOP 是否可发布」；未过 ⇒ 不发布 + 清组
+        # + 留痕（只报组键）。沿仓内惯例——judgment 背书的接缝**仅在 JEV 配置时启用**
+        # （同 `Guardrail(router) if jev is not None else None`）⇒ 缺省无 JEV 时发布路径逐字不变。
+        gate=sop_gate_with(router) if jev is not None else None,
     )
     # 技能迭代接线（0045）：命中注入 + 执行反馈 + 迭代闭环。反馈落盘见上（0050 注入路径，
     # 0058 起同时供路由排序）；迭代复用 VersionManager 的灰度/A/B（0048 决策 ⑥ 记的

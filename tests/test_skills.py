@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import pytest
@@ -419,6 +420,70 @@ def test_sop_extract_task_namespace_isolates_from_per_turn_group() -> None:
     assert task_skill is not None
     assert task_skill.task_types == ["task::report summarize"], "任务级组键前缀化，不复用单轮组"
     assert task_skill.skill_id != turn_skill.skill_id, "任务级产物与单轮产物落不同 skill_id"
+
+
+# ---- 自动质量门（0198 / ADR-0188） ----
+
+
+def test_sop_extract_quality_gate_rejects_group_cleared_and_key_only() -> None:
+    """门未过 ⇒ 不入库 + **清组** + 留痕**只报组键**（绝不回显正文）。"""
+    lib = SkillLibrary()
+    body = "SOP 正文-不可复用"
+    extractor = SopExtractor(lib, writer=_writer(body), threshold=2, gate=lambda _task, _sop: False)
+
+    assert extractor.observe("task a", _steps()) is None, "未达阈值不提炼"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert extractor.observe("task a", _steps()) is None, "门未过 ⇒ 不入库"
+
+    assert lib.all_skills() == [], "门未过不发布"
+    assert len(caught) == 1, "门未过留有痕"
+    text = str(caught[0].message)
+    assert extractor._group_key("task a") in text, "留痕报组键"
+    assert body not in text, "留痕绝不回显提炼正文"
+    assert extractor.observe("task a", _steps()) is None, "组已清空 ⇒ 重新累积，不立即提炼"
+
+
+def test_sop_extract_quality_gate_passing_publishes() -> None:
+    """门放行 ⇒ 照常以 `active` 入库，且门拿到的正是（任务, 提炼正文）。"""
+    lib = SkillLibrary()
+    seen: list[tuple[str, str]] = []
+
+    def gate(task: str, sop: str) -> bool:
+        seen.append((task, sop))
+        return True
+
+    extractor = SopExtractor(lib, writer=_writer(), threshold=1, gate=gate)
+    skill = extractor.observe("task a", _steps())
+
+    assert skill is not None and skill.status == "active"
+    assert seen and seen[0][0] == "task a" and "1. 读输入" in seen[0][1], "门看到（任务, 正文）"
+
+
+def test_sop_extract_without_quality_gate_publishes_unchanged() -> None:
+    """未注入门 ⇒ 发布路径与引入质量门之前**逐字一致**。"""
+    lib = SkillLibrary()
+    extractor = SopExtractor(lib, writer=_writer(), threshold=1)
+
+    skill = extractor.observe("task a", _steps())
+
+    assert skill is not None and skill.status == "active"
+    assert lib.lookup(skill.skill_id) is skill
+
+
+def test_sop_extract_quality_gate_failure_fails_open() -> None:
+    """门判定**异常** ⇒ 放行（fail-open：判定故障不阻断发布，也不中断主流程）。"""
+
+    def gate(_task: str, _sop: str) -> bool:
+        raise RuntimeError("判定不可用")  # noqa: TRY003
+
+    lib = SkillLibrary()
+    extractor = SopExtractor(lib, writer=_writer(), threshold=1, gate=gate)
+
+    skill = extractor.observe("task a", _steps())
+
+    assert skill is not None, "判定故障不阻断发布"
+    assert skill.status == "active"
 
 
 # ---- 语义路由（0044） ----

@@ -28,6 +28,7 @@ from core.judgment import (
     JudgmentError,
     JudgmentErrorCode,
     SkillMatcher,
+    SopGate,
 )
 
 
@@ -337,3 +338,54 @@ def test_skill_matcher_without_candidates_makes_no_call() -> None:
     matcher = SkillMatcher(DecisionRouter(provider=provider, fallback=_FakeFallback()))
     assert matcher.score("任务", []) == {}
     assert provider.queries == []
+
+
+# ---- SOP 自动质量门（SopGate，0198 / ADR-0188） ----
+
+
+def _noul_gate(answer: dict[str, Any]) -> tuple[SopGate, _FakeProvider]:
+    """真 `DecisionRouter` + 预设 noul 答案的门（不触网）。"""
+    provider = _FakeProvider(answers=answer)
+    return SopGate(DecisionRouter(provider=provider, fallback=_FakeFallback())), provider
+
+
+class _RaisingRouter:
+    """判定路由替身：`decide` 直接抛（模拟路由层外故障）。"""
+
+    def decide(self, request: Any) -> Any:
+        raise RuntimeError("路由不可用")  # noqa: TRY003
+
+
+class _ShapelessRouter:
+    """判定路由替身：返回**结构不符**的结果（answers 缺 `noul` 键）。"""
+
+    def decide(self, request: Any) -> Any:
+        return SimpleNamespace(answers={"noul": {"probability": 0.5}})
+
+
+def test_sop_gate_maps_noul_answer() -> None:
+    gate, provider = _noul_gate({"noul": {"noul": True, "probability": 0.95}})
+
+    assert gate("整理会议纪要", "1. 读输入\n2. 输出摘要") is True, "noul=True ⇒ 放行"
+
+    state, questions = provider.queries[0]
+    assert state == {"task": "整理会议纪要"}, "判定上下文携带任务文本"
+    action = questions["noul"]["action"]
+    assert action["kind"] == "publish_sop" and "读输入" in action["sop"], "门看得到提炼正文"
+
+
+def test_sop_gate_rejects_when_noul_false() -> None:
+    gate, _ = _noul_gate({"noul": {"noul": False, "probability": 0.95}})
+    assert gate("任务", "空泛步骤") is False
+
+
+def test_sop_gate_fails_open_on_judgment_fault() -> None:
+    """判定**故障**（路由抛异常）⇒ 放行（fail-open：不阻断发布）。"""
+    gate = SopGate(_RaisingRouter())  # type: ignore[arg-type] — 替身契约：只用到 decide
+    assert gate("任务", "步骤") is True
+
+
+def test_sop_gate_fails_open_on_missing_answer() -> None:
+    """答案**结构不符**（缺 `noul` 键）⇒ 放行（fail-open）。"""
+    gate = SopGate(_ShapelessRouter())  # type: ignore[arg-type]
+    assert gate("任务", "步骤") is True

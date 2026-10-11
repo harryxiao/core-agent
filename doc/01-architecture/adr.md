@@ -6172,6 +6172,60 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
   ③ 门未过时的**样本清理**属 0198（ADR-0188），本 change 只做采集；
   ④ 任务级 SOP 的**行为质量**由 0199（ADR-0189）端到端锚定。
 
+## ADR-0188：SOP 自动质量门 —— 提炼产物的发布闸门（change 0198 / 账本 E135）
+
+**背景 —— 发布的另一半缺口：提炼即 `active`，无任何质量判定。** `SopExtractor.observe` 拿到
+非空文本后**直接**以 `status="active"` 发布（`skills/sop.py`）。`doc/03-interfaces/skills-interface.md`
+§6 早已明文登记该缺口「无 judgment 质量门」。长任务过程输入接通后（change `0197`），任务级
+样本文本更长、语义更不可控 ⇒ 「自动发布 + 无判定」的组合风险抬升：一次低质提炼会把**空泛 /
+不可复用**的文本以 `active` 身份推进**路由放行集**，且**被拒亦无留痕**。这是
+**Procedural = 提炼/验证/沉淀** 中段「**验证**」一环的落地；与 ADR-0187（同类姊妹条，改的是
+**采集面**）各改一条、互不耦合（P3 进化局部化与可归因）。
+
+- **决策 ①：门的形状 = 纯 callable（`SopGate = Callable[[str, str], bool]`）。** 沿用
+  `SopWriter = Callable[[str], str]` 的既有依赖方向：skills 定义**契约**、judgment 提供**实现**、
+  组合根**注入**（ADR-0048）。skills **不** import judgment（否则判定依赖下沉进技能层）。
+- **决策 ②：判定用 noul 原语，落 `judgment/skills.py`。** 门问的是「**是否**可发布」= 布尔
+  ⇒ `DecisionPrimitive.NOUL`，镜像 `Guardrail`（同「注入 `DecisionRouter` 统一决策、不内联 JEV」
+  的范式）。`state={"task": …}`、`questions["noul"]["action"]={"kind": "publish_sop", "sop": …}`
+  —— 门**必须**看到正文才能判质量；该载荷进既有 `DecisionTrace` 观测面（与 `Guardrail` 把
+  `action` 交给 trace **同口径**，未新增暴露面）。**judgment 规格零改动**：新用途、不新增能力。
+- **决策 ③：fail-open（**两层**守卫，各有职责）。** ① `SopGate` 守**自身**判定故障：路由抛异常 /
+  答案缺 `noul` 键 ⇒ 吞异常返回 `True`（镜像 `SkillMatcher._score_one`）；② `observe._gate_ok`
+  守**契约边界**：门是**任意注入**的可调用，其故障**不得**冒泡进 `_finalize` → 编排收尾回路
+  （规格明文「提炼失败 SHALL NOT 中断 Agent 主流程」）。**方向判据**：有结论 ⇒ 以结论为准（拒是
+  本 change 的收益面）；**无结论** ⇒ 放行（门是**新增**的刹车，不能让判定故障把「一直正常发布」
+  的路径变成**静默不发布**）。**已知边界**：`DecisionRouter` 自身**不冒泡**（provider 不可达即回退
+  主 LLM，其答案——含主 LLM 亦不可用时给出的 `False`——都是一次**有结论**）⇒ 该情形门**拒**，
+  每次拒有 `warnings.warn` 留痕故不静默；本 change **不**改路由语义。
+- **决策 ④：未过 ⇒ 不发布 + **清组** + 留痕**只报组键**。** 清组（`del self._samples[key]` +
+  `_persist()`）与「达阈值提炼后清组」同构 —— 否则同批已判不合格的样本会在下一条到达时**再触发
+  一次**提炼（+ 判定）调用；代价是需重攒（有意：宁可重攒，不做无效重判）。留痕
+  `warnings.warn(f"SOP 质量门未过，不入库（组键 {key}）")` **只报组键、绝不回显提炼正文**
+  （密钥红线从严）。未入库 ⇒ **无效应可回滚**（与「入库登记撤销」不冲突）。
+- **决策 ⑤：接线只在**任务级**实例，且**仅在 JEV 配置时**。** `gate=sop_gate_with(router) if
+  jev is not None else None` —— 沿仓内惯例（`Guardrail(router) if jev is not None else None`）。
+  **只挂任务级**：动因是 0197 新接的面（样本更长、语义更不可控），改单轮面属**超范围**（P3）。
+  缺省（无 JEV）⇒ `gate=None` ⇒ 发布路径**逐字不变**。
+- **决策 ⑥：规格落点。** `skills`「SOP 提炼（skill extraction）」**MODIFIED**：原文 + 既有 **9
+  Scenario 逐字保留**，新增 bullet「自动质量门」（缺省不启用 / 未过 ⇒ 不入库 + 清组 + 只报组键 /
+  判定故障 ⇒ fail-open / 不得引入人工确认）+ 2 Scenario。canonical scen **47 → 49**、req **10 不变**。
+- **落点**：`src/core/skills/sop.py`（`SopGate` 别名 / `gate` kwarg / `_gate_ok` / `observe` 门分支）；
+  `src/core/judgment/skills.py`（`SopGate` + `sop_gate_with`）；`src/core/judgment/__init__.py`（导出）；
+  `src/core/runtime.py`（任务级实例接线）。
+- **测试**（+8，2241 → **2249**）：`test_skills.py` 4（门拒 ⇒ 不入库 + 清组 + 留痕**只报组键**
+  （断言正文不在告警）/ 门放行 ⇒ `active` 入库且门看到（任务, 正文）/ 未注入门 ⇒ 发布不变 /
+  门抛异常 ⇒ fail-open 放行）；`test_judgment.py` 4（noul 真/假映射 + 载荷断言 / `decide` 抛 ⇒
+  放行 / 答案缺 `noul` ⇒ 放行）。
+- **实测订正（红测救回一个误判）**：初版两条 fail-open 用例走「provider 抛错」⇒ **转红** ——
+  `DecisionRouter` **不**冒泡异常而是**回退主 LLM**（桩回退返回空串 ⇒ `_parse_yes("")` = `False`
+  ⇒ 门**拒**）。⇒ 用例改为直接桩**路由层**，并把该边界写进决策 ③（**门只看路由层之外的故障**）。
+- **局限**：① **拒即丢批** —— 清组令该组**重新累积**（阈值重新计满才可能再提炼；若门持续拒，
+  该组永不产出技能，只见告警）—— 有意（宁无技能，不发布低质技能）；② **只挂任务级实例** ——
+  单轮面仍无门（承 0197 决策⑤ 的局部化口径，另议）；③ **判定面自身降级为「有结论」**（决策③
+  已知边界）；④ **门是单次布尔判定** —— 无评分阈值 / 无多次投票 / 无产物改写（属另立账）；
+  ⑤ **告警频率** —— 每次门未过一条（长任务高频被拒时会刷屏，属可观测性噪音）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6354,3 +6408,4 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
 | ADR-0185 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0186 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0187 | 02-modules/skills.md, 03-interfaces/skills-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0188 | 02-modules/skills.md, 03-interfaces/skills-interface.md, 03-interfaces/judgment-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
