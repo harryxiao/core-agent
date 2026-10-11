@@ -242,6 +242,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "loop.causal_links",
+        "--loop.causal-links",
+        "CORE_LOOP_CAUSAL_LINKS",
+        default=False,
+        map_to="loop.causal_links",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "loop.block_plan",
         "--loop.block-plan",
         "CORE_LOOP_BLOCK_PLAN",
@@ -576,6 +584,23 @@ class ConfigManager:
             return value
         return str(value).strip().lower() in _FEATURE_TRUE
 
+    def causal_links(self) -> bool:
+        """情景链时序相邻标注开关（缺省 ``False`` = 不标注；change 0202 / ADR-0192）。
+
+        **独立访问器**（同 `history_turns()` 先例）：与预算/上限无语义关系，且既有访问器的
+        返回 arity 被解包断言钉死，不合并。取值归一与 feature flag 同集；``loop`` 为**结构化段**
+        （非法取值已在校验期阻断启动，见 `_loop_errors`），故此处只做字符串归一。
+
+        关闭 ⇒ 失败条目标签**逐字不变**（无 ``after:`` 标注）；读取面 ``session_chain`` 恒可用。
+        """
+        if self._config is None:
+            return False
+        raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
+        value = raw.get("causal_links", False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in _FEATURE_TRUE
+
     def importance_gate(self) -> bool:
         """写入侧重要度闸门开关（缺省 ``False`` = 不评分；change 0181 / ADR-0172）。
 
@@ -885,6 +910,11 @@ def _loop_errors(raw: dict[str, Any]) -> list[str]:
         _FEATURE_TRUE | _FEATURE_FALSE
     ):
         errors.append(f"非法区块配比开关: loop.block_plan={value}（须为 true/false 之一）")
+    value = raw.get("causal_links", False)
+    if not isinstance(value, bool) and str(value).strip().lower() not in (
+        _FEATURE_TRUE | _FEATURE_FALSE
+    ):
+        errors.append(f"非法情景链开关: loop.causal_links={value}（须为 true/false 之一）")
     return errors
 
 

@@ -2280,3 +2280,32 @@ bullet（缺省不启用 / 未过 ⇒ 不入库 + 清组 + 只报组键 / 判定
 > `plan_blocks`（五区块）—— 两个纯函数各自独立，本 change **不**重构、**不**统一二者口径。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0191 行（四块配比无行为 / 不含
 > `_window_plan` 的 `// 2` / 块内不做二级分配 / 回归锚订正）。
+
+## 115. 情景链（TC-CHAIN，change `0202`／ADR-0192，台账 E139）
+
+**行为规格锚点**：`memory/spec.md`「情景链（时序相邻标注）」（**ADDED**）。
+三面：**标注**（缺省关 ⇒ 逐字不变 / 开 ⇒ 时序相邻）、**不遮蔽**（新标签不得改变该条目在压实材料
+面与事实注入面上的去留）、**只读链**（`session_chain` 按序 / 跨会话不混 / 零效应）。
+
+| 用例 | 锚点 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-CHAIN-01 | **逐字锚**：缺省关 ⇒ 标签逐字不变 | `DefaultLoop(memory=store)`（**缺省** `causal_links=False`）连续两轮失败；`store.audit()` 取条目标签 | `loop.failure.t1` / `t2` 的 `tags` **恰为** `["loop","failure"]` ⇒ 无任何 `after:` 值（`tests/test_loop_causal_link.py::test_disabled_leaves_failure_tags_verbatim`） |
+| TC-CHAIN-02 | 开 ⇒ 标注**上一已记忆轮** | `DefaultLoop(memory=store, causal_links=True)` 同上前两轮 | `t1` 无标注（首轮无前序）；`t2 == ["loop","failure","after:t1"]` ⇒ 语义是**时序相邻**（`...::test_enabled_marks_temporal_adjacency`） |
+| TC-CHAIN-03 | 前序**按会话**维护 | `s1:a1` → `s2:b1` → `s1:a2`（开） | `a2` 标 `after:a1`（**不**取更近的 `b1`）；`b1` 无标注 ⇒ 跨会话**不混**（`...::test_chain_does_not_cross_sessions`） |
+| TC-CHAIN-04 | 不遮蔽①（**压实材料面**） | 同 TC-CHAIN-02 后取 `store._episodic_groups("s1")`（材料源**唯一入口**） | `loop.failure.t2`（含 `after:`）**不在**材料内（`failure` 标签仍在）；`loop.t2`（轨迹条目）**在** ⇒ 新标签未扰动材料面（`...::test_marked_failure_still_excluded_from_compaction_material`） |
+| TC-CHAIN-05 | 不遮蔽②（**事实注入面**） | 真 `DynamicAssembler(memory=store, exclude_fact_tags=frozenset({"steps"}))` 装配 ⇒ 取 `pack.facts` | 两条失败摘要**仍进**（`sum("失败：" in c) == 2`）；**对照**：纯步序条目（内容**恰为**步序串）仍被挡 ⇒ 去留未被新标签改变（`...::test_marked_failure_still_reaches_the_fact_face`） |
+| TC-CHAIN-06 | 只读链：序 / 隔离 / **零效应** | `s1:a1` → `s2:b1` → `s1:a2`（开）后 `store.session_chain("s1")` | `[trace_id] == ["a1","a1","a2","a2"]`（只含 s1、按 `ts` 序）、`ts` 升序、`[failed] == [False,True,False,True]`、末环 `after == "a1"`；**前后** `reuse_count` 与 `EffectTracker.audit(tid)` 长度**均不变** ⇒ 零读零效应（`...::test_session_chain_ordered_isolated_and_zero_effect`） |
+| TC-CHAIN-07 | 缺省全量 / 未命中为空 | `store.session_chain()`（无过滤）与 `store.session_chain("nope")` | 前者含两会话全部四环（`sorted(trace_id) == ["a1","a1","b1","b1"]`）；后者 `== []`（`...::test_session_chain_without_filter_returns_all_and_empty_is_empty`） |
+
+> **反证（逐字锚非恒真，实测记录）**：令标注**忽略开关**（`if previous:` 去掉 `self._causal_links`）
+> ⇒ TC-CHAIN-01 **红**（`t2` 实得 `["loop","failure","after:t1"]`，断言逐字不变失败）；复原 ⇒ 7 green。
+> **实测 1 red**。
+> **实测订正（本批踩到并留痕）**：TC-CHAIN-05 的**对照**断言初版写成「事实面**不含**步序文本子串」
+> ⇒ **转红** —— 失败摘要 `failure_digest(trajectory, steps, …)` **自身内嵌**步序文本，故子串判定
+> **恒假**。正解是按**整条内容相等**判定「纯步序条目是否被挡」（摘要是多行串，不会整条相等）。
+> 该订正已体现进用例与规格 Scenario 的**不遮蔽**语义。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2270 passed**（基线 **2263**，**+7**，与批次预估一致）。
+> **不重复**：`tests/test_loop_failure_memory.py`（change `0179`）覆盖**失败条目本身**的沉淀与
+> `kind="episodic"`；本 change 覆盖的**只是**该条目的 `tags` 增补与**读取面** —— 前者**不重写**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0192 行（前序表为进程内状态 ⇒ 跨进程 /
+> 三路 loop 断链 / 标注只说相邻不说因果 / `session_chain` 未进 Protocol / `Diagnoser` 前驱接线遗留）。

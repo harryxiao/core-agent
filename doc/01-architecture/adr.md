@@ -6367,6 +6367,59 @@ change `0182` / ADR-0173 正是把**轮内步数**误读作**对话轮数**的�
   `_system_prompt` 传了什么 ⇒ 真正的逐字锚必须是**新的**（桩装配器捕获 `build(budget=)`），
   已补并反证（忽略开关 ⇒ 该锚转红）。
 
+## ADR-0192：情景链 —— 时序相邻标注 + 零效应只读链（change 0202 / 账本 E139）
+
+**背景 —— 情景记忆只有「点」没有「线」。** 每轮沉淀的 L2 条目共享 `trace_id` ⇒ 只有**同轮隐式**
+关联，**跨轮关系为零**；全仓也没有按会话重建**时序链**的读取面。外来蓝图
+（`memory-4-layer-architecture.md` §2）的情景维要求「相邻事件可追溯」。
+
+**先做诚实评估 —— 不做 LLM 因果推断。** 仓内**不存在**确定性的**因果**事实：没有任何环节记录
+「第 N+1 轮失败是因为第 N 轮做了什么」。推导它**只能**靠 LLM 推断，而 LLM 推断：**不可测正确性**
+（只能测形状）、**非可逆**（需新增写路径）、**新增脱敏面**（模型生成的失败归因散文正是密钥易泄处，
+参 `diagnoser.py:_MAX_NOTE_CHARS`），且 `Diagnoser` 现按 `plugin_id` 归因、**时序前驱不增加信号**。
+⇒ 沿 ADR-0041 同理由拒绝先例，**不做**。只做**确定性**两件事。
+
+- **决策 ①：标注只说「时序相邻」，不说「因果」。** `loop.failure.<trace_id>` 的 `tags` 追加
+  `after:<前一已记忆轮 trace>`。命名取机制本名而非 `caused_by:`（沿 ADR-0173「按机制本名命名」
+  先例），并把「因果**不作**推断」写成规格的 **SHALL NOT** —— 一条只表时序相邻的断言**不得**被
+  读作归因。
+- **决策 ②：标注挂在**既有失败条目**上（标签），不新开条目、不改 `MemoryEntry` 字段。**
+  ⓐ 独立条目 `loop.cause.<tid>`：否 —— 每次失败多一次写入换一个字符串，且会作为 `episodic` L2
+  进入压实材料；ⓑ 新增 `MemoryEntry` 字段：否 —— `MemoryEntry` 是跨 `MemoryBackend` 的**线上
+  形状**，`FileBackend` 持久化需迁移；ⓒ **标签**：采纳 —— 同 `id` 幂等、`forget` 的 L2→L4 迁移
+  原样存活、零 schema 变更，且**消费面本就是标签驱动**（`_PRESERVE_TAGS` / `exclude_fact_tags` /
+  `assembler._shares_any_tag`）。
+- **决策 ③：前序取自进程内实例状态，刻意不做记忆读。** `DefaultLoop._last_trace: dict[str, str]`
+  （按 `session_id` 键），在 `remember` **末尾**更新（登记的是**上一**轮 ⇒「上一已记忆轮」口径
+  由此钉死）；`remember` **只有一个调用点** ⇒ 全流程**一个维护点**。**不做记忆读**：`MemoryStore.read`
+  会强化 `reuse_count`（**新副作用**），`MemoryBackend.search("")` 返回**写序**而非 `ts` 序 ⇒
+  零新 I/O、零新效应。
+- **决策 ④：只读链 `session_chain` 恒可用，且零效应。** `MemoryStore.session_chain(session_id="")`
+  → `list[ChainNode]`（`entry_id / trace_id / ts / failed / after`，**只携带链路语义、不含正文**），
+  按 `ts` 主序重建该会话情景链。刻意走 `_all_entries()`（冷 + 热）而**非** `read()` ⇒ 零 `_reinforce`、
+  零效应。**未**并入 `MemoryStore` Protocol —— 与 `repair_stale_key_facts` 同处置（读面为具体类
+  方法，Protocol 收窄）。
+- **决策 ⑤：开关在「写入面」，读取面不受门控。** 构造参 `DefaultLoop(causal_links=False)` +
+  配置 `loop.causal_links`（缺省 `False` + 独立访问器 + ConfigSpec 行 + `_loop_errors` 校验期拒绝
+  非法字面量）。`False` ⇒ **无 `after:` 标签** ⇒ 失败条目**逐字不变**；而 `_last_trace` 的维护是
+  零 I/O 零效应 ⇒ **不受门控**（会话中途开启亦立即可用），门控只覆盖标签的**写入**。
+
+**规格影响**：`memory` **ADDED** 一条要求「情景链（时序相邻标注）」（5 Scenario）；既有 13 条
+Requirement **逐字保留**（不做 MODIFIED）。**两处必断言的不遮蔽**：`failure` 标签仍在 ⇒
+`_episodic_groups`（压实材料唯一来源）**仍排除**该条目；无 `steps` 标签 ⇒ 失败条目**仍进**「相关
+事实」注入面 —— 新标签**不得**意外遮蔽任一面。
+
+- **落点**：`src/core/loop/default.py`、`src/core/memory/store.py`（`ChainNode` / `session_chain`）、
+  `src/core/memory/__init__.py`（导出）、`src/core/configuration/manager.py`、`src/core/runtime.py`、
+  `tests/test_loop_causal_link.py`（新，7 用例）、`doc/04-testing/test-cases.md` §115、
+  `coding-plan/known-risk.md`、`doc/02-modules/memory.md`。
+- **测试**：+7（2263 → **2270**，与批次预估一致）。
+- **局限**：① **前序表是进程内实例状态** —— 跨进程重启、以及三路 loop 实例（main/sub/beast）
+  之间**链路会断**（只读面以 `ts` 为主序、写序为次序，如实登记）；② **标注只说「相邻」不说
+  「因果」** —— 不向 `Diagnoser` 提供前驱，时间相邻**不**构成归因；③ **`session_chain` 未进
+  Protocol**（读面为具体类方法）；④ **`Diagnoser` 前驱接线未做** —— 需对 `evolution/spec.md`
+  「对比诊断」做约 36 行逐字 MODIFIED（本批最高风险规格编辑）⇒ 登记为遗留，不并入本 change。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6553,3 +6606,4 @@ change `0182` / ADR-0173 正是把**轮内步数**误读作**对话轮数**的�
 | ADR-0189 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0190 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0191 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/context.md |
+| ADR-0192 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md |

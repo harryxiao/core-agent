@@ -290,6 +290,10 @@ class DefaultLoop(Plugin):
         history_turns: int = 20,
         maintenance_interval: float = _MAINTENANCE_INTERVAL_S,
         clock: Callable[[], float] | None = None,
+        # 情景链的**时序相邻标注**开关（change 0202 / ADR-0192，缺省**关**）。开启 ⇒ 轮级失败
+        # 条目的 `tags` 增 `after:<同会话上一已记忆轮>`；关闭 ⇒ 失败条目**逐字不变**。
+        # 前序取自**进程内**按会话表 `_last_trace`（零记忆读 ⇒ 零新副作用）。
+        causal_links: bool = False,
     ) -> None:
         self._planner = planner
         self._memory = memory
@@ -318,6 +322,11 @@ class DefaultLoop(Plugin):
         self._maintenance_interval = maintenance_interval
         self._clock = clock if clock is not None else time.monotonic
         self._last_maintenance = self._clock()
+        self._causal_links = causal_links
+        # 前一**已记忆**轮的 trace（按会话）；change 0202 / ADR-0192。**进程内实例状态** ⇒
+        # 跨进程重启、以及三路 loop 实例之间**链路会断**（已登记为局限）。零 I/O、零效应，
+        # 故**不受开关门控**（开关只门控标注的**写入**）⇒ 会话中途开启亦立即可用。
+        self._last_trace: dict[str, str] = {}
 
     # ---- Plugin 生命周期 ----
 
@@ -805,6 +814,11 @@ class DefaultLoop(Plugin):
         （``tags=["loop","failure"]``）承载轮级失败（任务 + ``reason`` + 失败轮次与失败动作）；
         该标签使压实材料**排除**它（见 ``memory.store._PRESERVE_TAGS``）⇒ 失败证据不被摘成中性
         总结、不被迁 L4。三个参数缺省 ⇒ 行为与变更前**逐字一致**（成功轮不写该条目）。
+
+        情景链的**时序相邻标注**（change 0202 / ADR-0192）：``causal_links`` 开启且本会话有
+        前一**已记忆**轮时，失败条目 ``tags`` 追加 ``after:<前序 trace_id>`` —— 语义是**时序相邻**、
+        **不是因果**（故用机制本名而非 ``caused_by:``）。前序取自 ``self._last_trace``（**零记忆读**
+        ⇒ 零新副作用），并在本方法末尾登记本轮 ⇒ 全流程**一个维护点**。缺省关 ⇒ 标签逐字不变。
         """
         if not trajectory or self._memory is None:
             return
@@ -838,19 +852,26 @@ class DefaultLoop(Plugin):
                 ),
             )
         if failed:
+            tags = ["loop", "failure"]
+            previous = self._last_trace.get(session_id, "")
+            if self._causal_links and previous:
+                tags.append(f"after:{previous}")
             self._memory.write(
                 "L2",
                 MemoryEntry(
                     id=f"loop.failure.{trace_id}",
                     layer="L2",
                     content=failure_digest(trajectory, steps, reason=reason, task=task),
-                    tags=["loop", "failure"],
+                    tags=tags,
                     source=self._source,
                     trace_id=trace_id,
                     session_id=session_id,
                     kind="episodic",
                 ),
             )
+        # 前序登记在**末尾**（标注用的是**上一**轮）⇒ 「上一已记忆轮」口径由此钉死；
+        # 零 I/O 零效应，故不受 `causal_links` 门控（只有标签的**写入**受门控）。
+        self._last_trace[session_id] = trace_id
 
     def rollback(self, trace_id: str) -> None:
         if self._tools is not None:

@@ -30,7 +30,7 @@ from .extract import (
 from .importance import build_score_prompt, score_with
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
 from .relevance import rank, recency_decay, relevance
-from .store import ImportanceScorer, MemoryStore, RepairReport
+from .store import ChainNode, ImportanceScorer, MemoryStore, RepairReport
 from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter, build_prompt, summarize_with
 from .transcript import TranscriptStore
 
@@ -53,6 +53,7 @@ __all__ = [
     "MemoryStore",
     "PluginCandidate",
     "REDACTED",
+    "ChainNode",
     "RepairReport",
     "Summarizer",
     "SummaryPromoter",

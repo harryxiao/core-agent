@@ -733,6 +733,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     # 上下文区块配比（change 0201 / ADR-0191）：与上面的 `max_tokens` 同型 —— 算一次，注入
     # **四个 loop** 的全部 planner。缺省**关** ⇒ 注入预算沿用字面量 ⇒ 提示词逐字不变。
     block_plan = config.block_plan()
+    causal_links = config.causal_links()
     planner = LLMPlanner(
         llm,
         model=app.llm.model,
@@ -828,6 +829,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     transcript = TranscriptStore(_skill_state_path("messages.jsonl"))
 
     loop = DefaultLoop(
+        causal_links=causal_links,
         planner=planner,
         memory=memory,
         tools=tools,
@@ -874,6 +876,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         return cast(
             LoopPlugin,
             DefaultLoop(
+                causal_links=causal_links,
                 planner=sub_planner,
                 memory=memory,
                 tools=provider,
@@ -916,6 +919,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         return cast(
             LoopPlugin,
             DefaultLoop(
+                causal_links=causal_links,
                 planner=beast_planner,
                 memory=memory,
                 tools=provider,
@@ -1120,6 +1124,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             return cast(
                 LoopPlugin,
                 DefaultLoop(
+                    causal_links=causal_links,
                     planner=LLMPlanner(
                         llm,
                         model=app.llm.model,

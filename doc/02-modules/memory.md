@@ -241,6 +241,30 @@ MemoryStore
 - MVP：文件后端（`memory/*.md` 与 `memory/*.jsonl`），可审计、无外部依赖。
 - 未来：向量库后端（同一 `MemoryStore` 接口，`read` 换检索实现）。
 
+### 3.8 情景链（时序相邻标注与只读链，change `0202`／ADR-0192／账本 E139）
+
+跨轮关系面此前为零（每轮三条目共享 `trace_id` ⇒ 只有同轮隐式关联）。本 change 补两项**确定性**能力，
+**不做** LLM 因果推断（仓内无确定性因果事实；推断它不可测正确性 / 非可逆 / 新增脱敏面，且 `Diagnoser`
+现按 `plugin_id` 归因、时序前驱不增信号 ⇒ 沿 ADR-0041 同理由拒绝）。
+
+- **标注（写入面，缺省关）**：`loop.failure.<trace_id>` 的 `tags` 追加 `after:<前一已记忆轮 trace>`。
+  **语义是同会话内的时序相邻、不是因果**（故用机制本名而非 `caused_by:`；「因果不作推断」在规格里是
+  **SHALL NOT**）。前序取自 `DefaultLoop._last_trace: dict[str, str]`（按 `session_id`），在 `remember`
+  **末尾**登记（登记的是**上一**轮 ⇒「上一已记忆轮」口径由此钉死；`remember` 只有**一个调用点**）。
+  **刻意不做记忆读**：`read` 会强化 `reuse_count`（新副作用），`search("")` 返回**写序**而非 `ts` 序。
+  开关 `loop.causal_links`（构造参 + 配置，缺省 `False`）⇒ 关时失败条目 `tags` **逐字不变**；
+  `_last_trace` 的维护零 I/O 零效应 ⇒ **不受门控**（会话中途开启亦立即可用）。
+- **不遮蔽（两处必断言）**：`failure` 标签仍在 ⇒ `_episodic_groups`（材料源唯一入口）**仍排除**
+  该条目；无 `steps` 标签 ⇒ 失败条目**仍进**「相关事实」注入面。新标签**不得**意外遮蔽任一面。
+- **只读链（读取面，恒可用）**：`MemoryStore.session_chain(session_id="") -> list[ChainNode]` —— 按
+  `ts` **主序**（同 `ts` 保写入序）重建该会话情景链；`ChainNode` 只携带链路语义
+  （`entry_id / trace_id / ts / failed / after`），**不含正文**。走 `_all_entries()`（冷 + 热）而**非**
+  `read()` ⇒ 零 `_reinforce`、零效应。**未**并入 `MemoryStore` Protocol（与 `repair_stale_key_facts`
+  同处置 —— 读面为具体类方法）。
+- **已知局限**：前序表是**进程内实例状态** ⇒ 跨进程重启、以及三路 loop 实例（main/sub/beast）之间
+  **链路会断**；`Diagnoser(predecessor_lookup=…)` 接线**未做**（需对 `evolution/spec.md` 做约 36 行
+  逐字 MODIFIED）⇒ 登记为遗留。详见 `coding-plan/known-risk.md` §3 ADR-0192 行。
+
 ---
 
 ## 4. 记忆写入规范（"无行动不记忆"的落地）

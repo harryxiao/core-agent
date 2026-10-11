@@ -102,6 +102,25 @@ class RepairReport:
     dry_run: bool = False
 
 
+@dataclass(frozen=True)
+class ChainNode:
+    """情景链上的一环（**零效应只读快照**；change 0202 / ADR-0192）。
+
+    只携带链路语义（谁 / 何时 / 是否失败 / 前序），**不含**正文 —— 需要正文者按 `entry_id`
+    另行取用（本类不得成为第二条注入通道）。
+    """
+
+    entry_id: str  # 条目 id
+    trace_id: str  # 所属轮
+    ts: float  # 落库时间戳（链的**主序**）
+    failed: bool  # 轮级失败条目（`tags` 含 `failure`）
+    after: str  # 时序相邻的前序 `trace_id`（无标注则空串）
+
+
+# 时序相邻标注的标签前缀（change 0202 / ADR-0192）——机制本名，**非**因果措辞。
+_AFTER_PREFIX = "after:"
+
+
 def _decay_score(entry: MemoryEntry) -> float:
     """遗忘评分：新鲜度 × 复用频次 × 重要度（三者皆低才归档）。
 
@@ -407,6 +426,41 @@ class MemoryStore:
         （同 `summarize_slice`）。零写入 / 零效应、不变更条目字段；供上层取数注入。
         """
         return self._entry_by_id(f"compaction.mid.{session_id or 'default'}")
+
+    def session_chain(self, session_id: str = "") -> list[ChainNode]:
+        """按会话重建**情景链**（**零效应只读**；change 0202 / ADR-0192）。
+
+        只收**情景**条目（`kind == "episodic"` 且 `layer == "L2"`）—— 语义条目（关键事实 /
+        关系）不在链上；`session_id` 缺省空串 ⇒ 不按会话过滤。
+
+        次序：`ts` **主序**、写入序**次序**（`list.sort` 稳定 ⇒ `ts` 相等时保 `_all_entries`
+        的写入序；后端检索返回**写序**而非 `ts` 序，故此处必须显式排序）。
+
+        走 `_all_entries()`（冷区 + 热区）而**非** `read()` ⇒ 不触发 `_reinforce` ⇒
+        **不改 `reuse_count`、不记任何效应**。
+        """
+        nodes = [
+            ChainNode(
+                entry_id=entry.id,
+                trace_id=entry.trace_id,
+                ts=entry.ts,
+                failed="failure" in entry.tags,
+                after=next(
+                    (
+                        tag[len(_AFTER_PREFIX) :]
+                        for tag in entry.tags
+                        if tag.startswith(_AFTER_PREFIX)
+                    ),
+                    "",
+                ),
+            )
+            for entry in self._all_entries()
+            if entry.kind == "episodic"
+            and entry.layer == "L2"
+            and (not session_id or entry.session_id == session_id)
+        ]
+        nodes.sort(key=lambda node: node.ts)
+        return nodes
 
     def compact(
         self, query: str = "", budget: int = 4096, *, session_id: str = ""
