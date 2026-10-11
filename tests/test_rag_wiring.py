@@ -17,7 +17,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.configuration import ConfigManager
+from core.configuration import ConfigManager, config_specs
+from core.context import InfoMap
 from core.entry import main
 from core.llm_provider import (
     Embedding,
@@ -28,7 +29,7 @@ from core.llm_provider import (
     TokenUsage,
 )
 from core.rag import Chunk, HashEmbedder, RagService, SqliteVectorStore
-from core.runtime import build_runtime
+from core.runtime import _RAG_INFO_MAP_MAX_DOCS, _index_rag_docs, build_runtime
 
 
 class _StubProvider(LLMProvider):
@@ -64,7 +65,7 @@ class _StubProvider(LLMProvider):
         return [Embedding(vector=[1.0, 0.0]) for _ in texts]
 
 
-def _write_config(tmp_path, *, embedding_model: str = "") -> str:
+def _write_config(tmp_path, *, embedding_model: str = "", extra: str = "") -> str:
     cfg = tmp_path / "config.yaml"
     embed_line = f"  embedding_model: {embedding_model}\n" if embedding_model else ""
     cfg.write_text(
@@ -72,7 +73,7 @@ def _write_config(tmp_path, *, embedding_model: str = "") -> str:
         "  provider: litellm\n"
         "  model: test-model\n"
         "  endpoint: https://example.com/v1\n"
-        "  api_key: ${OPENAI_API_KEY}\n" + embed_line,
+        "  api_key: ${OPENAI_API_KEY}\n" + embed_line + extra,
         encoding="utf-8",
     )
     return str(cfg)
@@ -175,3 +176,79 @@ def test_cli_rag_search_rejects_dim_mismatch_with_hint(offline, capsys) -> None:
     err = capsys.readouterr().err
     assert "INDEX_CORRUPT" in err
     assert "重建索引" in err
+
+
+# ---- InfoMap × rag（change 0210 / ADR-0200）----
+
+_FLAG_ON = "context:\n  rag_info_map: true\n"
+_DOC_12 = "abcdefghijkl"  # 12 字符 ⇒ chunk_size=1 ⇒ 块 id `d#0`…`d#11`
+
+
+def _seed(store: SqliteVectorStore, doc_id: str, content: str) -> None:
+    RagService(HashEmbedder(), store, chunk_size=64).ingest(doc_id, content)
+
+
+def _rag_pointer_doc_ids(runtime) -> set[str]:
+    """装配器目录层里的文档 id 集合（经主 loop 的真 planner 取装配器）。"""
+    assembler = runtime.loop._planner._assembler  # noqa: SLF001
+    return {p["doc_id"] for p in assembler.build("部署", "reason", budget=2048).pointers}
+
+
+def test_chunk_texts_reconstructs_source_in_chunk_order() -> None:
+    """>10 块按**块序号**拼回 == 原文 —— 按 `chunk_id` 字典序拼会踩 `#10 < #2` 错序。"""
+    store = SqliteVectorStore(_index_path())
+    RagService(HashEmbedder(), store, chunk_size=1).ingest("d", _DOC_12)
+
+    assert store.document_ids() == ["d"]
+    assert "".join(store.chunk_texts("d")) == _DOC_12  # 字典序 ⇒ "abklcdefghij" ≠ 原文
+
+
+def test_vector_store_accessors_are_fail_soft_on_empty() -> None:
+    """空库 ⇒ 两访问器返空（不抛）；未登记的 doc_id ⇒ 块文本空。"""
+    store = SqliteVectorStore(_index_path())
+    assert store.document_ids() == []
+    assert store.chunk_texts("absent") == []
+
+
+def test_index_rag_docs_caps_documents_and_skips_core_profile() -> None:
+    """20 档 ⇒ 只上限个进地图；`core-profile` 跳过（真源已由 profile 分支建索引）。"""
+    store = SqliteVectorStore(_index_path())
+    for i in range(20):
+        _seed(store, f"doc{i:02d}", f"# 标题{i}\n内容{i}")
+    _seed(store, "core-profile", "# 顶\n真源")
+
+    info_map = InfoMap()
+    _index_rag_docs(info_map, store)
+
+    docs = info_map.documents()
+    assert "core-profile" not in docs
+    assert len(docs) == _RAG_INFO_MAP_MAX_DOCS  # noqa: PLR2004 — 上限是硬约束
+
+
+def test_spec_declares_rag_info_map_key() -> None:
+    specs = {spec.key: spec for spec in config_specs()}
+    assert "context.rag_info_map" in specs
+
+
+def test_rag_info_map_flag_on_indexes_rag_documents(offline, tmp_path) -> None:
+    """旗开 ⇒ 目录层 `pointers` 含 rag 库文档（从块拼回原文上建目录索引）。"""
+    _seed(SqliteVectorStore(_index_path()), "kb-deploy", "# 部署\n先构建镜像，再滚动发布")
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path, extra=_FLAG_ON)))
+
+    assert "kb-deploy" in _rag_pointer_doc_ids(runtime)
+
+
+def test_rag_info_map_flag_off_leaves_catalog_unchanged(offline, tmp_path) -> None:
+    """缺省关（零回归锚）⇒ rag 文档**不进**目录层。"""
+    _seed(SqliteVectorStore(_index_path()), "kb-deploy", "# 部署\n先构建镜像，再滚动发布")
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+
+    assert "kb-deploy" not in _rag_pointer_doc_ids(runtime)
+
+
+def test_rag_info_map_illegal_value_normalizes_to_off(offline, tmp_path) -> None:
+    """`context` 非结构化段 ⇒ 集合外取值归一为**关闭**（不阻断启动）。"""
+    runtime = build_runtime(
+        ConfigManager(yaml_path=_write_config(tmp_path, extra="context:\n  rag_info_map: maybe\n"))
+    )
+    assert runtime.config.rag_info_map() is False

@@ -58,6 +58,15 @@ ContextBuilder（L3 输入侧）
 - 把千页级业务文档转化为**轻量化目录索引**（章节/要点/位置指针），不把全文塞入窗口。
 - 模型按需跳转获取细节：先用地图定位，再 fetch 对应片段。
 - 地图更新策略：文档变更时增量重建（hash 比对）。
+- **文档来源（change `0210`／ADR-0200）**：生产有**两处** —— ① 项目信息段（Core.md，组合根从**真源**
+  `index`，change `0140`）；② **rag 库已索引文档**（旗 `context.rag_info_map`，缺省 `False`）。rag 文档
+  经 `index`（产出目录指针）登记，原文由 `VectorStore.chunk_texts` 的块文本按**块序号**拼回
+  （`_build_chunks` 定长切片 ⇒ 无损；`chunk_id` **字典序**会踩 `#10 < #2` 陷阱）。因目录层指针块
+  **不受预算裁剪**（`_gather_pointers` 只按**每文档**条数设上界），rag 文档施加**总量上限**
+  `_RAG_INFO_MAP_MAX_DOCS = 16`（**先滤后截**：`core-profile` 不占配额）；单文档读取失败**只跳过它**
+  （地图是增益面）。**接线在组合根**（`runtime._index_rag_docs`）—— `context` 不 import `rag`
+  （ADR-0097⑥，`tests/test_architecture.py:326-347` 守护）。旗关（缺省）⇒ 目录层**逐字不变**。
+  **局限**：CLI 摄取后运行中的进程**重启才可见**新档（InfoMap 进程内）；上限档数全文常驻内存。
 
 ### 3.3 上下文自动压实
 

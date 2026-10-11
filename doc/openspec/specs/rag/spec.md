@@ -14,6 +14,9 @@ RAG（检索增强生成）让 Core-Agent 通过本地向量库语义检索知�
 写入或检索的向量维度与索引不一致时（如更换 embedding 后端后沿用旧索引）SHALL 以**结构化错误**
 拒绝并提示**重建索引**，SHALL NOT 静默截断比较（静默降级会产出无意义的相似度）。索引 SHALL 同时记录各文档的
 `content_hash`（与向量同落盘），使**后续进程**的重复摄取按内容判定为**无变更**、不重复重建。
+`VectorStore` SHALL 另暴露两个**读侧访问器**供目录面消费：文档 id 列表与某文档的**块文本序列**。
+二者 SHALL 为**fail-soft 缺省实现**（基类返空列表、非抽象）⇒ 既有第三方实现**零改动**即静默
+no-op、契约不破坏；实现方若提供，块文本 SHALL 按**块序号升序**返回（使定长切片的块可无损拼回原文）。
 
 #### Scenario: 嵌入式零服务存储
 - **GIVEN** 知识文档完成 embedding
@@ -30,6 +33,10 @@ RAG（检索增强生成）让 Core-Agent 通过本地向量库语义检索知�
 - **WHEN** 以维度 M（M≠N，如更换 embedding 后端）写入或检索
 - **THEN** 以结构化错误（`INDEX_CORRUPT`）拒绝并提示重建索引，不产出错误相似度
 
+#### Scenario: 块文本按序号拼回原文
+- **GIVEN** 一份长文档经 `ingest` 切成超过 10 个块（块 id 形如 `doc#0…#12`）
+- **WHEN** 经访问器取该文档的块文本并按序拼接
+- **THEN** 拼接结果**等于原文**（按块序号升序，而非 `chunk_id` 字典序 —— `#10 < #2` 是错序）
 ### Requirement: 文档摄取与分块
 系统 SHALL 提供文档摄取管线：导入知识文档 → 分块 → 生成 embedding → 建立向量索引，并支持增量更新与索引失效检测。
 
@@ -47,7 +54,6 @@ RAG（检索增强生成）让 Core-Agent 通过本地向量库语义检索知�
 - **GIVEN** 摄取管线在 embedding 生成、索引写入或重建过程中失败（如 embedding 失败、索引损坏、重建失败）
 - **WHEN** 摄取或重建出错
 - **THEN** 该文档检索降级为旧索引（或纯 LLM 生成），记录失败并可重试，不阻断主流程
-
 ### Requirement: 本地 Embedding
 系统 SHALL **本地优先、零外呼**地生成 embedding：未配置 `llm.embedding_model` 时用 `HashEmbedder`
 （字符 n-gram 哈希 → 确定性向量的**离线降级基线**，零三方依赖、不请求外部 embedding API）；
@@ -63,7 +69,6 @@ RAG（检索增强生成）让 Core-Agent 通过本地向量库语义检索知�
 - **GIVEN** 用户配置了远端 embedding 模型（`llm.embedding_model`）
 - **WHEN** 经 llm-provider 归一化入口请求
 - **THEN** 无缝切换到远端模型，检索与调用方无感知
-
 ### Requirement: 存储与 Embedding 依赖注入隔离
 系统 SHALL 通过依赖注入隔离 VectorStore 与 Embedder 实现：替换向量库（如 stdlib `sqlite3` → 三方向量库）
 或替换 embedding 后端（离线 `HashEmbedder` → 远端模型 / 换模型）时，检索与调用方零改动。
@@ -77,7 +82,6 @@ RAG（检索增强生成）让 Core-Agent 通过本地向量库语义检索知�
 - **GIVEN** 需要替换 embedding 后端（离线 `HashEmbedder` → 远端模型）
 - **WHEN** 经 llm-provider 归一化入口或注册新的 Embedder 实现
 - **THEN** 检索与调用方无感知切换
-
 ### Requirement: 语义检索
 系统 SHALL 按向量相似度检索 top-k 最相关片段、弥补 LLM 知识缺口，检索结果带相关度得分供后续裁剪排序。
 
@@ -85,7 +89,6 @@ RAG（检索增强生成）让 Core-Agent 通过本地向量库语义检索知�
 - **GIVEN** 一条查询语句
 - **WHEN** 执行语义检索
 - **THEN** 返回按向量相似度排序的 top-k 片段及相关度得分
-
 ### Requirement: 生成融合
 系统 SHALL 将检索片段作为上下文注入生成链路：经 context 装配器按预算裁剪后随提示词送入 llm-provider 生成，检索缺失时降级为纯 LLM 生成。
 
@@ -98,7 +101,6 @@ RAG（检索增强生成）让 Core-Agent 通过本地向量库语义检索知�
 - **GIVEN** 语义检索无相关片段
 - **WHEN** 构建生成请求
 - **THEN** 降级为纯 LLM 生成，不阻断流程
-
 ### Requirement: 与 CodeBase Engine 职责边界
 系统 SHALL 保持 RAG 与 codebase-memory-mcp 的互补分工：RAG 管「知识文档」语义检索，codebase-memory-mcp 管「代码结构」结构化理解，两者同时引入、互不重叠。
 

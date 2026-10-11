@@ -31,6 +31,22 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+# 块序号无法解析时的排序位：排在所有可解析者之后 ⇒ 确定性，不因脏 id 抛错。
+_UNORDERED_CHUNK = 1 << 62
+
+
+def _chunk_order(chunk_id: str) -> tuple[int, str]:
+    """块排序键 = ``doc#i`` 的**数字后缀**（``#10 < #2`` 是字典序陷阱 ⇒ 必须取数值）。
+
+    后缀不可解析者排最后并按 ``chunk_id`` 定序（确定性）。
+    """
+    _, _, suffix = chunk_id.rpartition("#")
+    try:
+        return (int(suffix), chunk_id)
+    except ValueError:
+        return (_UNORDERED_CHUNK, chunk_id)
+
+
 class VectorStore(ABC):
     """向量存储抽象接口：写入 / 读取 / 按文档删除 / top-k 相似度检索。"""
 
@@ -63,6 +79,23 @@ class VectorStore(ABC):
     def document_hash(self, doc_id: str) -> str | None:
         """读取文档内容指纹；未记录返回 None。"""
         raise NotImplementedError
+
+    def document_ids(self) -> list[str]:
+        """已索引的文档 id（升序）。
+
+        **fail-soft 缺省**（非 ``abstractmethod``，缺省返空列表）：目录面（信息地图）是**增益**面，
+        替换实现的第三方无需实现本访问器 —— 拿不到 rag 文档**也不炸**，契约不破坏
+        （change 0210 / ADR-0200）。
+        """
+        return []
+
+    def chunk_texts(self, doc_id: str) -> list[str]:
+        """某文档的块文本，按**块序号升序**（使定长切片的块可无损拼回原文）。
+
+        同 ``document_ids`` 为 fail-soft 缺省（返空列表）。实现方若提供，排序 SHALL 按块
+        **数字后缀**而非 ``chunk_id`` 字典序 —— ``#10 < #2`` 是错序（change 0210 / ADR-0200）。
+        """
+        return []
 
 
 class InMemoryVectorStore(VectorStore):
@@ -97,6 +130,16 @@ class InMemoryVectorStore(VectorStore):
 
     def document_hash(self, doc_id: str) -> str | None:
         return self._hashes.get(doc_id)
+
+    def document_ids(self) -> list[str]:
+        return sorted({chunk.doc_id for chunk in self._chunks.values()})
+
+    def chunk_texts(self, doc_id: str) -> list[str]:
+        ordered = sorted(
+            (chunk for chunk in self._chunks.values() if chunk.doc_id == doc_id),
+            key=lambda chunk: _chunk_order(chunk.chunk_id),
+        )
+        return [chunk.text for chunk in ordered]
 
 
 def _pack(vector: list[float]) -> bytes:
@@ -187,6 +230,19 @@ class SqliteVectorStore(VectorStore):
             "SELECT content_hash FROM documents WHERE doc_id = ?", (doc_id,)
         ).fetchone()
         return str(row[0]) if row is not None else None
+
+    def document_ids(self) -> list[str]:
+        """已索引的文档 id（``ORDER BY doc_id`` ⇒ 目录面按固定序取前 N 档，确定性）。"""
+        rows = self._conn.execute("SELECT DISTINCT doc_id FROM chunks ORDER BY doc_id").fetchall()
+        return [str(row[0]) for row in rows]
+
+    def chunk_texts(self, doc_id: str) -> list[str]:
+        """某文档的块文本（按**数字后缀**序 ⇒ 定长切片无损拼回原文）。"""
+        rows = self._conn.execute(
+            "SELECT chunk_id, text FROM chunks WHERE doc_id = ?", (doc_id,)
+        ).fetchall()
+        ordered = sorted(rows, key=lambda row: _chunk_order(str(row[0])))
+        return [str(row[1]) for row in ordered]
 
     def _index_dim(self) -> int | None:
         row = self._conn.execute("SELECT value FROM meta WHERE key = 'dim'").fetchone()

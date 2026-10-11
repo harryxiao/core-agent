@@ -266,6 +266,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "context.rag_info_map",
+        "--context-rag-info-map",
+        "CORE_CONTEXT_RAG_INFO_MAP",
+        default=False,
+        map_to="context.rag_info_map",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "memory.importance_gate",
         "--memory-importance-gate",
         "CORE_MEMORY_IMPORTANCE_GATE",
@@ -643,6 +651,22 @@ class ConfigManager:
             return False
         raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
         value = raw.get("block_plan", False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in _FEATURE_TRUE
+
+    def rag_info_map(self) -> bool:
+        """rag 文档进信息地图开关（缺省 ``False`` = 不进；change 0210 / ADR-0200）。
+
+        **独立访问器**（同 `history_turns()` 先例）：与预算/上限无语义关系，且既有访问器的
+        返回 arity 被解包断言钉死，不合并。取值归一与 feature flag 同集；`context` 为
+        **非结构化段**（不阻断启动）⇒ 集合外取值归一为**关闭**（方向恒为「不进地图」，
+        无配置 ⇒ 既有路径逐字不变）。
+        """
+        if self._config is None:
+            return False
+        raw = cast("dict[str, Any]", self._config.extra.get("context") or {})
+        value = raw.get("rag_info_map", False)
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in _FEATURE_TRUE

@@ -2542,3 +2542,31 @@ Requirement 做全量替换）。
 > **规格**：`constraints` **MODIFIED**「容错中间件」（全量替换 7 Scenario 逐字 ＋ **ADD** Scenario ×5 ＋ 库能力边界段）——
 > canonical **3 → 3** req / **11 → 16（+5）** scen。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0199 行。
+
+## 123. rag 文档进信息地图（TC-RAGMAP，change `0210`／ADR-0200，台账 E147）
+
+**能力**：rag 库已索引文档进信息地图目录层（此前 `InfoMap` 生产只接了 Core.md 一处）；`VectorStore` 补两个 fail-soft 读侧访问器。
+
+**入口**：`src/core/rag/vector_store.py`（`document_ids` / `chunk_texts` 缺省 + 两实现 + `_chunk_order`）、`src/core/configuration/manager.py`（ConfigSpec `context.rag_info_map` + `rag_info_map()`）、`src/core/runtime.py`（`rag_store` 局部 + `_index_rag_docs` + `_RAG_INFO_MAP_MAX_DOCS`）。
+
+| 用例 | 场景 | 触发 | 断言（`tests/test_rag_wiring.py`） |
+|---|---|---|---|
+| TC-RAGMAP-01 | 块文本按序号拼回原文 | `chunk_size=1`、12 字符 ⇒ 12 块（`#0`…`#11`） | `"".join(chunk_texts("d")) == 原文`（**字典序**拼 ⇒ `abklcdefghij` ≠ 原文）（`...::test_chunk_texts_reconstructs_source_in_chunk_order`） |
+| TC-RAGMAP-02 | 访问器 fail-soft | 空库 / 未登记 doc_id | 两访问器返 `[]`（不抛）（`...::test_vector_store_accessors_are_fail_soft_on_empty`） |
+| TC-RAGMAP-03 | 上限＋跳过 core-profile | 20 档 ＋ `core-profile` ⇒ `_index_rag_docs` | 入图 **16** 档（**先滤后截**：`core-profile` 不占配额、不在入图集）（`...::test_index_rag_docs_caps_documents_and_skips_core_profile`） |
+| TC-RAGMAP-04 | 三面解析 | spec 声明（key/cli_flag/env_var/map_to） | `context.rag_info_map` 在 `config_specs()`（`...::test_spec_declares_rag_info_map_key`） |
+| TC-RAGMAP-05 | 组合根旗开 | 先 `ingest("kb-deploy", …)` ⇒ `build_runtime`（`context: rag_info_map: true`） | 装配器目录层 `pointers` 含 `kb-deploy`（`...::test_rag_info_map_flag_on_indexes_rag_documents`） |
+| TC-RAGMAP-06 | 组合根旗关（**零回归锚**） | 同上但无 `context` 段 | 目录层**不含** `kb-deploy`（`...::test_rag_info_map_flag_off_leaves_catalog_unchanged`） |
+| TC-RAGMAP-07 | 非法取值归一为关 | `rag_info_map: maybe` | `rag_info_map() is False`（`context` 非结构化段 ⇒ 不阻断启动）（`...::test_rag_info_map_illegal_value_normalizes_to_off`） |
+
+> **反证（逐字锚非恒真，实测记录）**：摘 `others[:_RAG_INFO_MAP_MAX_DOCS]` 的上限切片（改 `for doc_id in others:`）
+> ⇒ TC-RAGMAP-03 **红**（实测 `1 failed, 13 passed`）；复原后摘 `if config.rag_info_map():` 守卫 ⇒
+> TC-RAGMAP-06 **红**（实测 `1 failed, 13 passed`）；两次复原 ⇒ 14 passed。
+> TC-RAGMAP-06（旗关）在接线缺失时**恒绿** ⇒ 单独不构成证据，其价值在**与 TC-RAGMAP-05 成对**（防「接线即无条件生效」）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2378 passed**（基线 **2371**，**+7**，与用例数一致）。
+> **零回归**：`rag_info_map` 缺省 `False` ⇒ `if config.rag_info_map():` 短路 ⇒ 目录层**逐字不变**；
+> `document_ids`/`chunk_texts` 基类缺省不参与既有 `put`/`get`/`search`/`delete`/`*_document` 路径。
+> **规格**：`context` **MODIFIED**「信息地图」（全量替换 + **ADD** Scenario ×3）—— canonical
+> **8 → 8** req / **33 → 36** scen（「信息地图」条内 3 → 6）；`rag` **MODIFIED**「本地向量库存储」
+> （全量替换 + **ADD** Scenario ×1）—— **7 → 7** req / **14 → 15** scen。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0200 行。

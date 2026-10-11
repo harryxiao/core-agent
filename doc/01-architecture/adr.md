@@ -6815,6 +6815,76 @@ import 能力层 `constraints`。故 `retry_attempts() -> int`（缺省 `0` = �
   ③ `RETRY_EXHAUSTED` 码仍不使用（D4 原样返回语义无需改码）；④ 重试不重发 `action_*` 事件 ⇒ 观测面
   只见一条「动作耗时较长」；⑤ `retry_attempts` 语义为**尝试次数上界含首次**（= `RetryPolicy.max_attempts`）。
 
+## ADR-0200：rag 文档进信息地图 —— 生产侧接线、fail-soft 读侧、先滤后截（change 0210 / 台账 E147）
+
+**背景 —— 目录面早通、来源只有一处。** `InfoMap` 的两个入口（`index` = 原文 + 目录索引、
+`register` = 仅原文）生产只在组合根接了一处：Core.md 项目信息段（`runtime.py:713-721`，
+change `0140` / 账本 E77）。context spec「信息地图」的**千页级业务文档**场景（`context/spec.md:71`）
+从未兑现 —— 而 rag 摄取（`ingest.py:52-64`）恰好把整份文档切块写入落盘向量库，**原文就在库里**。
+
+**D1 改的是生产侧，不是装配器。** 目录面（`DynamicAssembler._gather_pointers`）早已在消费
+`InfoMap.documents()`：逐文档 `lookup(doc_id, task)` 取任务匹配指针。缺的是「**谁往地图里放文档**」。
+故本 change **零改动** `context/` 包内代码。这也是 **ADR-0097⑥**（rag 参与 loop 上下文的**唯一合法
+路径**是组合根注入）下的正确落点：`context` 不 import `rag`、`rag` 不 import `context`，
+桥只能由组合根搭（`tests/test_architecture.py:326-347` 守护，零改动即过）。
+
+**D2 `index` 而非 `register`。** `register` 只缓存原文 ⇒ `lookup` 走二阶线性扫描兜底
+（段数上界 20 ⇒ 千页文档只看得到头 20 段），语义上退化为兜底路径。要兑现「先定位指针再按需取详情」
+必须**有目录** ⇒ 用 `index`。
+
+**D3 块文本按数字后缀拼回 —— 定长切片 ⇒ 无损。** `_build_chunks` 按定长 `chunk_size` 切片、
+`chunk_id = f"{doc_id}#{i}"`（`i` = `enumerate` 下标）⇒ **按块序号升序拼接 = 原文**。
+按 `chunk_id` **字典序**拼则踩 `#10 < #2` 陷阱（逐字符比较：`"1" < "2"`）⇒ 错序。故排序键取
+**数字后缀** `int(chunk_id.rpartition("#")[2])`；不可解析者排最后并按 id 定序（确定性）。
+`document_ids()` 亦 `ORDER BY doc_id` ⇒ 上限截断是**确定性**的（否则 DB 行序不定，「谁进谁不进」不可测）。
+
+**D4 读侧访问器 fail-soft 缺省（非 `abstractmethod`）。** `VectorStore` 是**对外契约**
+（规格「存储与 Embedding 依赖注入隔离」：第三方实现可替换 sqlite）。加抽象方法 = **破坏性变更**
+（既有第三方实现一 import 就 `TypeError`）。故基类给缺省实现返 `[]` ⇒ 既有实现**零改动**即静默
+no-op：目录面拿不到 rag 文档但**不炸**。这与 `0209` 重试白名单的 **fail-closed** 方向**相反** ——
+因为此处的失败语义是「少一块能力」（增益面）而非「多做一次副作用」。
+
+**D5 文档数硬上限 `_RAG_INFO_MAP_MAX_DOCS = 16`。** 目录层指针块**不受预算裁剪**：
+`_gather_pointers` 对每文档取 `lookup(...)[:_MAX_POINTERS_PER_DOC]` —— 上界是**每文档**条数，
+**没有**跨文档总量上界。N 个 rag 文档 ⇒ 每步注入 O(N) 行。替代方案「给 `BudgetManager` 加按块
+记账」被**否决**（改预算器影响面远超本缺口；`plan_blocks` 纪律 `0201` 刚立，不宜同批再动）。
+以文档数上限换有界性 —— 取值与「一份千页文档」同阶。
+
+**D6 先滤后截 —— 上限是「rag 文档总量」的上界。** `core-profile` 不占配额：先截后滤会让被跳过的档
+白占一个名额（实测 21 档时先截后滤 ⇒ 实入 15 ≠ 16）。实现为
+`[d for d in doc_ids if d != _CORE_PROFILE_DOC_ID][:16]`。
+
+**D7 跳过 `core-profile`。** 该文档已由 `profile.context` 分支以**真源**（Core.md 原文，带
+`# {section}` 头）建索引；rag 库里若有同名摄取副本，再 `index` 会用**块拼回文本**覆盖真源
+（丢 `#` ⇒ 建不出 heading 指针）。故显式跳过（`_CORE_PROFILE_DOC_ID`，`runtime.py:386`）。
+
+**D8 逐文档降级不炸。** `_index_rag_docs` 对每文档独立 `try/except Exception: continue`；
+`document_ids()` 整体失败则全部不进。理由：地图是**增益**面，装配必须成功 —— 一份坏档不得让整个
+runtime 起不来。此处**连告警都不发**（该路径每次装配都走，逐次告警会刷屏）；坏档可见性由 rag
+自身的检索面错误码承担。
+
+- **落点**：`src/core/rag/vector_store.py`（`VectorStore.document_ids` / `chunk_texts` 缺省 +
+  `SqliteVectorStore` / `InMemoryVectorStore` 实现 + `_chunk_order` / `_UNORDERED_CHUNK`）、
+  `src/core/configuration/manager.py`（ConfigSpec `context.rag_info_map` + `rag_info_map()`）、
+  `src/core/runtime.py`（`rag_store` 局部 + `_index_rag_docs` + `_RAG_INFO_MAP_MAX_DOCS`）、
+  `tests/test_rag_wiring.py`（增补）、`doc/04-testing/test-cases.md` §123、`coding-plan/known-risk.md`、
+  `doc/02-modules/rag.md`、`doc/02-modules/context.md`。
+- **规格**：`context` **MODIFIED**「信息地图」（全量替换 narrative + **ADD** Scenario ×3；既有 3
+  Scenario 逐字保留）＋ `rag` **MODIFIED**「本地向量库存储」（全量替换 narrative + **ADD**
+  Scenario ×1；既有 3 Scenario 逐字保留）—— canonical: context **8 → 8** req / **33 → 36** scen（「信息地图」条内 Scenario **3 → 6**）；
+  rag **7 → 7** req / **14 → 15** scen。
+- **反证**：摘 `others[:_RAG_INFO_MAP_MAX_DOCS]` 的上限切片 ⇒ `test_index_rag_docs_caps_...` 红
+  （实测 `1 failed, 13 passed`）；摘 `if config.rag_info_map():` 守卫 ⇒
+  `test_rag_info_map_flag_off_leaves_catalog_unchanged` 红（实测 `1 failed, 13 passed`）；两次复原
+  ⇒ 14 passed。
+- **局限**：① **CLI 摄取 → 运行中进程不可见** —— InfoMap 是**进程内**对象，`rag ingest`（另一进程）
+  写的是**落盘向量库** ⇒ 运行中的 serve 要**重启**才把新档建进地图（同 `skills.json` 先例）；
+  ② `fetch_detail` 只回 `pointers[0].summary`（既有契约非本缺陷）；③ **全语料进内存** ——
+  `InfoMap.index` 把原文缓存于 `self._docs` ⇒ 上限档数的全文常驻内存（上限即兜）；
+  ④ 超 16 档只看到前 16（按 `doc_id` 序）—— 上限策略是**确定性截断**而非按重要性挑选；
+  ⑤ `chunk_texts` 依赖「块 id 以 `#<数字>` 结尾」这一 `ingest` 的**实现约定**（另一种
+  VectorStore 实现若换 id 形状，须自行按序返回）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7009,3 +7079,4 @@ import 能力层 `constraints`。故 `retry_attempts() -> int`（缺省 `0` = �
 | ADR-0197 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/cli-ops.md, 02-modules/durability.md |
 | ADR-0198 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/durability.md, 02-modules/configuration.md |
 | ADR-0199 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/constraints.md, 02-modules/loop.md |
+| ADR-0200 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/rag.md, 02-modules/context.md |

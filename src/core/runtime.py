@@ -119,6 +119,7 @@ from core.plugins import (
     plugin_installs_path,
 )
 from core.rag import HashEmbedder, LLMEmbedder, RagGenerator, RagService, SqliteVectorStore
+from core.rag.vector_store import VectorStore
 from core.skills import (
     RETIRE_AFTER_DEGRADATIONS,
     Skill,
@@ -234,6 +235,39 @@ def _rag_index_path() -> Path:
     """
     base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
     return base / "rag-index.db"
+
+
+# 进信息地图的 rag 文档数**硬上限**：目录层指针块不受预算裁剪（装配器 `_gather_pointers`
+# 只按**每文档**条数设上界）⇒ 文档数无界即每步无界注入。取值与「一份千页文档」同阶。
+_RAG_INFO_MAP_MAX_DOCS = 16
+
+
+def _index_rag_docs(info_map: InfoMap, store: VectorStore) -> None:
+    """把 rag 库已索引文档建成信息地图目录索引（change 0210 / ADR-0200）。
+
+    用 ``index``（产出**目录指针**）而非 ``register``（仅缓存原文 ⇒ 走线性扫描兜底）；
+    原文由块文本按**块序号**拼回（定长切片 ⇒ 无损）。**跳过** ``_CORE_PROFILE_DOC_ID``：
+    该文档已由 ``profile.context`` 分支以**真源**（Core.md 原文）建索引，此处再 `index` 会用
+    块拼回文本覆盖真源、丢 `#` 标题 ⇒ 建不出 heading 指针。
+
+    逐文档**降级不炸**：地图是**增益**面，装配必须成功 ——
+    单文档读取失败只跳过它（契约 `chunk_texts` 本身 fail-soft，此处再兜一层防坏库）；
+    ``document_ids`` 整体失败则**全部不进**（同降级方向）。
+    """
+    try:
+        doc_ids = store.document_ids()
+    except Exception:  # 坏库不得阻断装配（增益面整体降级）
+        return
+    # **先滤后截**：上限是「**rag** 文档总量」的上界，`core-profile` 不占配额
+    # （先截后滤会让被跳过的档白占一个名额 ⇒ 实际入图数 < 上限）。
+    others = [doc_id for doc_id in doc_ids if doc_id != _CORE_PROFILE_DOC_ID]
+    for doc_id in others[:_RAG_INFO_MAP_MAX_DOCS]:
+        try:
+            text = "".join(store.chunk_texts(doc_id))
+        except Exception:  # 单文档坏档只跳过它（增益面逐档降级）
+            continue
+        if text:
+            info_map.index(doc_id, text)
 
 
 def _skill_state_path(name: str) -> Path:
@@ -506,9 +540,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     context_compactor = ContextCompactor(memory=memory, step_threshold=config.compact_steps())
     # rag 主链路装配（0104）：落盘索引 + 语义优先 / 离线降级的 embedding + 生成融合，
     # 由 RagService 门面收口（CLI / 宿主只调用门面，不各自拼四个对象）。
+    rag_store = SqliteVectorStore(_rag_index_path())
     rag = RagService(
         LLMEmbedder(embed_provider) if embed_provider is not None else HashEmbedder(),
-        SqliteVectorStore(_rag_index_path()),
+        rag_store,
         generator=RagGenerator(llm, model=app.llm.model),
     )
     resolver = CoeffectResolver()
@@ -719,6 +754,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 _CORE_PROFILE_DOC_ID,
                 f"# {_CORE_PROFILE_SECTION}\n" + "\n".join(profile.context),
             )
+        # rag 文档进信息地图（change 0210 / ADR-0200）：把 rag 库已索引文档的**块拼回原文**
+        # 建目录索引 ⇒ 模型先看目录指针、再 `context_read` 取详情。旗关（缺省）⇒ 目录层逐字不变。
+        if config.rag_info_map():
+            _index_rag_docs(info_map, rag_store)
         assembler = DynamicAssembler(
             memory=memory,
             info_map=info_map,
