@@ -6055,6 +6055,42 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
   ② **`history_turns=0` 时摘要 token 仍计入预算记账**（正确但意味着纯摘要配置下预算可能被摘要吃满，
   属既有记账口径）；③ 本 change **不**动三层滑窗配额与 `tiered` 判据。
 
+## ADR-0185：长任务端到端门禁 —— 「产出 → 注入」两端接线补锚（change 0195 / 账本 E132）
+
+**背景 —— 前五条各修一环，但无端到端锚。** 本批次 `0190`~`0194` 修了长任务链路的五个缺口，但
+**没有任何用例**把「产出 → 注入」接起来：`test_loop.py` 的压实用例只断言**记忆态**
+（`compaction.summary.s1` 存在），`test_history_replay.py` 的注入用例**手播**摘要条目 —— 二者之间
+「**上一轮压实的产物真的进了下一轮推理的 system prompt**」**无锚**。越界首尾保留（`0193`）与解耦
+（`0194`）同理只在**单元 / 上下文对象**层断言，**装配后**形态无锚 ⇒ 回归时「哪一环断了」无法从
+端到端视角发觉。
+
+- **决策 ①：真材实料。** 用真 `DefaultLoop` + 真 `MemoryStore`（假摘要器离线）+ 真 `TranscriptStore`
+  + 桩 `LLMProvider`（只记录请求 + 返回定稿回复，不模拟推理）⇒ 零三方依赖、零网络。
+- **决策 ②：三条锚。** ①压实产物 → 下一轮 system prompt（turn1 以 `token_budget=1` 触发轮内压实，
+  turn2 复用同一 loop 断言 prompt 含产物字串）；②越界尾部 → **摘要器 prompt**；③关历史回放 →
+  摘要仍进装配后 prompt。
+- **决策 ③：锚点位置订正（初始设计错误并已改正）。** 初版把「越界首尾保留」的锚点放在**循环注入的
+  system prompt**，实测**证明失败** —— `_elide_summary` 约束的是**摘要器 prompt**（压实**输入**），
+  循环注入 system prompt 的既有摘要是**逐字**的（只受预算记账约束）。锚点已移正到摘要器 prompt。
+  **此订正本身即证据**：若不做 e2e，该误解不会被发现。
+- **决策 ④：门禁必须能咬（反证）。** 端到端门禁最大风险是**空过**（无论实现如何都绿）。逐条**临时
+  回退**目标行为并确认转红：①`_compact` 的 `memory.compact` → `pass` ⇒ 红；③`_elide_summary` 改回
+  纯头截断 ⇒ 红；④`_load_summaries` 恢复 `history_turns <= 0` 闸 ⇒ 红；复原后全绿 ⇒ 三条锚**均能咬住**
+  其目标行为。
+- **决策 ⑤：不重复已有锚。** CLI `--resume` 会话端到端已由
+  `test_entry.py::test_task_resume_reuses_checkpoint_session`（change `0190`）承载 ⇒ **不重写**；
+  本 change 只补真正缺失的三条。
+
+**规格中性判定。** 零 `src/` 改动、零行为改动 ⇒ 无 spec delta，`.openspec.yaml` `skip_specs: true`
+（沿 `0156` / `0189` 先例）。
+
+- **落点**：`tests/test_longtask_e2e.py`（新，3 用例）；`git diff --stat src/` **为空**。
+- **测试**：+3（2229 → **2232**）。
+- **局限**：① **不覆盖 CLI `--resume` 会话端到端**（已由 `0190` 的既有锚承载，避免重复）；
+  ② **桩 provider 不模拟推理** —— 只验装配形态，不验模型行为；③ **轮内压实经预算维度触发**
+  （`token_budget=1`），非步数维度 —— 步数维度的触发锚仍由 `test_loop.py` 承载；④ e2e 只在
+  **进程内**跑（跨进程断点续跑仍承 `0190`/`0191` 的既有边界）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6234,3 +6270,4 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
 | ADR-0182 | 02-modules/loop.md, 02-modules/memory.md, 02-modules/context.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0183 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0184 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0185 | 04-testing/test-cases.md, coding-plan/known-risk.md |

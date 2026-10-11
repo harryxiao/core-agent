@@ -2106,3 +2106,26 @@
 > 中 0.3 / 长 0.2 配额）/ 预算记账 / `tiered` 判据 **零改动**；缺省（`history_turns=20 > 0`）行为逐字不变。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0184 行（摘要读取仍要求转录已注入 / 纯摘要配置下
 > 摘要 token 仍计预算 / 未动滑窗配额）。
+
+## 108. 长任务端到端门禁（TC-LONGTASK-E2E，change `0195`／ADR-0185，台账 E132，**规格中性**）
+
+**行为规格锚点**：无 spec delta（`.openspec.yaml` `skip_specs: true`）—— 本 change **零 `src/` 改动**、
+**零行为改动**，只把此前**两端分离**的链路接成端到端锚。锚点的**行为语义**分别归属：
+`loop/spec.md`（压实 → 注入链、解耦）、`memory/spec.md`（越界首尾保留）。
+
+| 用例 | 锚点归属 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-LONGTASK-E2E-01 | `loop` 压实 + 三层滑窗 | 真 `DefaultLoop` + `MemoryStore`（假摘要器）+ `TranscriptStore`；turn1（`token_budget=1` 触发轮内压实）产 `compaction.summary.s1` ⇒ turn2 复用同一 loop | turn2 装配后 system prompt 含 `历史摘要（长期）：` **且**含 turn1 压实产物字串「上一轮：季度结论 已完成」（防空过；锚点：`tests/test_longtask_e2e.py::test_compaction_product_reaches_next_turn_system_prompt`） |
+| TC-LONGTASK-E2E-02 | `memory` 越界首尾保留（`0193`） | 既有摘要 > `MAX_SUMMARY_CHARS`（尾部含锚点字串），假摘要器内捕获 `build_prompt(entries)` | 投喂**摘要器**的既有摘要槽含尾部锚点 `最新结论：尾部保真锚点XYZ` **且**含中略标记 `⋯（中略`（`...::test_over_bound_summary_tail_reaches_compaction_prompt`） |
+| TC-LONGTASK-E2E-03 | `loop` 解耦（`0194`） | 会话有既有摘要 + `history_turns=0`（关原文回放）⇒ `astream` | 装配后 system prompt 含 `历史摘要（长期）：` + 摘要正文；且 `messages[1:] == ["新一轮"]`（历史原文**不回灌**）（`...::test_summary_injected_into_prompt_when_history_replay_disabled`） |
+
+> **锚点订正证据（本 change 的独有价值）**：初版 TC-LONGTASK-E2E-02 把锚点放在**循环注入的 system prompt**，
+> 实测**失败** —— `_elide_summary` 约束的是**摘要器 prompt**（压实**输入**），循环注入的既有摘要是**逐字**的。
+> ⇒ 锚点移正。**若不做 e2e，此误解不会被发现**。
+> **反证（门禁非空过）**：①`_compact` 的 `memory.compact` → `pass` ⇒ 01 红；②`_elide_summary` 改回纯头
+> 截断 ⇒ 02 红；③`_load_summaries` 恢复 `history_turns <= 0` 闸 ⇒ 03 红；复原后全绿 ⇒ 三条锚**均能咬住**。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2232 passed**（基线 **2229**，**+3**）。`git diff --stat src/` **为空**。
+> **不重复**：CLI `--resume` 会话端到端已由 `test_entry.py::test_task_resume_reuses_checkpoint_session`
+> （change `0190`）承载 ⇒ 本文件不重写。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0185 行（不覆盖 CLI resume / 桩 provider 不模拟推理 /
+> 轮内压实走预算维度 / 仅进程内）。
