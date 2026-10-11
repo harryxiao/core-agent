@@ -14,7 +14,7 @@ import json
 from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 
-from core.context import DynamicAssembler, estimate_tokens
+from core.context import DynamicAssembler, estimate_tokens, plan_blocks
 from core.llm_provider import LLMError, LLMProvider, LLMRequest, Message, TokenUsage, ToolCall
 from core.tools import ToolProvider
 
@@ -34,6 +34,10 @@ _UNPARSED_UNCLOSED = f"{_PARSE_FAILED}: 疑似工具调用 JSON 未闭合（输�
 
 # 命中技能提示：**纯数据**快照（loop 不 import skills —— 架构红线），由组合根组装
 SkillHint = dict[str, str]  # {"skill_id": ..., "version": ..., "instructions": ...}
+
+# 「记忆 / 事实」注入面的**字面** token 额度：区块配比未启用时的既有缺省
+# （change 0201 / ADR-0191 之前为内联字面量 —— 见 `_fact_budget`）。
+_FACT_BUDGET = 2048
 
 
 def _format_skill_hint(hint: SkillHint) -> str:
@@ -148,6 +152,10 @@ class LLMPlanner:
         # ADR-0174）。`None` 或 `≤ 0` ⇒ **不**下发（请求形状逐字不变）；`> 0` ⇒ 从「记账假设」
         # 变为**端点上界**（预算派生本已假设输出至多占预留这么多）。
         max_tokens: int | None = None,
+        # 上下文区块配比开关（change 0201 / ADR-0191，缺省**关**）。开启 ⇒ 装配器的注入预算
+        # 由 `context.plan_blocks` 按五区块份额从 `LoopContext.token_budget` 派生；
+        # 关闭 ⇒ **逐字**沿用既有字面常量（提示词零变化）。
+        block_plan: bool = False,
     ) -> None:
         self._llm = llm
         self._model = model
@@ -157,6 +165,7 @@ class LLMPlanner:
         self._skill_router = skill_router
         self._tools = tools
         self._max_tokens = max_tokens if (max_tokens is not None and max_tokens > 0) else None
+        self._block_plan = block_plan
         # 最近一次装配的提示 token 观测（记账下界）：由 `last_prompt_tokens()` 对外暴露，
         # 供 loop 侧以 duck-typing 探针消费（见 change 0152 / 账本 E96）。
         self._last_prompt_tokens = 0
@@ -305,12 +314,25 @@ class LLMPlanner:
 
     # ---- 组装 ----
 
+    def _fact_budget(self, ctx: LoopContext) -> int:
+        """「记忆 / 事实」注入面的 token 额度。
+
+        区块配比**关闭**（缺省）或本轮预算未接线（`ctx.token_budget` ≤ 0）⇒ 既有字面常量
+        （提示词逐字不变）；开启且预算为正 ⇒ `plan_blocks` 的**记忆份额**
+        （change 0201 / ADR-0191 —— loop 预算由此首次到达 planner）。
+        """
+        plan = plan_blocks(ctx.token_budget, enabled=self._block_plan)
+        return plan.memory_tokens if plan is not None else _FACT_BUDGET
+
     def _system_prompt(self, ctx: LoopContext) -> str:
         blocks: list[str] = [_SYSTEM_PROMPT]
         # 装配器调用提到块外：常驻笔记注入**不依赖**装配器（缺省未装装配器亦须每轮在场）
         pack = (
             self._assembler.build(
-                self._task(ctx), stage="reason", budget=2048, session_id=ctx.session_id
+                self._task(ctx),
+                stage="reason",
+                budget=self._fact_budget(ctx),
+                session_id=ctx.session_id,
             )
             if self._assembler is not None
             else None

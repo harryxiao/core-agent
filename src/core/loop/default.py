@@ -695,6 +695,9 @@ class DefaultLoop(Plugin):
             history=history,
             summary_long=summary_long,
             summary_mid=summary_mid,
+            # 区块配比的上游（change 0201 / ADR-0191）：预算**透传**给 planner，由后者按
+            # 五区块份额派生注入额度。未启用（缺省）时 planner 忽略此值 ⇒ 行为逐字不变。
+            token_budget=self._token_budget,
         )
         ctx.token_used = _context_tokens(ctx)
         self._append_transcript(session_id, "user", user_input)

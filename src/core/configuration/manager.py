@@ -242,6 +242,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "loop.block_plan",
+        "--loop.block-plan",
+        "CORE_LOOP_BLOCK_PLAN",
+        default=False,
+        map_to="loop.block_plan",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "memory.importance_gate",
         "--memory-importance-gate",
         "CORE_MEMORY_IMPORTANCE_GATE",
@@ -551,6 +559,23 @@ class ConfigManager:
         steps = _parse_int(raw.get("compact_steps", _DEFAULT_COMPACT_STEPS))
         return _DEFAULT_COMPACT_STEPS if steps is None else steps
 
+    def block_plan(self) -> bool:
+        """上下文区块配比开关（缺省 ``False`` = 不接管；change 0201 / ADR-0191）。
+
+        **独立访问器**（同 `history_turns()` 先例）：与预算/上限无语义关系，且既有访问器的
+        返回 arity 被解包断言钉死，不合并。取值归一与 feature flag 同集；``loop`` 为**结构化段**
+        （非法取值已在校验期阻断启动，见 `_loop_errors`），故此处只做字符串归一。
+
+        关闭 ⇒ planner 沿用其**字面**注入预算 ⇒ 提示词逐字不变。
+        """
+        if self._config is None:
+            return False
+        raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
+        value = raw.get("block_plan", False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in _FEATURE_TRUE
+
     def importance_gate(self) -> bool:
         """写入侧重要度闸门开关（缺省 ``False`` = 不评分；change 0181 / ADR-0172）。
 
@@ -855,6 +880,11 @@ def _loop_errors(raw: dict[str, Any]) -> list[str]:
         errors.append(
             f"非法压实步数阈值: loop.compact_steps={raw.get('compact_steps')}（须为 ≥1 的整数）"
         )
+    value = raw.get("block_plan", False)
+    if not isinstance(value, bool) and str(value).strip().lower() not in (
+        _FEATURE_TRUE | _FEATURE_FALSE
+    ):
+        errors.append(f"非法区块配比开关: loop.block_plan={value}（须为 true/false 之一）")
     return errors
 
 

@@ -2248,3 +2248,35 @@ bullet（缺省不启用 / 未过 ⇒ 不入库 + 清组 + 只报组键 / 判定
 > 「轮比率」与「字面边界」的**判别式**（字面边界下两点会相等）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0190 行（零值≠关掉判据一侧 / 本 change
 > 无行为故价值全在反证 / 不含蓝图 Tier 数值可配置化）。
+
+## 114. 上下文区块配比（TC-BLOCKS，change `0201`／ADR-0191，台账 E138）
+
+**行为规格锚点**：`context/spec.md`「上下文区块配比（五区块 / 80-20 安全线）」（**ADDED**）。
+两面：**确定性纯函数** `plan_blocks`（5 条）与**唯一消费者**（`LLMPlanner` 传给装配器
+`build(budget=)` 的那个数，3 条 —— 其中 2 条是**逐字锚**）。
+
+| 用例 | 锚点 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-BLOCKS-01 | 关 ⇒ **不接管** | `plan_blocks(65536, enabled=False)` | `is None`（**非**全零 —— 全零会被消费面当作 `budget=0` 传下去，语义不同）（`tests/test_context_blocks.py::test_disabled_returns_none`） |
+| TC-BLOCKS-02 | 五份额 + 安全线 | `plan_blocks(65536, enabled=True)` 的 `system/memory/window/archive` 与 `reserve` | 四块 = `int(B × 0.20/0.15/0.30/0.15)`；`reserve >= B × 0.20`（`...::test_enabled_shares_and_safety_line`） |
+| TC-BLOCKS-03 | 五块之和 ≤ 总预算 | 同上五块求和 | 各块 `>= 0` 且 **和 ≤ `B`** ⇒ 缓冲靠**不分配**实现（**非**再减一次，否则与 `loop.output_reserve` 双重预留）（`...::test_blocks_do_not_exceed_total`） |
+| TC-BLOCKS-04 | 非正预算 ⇒ 不接管 | `plan_blocks(0, enabled=True)` / `plan_blocks(-1, enabled=True)` | 均 `is None`（`...::test_non_positive_budget_returns_none`） |
+| TC-BLOCKS-05 | 配额随总预算**单调不减** | `(1000, 2001)` 与 `(2048, 65536)` 两点逐块比较 | 各块在更大预算下**不小于**小预算取值（`...::test_quotas_monotonic_in_total`） |
+| TC-BLOCKS-06 | **逐字锚**：缺省关 ⇒ 仍字面 `2048` | 桩装配器捕获 `build(budget=)`；`LLMPlanner(None, assembler=桩)`（**缺省** `block_plan=False`）+ `LoopContext(token_budget=65536)` | 捕获值 `== [2048]` ⇒ 今日提示词**逐字不变**（`...::test_disabled_planner_keeps_literal_budget`） |
+| TC-BLOCKS-07 | 两重保险：开但预算未接线 ⇒ 仍字面 | `block_plan=True` + `LoopContext()`（`token_budget` 缺省 `0`） | 捕获值 `== [2048]`（`...::test_enabled_without_budget_keeps_literal_budget`） |
+| TC-BLOCKS-08 | 开 + 已接线 ⇒ **记忆份额** | `block_plan=True` + `token_budget=65536` | 捕获值 `== plan_blocks(65536, enabled=True).memory_tokens`（≠ `2048`）⇒ loop 预算**首次到达 planner**（`...::test_enabled_planner_uses_derived_memory_budget`） |
+
+> **反证（逐字锚非恒真，实测记录）**：令 `_fact_budget` **忽略开关**（`enabled=True` 硬编码）⇒
+> TC-BLOCKS-06 **红**（实得 `9830`，断言 `2048` 失败）；复原 ⇒ 8 green。**实测 1 red**。
+> **回归锚订正（重要）**：`tests/test_infomap_wiring.py:48` 与 `tests/test_phase13.py:185`
+> **看似**钉住 `2048`，实则**各自显式传参**去调 `_assembler.build(...)`、**从不观察**
+> `_system_prompt` 传了什么 ⇒ 它们**不是**本 change 的绊线。真正的逐字锚是新增的
+> **桩捕获**用例（TC-BLOCKS-06），批内已补。`tests/test_loop_token_accounting.py` 的两条精确
+> 增量用例**不受影响**（`_context_tokens` 只读 `history/messages/summary_long/summary_mid`，
+> 新增的 `LoopContext.token_budget` 不在其中）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2263 passed**（基线 **2255**，**+8**；批次预估 +7 —— 多出的
+> 一条即 TC-BLOCKS-07 的**两重保险**锚）。
+> **不重复**：`tests/test_context_window.py` 覆盖 `plan_window`（三层滑窗），本 change 覆盖
+> `plan_blocks`（五区块）—— 两个纯函数各自独立，本 change **不**重构、**不**统一二者口径。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0191 行（四块配比无行为 / 不含
+> `_window_plan` 的 `// 2` / 块内不做二级分配 / 回归锚订正）。

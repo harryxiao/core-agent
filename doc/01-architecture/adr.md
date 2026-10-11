@@ -6313,6 +6313,60 @@ change `0182` / ADR-0173 正是把**轮内步数**误读作**对话轮数**的�
   2 红），不能以「测试是绿的」单独证明任何事；③ **不覆盖蓝图 Tier 数值的可配置化** —— 若未来
   确需字面边界，须另立 change 并先改 `三层窗口比例分配`（本 ADR 明确不采纳）。
 
+## ADR-0191：上下文区块配比 —— 五区块 / 80-20 安全线（change 0201 / 账本 E138）
+
+**背景 —— 三处预算各自为政，且 loop 的预算从未到达 planner。** 外来蓝图
+（`memory-4-layer-architecture.md` §3.3）给出上下文窗口「黄金配比」：系统提示 `20%` / 记忆 `15%` /
+窗口 `30%` / 归档 `15%` / 缓冲 `20%`。本仓三处预算互不知晓：ⓐ `loop_limits()` 的
+`token_budget = 上下文窗口 − loop.output_reserve`（**总量**，不划分）；ⓑ `_window_plan` 的
+`token_budget // 2`（只覆盖历史一面）；ⓒ `LLMPlanner._system_prompt` 的**字面量 `2048`**
+（与 ⓐ 无任何关系）。**ⓒ 是真缺陷**：用户改 `llm.context_window` / `loop.output_reserve`，
+事实注入面**纹丝不动**。
+
+- **决策 ①：配比收敛为确定性纯函数，纪律逐条镜像 `plan_window`。** 新增
+  `src/core/context/blocks.py`：模块常量 `_SYSTEM_SHARE/_MEMORY_SHARE/_WINDOW_SHARE/_ARCHIVE_SHARE
+  = 0.20/0.15/0.30/0.15`；`plan_blocks(total_budget, *, enabled) -> BlockPlan | None` ——
+  **零 I/O、零模型调用**，只依赖 stdlib。五份额为**模块常量**（本**配额分配面**不新增配置键，
+  同 `_STEP_THRESHOLD` / `_SHORT_SHARE` 纪律）。
+- **决策 ②：20% 缓冲是「上界」，靠「不分配」实现，不是新的减法。** 总预算**已是**扣除输出预留后
+  的值（`loop.output_reserve` 已在 `loop_limits()` 的派生中扣过）⇒ 若缓冲再实现为
+  `total × 0.8` 的运算，**同一次预留会被扣两遍**。故 `reserve_tokens` 取**余数**
+  （`total − (system + memory + window + archive)`）：五块之和**恰为** `total`，且因四个可用块
+  均**向下取整**，缓冲恒 `≥ 0.20 × total`。这是外部蓝图模型与本仓模型**唯一重叠、唯一可能被
+  重复计数**之处，故在规格里写成 SHALL NOT。
+- **决策 ③：`None` ≠ 全零 —— 刻意偏离 `plan_window`。** `plan_window` 预算非正时返回
+  `WindowPlan(0,0,0,0)`，因其消费者**就是**那个机制（全零 = 关闭回灌，**有语义**）。`plan_blocks`
+  的消费者是**提示词预算**：此处「零配额」与「无配额」语义不同（前者会被当作 `budget=0` 传下去），
+  唯有 `None` 能表达「**不接管**，沿用你的既有字面量」。
+- **决策 ④：唯一消费者是「记忆 / 事实注入面」，其余四块**仅具咨询性**。** 五区块**不映射**到
+  `_system_prompt` 的**十**个块 —— 把五份额摊到十块是**提示词契约重写**，不是一次 change
+  （本 change 不做第 11 个块、不改提示词块序）。接通方式：`LoopContext.token_budget: int = 0`
+  （`perceive()` 置为 `self._token_budget`）+ `LLMPlanner(block_plan=False)` 构造参 +
+  `_system_prompt` 经 `_fact_budget(ctx)` 取额度。**开关缺省关** ⇒ `enabled=False` ⇒ `None` ⇒
+  仍字面 `_FACT_BUDGET = 2048` ⇒ 今日提示词**逐字不变**。
+- **决策 ⑤：开关在「启用面」，合法。** `loop.block_plan`（缺省 `False` + 独立访问器 + ConfigSpec
+  行 + `_loop_errors` 校验期拒绝非法字面量）。规格只在**配额分配面**禁新键；本键与 `0182` 的
+  `loop.compact_steps`（压实**触发**阈值）同性质 —— `三层窗口比例分配` 原文已明文许可
+  「触发阈值是另一面」。注入面与 `max_tokens` 同型：组合根算一次，注入**四个 loop 的全部 planner**。
+
+**规格影响**：`context` **ADDED** 一条要求「上下文区块配比（五区块 / 80-20 安全线）」（5 Scenario）；
+既有 7 条 Requirement **逐字保留**（不做 MODIFIED）。
+
+- **落点**：`src/core/context/blocks.py`（新）、`context/__init__.py`、`loop/protocol.py`、
+  `loop/default.py`、`loop/planner.py`、`configuration/manager.py`、`runtime.py`、
+  `tests/test_context_blocks.py`（新，8 用例）、`doc/04-testing/test-cases.md` §114、
+  `coding-plan/known-risk.md`、`doc/02-modules/context.md`。
+- **测试**：+8（2255 → **2263**；批次预估 +7，实为 +8 —— 多出的一条是
+  「开关开了但 `token_budget` 未接线 ⇒ 仍字面」的**两重保险**锚）。
+- **局限**：① **四个非事实块的配比不驱动任何行为** —— `BlockPlan` 的 `system/window/archive`
+  三字段今日仅供观测，本 ADR **不**声称系统已按五区块分配窗口（只声称「配比已表达、**一个面**已
+  接线」）；② **不覆盖 `_window_plan` 的 `// 2`** —— 窗口面已有独立口径，统一它属另一个 change
+  （会动历史回灌预算，回归面更大）；③ **块内不做二级分配** —— 「记忆」份额在关键事实 / 关系
+  （`0203`）/ 摘要之间不细分（`cap` 有界）；④ **回归锚的订正**：`tests/test_infomap_wiring.py:48`
+  与 `tests/test_phase13.py:185` 看似钉住 `2048`，实则**各自显式传参**去测装配器契约、从不观察
+  `_system_prompt` 传了什么 ⇒ 真正的逐字锚必须是**新的**（桩装配器捕获 `build(budget=)`），
+  已补并反证（忽略开关 ⇒ 该锚转红）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6498,3 +6552,4 @@ change `0182` / ADR-0173 正是把**轮内步数**误读作**对话轮数**的�
 | ADR-0188 | 02-modules/skills.md, 03-interfaces/skills-interface.md, 03-interfaces/judgment-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0189 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0190 | 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0191 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/context.md |

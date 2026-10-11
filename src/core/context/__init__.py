@@ -7,6 +7,7 @@
 """
 
 from .assembler import DynamicAssembler
+from .blocks import BlockPlan, plan_blocks
 from .budget import BudgetManager, estimate_tokens
 from .compactor import Compactor
 from .errors import ContextError, ContextErrorCode
@@ -15,6 +16,7 @@ from .models import Compaction, ContextPack, MapEntry, Pointer
 from .window import WindowPlan, plan_window
 
 __all__ = [
+    "BlockPlan",
     "BudgetManager",
     "Compaction",
     "Compactor",
@@ -27,5 +29,6 @@ __all__ = [
     "Pointer",
     "WindowPlan",
     "estimate_tokens",
+    "plan_blocks",
     "plan_window",
 ]

@@ -58,6 +58,10 @@ class LoopContext:
     summary_long: str = ""
     # 分层历史的**中期摘要**（紧邻短带之前的中带滚动摘要；缺省空 ⇒ 不注入）。
     summary_mid: str = ""
+    # 本轮 token 预算（缺省 `0` = **未接线**）。唯一消费者是 planner 的区块配额
+    # （`context.plan_blocks`）⇒ 推断期把「记忆」份额传给装配器 `build(budget=…)`。
+    # 缺省 `0` ⇒ 不产出配额 ⇒ planner 沿用其既有字面预算（change 0201 / ADR-0191）。
+    token_budget: int = 0
     _done: bool = field(default=False, repr=False)
 
     def done(self) -> bool:

@@ -96,6 +96,25 @@ ContextBuilder（L3 输入侧）
   本节**比率相对**的份额构成**第二套冲突边界**。要求：「压缩轴口径（轮 / 步两轴不可互换）」；
   守护：`tests/test_axis_units.py`。
 
+### 3.5 五区块配比与 80-20 安全线（change `0201`／ADR-0191）
+
+- **策略纯函数**：`core.context.plan_blocks(total_budget, *, enabled) -> BlockPlan | None`
+  —— **零 I/O、零模型调用**，与 `plan_window` 同纪律；份额为**模块常量**
+  `0.20 / 0.15 / 0.30 / 0.15`（系统提示 / 记忆 / 窗口 / 归档），缓冲 `0.20`（本**配额分配面**
+  不新增配置键）。
+- **缓冲靠「不分配」实现**：`reserve_tokens` 取**余数** ⇒ 五块之和**恰为**总预算，且因四块
+  向下取整，缓冲恒 `≥ 0.20 × 总预算`。总预算**已扣**输出预留（`loop.output_reserve`）⇒
+  再减一次 SHALL 为**双重预留**。
+- **`None` ≠ 全零**（刻意偏离 `plan_window`）：本函数的消费者是**提示词预算**，唯有 `None`
+  能表达「**不接管**，沿用调用方既有字面量」。
+- **唯一消费者** = **记忆 / 事实注入面**：`LoopContext.token_budget`（`perceive()` 置为
+  `self._token_budget`）→ `LLMPlanner(block_plan=…)` → 装配器 `build(budget=…)`。
+  **缺省关** ⇒ 仍字面 `_FACT_BUDGET = 2048` ⇒ 既有提示词**逐字不变**。其余四块
+  （系统提示 / 窗口 / 归档 / 缓冲）**仅具咨询性**，今日不驱动行为；本模块**不加第 11 个提示词块**、
+  **不给** `ContextPack` / `BudgetManager._measure` 加按块记账。
+- 启用面：配置 `loop.block_plan`（缺省 `False`）—— 与 `layer 3.3` 的 `loop.compact_steps`
+  同性质（**启用 / 触发面**，非配比面）。
+
 ---
 
 ## 4. 与记忆/约束的分工
