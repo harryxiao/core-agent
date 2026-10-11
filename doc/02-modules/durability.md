@@ -57,6 +57,11 @@ Durability（横切层）
 
 - 保留策略自动清理：按数量上限 / 时间窗口 / 存储配额清理过期检查点（时间窗口或 LRU），释放存储。
 - 关键检查点保护：pinned 检查点不受自动清理影响，直到显式取消标记。
+- **生产接线（change `0208`／ADR-0198）**：`RetentionManager.apply` 接入 `_write_checkpoint` —— 检查点
+  **落盘之后**按已配置通道清理（最新 ts 最大 ⇒ 永不误删刚写者）。**只接两通道**：数量上限
+  `durability.retention.max_count`（≥1 的整数）、时间窗口 `durability.retention.time_window_s`
+  （≥0 的数值）；**存储配额通道留库能力未接**（超配额抛 `RETENTION_QUOTA_EXCEEDED` ⇒ 不接落盘热路径）。
+  **两键皆缺省 ⇒ 零清理、既有路径逐字不变**；非法值阻断启动。
 
 ---
 

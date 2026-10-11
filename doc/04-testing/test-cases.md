@@ -2481,3 +2481,29 @@ Requirement 做全量替换）。
 > **规格**：`durability` **MODIFIED**「崩溃恢复」（全量替换 narrative + **ADD** Scenario
 > 「全部交互入口启动扫描呈现」）—— canonical **4 → 4** req（MODIFIED 不增）/ **13 → 14（+1）** scen。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0197 行。
+
+## 121. 保留策略接线（TC-RETENTION，change `0208`／ADR-0198，台账 E145）
+
+**能力**：`RetentionManager` 经 `_write_checkpoint` 接线到生产（此前零调用）—— `checkpoints.jsonl` 不再无限增长。
+
+**入口**：`src/core/configuration/manager.py`（两 ConfigSpec + `retention_limits()` + `_retention_errors`）、`src/core/runtime.py`（`_write_checkpoint` 落盘后 `apply`）。
+
+| 用例 | 场景 | 触发 | 断言（`tests/test_retention_wiring.py`） |
+|---|---|---|---|
+| TC-RETENTION-01 | 数量上限清理最旧 | `max_count=2` ⇒ 经编排器检查点回调写 5 个 | 剩 **2** 个且 == 最后写 2 个（`...::test_max_count_prunes_oldest`） |
+| TC-RETENTION-02 | 时间窗口清理过期 | `time_window_s=10` ⇒ 写 2 个后回拨 ts −100000 ⇒ 再写 1 个 | 过期者被清、新写者保留（剩 1）（`...::test_time_window_prunes_expired`） |
+| TC-RETENTION-03 | pinned 豁免 | `max_count=1` ⇒ 写 1 个 → pin → 再写 3 个 | pinned 仍在、共 2 个（`...::test_pinned_checkpoint_survives_pruning`） |
+| TC-RETENTION-04 | 缺省零清理（**零回归锚**） | 无 durability 配置 ⇒ 写 5 个 | 剩 **5** 个（逐字不变）（`...::test_default_off_never_prunes`） |
+| TC-RETENTION-05 | 三面解析 | spec 声明（key/cli_flag/env_var/map_to） | 两键 map_to/env_var 正确（`...::test_spec_declares_retention_keys`） |
+| TC-RETENTION-06 | yaml/env 生效 | yaml 配两键 / env 覆盖 max_count | 访问器返 `(3, 30.0)` / `(7, None)`（`...::test_config_yaml_enables` / `...::test_config_env_overrides`） |
+| TC-RETENTION-07 | 非法值阻断启动（5 参例） | `max_count=0`/`-1`/`true`、`time_window_s=-1`/`true` | `ConfigurationError`（`...::test_illegal_retention_value_blocks_startup[...]`） |
+
+> **反证（逐字锚非恒真，实测记录）**：摘 `_write_checkpoint` 的 `retention.apply` 调用 ⇒ TC-RETENTION-01/-02/-03
+> **红**（实测 `3 failed`）；复原 ⇒ 13 passed。TC-RETENTION-04（缺省关）在接线缺失时**恒绿** ⇒ 单独不构成证据，
+> 其价值在**与三例成对**（防「缺省即清理」）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2351 passed**（基线 **2338**，**+13**，与用例数一致：4 接线 + 1 声明 + 2 三面 + 1 缺省访问器 + 5 非法参例）。
+> **零回归**：两键皆缺省 ⇒ `retention_limits()` 返 `(None, None)` ⇒ `retention_policy=None` ⇒ `_write_checkpoint`
+> 内 `if retention_policy is not None` 短路 ⇒ 既有检查点落盘路径**逐字不变**。
+> **规格**：`durability` **MODIFIED**「生命周期与保留策略」（全量替换 + **ADD** Scenario ×3）—— canonical
+> **4 → 4** req / **14 → 17（+3）** scen。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0198 行。

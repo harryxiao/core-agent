@@ -289,6 +289,22 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         map_to="skills.retirement",
         exposure=ConfigExposure.ADVANCED,
     ),
+    ConfigSpec(
+        "durability.retention.max_count",
+        "--durability.retention.max-count",
+        "CORE_DURABILITY_RETENTION_MAX_COUNT",
+        default=None,
+        map_to="durability.retention.max_count",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "durability.retention.time_window_s",
+        "--durability.retention.time-window-s",
+        "CORE_DURABILITY_RETENTION_TIME_WINDOW_S",
+        default=None,
+        map_to="durability.retention.time_window_s",
+        exposure=ConfigExposure.ADVANCED,
+    ),
 ]
 
 _FEATURE_ENV_PREFIX = "CORE_FEATURES_"
@@ -428,6 +444,8 @@ class ConfigManager:
         errors.extend(_window_reserve_errors(config.llm.context_window, loop_raw))
         orch_raw = cast("dict[str, Any]", config.extra.get("orchestration") or {})
         errors.extend(_orchestration_errors(orch_raw))
+        dur_raw = cast("dict[str, Any]", config.extra.get("durability") or {})
+        errors.extend(_retention_errors(dur_raw))
         warnings = self._unknown_section_warnings(config) + self._unknown_feature_warnings(config)
         return ValidationResult(ok=not errors, errors=errors, warnings=warnings)
 
@@ -691,6 +709,25 @@ class ConfigManager:
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in _FEATURE_TRUE
+
+    def retention_limits(self) -> tuple[int | None, float | None]:
+        """检查点保留策略的两通道配置（缺省 ``(None, None)`` = 不清理；change 0208 / ADR-0198）。
+
+        返回 ``(max_count, time_window_s)``；``None`` 表示该通道未配置。**只暴露两通道** ——
+        存储配额通道留库能力（`RetentionManager` 超配额时抛 `RETENTION_QUOTA_EXCEEDED`，接进
+        检查点落盘热路径会让「写检查点」可能炸启动，故不接）。
+
+        **返回原始值对（非 `RetentionPolicy`）**：`configuration` 是**底座模块**
+        （`test_architecture.py:58`）⇒ 不得 import 能力层 `durability`；`RetentionPolicy`
+        由组合根装配。取值已过校验（≥1 的整数 / ≥0 的数值），此处只做 env/CLI 字符串归一。
+        """
+        if self._config is None:
+            return (None, None)
+        raw = cast("dict[str, Any]", self._config.extra.get("durability") or {})
+        ret = cast("dict[str, Any]", raw.get("retention") or {})
+        count = _parse_int(ret.get("max_count")) if "max_count" in ret else None
+        window = _as_number(ret.get("time_window_s")) if "time_window_s" in ret else None
+        return (count, window)
 
     def orchestration_difficulty_policy(self) -> str:
         """同波次调度策略（缺省 ``off`` = 不启用难易度策略；见规格「难易度感知的调度策略」）。
@@ -990,6 +1027,36 @@ def _loop_errors(raw: dict[str, Any]) -> list[str]:
         _FEATURE_TRUE | _FEATURE_FALSE
     ):
         errors.append(f"非法情景链开关: loop.causal_links={value}（须为 true/false 之一）")
+    return errors
+
+
+def _retention_errors(raw: dict[str, Any]) -> list[str]:
+    """检查点保留策略取值校验（对齐 durability「生命周期与保留策略」，change 0208）。
+
+    `durability.retention.max_count` 须为 **≥1 的整数**（``bool`` 视作非法 —— ``true`` 不是次数；
+    ``0`` 非法 ⇒ 不会意外「清空全部未 pinned 检查点」）；`time_window_s` 须为 **≥0 的数值**。
+    **两键皆缺省合法**（= 不清理）。非法取值**阻断启动**：静默兜底会把配置错误变成运行时的
+    诡异清理行为（同 `_circuit_breaker_errors` 口径）。
+    """
+    errors: list[str] = []
+    ret_raw = raw.get("retention")
+    if not isinstance(ret_raw, dict):
+        return errors
+    ret = cast("dict[str, Any]", ret_raw)
+    if "max_count" in ret:
+        count = _parse_int(ret.get("max_count"))
+        if count is None or count < 1:
+            errors.append(
+                f"非法保留数量上限: durability.retention.max_count={ret.get('max_count')}"
+                "（须为 ≥1 的整数）"
+            )
+    if "time_window_s" in ret:
+        window = _as_number(ret.get("time_window_s"))
+        if window is None or window < 0:
+            errors.append(
+                f"非法保留时间窗口: durability.retention.time_window_s={ret.get('time_window_s')}"
+                "（须为 ≥0 的数值）"
+            )
     return errors
 
 

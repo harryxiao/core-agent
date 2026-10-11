@@ -75,6 +75,11 @@ Configuration（横切）
   `output_reserve()` 各读一个既有/新增键，**不**并入 `loop_limits()` 二元组（其 arity 被多处解包断言
   钉死）；`output_reserve()` 与预算派生**同源**（预算 = 窗口 − 预留），组合根据此注入 planner 的
   请求侧输出上限 ⇒ 预留从**记账假设**变为**端点上界**（无新配置键、无规格变更）。
+- **durability 保留策略两键**（change `0208`／ADR-0198）：`durability.retention.max_count` 须为
+  **≥1 的整数**（`bool` / `0` / 负数一律非法）、`durability.retention.time_window_s` 须为 **≥0 的
+  数值**（`bool` 非法）；**两键皆缺省合法**（= 不清理），非法即阻断启动。访问器 `retention_limits()
+  -> tuple[int | None, float | None]` 返回**原始值对**（**不**返回能力层 `RetentionPolicy` ——
+  `configuration` 是底座模块不得 import `durability`；`timedelta` 装配留组合根）。
 - **已知模型窗口表**（change `0184`／ADR-0175）：`llm.context_window` 未配置（`0`）时，窗口来源由
   「恒回落常量 `65536`」改为**按 `llm.model` 从内置表推导** —— `model_windows.known_window(model)`
   做**子串匹配**（大小写不敏感）命中收录族返回其真实窗口，未命中返回 `0`（=「不知道」，调用方据此

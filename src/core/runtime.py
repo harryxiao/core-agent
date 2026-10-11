@@ -15,6 +15,7 @@ import warnings
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
@@ -38,6 +39,8 @@ from core.durability import (
     CrashRecovery,
     DurabilityError,
     RestoreHandle,
+    RetentionManager,
+    RetentionPolicy,
     TimeTravel,
 )
 from core.evolution import (
@@ -1020,6 +1023,18 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     checkpoints = CheckpointManager(store)
     time_travel = TimeTravel(store, effect_tracker=effect_tracker)
     crash_recovery = CrashRecovery(store)
+    # 保留策略接线（change 0208 / ADR-0198）：两通道皆缺省 ⇒ policy=None ⇒ `_write_checkpoint`
+    # 短路，零清理、逐字不变。存储配额通道留库能力（超配额抛 RETENTION_QUOTA_EXCEEDED，不接）。
+    retention = RetentionManager(store)
+    _ret_max_count, _ret_window_s = config.retention_limits()
+    retention_policy = (
+        RetentionPolicy(
+            max_count=_ret_max_count,
+            time_window=timedelta(seconds=_ret_window_s) if _ret_window_s is not None else None,
+        )
+        if (_ret_max_count is not None or _ret_window_s is not None)
+        else None
+    )
 
     def _checkpoint(
         task_id: str, outcomes: list[SubtaskOutcome], plan: Plan, session_id: str = ""
@@ -1063,6 +1078,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 "done": done,
             },
         )
+        # 保留策略：**新检查点已落盘之后**清理（最新 ts 最大 ⇒ 永不误删刚写者；change 0208）。
+        if retention_policy is not None:
+            retention.apply(retention_policy)
 
     orchestrator = TaskScheduler(
         decomposer=SubtaskDecomposer(

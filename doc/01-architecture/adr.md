@@ -6700,6 +6700,55 @@ change 不越界。
   ② `recover()` 扫描面仍未覆盖「轮级检查点」（`0214` 另立）；③ `serve` 既有呈现不受影响（同旗
   同函数）。
 
+## ADR-0198：保留策略接线 —— 缺省关、只接两通道、落盘后清理（change 0208 / 台账 E145）
+
+**背景 —— 库齐备、生产零调用。** `RetentionManager.apply(policy)`（`durability/retention.py:25-49`）
+三通道（数量上限 / 时间窗口 / 存储配额）＋ `pin`/`unpin`（`:51-55`）API 齐备、规格已写
+（`durability/spec.md`「生命周期与保留策略」，含 pinned 保护），但**生产零调用** —— 每次波次 / 任务
+完成都 `create_checkpoint` 追加快照（`durability/manager.py:32-54`，`put` 追加非覆盖）而**无人清理**
+⇒ `checkpoints.jsonl` 无限增长。且 `0214`（主 loop 轮级检查点）会把写入频率显著抬高 ⇒ 本 change
+**先行**铺好清理面。
+
+**D1 只接两通道，存储配额不接。** `storage_quota` 通道的 `apply` 在「全部 pinned 仍超配额」时抛
+`RETENTION_QUOTA_EXCEEDED` ⇒ 接进 `_write_checkpoint` 会让**检查点落盘这条路径可能炸**（写检查点
+本该是尽力而为的持久化，不该因配额把主流程打断）。故 `storage_quota` 与 `RetentionPolicy.strategy`
+字段（无消费者）**留库能力**，仅登记。暴露的两键：`durability.retention.max_count`（int ≥1）与
+`durability.retention.time_window_s`（float ≥0）。
+
+**D2 接线点 = 落盘之后，永不误删刚写者。** `RetentionManager.apply` 在 `_write_checkpoint` 内
+`create_checkpoint` **之后**调用：新检查点已在库中、其 `ts` 最大 ⇒ 数量上限的「清理最旧」永不会
+命中刚写的那个。时间窗口判据 `cp.ts < now - window` 对刚写者恒假（`ts ≈ now`）⇒ 同理安全。
+
+**D3 访问器返回原始值对，不返回 `RetentionPolicy` —— 守底座边界。** `configuration` 是**底座模块**
+（`test_architecture.py:58` `BASE_MODULES`）⇒ **不得** import 能力层 `durability`（`RetentionPolicy`
+在 `durability.models`）。故访问器 `retention_limits() -> tuple[int | None, float | None]`；`timedelta`
+装配留在组合根。先例：`max_concurrency()` 返回 int、`loop_limits()` 返回 tuple（均不返回能力层类型）。
+
+**D4 缺省关 ⇒ 零清理、逐字不变。** 两键皆缺省 ⇒ `retention_limits()` 返回 `(None, None)` ⇒ 组合根
+`retention_policy = None` ⇒ `_write_checkpoint` 内 `if retention_policy is not None` 短路 ⇒ **不清理
+任何检查点**。守全仓不变量「新行为缺省关 ⇒ 既有路径逐字不变」（对照 `0206`：那是缺陷修复、唯一例外）。
+
+**D5 非法值阻断启动。** `_retention_errors` 镜像 `_circuit_breaker_errors`：`max_count` 须为 **≥1 的
+整数**（`bool` 拒收；`0` 拒收 ⇒ 不会意外「清空全部未 pinned 检查点」）、`time_window_s` 须为 **≥0 的
+数值**（`bool` 拒收）；**两键皆缺省合法**（= 不清理）。非法值进 `validate_schema` errors ⇒
+`ConfigurationError` 阻断启动。
+
+- **落点**：`src/core/configuration/manager.py`（两 ConfigSpec + `retention_limits()` +
+  `_retention_errors`）、`src/core/runtime.py`（`_write_checkpoint` 落盘后 `apply`）、
+  `tests/test_retention_wiring.py`（新）、`doc/04-testing/test-cases.md` §121、
+  `coding-plan/known-risk.md`、`doc/02-modules/durability.md`、`doc/02-modules/configuration.md`。
+- **规格**：`durability` **MODIFIED**「生命周期与保留策略」（全量替换 narrative + **ADD** Scenario ×3；
+  既有两 Scenario 逐字保留）—— canonical **4 → 4** req（MODIFIED 不增）/ **14 → 17（+3）** scen。
+- **反证**：摘 `_write_checkpoint` 的 `retention.apply` 调用 ⇒ 三个重载用例红（`test_max_count_prunes_oldest`
+  / `test_time_window_prunes_expired` / `test_pinned_checkpoint_survives_pruning`，实测 `3 failed`）；
+  复原即 13 passed。缺省关用例（`test_default_off_never_prunes`）在接线缺失时**恒绿** ⇒ 单独不构成
+  证据，其价值在于**与三例成对**（防「缺省即清理」的越界）。
+- **局限**：① `max_count` 过小会清理未完成任务的旧检查点（续跑回退更早，非整体丢失，且用户显式配置）；
+  ② 每次落盘后 `apply` 需 `list_checkpoints` + 排序（O(n log n)）—— 检查点写入本在波次/轮次边界
+  （非主循环热路径），可接受；③ `storage_quota` 与 `strategy` 未接（D1）；④ 清理**不逐条记可逆效应**
+  （`store.delete` 直接落盘，与既有 `RetentionManager` 行为一致 —— 保留策略是**生命周期管理**而非
+  用户数据的可撤销操作，规格未要求可逆）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6892,3 +6941,4 @@ change 不越界。
 | ADR-0195 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/skills.md |
 | ADR-0196 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0197 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/cli-ops.md, 02-modules/durability.md |
+| ADR-0198 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/durability.md, 02-modules/configuration.md |
