@@ -2718,3 +2718,36 @@ Requirement 做全量替换）。
 > （本 change **不** MODIFY）—— canonical durability **4 → 5（+1）** req / **17 → 22（+5）** scen。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0204 行。
 
+
+---
+
+## 128. 提示词文本 pin（TC-PROMPTPIN，change `0215`／ADR-0205，台账 E152）
+
+**规格中性**：零 `src/` 改动。新 `tests/test_prompt_pinning.py`（12 用例）把 9 条核心 prompt 头的
+**措辞**与**渲染结构不变量**钉死。承 `tests/test_memory.py` 的 `build_prompt` 内容锚先例。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-PROMPTPIN-01 | 关键事实抽取头逐字 | `extract._PROMPT_HEAD` | `== _EXTRACT_HEAD`（JSON 数组形状 / `<redacted>` / `ref` 只认 `coeffect:`）（`tests/test_prompt_pinning.py::test_extract_head_verbatim`） |
+| TC-PROMPTPIN-02 | 实体关系抽取头逐字 | `extract._RELATION_PROMPT_HEAD` | `== _RELATION_HEAD`（谓词必须归入下表 / 归不入不输出）（`...::test_relation_head_verbatim`） |
+| TC-PROMPTPIN-03 | 会话摘要头逐字 | `summarize._PROMPT_HEAD` | `== _SUMMARIZE_HEAD`（`...::test_summarize_head_verbatim`） |
+| TC-PROMPTPIN-04 | 重要度评分头逐字 | `importance._PROMPT_HEAD` | `== _IMPORTANCE_HEAD`（`...::test_importance_head_verbatim`） |
+| TC-PROMPTPIN-05 | SOP 提炼头逐字 | `sop._PROMPT_HEAD` | `== _SOP_HEAD`（`...::test_sop_head_verbatim`） |
+| TC-PROMPTPIN-06 | 技能迭代头逐字 | `iteration._PROMPT_HEAD` | `== _ITERATION_HEAD`（`...::test_iteration_head_verbatim`） |
+| TC-PROMPTPIN-07 | 主推理规划头逐字 | `loop.planner._SYSTEM_PROMPT` | `== _PLANNER_SYSTEM`（工具 JSON 单独成块 / 不得围栏包裹）（`...::test_planner_system_prompt_verbatim`） |
+| TC-PROMPTPIN-08 | 任务拆解头逐字 | `orch.planner._DECOMPOSE_SYSTEM` | `== _DECOMPOSE_SYSTEM`（2–6 DAG / 不伪造依赖）（`...::test_decompose_system_verbatim`） |
+| TC-PROMPTPIN-09 | 验收判定头逐字 | `orch.planner._VERIFY_SYSTEM` | `== _VERIFY_SYSTEM`（`...::test_verify_system_verbatim`） |
+| TC-PROMPTPIN-10 | 六 builder 头恒首位 | 各 `build_*` | 产物以对应头开头（占位符 builder 取解析后头）（`...::test_builders_render_head_at_top`） |
+| TC-PROMPTPIN-11 | 条目行前缀 / 占位符 / 白名单 | `build_*` | `"\n- "` 出现；`{max}` 解析为实参、无残留；谓词**集合恒等**且全量出现（`...::test_item_lines_prefixed_and_placeholders_resolved`） |
+| TC-PROMPTPIN-12 | 节选上界字面量 + 有界 | 超长正文（10× 界） | 四个上界常量 `== 400`（**独立字面量**，非派生）；单条节选 ≤ 400、超长串不整段进 prompt（`...::test_entry_excerpts_bounded`） |
+
+> **反证（逐字锚非恒真，实测记录，四组）**：(A) `extract._PROMPT_HEAD` 的「绝不」→「请勿」⇒
+> TC-PROMPTPIN-01 **红**（实测 `1 failed, 11 passed`）；(B) `planner._SYSTEM_PROMPT` 删
+> 「，不得用代码块围栏包裹」⇒ TC-PROMPTPIN-07 **红**；(C) `_CANONICAL_PREDICATES` 去 `related_to`
+> ⇒ TC-PROMPTPIN-11 **红**（集合恒等）；(D) `extract._MAX_ENTRY_CHARS` 400 → 4000 ⇒
+> TC-PROMPTPIN-12 **红**（字面量锚）。全部复原 ⇒ `src/core/memory/extract.py` ／
+> `src/core/loop/planner.py` **`diff -q` 逐字节相同**，复测 **12 passed**。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2433 passed**（基线 **2421**，**+12**，与用例数一致）。
+> **零回归**：`git diff --stat src/` **为空**（本 change 的核心承诺）。**规格中性**：`openspec validate --all`
+> 32 passed（31 canonical ＋ 1 change）→ 归档后 **31 passed**，canonical 计数**不变**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0205 行。

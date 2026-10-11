@@ -7150,6 +7150,42 @@ loop 接线** —— 子 / 神兽 / 宠物 loop **不接**（沿既有隔离注�
   `src/core/loop/default.py` / `src/core/runtime.py` **md5 / diff -q 逐字节相同**。
 - **局限**：见 D7。来源另见 `doc/openspec/changes/archive/2026-10-11-0214-loop-turn-checkpoint/design.md`。
 
+## ADR-0205：提示词文本 pin —— 9 条 prompt 头逐字钉死（change 0215 / 台账 E152）
+
+**背景 —— 措辞是私有常量，零测试 pin ⇒ 漂移静默改行为。** 控制面/数据面的提词措辞是模块私有
+常量（实现细节），而 `tests/` 对 9 条核心 prompt 头的引用数**为零**；唯一内容锚是
+`tests/test_memory.py` 的 `build_prompt`（一条 builder 的**结构**）。后果：改一个约束句（如
+「绝不输出密钥明文」「谓词必须归入闭表白名单」「工具 JSON 单独成块」）即**静默**改模型行为、
+无测试拦截 —— 对**承重措辞**而言，漂移即**能力退化或安全面收窄**。
+
+**D1 只 pin，不改 `src/`。** 零 `src/` 改动；新 `tests/test_prompt_pinning.py`（12 用例）持
+**独立副本**逐字比较。副本是**有意重复**（pin 的本质）：src 措辞一改，断言以清晰 diff 转红，
+逼改者**显式**确认「这是有意的行为改动」。承重措辞逐字进副本，**不只首句**。
+
+**D2 pin 的是实现细节，**不**升进规格。** 规格约束的是「抽取/归纳**发生**及其产物形状」，不是
+模型的措辞；把 prompt 字面量升进规格即**过约束**（措辞非对外契约，且会锁死换模型的自由度）。
+故**规格中性**：无 spec delta，`.openspec.yaml` `skip_specs: true`（沿 `0156` / `0189` /
+`0195` / `0199` 先例）。
+
+**D3 结构与措辞分离：两类锚。** 逐字头（9）钉**措辞**；结构不变量（3）钉**渲染契约**（与既有
+`build_prompt` 锚同口径）：① 六 builder 产物恒以头开头且条目行 `- ` 前缀；② 模板占位符解析后
+无残留、闭合谓词白名单**集合恒等**且全量出现；③ 节选上界**钉死为字面量**（400）且超长正文不炸
+prompt。**为何把「上界 = 400」也钉成字面量**：若测试从模块常量**派生**上界（`×10` 构造超长、
+再用同常量断言），则常量翻倍时用例**恒绿**（自我指涉 ⇒ 空过）—— 必须用**独立字面量**作绝对锚。
+
+- **规格（规格中性）**：无 spec delta；`openspec validate --all` 32 passed（31 canonical ＋ 1 change）
+  → 归档后 31 passed。canonical 规格计数**不变**。
+- **反证（四组，实测）**：① `extract._PROMPT_HEAD` 的「绝不」→「请勿」⇒ `1 failed, 11 passed`
+  （仅 `test_extract_head_verbatim`）；② `planner._SYSTEM_PROMPT` 删「，不得用代码块围栏包裹」⇒
+  仅 `test_planner_system_prompt_verbatim` 红；③ `_CANONICAL_PREDICATES` 去 `related_to` ⇒ 仅结构锚
+  `test_item_lines_prefixed_and_placeholders_resolved` 红（集合恒等）；④ `extract._MAX_ENTRY_CHARS`
+  400→4000 ⇒ 仅 `test_entry_excerpts_bounded` 红（字面量锚）。全部复原 ⇒
+  `src/core/memory/extract.py` / `src/core/loop/planner.py` **diff -q 逐字节相同**，12 绿。
+- **局限**：① pin 的是**当前**措辞 ⇒ 有意改措辞时须**同步**改副本（这是设计意图，非缺陷）；
+  ② 只覆盖 9 条**核心**头，未覆盖 `LoopContext`/诊断/进化等次级文本与 `_system_prompt` 的块序；
+  ③ 结构锚只钉「有界 / 前缀 / 占位符」，不钉**块拼接顺序**（归 `0201` 的 `plan_blocks` 锚域）。
+- 来源另见 `doc/openspec/changes/archive/2026-10-11-0215-prompt-text-pinning/design.md`。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7349,3 +7385,4 @@ loop 接线** —— 子 / 神兽 / 宠物 loop **不接**（沿既有隔离注�
 | ADR-0202 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/evolution.md, 03-interfaces/evolution-interface.md |
 | ADR-0203 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/notes.md, 02-modules/rag.md, 03-interfaces/notes-interface.md |
 | ADR-0204 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/durability.md, 02-modules/loop.md, 03-interfaces/durability-interface.md |
+| ADR-0205 | 04-testing/test-cases.md, coding-plan/known-risk.md |
