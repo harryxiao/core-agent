@@ -3023,3 +3023,27 @@ Scenario ＋ ADDED 1 Scenario；既有其余 7 Scenario 逐字保留）。承 `0
 > ⇒ canonical 计数**不变**（与 `0220` 同口径）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0215 行（锚为手工清单 / 行号只覆盖 §1 表 /
 > 不核多余行 / 未采反向生成）。
+
+## 139. 长任务 × 记忆待裁决登记（TC-LTARB，change `0226`／ADR-0216，台账 E163）
+
+**规格中性**：`skip_specs: true`。**零 `src/` 改动**（`git diff --stat src/` 为空）—— 把「长任务 ×
+记忆」的四项无立项（阶段锚定 / 检索质量 / M4 基准 / 索引漂移）＋ 一处编号歧义**登记为待裁决**
+（PA-08~PA-12），并给登记簿加**结构守卫**。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-LTARB-01 | 两轮分节齐 | `Pending-Arbitration.md` 文本 | 含 `## §0.1` / `## §0.2` / `## §1.1` / `## §1.2`（混作一节会让开放项被读成已闭项）（`tests/test_arbitration_ledger.py::test_two_rounds_stay_separated`） |
+| TC-LTARB-02 | 总表 ↔ 逐条一致 | §1 两张表的 `**PA-NN**` 行 vs §2 的 `### PA-NN` 小节 | 差集为**空**（防「总表有、正文丢」）（`...::test_every_listed_item_has_a_detail_section`） |
+| TC-LTARB-03 | 闭项必带 change 号 | §1 中所有含「已闭」的 PA 行 | 每行都匹配 `` `0\d{3}` ``（否则追溯断点）（`...::test_closed_items_carry_a_change_number`） |
+| TC-LTARB-04 | 开放项五要素齐 | PA-08~PA-12 逐条小节（5 参数化） | 各含「现象 / 证据 / 可选项 / 建议 / 落地面」（缺一即不可裁决）（`...::test_open_items_are_actionable`） |
+| TC-LTARB-05 | 登记 ≠ 裁决（手工项） | PA-08~PA-12 | 五项**全部仍开**（无 change 号、无「已闭」标记）—— 本 change 一项都不实现（非 pytest 锚） |
+| TC-LTARB-06 | 实测只统计结构（手工项） | §5 复核命令 | 输出仅 id 前缀 / layer / kind / 计数；**绝不回显正文或取值**（守 `CORE-NFR-SEC1`）；`.env` 只列变量名（非 pytest 锚） |
+
+> **反证（实测两组）**：(A) `### PA-09` 改名 ⇒ `test_every_listed_item_has_a_detail_section` 与
+> `test_open_items_are_actionable[PA-09]` **转红**；(B) 抹掉 PA-01 行的 `` `0222` `` ⇒
+> `test_closed_items_carry_a_change_number` **转红**。复原 ⇒ `Pending-Arbitration.md` `md5sum`
+> **逐字节相同**。绿后全量 `.venv/bin/pytest -q` ⇒ **2542 passed**（基线 **2534**，**+8**）。
+> **规格中性**：本环境**无 `openspec` CLI** ⇒ **未复跑** `validate`；零 spec delta ⇒ canonical 计数
+> **不变**（沿 `0220`/`0225` 同口径）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0216 行（登记≠裁决 / 守卫不判内容 /
+> 实测是快照 / 未合并进 known-risk / PA-11 根治在自身）。

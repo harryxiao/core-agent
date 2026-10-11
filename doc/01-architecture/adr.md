@@ -7568,6 +7568,46 @@ helper；`skills/router.py`、`crystallizer.py` 已 import `core.memory` ⇒ **�
   局限②）；④ **未采反向生成**（同 D1）。
 - 来源另见 `doc/openspec/changes/…-0225-mirror-staleness-closeout/design.md`、`coding-plan/Pending-Arbitration.md` §4。
 
+## ADR-0216：长任务 × 记忆待裁决登记 —— 登记簿拆两轮 ＋ 结构守卫（change 0226 / 台账 E163）
+
+**背景**：2026-10-11 用户问「**现在的 core-agent 四层记忆光谱 ＋ 四类记忆模式，满足长任务要求
+了吗**」。两路只读取证（要求侧规范 / 实现侧现状）＋ 对**真实运行配置与 state** 的经验核验，结论为：
+**四类记忆的能力位已落地接线**（成文映射见 `phase-38.md:7-8`），但长任务三条硬要求里**两条无对应
+机制**（阶段/里程碑锚定、万条不漂移），另有一批**无立项**（M4 基准），并暴露两处**登记/索引级**缺口 ——
+其中 `coding-plan/README.md` 的阶段索引漂移**已实际造成返工**：按 README 找会漏掉 `phase-36`
+（长任务硬化）与 `phase-38`（**专门**对照同一份四维记忆蓝图做查漏补缺）两册最相关的账，
+从而把**已裁决过的事项**重报为缺口。
+
+**D1 登记进同一册、升级为多轮登记簿。** `Pending-Arbitration.md` 的定位即「登记需要人裁决才能推进
+的开放项」，其失效方式恰是**入口分裂**：另开一份会让「还有什么在等裁决」有两个答案。故按
+`§0.x`/`§1.x` 分轮，第一轮条目**逐字保留**（只改其所在分节标题）—— 沿 `known-risk.md` 对历史行号
+快照的同一纪律。
+
+**D2 加结构守卫、不判内容。** 待裁决项的**内容**无真源可核（`file:line` 随代码漂移、选项代价是人的
+判断）；可判定的是**结构完整性** —— 总表↔逐条一致、闭项带 change 号、开放项有「落地面」，四条恰好
+覆盖「悄悄丢项」的全部失效方式。纪律逐条镜像 `test_prompt_mirror.py`（只钉可判定部分 ＋ docstring
+明写不判什么）。
+
+**D3 §5 附录带可重跑命令、且只统计结构。** 本轮最有价值的结论是**实测**（三项配置源皆无功能键 ⇒
+「缺省关」确实关着；213 条记忆里 `relation.*`/`episodic.*`/`loop.failure.*`/`compaction.mid.*` 皆为 0）。
+快照会过期 ⇒ 附命令让人**自己复核**。`state`/`.env` 复核**只打印 id 前缀与变量名**，**绝不回显正文或
+取值**（守 `CORE-NFR-SEC1`）。
+
+**D4 外部材料不作判据。** 三份蓝图类材料均**未跟踪**且前两份自标「百度AI生成，仅供参考」；台账
+**明写不取**其「里程碑永久删除／单库无隔离／三方依赖」（`known-risk.md:269`）；ADR-0190 已裁
+**采其结构弃其数值**（`known-risk.md:106`）⇒ 「拿蓝图当尺子」得出的「不满足」是**裁决过的**，非遗漏。
+
+- **规格**：**中性**（`skip_specs: true`）—— 改动全在**文档面**与**测试面**，**零 `src/`**
+  （`git diff --stat src/` 为空）。**登记 ≠ 裁决**：PA-08~PA-12 **全部保持开放**。
+- **反证（实测两组）**：(A) `### PA-09` 改名 ⇒「总表↔逐条」用例与 `test_open_items_are_actionable[PA-09]`
+  转红；(B) 抹掉 PA-01 行的 change 号 ⇒「闭项必带 change 号」用例转红；复原 ⇒ `md5sum` **逐字节相同**。
+  绿后全量 `.venv/bin/pytest -q` ⇒ **2542 passed**（基线 **2534**，**+8**）。
+- **局限**：① **登记不等于裁决**（五项全开，一项未实现）；② **守卫不判内容**（证据漂移不会红）；
+  ③ **§5 实测是当日快照**（属证据非证明）；④ **未采「合并进 `known-risk.md`」**（语义不同，合并会让
+  「在等什么」不可见）；⑤ **PA-11 的根治在 PA-11 自身**（本 change 只登记缺口，未补 README）。
+- 来源另见 `doc/openspec/changes/…-0226-longtask-memory-arbitration/design.md`、
+  `coding-plan/Pending-Arbitration.md` PA-08~PA-12。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7778,3 +7818,4 @@ helper；`skills/router.py`、`crystallizer.py` 已 import `core.memory` ⇒ **�
 | ADR-0213 | 03-interfaces/skills-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0214 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0215 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
+| ADR-0216 | 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
