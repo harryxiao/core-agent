@@ -421,6 +421,11 @@ class MemoryBackend(Protocol):
 
 MVP 实现：`FileBackend`（`memory/*.md` + `memory/*.jsonl`）。
 
+**落盘耐久承诺（change `0206`／ADR-0196，缺省生效）**：`FileBackend` 的 JSONL 落盘**原子提交**
+（写同目录 tmp ＋ `os.replace` ⇒ 目标文件不出现半写/空文件）；`_load` **逐行容错**（坏行跳过、
+末尾汇总告警 `损坏 N 行`，**不收 `OSError`**、**不回显行内容**）。⇒ 半写崩溃从「启动直接抛异常」
+变为「跳过坏行继续启动」。这是**缺陷修复**（完好文件行为逐字不变），不是可关的新行为。
+
 ---
 
 ## 6. 约束
