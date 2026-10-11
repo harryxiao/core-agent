@@ -71,6 +71,12 @@ TraceObserver = Callable[[str], None]
 # 生产侧注入组合根适配层闭包。
 ActionObserver = Callable[[LoopContext, Action, ActionResult], None]
 
+# 会话轮级检查点回调：``(trace_id, session_id, goal, done)`` → 无返回值；缺省未注入则不做。
+# 轮首 ``done=False``、轮末 ``done=True``，两次共用同一 ``trace_id`` ⇒ 同一 task id 承载该轮的
+# 「在途 / 完结」两态。loop **不 import** durability（架构红线），生产侧注入组合根闭包；
+# 写入失败的降级策略（只告警、不改变本轮结局）由注入侧负责（change 0214 / ADR-0204）。
+TurnCheckpoint = Callable[[str, str, str, bool], None]
+
 
 _MAINTENANCE_INTERVAL_S = 900.0  # 记忆维护节拍（秒）：默认 15 分钟
 _MAX_ACTION_EXCERPT = 400  # 动作事件 args/output 节选上界（事件面有界）
@@ -298,6 +304,9 @@ class DefaultLoop(Plugin):
         # 执行接缝包装器（change 0209 / ADR-0199，缺省 `None`）。注入 ⇒ 包裹 `self.act`
         # （容错重试）；`None` ⇒ `self._act is self.act`，既有路径**逐字不变**。
         act_wrapper: Callable[[ActFn], ActFn] | None = None,
+        # 会话轮级检查点回调（change 0214 / ADR-0204，缺省 `None`）。注入 ⇒ 轮首 / 轮末各写
+        # 一次（在途 / 完结）；`None` ⇒ **零调用、零 I/O**，既有路径**逐字不变**。
+        turn_checkpoint: TurnCheckpoint | None = None,
     ) -> None:
         self._planner = planner
         self._memory = memory
@@ -333,6 +342,8 @@ class DefaultLoop(Plugin):
         self._last_trace: dict[str, str] = {}
         # 执行接缝：缺省即 `self.act` 本身（`act_wrapper` 为 None ⇒ **逐字不变**）；注入 ⇒ 包裹。
         self._act: ActFn = act_wrapper(self.act) if act_wrapper is not None else self.act
+        # 会话轮级检查点外发口（缺省 None ⇒ 轮首/轮末均不调用，零 I/O、逐字不变；change 0214）
+        self._turn_checkpoint = turn_checkpoint
 
     # ---- Plugin 生命周期 ----
 
@@ -401,6 +412,10 @@ class DefaultLoop(Plugin):
         ctx = self.perceive(user_input, session_id=session_id)
         self._consult_notes(ctx, trace_id)
         self._load_pinned_notes(ctx, trace_id)
+        # 轮首写点（change 0214 / ADR-0204）：用户消息**已进**转录（`perceive` 内追加）、
+        # 前置读（Consult / 常驻注入）**已完成** ⇒ 此处标记「本轮在途」。`astream` 无
+        # `try/finally` ⇒ 中途异常 / 被杀天然留未完结态（与编排波次回调同语义）。
+        self._mark_turn(trace_id, session_id, ctx, done=False)
         limit_reason = ""
         # 推理产出不可用（解析失败 / 模型调用失败）的失败态终止动作 ⇒ 本轮失败（0166 / ADR-0156）。
         # 与 `limit_reason` **并列**：后者管**终止语义**（`loop_failed` 事件、合成文案、转录门控），
@@ -497,6 +512,9 @@ class DefaultLoop(Plugin):
             reason=limit_reason,
             task=_task_text(ctx),
         )
+        # 轮末写点（change 0214 / ADR-0204）：成功路与 `limit_reason` 终止路**都**到达此处
+        # （`remember` 在两分支之外） ⇒ 终止轮同样被标记完结。
+        self._mark_turn(trace_id, session_id, ctx, done=True)
         # 维护节拍同样卸载：冷路径（进化 review / patch author）内含同步模型调用
         # （change 0167 / ADR-0157）。
         await asyncio.to_thread(self._maintain, trace_id, session_id)
@@ -553,6 +571,19 @@ class DefaultLoop(Plugin):
         except Exception as err:  # noqa: BLE001 — 常驻注入失败降级，不影响本轮结果
             ctx.pinned_notes = ""
             self._trace(trace_id, "pinned_notes_consult_failed", {"error": str(err)})
+
+    def _mark_turn(self, trace_id: str, session_id: str, ctx: LoopContext, *, done: bool) -> None:
+        """轮级检查点外发：把本轮「在途 / 完结」交给注入的闭包（缺省不启用；change 0214）。
+
+        契约 ``(trace_id, session_id, goal, done)``；轮首 ``done=False``、轮末 ``done=True``。
+        ``goal`` 取本轮任务文本（``perceive`` 写入的首条 user 消息）⇒ 两次写点**同值**。
+        闭包异常**不**在此吞：降级策略（持久化失败只告警、不改变本轮结局）是**注入侧**的
+        契约（组合根闭包），与本类其余钩子「在此降级留痕」的分工不同 —— 那些钩子的产物
+        入**上下文**，本钩子只**外发**事实。
+        """
+        if self._turn_checkpoint is None:
+            return
+        self._turn_checkpoint(trace_id, session_id, _task_text(ctx), done)
 
     def _notify_turn(self, ctx: LoopContext, trace_id: str, *, ok: bool) -> None:
         """收尾钩子：把任务文本 + 行动/结果序列 + 本轮成败交给注入的观察者（缺省不启用）。

@@ -47,6 +47,9 @@ Durability（横切层）
   回调 ⇒ 零副作用），**不自动重执行**；呈现走 **stderr**（机读入口 `mcp serve` 的 stdout 是协议流）
   且**只报 task id**（不回显任务正文 / 记忆 / 密钥）。（change `0207`／ADR-0197 补全入口覆盖，此前
   仅 `serve` / `task` fresh 两入口。）
+- 启动扫描呈现（**会话轮面**）：主循环轮级检查点（见 3.5）的**未完结轮**在启动扫描时**独立呈现** ——
+  报中断轮**数量与会话标识**，**不含** `task --resume`（轮面语义是**续聊即恢复**、不自动重执行）；
+  编排任务面照旧给 `task --resume` 提示。两面**不混列**。（change `0214`／ADR-0204）
 
 ### 3.3 时间旅行
 
@@ -63,6 +66,22 @@ Durability（横切层）
   （≥0 的数值）；**存储配额通道留库能力未接**（超配额抛 `RETENTION_QUOTA_EXCEEDED` ⇒ 不接落盘热路径）。
   **两键皆缺省 ⇒ 零清理、既有路径逐字不变**；非法值阻断启动。
 
+### 3.5 会话轮级检查点（主循环，change `0214`／ADR-0204）
+
+- **动机**：`create_checkpoint` 的生产调用链原本**只有**编排器波次回调一条 ⇒ 一个**非编排的长时单轮**
+  中途被杀**整轮无痕**、重启无呈现。本 change 给**主 loop**加轮级写点。
+- **两写点**：轮首（`_load_pinned_notes` 后）写 `done=False`、轮末（`remember` 后，**成功与
+  `limit_reason` 两路都达**）写 `done=True`。**不逐步刷新**（`CheckpointStore._persist` 每 `put`
+  全量重写 ⇒ 逐步 O(n²)；增长由 3.4 保留策略兜）。`astream` 无 `try/finally` ⇒ 轮内异常 / 进程被杀
+  **天然**留 `done=False`。
+- **命名空间隔离**：`task_id = "turn.<trace_id>"` ＋ `state["kind"] = "turn"`（**双判据**）—— 防
+  `task --resume` 误接一个**不可重放**的续跑（轮面**不含**撤销账本）。
+- **注入路径**：`DefaultLoop(turn_checkpoint=…)` 为**闭包注入**（loop **不** import durability，沿
+  `turn_observer`／`cold_path` 先例）；闭包 `except DurabilityError → warn` 降级（**非**裸 `Exception`）。
+- **启动呈现分流**：见 3.2 的「启动扫描」段 —— 轮面**独立一段**、报数量与会话标识、**不含**
+  `task --resume`（**续聊即恢复**，不自动重执行）。
+- **缺省关**：`loop.turn_checkpoint`（bool 缺省 `False`）⇒ 构造参 `None` ⇒ **零写入**、既有路径逐字不变。
+
 ---
 
 ## 4. 与 loop / orchestration 的挂接
@@ -71,6 +90,7 @@ Durability（横切层）
 loop（L3）四阶段：
   Act       ──► EffectTracker 记录 undo 栈（副作用级，供 tool-use 时间旅行回滚）
                  └── CheckpointManager 在轮次边界 / 长任务里程碑创建检查点
+  Perceive→  ──► 轮首写 turn.<trace_id>（done=False）；Remember 后写 done=True（change 0214／ADR-0204）
   Remember  ──► 每轮写 L2 记忆（无行动不记忆）
 orchestration（任务级）：
   断点续跑   ──► 挂起时经 CheckpointManager 持久化执行上下文与中间结果

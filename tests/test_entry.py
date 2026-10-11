@@ -698,6 +698,7 @@ def _patch_runtime(  # noqa: PLR0913 — 测试桩装配参数组（checkpoints/
         checkpoints=checkpoints,
         time_travel=time_travel,
         recover=lambda: handles or [],  # 启动扫描：未完成任务句柄（change 0191）
+        recover_turns=lambda: [],  # 启动扫描：中止的会话轮（change 0214）；空 ⇒ 无轮面呈现
     )
     monkeypatch.setattr("core.entry.build_runtime", lambda config: runtime)
     if registry is not None:
@@ -1156,6 +1157,7 @@ def _patch_fake_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
         beast_activator=None,  # change 0137：`_build_ui` 读该字段
         transcript=None,  # change 0115：`_build_ui` 读该字段；None ⇒ 读取面逐字保持原形状
         recover=lambda: [],  # change 0207：入口启动扫描调 `runtime.recover()`；空 ⇒ 静默
+        recover_turns=lambda: [],  # change 0214：轮面独立呈现面；空 ⇒ 静默
         app=SimpleNamespace(
             llm=LLMConfig(
                 provider="openai", model="gpt-4o", endpoint="https://x", api_key_ref="${K}"

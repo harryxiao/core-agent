@@ -662,6 +662,9 @@ def test_entry_run_wires_runtime(monkeypatch) -> None:
         def recover(self):  # change 0207：`run` 入口启动扫描调 `runtime.recover()`
             return []
 
+        def recover_turns(self):  # change 0214：轮面独立呈现面（此处无中止轮）
+            return []
+
     def _fake_build(config, **kwargs):
         calls["config"] = config
         calls["build_kwargs"] = kwargs

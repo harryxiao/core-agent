@@ -146,7 +146,15 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
 - **只换执行线程**：三个私有方法签名与内部降级链**逐字不动**，四个注入接缝仍是**同步 callable**
   ⇒ 终止语义、事件序、转录追加、遥测事件名零回归。依据：ADR-0064 决策②（同步传输本就在工作线程上跑）。
 
-### 3.6 可观测
+### 3.6 轮级检查点（change `0214` / ADR-0204）
+
+- 新可选构造参 `turn_checkpoint: Callable[[str, str, str, bool], None] | None`（`(trace_id, session_id,
+  goal, done)`，**闭包注入** —— loop **不** import durability，沿 `turn_observer`／`cold_path` 先例）。
+- **两写点**：轮首（`_load_pinned_notes` 后）写 `done=False`、轮末（`remember` 后）写 `done=True`，
+  经私有 `_mark_turn`；`astream` 无 `try/finally` ⇒ 轮内异常 / 被杀**天然**留 `done=False`（镜像波次语义）。
+- **缺省 `None`** ⇒ `_mark_turn` 首行短路 ⇒ **零写入**、既有路径逐字不变；`goal` 由 `_task_text(ctx)` 取。
+
+### 3.7 可观测
 
 - 每轮生成 `trace_id`，贯穿日志/效应/记忆写入，单轮可复现（NFR-OBS2）。
 

@@ -7089,6 +7089,67 @@ ADR、再开规格变更，而非顺手补签名」—— 本 change 的规格/�
   两次复原 ⇒ **md5 逐字节相同**（`ENTRY-RESTORED-OK` / `STORE-RESTORED-OK`）并复测 8 passed。
 - **局限**：见 D8。来源另见 `doc/openspec/changes/archive/2026-10-11-0213-rag-doc-summary-notes/design.md`。
 
+## ADR-0204：主循环会话轮级检查点 —— 两写点 / `turn.` 命名空间隔离 / 轮面独立呈现（change 0214 / 台账 E151）
+
+**背景 —— 长时单轮被杀，整轮无痕。** `create_checkpoint` 的生产调用链**只有一条**：编排器波次回调
+（`runtime.py` 的 `_checkpoint` / `_done` 注入点）。⇒ 一个**非编排的长时单轮**（例如一次长 ReAct）
+若中途被杀，**整轮无任何落盘痕迹**，且重启后**无呈现**（`_recover_incomplete` 只认编排任务）。
+本 change 补主 loop 的轮级写点（用户裁决：「⑤b 主 loop 轮级检查点」进本批）。
+
+**D1 写点 = 轮首 / 轮末两处，**不**逐步刷新。** `CheckpointStore._persist` 每次 `put` **全量重写**
+文件 ⇒ 逐步写会是 **O(n²)**。故只两写：轮首（`_load_pinned_notes` 后，用户消息已进 transcript、序一致）
+置 `done=False`；轮末（`remember` 后，**成功与 `limit_reason` 两路都达**）置 `done=True`。`astream`
+**无 `try/finally`** ⇒ 轮内异常 / 进程被杀**天然**留 `done=False`（镜像波次语义，不谎报完结）。增长
+由**保留策略**兜 —— 故 `0208`（RetentionManager 接线）**先行**。
+
+**D2 命名空间隔离 `turn.<trace_id>`。** 轮面检查点用 `task_id = f"turn.{trace_id}"` ＋
+`state["kind"] = "turn"`（前缀 + kind **双判据**）。理由：**防 `task --resume` 误接** —— 轮面
+**不可**重放（无撤销账本，见 D7），若落入任务续跑面 ⇒ CLI 会提示一个**无法真正恢复**的续跑。
+
+**D3 闭包注入（loop **不** import durability）。** 新可选参
+`turn_checkpoint: Callable[[str, str, str, bool], None] | None`（`(trace_id, session_id, goal, done)`），
+沿 `turn_observer` / `cold_path` / `act_wrapper` **闭包注入先例**（loop → durability 是**红线**外的
+依赖，必须由组合根注入）。闭包自防御用 `except DurabilityError`（**非**裸 `Exception`）：满足规格
+「写入失败（持久化不可用）SHALL 只记录告警」，同时**不吞**编程错误（保持 loud）；含
+`retention_policy` 落盘后 `apply`（与 `0208` 同点）。
+
+**D4 分流 = 两套扫描语义，**不**做共享重构。** `_recover_incomplete` 的既有语义「**任一**快照
+`done=True` ⇒ 该任务已完成」**必须逐字不变** ⇒ 不改写为共享 helper，而是第一环**收集** `turn_tasks`
+集合、第二环**守卫**跳过（`if cp.task_id in turn_tasks or _is_turn_task(cp.task_id): continue`）；
+`_turn_incomplete(checkpoints)` 用**独立**的「**最新可读快照**」语义（坏快照跳过、按 ts 排序）——
+两者语义**不同**，硬合并会破坏任务面。**反证订正**：摘**第一环** `kind` 分类 ⇒ 18 passed（**被第二环
+前缀守卫遮蔽 ⇒ 冗余，非缺证据**）；有效反证是摘**第二环**守卫 ⇒ 4 红（见「反证」）。
+
+**D5 呈现独立一段、**不给**续跑提示。** 两面的**恢复语义不同**：任务面「**显式** `task --resume`
+续跑」、轮面「**续聊即恢复**」（**不**自动重执行，守 P2 / `durability/spec.md`）。故
+`_surface_incomplete` 扩**独立一段**：报中断轮**数量与会话标识**，**不含** `task --resume` —— 且
+**绝不回显轮目标正文**（留痕只报 id / 会话键）。
+
+**D6 缺省关 ⇒ 逐字不变。** `loop.turn_checkpoint`（bool **缺省 False**）⇒ 构造参 `None` ⇒
+`_mark_turn` 首行 `if self._turn_checkpoint is None: return` ⇒ **零写入**（零回归锚）。
+
+**D7 已知局限。** ① **不含撤销账本** —— `EffectTracker` 的 `undo` 是**闭包、不可序列化**
+（`entry.py` 已认此项）⇒ 轮面检查点**不做假耐久**（落不了可重放的 undo）；② **快照仅供呈现不供
+重放** —— `goal` / `done` 只服务启动呈现与分流，**恢复语义仍是显式**（不给自动重执行）；③ **仅主
+loop 接线** —— 子 / 神兽 / 宠物 loop **不接**（沿既有隔离注记）；④ **轮内不刷新** —— 长轮中途被杀
+只留轮首快照（`goal` 是最新、`rounds` 不更新；这是 D1 的 O(n²) 取舍的直接代价）。
+
+- **落点**：`src/core/loop/default.py`（`TurnCheckpoint` 别名 / `turn_checkpoint` 参 / `_mark_turn` /
+  轮首·轮末两写点）、`src/core/runtime.py`（`_TURN_TASK_PREFIX` / `_TURN_KIND` / `_turn_checkpoint`
+  闭包（晚绑定）/ `_is_turn_task` / `_turn_incomplete` / `_recover_incomplete` 分流守卫 /
+  `Runtime.recover_turns()`）、`src/core/entry.py`（`_surface_incomplete` 轮面段）、
+  `src/core/configuration/manager.py`（`loop.turn_checkpoint` spec ＋ `turn_checkpoint()` 访问器 ＋
+  `_loop_errors` 校验）、`tests/test_turn_checkpoint.py`（新 ×18）、`tests/test_entry.py` /
+  `tests/test_phase13.py`（既有桩补 `recover_turns` 协作方）。
+- **规格**：`durability` **ADDED**「会话轮级检查点」＋ Scenario ×5（轮首未完结 / 轮末完结 / 中途中断
+  留未完结 / 启动扫描独立呈现不提示续跑 / 缺省关零写入）；**既有 4 Requirement 逐字保留**（本 change
+  **不** MODIFY）—— canonical durability **4 → 5（+1）** req / **17 → 22（+5）** scen。
+- **反证**：**四组**，(A) 摘轮末 `done=True` ⇒ `3 failed, 15 passed`；(B) 摘轮首写 ⇒
+  `4 failed, 14 passed`；(C) 摘第一环 `kind` 分类 ⇒ `18 passed`（被第二环前缀守卫**遮蔽 ⇒ 冗余**，
+  记录为「冗余已验证」而非失败）；(C') 摘第二环**续跑面守卫** ⇒ `4 failed, 14 passed`；全部复原 ⇒
+  `src/core/loop/default.py` / `src/core/runtime.py` **md5 / diff -q 逐字节相同**。
+- **局限**：见 D7。来源另见 `doc/openspec/changes/archive/2026-10-11-0214-loop-turn-checkpoint/design.md`。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7287,3 +7348,4 @@ ADR、再开规格变更，而非顺手补签名」—— 本 change 的规格/�
 | ADR-0201 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md, 03-interfaces/ui-interface.md |
 | ADR-0202 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/evolution.md, 03-interfaces/evolution-interface.md |
 | ADR-0203 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/notes.md, 02-modules/rag.md, 03-interfaces/notes-interface.md |
+| ADR-0204 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/durability.md, 02-modules/loop.md, 03-interfaces/durability-interface.md |

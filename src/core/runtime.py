@@ -205,6 +205,15 @@ class Runtime:
         """启动时扫描检查点，恢复无 done 标记的任务（返回续跑句柄）。"""
         return _recover_incomplete(self.checkpoints, self.crash_recovery)
 
+    def recover_turns(self) -> list[tuple[str, str]]:
+        """启动时扫描**未完结的会话轮**（`(task_id, session_id)`，按 ts 升序）。
+
+        **只读**（`list_checkpoints` + `get_snapshot`）⇒ 零副作用、零续跑句柄：会话轮**不**经
+        `task --resume` 恢复（**续聊即恢复**）—— 本面只供呈现「上次有哪些轮被中断」
+        （change 0214 / ADR-0204）。
+        """
+        return _turn_incomplete(self.checkpoints)
+
 
 def _checkpoint_path() -> Path:
     """检查点落盘路径：$CORE_STATE_DIR（缺省 ~/.core/state）/checkpoints.jsonl。
@@ -458,6 +467,13 @@ _CORE_PROFILE_SECTION = "项目信息"
 
 # 委托深度护栏：子 Agent 工具面已不含 delegate，此处为纵深防御
 _DELEGATE_DEPTH: ContextVar[int] = ContextVar("delegate_depth", default=0)
+
+# 会话轮级检查点的**独立命名空间**（change 0214 / ADR-0204）与状态语义标记。前缀是**命名空间
+# 守卫**（快照损坏、`kind` 读不出时仍能把轮面与编排任务分开），`kind` 是**语义真源**（呈现分流
+# 读它）。二者任一命中即判为轮面（`_is_turn_task`）—— 轮面**不**入 `task --resume` 续跑面
+# （续聊即恢复，语义不同）。
+_TURN_TASK_PREFIX = "turn."
+_TURN_KIND = "turn"
 
 
 def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
@@ -947,6 +963,27 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     # 子 / 神兽 / 宠物 loop 不接（零行为变化）。回灌轮数经独立访问器（不走 loop_limits()）。
     transcript = TranscriptStore(_skill_state_path("messages.jsonl"))
 
+    # 会话轮级检查点（change 0214 / ADR-0204）：`loop.turn_checkpoint` 缺省关 ⇒ 传 `None`
+    # ⇒ 主循环**零调用、零 I/O**（既有路径逐字不变）。`checkpoints` / `retention*` 在本函数
+    # **之后**才装配 ⇒ 闭包按**晚绑定**读取（同 `_bench_runner` 先例，ADR-0202 D3）：只在本轮
+    # 运行时（装配已完成）被调用。持久化失败只告警降级 —— 轮级留痕**不改变本轮结局**。
+    def _turn_checkpoint(trace_id: str, session_id: str, goal: str, done: bool) -> None:
+        try:
+            checkpoints.create_checkpoint(
+                f"{_TURN_TASK_PREFIX}{trace_id}",
+                session_id,
+                {"kind": _TURN_KIND, "goal": goal, "done": done},
+            )
+        except DurabilityError as err:
+            warnings.warn(
+                f"会话轮级检查点写入失败（trace={trace_id}）: {err.code.value}", stacklevel=2
+            )
+            return
+        # 保留策略：**新检查点已落盘之后**清理（同 `_write_checkpoint`，change 0208/0214）——
+        # 否则轮级写入只增不减，长跑下无限增长。
+        if retention_policy is not None:
+            retention.apply(retention_policy)
+
     loop = DefaultLoop(
         causal_links=causal_links,
         planner=planner,
@@ -969,6 +1006,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         transcript=transcript,
         history_turns=config.history_turns(),
         act_wrapper=_fault_wrapper(tools),
+        # 轮级检查点：**只**注入主 loop（子 Agent / 神兽 / 宠物 loop 不接 —— 会话维度是主
+        # Agent 的门面概念，同 `transcript` 的注入面；change 0214 / ADR-0204）。
+        turn_checkpoint=_turn_checkpoint if config.turn_checkpoint() else None,
     )
 
     # 子 Agent 独立 loop：各自 ToolProvider（不含 tools.delegate，结构上杜绝再委托），
@@ -1351,22 +1391,70 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     )
 
 
+def _is_turn_task(task_id: str, state: dict[str, Any] | None = None) -> bool:
+    """轮面判据（change 0214 / ADR-0204）：命名空间前缀**或**状态标记 `kind == "turn"`。
+
+    **或**（不是与）是刻意的：快照损坏时读不出 `kind`，前缀仍能把轮面与编排任务分开 ——
+    与「损坏检查点按未完成处理」的既有降级方向一致（轮面宁可漏一句提示，**不**产生错的
+    `task --resume turn.x` 提示）。
+    """
+    if task_id.startswith(_TURN_TASK_PREFIX):
+        return True
+    return state is not None and state.get("kind") == _TURN_KIND
+
+
+def _turn_incomplete(checkpoints: CheckpointManager) -> list[tuple[str, str]]:
+    """未完结的会话轮：`(task_id, session_id)`，按 ts 升序；**只读**、零副作用。
+
+    判据与 `_recover_incomplete` 的「已完成」口径**不同**：轮面看**最新可读快照**（轮首写在途、
+    轮末写完结 ⇒ 最新态即真态；编排任务侧沿用「任一快照 done 即视为完成」的历史口径，故不共用
+    扫描实现）。损坏快照跳过（读不出即不冒错提示）。
+    """
+    latest: dict[str, tuple[float, str, bool]] = {}
+    for cp in checkpoints.list_checkpoints():
+        try:
+            state = checkpoints.get_snapshot(cp.checkpoint_id).state
+        except DurabilityError:
+            continue
+        if not _is_turn_task(cp.task_id, state):
+            continue
+        current = latest.get(cp.task_id)
+        if current is None or cp.ts >= current[0]:
+            latest[cp.task_id] = (cp.ts, cp.session_id, bool(state.get("done")))
+    open_turns = [
+        (ts, task_id, session_id) for task_id, (ts, session_id, done) in latest.items() if not done
+    ]
+    return [(task_id, session_id) for _, task_id, session_id in sorted(open_turns)]
+
+
 def _recover_incomplete(
     checkpoints: CheckpointManager, recovery: CrashRecovery
 ) -> list[RestoreHandle]:
-    """扫描检查点，对无 done 标记的任务 restore + resume（幂等续跑）。"""
+    """扫描检查点，对无 done 标记的任务 restore + resume（幂等续跑）。
+
+    **轮面分流**（change 0214 / ADR-0204）：会话轮级检查点**不**入续跑面（`turn.x` 交给
+    `CrashRecovery.restore` 会产出「把一轮对话当一个任务续跑」的错提示）—— 其呈现走
+    `_turn_incomplete` / :meth:`Runtime.recover_turns`。
+    """
     done_tasks: set[str] = set()
+    turn_tasks: set[str] = set()
     for cp in checkpoints.list_checkpoints():
         try:
             snapshot = checkpoints.get_snapshot(cp.checkpoint_id)
         except DurabilityError:
             continue  # 损坏检查点按未完成处理，交给 restore 回退更早检查点
+        if _is_turn_task(cp.task_id, snapshot.state):
+            turn_tasks.add(cp.task_id)
+            continue
         if snapshot.state.get("done"):
             done_tasks.add(cp.task_id)
     handles: list[RestoreHandle] = []
     seen: set[str] = set()
     for cp in checkpoints.list_checkpoints():
         if cp.task_id in done_tasks or cp.task_id in seen:
+            continue
+        # 快照全损坏 ⇒ 上面的 kind 读不出；此处再按前缀兜一次（轮面永不续跑）
+        if cp.task_id in turn_tasks or _is_turn_task(cp.task_id):
             continue
         seen.add(cp.task_id)
         try:

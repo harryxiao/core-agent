@@ -2669,3 +2669,52 @@ Requirement 做全量替换）。
 > **42 → 46（+4）** scen。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0203 行。
 
+## 127. 主循环会话轮级检查点（TC-TURNCP，change `0214`／ADR-0204，台账 E151）
+
+**能力**：补**主 loop 轮级写点** —— 主循环在**轮首**写 `done=False`、**轮末**写 `done=True`（同一
+`turn.<trace_id>` 命名空间 + `kind="turn"`）；**缺省关**（`loop.turn_checkpoint`）⇒ **零写入**；启动
+扫描把**轮面**与**任务面**分流，轮面**独立呈现**且**不给** `task --resume`（续聊即恢复，**不**自动重执行）。
+
+**入口**：`src/core/loop/default.py`（`TurnCheckpoint` 别名／`turn_checkpoint` 参／`_mark_turn`／轮首·
+轮末两写点）、`src/core/runtime.py`（`_TURN_TASK_PREFIX`／`_TURN_KIND`／`_turn_checkpoint` 闭包／
+`_is_turn_task`／`_turn_incomplete`／`_recover_incomplete` 分流守卫／`Runtime.recover_turns()`）、
+`src/core/entry.py`（`_surface_incomplete` 轮面段）、`src/core/configuration/manager.py`
+（`loop.turn_checkpoint` spec ＋ `turn_checkpoint()` 访问器 ＋ `_loop_errors` 校验）。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-TURNCP-01 | 正常轮：轮首未完结 → 轮末完结 | 真 `DefaultLoop(turn_checkpoint=记录器)`，跑一轮 | 写序 `[(会话,"目标：接线",False),("目标：接线",True)]`、**两次同一 trace**（⇒ 同一 task id）（`tests/test_turn_checkpoint.py::test_records_open_then_closed_on_normal_turn`） |
+| TC-TURNCP-02 | 达轮数上限的**终止轮**仍闭轮 | `planner` 恒非终止动作 ＋ `max_rounds=1` | `[c[3] for c in calls] == [False, True]`、轮末仍带同一目标 ⇒ 写点在 `limit_reason` 分支**之外**（`...::test_round_limit_still_closes_turn`） |
+| TC-TURNCP-03 | 轮内抛错 ⇒ **只留未完结** | `_BoomLoop`（`act` 恒抛） | `[c[3] for c in calls] == [False]`（**不**误报完结）（`...::test_interrupted_turn_leaves_open_only`） |
+| TC-TURNCP-04 | **零回归锚**：缺省关零写入 | `DefaultLoop()` 无注入 | `loop._turn_checkpoint is None`；跑一轮**零调用**（`...::test_default_off_records_nothing`） |
+| TC-TURNCP-05 | 分流：轮面**不**入任务续跑面 | 播种 `task-stale` ＋ `turn.t1`（`kind="turn"`） | `_recover_incomplete(...)` 句柄**只有** `["task-stale"]`（`...::test_recover_incomplete_skips_turn_checkpoints`） |
+| TC-TURNCP-06 | 分流：只列**未完结**轮 | `turn.open`（未完结）＋ `turn.closed`（`done=True`）＋ `task-stale` | `_turn_incomplete(...) == [("turn.open","sess-a")]`（只轮面、只在途）（`...::test_turn_incomplete_lists_only_open_turns`） |
+| TC-TURNCP-07 | 呈现：轮面独立段、**不含**续跑提示 | `_surface_incomplete`（桩 runtime 委派真扫描） | stderr 含 `中断的会话轮` 与 `sess-a`；**不含** `task --resume` 与 `未完成任务`（`...::test_surface_renders_turn_without_resume_hint`） |
+| TC-TURNCP-08 | 呈现：任务面与轮面**不混列** | 同时播种 `task-stale` ＋ `turn.t1` | 含 `task --resume task-stale`；**不含** `task --resume turn.t1`；含 `中断的会话轮` 与 `sess-2`（`...::test_surface_keeps_task_and_turn_faces_separate`） |
+| TC-TURNCP-09 | 呈现：无检查点静默 | 空 store | `capsys.readouterr().err == ""`（`...::test_surface_silent_when_no_checkpoints`） |
+| TC-TURNCP-10 | 配置单一真源声明该键 | `config_specs()` | `loop.turn_checkpoint` 的 `map_to`／`env_var == "CORE_LOOP_TURN_CHECKPOINT"`（`...::test_spec_declares_turn_checkpoint_key`） |
+| TC-TURNCP-11 | 配置缺省关 | 仅 llm 段 | `manager.turn_checkpoint() is False`（`...::test_config_default_is_off`） |
+| TC-TURNCP-12 | 配置 yaml 开 | `loop:\n  turn_checkpoint: true` | `is True`（`...::test_config_yaml_enables`） |
+| TC-TURNCP-13 | 配置 env 开 | `CORE_LOOP_TURN_CHECKPOINT=true` | `is True`（`...::test_config_env_enables`） |
+| TC-TURNCP-14 | 非法值阻断启动（`maybe`） | `loop:\n  turn_checkpoint: maybe` | `pytest.raises(ConfigurationError)`（`...::test_illegal_turn_checkpoint_blocks_startup[maybe]`） |
+| TC-TURNCP-15 | 非法值阻断启动（空 ⇒ yaml `null`） | `loop:\n  turn_checkpoint: ` | `pytest.raises(ConfigurationError)`（`1`/`0` 等词表内取值**合法**）（`...::test_illegal_turn_checkpoint_blocks_startup[]`） |
+| TC-TURNCP-16 | 接线（真闭包 + 真 store）：旗关零写入 | `build_runtime` 缺省，跑一轮 | `[t for t in ids if t.startswith("turn.")] == []`（零回归锚）（`...::test_flag_off_writes_no_turn_checkpoint`） |
+| TC-TURNCP-17 | 接线：旗开落 `turn.<trace_id>` 且已完结 | `loop.turn_checkpoint: true`，跑一轮 | 恰 **1** 个 task id、该 id **两次**写、最新快照 `kind=="turn"`／`done is True`／`goal=="目标：接线"`、`session_id=="s1"`（`...::test_flag_on_writes_turn_checkpoint`） |
+| TC-TURNCP-18 | 真 CLI 入口：启动扫描呈现中断轮 | 播种 `turn.t1`（`goal="轮目标正文"`）＋ `main(["--config",…])` | stderr 含 `中断的会话轮` 与 `sess-a`；**不含** `task --resume`；**不含** `轮目标正文`（只报会话标识，**不回显正文**）（`...::test_repl_startup_surfaces_interrupted_turn`） |
+
+> **反证（逐字锚非恒真，实测记录，四组）**：(A) 摘轮末 `done=True` ⇒ TC-TURNCP-01/02/17 **红**
+> （实测 `3 failed, 15 passed`）；(B) 摘轮首写 ⇒ TC-TURNCP-01/03/17 等 **红**（实测
+> `4 failed, 14 passed`）；(C) 摘 `_recover_incomplete` **第一环** `kind` 分类 ⇒ **18 passed**
+> （被**第二环**前缀守卫**遮蔽 ⇒ 冗余**，记录为「冗余已验证」而非失败）；(C') 摘**第二环续跑面
+> 守卫** ⇒ TC-TURNCP-05 等 **红**（实测 `4 failed, 14 passed`）；四次复原 ⇒
+> `src/core/loop/default.py`／`src/core/runtime.py` **md5／`diff -q` 逐字节相同**，复测 **18 passed**。
+> TC-TURNCP-04（缺省关）与 TC-TURNCP-17（旗开）**成对** ⇒ 缺一即「旗要么恒开要么恒关」的证据缺口；
+> TC-TURNCP-05 与 TC-TURNCP-06 **成对** ⇒ 缺一即「分流要么全吞要么全放」的证据缺口。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2421 passed**（基线 **2403**，**+18**，与用例数一致）。
+> **零回归**：缺省关 ⇒ `turn_checkpoint=None` ⇒ `_mark_turn` 首行短路 ⇒ 主 loop **零写入**（既有
+> `create_checkpoint` 调用面逐字不变）；`_recover_incomplete` 既有「任一快照 `done=True` ⇒ 任务已完成」
+> 语义**逐字不变**（换为 `turn_tasks` 集合 + 守卫，非重构）；`_surface_incomplete` **无任务时**仍静默。
+> **规格**：`durability` **ADDED**「会话轮级检查点」＋ Scenario ×5；**既有 4 Requirement 逐字保留**
+> （本 change **不** MODIFY）—— canonical durability **4 → 5（+1）** req / **17 → 22（+5）** scen。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0204 行。
+

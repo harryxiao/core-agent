@@ -266,6 +266,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "loop.turn_checkpoint",
+        "--loop.turn-checkpoint",
+        "CORE_LOOP_TURN_CHECKPOINT",
+        default=False,
+        map_to="loop.turn_checkpoint",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "context.rag_info_map",
         "--context-rag-info-map",
         "CORE_CONTEXT_RAG_INFO_MAP",
@@ -688,6 +696,23 @@ class ConfigManager:
             return value
         return str(value).strip().lower() in _FEATURE_TRUE
 
+    def turn_checkpoint(self) -> bool:
+        """会话轮级检查点开关（缺省 ``False`` = 不写；change 0214 / ADR-0204）。
+
+        **独立访问器**（同 `history_turns()` 先例）：与预算/上限无语义关系，且既有访问器的
+        返回 arity 被解包断言钉死，不合并。取值归一与 feature flag 同集；``loop`` 为**结构化段**
+        （非法取值已在校验期阻断启动，见 `_loop_errors`），故此处只做字符串归一。
+
+        关闭 ⇒ 主循环构造参为 ``None`` ⇒ **零调用、零 I/O**，既有路径逐字不变。
+        """
+        if self._config is None:
+            return False
+        raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
+        value = raw.get("turn_checkpoint", False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in _FEATURE_TRUE
+
     def importance_gate(self) -> bool:
         """写入侧重要度闸门开关（缺省 ``False`` = 不评分；change 0181 / ADR-0172）。
 
@@ -1089,6 +1114,11 @@ def _loop_errors(raw: dict[str, Any]) -> list[str]:
         _FEATURE_TRUE | _FEATURE_FALSE
     ):
         errors.append(f"非法情景链开关: loop.causal_links={value}（须为 true/false 之一）")
+    value = raw.get("turn_checkpoint", False)
+    if not isinstance(value, bool) and str(value).strip().lower() not in (
+        _FEATURE_TRUE | _FEATURE_FALSE
+    ):
+        errors.append(f"非法轮级检查点: loop.turn_checkpoint={value}（须为 true/false 之一）")
     return errors
 
 

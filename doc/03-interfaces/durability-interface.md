@@ -70,6 +70,11 @@ class CrashRecovery:
   （仅把句柄记入幂等集）⇒ `Runtime.recover()` 可作为启动扫描**只呈现不重执行**。
 - **降级不炸全扫**：`Runtime.recover()` 对「检查点全无有效快照」的任务**跳过 + 告警**，
   不因单任务不可恢复中断整轮扫描（与 `restore` 内 corrupt 回退同口径）。
+- **会话轮面（change `0214` / ADR-0204）**：主循环轮级检查点用**独立命名空间**
+  `task_id = "turn.<trace_id>"` ＋ `state["kind"] = "turn"`（**双判据**）。`Runtime.recover()` 对
+  轮面**跳过**（不产生续跑句柄 —— 轮面**不可重放**，无撤销账本）；轮面由 `Runtime.recover_turns()`
+  单独读取（返 `list[tuple[task_id, session_id]]`，**最新可读快照**语义：只列未完结轮、坏快照跳过、
+  按 `ts` 排序）。启动呈现时轮面**独立一段**、**不给** `task --resume`（**续聊即恢复**，不自动重执行）。
 
 ---
 

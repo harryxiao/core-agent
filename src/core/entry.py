@@ -478,14 +478,27 @@ def _surface_incomplete(runtime: Runtime) -> None:
 
     `runtime.recover()` 无 replay 回调 ⇒ 纯扫描、零副作用。有未完成任务时告警 +
     提示续跑命令；**只报 task id**（不回显任务正文 / 记忆 / 密钥）。
+
+    会话轮级检查点（change 0214 / ADR-0204）**独立一段**呈现：被中断的会话轮只报**数量与
+    所属会话**（task id / 轮目标均不回显），且**不给** `task --resume` 提示 —— **续聊即恢复**，
+    与编排任务的续跑语义不同；两面**不混列**。
     """
     handles = runtime.recover()
-    if not handles:
+    turns = runtime.recover_turns()
+    if not handles and not turns:
         return
-    tasks = sorted({h.task_id for h in handles})
-    warnings.warn(f"启动扫描发现 {len(tasks)} 个未完成任务", stacklevel=2)
-    prompt = "、".join(f"`task --resume {t}`" for t in tasks)
-    print(f"⚠ {len(tasks)} 个未完成任务：{prompt} 可续跑", file=sys.stderr)
+    if handles:
+        tasks = sorted({h.task_id for h in handles})
+        warnings.warn(f"启动扫描发现 {len(tasks)} 个未完成任务", stacklevel=2)
+        prompt = "、".join(f"`task --resume {t}`" for t in tasks)
+        print(f"⚠ {len(tasks)} 个未完成任务：{prompt} 可续跑", file=sys.stderr)
+    if turns:
+        sessions = sorted({session for _, session in turns})
+        warnings.warn(f"启动扫描发现 {len(turns)} 个中断的会话轮", stacklevel=2)
+        print(
+            f"⚠ 上次有 {len(turns)} 个中断的会话轮（会话 {'、'.join(sessions)}）：续聊即恢复",
+            file=sys.stderr,
+        )
 
 
 def _build_ui(
