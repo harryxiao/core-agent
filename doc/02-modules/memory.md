@@ -335,6 +335,23 @@ MemoryStore
   只归档「不再被重抽」的事实（活跃重抽的 `ts` 被刷新 ⇒ 永不陈旧，且重抽**重置 `reuse_count`**）；
   缺省关使能力**惰性**。详见 `coding-plan/known-risk.md` §3 ADR-0194 行。
 
+### 3.11 后端落盘耐久（原子写 + 逐行容错，change `0206`／ADR-0196／账本 E143）
+
+`FileBackend` 是动态记忆主库（每轮 `remember`/压实/抽取都写），此前却是全仓唯一「写非原子 +
+读不容错」双无防护面 ⇒ 半写崩溃即 `build_runtime` 起不来。本 change 补两项**缺省生效**的耐久承诺：
+
+- **原子写**：`_persist` 改 **tmp ＋ `os.replace`**（镜像 `persistence.write_state` / `CheckpointStore._persist`
+  的写法；**不复用 `write_state` 本体**——它对 payload 做 `json.dumps`，JSONL 已是拼接串）。失败点从
+  **目标文件**移到 **tmp 文件** ⇒ 目标不动、既有条目集合不受半写影响。
+- **逐行容错**：`_load` 逐行 `try/except (ValueError, TypeError)` 跳坏行（`JSONDecodeError ⊂ ValueError`
+  覆盖半行；`MemoryEntry(**)` 的 `TypeError` 覆盖结构不符行），`_load` 末尾**汇总一次**告警
+  （`损坏 N 行`＋文件名）。**不收 `OSError`**——读失败仍炸启动（环境问题 ≠ 数据损坏）；**不回显行内容**
+  （条目可能含敏感信息）。
+- **缺省生效、无开关**（本批唯一例外）：这是**缺陷修复**而非新行为——完好文件行为**逐字不变**，
+  损坏文件从「启动崩溃」变「跳过坏行」；给「起得来」加开关等于允许把客户端关成砖。
+- **已知局限**：`.tmp` 残骸不清理（同 CheckpointStore 口径）；告警每次构造后端一次、不去重；
+  坏行寿命 = 到下次写为止（任一写即以完好集合覆盖）。详见 `coding-plan/known-risk.md` §3 ADR-0196 行。
+
 ---
 
 ## 4. 记忆写入规范（"无行动不记忆"的落地）

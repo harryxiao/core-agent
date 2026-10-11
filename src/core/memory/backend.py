@@ -9,7 +9,9 @@ list_index / delete 五入口；``path`` 为空则纯内存（测试友好、无
 from __future__ import annotations
 
 import json
+import os
 import threading
+import warnings
 from dataclasses import asdict
 from pathlib import Path
 
@@ -71,16 +73,30 @@ class FileBackend:
         path = self._path
         if path is None:
             return
+        # 逐行容错（change 0206 / 台账 E143）：半行（ValueError）与结构不符行（TypeError）
+        # 跳过并汇总告警——损坏的记忆文件 SHALL NOT 阻断启动（与 CheckpointStore 同口径）。
+        # 告警只报计数与文件名，不回显行内容（条目可能含敏感信息）。
+        bad = 0
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            entry = MemoryEntry(**json.loads(line))
+            try:
+                entry = MemoryEntry(**json.loads(line))
+            except (ValueError, TypeError):
+                bad += 1
+                continue
             self._entries[entry.id] = entry
             self._index.append((entry.id, entry.layer))
+        if bad:
+            warnings.warn(f"记忆落盘含 {bad} 条损坏行，已跳过: {path.name}", stacklevel=2)
 
     def _persist(self) -> None:
         path = self._path
         if path is None:
             return
+        # 原子提交（change 0206 / 台账 E143）：tmp + os.replace——写中途被杀不损坏既有集合
+        # （镜像 persistence.write_state 的写法；JSONL 是拼接串，不复用其 json.dumps 本体）。
         lines = [json.dumps(asdict(e), ensure_ascii=False) + "\n" for e in self._entries.values()]
-        path.write_text("".join(lines), encoding="utf-8")
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text("".join(lines), encoding="utf-8")
+        os.replace(tmp, path)

@@ -2434,3 +2434,26 @@ Requirement 做全量替换）。
 > MODIFIED Scenario 收窄其 GIVEN 为「单次」。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0195 行（退役不可自动复活 / 计数进程内 /
 > 可回滚仅当注入 tracker / 三处既有旁路不共享 trace / `_index` 既有重复 bug 不修 / 退役 ≠ 删除）。
+
+## 119. 记忆后端落盘耐久（TC-MEMDUR，change `0206`／ADR-0196，台账 E143）
+
+**能力**：`memory.jsonl`（动态记忆主库）的**原子写 + 逐行容错** —— 修复「半写崩溃 ⇒ 客户端起不来」。
+
+**入口**：`src/core/memory/backend.py`（`FileBackend._persist` 改 tmp＋`os.replace`；`_load` 逐行 `try/except (ValueError, TypeError)` 跳坏行 + 汇总告警）。
+
+| 用例 | 场景 | 触发 | 断言（`tests/test_memory_backend_durability.py`） |
+|---|---|---|---|
+| TC-MEMDUR-01 | 半写不损坏既有条目 | 落一条 ⇒ monkeypatch `Path.write_text`（截断自身 + 抛 `OSError`）⇒ 再写 ⇒ 捕获异常 ⇒ 重载 | 目标文件**字节 == 写前**、重载 `["e0"]`（`...::test_interrupted_persist_keeps_existing_entries`） |
+| TC-MEMDUR-02 | 坏行跳过 + 告警计数 | 好行 + 半行（非法 JSON）+ 结构不符行（合法 JSON 非条目形状） | `pytest.warns(UserWarning, match="2 条损坏行")`、好行俱在（`...::test_corrupt_lines_skipped_with_warning`） |
+| TC-MEMDUR-03 | 告警不回显内容 | 单行含金丝雀 `SECRET-CANARY` | 告警串**含** `1 条损坏行`、**不含** `SECRET-CANARY`（`...::test_warning_does_not_echo_content`） |
+| TC-MEMDUR-04 | 完好往返逐字节不变 | 写 3 条 ⇒ 重载 ⇒ 覆盖式 `put` 既有 id | 重载后落盘**字节逐字节 == 重载前**（`...::test_roundtrip_bytes_identical`） |
+| TC-MEMDUR-05 | 真进程 SIGKILL 后重载可读 | 子进程写 2 条后 `SIGKILL`；另进程重载（`warnings.simplefilter("error")`） | 返回码 `-SIGKILL`、条目 `["e0","e1"]`、**零告警**（`...::test_real_sigkill_then_reload`） |
+
+> **反证（逐字锚非恒真，实测记录）**：① 复原 `_load` 不容错（`MemoryEntry(**json.loads(line))` 无 try）⇒ TC-MEMDUR-02/-03 **红**（坏行抛异常、无告警）；② 复原 `_persist` 非原子（`path.write_text`）⇒ TC-MEMDUR-01 **红**（失败点落在目标文件 ⇒ 截断即全丢）。两处复原 ⇒ 5 green。**实测 3 组红**（实现前）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2332 passed**（基线 **2327**，**+5**，与用例数一致）。
+> **零回归**：TC-MEMDUR-04（完好文件往返字节不变）在**旧实现下亦绿** —— 原子写对**完好路径**逐字
+> 不变，仅改失败点位置。故本 change 是**缺陷修复**而非新行为，**缺省生效、无开关**（本批唯一例外，
+> ADR-0196 D3）。
+> **规格**：`memory` **ADDED**「记忆后端落盘耐久（backend durability）」+ 4 Scenario
+> （canonical 15 → 16 req / 111 → 115 scen）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0196 行。

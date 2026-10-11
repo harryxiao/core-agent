@@ -6618,6 +6618,47 @@ evolution 结晶插件补齐「观察期回归自动溶解」，但那条路依�
   ⑤ **`SkillLibrary._index` 既有重复 bug**（`_index` 无条件 append，`library.py:129`）本 change
   **不修**（超范围，仅登记）。
 
+## ADR-0196：记忆后端落盘耐久 —— 原子写 + 逐行容错（change 0206 / 台账 E143）
+
+**背景 —— 全仓唯一「写非原子＋读不容错」双无防护面，恰是写入频率最高的主库。** 六能力走查
+（2026-10-11）发现的唯一启动级硬伤：`FileBackend._persist`（`memory/backend.py:81-86`）
+`path.write_text` 全量重写**非原子**（写中途被杀 ⇒ 半写/截断）；`_load`（`:70-79`）对
+`json.loads` **零容错**（半写后的下次启动 `MemoryEntry(**json.loads(line))` 直接抛异常 ⇒
+`build_runtime` 起不来 ⇒ 客户端整体不可用）。对照组：`CheckpointStore` 早已双防护
+（`durability/store.py:97-99` tmp＋`os.replace`；`:107-110` 坏行跳过）；而 `memory.jsonl`
+每轮 `remember`、压实、抽取都写——暴露度最大、防护最薄。
+
+**D1 原子写 = 镜像 `persistence.write_state` 的写法，不复用本体。** `write_state` 对 payload 做
+`json.dumps`，JSONL 已是拼接串 ⇒ 复用会二次编码。只镜像 **tmp ＋ `os.replace`** 模式（与
+`CheckpointStore._persist` 同型）。失败点从「目标文件」移到「tmp 文件」⇒ 目标不动；tmp 残骸
+在下次写入被覆盖（同 CheckpointStore 口径，不额外清理）。
+
+**D2 容错面 = `ValueError | TypeError`，单次汇总告警只报计数。** `json.JSONDecodeError` ⊂
+`ValueError`（半行/坏 JSON）；`MemoryEntry(**record)` 对缺字段/多字段抛 `TypeError`（结构不符
+行）。**不收 `OSError`**——读失败（权限/IO）仍炸启动：环境问题 ≠ 数据损坏，静默吞掉权限错误
+会把「全库不可读」伪装成「空库」。告警在 `_load` 末尾**汇总一次**（`损坏 N 行`＋文件名），
+**绝不回显行内容**（条目可能含敏感信息，密钥红线的同族纪律）。
+
+**D3 为什么缺省生效、无开关（本批 9 个 change 的唯一例外）。** 这是**缺陷修复**而非新行为：
+完好文件的行为**逐字不变**（往返逐字节不变锚）；损坏文件从「启动崩溃」变为「跳过坏行」。给
+「起得来」加开关等于允许用户把客户端关成砖——开关保护的是「既有路径不变」承诺，而既有路径
+（崩溃）本身就是被修复的对象。对照 `0207`~`0214`：那些是**新行为**，须缺省关。
+
+**D4 坏行寿命 = 到下次写为止。** 坏行不会自行修复，但任一写操作触发 `_persist` 即以完好集合
+**全量覆盖**之。失效记忆条目的**修复面**另有 0174 运维动词（按会话重抽 + 删除 + 备份），本
+change 不越界。
+
+- **落点**：`src/core/memory/backend.py`（`_persist` / `_load`）、
+  `tests/test_memory_backend_durability.py`（新）、`doc/04-testing/test-cases.md` §119、
+  `coding-plan/known-risk.md`、`doc/02-modules/memory.md`。
+- **规格**：`memory` **ADDED**「记忆后端落盘耐久（backend durability）」+ 4 Scenario
+  （canonical 15 → 16 req / 111 → 115 scen）。
+- **反证**：实现前实录 3 红（半写丢库 / 坏行炸启动 ×2）—— 旧实现的失败点落在目标文件上
+  （截断即全丢）；新实现落 tmp 上。两锚复原（`_load` 去容错 / `_persist` 去原子）即回红。
+- **局限**：① `.tmp` 残骸不清理（同 CheckpointStore）；② 坏行告警每次构造后端一次，不区分
+  「同一坏行反复出现」；③ `search("")` 的层过滤在 `MemoryStore` 侧而非 backend 侧（既有行为，
+  不动）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6808,3 +6849,4 @@ evolution 结晶插件补齐「观察期回归自动溶解」，但那条路依�
 | ADR-0193 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md |
 | ADR-0194 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md |
 | ADR-0195 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/skills.md |
+| ADR-0196 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
