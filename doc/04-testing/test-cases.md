@@ -2223,3 +2223,28 @@ bullet（缺省不启用 / 未过 ⇒ 不入库 + 清组 + 只报组键 / 判定
 > `compose_task_steps` 边界与 `_steps_lookup` 零效应（`tests/test_task_sop.py`）**均不重写**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0189 行（桩子 Agent 不真跑循环 / 不覆盖续跑二次触发 /
 > 仅进程内 / 门只在任务级实例上验）。
+
+## 113. 压缩轴口径（TC-AXIS，change `0200`／ADR-0190，台账 E137）
+
+**行为规格锚点**：`context/spec.md`「压缩轴口径（轮 / 步两轴不可互换）」（**ADDED**）。
+本 change **零 `src/` 改动、零行为改动** ⇒ 三条为**守护**断言（绿→绿），其价值**全在反证**。
+
+| 用例 | 锚点 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-AXIS-01 | 步轴：压实触发仅由**步数**决定 | `Compactor()`（**出厂缺省**阈值 `6`）+ **不可满足的** token 预算 ⇒ `should_compact(6, 0, 10**9)` | `is True` ⇒ 触发**仅**由步轴达成（`tests/test_axis_units.py::test_compaction_trigger_axis_is_steps_not_turns`） |
+| TC-AXIS-02 | 同上（阈值之下 / 轮不可表达） | `should_compact(5, 0, 10**9)`；`LoopContext().rounds` | `is False`；且 `rounds == 0` ⇒ 步计数每轮自 `0` 起算、**不**携带跨轮累计 ⇒「对话第 N 轮」**不可表达**（同用例内） |
+| TC-AXIS-03 | 轮轴：分层边界随轮**等比缩放** | `plan_window(20, B, tiered=True).short_turns` 与 `(40, B, tiered=True).short_turns`（另加 `mid_turns`） | `10` 与 `20`（`40 × 0.3 = 12`）⇒ 边界是**轮比率**、随总量缩放，**非**固定字面边界（`...::test_window_tier_boundary_scales_with_turns_not_fixed_literal`） |
+
+> **反证（守护非空过，实测记录）**：①步轴断言入参换成 `0`（`should_compact(0, 0, 10**9) is True`）⇒
+> **红**（实得 `False`）；②轮轴第二点断言换成 `short_turns == 10`（字面边界读法）⇒ **红**（实得 `20`）。
+> **实测 2 red**；复原 ⇒ 2 green ⇒ 两条锚**均咬住**「两轴分工」这一语义，而非恒真。
+> **实测订正（通用坑）**：初版以 `budget=0` 想「排除 token 维度」⇒ **转红** —— 判据为
+> `token_used >= budget`，`0 >= 0` **恒真** ⇒ token 维度反而**恒触发**。隔离一个 `or` 判据的
+> **单侧**须用「**不可满足**」而非「**零值**」；该订正已同步进规格 Scenario 的 GIVEN（预算
+> **不可满足**）与 ADR-0190 局限①。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2255 passed**（基线 **2253**，**+2**）。`git diff --stat src/` **为空**。
+> **不重复**：`tests/test_context_window.py::test_plan_window_tiered_splits_by_ratio` 已钉住**某一点**
+> 的份额数值（20 轮 ⇒ 短 10 / 中 6）；本 change 钉的是**跨两点**的**缩放关系** —— 后者才是
+> 「轮比率」与「字面边界」的**判别式**（字面边界下两点会相等）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0190 行（零值≠关掉判据一侧 / 本 change
+> 无行为故价值全在反证 / 不含蓝图 Tier 数值可配置化）。

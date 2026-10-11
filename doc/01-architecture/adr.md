@@ -6268,6 +6268,51 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
   样本，跨进程无去重面，属另立账）；③ **进程内跑**（跨进程断点续跑仍承 `0190`/`0191` 边界）；
   ④ **门只在任务级实例上验**（单轮面无门，承 `0198` 决策⑤ 局部化口径）。
 
+## ADR-0190：压缩轴口径裁决 —— 轮 / 步两轴不可互换（change 0200 / 账本 E137）
+
+**背景 —— 规格已分别如实记录两轴，但二者关系从未裁决，且有实测前科。** 系统内并存两个时间轴：
+**步轴**（`LoopContext.rounds`，每用户轮新建上下文 ⇒ 自 `0` 起算）驱动**轮内**压实触发
+（`Compactor.should_compact(steps, token_used, budget)`，阈值 `loop.compact_steps` 缺省 `6`）；
+**轮轴**（`loop.history_turns` 缺省 `20`）驱动**跨轮**三层滑窗分层
+（`plan_window(turns, budget, tiered=)`，切分单位是转录**用户角色行**）。二者各自有规格
+（`上下文自动压实` / `三层窗口比例分配`），但**「不可互换」从未被写成要求**。前科：
+change `0182` / ADR-0173 正是把**轮内步数**误读作**对话轮数**的一次诚实化订正；而 `compact_steps`
+缺省 `6` 恰好落在外来蓝图（`memory-4-layer-architecture.md` §4.1）「Tier 2 自第 6 轮开始」的
+字面区间上 ⇒ **同一误解极易复发**。
+
+- **决策 ①：两轴分工，各自唯一旋钮，不可互换。** 步轴 → 轮内压实触发；轮轴 → 跨轮历史分层。
+  `loop.compact_steps` **只**是步轴阈值，SHALL NOT 读作轮轴边界；因步轴每轮归零，
+  「`compact_steps = 6` ⇒ 对话第 6 轮」在系统内**不可计算**（无任何用户轮计数器）。裁决写入
+  `context` 规格新要求「压缩轴口径（轮 / 步两轴不可互换）」+ 4 Scenario。
+- **决策 ②：蓝图的字面 tier 边界 `0-5 / 6-20 / 21+` 不采纳，只采纳其结构。** 理由三条：
+  ⓐ 会造出**第二套冲突边界** —— 现有分层是**比率相对**的（短 `0.5` / 中 `0.3` 随 `history_turns`
+  缩放，`history_turns=40` 时短层即 `20` 轮，字面 `0-5` 无法并存）；ⓑ `三层窗口比例分配` 明禁在
+  **配额分配面**新增配置键；ⓒ 蓝图自身即标注 Tier 2「可配置」⇒ 采纳**三区分工的结构**、不采纳其
+  **数值**。蓝图的 Tier 1/2/3 **语义上映射到轮轴**（短/中/长三层已一一对应）；步轴是蓝图**没有**
+  的更细轮内机制，**不得**塞进 Tier 边界。
+- **决策 ③：只裁决，不改代码。** 零 `src/` 改动（`git diff --stat src/` 为空）：不新增配置键、
+  不改任何阈值或配比、不重构 `plan_window` / `Compactor` —— 本 change 只**断言**其既有语义。
+- **决策 ④：守护测试是执行面，Scenario 是耐久锚。** 裁决类要求若只写文档会退化成说明文 ⇒
+  要求里每条 SHALL 均由 `tests/test_axis_units.py` 断言：步轴（**不可满足的 token 预算**下单看
+  步数：`6` 真 / `5` 假）+ 轮轴（`plan_window` 的短层轮数在 `20`/`40` 两点为 `10`/`20` ⇒ 随总量
+  等比缩放）。**隔离一个 `or` 判据的单侧**时以「不可满足」而非「零值」排除另一侧 —— 见下局限①。
+- **决策 ⑤：不重复既有锚。** `tests/test_context_window.py` 已钉住**某一点**的份额数值
+  （20 轮 ⇒ 短 10 / 中 6）；本 change 钉的是**跨两点**的**缩放关系** —— 后者才是「轮比率」与
+  「字面边界」的**判别式**（字面边界下两点会相等）。
+
+**规格影响**：`context` **ADDED** 一条要求（4 Scenario）；既有 6 条 Requirement 的 Scenario
+**全部逐字保留**（不做 MODIFIED）。
+
+- **落点**：`doc/openspec/specs/context/spec.md`、`tests/test_axis_units.py`（新，2 用例）、
+  `doc/04-testing/test-cases.md` §113、`coding-plan/known-risk.md`；`git diff --stat src/` **为空**。
+- **测试**：+2（2253 → **2255**）。
+- **局限**：① **判据单侧隔离的坑（实测订正）** —— 初版以 `budget=0` 想「排除 token 维度」⇒
+  **转红**：判据是 `token_used >= budget`，`0 >= 0` **恒真** ⇒ token 维度反而**恒触发**；正解是
+  用**不可满足**的大预算（`0 < 10**9` 恒真为假）。**零值不等于「关掉」一个 `or` 的某一侧。**
+  ② **本 change 不产生行为** ⇒ 守护测试的**价值全在反证**（改成轮读法 / 字面边界即转红，已实测
+  2 红），不能以「测试是绿的」单独证明任何事；③ **不覆盖蓝图 Tier 数值的可配置化** —— 若未来
+  确需字面边界，须另立 change 并先改 `三层窗口比例分配`（本 ADR 明确不采纳）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6452,3 +6497,4 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
 | ADR-0187 | 02-modules/skills.md, 03-interfaces/skills-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0188 | 02-modules/skills.md, 03-interfaces/skills-interface.md, 03-interfaces/judgment-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0189 | 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0190 | 04-testing/test-cases.md, coding-plan/known-risk.md |
