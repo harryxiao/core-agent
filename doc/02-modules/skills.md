@@ -92,6 +92,28 @@ SkillManager（L3）
   不得把「一直正常发布」变成静默不发布）。缺省（未配置 JEV）⇒ 无门 ⇒ 发布路径**逐字不变**。
   门是**自动**判定 ⇒ 守红线「维度1 技能库/SOP **全自动**」（**不**引入人工确认）。
 
+### 3.5 SOP 技能退役（技能生命周期出口，change `0205`／ADR-0195）
+
+技能此前是**只进不出**的：`Skill.status` 取值域早含 `"deprecated"`，但生产**无任何路径**会置它
+（`decide()` 单次退化只丢草稿；evolution 溶解的 id 前缀 `skills.evolution.` 永不命中 `skills.sop.*`；
+`SkillCrystallizer.dissolve` 是死代码）⇒ SOP 技能一经自动 `active` 即**永久可路由**。本段补上出口：
+
+- **触发 = 迭代连续退化**（**自动**，守红线「维度1 全自动」）：`SkillIterator` 逐技能统计**连续**
+  A/B 退化次数（一次提升**归零**），达阈 `RETIRE_AFTER_DEGRADATIONS`（缺省 3）⇒ 自动
+  `SkillLibrary.deprecate`。**计数折叠进 `decide()` 既有分支**（信号本就在局部）⇒ 运行时钩子零改动。
+- **退役面 = `SkillLibrary.deprecate`**（**逐字镜像 `activate`**）：改 `status` + 落盘 + 登记可逆效应
+  （trace `skills.deprecate`，回滚恢复退役前 `status`，复用 `_restore_status`）；未知 id 抛
+  `KeyError`、已退役**幂等**。**不物理删除** ⇒ 退出的是**路由候选**（放行集只含 `active`/`gray`）。
+- **粘性防复活**：已退役的 `skills.sop.<hash>` SHALL NOT 因**同组键重抽**无声复活为 `active`
+  —— 守卫在 `sop.py::observe`（**不改 `SkillLibrary.register` 的通用覆盖语义**：`_load`/beast/
+  notes/evolution 四处依赖它）；动作 = 跳过入库 + 清组 + `warnings.warn` **只报组键**。复活仅经
+  **显式** `SkillLibrary.activate`。
+- **缺省关**：构造参 `retire_after: int | None = None`（`None` = 关）+ 配置 `skills.retirement`
+  （**全仓首个 `skills.*` 键**，缺省 `False`）⇒ 关闭时 `decide()` **逐字不变**。
+- **边界（ADR-0011）**：evolution 的「观察期回归自动溶解」依赖**留出集基准**（生产 `Evaluator`
+  无基准 ⇒ `freeze`）⇒ 对 SOP 结构性不可达；本次是 `skills` **自有**的、反馈驱动的、限定
+  `skills.sop.*` 的停用动作 —— 与 evolution 的溶解**判据 / 对象 / 数据源三重不同**、**不重叠**。
+
 ---
 
 ## 4. 结晶与溶解（与 evolution/memory 的闭环）

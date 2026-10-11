@@ -6552,6 +6552,72 @@ and entry.source in _FORGETTABLE_SEMANTIC_SOURCES)` —— 缺省关时 `and` �
   `_write_relation` 每次压实**新建**条目并经 `_persist` 刷新 `ts` ⇒ 活跃重抽的事实永不陈旧
   （期望性质），代价是**反复出现却无用**的事实不会被遗忘 + 重抽**重置 `reuse_count`**。
 
+## ADR-0195：SOP 技能退役 —— 连续迭代退化自动退役 + 粘性防复活（change 0205 / 账本 E142）
+
+**背景 —— 程序记忆只进不出。** `Skill.status` 的取值域已含 `"deprecated"`（`models.py:26`），但
+`src/` 内**无任何生产路径**会置它。四处取证：① `SkillIterator.decide()`（`iteration.py:135`）在 A/B
+退化时**只丢草稿**，注释明写「不置 deprecated」；② `EvolutionEngine.dissolve` 的 id 前缀硬编码
+`skills.evolution.`（`engine.py:227`）⇒ **永不命中** `skills.sop.<hash>`；③ `SkillLibrary` **无
+`deprecate`/`retire` 面**；④ 唯一 id-agnostic 的 `SkillCrystallizer.dissolve` 是**死代码**（`src/`
+内零构造）。后果：SOP 技能一经自动 `active`（`sop.py:127`，维度1「低风险自动发布」）即**永久
+可路由** —— 与 P2「一切副作用可逆」及「失败即沿反方向溶解」的隐喻相悖。
+
+**D1 触发器 = 迭代连续退化（用户裁决③：自动、不依赖人工）。** A/B 定夺**已经**算出「新版本更差」
+这个信号（`result.winner != draft`）——缺的只是**把它累计起来**。同一信号单次出现是方差、**连续**
+N 次出现才是趋势。计数折叠进 `decide()` 既有分支（`result.winner` 与 `draft` 本就在局部）⇒
+**运行时钩子零改动**（`runtime.py:628` 的 `decide(skill)` 调用点逐字不变）、零新评分逻辑、零新
+会话面。阈值 `RETIRE_AFTER_DEGRADATIONS = 3`（与 `_ITERATE_MIN_SAMPLES` 同量级）；一次提升
+（新版本落地）SHALL 使计数**归零**（「连续」的字面语义，抖动不累积）。
+
+**D2 退役面 = `SkillLibrary.deprecate`（镜像 `activate`）。** 唯一既有「改 status + 落盘 + 可逆
+效应」的正路模板是 `activate`（`library.py:84-99`）：逐字镜像 ⇒ 未知 id 抛 `KeyError`、已退役
+**幂等**返回、`_track_deprecation` 复用既有 `_restore_status`（带 `contextlib.suppress(KeyError)`
+的幂等守卫）。效应 trace `skills.deprecate`，回滚即恢复退役前 `status`。**不物理删除**：技能仍在库
+中，路由候选放行集只含 `active`/`gray`（`router.py:98`）⇒ 自动**退出注入面**，可回滚、可显式复活。
+
+**D3 粘性防复活（用户裁决⑤）= `sop.py::observe` 守卫，不改 `register`。** 已退役的
+`skills.sop.<hash>` SHALL NOT 因**同组键重抽**（`_skill_id_for` 由组键确定性哈希）无声复活为
+`active`；复活 SHALL 仅经**显式** `SkillLibrary.activate`。守卫放 `observe()` 而非
+`SkillLibrary.register` —— 后者的「同名覆盖」是**通用契约**，`_load` 恢复、beast 神通、notes
+工作流技能、evolution 结晶产物**四处**都依赖它，改它会波及三面（超出本 change 范围）。守卫动作 =
+跳过 `register` + 清组（免同批样本反复触发提炼调用）+ `warnings.warn` **只报组键**（绝不回显正文，
+密钥红线）。
+
+**D4 开关缺省关、显式开启（用户裁决④）。** 构造参 `retire_after: int | None = None`（`None` =
+关闭 = 缺省）+ 配置 `skills.retirement`（**全仓首个 `skills.*` 键**，缺省 `False`）。缺省关 ⇒
+两个 `if self._retire_after is not None` 均假 ⇒ `decide()` **逐字不变**（`_degradations` 恒空）。
+`skills` 为非结构化段 ⇒ 集合外取值归一为关，不阻断启动（同 `memory` 段先例）。
+
+**D5 ADR-0011 边界调和（关键）。** ADR-0011（`:89`）把「溶解」划归 evolution；ADR-0052 已为
+evolution 结晶插件补齐「观察期回归自动溶解」，但那条路依赖**留出集基准**，而生产 `Evaluator` 无
+基准 ⇒ `freeze`（`runtime.py:793-796`）⇒ 对 SOP **结构性不可达**。本 change 的退役是 **`skills`
+自有的、反馈驱动（迭代退化）的、限定于 `skills.sop.*`** 的生命周期动作 —— 与 evolution 的「留出集
+回归」**判据不同**（连续退化 vs 绝对分差）、**对象不同**（SOP 技能 vs 结晶插件）、**数据源不同**
+（执行成功率 vs 留出集）⇒ **不重叠**。ADR-0011 的「evolution 负责结晶/溶解、skills 负责版本/灰度/
+路由」分工**不变**：本次是 skills **治理面**内部的「停用」动作，不是「产物如何产生」的溶解。
+
+**D6 零既有测试破坏（实测）。** `SkillIterator` 既有用例全走缺省构造（不传 `retire_after`）⇒
+`_retire_after=None` ⇒ 退化分支只 `del drafts[draft]`、不碰 `status` ⇒ 逐字不变。⇒ 0205 零既有
+测试破坏（2310 基线 + 17 新 = 2327）；反证**必须显式翻转** `retire_after`。
+
+- **落点**：`src/core/skills/library.py`（`_DEPRECATE_TRACE` / `deprecate` / `_track_deprecation`）、
+  `src/core/skills/iteration.py`（`RETIRE_AFTER_DEGRADATIONS` / 构造参 / `_degradations` /
+  `decide()` / `_count_degradation`）、`src/core/skills/sop.py`（`observe` 防复活守卫 / `_is_retired`）、
+  `src/core/configuration/manager.py`、`src/core/runtime.py`、`tests/test_skill_retirement.py`（新）、
+  `doc/04-testing/test-cases.md` §118、`coding-plan/known-risk.md`、`doc/02-modules/skills.md`。
+- **规格**：`skills` **MODIFIED**「技能迭代闭环」（定夺 bullet 收窄为**单次**失败 + 前向引用）+
+  **MODIFIED** Scenario `A/B 退化丢弃新版本`（GIVEN 收窄、标题不动）+ **ADDED**「SOP 技能退役」
+  + 6 Scenario（canonical 10 → 11 req / 49 → 55 scen）。
+- **反证**：① 摘掉 `decide()` 退化分支的 `self._library.deprecate(...)` ⇒ 连续退化 / 可撤销两锚
+  转红；② 摘掉 `sop.py` 防复活守卫 ⇒ 防复活锚转红。两处复原 ⇒ 全绿。
+- **局限**：① **退役不可自动复活**（粘性，用户裁决⑤）—— 复活需显式 `SkillLibrary.activate`；
+  ② **连续退化计数是进程内状态**（跨进程重启归零）⇒ 「连续」为进程内语义（同 `0202` 前序表）；
+  ③ **可回滚仅当注入 tracker**（`runtime.py:581` 已注入；未注入时仍改状态但不记效应，与 `activate`
+  同口径）；④ **三处既有旁路各置 `status` 却不共享本次 trace**（`VersionManager._deprecate` /
+  `SkillCrystallizer.dissolve`（死代码） / `EvolutionEngine.dissolve`）—— 本 change **不动**；
+  ⑤ **`SkillLibrary._index` 既有重复 bug**（`_index` 无条件 append，`library.py:129`）本 change
+  **不修**（超范围，仅登记）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6741,3 +6807,4 @@ and entry.source in _FORGETTABLE_SEMANTIC_SOURCES)` —— 缺省关时 `and` �
 | ADR-0192 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md |
 | ADR-0193 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md |
 | ADR-0194 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md |
+| ADR-0195 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/skills.md |

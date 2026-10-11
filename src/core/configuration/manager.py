@@ -281,6 +281,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         map_to="memory.semantic_forgetting",
         exposure=ConfigExposure.ADVANCED,
     ),
+    ConfigSpec(
+        "skills.retirement",
+        "--skills-retirement",
+        "CORE_SKILLS_RETIREMENT",
+        default=False,
+        map_to="skills.retirement",
+        exposure=ConfigExposure.ADVANCED,
+    ),
 ]
 
 _FEATURE_ENV_PREFIX = "CORE_FEATURES_"
@@ -664,6 +672,22 @@ class ConfigManager:
             return False
         raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
         value = raw.get("semantic_forgetting", False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in _FEATURE_TRUE
+
+    def skill_retirement(self) -> bool:
+        """SOP 技能退役开关（缺省 ``False`` = 连续退化不退役；change 0205 / ADR-0195）。
+
+        **独立访问器**（同 `semantic_forgetting()` 先例）：取值归一与 feature flag 同集；
+        `skills` 为**非结构化段** ⇒ 集合外取值归一为**关闭**（方向恒为「不退役」）。
+        关闭 ⇒ `SkillIterator` 的 `retire_after=None` ⇒ 退化只丢草稿、不碰 `status`（既有路径
+        逐字不变）；开启 ⇒ 组合根以 `retire_after=RETIRE_AFTER_DEGRADATIONS` 接线。
+        """
+        if self._config is None:
+            return False
+        raw = cast("dict[str, Any]", self._config.extra.get("skills") or {})
+        value = raw.get("retirement", False)
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in _FEATURE_TRUE

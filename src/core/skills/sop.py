@@ -126,6 +126,14 @@ class SopExtractor:
             instructions=text,
             status="active",  # 维度1 技能库层：低风险自动发布（draft 对路由不可见）
         )
+        if self._is_retired(skill.skill_id):
+            # 粘性防复活（0205 / ADR-0195）：已退役的 id SHALL NOT 因重抽无声复活为 active
+            # （复活须显式 `SkillLibrary.activate`）。清组免同批样本反复触发提炼调用；
+            # 留痕**只报组键**，绝不回显提炼正文（密钥红线）。
+            warnings.warn(f"SOP 技能已退役，重抽不复活（组键 {key}）", stacklevel=2)
+            del self._samples[key]
+            self._persist()
+            return None
         self._library.register(skill)
         self._track(skill)
         del self._samples[key]  # 提炼后清组，下批重新累积
@@ -176,6 +184,13 @@ class SopExtractor:
             return bool(gate(task, text))
         except Exception:  # noqa: BLE001 — 门故障按放行
             return True
+
+    def _is_retired(self, skill_id: str) -> bool:
+        """该 id 是否已在库中且已退役（粘性防复活判据；不在库 ⇒ 未退役）。"""
+        try:
+            return self._library.lookup(skill_id).status == "deprecated"
+        except KeyError:
+            return False
 
     def _same_namespace(self, task_type: str) -> bool:
         """该 ``task_type`` 是否属本实例命名空间（空命名空间 ⇒ 只认无前缀键）。"""

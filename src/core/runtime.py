@@ -115,6 +115,7 @@ from core.plugins import (
 )
 from core.rag import HashEmbedder, LLMEmbedder, RagGenerator, RagService, SqliteVectorStore
 from core.skills import (
+    RETIRE_AFTER_DEGRADATIONS,
     Skill,
     SkillFeedback,
     SkillIterator,
@@ -579,6 +580,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             path=_skill_state_path("skill-versions.json"),
         ),
         tracker=effect_tracker,
+        # SOP 技能退役（0205 / ADR-0195）：开关缺省关 ⇒ `None` ⇒ 退化只丢草稿、不碰 status
+        # （迭代行为逐字不变）；开启 ⇒ 连续退化达阈自动退役（`skills.deprecate` 可逆效应）。
+        retire_after=RETIRE_AFTER_DEGRADATIONS if config.skill_retirement() else None,
     )
 
     # 神通注册（0057）：20 神兽独有神通进全局技能库，供**按兽作用域**路由（见 _beast_loop）。

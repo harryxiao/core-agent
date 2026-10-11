@@ -26,6 +26,9 @@ from .models import Skill
 # 启用效应按此 trace 登记（回滚即恢复启用前状态）
 _ACTIVATE_TRACE = "skills.activate"
 
+# 退役效应按此 trace 登记（回滚即恢复退役前状态）
+_DEPRECATE_TRACE = "skills.deprecate"
+
 
 def _domain(skill_id: str) -> str:
     """从 "skills.<domain>.<name>" 提取领域段。"""
@@ -98,7 +101,42 @@ class SkillLibrary:
         self._track_activation(skill_id, previous, effect_tracker)
         return skill
 
+    def deprecate(self, skill_id: str, *, effect_tracker: EffectTracker | None = None) -> Skill:
+        """退役：把技能迁至 ``deprecated``（skills spec「SOP 技能退役」）。
+
+        已 ``deprecated`` 时**幂等**返回、不重复落盘与登记效应；未知 id 抛 ``KeyError``
+        （对齐 ``lookup`` / ``remove``）。注入 ``effect_tracker`` 时登记可逆效应（undo 恢复
+        退役前状态），未注入不记（零行为变化）。退役技能自动退出路由（放行集只含
+        ``active`` / ``gray``），**不**物理删除、可经 ``activate`` 显式复活。
+        """
+        skill = self._skills[skill_id]
+        if skill.status == "deprecated":
+            return skill
+        previous = skill.status
+        skill.status = "deprecated"
+        self._persist()
+        self._track_deprecation(skill_id, previous, effect_tracker)
+        return skill
+
     # ---- 落盘 ----
+
+    def _track_deprecation(
+        self, skill_id: str, previous: str, tracker: EffectTracker | None
+    ) -> None:
+        """登记退役效应（未注入 tracker 时不记，缺省降级）。"""
+        if tracker is None:
+            return
+        tracker.record(
+            Effect(
+                op="skills.deprecate",
+                target=skill_id,
+                undo=lambda: self._restore_status(skill_id, previous),
+                reversible=True,
+                coeffect=[],
+                trace_id=_DEPRECATE_TRACE,
+                ts=time.time(),
+            )
+        )
 
     def _track_activation(
         self, skill_id: str, previous: str, tracker: EffectTracker | None

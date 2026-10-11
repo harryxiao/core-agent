@@ -10,7 +10,7 @@
 from .crystallizer import SkillCrystallizer
 from .errors import SkillError, SkillErrorCode
 from .feedback import SkillFeedback, SkillStats
-from .iteration import SkillIterator, build_iterate_prompt
+from .iteration import RETIRE_AFTER_DEGRADATIONS, SkillIterator, build_iterate_prompt
 from .library import SkillLibrary
 from .models import ABResult, Skill, SkillMatch
 from .router import SkillRouter, SkillScorer, skill_hint
@@ -19,6 +19,7 @@ from .version import VersionManager
 
 __all__ = [
     "ABResult",
+    "RETIRE_AFTER_DEGRADATIONS",
     "Skill",
     "SkillCrystallizer",
     "SkillError",

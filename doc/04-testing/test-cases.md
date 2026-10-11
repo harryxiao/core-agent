@@ -2392,3 +2392,45 @@ Requirement 做全量替换）。
 > 覆盖**评分**豁免面（`_GATE_EXEMPT_SOURCES`）—— 与本 change 的**遗忘**面是**不同面**（ADR-0194 明写）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0194 行（归档 ≠ 移出注入面 / 只归档「不再被重抽」
 > 的事实 / 缺省关使能力惰性 / 首次 MODIFIED 既有 Requirement / 配比面无新键）。
+
+## 118. SOP 技能退役（TC-SKILLRETIRE，change `0205`／ADR-0195，台账 E142）
+
+**行为规格锚点**：`skills/spec.md`「技能迭代闭环（skill iteration）」（**MODIFIED** —— 定夺 bullet
+收窄为**单次**失败）+ **MODIFIED** Scenario `A/B 退化丢弃新版本`（GIVEN 收窄）+ **ADDED**「SOP 技能
+退役（skill retirement）」。
+三面：**零回归**（缺省关 ⇒ 连续退化不改变 `status`）、**退役面**（开 ⇒ 连续退化达阈自动退役 + 可逆
++ 退出路由）、**防复活与配置**（粘性重抽不复活；新键三面齐备 + 组合根接线）。
+
+| 用例 | 锚点 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-SKILLRETIRE-01 | `deprecate` 置状态 + 落盘 | `SkillLibrary(path)` 注册 `active` 技能 → `deprecate(id)` | 返回 `status=="deprecated"`；**同路径新实例重载仍 `deprecated`**（`tests/test_skill_retirement.py::test_deprecate_sets_status_and_persists`） |
+| TC-SKILLRETIRE-02 | `deprecate` **幂等** | 同 id 连调两次（注入 tracker） | 均 `deprecated`；`tracker.audit("skills.deprecate")` 长度 **1**（不重复记效应）（`...::test_deprecate_is_idempotent`） |
+| TC-SKILLRETIRE-03 | 未知 id 抛错 | `deprecate("skills.sop.unknown")` | `KeyError`（对齐 `lookup`/`remove`，不静默创建）（`...::test_deprecate_unknown_id_raises_key_error`） |
+| TC-SKILLRETIRE-04 | 退役**可逆** | `deprecate(id, effect_tracker=tracker)` → `tracker.rollback("skills.deprecate")` | `undo_failed == []`；回滚后 `status == "active"`（恢复退役前状态）（`...::test_deprecate_is_reversible`） |
+| TC-SKILLRETIRE-05 | **自动退役**：连续退化达阈 | `SkillIterator(retire_after=3)`；连续 3 次 A/B 退化定夺 | 第 1/2 次后仍 `active`；第 3 次后 `status == "deprecated"`（`...::test_consecutive_degradations_retire_skill`） |
+| TC-SKILLRETIRE-06 | 退役可撤销（迭代路径） | 同上 + `tracker`，退役后 `rollback("skills.deprecate")` | 回滚后 `status == "active"`（`...::test_degradation_retirement_is_reversible`） |
+| TC-SKILLRETIRE-07 | **判别性**：提升使计数**归零** | 退化 2 次 → 一次**提升**（归零）→ 再退化 2 次 | 全程 `active`（若未归零则 2+2 ≥ 3 已退役）（`...::test_promotion_resets_degradation_counter`） |
+| TC-SKILLRETIRE-08 | **零回归锚**：缺省关不退役 | `SkillIterator(retire_after=None)`；连续 5 次退化 | 始终 `active` ⇒ 与引入该开关前逐字一致（`...::test_default_off_never_retires`） |
+| TC-SKILLRETIRE-09 | 退役 ⇒ **退出路由** | `active` 时可路由（`router.match(_TASK)` 命中）→ `deprecate` 后 | `router.match(_TASK) == []`（放行集只含 `active`/`gray`）（`...::test_retired_skill_leaves_routing`） |
+| TC-SKILLRETIRE-10 | **粘性防复活** | 库中注册 `deprecated` 的 `skills.sop.<hash>` → `SopExtractor.observe(同组键任务, …, ok=True)`（阈值 1） | `observe` 返回 `None`（不入库）；技能**仍 `deprecated`**；`warnings.warn` **只报组键**（`...::test_retired_sop_skill_is_not_resurrected_by_reextraction`） |
+| TC-SKILLRETIRE-11 | 对照锚：显式激活后可入库 | 同上，但先 `lib.activate(sid)` 再 `observe` | `observe` 返回技能（守卫不再拦截）⇒ 复活走**显式面**（`...::test_reextraction_after_activate_publishes`） |
+| TC-SKILLRETIRE-12 | 单一真源：新键三面齐备 | `config_specs()` 取 `skills.retirement` | `(cli_flag, env_var, default, map_to) == ("--skills-retirement", "CORE_SKILLS_RETIREMENT", False, "skills.retirement")`（**全仓首个 `skills.*` 键**）（`...::test_spec_declares_skill_retirement`） |
+| TC-SKILLRETIRE-13 | 配置缺省关 | 无 `skills:` 段 | `manager.skill_retirement() is False`（`...::test_config_default_is_off`） |
+| TC-SKILLRETIRE-14 | yaml 面可达 | `skills:\n  retirement: true\n` | `is True`（`...::test_config_yaml_enables`） |
+| TC-SKILLRETIRE-15 | env 面可达 | `CORE_SKILLS_RETIREMENT=true` | `is True`（字符串口径与 feature flag 同集）（`...::test_config_env_overrides`） |
+| TC-SKILLRETIRE-16 | 组合根缺省**不接线** | `build_runtime(ConfigManager(…))` | `runtime.skill_iterator._retire_after is None` ⇒ 缺省关（`...::test_build_runtime_default_wires_retirement_off`） |
+| TC-SKILLRETIRE-17 | 组合根置 true ⇒ 接线 | 同上 + `skills: retirement: true` | `_retire_after == RETIRE_AFTER_DEGRADATIONS`（`...::test_build_runtime_wires_retirement_when_enabled`） |
+
+> **反证（逐字锚非恒真，实测记录）**：① 摘掉 `decide()` 退化分支里的
+> `self._library.deprecate(...)`（模拟「退役未接线」）⇒ TC-SKILLRETIRE-05 / -06 **红**
+> （`AssertionError: 连续退化达阈 → 自动退役`）；② 摘掉 `sop.py::observe` 的粘性守卫
+> （`if self._is_retired(...)` → `if False`）⇒ TC-SKILLRETIRE-10 **红**（重抽把退役技能复活为
+> `active`）。两处复原 ⇒ 17 green。**实测 2 组红**。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2327 passed**（基线 **2310**，**+17**，与用例数一致）。
+> **零既有测试破坏（实测）**：`SkillIterator` 既有用例全走缺省构造（不传 `retire_after`）⇒
+> `_retire_after=None` ⇒ 退化分支只 `del drafts[draft]`、不碰 `status` ⇒ 逐字不变。
+> **不重复**：`tests/test_skills.py::test_iterator_decide_discards_worse_version`（change 前既有）
+> 覆盖**单次**退化的「只丢草稿、技能不弃用」—— 本 change **不重写**（缺省关下逐字一致），仅以
+> MODIFIED Scenario 收窄其 GIVEN 为「单次」。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0195 行（退役不可自动复活 / 计数进程内 /
+> 可回滚仅当注入 tracker / 三处既有旁路不共享 trace / `_index` 既有重复 bug 不修 / 退役 ≠ 删除）。

@@ -31,6 +31,9 @@ _ITERATE_FAILURE_RATE = 0.5
 # 草稿灰度比例（仅该比例的任务走新版本）
 _GRAY_RATIO = 0.3
 
+# 连续 A/B 退化达此数即自动退役技能（skills spec「SOP 技能退役」；一次提升归零）
+RETIRE_AFTER_DEGRADATIONS = 3
+
 # 落地效应按此 trace 登记（回滚即恢复原版本与原 instructions）
 _ITERATE_TRACE = "skills.iterate"
 
@@ -78,6 +81,7 @@ class SkillIterator:
         min_samples: int = _ITERATE_MIN_SAMPLES,
         ratio: float = _GRAY_RATIO,
         tracker: EffectTracker | None = None,
+        retire_after: int | None = None,
     ) -> None:
         self._library = library
         self._feedback = feedback
@@ -93,6 +97,10 @@ class SkillIterator:
         self._min_samples = min_samples
         self._ratio = ratio
         self._tracker = tracker
+        # 连续退化阈值（None = 关闭 = 缺省；见 skills spec「SOP 技能退役」）
+        self._retire_after = retire_after
+        # 各技能**连续** A/B 退化计数（一次提升即归零；进程内状态）
+        self._degradations: dict[str, int] = {}
         # 草稿版本 → instructions（不写回技能本体，定夺后胜者才落地）
         self._drafts: dict[str, dict[str, str]] = {}
 
@@ -120,7 +128,11 @@ class SkillIterator:
         return draft
 
     def decide(self, skill: Skill) -> ABResult | None:
-        """两版本样本齐备 → A/B 定夺（胜者落地、败者丢弃草稿）；样本未齐返回 None。"""
+        """两版本样本齐备 → A/B 定夺（胜者落地、败者丢弃草稿）；样本未齐返回 None。
+
+        开启 `retire_after` 时另计**连续**退化（一次提升归零）：达阈即自动退役技能
+        （skills spec「SOP 技能退役」）。关闭时退化只丢草稿、不碰 `status`（逐字不变）。
+        """
         drafts = self._drafts.get(skill.skill_id, {})
         draft = _next_version(skill.version)
         if draft not in drafts:
@@ -130,10 +142,24 @@ class SkillIterator:
             return None
         result = self._versions.ab_test(skill.skill_id, current, draft)
         if result.winner == draft:
+            if self._retire_after is not None:
+                self._degradations.pop(skill.skill_id, None)  # 提升 ⇒ 归零
             self._apply(skill, draft, drafts[draft])
         else:
-            del drafts[draft]  # 退化：只丢草稿，技能本体不动（不置 deprecated）
+            del drafts[draft]  # 单次退化：只丢草稿，技能本体不动
+            self._count_degradation(skill)
         return result
+
+    def _count_degradation(self, skill: Skill) -> None:
+        """累计一次退化；达阈退役并清计数（关闭 `retire_after` 时不记）。"""
+        if self._retire_after is None:
+            return
+        count = self._degradations.get(skill.skill_id, 0) + 1
+        if count < self._retire_after:
+            self._degradations[skill.skill_id] = count
+            return
+        self._library.deprecate(skill.skill_id, effect_tracker=self._tracker)
+        self._degradations.pop(skill.skill_id, None)
 
     # ---- 内部辅助 ----
 
