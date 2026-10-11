@@ -210,8 +210,12 @@ def sop_writer_with(llm: Callable[[str], str]) -> SopWriter:
 
 class SopExtractor:
     def __init__(self, library, *, writer=None, threshold=3, effect_tracker=None,
-                 path: Path | None = None) -> None:
-        """``path`` 注入样本落盘位置（``None`` = 纯内存）；样本随提交/清组落盘（见 §7）。"""
+                 path: Path | None = None, namespace: str = "") -> None:
+        """``path`` 注入样本落盘位置（``None`` = 纯内存）；样本随提交/清组落盘（见 §7）。
+
+        ``namespace``（change `0197`）：空 = 单轮面（**逐字不变**）；非空 = 组键**前缀化**
+        （`<ns>::<键>`）且**词法复用只在同命名空间内**（防单轮面反向采纳任务级键）。
+        """
 
     def observe(self, task: str, steps: Sequence[str], *, ok: bool = True) -> Skill | None:
         """提交一条轨迹；达阈值则提炼入库并返回技能，否则返回 None。"""
@@ -219,8 +223,8 @@ class SopExtractor:
 
 | 维度 | 口径 |
 |---|---|
-| **调用方** | `DefaultLoop` 收尾钩子（`TurnObserver`）——每轮收尾都提交（任务文本, 行动/结果序列, ok）；`observe` 对 `ok=False` 直接丢弃（失败轨迹不是 SOP），由组合根再转交技能反馈 |
-| **归组键** | 优先词法命中已有技能的 `task_types` 并复用其作组键，否则「任务词元签名」（`terms_of` 与 SkillRouter 同口径）——确定性、离线可断言 |
+| **调用方** | **单轮面**：`DefaultLoop` 收尾钩子（`TurnObserver`）——每轮收尾都提交（任务文本, 行动/结果序列, ok）；**任务级面**（change `0197`）：编排 `DoneFn`（任务成功达成 `DONE` 时一次）提交（`plan.goal`, 子任务步序）。`observe` 对 `ok=False` 直接丢弃（失败轨迹不是 SOP），由组合根再转交技能反馈 |
+| **归组键** | 优先词法命中已有技能的 `task_types` 并复用其作键（**限**同命名空间），否则「任务词元签名」（`terms_of` 与 SkillRouter 同口径）——确定性、离线可断言 |
 | **阈值** | 同组累计达 3 条（`_SOP_MIN_SAMPLES`）提炼一次，提炼后**清空该组**（下批重新累积） |
 | **产物** | `skill_id="skills.sop.<组键 blake2b-8hex>"`（确定性、同组重复提炼覆盖同一条）、`description="SOP：<组键>"`、`task_types=[组键]`、`instructions=<提炼文本>`、`status="active"` |
 | **发布口径** | `active`（维度1 技能库层属低风险自动发布）；`draft` 对路由不可见 → 不置 draft |
@@ -229,6 +233,15 @@ class SopExtractor:
 
 已知缺口（如实记录）：无 judgment 质量门（质量门与版本迭代归 Phase 18 #8）。技能库与样本
 已可落盘（0050，见 §7），缺省仍纯内存——生产由 `build_runtime` 注入路径。
+
+**任务级过程输入（change `0197`／ADR-0187）**：长会话任务（跨多轮编排）的**任务过程**是
+SOP 的另一观察面 —— 单轮面在长任务下**每轮各自成样本、任务文本逐轮不同 ⇒ 归组键漂移 ⇒
+永不达阈**。任务级面以 **`DoneFn`**（`orchestration/scheduler.py`）为接入点（成功 `DONE` 一次，
+与「只吸收成功轨迹」天然对齐），观察单位 = `plan.goal` + 按 `plan.order` 聚合的子任务步序
+（`runtime.compose_task_steps`；步序回读走 `_steps_lookup` → `MemoryBackend.search("")`，
+**零效应**、不经 `MemoryStore.read`）。实现为**第二个实例**（同库、异样本文件
+`sop-task-samples.json`、`namespace="task"`）—— 两路步序**语义不同**（任务级 = 子任务骨架；
+单轮 = 工具调用行），**混组即产出浑浊 SOP** ⇒ 样本、组键、`skill_id` 三者**全隔离**。
 
 ---
 
@@ -252,6 +265,7 @@ def write_state(path: Path | None, data: Any) -> None:
 | `skills.json` | `SkillLibrary` | `[Skill 字段全量]`（`asdict`） |
 | `skill-feedback.json` | `SkillFeedback` | `{skill_id: {version: {hits, ok, fail}}}` |
 | `sop-samples.json` | `SopExtractor` | `{组键: [[步骤…]…]}` |
+| `sop-task-samples.json` | `SopExtractor`（任务级实例，change `0197`） | `{task::组键: [[步骤…]…]}` |
 | `skill-versions.json` | `VersionManager` | `{gray, stable, ab}` |
 
 | 维度 | 口径 |

@@ -64,7 +64,7 @@ def sop_writer_with(llm: Callable[[str], str]) -> SopWriter:
 class SopExtractor:
     """SOP 提炼器：归组累积成功轨迹 → 达阈值提炼一条技能入库（可逆）。"""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — 构造注入面（提炼缝 + 阈值 + 落盘 + 命名空间）
         self,
         library: SkillLibrary,
         *,
@@ -72,12 +72,17 @@ class SopExtractor:
         threshold: int = _SOP_MIN_SAMPLES,
         effect_tracker: EffectTracker | None = None,
         path: Path | None = None,
+        namespace: str = "",
     ) -> None:
         self._library = library
         self._writer = writer
         self._threshold = threshold
         self._tracker = effect_tracker
         self._path = path
+        # 观察面命名空间（change 0197）：空 ⇒ 单轮面（逐字不变）；非空 ⇒ 组键**前缀化**，
+        # 与单轮面样本隔离（不复用单轮 task_types、落不同 skill_id）。隔离是**正确性**要求 ——
+        # 两步序语义不同（任务级 = 子任务骨架；单轮 = 工具调用行），混组会产出浑浊 SOP。
+        self._namespace = namespace
         self._samples: dict[str, list[list[str]]] = {}
         self._load()
 
@@ -130,15 +135,29 @@ class SopExtractor:
     # ---- 内部辅助 ----
 
     def _group_key(self, task: str) -> str:
-        """归组键：优先复用词法命中的已有 ``task_types``，否则用任务词元签名。"""
+        """归组键：优先复用词法命中的已有 ``task_types``，否则用任务词元签名。
+
+        注入 ``namespace`` 时组键**前缀化**且词法复用**只在同命名空间内**进行（change 0197）：
+        任务级观察面与单轮面完全隔离 —— 组键与 ``_skill_id_for`` 双双落**独立** id 空间，
+        互不复用（否则单轮面会命中任务级键而把两类样本混组）。缺省空命名空间 ⇒ 键逐字不变。
+        """
         terms = set(terms_of(task))
         if not terms:
-            return task.strip().lower()
+            return self._apply_namespace(task.strip().lower())
         for skill in self._library.all_skills():
             for task_type in skill.task_types:
-                if terms & set(terms_of(task_type)):
-                    return task_type
-        return " ".join(sorted(terms))
+                if self._same_namespace(task_type) and terms & set(terms_of(task_type)):
+                    return task_type  # 已是同命名空间键，直接复用
+        return self._apply_namespace(" ".join(sorted(terms)))
+
+    def _same_namespace(self, task_type: str) -> bool:
+        """该 ``task_type`` 是否属本实例命名空间（空命名空间 ⇒ 只认无前缀键）。"""
+        if self._namespace:
+            return task_type.startswith(f"{self._namespace}::")
+        return "::" not in task_type
+
+    def _apply_namespace(self, key: str) -> str:
+        return f"{self._namespace}::{key}" if self._namespace else key
 
     def _track(self, skill: Skill) -> None:
         """登记入库效应（未注入 tracker 时不记，缺省降级）。"""

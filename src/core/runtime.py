@@ -308,6 +308,65 @@ def _failure_lookup(backend: MemoryBackend) -> Callable[[str], str | None]:
     return lookup
 
 
+# 任务级步序单行上界（token 有界；与 skills.sop._MAX_STEP_CHARS 同口径）
+_MAX_TASK_STEP_CHARS = 400
+# 任务级步序聚合总长上界（token 有界）
+_MAX_TASK_STEPS_CHARS = 2000
+
+
+def _steps_lookup(backend: MemoryBackend) -> Callable[[str], list[str]]:
+    """子任务步序查询接缝（change 0197 / ADR-0187）：按 id 取 `loop.steps.<trace_id>` 正文。
+
+    与 `_failure_lookup` **同形**：走 `MemoryBackend.search("")`（**不**经 `MemoryStore.read`
+    ⇒ **零写入、零效应**、层无关，不强化 `reuse_count`）。条目在**写入时**已脱敏
+    （`loop/default.py` 的 `redact_secrets`）⇒ 本接缝**不引入**新的密钥暴露面。
+    无条目 ⇒ **空列表**（不伪造证据）。
+    """
+
+    def lookup(trace_id: str) -> list[str]:
+        wanted = f"loop.steps.{trace_id}"
+        for entry in backend.search(""):
+            if entry.id == wanted:
+                return [line for line in entry.content.splitlines() if line.strip()]
+        return []
+
+    return lookup
+
+
+def compose_task_steps(
+    plan: Plan,
+    outcomes: list[SubtaskOutcome],
+    lookup: Callable[[str], list[str]],
+) -> list[str]:
+    """把一次编排任务的**过程**装配为任务级 SOP 观察面（change 0197 / ADR-0187）。
+
+    按 `plan.order` 遍历子任务，取各子任务 `trace_id` 经 `lookup` 回读步序，渲染为
+    「子任务 <目标>：<步序行>」；无 `trace_id` / 无步序的子任务**跳过**（乱序 outcomes 不改
+    输出顺序，缺 trace 不炸）。每行截断至 `_MAX_TASK_STEP_CHARS`、总量封顶
+    `_MAX_TASK_STEPS_CHARS`（token 有界）。
+    """
+    by_id = {o.subtask_id: o for o in outcomes}
+    goal_by_id = {s.id: s.goal for s in plan.subtasks}
+    order = plan.order or [s.id for s in plan.subtasks]
+    lines: list[str] = []
+    used = 0
+    for subtask_id in order:
+        outcome = by_id.get(subtask_id)
+        if outcome is None or not outcome.trace_id:
+            continue
+        steps = lookup(outcome.trace_id)
+        if not steps:
+            continue
+        head = f"子任务 {goal_by_id.get(subtask_id, subtask_id)}："
+        for step in steps:
+            line = f"{head}{step}"[:_MAX_TASK_STEP_CHARS]
+            if used + len(line) > _MAX_TASK_STEPS_CHARS:
+                return lines
+            lines.append(line)
+            used += len(line)
+    return lines
+
+
 # 信息地图的长文档源（change 0140 / 账本 E77）：Core.md「## 项目信息」段为启动期唯一
 # 长文档，建索引后由装配器注入**目录层**（指针，非全文）、由 `tools.context_read` 取详情。
 _CORE_PROFILE_DOC_ID = "core-profile"
@@ -474,6 +533,17 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         writer=sop_writer_with(_llm_text),
         effect_tracker=effect_tracker,
         path=_skill_state_path("sop-samples.json"),
+    )
+    # 任务级 SOP 提炼接线（0197 / ADR-0187）：与单轮面**同库、异样本文件、异命名空间**的第二个
+    # 实例 —— 长任务跨轮时单轮面归组键逐轮漂移（永不达阈），任务级面以「任务目标 + 子任务步序」
+    # 为单位、随任务成功收尾（`DONE`）提交一次。两路步序语义不同（子任务骨架 vs 工具调用行）
+    # ⇒ 隔离是**正确性**要求（namespace 使组键与 skill_id 各落独立空间）。
+    sop_task_extractor = SopExtractor(
+        skill_library,
+        writer=sop_writer_with(_llm_text),
+        effect_tracker=effect_tracker,
+        path=_skill_state_path("sop-task-samples.json"),
+        namespace="task",
     )
     # 技能迭代接线（0045）：命中注入 + 执行反馈 + 迭代闭环。反馈落盘见上（0050 注入路径，
     # 0058 起同时供路由排序）；迭代复用 VersionManager 的灰度/A/B（0048 决策 ⑥ 记的
@@ -928,6 +998,11 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         task_id: str, outcomes: list[SubtaskOutcome], plan: Plan, session_id: str = ""
     ) -> None:
         _write_checkpoint(task_id, outcomes, plan, done=True, session_id=session_id)
+        # 任务级 SOP 观察（change 0197 / ADR-0187）：成功 `DONE` 时把「任务目标 + 子任务步序」
+        # 提交给任务级提炼器（达阈值才提炼）。步序经零效应 `_steps_lookup` 回读内存条目；
+        # 该回调已由 change 0196 卸载出事件循环 ⇒ 此处模型调用不阻塞流式产出。提炼失败不中断。
+        steps = compose_task_steps(plan, outcomes, _steps_lookup(backend))
+        sop_task_extractor.observe(plan.goal, steps, ok=True)
 
     def _write_checkpoint(
         task_id: str,

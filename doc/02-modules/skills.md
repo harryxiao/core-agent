@@ -69,6 +69,24 @@ SkillManager（L3）
 - 命中结果**真正进 prompt**（#8）：组合根把命中快照（`skill_hint`：id + 版本 + `instructions`
   节选 ≤ 400 字符）交给 planner 渲染为技能块；loop 只吃纯 dict（不 import skills）。
 
+### 3.4 SOP 提炼（技能的产生入口）
+
+技能库此前只有注册 / 路由 / 版本三段，**没有任何产生技能的路径**；`SopExtractor` 补上这一段
+（接口见 `doc/03-interfaces/skills-interface.md` §6）：把**同一类任务的多次成功轨迹**聚合、
+提炼为一条 `Skill` 入库（可逆）。**两个观察面**：
+
+| 面 | 观察单位 | 接入点 | 命名空间 / 样本文件 |
+|---|---|---|---|
+| **单轮面** | 本轮的「工具（参数）→ 结果」行 | `DefaultLoop` 收尾钩子（每轮） | 无前缀 / `sop-samples.json` |
+| **任务级面**（change `0197`／ADR-0187） | 任务目标 + 按 `plan.order` 聚合的子任务步序（**任务过程**） | 编排 `DoneFn`（成功 `DONE` 一次） | `task::` / `sop-task-samples.json` |
+
+- **为什么要有任务级面**：长会话任务跨多轮 ⇒ 单轮面**每轮各自成样本、任务文本逐轮不同 ⇒ 归组键
+  漂移 ⇒ 永不达阈**（`_SOP_MIN_SAMPLES=3`）⇒ 「长会话任务过程 → 技能资产」这条链**从未产出过东西**。
+- **两面严格隔离**：步序语义不同（任务级 = 子任务**骨架**；单轮 = 工具调用**行**），混组会产出浑浊
+  SOP ⇒ 样本文件、组键（前缀 `task::`）、`skill_id` 三者**全隔离**；隔离是**正确性**要求。
+- **只吸收成功**：`DoneFn` 只在 `DONE` 时调用、`observe(ok=False)` 直接丢弃 ⇒ 失败轨迹不入 SOP
+  （教训走 memory / evolution 通道）。
+
 ---
 
 ## 4. 结晶与溶解（与 evolution/memory 的闭环）

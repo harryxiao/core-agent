@@ -371,6 +371,56 @@ def test_sop_extract_is_reversible() -> None:
     tracker.rollback("skills.extract")  # 重复回滚不报错（幂等 undo）
 
 
+def test_sop_extract_namespace_prefixes_group_key() -> None:
+    """任务级观察面组键前缀化（change 0197：`namespace`）。"""
+    lib = SkillLibrary()
+    extractor = SopExtractor(lib, writer=_writer(), threshold=1, namespace="task")
+
+    skill = extractor.observe("summarize the report", ["子任务目标：取数", "步序：echo"])
+
+    assert skill is not None
+    assert skill.task_types[0].startswith("task::"), "namespace 非空 ⇒ 组键前缀化"
+
+
+def test_sop_extract_namespace_default_keeps_group_key_verbatim() -> None:
+    """缺省 `namespace=""` ⇒ 组键逐字不变（单轮路径零改动）。"""
+    lib = SkillLibrary()
+    extractor = SopExtractor(lib, writer=_writer(), threshold=1)
+
+    skill = extractor.observe("summarize the report", _steps())
+
+    assert skill is not None
+    assert not skill.task_types[0].startswith("task::"), "缺省不加前缀"
+
+
+def test_sop_extract_task_namespace_isolates_from_per_turn_group() -> None:
+    """任务级与单轮样本**不混组**（change 0197：隔离是正确性要求）。
+
+    同库已有词法相近的单轮技能 ⇒ 单轮面复用其 `task_types` 作组键；任务级面因命名空间前缀**不**
+    复用，落**不同** `skill_id`。
+    """
+    lib = SkillLibrary()
+    lib.register(
+        Skill(
+            skill_id="skills.data.summarize",
+            description="summarize text",
+            task_types=["report summarize"],
+            status="active",
+        )
+    )
+    per_turn = SopExtractor(lib, writer=_writer(), threshold=1)
+    turn_skill = per_turn.observe("summarize report", _steps())
+    assert turn_skill is not None
+    assert turn_skill.task_types == ["report summarize"], "单轮面词法复用已有 task_type"
+
+    task_level = SopExtractor(lib, writer=_writer(), threshold=1, namespace="task")
+    task_skill = task_level.observe("summarize report", ["子任务目标：取数"])
+
+    assert task_skill is not None
+    assert task_skill.task_types == ["task::report summarize"], "任务级组键前缀化，不复用单轮组"
+    assert task_skill.skill_id != turn_skill.skill_id, "任务级产物与单轮产物落不同 skill_id"
+
+
 # ---- 语义路由（0044） ----
 
 

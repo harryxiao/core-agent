@@ -2146,3 +2146,27 @@
 > **调用时机/次数/顺序/终态逐字不变**：仍在 `DONE` 达成后**一次**、`task_finished` 事件之前、检查点写入之后。
 > **不做**：`_checkpoint`（`scheduler.py:261-262`）**不**卸载（判据是「是否承载模型调用」而非「是否同步」）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0186 行。
+
+## 110. 任务级 SOP 过程输入（TC-TASK-SOP，change `0197`／ADR-0187，台账 E134）
+
+**行为规格锚点**：`skills/spec.md`「SOP 提炼（skill extraction）」**MODIFIED**（+「任务级过程输入」
+bullet（含**样本隔离**硬约束）+ Scenario「任务达阈值提炼为任务级 SOP」/「任务级与单轮样本不混组」）；
+canonical `skills` scen **45 → 47**、req **10 不变**。`orchestration` 规格**零改动**。
+
+| 用例 | 锚点归属 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-TASK-SOP-01 | `skills` SOP 提炼（任务级过程输入） | `SopExtractor(..., namespace="task")` 提交任务级样本至阈值 | 入库 `task_types` **前缀化**为 `task::…` 的组键（`tests/test_skills.py::test_sop_extract_namespace_prefixes_group_key`） |
+| TC-TASK-SOP-02 | 同上（缺省逐字不变） | `namespace=""`（单轮路径）提交样本 | 组键**无**前缀、与变更前**逐字一致**（`...::test_sop_extract_namespace_default_keeps_group_key_verbatim`） |
+| TC-TASK-SOP-03 | `skills` SOP 提炼（样本隔离） | 同库已有词法相近的单轮技能 + 任务级实例提交样本 | 任务级样本**不**复用单轮 `task_types`、二者**不混组**，产物 `skill_id` 与单轮产物**不同**（`...::test_sop_extract_task_namespace_isolates_from_per_turn_group`） |
+| TC-TASK-SOP-04 | `runtime` 组合根（步序回读） | `_steps_lookup(backend)` 对已沉淀的 `loop.steps.<tid>` 条目按 id 取回 | 逐行返回步序；**无**该条目 ⇒ **空列表**（不伪造）（`tests/test_task_sop.py::test_steps_lookup_reads_loop_steps_by_id`） |
+| TC-TASK-SOP-05 | 同上（**零效应**） | 同上查找前后读条目 `reuse_count` | 前后**皆 0** —— 走 `search` **不经** `read` ⇒ 不强化、不落盘（**守 P2**；`...::test_steps_lookup_is_zero_effect`） |
+| TC-TASK-SOP-06 | `runtime` 组合根（聚合） | `compose_task_steps(plan, outcomes, lookup)`：乱序 outcomes + 一个无 `trace_id` 的子任务 | 输出依 `plan.order` 排列；无 trace 者**跳过不炸**（`...::test_compose_task_steps_follows_plan_order`） |
+| TC-TASK-SOP-07 | 同上（token 有界） | 20 个子任务 × 单行 5000 字步序 | 单行截断至 `_MAX_TASK_STEP_CHARS`(400)；总长 ≤ `_MAX_TASK_STEPS_CHARS`(2000) 且**提前收敛**（不聚满全部子任务）（`...::test_compose_task_steps_bounded`） |
+
+> **反证（门禁非空过）**：变更前（`SopExtractor` 无 `namespace` / 组键**不**前缀化）01 红（组键无 `task::`）；
+> 变更前（`_group_key` 只前缀化最终键、无 `_same_namespace()`）03 红（单轮面词法命中任务级键 ⇒ **反向**
+> 采纳带前缀键、样本混组）⇒ **只前缀化不够**这一误解由该锚暴露。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2241 passed**（基线 **2234**，**+7**）。
+> **单轮路径零改动**：`namespace` 缺省 `""` ⇒ `_group_key` 缺省行为、`observe` 签名、per-turn 采集路径**逐字不变**。
+> **不新增密钥暴露面**：新路径消费的 `loop.steps.<trace_id>` 条目在**写入时已** `redact_secrets`（`loop/default.py:830`）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0187 行（续跑二次触发 / 只编排路径生效 / 门属 0198 等）。

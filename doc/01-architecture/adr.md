@@ -6119,6 +6119,59 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
   上限由 asyncio 缺省值（`min(32, cpu+4)`）约束；③ 本 change **不**引入回调超时 / 异常处理变更
   （回调异常仍按其自身路径降级，语义不变）。
 
+## ADR-0187：任务级过程输入 —— SOP 提炼接入长会话任务粒度（change 0197 / 账本 E134）
+
+**背景 —— 只有「单轮」一半，长任务永远提炼不出 SOP。** SOP 提炼的观察面此前**只有单轮**
+（`loop/default.py:113-135` `_action_steps(ctx)`：本轮的「工具（参数）→ 结果」行）。长任务跨多轮：
+每轮**各自成样本**、且任务文本**逐轮不同** ⇒ 归组键漂移（`_group_key` 的词元签名逐轮变化）⇒
+**永不达阈**（`_SOP_MIN_SAMPLES=3`）。⇒ 提炼单位上移一格：以**编排任务**为粒度、以**任务过程**
+（任务目标 + 各子任务步序）为观察对象。这是「Procedural = 基于长会话**任务过程**提炼」缺口的
+**采集面**收口；与本 ADR 姊妹条 **ADR-0188（发布面：自动质量门）** 各改一条、互不耦合（P3）。
+
+- **决策 ①：接入点复用 `DoneFn`，不新增接缝。** `orchestration/scheduler.py:33-35` 的完成回调
+  `(task_id, outcomes, plan, session_id)` **只在成功达成 `TaskState.DONE` 时调用一次**
+  （`scheduler.py:290-292`）——与 SOP「**只吸收成功轨迹**」语义天然对齐，**无需**任何失败过滤代码。
+  该回调自 change 0190（ADR-0180）起已带 `session_id`（会话归因免费获得），自 change 0196
+  （ADR-0186）起**已卸载出事件循环** ⇒ 在本回调里跑一次模型调用是安全的（这正是 0196 存在的理由）。
+- **决策 ②：步序**不回读** `SubtaskOutcome.reply`，回读 L2 条目。** `reply` 截断 2000 字
+  （`_MAX_HANDOFF_CHARS`）**不足以承载步序**；真正的步序在 `loop.steps.<trace_id>` L2 条目
+  （写入时**已脱敏**，`loop/default.py:830` `redact_secrets(step)` ⇒ 新路径**不引入**任何新的密钥
+  暴露面）。连接键 = 检查点 `state["trace_ids"]` → `SubtaskOutcome.trace_id`。
+- **决策 ③：读取零效应，沿 `_failure_lookup` 范式。** 新增 `runtime._steps_lookup(backend)`：
+  走 `MemoryBackend.search("")` 按 id 精确取条目（**不经** `MemoryStore.read` ⇒ 不强化
+  `reuse_count`、不落盘；与 `runtime.py:289-308` 同形）。**任何**读取面走 `read` 都会改写 `reuse_count`
+  ⇒ 是**副作用**，违 P2。
+- **决策 ④：复用 `observe` + 第二实例 + `namespace`，不新增提炼方法、不改 `observe` 签名。**
+  两个实例（同库、**异**样本文件、**异**命名空间）而非一个实例加参数：因为两路**步序语义不同**
+  （任务级承载**子任务骨架**、单轮承载**工具调用行**），混组会产出**浑浊 SOP** —— 隔离是**正确性**
+  要求，不是洁癖。`SopExtractor.__init__` 增 keyword-only `namespace: str = ""`；`_group_key` 的
+  **最终键**在非空时前缀化（`task::<key>`）。缺省 `""` ⇒ **逐字不变**（单轮路径零改动）。
+- **决策 ⑤：命名空间是**双向**隔离（防「反向泄漏」）。** 只把最终键前缀化**不够**：任务级产物的
+  `task_types` 是 `task::report summarize`，而 `terms_of` 按非字母数字切分 ⇒ 单轮面对
+  "summarize report" 的观察会**词法命中**任务级键并**采纳带前缀的键**，把单轮样本灌进任务级组。
+  ⇒ 增设 `_same_namespace()`：词法复用**只在同命名空间内**进行（非空命名空间 ⇒ 只认
+  `"<ns>::"` 前缀键；空 ⇒ 只认**无** `::` 的键）。两向（正向复用、反向泄漏）同时封死。
+- **决策 ⑥：聚合是纯函数、上界是常量。** `runtime.compose_task_steps(plan, outcomes, lookup)`
+  按 `plan.order` 遍历子任务 → `outcomes` 取 `trace_id` → `lookup(tid)` 取步序 → 拼「子任务 <目标>：<步>」
+  行；无 trace / 无步序者**跳过不炸**。上界：单行 `_MAX_TASK_STEP_CHARS=400`、全体
+  `_MAX_TASK_STEPS_CHARS=2000`（超界**提前收敛**，不聚满）。纯函数 ⇒ 离线可断言，无需模型。
+- **决策 ⑦：规格落点。** `skills`「SOP 提炼（skill extraction）」**MODIFIED**：原文 + 既有 **7
+  Scenario 逐字保留**，新增 bullet「任务级过程输入」（含**样本隔离**硬约束）+ 2 Scenario
+  （「任务达阈值提炼为任务级 SOP」/「任务级与单轮样本不混组」）。canonical scen **45 → 47**、
+  req **10 不变**。`orchestration` 规格**零改动**（复用既有 `DoneFn` 契约，未新增语义）。
+- **落点**：`src/core/skills/sop.py`（`namespace` + `_same_namespace` + `_apply_namespace`）；
+  `src/core/runtime.py`（`_steps_lookup` / `compose_task_steps` / 第二实例 `sop_task_extractor`
+  （`sop-task-samples.json` / `namespace="task"`）/ `_finalize` 接线）。
+- **测试**（+7，2234 → **2241**）：`test_skills.py` 3（组键前缀化确定性 / 缺省逐字不变 / 任务级与单轮
+  **不混组**且 `skill_id` 不同）；`test_task_sop.py` 4（`_steps_lookup` 按 id 取回 / **零效应**
+  （`reuse_count` 前后皆 0）/ `compose_task_steps` 依 `plan.order` 且跳过无 trace 者 / 聚合上界
+  （单行截断 + 提前收敛））。
+- **局限**：① **续跑已 `DONE` 的任务会二次触发** `_on_done` ⇒ 同一条成功轨迹被记**两次样本**
+  （跨进程无去重面；去重需读检查点，属**另一**缺陷面，本 change **不修**，已登记 `known-risk.md`）；
+  ② 任务级观察面只在**编排**路径生效（单轮对话不经 `DoneFn`，仍走原单轮面）；
+  ③ 门未过时的**样本清理**属 0198（ADR-0188），本 change 只做采集；
+  ④ 任务级 SOP 的**行为质量**由 0199（ADR-0189）端到端锚定。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6300,3 +6353,4 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
 | ADR-0184 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0185 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0186 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0187 | 02-modules/skills.md, 03-interfaces/skills-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

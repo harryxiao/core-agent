@@ -17,7 +17,6 @@
 - **GIVEN** 一个技能的前置条件不满足
 - **WHEN** 尝试调用该技能
 - **THEN** 调用被拒绝并返回 `PRECONDITION_FAILED`
-
 ### Requirement: 技能启用（draft → active）
 系统 SHALL 提供把 `draft` 技能迁至 `active` 的**显式启用**路径，使下载 / 注册所得的草稿技能
 **可被**启用（此前的迁移路径缺失 ⇒ `draft` 技能永不被路由，是死胡同）。启用 SHALL NOT 自动
@@ -61,7 +60,6 @@
 - **GIVEN** 一次启用在注入的效应追踪器上登记了效应
 - **WHEN** 按该次登记的 trace 回滚
 - **THEN** 该技能状态恢复为启用前状态（重复回滚不报错）
-
 ### Requirement: 版本管理与灰度/A/B
 系统 SHALL 支持技能世代版本、灰度发布与 A/B 测试，依据指标决定提升或回退。
 
@@ -74,7 +72,6 @@
 - **GIVEN** 技能 A/B 并行测试中 B 指标显著退化
 - **WHEN** A/B 对比完成
 - **THEN** 自动切回 A，B 标记 deprecated
-
 ### Requirement: 技能路由
 系统 SHALL 按任务类型自动匹配最合适技能，无匹配时回退通用流程。
 
@@ -136,7 +133,6 @@
 - **GIVEN** 某技能无任何执行样本
 - **WHEN** 路由器匹配
 - **THEN** 其排序分等于基础分（因子 1.0），与未接反馈时一致
-
 ### Requirement: 语义路由（semantic routing）
 系统 SHALL 在**词法匹配全无命中**时提供语义路由兜底：以注入的语义打分器（缺省不启用）对候选技能
 逐条打分，达阈值者按分排序返回；语义命中 SHALL 视为命中（不记未命中）。
@@ -179,7 +175,6 @@
 - **GIVEN** 词法无命中，语义打分器整体抛出异常
 - **WHEN** 调用 `match`
 - **THEN** 不抛出、返回空列表并记 miss（路由不得因打分器故障而中断）
-
 ### Requirement: SOP 提炼（skill extraction）
 系统 SHALL 提供 SOP 提炼能力：由注入的提炼器（DI 可调用，缺省不启用）把**同一类任务的
 成功轨迹**聚合、提炼为一条 `Skill`（`instructions` 承载 SOP 步骤、`task_types` 承载归组键），
@@ -191,6 +186,12 @@
   为新组键。归组口径 SHALL 确定性（离线可断言）。
 - **发布**：提炼产物 SHALL 以 `active` 入库（维度1 技能库属低风险自动发布）；提炼文本为空时
   SHALL 不入库。
+- **任务级过程输入**：除**单轮**轨迹外，系统 SHALL 提供以**编排任务粒度**为输入的观察面 ——
+  其观察单位是「**任务目标 + 按 `plan.order` 聚合的子任务步序**」（任务过程），随任务**成功**
+  收尾（`DONE`）提交一次。该面 SHALL 与单轮面**样本隔离**（独立命名空间与样本集，互不混组：
+  面、组键、`skill_id` 三者均不交叠），提炼产物 SHALL 同样经 `SkillLibrary.register()` 入库、
+  可逆。两步序语义不同（任务级承载子任务骨架、单轮承载工具调用行），隔离 SHALL 保证两类
+  样本不被聚合进同一提炼。
 - 未注入提炼器时 SHALL 不累积、不提炼（零额外调用）；提炼失败 SHALL NOT 中断 Agent 主流程。
 
 #### Scenario: 同类任务达阈值提炼入库
@@ -229,6 +230,17 @@
 - **WHEN** 按该次登记的 trace 回滚效应
 - **THEN** 技能从库中移除（重复回滚不报错）
 
+#### Scenario: 任务达阈值提炼为任务级 SOP
+- **GIVEN** 已注入提炼器与技能库，同一类**编排任务**（任务目标归组键一致）成功达成 `DONE` 达阈值
+- **WHEN** 第 N 次成功收尾触发**任务级**观察，提交「任务目标 + 按 `plan.order` 聚合的子任务步序」
+- **THEN** 技能库新增一条 `Skill`：`instructions` 为任务级提炼文本、`task_types` 含任务归组键、
+  `status="active"`
+
+#### Scenario: 任务级与单轮样本不混组
+- **GIVEN** 任务级与单轮两条观察面共用同一技能库，且单轮技能已含词法相近的 `task_types`
+- **WHEN** 任务级观察提交样本
+- **THEN** 任务级样本归入**独立命名空间**的组键（不复用单轮技能的 `task_types`、不与之混组），
+  其提炼产物的 `skill_id` 与单轮产物**不同**
 ### Requirement: 技能命中注入（skill hint injection）
 系统 SHALL 把**路由命中的技能**以「技能 id + 版本 + `instructions` 节选」注入推理 prompt；
 节选 SHALL 有字符上界（token 有界），`instructions` 为空时 SHALL 只注入 id 与版本。
@@ -246,7 +258,6 @@
 - **GIVEN** 命中技能的 `instructions` 为空
 - **WHEN** 组装推理 system prompt
 - **THEN** 技能块只含 `skill_id`（不产生空占位行）
-
 ### Requirement: 技能执行反馈（skill execution feedback）
 系统 SHALL 记录技能的「命中」与「执行结果」，按 `(skill_id, version)` 累计，作为技能迭代的
 判据；未注入记录器时 SHALL NOT 记录（零行为变化）。
@@ -265,7 +276,6 @@
 - **GIVEN** 一轮任务命中技能 X 但收尾失败（超限终止）
 - **WHEN** 记录结果
 - **THEN** `(X, 该轮版本)` 失败数 +1
-
 ### Requirement: 技能迭代闭环（skill iteration）
 系统 SHALL 在**执行反馈不达标**（样本达下限且失败率达阈值）时触发迭代：由注入的改写器
 （DI 可调用，缺省不启用）重写 `instructions` 为新版本并经**灰度发布**生效；两版本样本齐备后
@@ -298,7 +308,6 @@ SHALL 以 A/B 对比定夺——提升 SHALL 落地新版本，退化 SHALL 丢�
 - **GIVEN** 技能 X 的新版本成功率更低
 - **WHEN** A/B 定夺
 - **THEN** 技能保持原版本与 `instructions`（草稿丢弃），且技能 SHALL NOT 被标记 `deprecated`
-
 ### Requirement: 技能态持久化（skill state persistence）
 系统 SHALL 支持把**技能态**——技能库注册表、执行反馈统计、SOP 样本累积、灰度/A-B 状态——
 落盘为 JSON 并在启动时恢复；未注入路径时 SHALL 纯内存运行（零行为变化、不写盘）。
