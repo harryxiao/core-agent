@@ -919,18 +919,28 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     time_travel = TimeTravel(store, effect_tracker=effect_tracker)
     crash_recovery = CrashRecovery(store)
 
-    def _checkpoint(task_id: str, outcomes: list[SubtaskOutcome], plan: Plan) -> None:
-        _write_checkpoint(task_id, outcomes, plan, done=False)
+    def _checkpoint(
+        task_id: str, outcomes: list[SubtaskOutcome], plan: Plan, session_id: str = ""
+    ) -> None:
+        _write_checkpoint(task_id, outcomes, plan, done=False, session_id=session_id)
 
-    def _finalize(task_id: str, outcomes: list[SubtaskOutcome], plan: Plan) -> None:
-        _write_checkpoint(task_id, outcomes, plan, done=True)
+    def _finalize(
+        task_id: str, outcomes: list[SubtaskOutcome], plan: Plan, session_id: str = ""
+    ) -> None:
+        _write_checkpoint(task_id, outcomes, plan, done=True, session_id=session_id)
 
     def _write_checkpoint(
-        task_id: str, outcomes: list[SubtaskOutcome], plan: Plan, *, done: bool
+        task_id: str,
+        outcomes: list[SubtaskOutcome],
+        plan: Plan,
+        *,
+        done: bool,
+        session_id: str = "",
     ) -> None:
         checkpoints.create_checkpoint(
             task_id,
-            "default",
+            # 发起会话标识：实参原值（空串 = 未归属照实记录；change 0190 去占位值）
+            session_id,
             {
                 "plan": plan_to_dict(plan),  # 计划随检查点持久化（续跑重建）
                 "outcomes": [

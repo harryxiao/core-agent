@@ -151,7 +151,9 @@ def test_task_scheduler_multi_agent_checkpoint_per_wave() -> None:
             Subtask(id="2", goal="write the code", acceptance="", depends_on=["1"]),
         ]
 
-    def checkpoint(task_id: str, outcomes: list[SubtaskOutcome], plan: object) -> None:
+    def checkpoint(
+        task_id: str, outcomes: list[SubtaskOutcome], plan: object, session_id: str
+    ) -> None:
         calls.append((task_id, [o.subtask_id for o in outcomes]))
 
     scheduler = TaskScheduler(

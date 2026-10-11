@@ -1709,12 +1709,16 @@ def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911 — 入口校验天
     plan: Plan | None = None
     completed: set[str] | None = None
     results: dict[str, str] | None = None
+    # 会话归因（change 0190）：fresh 经共享注册表铸会话；resume 复用检查点的发起会话
+    # （旧占位值 "default" / 空视作未归属，与既往行为逐字一致，不迁移旧数据）。
+    session_id = ""
     if args.resume_id:
         cps = runtime.checkpoints.list_checkpoints(task_id=args.resume_id)
         if not cps:
             print(f"未找到任务 {args.resume_id} 的检查点", file=sys.stderr)
             return 1
-        state = runtime.checkpoints.get_snapshot(cps[-1].checkpoint_id).state
+        latest = cps[-1]
+        state = runtime.checkpoints.get_snapshot(latest.checkpoint_id).state
         if state.get("done"):
             print(f"[task_finished] 任务 {args.resume_id} 已完成（检查点 done）")
             return 0
@@ -1730,11 +1734,19 @@ def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911 — 入口校验天
         }
         goal = plan.goal or goal
         task_id = args.resume_id
+        checkpoint_session = str(getattr(latest, "session_id", "") or "")
+        if checkpoint_session and checkpoint_session != "default":
+            session_id = checkpoint_session  # 复用发起会话（同一任务跨续跑不分裂）
+        else:
+            print("检查点未携带会话标识（旧版检查点），子任务轨迹归全局层", file=sys.stderr)
+    else:
+        # fresh：与 run CLI 同注册表同 mode 铸会话（session list 可见；不建 UI 装配）
+        session_id = SessionRegistry(path=_state_path("conversations.json")).create("cli")
     if not goal:
         print("缺少任务目标（检查点未携带且未给定 <目标>）", file=sys.stderr)
         return 1
     failed = asyncio.run(
-        _stream_task(runtime.orchestrator, task_id, goal, plan, completed, results)
+        _stream_task(runtime.orchestrator, task_id, goal, plan, completed, results, session_id)
     )
     return 1 if failed else 0
 
@@ -1746,11 +1758,12 @@ async def _stream_task(  # noqa: PLR0913, PLR0917 — 续跑注入面参数组
     plan: Plan | None,
     completed: set[str] | None,
     results: dict[str, str] | None,
+    session_id: str = "",
 ) -> bool:
     """流式驱动编排器并打印进度事件；返回是否终态失败（task_failed）。"""
     failed = False
     async for event in orchestrator.astream(
-        task_id, goal, plan=plan, completed=completed, results=results
+        task_id, goal, plan=plan, completed=completed, results=results, session_id=session_id
     ):
         line = format_task_event(event.type, event.payload)
         if line:

@@ -59,7 +59,6 @@ CLI 运维命令面（cli-ops）为 core-agent 提供运维命令集与启动参
 - **GIVEN** core-agent 运行中
 - **WHEN** 执行 auth / permission-mode / gateway
 - **THEN** 对应鉴权 / 设置权限模式 / 启停本地服务网关
-
 ### Requirement: 启动参数映射
 系统 SHALL 建立启动参数与配置项的一一对应：优先级链为 CLI flag > env > config.yaml > 默认值，映射关系由单一真源 ConfigSpec 声明（`--foo.bar=value ↔ config.foo.bar ↔ CORE_AGENT_FOO_BAR`）。
 
@@ -72,7 +71,6 @@ CLI 运维命令面（cli-ops）为 core-agent 提供运维命令集与启动参
 - **GIVEN** 一个配置项已由 ConfigSpec 声明
 - **WHEN** 通过 CLI flag（如 `--foo.bar=value`）或 env（如 `CORE_AGENT_FOO_BAR`）指定
 - **THEN** 二者映射到同一 config.foo.bar 配置项，无第二真源
-
 ### Requirement: 会话命令族与交互入口续聊
 系统 SHALL 提供会话命令族：`session create`（新建会话并返回标识，登记于跨进程共享注册表）、
 `session list`（枚举已登记会话：标识 + 模式）、`session show <session_id>`（按追加次序打印该会话的
@@ -84,6 +82,11 @@ CLI 运维命令面（cli-ops）为 core-agent 提供运维命令集与启动参
 交互入口（无子命令进入的会话循环）SHALL 接受 `--session <session_id>` 以**续接既有会话**：该标识
 有效时 SHALL 复用（**SHALL NOT** 新建会话），且该会话既有转录 SHALL 被载入续聊上下文与呈现面；
 该标识未登记时 SHALL fail-closed 拒绝。未指定 `--session` 时 SHALL 新建会话（既有行为不变）。
+
+一次性**任务**入口（`task <目标>`）新任务铸会话时 SHALL 经**同一**跨进程共享注册表登记
+（mode `cli`，不另建第二注册表）—— 铸出的会话对 `session list` 可见、对交互入口 `--session`
+续接可用；任务续跑（`--resume`）SHALL 复用检查点携带的既有会话（SHALL NOT 另铸新会话导致
+同一任务轨迹分裂）。
 
 #### Scenario: 列出与查看会话转录
 - **GIVEN** 已存在一个会话且其转录含若干轮对话
@@ -110,6 +113,10 @@ CLI 运维命令面（cli-ops）为 core-agent 提供运维命令集与启动参
 - **WHEN** 以 `--session <session_id>` 进入交互入口
 - **THEN** fail-closed 拒绝（不静默新建会话顶替）
 
+#### Scenario: 一次性任务入口铸会话入同一注册表
+- **GIVEN** 操作者执行 `core-agent task <目标>`（新任务）
+- **WHEN** 任务开始执行
+- **THEN** 铸出的会话经共享注册表登记（mode `cli`），`session list` 可见；续跑 `--resume` 复用检查点既有会话而非另铸
 ### Requirement: 自检诊断（`doctor`）与运行状态（`status`）
 
 CLI SHALL 提供 `doctor` 与 `status` 两个**只读**运维子命令：二者 SHALL NOT 改变运行态、SHALL NOT 启动
@@ -153,7 +160,6 @@ SHALL NOT 各写一份检查逻辑。该诊断源 SHALL 经**依赖注入**取�
 - **GIVEN** 存在若干会话与工具
 - **WHEN** 执行 `core-agent status`
 - **THEN** 打印会话数 / 工具数 / 已安装资产数 / MCP 端点数 / 模型标识 / 循环预算，退出码为 `0`
-
 ### Requirement: 诊断视图列对齐
 
 诊断源的**全部**列表型视图 —— `render_sessions` / `render_config` / `render_mcp` / `render_skills` /

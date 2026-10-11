@@ -5827,6 +5827,57 @@ scen 83 → **84**。**既有 Requirement / Scenario 标题零丢失**（归档�
   `loop.failure.<trace_id>` 这一构造在 `loop`（写入侧）与 `runtime`（读取侧）各出现一次，
   无单一真源常量守护（若 `loop` 侧改约定，桥**静默**取不到 ⇒ 退化为「无 note」，不报错）。
 
+## ADR-0180：检查点会话归因 + task 路径会话接线（change 0190 / 账本 E127）
+
+**背景 —— 长任务断点链路上的三重会话身份不调和。** 2026-10-11 长任务评估取证：① 检查点会话
+元数据**恒为占位谎言** —— `CheckpointFn` 回调签名无 session 形参（`src/core/orchestration/
+scheduler.py:32-34`）⇒ 组合根 `_write_checkpoint` 对每个检查点写死 `"default"`
+（`src/core/runtime.py` `create_checkpoint(task_id, "default", …)`）；② CLI `task` 入口**完全无会话
+身份** —— `entry._task` → `_stream_task` → `orchestrator.astream` 不传 `session_id` ⇒ 子任务轨迹 /
+记忆 / 转录全落**全局未归属**（`scheduler._run_subtask` 空则不传第二实参），与 REPL `/task`（发起
+会话归因）与 Web 任务入口（同）行为不一致；③ 续跑若另铸新会话，同一任务轨迹将**分裂**在两个会话
+下。结构根因是 ①（回调签名），②③ 是其在入口层的两个表现 —— session 在两个回调调用点均在
+`astream` 作用域内，扩签名是**最小**结构修正。
+
+- **决策 ①：回调签名扩第 4 参（非新状态）。** `CheckpointFn` / `DoneFn` 增尾参
+  `session_id: str`（空串 = 未归属，与 `astream` / `Loop.remember` 既有口径同构），两个调用点
+  （波次收拢 / 终态）透传 `astream` 形参——**不加新字段、不加新状态、不加新回调**。这是**破坏性
+  接口变更**：全仓实现方仅组合根一处 + 测试替身三处，影响面已枚举并同步。
+- **决策 ②：写真值，不写占位。** `_write_checkpoint` 用实参原值（`create_checkpoint(task_id,
+  session_id, …)`）：非空写真会话、空串照传 = 诚实的「无会话」。全仓无任何消费方依赖
+  `"default"` 字面值（grep 无 `== "default"` 判据；测试中该字面值仅作 create 入参，非读取断言）
+  ⇒ 从谎言到真话是**纯修正**。REPL `/task` 与 Web 入口本就传 session ⇒ 其检查点自动获得真会话
+  （零额外改动）。
+- **决策 ③：CLI fresh 铸会话走共享注册表、直接构造不建 UI。** `_task` 无 `--resume` 时经
+  `SessionRegistry(path=_state_path("conversations.json")).create("cli")` 铸会话——与 `run` CLI
+  （`api.create_session("cli")`）**同注册表、同 mode**（`session list` 可见、`--session` 续接
+  可用）；**不**借道 `_build_ui`（`task` 入口不需要 UI 装配，且那会二次 `build_runtime`）。
+- **决策 ④：resume 复用检查点会话；旧占位值视作未归属、不迁移。** `--resume` 取最新检查点的
+  `Checkpoint.session_id` 元数据（dataclass 既有字段，durability 层零改动）：`sid and sid !=
+  "default"` ⇒ 复用（同一任务跨续跑不分裂）；否则传空串（未归属，行为与既往 CLI task **逐字
+  一致**）+ stderr 明示提示。旧数据不迁移——`"default"` 是既成事实，视作未归属即兼容。
+- **决策 ⑤：「最新检查点」读取不在本 change 动。** `--resume` 仍取 `list_checkpoints` 末元素
+  （文件序）；与 `restore` 的 ts 序对齐属 change `0191`（同批下一条），改动点互不重叠。
+
+**被改写的规格条款。** `orchestration/spec.md`「断点续跑」**MODIFIED**（检查点携带发起会话标识 +
+SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」）；「任务入口与进度事件」
+**MODIFIED**（新增 bullet「任务入口会话归因」+ 2 Scenario「CLI 新任务铸会话归因」/「CLI 续跑复用
+检查点会话」）。`cli-ops/spec.md`「会话命令族与交互入口续聊」**MODIFIED**（一次性任务入口铸会话入
+同一注册表条款 + 1 Scenario）。既有 Requirement / Scenario 标题**零丢失**。
+
+- **落点**：`src/core/orchestration/scheduler.py`（类型别名 + 2 调用点）、`src/core/runtime.py`
+  （`_checkpoint` / `_finalize` / `_write_checkpoint`）、`src/core/entry.py`（`_task` /
+  `_stream_task`）。`durability` 存储层 / 子 Agent 循环 / 记忆 / 转录**零改动**（归因由生产方修正，
+  消费方无感）。
+- **测试**（+6）：回调收到发起会话标识（fresh 非空 + 缺省空串）/ 组合根写真值 / CLI fresh 铸会话且
+  `astream` 收到（经注册表 mode `cli`）/ resume 复用检查点会话 / 旧 `"default"` 视作未归属 + 提示；
+  既有替身补第 4 参、既有 resume 用例补 `session_id` 元数据（断言不变量不变）。
+- **局限**：① **CLI `task` 无 `--session` flag** —— 显式指定既有会话属会话命令族面（无诉求，
+  YAGNI）；② **`"default"` 视作未归属是启发式归一** —— 若操作者真有个会话 id 恰为 `"default"`
+  会同样被视作未归属（`SessionRegistry` 铸的是 uuid4 hex，实践不撞）；③ **检查点会话元数据目前
+  无检索面** —— `list_checkpoints` 不按 session 过滤（消费面出现时再加索引）；④ 跨进程 undo /
+  trace_ids 消费面承 ADR-0136 既有局限，不在本 change。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6001,3 +6052,4 @@ scen 83 → **84**。**既有 Requirement / Scenario 标题零丢失**（归档�
 | ADR-0177 | 02-modules/context.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/phase-35.md |
 | ADR-0178 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/phase-35.md |
 | ADR-0179 | 02-modules/evolution.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/phase-35.md |
+| ADR-0180 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 02-modules/cli-ops.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

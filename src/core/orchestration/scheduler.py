@@ -28,10 +28,11 @@ from .models import Plan, Subtask, TaskState
 from .router import MultiAgentRouter
 from .state_machine import StateMachine
 
-# 检查点回调：波次收拢后持久化（task_id、累计结果、全量计划——续跑重建用）。
-CheckpointFn = Callable[[str, "list[SubtaskOutcome]", Plan], None]
-# 完成回调：任务 DONE 后落终态检查点（done=True）。
-DoneFn = Callable[[str, "list[SubtaskOutcome]", Plan], None]
+# 检查点回调：波次收拢后持久化（task_id、累计结果、全量计划、发起会话标识——续跑重建用）。
+# 第 4 参 session_id 为发起方会话标识（空串 = 未归属照实记录；change 0190 去占位值）。
+CheckpointFn = Callable[[str, "list[SubtaskOutcome]", Plan, str], None]
+# 完成回调：任务 DONE 后落终态检查点（done=True）；第 4参与检查点回调同口径。
+DoneFn = Callable[[str, "list[SubtaskOutcome]", Plan, str], None]
 # 子任务事件发射器：入队即返回（None 为波次收尾哨兵）。
 Emit = Callable[[LoopEvent | None], None]
 
@@ -258,7 +259,7 @@ class TaskScheduler:
                 )
                 return
             if self._checkpoint is not None:
-                self._checkpoint(task_id, outcomes, plan)
+                self._checkpoint(task_id, outcomes, plan, session_id)
                 yield LoopEvent(
                     "task_checkpoint",
                     {
@@ -288,7 +289,7 @@ class TaskScheduler:
             return
         self._state_machine.transition(task_id, TaskState.DONE)
         if self._on_done is not None:
-            self._on_done(task_id, outcomes, plan)
+            self._on_done(task_id, outcomes, plan, session_id)
         self._trace(
             task_id,
             "task_finished",

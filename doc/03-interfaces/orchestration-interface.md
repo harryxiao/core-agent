@@ -128,6 +128,11 @@ class TaskScheduler:
   `--resume` 从该 task-id 最新检查点重建 Plan 与已完成集，续跑未完成子任务；
   检查点经 CheckpointStore 落盘 `$CORE_STATE_DIR/checkpoints.jsonl`（缺省
   `~/.core/state/`），跨进程 kill/重启可续跑。
+- **检查点会话归因**（change 0190 / ADR-0180）：检查点回调 `CheckpointFn` / `DoneFn` 签名为
+  `(task_id, outcomes, plan, session_id)` —— 第 4 参即发起方会话标识（空串 = 未归属照实记录，
+  **不**写占位值如 `"default"`）；波次检查点与终态检查点同口径。CLI `task` 新任务经共享会话
+  注册表铸会话（mode `cli`，与其他一次性入口同一注册表）并透传至 `astream`；`--resume` 复用
+  检查点携带的既有会话（旧占位值视作未归属并提示，不迁移旧数据）。
 - 依赖结果交接：子任务验收通过的回复（截断 2000 字符）注入 `depends_on` 后继
   子任务的执行输入（「前置子任务结果」段），并随 `SubtaskOutcome.reply` 写入
   检查点 outcomes，续跑时经 `results` 参数重建依赖上下文。

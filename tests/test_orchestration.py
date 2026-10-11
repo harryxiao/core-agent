@@ -523,7 +523,7 @@ def test_scheduler_astream_emits_progress_events() -> None:
             [AgentProfile(agent_id="a", capabilities=["t"], loop=_TrackingLoop("ok", executed))]
         ),
         state_machine=StateMachine(),
-        checkpoint=lambda task_id, outcomes, plan: None,
+        checkpoint=lambda task_id, outcomes, plan, session_id: None,
         tracer=recorder,
     )
     events = _collect(scheduler, "task", "goal")
@@ -551,6 +551,58 @@ def test_scheduler_astream_emits_progress_events() -> None:
     assert [o.ok for o in finished["outcomes"]] == [True, True]
     kinds = {e.kind for e in recorder.events}  # 审计：关键节点写 trace
     assert {"plan_ready", "subtask_verified", "task_checkpoint", "task_finished"} <= kinds
+
+
+def test_scheduler_checkpoint_callbacks_receive_session_id() -> None:
+    """检查点/终态回调收到发起会话标识（change 0190：CheckpointFn/DoneFn 第 4 参）。"""
+    decomposer = SubtaskDecomposer(
+        planner=lambda goal: [Subtask(id="1", goal="t-one", acceptance="")]
+    )
+    seen: list[tuple[str, str]] = []
+
+    def checkpoint(task_id, outcomes, plan, session_id):
+        seen.append(("checkpoint", session_id))
+
+    def on_done(task_id, outcomes, plan, session_id):
+        seen.append(("done", session_id))
+
+    scheduler = TaskScheduler(
+        decomposer=decomposer,
+        router=MultiAgentRouter(
+            [AgentProfile(agent_id="a", capabilities=["t"], loop=_FixedReplyLoop("ok"))]
+        ),
+        state_machine=StateMachine(),
+        checkpoint=checkpoint,
+        on_done=on_done,
+    )
+
+    outcomes = asyncio.run(scheduler.run("task-s", "goal", session_id="sess-A"))
+
+    assert [o.ok for o in outcomes] == [True]
+    # 波次检查点与终态检查点同口径：均携带发起会话（非占位值）
+    assert seen == [("checkpoint", "sess-A"), ("done", "sess-A")]
+
+
+def test_scheduler_checkpoint_callbacks_default_session_empty() -> None:
+    """未携带会话 ⇒ 回调收到空串（未归属照实记录，不写占位值）。"""
+    decomposer = SubtaskDecomposer(
+        planner=lambda goal: [Subtask(id="1", goal="t-one", acceptance="")]
+    )
+    seen: list[tuple[str, str]] = []
+
+    scheduler = TaskScheduler(
+        decomposer=decomposer,
+        router=MultiAgentRouter(
+            [AgentProfile(agent_id="a", capabilities=["t"], loop=_FixedReplyLoop("ok"))]
+        ),
+        state_machine=StateMachine(),
+        checkpoint=lambda task_id, outcomes, plan, session_id: seen.append(session_id),
+    )
+
+    outcomes = asyncio.run(scheduler.run("task-s", "goal"))
+
+    assert [o.ok for o in outcomes] == [True]
+    assert seen == [""]
 
 
 def test_scheduler_astream_failure_visible() -> None:

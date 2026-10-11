@@ -689,9 +689,26 @@ def _patch_runtime(
     orch: _StreamOrchestrator,
     checkpoints: object,
     time_travel: object = None,
+    registry: type | None = None,
 ) -> None:
     runtime = SimpleNamespace(orchestrator=orch, checkpoints=checkpoints, time_travel=time_travel)
     monkeypatch.setattr("core.entry.build_runtime", lambda config: runtime)
+    if registry is not None:
+        monkeypatch.setattr("core.entry.SessionRegistry", registry)
+
+
+def _registry_stub(modes: list[str]) -> type:
+    """会话注册表桩类：create 记录 mode 到闭包列表，返回固定会话标识。"""
+
+    class _Stub:
+        def __init__(self, path: object = None) -> None:
+            pass
+
+        def create(self, mode: str) -> str:
+            modes.append(mode)
+            return "sess-stub"
+
+    return _Stub
 
 
 def test_task_streams_progress_events(
@@ -706,7 +723,7 @@ def test_task_streams_progress_events(
             ("task_finished", {"outcomes": [SimpleNamespace(ok=True)]}),
         ]
     )
-    _patch_runtime(monkeypatch, orch, checkpoints=None)
+    _patch_runtime(monkeypatch, orch, checkpoints=None, registry=_registry_stub([]))
 
     rc = main(["task", "复合目标", "--task-id", "t1"])
 
@@ -733,7 +750,7 @@ def test_task_failed_exits_nonzero(
             ),
         ]
     )
-    _patch_runtime(monkeypatch, orch, checkpoints=None)
+    _patch_runtime(monkeypatch, orch, checkpoints=None, registry=_registry_stub([]))
 
     rc = main(["task", "g", "--task-id", "t1"])
 
@@ -759,7 +776,7 @@ def test_task_resume_rebuilds_plan_and_completed(
         waves=[["1"], ["2"]],
     )
     orch = _StreamOrchestrator([("task_started", {}), ("task_finished", {"outcomes": []})])
-    cps = [SimpleNamespace(checkpoint_id="cp1", task_id="t1")]
+    cps = [SimpleNamespace(checkpoint_id="cp1", task_id="t1", session_id="default")]
     snapshots = {
         "cp1": SimpleNamespace(
             state={
@@ -783,6 +800,71 @@ def test_task_resume_rebuilds_plan_and_completed(
     assert isinstance(orch.calls["plan"], Plan)
     assert orch.calls["completed"] == {"1"}  # 已完成集回填，续跑跳过
     assert orch.calls["results"] == {"1": "上游答复"}  # 依赖交接上下文重建
+    assert orch.calls["session_id"] == ""  # 旧占位值检查点 ⇒ 视作未归属（与既往一致）
+
+
+# ---- task 会话归因（change 0190 / 账本 E127）----
+
+
+def test_task_fresh_mints_session(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    orch = _StreamOrchestrator([("task_started", {}), ("task_finished", {"outcomes": []})])
+    modes: list[str] = []
+    _patch_runtime(monkeypatch, orch, checkpoints=None, registry=_registry_stub(modes))
+
+    rc = main(["task", "g"])
+
+    assert rc == 0
+    assert modes == ["cli"]  # 经共享注册表铸会话（mode cli，session list 可见）
+    assert orch.calls["session_id"] == "sess-stub"  # 会话标识透传至编排器
+
+
+def test_task_resume_reuses_checkpoint_session(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan = Plan(
+        subtasks=[Subtask(id="1", goal="g", acceptance="")], goal="g", order=["1"], waves=[["1"]]
+    )
+    orch = _StreamOrchestrator([("task_started", {}), ("task_finished", {"outcomes": []})])
+    cps = [SimpleNamespace(checkpoint_id="cp1", task_id="t1", session_id="orig-sess")]
+    snapshots = {"cp1": SimpleNamespace(state={"plan": plan_to_dict(plan), "done": False})}
+    checkpoints = SimpleNamespace(
+        list_checkpoints=lambda *, task_id=None: cps,
+        get_snapshot=lambda checkpoint_id: snapshots[checkpoint_id],
+    )
+    modes: list[str] = []
+    _patch_runtime(monkeypatch, orch, checkpoints=checkpoints, registry=_registry_stub(modes))
+
+    rc = main(["task", "--resume", "t1"])
+
+    assert rc == 0
+    assert orch.calls["session_id"] == "orig-sess"  # 复用检查点会话（同一任务不分裂）
+    assert modes == []  # 续跑不铸新会话
+
+
+def test_task_resume_legacy_default_session_unattributed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """旧占位值检查点：视作未归属 + stderr 明示提示（不迁移旧数据）。"""
+    orch = _StreamOrchestrator([("task_started", {}), ("task_finished", {"outcomes": []})])
+    plan = Plan(
+        subtasks=[Subtask(id="1", goal="g", acceptance="")], goal="g", order=["1"], waves=[["1"]]
+    )
+    cps = [SimpleNamespace(checkpoint_id="cp1", task_id="t1", session_id="default")]
+    snapshots = {"cp1": SimpleNamespace(state={"plan": plan_to_dict(plan), "done": False})}
+    checkpoints = SimpleNamespace(
+        list_checkpoints=lambda *, task_id=None: cps,
+        get_snapshot=lambda checkpoint_id: snapshots[checkpoint_id],
+    )
+    _patch_runtime(monkeypatch, orch, checkpoints=checkpoints, registry=_registry_stub([]))
+
+    rc = main(["task", "--resume", "t1"])
+
+    assert rc == 0
+    assert orch.calls["session_id"] == ""
+    captured = capsys.readouterr()
+    assert "未携带会话" in captured.err  # 明示提示（不静默）
 
 
 # ---- time-travel：时间旅行回滚入口（change 0144 / 账本 E73）----

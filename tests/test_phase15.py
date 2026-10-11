@@ -29,6 +29,7 @@ from core.memory import Crystallizer
 from core.orchestration import (
     AgentProfile,
     MultiAgentRouter,
+    Plan,
     StateMachine,
     Subtask,
     SubtaskDecomposer,
@@ -296,6 +297,24 @@ def test_runtime_recover_restores_incomplete_skips_done(monkeypatch, tmp_path) -
     assert handles[0].checkpoint_id == todo.checkpoint_id
 
 
+def test_runtime_checkpoint_carries_initiating_session(monkeypatch, tmp_path) -> None:
+    """组合根检查点闭包写**实参原值**会话标识（change 0190：去 `"default"` 占位）。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+    plan = Plan(
+        subtasks=[Subtask(id="1", goal="g", acceptance="")],
+        goal="g",
+        order=["1"],
+        waves=[["1"]],
+    )
+
+    runtime.orchestrator._checkpoint("task-s", [], plan, "sess-real")
+
+    cps = runtime.checkpoints.list_checkpoints(task_id="task-s")
+    assert len(cps) == 1
+    assert cps[-1].session_id == "sess-real"  # 真值入元数据（非占位 "default"）
+
+
 # ---- TaskScheduler trace_id + on_done ----
 
 
@@ -312,7 +331,7 @@ def test_scheduler_on_done_and_trace_id() -> None:
             [AgentProfile(agent_id="main", capabilities=["default"], loop=main)]
         ),
         state_machine=StateMachine(),
-        on_done=lambda task_id, outcomes, plan: done.append((task_id, outcomes)),
+        on_done=lambda task_id, outcomes, plan, session_id: done.append((task_id, outcomes)),
     )
 
     outcomes = asyncio.run(scheduler.run("task-1", "plan"))

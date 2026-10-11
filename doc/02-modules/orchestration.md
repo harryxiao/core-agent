@@ -65,6 +65,10 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
   且**不改**波次划分（依赖拓扑仍是**硬约束**）。两值经 `configuration` 校验期拦截非法取值
   （`INVALID_DISPATCH_POLICY` 为构造期 fail-fast），并由**组合根**注入（缺省 `4` 与既有行为同值 ⇒
   不接线不暴露，故**必须**显式传）。
+- **检查点会话归因**（change `0190`／ADR-0180）：波次收拢 / 终态检查点回调（`CheckpointFn` /
+  `DoneFn`，第 4 参 `session_id`）携带**发起方会话标识**（空串 = 未归属照实记录，**不**写占位值）
+  ⇒ 检查点的会话归属元数据与实际发起会话一致；CLI `task` 新任务经共享注册表铸会话（mode `cli`）、
+  `--resume` 续跑复用检查点既有会话（同一任务跨续跑不分裂）。
 
 ### 3.5 目标监控（Goal / SuccessCriteria + ProgressTracker）
 

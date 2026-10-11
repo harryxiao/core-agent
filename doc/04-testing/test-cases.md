@@ -1989,3 +1989,28 @@
 > 无新配置键。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0148 行（收窄后的 ②③：间接路径 / 非公开面不察；
 > 门槛仍**靠人守 ＋ 最小绊线**），以及 ④「三面边界表是当前分工」逐字不变。
+
+## 103. 检查点会话归因 + task 路径会话接线（TC-CKPT-SESSION，change `0190`／ADR-0180，台账 E127）
+
+**行为规格锚点**：`orchestration/spec.md`「断点续跑」（检查点携带发起会话标识、SHALL NOT 写占位值）、
+「任务入口与进度事件」bullet「任务入口会话归因」；`cli-ops/spec.md`「会话命令族与交互入口续聊」
+（一次性任务入口铸会话入同一注册表）。
+
+| 用例 | 锚点 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-CKPT-SESSION-01 | 断点续跑 Scenario「检查点携带发起会话标识」（fresh 非空） | 单子任务调度器以 `session_id="sess-A"` 跑 `astream`，记录 checkpoint / on_done 回调实参 | 两回调第 4 参均为 `"sess-A"`（锚点：`tests/test_orchestration.py::test_scheduler_checkpoint_callbacks_receive_session_id`） |
+| TC-CKPT-SESSION-02 | 同前（缺省空串） | 同上但不传 `session_id` | 回调收到 `""`（未归属照实记录；锚点：`...::test_scheduler_checkpoint_callbacks_default_session_empty`） |
+| TC-CKPT-SESSION-03 | 组合根写真值 | `build_runtime` 后 `orchestrator._checkpoint("task-s", [], plan, "sess-real")` | 检查点 `session_id == "sess-real"`（非占位 `"default"`；锚点：`tests/test_phase15.py::test_runtime_checkpoint_carries_initiating_session`） |
+| TC-CKPT-SESSION-04 | cli-ops Scenario「一次性任务入口铸会话入同一注册表」 | 桩注册表 + 桩编排器跑 `task <目标>`（无 `--resume`） | 注册表 `create` 收 mode `cli`、`astream` 收到该会话标识（锚点：`tests/test_entry.py::test_task_fresh_mints_session`） |
+| TC-CKPT-SESSION-05 | orchestration Scenario「CLI 续跑复用检查点会话」 | 检查点 `session_id="orig-sess"` 跑 `task --resume t1` | `astream` 收 `"orig-sess"` 且**不**再铸会话（锚点：`...::test_task_resume_reuses_checkpoint_session`） |
+| TC-CKPT-SESSION-06 | 同前（旧占位值归一） | 检查点 `session_id="default"` 跑 `task --resume` | `astream` 收 `""`（未归属，行为与既往逐字一致）+ stderr 提示「未携带会话标识」（锚点：`...::test_task_resume_legacy_default_session_unattributed`） |
+
+> **红态证据**：TC-CKPT-SESSION-01/02/03/04/05 在签名扩参前**红**（回调只收 3 参 / 检查点写死
+> `"default"` / CLI 不传会话）；TC-CKPT-SESSION-06 在实现前红（无提示行）。既有替身
+> （`test_orchestration.py` lambda / `test_phase14.py` checkpoint / `test_phase15.py` on_done）补第 4 参、
+> 既有 resume 用例补 `session_id` 元数据后断言不变量不变。绿后全量 `.venv/bin/pytest -q` ⇒
+> **2214 passed**（基线 **2208**，**+6** = 回调 2 ＋ 组合根 1 ＋ CLI 入口 3）。
+> **不动面**：REPL `/task` 与 Web 任务入口（本就传会话，自动获益零改动）；`durability` 存储层
+> （`Checkpoint.session_id` 既有字段）；`--resume` 「最新检查点」取法（文件序，ts 序对齐归 change `0191`）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0180 行（无 `--session` flag / `"default"` 归一
+> 启发式 / 会话元数据无检索面 / 跨进程 undo 承 ADR-0136）。
