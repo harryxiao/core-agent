@@ -19,6 +19,7 @@ from pathlib import Path
 
 from core.configuration import ConfigManager
 from core.mcp import MCPEndpointRegistry
+from core.memory import ChainNode
 from core.notes import NoteStore
 from core.plugin_registry import PluginInstaller
 from core.skillhub import MarketIndex
@@ -29,6 +30,10 @@ from core.tools import ToolProvider
 #: （形状与 `ui.UIAPILayer.list_sessions` 一致 —— 同一份数据，两个消费面）。
 SessionsHandle = Callable[[], list[dict[str, object]]]
 
+#: 情景链取数句柄：`session_chain(session_id) -> list[ChainNode]`（`""` ⇒ 不按会话过滤）。
+#: 注入的是**可调用**（如 `MemoryStore.session_chain` 本身）⇒ 诊断包不建 store 实例、不引组合根。
+ChainHandle = Callable[[str], list[ChainNode]]
+
 
 @dataclass(frozen=True)
 class Deps:
@@ -37,6 +42,7 @@ class Deps:
     config: ConfigManager | None = None  # 配置：**只经 is_resolvable 判可解析**，绝不读值
     tools: ToolProvider | None = None  # 工具面：CLI 注入内置原子工具，TUI 注入 runtime 全量
     sessions: SessionsHandle | None = None  # 会话枚举（可调用 ⇒ 无需引 core.ui）
+    chain: ChainHandle | None = None  # 情景链（**零效应只读**；可调用 ⇒ 不建 store 实例）
     notes: NoteStore | None = None  # canonical 笔记库
     mcp: MCPEndpointRegistry | None = None  # 已装 MCP 端点表
     library: SkillLibrary | None = None  # 技能库（已装）

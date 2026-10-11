@@ -138,6 +138,47 @@ def render_notes(deps: Deps) -> Report:
     return _sealed("笔记", rows)
 
 
+#: 单会话呈现的链节数上限（只读视图的输出**整体进时间线块** ⇒ 长会话的链不可无界）。
+_MAX_CHAIN_ROWS = 20
+
+
+def render_chain(deps: Deps) -> Report:
+    """情景链（只读）：按会话列出**最近**若干节的链路语义（会话 / 轮 / 结果 / 前序 / 时间）。
+
+    取数走**注入的可调用**（`Deps.chain`，change 0211 / ADR-0201）—— 诊断包**不建 store 实例**、
+    不引 `core.runtime`；`ChainNode` **不含正文** ⇒ 只呈现链路语义、无需脱敏闸。会话分组取自
+    `Deps.sessions`（同为注入句柄）；会话面缺失 ⇒ 退回**不过滤**的一节。
+    """
+    handle = deps.chain
+    if handle is None:
+        return Report(title="情景链", lines=(_NOT_WIRED,))
+
+    def rows() -> list[str]:
+        cells: list[list[str]] = []
+        for session_id in _chain_sessions(deps):
+            cells.extend(
+                [
+                    str(session_id or "（未标识）"),
+                    str(node.trace_id or "（无）"),
+                    "失败" if node.failed else "成功",
+                    node.after or "（无）",
+                    f"{node.ts:.3f}",
+                ]
+                for node in handle(session_id)[-_MAX_CHAIN_ROWS:]
+            )
+        return align_rows(cells)
+
+    return _sealed("情景链", rows)
+
+
+def _chain_sessions(deps: Deps) -> list[str]:
+    """链视图的会话集：取注入的会话句柄（缺 ⇒ 单节**不过滤**，即 `session_chain("")` 语义）。"""
+    handle = deps.sessions
+    if handle is None:
+        return [""]
+    return [str(entry.get("session_id", "")) for entry in handle()]
+
+
 def _as_int(value: object) -> int:
     """数值字段容错取值（诊断视图不因脏数据崩）。"""
     try:

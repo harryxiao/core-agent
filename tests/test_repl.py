@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 import pytest
 
@@ -10,7 +11,7 @@ from core.configuration import ConfigManager
 from core.configuration.models import LLMConfig
 from core.diagnostics import Deps
 from core.loop import LoopEvent, LoopResult
-from core.memory import TranscriptStore
+from core.memory import ChainNode, TranscriptStore
 from core.ui import Event, UIAPILayer, UiError, UiErrorCode
 from core.ui.repl import (
     _COMMANDS,
@@ -1539,6 +1540,7 @@ def test_palette_options_lists_all_commands_on_slash() -> None:
         "/mcp",
         "/skill",
         "/notes",
+        "/chain",
     ]
 
 
@@ -1660,6 +1662,7 @@ def test_palette_opens_on_slash_and_lists_registered_commands() -> None:
         "cmd:/mcp",
         "cmd:/skill",
         "cmd:/notes",
+        "cmd:/chain",
     ]
 
 
@@ -2180,7 +2183,16 @@ def test_registry_handlers_resolve() -> None:
 
 # ---- TUI 只读命令族（change 0163 / ADR-0154） ----
 
-_READONLY_KINDS = ("/doctor", "/status", "/sessions", "/config", "/mcp", "/skill", "/notes")
+_READONLY_KINDS = (
+    "/doctor",
+    "/status",
+    "/sessions",
+    "/config",
+    "/mcp",
+    "/skill",
+    "/notes",
+    "/chain",
+)
 _READONLY_CANARY = "sk-READONLY-CANARY-7c21"
 _READONLY_YAML = """\
 llm:
@@ -2191,7 +2203,9 @@ llm:
 """
 
 
-def _readonly_deps(tmp_path: object) -> Deps:
+def _readonly_deps(
+    tmp_path: object, *, chain: Callable[[str], list[ChainNode]] | None = None
+) -> Deps:
     """只读诊断源：密钥引用**可解析**，其值为哨兵（泄漏断言的靶子）。"""
     from pathlib import Path  # noqa: PLC0415 — 路径拼接随用例落 tmp_path
 
@@ -2199,7 +2213,7 @@ def _readonly_deps(tmp_path: object) -> Deps:
     yaml_path = root / "config.yaml"
     yaml_path.write_text(_READONLY_YAML, encoding="utf-8")
     config = ConfigManager(yaml_path, environ={"CORE_READONLY_KEY": _READONLY_CANARY})
-    return Deps(config=config, state_dir=root)
+    return Deps(config=config, state_dir=root, chain=chain)
 
 
 async def _submit(app: object, line: str) -> list[str]:
@@ -2218,7 +2232,7 @@ async def _submit(app: object, line: str) -> list[str]:
 
 
 def test_readonly_commands_render_result_block_without_touching_conversation(tmp_path) -> None:
-    """7 条只读命令：各落结果块、**无** `❯` 回显、**零**对话轮次（承规格三 Scenario）。"""
+    """8 条只读命令：各落结果块、**无** `❯` 回显、**零**对话轮次（承规格三 Scenario）。"""
     api, loop = _palette_api(diagnostics=_readonly_deps(tmp_path))
     app = build_app(api)
 
@@ -2233,6 +2247,24 @@ def test_readonly_commands_render_result_block_without_touching_conversation(tmp
         assert not any("❯" in line for line in block), f"{kind} 落了用户输入回显"
     assert loop.inputs == []  # 无一进普通对话
     assert loop.sessions == []
+
+
+def test_chain_command_renders_failure_marker(tmp_path) -> None:
+    """`/chain`：注入链句柄 ⇒ 时间线呈现**失败标记**与 `after` 值（同 CLI 诊断面同一产出）。"""
+    chain = {"": [ChainNode("loop.failure.t2", "t2", 2.0, True, "t1")]}
+    api, loop = _palette_api(
+        diagnostics=_readonly_deps(tmp_path, chain=lambda sid: chain.get(sid, []))
+    )
+    app = build_app(api)
+
+    async def drive() -> list[str]:
+        async with app.run_test() as pilot:
+            app._pilot = pilot  # noqa: SLF001 — 供 `_submit` 取 pilot
+            return await _submit(app, "/chain")
+
+    block = asyncio.run(drive())
+    assert any("失败" in line and "t1" in line for line in block), block
+    assert loop.inputs == []
 
 
 def test_readonly_commands_leak_no_secret(tmp_path) -> None:

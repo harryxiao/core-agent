@@ -19,7 +19,7 @@ from core.durability import (
     DurabilityError,
     DurabilityErrorCode,
 )
-from core.entry import _build_installer, _build_parser, _state_path, main
+from core.entry import _build_installer, _build_parser, _diag_deps, _state_path, main
 from core.loop import LoopEvent
 from core.memory import FileBackend, MemoryEntry, MemoryStore, TranscriptStore
 from core.notes import NoteEntry, NoteStore
@@ -1400,6 +1400,55 @@ def test_notes_pinned_reports_in_context_and_overflow(capsys: pytest.CaptureFixt
     drop = next(line for line in lines if line.startswith("drop"))
     assert "[在场]" in keep, "高优先级整篇在场"
     assert "[未进场]" in drop, "超预算篇整篇排除且可见"
+
+
+# ---- 只读诊断面：情景链句柄接线（change 0211 / ADR-0201 / 账本 E148） ----
+
+
+def _seed_chain_round(trace_id: str, *, failed: bool) -> None:
+    """以组合根同源路径播种一轮情景条目（轨迹 + 失败时另立失败条目；`CORE_STATE_DIR` 已隔离）。"""
+    store = MemoryStore(backend=FileBackend(_state_path("memory.jsonl")))
+    store.write(
+        "L2",
+        MemoryEntry(
+            id=f"loop.{trace_id}",
+            layer="L2",
+            content=f"第 {trace_id} 轮",
+            tags=["loop"],
+            source="loop",
+            trace_id=trace_id,
+            session_id="s1",
+        ),
+    )
+    if failed:
+        store.write(
+            "L2",
+            MemoryEntry(
+                id=f"loop.failure.{trace_id}",
+                layer="L2",
+                content=f"第 {trace_id} 轮失败",
+                tags=["loop", "failure"],
+                source="loop",
+                trace_id=trace_id,
+                session_id="s1",
+            ),
+        )
+
+
+def test_diag_deps_wires_session_chain_handle() -> None:
+    """`_diag_deps` 注入情景链句柄（免 runtime 的裸店）⇒ 诊断面读得到落盘链
+
+    否则 `/chain` 恒「未接线」。
+    """
+    _seed_chain_round("t1", failed=False)
+    _seed_chain_round("t2", failed=True)
+
+    deps = _diag_deps(_build_parser().parse_args([]))
+
+    assert deps.chain is not None, "诊断源须注入链句柄"
+    nodes = deps.chain("s1")
+    assert sorted(node.trace_id for node in nodes) == ["t1", "t2", "t2"]
+    assert any(node.failed for node in nodes), "失败轮须带失败标记"
 
 
 # ---- notes：会话摘要提升（change 0150 / ADR-0142 / 账本 E94） ----

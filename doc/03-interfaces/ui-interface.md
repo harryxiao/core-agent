@@ -271,9 +271,10 @@ fail-closed，先于进入 TUI 拒绝），缺省 ⇒ 新建（既有行为不�
 落痕为 `↻ 续接会话 <标识>（N 条历史已载入）`）。`/resume` 无参数 ⇒ 只提示用法、不切换。
 
 **TUI 只读命令族（change 0163 / ADR-0154）**：真源 `_COMMANDS` 增 `handler` 字段（处理器**方法名**，
-`""` ⇒ 走既有专用分支，既有 6 条命令**逐字不变**）并追加 7 条**只读**命令 —— `/doctor`（自检诊断）、
+`""` ⇒ 走既有专用分支，既有 6 条命令**逐字不变**）并追加 8 条**只读**命令 —— `/doctor`（自检诊断）、
 `/status`（状态概览）、`/sessions`（会话清单）、`/config`（配置视图）、`/mcp`（MCP 端点）、`/skill`
-（技能目录）、`/notes`（笔记与常驻项），均**无参数面**（`arg=""`）。分发在 `on_input_submitted` 的
+（技能目录）、`/notes`（笔记与常驻项）、`/chain`（情景链，change `0211`／ADR-0201 —— 按会话列出
+最近若干节的链路语义，视图 `render_chain`、句柄 `Deps.chain`），均**无参数面**（`arg=""`）。分发在 `on_input_submitted` 的
 **忙态检查之后**（与 `/resume` 同侧 ⇒ 本轮执行中提交被拒绝），`_dispatch_registered` 命中 `handler`
 非空者即 `getattr(self, handler)()`（**登记即接线**，由 `test_registry_handlers_resolve` 与
 `test_registry_commands_are_all_dispatchable` 双重守护）；带参数 ⇒ 只提示不执行。结果**就地**落时间线

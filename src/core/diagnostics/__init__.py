@@ -9,9 +9,10 @@ TUI（change 0162）复用**同一份**产出 —— SHALL NOT 各写一份检�
 """
 
 from .checks import collect_doctor, collect_status
-from .deps import Deps, SessionsHandle
+from .deps import ChainHandle, Deps, SessionsHandle
 from .models import Check, CheckStatus, Report, render
 from .views import (
+    render_chain,
     render_config,
     render_mcp,
     render_notes,
@@ -20,6 +21,7 @@ from .views import (
 )
 
 __all__ = [
+    "ChainHandle",
     "Check",
     "CheckStatus",
     "Deps",
@@ -28,6 +30,7 @@ __all__ = [
     "collect_doctor",
     "collect_status",
     "render",
+    "render_chain",
     "render_config",
     "render_mcp",
     "render_notes",

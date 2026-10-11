@@ -30,6 +30,7 @@ from core.diagnostics import (
     collect_doctor,
     collect_status,
     render,
+    render_chain,
     render_config,
     render_mcp,
     render_notes,
@@ -279,6 +280,7 @@ _COMMANDS: tuple[_Command, ...] = (
     _Command("/mcp", "MCP 端点", handler="_show_mcp"),
     _Command("/skill", "技能目录", handler="_show_skill"),
     _Command("/notes", "笔记与常驻项", handler="_show_notes"),
+    _Command("/chain", "情景链（按时序）", handler="_show_chain"),
 )
 
 
@@ -1335,6 +1337,10 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
         def _show_notes(self) -> None:
             """`/notes`：笔记与常驻项。"""
             self._readonly_report(render_notes)
+
+        def _show_chain(self) -> None:
+            """`/chain`：情景链（按会话列出最近若干节的链路语义，**零效应**只读）。"""
+            self._readonly_report(render_chain)
 
         # ---- 普通消息轮 ----
 

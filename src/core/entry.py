@@ -43,6 +43,7 @@ from core.deployment import (
     ServeStateStore,
 )
 from core.diagnostics import (
+    ChainHandle,
     Deps,
     collect_doctor,
     collect_status,
@@ -561,6 +562,7 @@ def _diag_deps(
         config=config if config is not None else _config_manager(args),
         tools=tools,
         sessions=SessionRegistry(path=_state_path("conversations.json")).list,
+        chain=_memory_chain(),
         notes=_notes_store(),
         mcp=MCPEndpointRegistry(mcp_endpoints_path()),
         library=_build_skill_library(),
@@ -1627,6 +1629,13 @@ def _notes_pinned(store: NoteStore, _args: argparse.Namespace) -> int:
         status = "[未进场]" if note.note_id in excluded else "[在场]"
         print(f"{note.note_id}\t{note.title or note.note_id}\t优先 {note.pin_priority}\t{status}")
     return 0
+
+
+def _memory_chain() -> ChainHandle:
+    """情景链取数句柄（**零效应只读**裸实例：`session_chain` 走 `_all_entries()` 而非 `read()`
+    ⇒ 不强化 `reuse_count`、不记任何效应），与 `_memory_summary` **同源同构**。
+    """
+    return MemoryStore(backend=FileBackend(_state_path("memory.jsonl"))).session_chain
 
 
 def _memory_summary(session_id: str) -> MemoryEntry | None:

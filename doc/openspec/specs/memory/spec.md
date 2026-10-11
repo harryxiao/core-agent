@@ -801,6 +801,15 @@ i) 逃出压实材料的**排除面**（`_PRESERVE_TAGS` 按 `failure` 标签排
 该调用 SHALL 为**零效应**：SHALL NOT 强化 `reuse_count`、SHALL NOT 产生任何写入效应。
 节点 SHALL 携带：条目 `id`、`trace_id`、`ts`、**失败标记**、`after` 值（无则空串）。
 
+**（g）只读呈现面.** 只读诊断源（`core.diagnostics`）SHALL 提供一张**情景链视图**
+（`render_chain`），由 TUI 只读命令族与 CLI 诊断面**共用同一产出**（诊断包 SHALL NOT 各写一份）。
+该视图 SHALL 经**注入的可调用**取链（诊断包 SHALL NOT 自建 `MemoryStore`、SHALL NOT
+import `core.runtime` / `core.ui`），且 SHALL 只呈现 `ChainNode` **已携带**的链路语义
+—— SHALL NOT 呈现条目**正文**（节点非第二条注入通道）。视图 SHALL 保持 (f) 的**零效应**约束：
+SHALL NOT 产生写入效应、SHALL NOT 强化 `reuse_count`；呈现 SHALL **有界**（单会话至多
+`_MAX_CHAIN_ROWS` 节）。句柄未注入 / 链为空 ⇒ 视图 SHALL **如实降级**为一行结论，
+SHALL NOT 抛异常。
+
 #### Scenario: 关闭时失败条目标签逐字不变
 
 - **GIVEN** 标注开关**关闭**（缺省）
@@ -831,6 +840,19 @@ i) 逃出压实材料的**排除面**（`_PRESERVE_TAGS` 按 `failure` 标签排
 - **WHEN** 以其中一个会话调用 `session_chain`
 - **THEN** 只得到该会话的条目、按 `ts` 不减排列；且调用前后各条目的 `reuse_count` **不变**、
   效应追踪器**无新增记录**
+
+#### Scenario: 只读诊断面呈现链
+
+- **GIVEN** 诊断源注入了链句柄（该会话有失败轮，且失败轮带 `after:` 标注）
+- **WHEN** 渲染 `render_chain`（TUI 只读命令族同一产出）
+- **THEN** 呈现含该会话的**失败标记**与 `after` 值；且调用前后 store **无新增写入效应**、
+  `reuse_count` **不变**
+
+#### Scenario: 句柄未注入或空链时不抛
+
+- **GIVEN** 诊断源**未**注入链句柄，或注入的链为空
+- **WHEN** 渲染 `render_chain`
+- **THEN** 分别得到「未接线」/「（空）」一行结论，SHALL NOT 抛异常
 ### Requirement: 实体关系抽取（relations）
 
 系统 SHALL 提供**实体关系抽取**：在记忆压实时，从**被聚合的 episodic 条目**中抽取

@@ -6885,6 +6885,69 @@ runtime 起不来。此处**连告警都不发**（该路径每次装配都走�
   ⑤ `chunk_texts` 依赖「块 id 以 `#<数字>` 结尾」这一 `ingest` 的**实现约定**（另一种
   VectorStore 实现若换 id 形状，须自行按序返回）。
 
+## ADR-0201：情景链读侧进只读诊断面 —— 注入可调用、呈现有界、类型零变更（change 0211 / 台账 E148）
+
+**背景 —— 写侧通了、读侧不通。** change `0202` / ADR-0192 立了 `MemoryStore.session_chain`
+（零效应只读：按 `ts` 主序重建某会话的情景链，节点携带 `entry_id / trace_id / ts / failed / after`），
+并把 (f) 只读链重建写进了 `memory/spec.md:769`。但**全仓零生产消费者** —— `session_chain` 只被自己的
+单测调用。六能力走查中「有规格无接线」死代码的一支：链只在测试里可读，运维面（TUI 只读命令族 /
+CLI 诊断源）看不到「哪些轮失败、链条怎么接的」。
+
+**D1 落 `core.diagnostics`，不落 `memory` / `ui`。** 诊断包是 `0162` 立的**只读诊断源**
+（`doctor` / `status` / 六张列表视图的**单一**产出方，「SHALL NOT 各写一份检查逻辑」）。`session_chain`
+是**读取面**、无行为开关 ⇒ 属「呈现」而非「能力」：加在 `memory` 包内会多一个无人消费的公开方法；
+加在 `ui` 包内则 CLI 侧拿不到，且 `ui` 反向引用 diagnostics ⇒ 写进去**成环**。故落 `views.py`，
+与 `render_sessions` / `render_notes` **同形**（`_sealed` 包裹 ⇒ 空 ⇒ `（空）`、读取异常 ⇒ 一行说明、
+**视图不抛**）。
+
+**D2 句柄是「注入的可调用」而非 store 对象。** 沿 `Deps` 既有惯例（`SessionsHandle = Callable[[], ...]`，
+`deps.py:30`）：`chain: ChainHandle | None`，`ChainHandle = Callable[[str], list[ChainNode]]`。
+注入的是 `runtime.memory.session_chain` **本身**（bound method）⇒ 诊断包只认**签名**，
+**不建 store 实例**、**不引 `core.runtime`**（硬红线，`test_runtime_is_sole_composition_root`）。
+`ChainNode` 为**类型标注**而 import 是允许的：`diagnostics` 与 `memory` 同属 `CAPABILITY_MODULES`
+（`tests/test_architecture.py:63-90`），`deps.py` 早已 import `core.notes` / `core.skills`。
+
+**D3 呈现有界且不含正文。** `ChainNode` 契约刻意**不含正文**（`store.py:121-125`：「本类不得成为
+第二条注入通道」）⇒ 视图天然只有链路语义，**不需要**再设脱敏闸。**有界**：单会话只取**最近**
+`_MAX_CHAIN_ROWS = 20` 节（`nodes[-20:]`）—— 理由同 `0210` 的文档数上限：只读视图的输出**整体进
+时间线块**，长会话的链可以无界增长；「最近 N 节」是诊断视角的正确默认（最新状态最有用）。
+
+**D4 零效应由既有实现原样承载。** `session_chain` 走 `_all_entries()`（冷区 + 热区）而**非**
+`read()` ⇒ 不触发 `_reinforce`。本 change **不触碰** `memory` 包任何一行 ⇒ (f) 的零效应保证
+**原样**成立，新视图只是**消费方**。
+
+**D5 为何不扩 `ChainNode` 带 `session_id`（计划期修正）。** 计划草稿写「按会话分组，`session_chain("")`
+不过滤再分组」，但 `ChainNode` **不含** `session_id`（`0202` 交付的节点契约只承载链路语义），
+而分组恰需它。**否决**「给节点加字段」：那会把**呈现需求**反向渗进能力层，并迫使 `0202` 的 (f)
+重写。改用**已有**的 `Deps.sessions` 句柄（`_diag_deps` 恒注入 `SessionRegistry(...).list`）
+逐会话取链 ⇒ 同一效果、**类型零变更**。会话面缺失（某调用方只注入 `chain`）⇒ 退回**不过滤**的一节
+（`session_id=""`，即 `session_chain("")` 语义）。
+
+**D6 生产侧接线 = 裸店（免 runtime）。** `_diag_deps`（`entry.py:540-570`）注入
+`MemoryStore(backend=FileBackend(_state_path("memory.jsonl")))` 的 `session_chain` ——
+先例 = `_memory_summary`（`:1632-1637`，**同一路径助手、同一裸构造**）。免 runtime 是刻意的：
+装配 runtime 需要**有效**配置，而「配置坏了」恰是最该跑诊断的场景（ADR-0153 决策①）；
+`session_chain` 零效应 ⇒ 诊断面「不产生副作用」的红线保持。
+
+- **落点**：`src/core/diagnostics/deps.py`（`ChainHandle` + `Deps.chain`）、
+  `src/core/diagnostics/views.py`（`_MAX_CHAIN_ROWS` + `render_chain` + `_chain_sessions`）、
+  `src/core/diagnostics/__init__.py`（导出）、`src/core/entry.py`（`_memory_chain()` + `_diag_deps` 注入）、
+  `src/core/ui/repl.py`（`/chain` + `_show_chain`）、`tests/test_diagnostics.py` / `tests/test_repl.py` /
+  `tests/test_entry.py`（增补）、`doc/04-testing/test-cases.md` §124、`coding-plan/known-risk.md`、
+  `doc/02-modules/memory.md`、`doc/03-interfaces/ui-interface.md`。
+- **规格**：`memory` **MODIFIED**「情景链（时序相邻标注）」（全量替换；narrative 补 **(g) 只读呈现面**
+  ＋ **ADD** Scenario ×2「只读诊断面呈现链」/「句柄未注入或空链时不抛」；既有 (a)–(f) 与 5 个 Scenario
+  **逐字保留**）—— canonical: memory **16 → 16** req / **115 → 117** scen（「情景链」条内
+  Scenario **5 → 7**）。
+- **反证**：摘 `/chain` 命令登记 ⇒ palette ×2 ＋ 只读块用例红（实测 `3 failed, 22 passed`）；
+  摘 `_diag_deps` 的 `chain=` 注入 ⇒ 接线用例红（`1 failed, 96 deselected`）；把 `render_chain`
+  的句柄分支短路为 `if True: 未接线` ⇒ 链用例 ×6 红（`6 failed, 104 deselected`）；三次复原
+  ⇒ 逐字节相同（`diff -q` 三文件）。
+- **局限**：① **`/chain` 无参数** —— 只读命令族（`0163`）的 `handler` 直分发**无参数面** ⇒ 只能看
+  「各会话的最近 N 节」，按会话钻取需带参命令（未做）；② **只呈现** —— 不提供跳转到条目正文的入口；
+  ③ **CLI 无 `chain` 子命令** —— 句柄在 CLI 入口同样被注入（`_diag_deps` 单点）⇒ 未来加子命令是
+  **一行**；④ 会话分组依赖 `Deps.sessions`（注入面缺失时退化为单节不过滤）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7080,3 +7143,4 @@ runtime 起不来。此处**连告警都不发**（该路径每次装配都走�
 | ADR-0198 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/durability.md, 02-modules/configuration.md |
 | ADR-0199 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/constraints.md, 02-modules/loop.md |
 | ADR-0200 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/rag.md, 02-modules/context.md |
+| ADR-0201 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md, 03-interfaces/ui-interface.md |

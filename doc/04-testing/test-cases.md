@@ -2570,3 +2570,35 @@ Requirement 做全量替换）。
 > **8 → 8** req / **33 → 36** scen（「信息地图」条内 3 → 6）；`rag` **MODIFIED**「本地向量库存储」
 > （全量替换 + **ADD** Scenario ×1）—— **7 → 7** req / **14 → 15** scen。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0200 行。
+
+## 124. 情景链读侧进只读诊断面（TC-CHAIN，change `0211`／ADR-0201，台账 E148）
+
+**能力**：`MemoryStore.session_chain`（change `0202` 立的零效应只读口）接进只读诊断源 —— TUI `/chain` 与 CLI 诊断面**同一产出**。
+
+**入口**：`src/core/diagnostics/views.py`（`_MAX_CHAIN_ROWS` + `render_chain` + `_chain_sessions`）、`src/core/diagnostics/deps.py`（`ChainHandle` + `Deps.chain`）、`src/core/entry.py`（`_memory_chain()` + `_diag_deps` 注入）、`src/core/ui/repl.py`（`/chain` + `_show_chain`）。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-CHAIN-01 | 按会话分组 + 失败标记 + 列对齐 | 注入 `{"s1": [成功节, 失败节(after=t1)]}` | 输出含会话 / `失败` / `after` 值；节点行第 2 列（结果）起始显示列一致、无 `\t`（`tests/test_diagnostics.py::test_render_chain_groups_by_session_and_marks_failure`） |
+| TC-CHAIN-02 | 未注入 / 空链不抛 | `chain=None` ／ `chain` 返 `[]` | 分别 `未接线` / `（空）`（`...::test_render_chain_not_wired_and_empty`） |
+| TC-CHAIN-03 | 坏句柄降级 | `chain` 抛 `RuntimeError` | 一行 `不可读（RuntimeError）`，**不抛**（`...::test_render_chain_survives_broken_handle`） |
+| TC-CHAIN-04 | 呈现**有界** | 单会话 30 节 | 恰 `_MAX_CHAIN_ROWS` 行；`tr029` 在、`tr009` 不在（**最近** N 节）（`...::test_render_chain_is_bounded`） |
+| TC-CHAIN-05 | **零效应锚** | 真 `MemoryStore` + 真 `EffectTracker`，两轮（含失败轮） | 调用前后条目集 / `reuse_count` 不变、`tracker.audit("t1")` 长度不变（`...::test_render_chain_is_zero_effect`） |
+| TC-CHAIN-06 | TUI `/chain` 落结果块 | `_readonly_deps(chain=…)` ＋ `run_test` 提交 `/chain` | 块含 `失败` 与 `after` 值；`loop.inputs == []`（`tests/test_repl.py::test_chain_command_renders_failure_marker`） |
+| TC-CHAIN-07 | 生产接线（`_diag_deps` 注入句柄） | 播种两轮（含失败轮）后 `_diag_deps(parse_args([]))` | `deps.chain is not None` 且读回 `["t1","t2","t2"]`、含失败标记（`tests/test_entry.py::test_diag_deps_wires_session_chain_handle`） |
+
+> **反证（逐字锚非恒真，实测记录）**：摘 `/chain` 命令登记（`ui/repl.py` 的 `_COMMANDS` 项）⇒
+> TC-CHAIN-06 ＋ palette ×2 **红**（实测 `3 failed, 22 passed`）；复原后摘 `_diag_deps` 的 `chain=` 注入 ⇒
+> TC-CHAIN-07 **红**（实测 `1 failed, 96 deselected`）；复原后把 `render_chain` 的句柄分支短路为
+> `if True: 未接线` ⇒ TC-CHAIN-01/03/04/05/06 **红**（实测 `6 failed, 104 deselected`）；三次复原 ⇒
+> 三文件 `diff -q` **逐字节相同**。
+> TC-CHAIN-02（未接线）在视图缺失时**恒绿** ⇒ 单独不构成证据，其价值在**与 TC-CHAIN-07 成对**
+> （防「有视图但生产不接线」）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2385 passed**（基线 **2378**，**+7**，与用例数一致）。
+> **零回归**：本 change **不触碰** `memory` 包任何一行 ⇒ `session_chain` 语义逐字不变；
+> `Deps.chain` 缺省 `None` ⇒ 其余六张视图与 CLI `doctor`/`status` 输出**逐字不变**；TUI 新增一条只读命令，
+> 既有七条命令的呈现路径不变。
+> **规格**：`memory` **MODIFIED**「情景链（时序相邻标注）」（全量替换 (a)–(f) 逐字 ＋ **ADD** (g) 只读呈现面
+> ＋ **ADD** Scenario ×2）—— canonical **16 → 16** req / **115 → 117（+2）** scen（「情景链」条内 5 → 7）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0201 行。
+

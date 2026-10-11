@@ -261,6 +261,13 @@ MemoryStore
   （`entry_id / trace_id / ts / failed / after`），**不含正文**。走 `_all_entries()`（冷 + 热）而**非**
   `read()` ⇒ 零 `_reinforce`、零效应。**未**并入 `MemoryStore` Protocol（与 `repair_stale_key_facts`
   同处置 —— 读面为具体类方法）。
+- **只读呈现面（消费者，change `0211`／ADR-0201／账本 E148）**：只读诊断源加视图 `render_chain`
+  （`core/diagnostics/views.py`）⇒ TUI `/chain` 与 CLI 诊断面**同一产出**。取数走**注入的可调用**
+  `Deps.chain`（`ChainHandle = Callable[[str], list[ChainNode]]`，沿 `SessionsHandle` 先例）——
+  诊断包**不建 store 实例、不引 `core.runtime`**；生产接线 = `entry._memory_chain()` 的**裸店**
+  （免 runtime，先例 `_memory_summary`）。呈现**有界**（单会话最近 `_MAX_CHAIN_ROWS = 20` 节）且
+  **只含链路语义**（节点无正文 ⇒ 无需脱敏闸）；按会话分组取自 `Deps.sessions`，缺失则退化为
+  不过滤的一节。**本模块零改动** —— 零效应由 `session_chain` 既有实现原样承载，视图只是消费方。
 - **已知局限**：前序表是**进程内实例状态** ⇒ 跨进程重启、以及三路 loop 实例（main/sub/beast）之间
   **链路会断**；`Diagnoser(predecessor_lookup=…)` 接线**未做**（需对 `evolution/spec.md` 做约 36 行
   逐字 MODIFIED）⇒ 登记为遗留。详见 `coding-plan/known-risk.md` §3 ADR-0192 行。

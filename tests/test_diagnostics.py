@@ -27,14 +27,18 @@ from core.diagnostics import (
     collect_doctor,
     collect_status,
     render,
+    render_chain,
     render_config,
     render_mcp,
     render_notes,
     render_sessions,
     render_skills,
 )
+from core.diagnostics.views import _MAX_CHAIN_ROWS
 from core.mcp import EndpointRecord, MCPEndpointRegistry
+from core.memory import ChainNode, MemoryEntry, MemoryStore
 from core.notes import NoteStore
+from core.plugin_registry import EffectTracker
 from core.skillhub import MarketIndex, MarketSkill
 from core.skills import Skill, SkillLibrary
 from core.tools import ToolProvider, builtin_tools
@@ -85,6 +89,7 @@ def _deps(tmp_path, **overrides: Any) -> Deps:
         "mcp": MCPEndpointRegistry(tmp_path / "mcp.json"),
         "library": SkillLibrary(tmp_path / "skills.json"),
         "state_dir": tmp_path,
+        "chain": lambda _sid: [],
         **overrides,
     }
     return Deps(**fields)
@@ -97,7 +102,14 @@ def _lines(report: Report) -> str:
 def _all_views(deps: Deps) -> str:
     """doctor / status / 五张列表视图的**全部**输出（泄漏断言用一份文本）。"""
     parts = [_lines(collect_doctor(deps)), _lines(collect_status(deps))]
-    views = (render_sessions, render_config, render_mcp, render_skills, render_notes)
+    views = (
+        render_sessions,
+        render_config,
+        render_mcp,
+        render_skills,
+        render_notes,
+        render_chain,
+    )
     parts.extend(_lines(view(deps)) for view in views)
     return "\n".join(parts)
 
@@ -375,6 +387,92 @@ def test_views_degrade_without_handles() -> None:
     empty = Deps()
     for view in (render_sessions, render_config, render_mcp, render_skills, render_notes):
         assert _lines(view(empty)).strip()
+
+
+# ---- 情景链视图（change 0211 / ADR-0201） ----
+
+
+def test_render_chain_groups_by_session_and_marks_failure(tmp_path) -> None:
+    """链视图：按会话分组、呈现**失败标记**与 `after` 值；等宽列（无 `\\t`）。"""
+    chain = {
+        "s1": [
+            ChainNode("e1", "t1", 1.0, False, ""),
+            ChainNode("e2", "t2", 2.0, True, "t1"),
+        ]
+    }
+    deps = _deps(
+        tmp_path,
+        chain=lambda sid: chain.get(sid, []),
+        sessions=lambda: [{"session_id": "s1"}],
+    )
+    out = _lines(render_chain(deps))
+    assert "s1" in out
+    assert "失败" in out and "成功" in out
+    assert "t1" in out  # `after` 值
+    _assert_aligned(_body(out, 2), 2)
+
+
+def test_render_chain_not_wired_and_empty(tmp_path) -> None:
+    """未注入句柄 ⇒ 一行「未接线」；链为空 ⇒ 「（空）」；两者均**不抛**。"""
+    assert "未接线" in _lines(render_chain(_deps(tmp_path, chain=None)))
+    assert "（空）" in _lines(render_chain(_deps(tmp_path)))
+
+
+def test_render_chain_survives_broken_handle(tmp_path) -> None:
+    """句柄抛异常 ⇒ 视图降级为一行说明（`_sealed`），不抛。"""
+
+    def boom(_sid: str) -> list[ChainNode]:
+        raise RuntimeError("bad")
+
+    out = _lines(render_chain(_deps(tmp_path, chain=boom, sessions=lambda: [{"session_id": "s1"}])))
+    assert "不可读（RuntimeError）" in out
+
+
+def test_render_chain_is_bounded(tmp_path) -> None:
+    """链视图**有界**：超过 `_MAX_CHAIN_ROWS` 节 ⇒ 只呈现**最近** N 节。"""
+    nodes = [ChainNode(f"e{i}", f"tr{i:03d}", float(i), False, "") for i in range(30)]
+    deps = _deps(tmp_path, chain=lambda _sid: nodes, sessions=lambda: [{"session_id": "s1"}])
+    out = _lines(render_chain(deps))
+    _body(out, _MAX_CHAIN_ROWS)  # 恰好 N 行（行数本身即断言）
+    assert "tr029" in out  # 最新一节在
+    assert "tr009" not in out  # 最早的已被截掉
+
+
+def test_render_chain_is_zero_effect(tmp_path) -> None:
+    """零效应锚：视图只**读**链 —— 调用前后 store 无新增条目、`reuse_count` 不变。"""
+    tracker = EffectTracker()
+    store = MemoryStore(effect_tracker=tracker)
+    entries = [
+        MemoryEntry(
+            id="loop.t1",
+            layer="L2",
+            content="第一轮轨迹",
+            tags=["loop"],
+            source="loop",
+            trace_id="t1",
+            session_id="s1",
+        ),
+        MemoryEntry(
+            id="loop.failure.t1",
+            layer="L2",
+            content="第一轮失败",
+            tags=["loop", "failure"],
+            source="loop",
+            trace_id="t1",
+            session_id="s1",
+        ),
+    ]
+    for entry in entries:
+        store.write(entry.layer, entry)
+    before = {entry.id: entry.reuse_count for entry in store.audit()}
+    before_effects = len(tracker.audit("t1"))
+    deps = _deps(tmp_path, chain=store.session_chain, sessions=lambda: [{"session_id": "s1"}])
+
+    out = _lines(render_chain(deps))
+
+    assert "失败" in out
+    assert {entry.id: entry.reuse_count for entry in store.audit()} == before
+    assert len(tracker.audit("t1")) == before_effects
 
 
 # ---- 红线：包边界 ----
