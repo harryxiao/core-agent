@@ -7531,6 +7531,43 @@ helper；`skills/router.py`、`crystallizer.py` 已 import `core.memory` ⇒ **�
   暴露面不在本 change（见 ADR-0213 局限②）。
 - 来源另见 `doc/openspec/changes/…-0224-doc-summary-redact/design.md`、`coding-plan/Pending-Arbitration.md` PA-03。
 
+## ADR-0215：镜像失真收口 —— 落点行号 ＋ 旁注锚（change 0225 / 台账 E162）
+
+**背景**：`doc/03-interfaces/prompts.md` 自称「全仓内置 prompt 的**现状快照（镜像）**」，change `0220`
+为它加了门禁 `tests/test_prompt_mirror.py`，但该门禁只断言「模块常量的**每一非空行**出现在镜像」——
+**结构性看不见**两面：① **§1 落点列的 `文件:行`**（常量上方增删行即漂移：实测 ①③⑥⑩ 四条失准，
+其中 ①⑩ 由 `0222`/`0223` 引入、③⑥ 由提词收紧轮的 ②⑤ 加长引入）；② **解释性旁注**（不是模块常量
+⇒ 全不受保护：实测 §4⑪ 把 `0220` 已闭的 `strip_fence` 兜底写成「仍不会被剥」、§2① 未记 `0222`
+形态 5、§3⑩ 未记 `0223` 失败实况）。
+
+**D1 落点行号改为可判定断言（非生成物）。** 在常量上方增行是常规操作 ⇒ 该列必然漂移，靠「记得复核」
+在人肉流程里不可靠。故 `test_prompt_mirror` 增 14 行参数化：所列行**必须**含所列符号；符号去掉尾随
+`()`（⑬ 落点写 `render_prompt()`，目标行是 `def render_prompt(self) -> str:`）。**不采**「从源码反查
+生成该列」—— 那要先解决镜像里大段手写旁注的另存与结构重排（同 PA-05 选项 C）。
+
+**D2 旁注取「已知加固点锚」而非全量校验。** 旁注是散文、无真源可核 ⇒ 无通用正确性判据。可做的是
+**反向守卫**：每个已知加固点登记一个标识串（`_FENCE_ANY` / 形态 5 / `failure_steps`），断言镜像
+**记到了**它 —— 拦的是「加固已闭、旁注仍写成开」这类**方向性失真**（本次即此型）。
+
+**D3 纪律面同步。** `prompts.md` §7 补两步：复核落点行号（第 4 步）；触及行为时同步旁注 ＋ 明写
+「旁注不受文本门禁保护」（第 5 步）。
+
+**D4 PA 簿补第三条出口。** 原约定只有「转实现 / 判不做」；实测 6 个子项被**缓议 / 单独立项**却因无此
+出口而只落在 ADR 局限里 ⇒ 新增「缓议 / 单独立项 ⇒ 记入 §4 ＋ `known-risk.md` §3，**不重开**闭项」
+＋ §4 索引（6 项）。重开闭项是错的：裁决确实做了「本轮不做」的决定。
+
+- **规格**：**中性**（`skip_specs: true`）—— 改动全在**测试面**与**文档面**，零 `src/`。
+- **反证（实测两组）**：① §1 落点行号改回 `:50` ⇒ `test_mirror_landing_line_points_at_symbol[①]`
+  **`1 failed, 31 passed`**；② 镜像摘 `_FENCE_ANY` ⇒
+  `test_mirror_notes_carry_known_hardening_anchors[0220 …]` **`1 failed, 31 passed`**；复原
+  `prompts.md` `md5sum` **逐字节相同**（`24a38ee64628e8a46e10ebd413b61c92`）、复测 **32 passed**。
+  绿后全量 `.venv/bin/pytest -q` ⇒ **2534 passed**（基线 **2516**，**+18**；`test_prompt_mirror`
+  14 → **32**）。
+- **局限**：① **锚是手工清单** —— 新增加固点忘加锚则不红（旁注无真源）；② **行号核对只覆盖 §1 表** ——
+  小节标题里的同一 `文件:行` 靠纪律（§7 第 4 步）而非自动；③ **不核镜像多余/过期行**（沿 ADR-0210
+  局限②）；④ **未采反向生成**（同 D1）。
+- 来源另见 `doc/openspec/changes/…-0225-mirror-staleness-closeout/design.md`、`coding-plan/Pending-Arbitration.md` §4。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7740,3 +7777,4 @@ helper；`skills/router.py`、`crystallizer.py` 已 import `core.memory` ⇒ **�
 | ADR-0212 | 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0213 | 03-interfaces/skills-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0214 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
+| ADR-0215 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |

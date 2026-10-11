@@ -2997,3 +2997,29 @@ Scenario ＋ ADDED 1 Scenario；既有其余 7 Scenario 逐字保留）。承 `0
 > **零回归面**：无密钥形态的摘要在 `redact_secrets` 下**逐字不变**（只替换命中子串）⇒ 既有 4
 > Scenario（source/tags/pinned / 幂等覆盖 / 双守护 / digest 命中节选）全绿。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0214 行。
+
+## 138. 镜像失真收口（TC-MIRRORFIX，change `0225`／ADR-0215，台账 E162）
+
+**规格中性**：`skip_specs: true`。**零 `src/` 改动**（`git diff --stat src/` 为空）—— 收口
+`test_prompt_mirror.py` 的两处结构性盲区（**落点行号** / **解释性旁注**）＋ `prompts.md` 的三类失真
+＋ `Pending-Arbitration.md` 的一致性。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-MIRRORFIX-01 | 落点列覆盖全表 | `prompts.md` §1 | 解析出 ①~⑭ **顺序一致**共 14 行（漏一行即行号失守而不自知）（`tests/test_prompt_mirror.py::test_mirror_landing_column_covers_all_rows`） |
+| TC-MIRRORFIX-02 | 落点行号指向符号 | 14 行参数化：`文件:行` ⇒ 该行文本 | 该行**含**所列符号（符号去尾随 `()`；⑬ 的 `render_prompt()` 对应 `def render_prompt(self) -> str:`）（`...::test_mirror_landing_line_points_at_symbol`，14 参数化） |
+| TC-MIRRORFIX-03 | 旁注记到已知加固点 | 锚表 `_NOTE_ANCHORS`（`_FENCE_ANY` / `形态 5` / `failure_steps`） | 镜像文本**含**每个锚（防「加固已闭、旁注仍写成开」）（`...::test_mirror_notes_carry_known_hardening_anchors`，3 参数化） |
+| TC-MIRRORFIX-04 | 旁注纠错（手工项） | `prompts.md` §4⑪ | 旁注为「**两道**剥围栏（块体 / 末块）＋ 不匹配即原样返回」，**不再**声称「说明 ＋ 围栏不会被剥」（与 TC-LOWRISK-02/04 事实一致）（非 pytest 锚） |
+| TC-MIRRORFIX-05 | PA 簿出口完整性（手工项） | `Pending-Arbitration.md` | §0 边界表与 §1/§2 一致（全闭）；出口约定含第③条「缓议 / 单独立项」；§4 索引 6 项缓议子项（非 pytest 锚） |
+
+> **反证（实测两组）**：(A) §1 落点行号改回 `:50` ⇒ `test_mirror_landing_line_points_at_symbol[①]`
+> **`1 failed, 31 passed`**；(B) 镜像摘 `_FENCE_ANY` ⇒
+> `test_mirror_notes_carry_known_hardening_anchors[0220 strip_fence 末块兜底-_FENCE_ANY]`
+> **`1 failed, 31 passed`**。复原 ⇒ `prompts.md` `md5sum` **逐字节相同**
+> （`24a38ee64628e8a46e10ebd413b61c92`）、复测 **32 passed**。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2534 passed**（基线 **2516**，**+18**；`test_prompt_mirror`
+> **14 → 32**，与用例数一致）。
+> **规格中性**：本环境**无 `openspec` CLI**（未安装）⇒ **未复跑** `validate`；本 change 零 spec delta
+> ⇒ canonical 计数**不变**（与 `0220` 同口径）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0215 行（锚为手工清单 / 行号只覆盖 §1 表 /
+> 不核多余行 / 未采反向生成）。

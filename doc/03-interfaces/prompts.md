@@ -30,16 +30,16 @@
 
 | # | 面 | 提词 | 落点（`src/core/`） | 输出契约 | pin |
 |---|---|---|---|---|---|
-| ① | 控制面 | 推理规划器 | `loop/planner.py:50` `_SYSTEM_PROMPT` | 自然语言 **或** 工具 JSON | ✓ `0215` |
+| ① | 控制面 | 推理规划器 | `loop/planner.py:53` `_SYSTEM_PROMPT` | 自然语言 **或** 工具 JSON | ✓ `0215` |
 | ② | 控制面 | 任务拆解器 | `orchestration/planner.py:19` `_DECOMPOSE_SYSTEM` | JSON `{subtasks:[…]}` | ✓ `0215` |
-| ③ | 控制面 | 验收判定器 | `orchestration/planner.py:29` `_VERIFY_SYSTEM` | JSON `{passed,reason}` | ✓ `0215` |
+| ③ | 控制面 | 验收判定器 | `orchestration/planner.py:32` `_VERIFY_SYSTEM` | JSON `{passed,reason}` | ✓ `0215` |
 | ④ | 数据面 | 记忆压实器 | `memory/summarize.py:37` `_PROMPT_HEAD` | 文本（更新后摘要） | ✓ `0215` |
 | ⑤ | 数据面 | 关键事实抽取器 | `memory/extract.py:178` `_PROMPT_HEAD` | JSON `[{entity,value,ref}]` | ✓ `0215` |
-| ⑥ | 数据面 | 实体关系抽取器 | `memory/extract.py:394` `_RELATION_PROMPT_HEAD` | JSON `[{head,predicate,tail}]` | ✓ `0215` |
+| ⑥ | 数据面 | 实体关系抽取器 | `memory/extract.py:398` `_RELATION_PROMPT_HEAD` | JSON `[{head,predicate,tail}]` | ✓ `0215` |
 | ⑦ | 数据面 | 记忆重要度评分器 | `memory/importance.py:27` `_PROMPT_HEAD` | 数值 `0`–`1` | ✓ `0215` |
 | ⑧ | 数据面 | 情景归纳器 | `memory/episodic.py:35` `_PROMPT_HEAD` | 文本（四段结论快照） | ✓ `0219` |
 | ⑨ | 数据面 | SOP 提炼器 | `skills/sop.py:48` `_PROMPT_HEAD` | 文本（编号步骤清单） | ✓ `0215` |
-| ⑩ | 数据面 | 技能迭代器 | `skills/iteration.py:40` `_PROMPT_HEAD` | 文本（编号步骤清单） | ✓ `0215` |
+| ⑩ | 数据面 | 技能迭代器 | `skills/iteration.py:46` `_PROMPT_HEAD` | 文本（编号步骤清单） | ✓ `0215` |
 | ⑪ | 进化面 | 源码修补者 | `evolution/author.py:32` `_PROMPT_HEAD` | 文本（完整文件内容） | ✓ `0219` |
 | ⑫ | 进化面 | 候选审查者 | `evolution/validator.py:43` `_REVIEW_PROMPT_HEAD` | 文本（首行 `PASS`/`REJECT`） | ✓ `0219` |
 | ⑬ | 人格面 | 宠物人格 | `pet/library/persona.py:24` `render_prompt()` | 文本（人格设定） | ✗ 动态拼接 |
@@ -49,7 +49,7 @@
 
 ## 2. 控制面（3 条）—— 推理与编排循环本体
 
-### ① 主推理规划器 · `loop/planner.py:50`
+### ① 主推理规划器 · `loop/planner.py:53`
 ```
 你是 CORE-Harness 无特权核心的推理规划器，把用户任务推理为下一步动作。
 输出格式二选一，整条回复只能是其中之一：
@@ -75,15 +75,19 @@
 | 10 | `可用技能：` | 技能路由命中 |
 | 11 | `可用工具：` | `self._tools is not None` |
 
-> 解析侧旁注：模型把动作写成「解释 ＋ 换行 ＋ JSON」的混写形态时，`_trailing_json_object`
-> 从文末 `{` 起 `raw_decode`（change `0166`/ADR-0156）—— 属**解析**逻辑，非提词。
+> 解析侧旁注（属**解析**逻辑，非提词）：① 模型把动作写成「解释 ＋ 换行 ＋ JSON」的混写形态时，
+> `_trailing_json_object` 从文末 `{` 起 `raw_decode`（change `0166`/ADR-0156）；② **闭合**的动作
+> JSON 之后**仍有正文** ⇒ **形态 5**「可见失败」（`_UNPARSED_EMBEDDED`，change `0222`/ADR-0212 ——
+> **取代** ADR-0156 的该子情形：静默零执行 ≫ 一次可见失败；只认含**非空 `tool_id`** 的对象）；
+> ③ **流式未修**：`astream` 仍以首个非空 chunk 首字符定形态，判为回复后原样外发 ⇒ 尾随 JSON 会
+> 漏到屏幕（ADR-0212 局限②，须放弃边出边流的全缓冲，属产品级取舍）。
 
 ### ② 任务拆解器 · `orchestration/planner.py:19`
 ```
 你是任务拆解器。把目标拆成 1-6 个可执行的子任务 DAG，仅输出 JSON：{"subtasks": [{"id": "1", "goal": "...", "acceptance": "...", "depends_on": [], "priority": 0, "difficulty": "medium"}]}。规则：goal 是给执行智能体的单一明确指令，且须**自包含**——执行者看不到原始目标，所需背景、路径与约束都要写进 goal；acceptance 是可判定的验收标准，须能被客观检查（如「测试通过」「文件 X 含 Y」），不要写「质量好」「尽量」这类无法判定的表述；depends_on 只引用已声明的 id，无依赖则留空数组，不得成环，无依赖子任务不要伪造依赖；priority 是整数、取值**越大越先执行**（同波次就绪队列内降序调度），没有偏好时留 0；difficulty 是该子任务的难易度，只能取 "easy" / "medium" / "hard" 三档之一，把握不足时取 medium；目标本身不可再分时，只输出 1 个子任务。
 ```
 
-### ③ 验收判定器 · `orchestration/planner.py:29`
+### ③ 验收判定器 · `orchestration/planner.py:32`
 ```
 你是验收判定器。对照验收标准判定子任务结果是否达标，仅输出 JSON：{"passed": true, "reason": "..."}。只依据给出的事实判定，不要替结果补全任何未出现的信息；结果未提供、与标准无关、信息被截断而缺少关键证据、或未达标准时判 false，并给出一句话理由（不要复述结果全文）。
 ```
@@ -111,7 +115,7 @@
 > 记忆的**第一道**（模型侧）约束；第二道是 store 侧无条件 `redact_secrets`。改动此措辞前须重评安全面。
 > 条数上限 `{max}` 取 `KEY_FACTS_MIN = 8`（抽取出厂值，`KEY_FACTS_MAX = 16` 为自适应上限）。
 
-### ⑥ 实体关系抽取器 · `memory/extract.py:394`（`{max}` / `{predicates}` 注入）
+### ⑥ 实体关系抽取器 · `memory/extract.py:398`（`{max}` / `{predicates}` 注入）
 ```
 你是实体关系抽取器。从下面的会话事件中抽取「头实体 — 谓词 — 尾实体」三元组，最多 {max} 条。只输出一个 JSON 数组，元素形如 {"head": "头实体", "predicate": "谓词", "tail": "尾实体"}。谓词**必须**归入下表之一（可用中英任一变体，落库会归一化）：{predicates}。归不入下表的关系**不要输出**。各谓词的语义与方向（head 在前、tail 在后，勿颠倒）：depends_on ＝ head 依赖 tail（依赖方 → 被依赖方）；part_of ＝ head 是 tail 的组成部分（部分 → 整体）；uses ＝ head 使用 / 调用 / 采用 tail（使用者 → 被使用者，如工具、库、接口、资源）；causes ＝ head 导致 tail（原因 → 结果）；blocks ＝ head 阻塞 tail（阻塞方 → 被阻塞方）；owns ＝ head 拥有 / 负责 tail（负责方 → 被负责对象）；implements ＝ head 实现 tail（实现者 → 被实现的契约 / 接口 / 规格）；related_to ＝ 以上都不适用、但确实相关的弱关系（仅在无法归入前 7 者时使用）。**绝不**输出任何密钥 / 凭据 / 口令的明文（含作为实体名的情形）。不要输出解释或多余文字。
 ```
@@ -141,11 +145,13 @@
 > 动态内置内容：`任务：` ＋ `成功轨迹：` 段 ＋ **按轨迹分组**（`轨迹 N：`）逐条 `- {step[:400]}`（`_MAX_STEP_CHARS = 400`）。
 > 分组由 `build_sop_prompt(task, trajectories)` 渲染 —— 拍平成一个列表会让「每次都出现的步骤」无法识别。
 
-### ⑩ 技能迭代器 · `skills/iteration.py:40`
+### ⑩ 技能迭代器 · `skills/iteration.py:46`
 ```
 你是技能迭代器。下面是某技能的现行标准作业步骤与最近的实际执行情况。请针对失败给出更稳健的改进版步骤：只输出编号步骤清单，不要复述原文、不要解释理由。要求：在现行步骤基础上做**最小必要修改**，仍然有效的步骤保留原文；不得缩窄技能的适用任务范围；新增的防护步骤要写明它防的是哪一类失败。
 ```
-> 动态内置内容：`技能 / 适用任务 / 执行情况` ＋ `现行步骤：`。
+> 动态内置内容：`技能 / 适用任务 / 执行情况` ＋ `现行步骤：`；`failure_steps` 非空时另插一节
+> `最近一次失败的实际执行步骤：`（change `0223`/ADR-0213）。**有界**：末尾至多 5 步 × 单步 200 字，
+> 且**注入前**先 `redact_secrets`、再截断（脱敏先行）。缺省空 ⇒ 该节不产 ⇒ 提示词**逐字不变**。
 
 ---
 
@@ -173,8 +179,10 @@
 你是核心源码修补者。只修这一个模块，保持其现有风格与对外契约不变。只输出修补后的**完整**文件内容——回复的第一个字符就是文件内容，最后一个字符也是；不要解释、不要 diff、不要代码围栏、不要在文件之外写任何字。只做修复所必需的最小改动：不要重排无关代码、不要改注释风格、不要动与问题无关的部分。不得改变公开函数签名、模块 docstring 里的接口引用与既有 import 依赖方向（新增跨模块 import 会触发架构门禁）。
 ```
 > 动态内置内容：`目标模块 / 问题 / 当前内容`（原源码**给全**——模型要改的就是它）；`issue` 为空
-> 时渲染为显式「未提供」占位。输出经 `strip_fence` 剥围栏后落盘 —— 该正则只兜底「**整体**被围栏
-> 包裹」的形态，「说明 + 围栏」不会被剥，故提示侧已要求首尾字符即文件内容。
+> 时渲染为显式「未提供」占位。输出经 `strip_fence` 剥围栏后落盘 —— **两道**：① 整串恰为一个围栏块
+> ⇒ 取该块块体；② 否则（如「说明 ＋ 围栏」）取**最后一个**围栏块（`_FENCE_ANY`，change `0220`／
+> ADR-0210 —— 避免块前说明文字被写进 `.py`）；两道都不匹配 ⇒ **原样返回**（不擅自改写模型输出）。
+> 提示侧另要求首尾字符即文件内容，与两道兜底互补。
 
 ### ⑫ 候选审查者 · `evolution/validator.py:43`
 ```
@@ -214,8 +222,13 @@
 
 1. 改**模块常量**（§1 落点列）。
 2. 若该条**已 pin** ⇒ 同步改 `tests/test_prompt_pinning.py` 的逐字副本（改错一处即转红）。
-3. 同步改**本表**（§1 总表行 ＋ 对应小节正文）。
-4. 跑四门禁：`.venv/bin/ruff check src tests` ／ `.venv/bin/ruff format --check src tests` ／
+3. 同步改**本表**（§1 总表行 ＋ 对应小节正文）—— 由 `tests/test_prompt_mirror.py` 逐行核对，漏改即红。
+4. **复核 §1 落点列的 `文件:行`**：常量**上方**插入/删除行会使其漂移（`0222` 的 `_UNPARSED_EMBEDDED`、
+   `0223` 的两个上界常量即如此，`0225` 之前共 4 条失准）。该列同受 `test_prompt_mirror` 的
+   **行号核对**（change `0225`）。
+5. 若改动**触及行为**（解析 / 渲染 / 注入面）⇒ 同时更新「动态内置内容 / 解析侧旁注」与对应接口文档。
+   旁注**不受**文本门禁保护：只有 `test_prompt_mirror` 的**已知加固点锚**能拦（ADR-0215 局限②）。
+6. 跑四门禁：`.venv/bin/ruff check src tests` ／ `.venv/bin/ruff format --check src tests` ／
    `pyright`（0-0-0）／ `.venv/bin/pytest -q`。
-5. **安全承重条目**（⑤⑥）：任何措辞改动须重评「密钥不落记忆」两条防线
+7. **安全承重条目**（⑤⑥）：任何措辞改动须重评「密钥不落记忆」两条防线
    （模型侧 `绝不输出明文` ＋ store 侧 `redact_secrets`），必要时补反证。

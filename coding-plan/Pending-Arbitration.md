@@ -13,7 +13,8 @@
 >
 > **编号约定**：本簿取 `PA-<n>`（Pending Arbitration），与 `known-risk.md` 的 `E<n>` **不共用**序列。
 > 裁决后：① 转实现 ⇒ 按既有纪律走 change/ADR ＋ 四门禁，本行标「已闭（change `0xxx`）」；
-> ② 判不做 ⇒ 转 `known-risk.md` §2「有意取舍」（带裁决日期与理由，避免二次翻案）。
+> ② 判不做 ⇒ 转 `known-risk.md` §2「有意取舍」（带裁决日期与理由，避免二次翻案）；
+> ③ **缓议 / 单独立项** ⇒ 记入 **§4** ＋ `known-risk.md` §3（ADR 局限），**不重开**已闭项。
 
 ---
 
@@ -24,13 +25,13 @@
 | 10 条提词（①规划 / ②拆解 / ③验收 / ④压实 / ⑤事实 / ⑥关系 / ⑨SOP / ⑩迭代 / ⑪修补 / ⑫审查） | **已改**（模块常量 + pin 副本 + `prompts.md` 三处同步） |
 | `evolution.validator.parse_review`：`startswith` → **等值** | **已改**（P0 fail-open 的解药） |
 | `skills.sop.build_sop_prompt(task, trajectories)`：**按轨迹分组** | **已改**（签名变更；`skills-interface.md` 已同步） |
-| loop 解析 / 流式的**代码侧**加固 | **未改** ⇒ **PA-01** |
-| ⑩ 迭代器的**失败材料**注入 | **未改** ⇒ **PA-02**（改提示做不到的那半） |
-| ⑭ 文档摘要路径的**脱敏面** | **未改** ⇒ **PA-03** |
-| `evolution.author.strip_fence` 的兜底边界 | **未改** ⇒ **PA-04** |
-| `prompts.md` 镜像一致性**未入门禁** | **未改** ⇒ **PA-05** |
-| ⑦ 重要度 / ⑧ 情景归纳（未点名，仅评审提及） | **未改** ⇒ **PA-06** |
-| change / ADR / 台账**登记** | **未登记** ⇒ **PA-07** |
+| loop 解析 / 流式的**代码侧**加固 | **已闭**（形态 5 入 `_parse`：change `0222`／ADR-0212）；**流式泄漏缓议**（§4） |
+| ⑩ 迭代器的**失败材料**注入 | **已闭**（`failure_steps`：change `0223`／ADR-0213）；**错误原因面缓议**（§4） |
+| ⑭ 文档摘要路径的**脱敏面** | **已闭**（写入侧 `redact_secrets` ＋ 提示侧纵深：change `0224`／ADR-0214） |
+| `evolution.author.strip_fence` 的兜底边界 | **已闭**（`_FENCE_ANY` 取末块：change `0220`／ADR-0210）；`ast.parse` 自检缓议（§4） |
+| `prompts.md` 镜像一致性**未入门禁** | **已闭**（`tests/test_prompt_mirror.py`：change `0220`）；**行号 / 旁注盲区**由 change `0225` 补 |
+| ⑦ 重要度 / ⑧ 情景归纳（未点名，仅评审提及） | **⑧ 已闭**（change `0220`）；**⑦ 缓议**（§4） |
+| change / ADR / 台账**登记** | **已闭**（追溯挂账 `1f93b88`：change `0221`／ADR-0211） |
 
 ---
 
@@ -49,6 +50,10 @@
 ---
 
 ## §2 逐条
+
+> 各条「现象 / 证据」段引用的是**改动前**的 `file:line` 快照（历史证据，保留不改 —— 否则失去
+> 「当时为什么这么判」的可追溯性）。**现状**行号以 `doc/03-interfaces/prompts.md` §1 落点列为准
+> （该列现受 `test_prompt_mirror` 行号核对；见 change `0225`）。
 
 ### PA-01 loop 输出协议的第二道防线
 
@@ -307,7 +312,7 @@ B 判为本轮「无规格影响的措辞收紧」不登记 —— 但 `parse_re
 
 - **10 条提词**（`src/core/loop/planner.py:50`、`src/core/orchestration/planner.py:19/29`、
   `src/core/memory/summarize.py:37`、`src/core/memory/extract.py:178/394`、
-  `src/core/skills/sop.py:48`、`src/core/skills/iteration.py:40`、
+  `src/core/skills/sop.py:48`、`src/core/skills/iteration.py:46`、
   `src/core/evolution/author.py:32`、`src/core/evolution/validator.py:43`）——
   与 `tests/test_prompt_pinning.py` 副本、`doc/03-interfaces/prompts.md` **三处同步**。
 - **`parse_review` 改等值**（`validator.py:71`）：消除「通过不了」「PASS 但存在问题」「PASSING」被读成通过。
@@ -319,3 +324,20 @@ B 判为本轮「无规格影响的措辞收紧」不登记 —— 但 `parse_re
 
 > **落盘状态**：本轮已提交为 `1f93b88`（**非**未提交）—— 回退须 `git revert 1f93b88` 或走新 commit，
 > 不能再 `git checkout`。
+
+---
+
+## §4 已转出 / 缓议（不在本簿裁决队列，但有账可查）
+
+本簿**开放项为 0**（PA-01~PA-07 全闭）。以下子项在闭项时被明确**缓议 / 单独立项**，登记落在
+`known-risk.md`（§1 账目 / §3 ADR 局限）—— 此处只做**索引**，避免「从本簿入口看不见」。
+
+| 来源 | 子项 | 登记位置 |
+|---|---|---|
+| PA-01 C | **流式泄漏**：`astream` 以首个非空 chunk 首字符定形态 ⇒ 尾随 JSON 漏到屏幕（根治须放弃边出边流的全缓冲，**产品级取舍**） | `known-risk.md` §3 ADR-0212 局限② |
+| PA-02 C | 扩 `on_turn` 带 `trace_id` ⇒ 取 `loop.failure.<trace>`（材料比 `steps` 更贴近「为什么失败」；触及 loop 钩子协议） | `known-risk.md` §3 ADR-0213 局限① ＋ PA-02 闭项正文 |
+| PA-02 旁 | `sop.py::observe` 把**未脱敏** `steps` 喂 `build_sop_prompt`（**既有**暴露面，非该 change 引入） | `known-risk.md` §3 ADR-0213 局限② |
+| PA-04 C | 落盘前 `ast.parse` 语法自检（裁决为**验证门职责**，未采） | `known-risk.md` §1 E157 行 ＋ §3 ADR-0210 行 |
+| PA-05 C | 镜像**反向生成**（人不再手改；须先解决旁注另存的结构重排） | 本簿 PA-05 闭项正文 ＋ `known-risk.md` §3 ADR-0210 局限② |
+| PA-06 B′ | ⑦ 重要度提词收紧（牵动 `W_IMPORTANCE` 乘性权重与写入闸门，**待真实分布证据**） | `known-risk.md` §3 ADR-0210 局限③ |
+| change `0225` | 镜像旁注的**新增加固点**须手工登记锚（`_NOTE_ANCHORS`）—— 旁注无真源可核 | `known-risk.md` §3 ADR-0215 局限② |
