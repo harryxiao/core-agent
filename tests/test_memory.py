@@ -19,6 +19,7 @@ import pytest
 
 from core.judgment import DecisionPrimitive, DecisionResult
 from core.memory import (
+    MAX_SUMMARY_CHARS,
     Crystallizer,
     FileBackend,
     Layer,
@@ -407,6 +408,58 @@ def test_build_prompt_renders_existing_summary_slot() -> None:
 
     without = build_prompt([fresh])
     assert "现有摘要" not in without, "无既有摘要 ⇒ 不渲染该槽"
+
+
+def _summary_slot(prompt: str) -> str:
+    """取出 prompt 中「现有摘要」槽位的正文（`_elide_summary` 的产物）。"""
+    return prompt.split("现有摘要：\n", 1)[1].split("\n\n会话事件：", 1)[0]
+
+
+def test_build_prompt_preserves_summary_tail_when_over_bound() -> None:
+    """越界 ⇒ 首尾保留：尾部（最新结论）仍在、含中略标记、总节选 ≤ 上界（change 0193）。"""
+    body = "首部结论：" + "早" * (MAX_SUMMARY_CHARS + 200)
+    tail = "尾部结论：最终交付物"
+    prior = _summary_entry("compaction.summary.s1", body + tail, "s1")
+
+    prompt = build_prompt([prior, _session_entry("e1", "新增事实", "s1")])
+
+    slot = _summary_slot(prompt)
+    assert tail in slot, "尾部（最新结论）SHALL 保留，不再被头截断销毁"
+    assert "中略" in slot, "越界 ⇒ 含省略标记"
+    assert len(slot) <= MAX_SUMMARY_CHARS, "节选总长不超过上界（token 有界不破）"
+
+
+def test_build_prompt_keeps_summary_verbatim_below_bound() -> None:
+    """未越界 ⇒ 既有摘要**逐字**投喂（与变更前一致）—— 兼容性红线。"""
+    content = "结论：" + "短" * 100
+    prior = _summary_entry("compaction.summary.s1", content, "s1")
+
+    prompt = build_prompt([prior, _session_entry("e1", "新增", "s1")])
+
+    assert _summary_slot(prompt) == content, "未越界 ⇒ 逐字不变"
+    assert "中略" not in prompt
+
+
+def test_build_prompt_slot_stays_bounded_for_huge_summary() -> None:
+    """极大既有摘要（10× 上界）⇒ 槽位仍 ≤ 上界（防 prompt 爆炸，change 0193 有界性）。"""
+    prior = _summary_entry("compaction.summary.s1", "长" * (MAX_SUMMARY_CHARS * 10), "s1")
+
+    prompt = build_prompt([prior, _session_entry("e1", "新增", "s1")])
+
+    assert len(_summary_slot(prompt)) <= MAX_SUMMARY_CHARS
+
+
+def test_compaction_warns_when_skipping_low_value_session() -> None:
+    """价值闸跳过 ⇒ `warnings.warn` 留痕**只报会话键**（不回显正文，change 0193）。"""
+    store = MemoryStore(compactor=_ValueScorer({"lo0": 0.1}), summarizer=lambda entries: "摘要")
+    store.write("L2", _session_entry("lo0", "绝密正文勿回显", "s-lo"))
+
+    with pytest.warns(RuntimeWarning) as rec:
+        store.compact()
+
+    text = " ".join(str(w.message) for w in rec)
+    assert "s-lo" in text, "留痕报会话键"
+    assert "绝密正文" not in text, "SHALL NOT 回显正文（密钥红线）"
 
 
 def test_compact_feeds_existing_summary_back_to_summarizer() -> None:

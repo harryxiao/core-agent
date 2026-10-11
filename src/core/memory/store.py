@@ -577,6 +577,13 @@ class MemoryStore:
             scores = self._score_importance([e for group in groups.values() for e in group])
         for sid, entries in groups.items():
             if _below_gate(entries, scores):
+                # 价值门控跳过**留痕**（change 0193）：只报**会话键**，绝不回显摘要 / 事件正文
+                # （承「密钥只引用不读取」红线）；避免「为何我的会话没产摘要」无从判断。
+                warnings.warn(
+                    f"memory compaction skipped low-value session {sid!r}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
                 continue
             if summarizer is not None:
                 prior = self._existing_summary(sid)

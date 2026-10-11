@@ -58,11 +58,16 @@ class MemoryStore(Plugin):
         带 ``_PRESERVE_TAGS`` 标签者**不入材料**（change `0179` / ADR-0170，见下「压实材料的排除面」）。
 
         ``session_id`` 为**聚合范围的收窄形参**（change `0131` / ADR-0124 / 账本 E66）：非空 ⇒
-        只聚合**该会话**条目（SHALL NOT 跨会话提炼/迁移）；空串 ⇒ **全量**（循环内节拍压实）。
+        只聚合**该会话**条目（SHALL NOT 跨会话提炼/迁移）；空串 ⇒ **全量** —— 该全量语义**保留给
+        **显式调用**（CLI / 运维命令面）；**循环内路径**（轮内压实 ``DefaultLoop._compact`` 与维护节拍
+        ``_maintain``）**一律**以本轮会话标识收窄（change `0192` / ADR-0182 / 账本 E129）。
         **不是** ``query`` —— 两者语义无干（此前按位置传入被当成 ``query``）。
 
         注入 ``summary_promoter`` 时，某会话摘要**首次越过** ``MAX_SUMMARY_CHARS`` 即把该摘要
-        条目交付钩子**一次**（change `0153` / ADR-0145 / 路线图 G3）；缺省 UNWIRED ⇒ 行为不变。"""
+        条目交付钩子**一次**（change `0153` / ADR-0145 / 路线图 G3）；缺省 UNWIRED ⇒ 行为不变。
+        投喂摘要器的既有摘要槽为**首尾保留**节选（未越界逐字、越界「首部＋中略标记＋尾部」且总量恰为
+        上界），比**纯头截断**（会无声销毁尾部 = 最新结论）**不**削弱「越界即交付」的触发语义 ——
+        触发判据仍读 ``len(prior.content)`` 全体长度（change `0193` / ADR-0183 / 账本 E130）。"""
 
     def audit(self, trace_id: str | None = None) -> list[MemoryEntry]:
         """审计写入记录。"""

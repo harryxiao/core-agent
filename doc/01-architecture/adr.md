@@ -5979,6 +5979,46 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
   非本 change 修复对象；③ **`_maintain` 的多会话公平性**承 ADR-0169⑦ 既有局限（节拍状态驻留实例、
   只有「正巧活跃」的会话被刷新），不在本 change。
 
+## ADR-0183：滚动摘要首尾保留 —— 越界不再销毁尾部（结论所在）（change 0193 / 账本 E130）
+
+**背景 —— 滚动摘要越界即无声销毁尾部。** 2026-10-11 长任务评估取证：`build_prompt`
+（`src/core/memory/summarize.py:48`）把既有摘要投喂摘要器时用 `prior.content[:MAX_SUMMARY_CHARS]`
+—— **纯头部截断**。长任务里摘要持续滚动增长，一旦越过 `MAX_SUMMARY_CHARS=2000`，**尾部**（最新
+结论 / 决策所在）**永不再进 LLM** ⇒ 下一轮融合产出「前半段 + 新事件」，尾部内容被**无声、不可逆
+销毁**（长任务失忆的隐蔽来源）。且 `store.py:700-703`（`_deliver_promotion`）以「既有摘要首越上界」
+为交付 canonical 真相层的判据 ⇒ 修法**必须保触发语义逐字不变**。此外 `_below_gate` 跳过会话
+（`store.py:118-125` / `:579-580`）**无任何留痕**，运维无从判断「为何我的会话没产摘要」。
+
+- **决策 ①：首尾保留（`_elide_summary`）。** 未越界**逐字**全文（兼容性红线）；越界渲染
+  「**首部** ＋ 省略标记（标明中略字数）＋ **尾部**（`_SUMMARY_TAIL_CHARS=800`）」，
+  首部 = `MAX_SUMMARY_CHARS - 尾长 - 省略标记长` ⇒ 三段相加**恰为上界**：上界（token 有界）
+  **不破**，`MAX_SUMMARY_CHARS` 的「投喂节选上限」语义**保真**；尾部逐字保真 ⇒ 最新结论不再进
+  黑洞。marker 长度仅由「上界之外的字数」决定（与首部选择无关）⇒ 单趟确定性、无循环收敛问题。
+- **决策 ②：触发语义逐字不动。** `_deliver_promotion` 的越界判据读 `len(prior.content)`（条目
+  **全体长度**）与 `len(summary)`，**不读节选** ⇒ 首尾保留**不触碰**该判据。`_commit_summary`
+  落库**仍不截断**（canonical 存全文、投喂有界 —— 两条边界**正交**，本 change 只动「投喂」那条）。
+- **决策 ③：价值闸留痕（只报会话键）。** `_summarize_sessions` 因 `_below_gate` 跳过会话时补
+  `warnings.warn`，**只报会话键**（`{sid!r}`），**绝不**回显摘要 / 事件正文（承「密钥只引用不读取」
+  红线）；不改变门控判据与结果（跳过行为逐字不变）。
+- **决策 ④：mid 提升通道显式不做。** mid 层由 `summarize_slice(session_id, entries, max_chars=…)`
+  预截断（`store.py:477`），是**有界瞬态层**；canonical 逃逸由**长期摘要提升**（change 0153）承载
+  —— 本条保长期摘要「越界不销毁尾部」后，该提升路径即在正确前提上成立。
+
+**被改写的规格条款。** `memory/spec.md`「记忆压实」**MODIFIED**（节选**首尾保留**条款 —— 含
+「越界判据读全体长度」+ **价值门控留痕**条款 + 2 Scenario「摘要越界首尾保留（尾部不销毁）」/
+「价值门控跳过留痕（只报会话键）」）。既有 20 Scenario 标题**零丢失**。
+
+- **落点**：`src/core/memory/summarize.py`（`_SUMMARY_TAIL_CHARS` + `_elide_summary` + `build_prompt`
+  用）、`src/core/memory/store.py`（价值闸跳过补 `warnings.warn`）。`MAX_SUMMARY_CHARS` 值 /
+  `_deliver_promotion` / `_commit_summary` / `summarize_slice`（mid）**零改动**。
+- **测试**（+4 新增）：越界含尾段 + 中略标记 + 节选 ≤ 上界 / 未越界逐字不变 / 极大摘要槽位有界 /
+  价值闸留痕只报会话键（断言不含正文）。回归：`test_memory_summary_promotion` / `test_notes_promote`
+  既有越界提升用例全绿。
+- **局限**：① **中略区仍不可逆丢失** —— 首尾保留只保**尾**，中段（越界部分）仍不进 LLM（canonical
+  完整副本由提升钩子落真相层承载，见 `0153`）；② **`omitted` 是「上界之外的字数」** 的近似提示
+  （真实中略 = 该值 + `len(marker)`），为人类可读提示、非契约；③ **mid 层无提升通道**（有界瞬态，
+  显式不做）；④ 价值闸留痕**每轮每会话一条** —— 长任务高频跳过时会刷屏（属可观测性噪音，非缺陷）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6156,3 +6196,4 @@ SHALL NOT 写占位值条款 + 1 Scenario「检查点携带发起会话标识」
 | ADR-0180 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 02-modules/cli-ops.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0181 | 03-interfaces/durability-interface.md, 02-modules/cli-ops.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0182 | 02-modules/loop.md, 02-modules/memory.md, 02-modules/context.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0183 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

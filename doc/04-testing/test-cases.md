@@ -2060,3 +2060,26 @@
 > （`compact(session_id="")` ≡ 裸调）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0182 行（provenance 死面只注记不活化 / 空会话轮仍全量 /
 > `_maintain` 多会话公平性承 ADR-0169⑦）。
+
+## 106. 滚动摘要首尾保留 + 价值闸留痕（TC-SUMMARY-TAIL，change `0193`／ADR-0183，台账 E130）
+
+**行为规格锚点**：`memory/spec.md`「记忆压实」（既有摘要投喂节选**首尾保留**、越界判据读全体长度；
+价值门控跳过**留痕**且只报会话键）。
+
+| 用例 | 锚点 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-SUMMARY-TAIL-01 | memory Scenario「摘要越界首尾保留（尾部不销毁）」 | 既有摘要 `首部结论：` + `早`×2200（> `MAX_SUMMARY_CHARS`）⇒ `build_prompt` | 「现有摘要」槽含**尾部**「早」串末段 ＋ 中略标记「⋯（中略 N 字）」；节选总长 ≤ `MAX_SUMMARY_CHARS`（锚点：`tests/test_memory.py::test_build_prompt_preserves_summary_tail_when_over_bound`） |
+| TC-SUMMARY-TAIL-02 | memory Scenario「摘要越界首尾保留」 | 既有摘要 ≤ 上界 | 槽内**逐字**全文（与变更前一致，兼容性红线；`...::test_build_prompt_keeps_summary_verbatim_below_bound`） |
+| TC-SUMMARY-TAIL-03 | 上界不破（token 有界） | 既有摘要 = `长`×(上界×10) ⇒ `build_prompt` | 槽长仍 ≤ `MAX_SUMMARY_CHARS`（`_elide_summary` 三段相加恰为上界；`...::test_build_prompt_slot_stays_bounded_for_huge_summary`） |
+| TC-SUMMARY-TAIL-04 | memory Scenario「价值门控跳过留痕（只报会话键）」 | 低价值会话 `s-lo`（正文含「绝密正文」）越过价值闸 ⇒ 压实 | `warnings.warn(RuntimeWarning)` 触发；告警文本含会话键 `s-lo`、**不含**「绝密正文」（密钥红线）（`...::test_compaction_warns_when_skipping_low_value_session`） |
+
+> **红态证据**：01/03 在 `_elide_summary` 落地前**红**（纯头截断 ⇒ 槽内无尾段）；04 在补 `warnings.warn`
+> 前**红**（静默跳过、无告警）。02 为**兼容性回归锚**（变更前后同绿，证明未越界路径逐字未动）。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2227 passed**（基线 **2223**，**+4 新增**）。
+> **触发语义不动面**：`_deliver_promotion` 的越界判据读 `len(prior.content)`（**全体长度**）不读节选 ⇒
+> 首尾保留**不触碰**提升触发，由既有 `test_memory_summary_promotion.py::test_summary_crossing_bound_delivers_promotion_once`
+> 回归作证（触发路径零改动，故不另写重复用例）。
+> **不动面**：`MAX_SUMMARY_CHARS` 值 / `_commit_summary`（canonical 仍落全文、不截断）/ `summarize_slice`
+> （mid 层 `max_chars` 预截断）/ 价值闸**判据与结果**（仅补留痕）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0183 行（中略区仍不可逆丢失 / `omitted` 为人类可读提示
+> 非契约 / mid 无提升通道显式不做 / 留痕每轮每会话一条属噪音）。

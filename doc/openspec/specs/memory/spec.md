@@ -144,8 +144,7 @@ SHALL 只聚合**该会话**的 L2 episodic 条目（含其重要度打分写回
 无则返回 `None`。该访问器 SHALL NOT 产生任何写入或效应记录，SHALL NOT 变更条目的
 `reuse_count` / `importance` / `updated_at`。
 
-滚动合并 SHALL 有一**上界** `MAX_SUMMARY_CHARS`：该上界是既有摘要**投喂摘要器时的节选上限**，
-故摘要一旦越过它，下一轮滚动合并即**丢弃**上界之外的既有内容（不可逆稀释）。为把该边界**可见地**
+滚动合并 SHALL 有一**上界** `MAX_SUMMARY_CHARS`：该上界是既有摘要**投喂摘要器时的节选上限**。节选 SHALL 为**首尾保留**（而非仅截头）：既有摘要越过上界时，投喂摘要器的既有摘要 SHALL 由**首部**（约 `1200` 字）＋**省略标记**（标明中略字数）＋**尾部**（约 `800` 字）构成，且总节选长度 SHALL **不超过** `MAX_SUMMARY_CHARS` —— 既保上界有界（token 有界），又使**最新结论所在的尾部**不再被无声销毁；未越界时 SHALL **逐字**投喂全文。**越界判据 SHALL 读取既有摘要的全体长度**（不受本节选影响）⇒「首次越过上界」的提升交付语义**逐字不变**。为把该边界**可见地**
 交付上层，`MemoryStore` SHALL 支持注入**提升钩子** `summary_promoter`（契约
 `(session_id, MemoryEntry) -> object`，返回值丢弃；缺省 UNWIRED）—— 当某会话摘要**首次越过**该上界
 （**既有摘要长度不超过上界**「或该会话尚无既有摘要」而**本次产出摘要长度超过上界**）时，系统 SHALL
@@ -153,6 +152,8 @@ SHALL 只聚合**该会话**的 L2 episodic 条目（含其重要度打分写回
 后继摘要覆写上一层已保存的完整内容）。会话标识为空串 SHALL NOT 交付。钩子 UNWIRED（缺省）⇒
 SHALL NOT 交付，压实行为**逐字不变**。钩子抛错 SHALL **降级**（不牵连压实本身的写回与迁移，且经
 `warnings.warn` 留痕，不静默吞异常）。
+
+会话**因价值门控被跳过**时（条目取得的最高分低于阈值），系统 SHALL 经 `warnings.warn` **留痕**（只报**会话键**，SHALL NOT 回显摘要 / 事件正文 —— 承密钥红线），SHALL NOT 静默跳过。
 
 #### Scenario: 索引最小化
 - **GIVEN** L1 索引膨胀
@@ -293,6 +294,16 @@ SHALL NOT 被摘要提炼或关键事实抽取吸收，SHALL NOT 被迁至 L4（
 - **WHEN** 记忆固化执行
 - **THEN** 聚合范围收窄至该会话（不聚合他会话条目），产物归该会话；全量聚合语义仅由不带会话
   标识的**显式调用**触发
+
+#### Scenario: 摘要越界首尾保留（尾部不销毁）
+- **GIVEN** 某会话既有摘要长度**超过** `MAX_SUMMARY_CHARS`
+- **WHEN** 该会话再次压实、构造投喂摘要器的 prompt
+- **THEN** 既有摘要槽 SHALL 含**首部**、**省略标记**与**尾部**（尾部与原文末段逐字一致），总节选长度 ≤ `MAX_SUMMARY_CHARS`；且**未越界**时 SHALL 逐字投喂全文（与变更前一致）
+
+#### Scenario: 价值门控跳过留痕（只报会话键）
+- **GIVEN** 某会话条目取得的最高分低于阈值（`_below_gate` 判低价值）
+- **WHEN** 压实运行并跳过该会话
+- **THEN** 经 `warnings.warn` 留痕**只报会话键**（不回显摘要 / 事件正文），该会话条目层级不动
 ### Requirement: 记忆固化（consolidation）
 系统 SHALL 对会话内 episodic 条目**自动打分**并据此**门控固化**：注入 scorer（judgment `score`
 原语，JEV 优先、低置信/不可达回退主 LLM）时，SHALL 将分值写回条目的 `importance`（写入可撤销，
