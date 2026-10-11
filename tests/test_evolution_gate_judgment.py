@@ -143,10 +143,14 @@ def test_review_prompt_carries_candidate_facts() -> None:
         ("也许吧", False),
         ("", False),
         ("   \n  ", False),
+        # 等值判定反证：前缀匹配会把下面三条读成通过（fail-open）
+        ("通过不了，delta 与目标不自洽", False),
+        ("PASS 但存在问题", False),
+        ("PASSING", False),
     ],
 )
 def test_parse_review_fail_closed(text: str, expected: bool) -> None:
-    """判定词表外（含空 / 含糊输出）一律**不通过**（fail-closed）。"""
+    """判定词表外（含空 / 含糊 / 以通过词起首的否定句）一律**不通过**（fail-closed）。"""
     assert parse_review(text) is expected
 
 

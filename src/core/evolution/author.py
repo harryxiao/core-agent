@@ -30,8 +30,12 @@ class PatchAuthor(Protocol):
 
 
 _PROMPT_HEAD = (
-    "你是核心源码修补者。只修这一个模块，保持其现有风格与对外契约不变；"
-    "只输出修补后的**完整**文件内容，不要解释、不要 diff、不要代码围栏。"
+    "你是核心源码修补者。只修这一个模块，保持其现有风格与对外契约不变。"
+    "只输出修补后的**完整**文件内容——回复的第一个字符就是文件内容，最后一个字符也是；"
+    "不要解释、不要 diff、不要代码围栏、不要在文件之外写任何字。"
+    "只做修复所必需的最小改动：不要重排无关代码、不要改注释风格、不要动与问题无关的部分。"
+    "不得改变公开函数签名、模块 docstring 里的接口引用与既有 import 依赖方向"
+    "（新增跨模块 import 会触发架构门禁）。"
 )
 
 # 模型爱把整份源码裹进 ```python 围栏：围栏必须剥掉，否则会被原样写进源码文件。
@@ -40,12 +44,13 @@ _FENCE = re.compile(r"^```[^\n]*\n(?P<body>.*?)\n?```\s*$", re.DOTALL)
 
 def build_prompt(candidate: GenerationCandidate, source: str | None) -> str:
     """把归因目标、问题与原源码渲染为修补 prompt（原源码给全 —— 模型要改的就是它）。"""
+    issue = candidate.delta.get("issue", "") or "（未提供具体问题描述：按候选内容自行判断）"
     return "\n".join(
         [
             _PROMPT_HEAD,
             "",
             f"目标模块：{candidate.target_plugin}",
-            f"问题：{candidate.delta.get('issue', '')}",
+            f"问题：{issue}",
             "",
             "当前内容：",
             source if source is not None else "（该模块当前不存在：按需新建）",

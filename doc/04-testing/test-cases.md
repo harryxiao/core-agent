@@ -560,7 +560,7 @@
 | 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
 |---|---|---|---|
 | TC-EVGJ-01 | evolution/spec.md「验证门」+ ci-cd（change `0120`） | `crystallization_gates()` 与单一真源 `GATE_COMMANDS` 的关系；标记键/值面；标记命中**未注册**门名（monkeypatch 标记） | 子集 = `lint` + `test`、**顺序随真源**、命令字符串仍只有一份；`typecheck` / `build`（交付面）不入子集（子集 ∪ 二者 = 全集）；标记只带**门名**（值非命令字符串）；漂移 ⇒ `CiCdError(GATE_FAILED)`（fail-closed）（锚点：`tests/test_evolution_gate_judgment.py::test_crystallization_gates_derived_from_single_source` / `::test_crystallization_gates_exclude_delivery_face_gates` / `::test_crystallization_marks_unknown_gate_fails_closed` / `::test_crystallization_marks_carry_names_not_commands`） |
-| TC-EVGJ-02 | evolution/spec.md「验证门」（change `0120`） | `build_review_prompt` 的判据面；`parse_review` 词表参数化表（PASS / pass / 通过 / 前导空行；REJECT / 拒绝 / 含糊 / 空）；`review_with` 三态（PASS / 不可解析 / 调用抛异常） | prompt 带 `kind` / `target_plugin` / `delta` 与判定词表；**只认首行以通过词起首**，词表外一律 `False`；调用抛异常 ⇒ `False`（不外抛）（锚点：`::test_review_prompt_carries_candidate_facts` / `::test_parse_review_fail_closed` / `::test_review_with_llm_passes` / `::test_review_with_llm_garbage_denies` / `::test_review_with_llm_failure_denies`） |
+| TC-EVGJ-02 | evolution/spec.md「验证门」（change `0120`） | `build_review_prompt` 的判据面；`parse_review` 词表参数化表（PASS / pass / 通过 / 前导空行；REJECT / 拒绝 / 含糊 / 空）；`review_with` 三态（PASS / 不可解析 / 调用抛异常） | prompt 带 `kind` / `target_plugin` / `delta` 与判定词表；**只认首行恰为通过词（等值，非前缀）**，词表外一律 `False`（含「通过不了」这类否定首行 → `False`）；调用抛异常 ⇒ `False`（不外抛）（锚点：`::test_review_prompt_carries_candidate_facts` / `::test_parse_review_fail_closed` / `::test_review_with_llm_passes` / `::test_review_with_llm_garbage_denies` / `::test_review_with_llm_failure_denies`） |
 | TC-EVGJ-03 | evolution/spec.md「验证门」（change `0120`） | `run_gate_tests`（只跑标记子集 / 某门未过 / 执行面抛异常）；`Validator` 判据组合：缺省无参、只注入一半、两判据皆过、review 拒、某门禁未过、空测试集 | 逐门执行、结果按门名收集且值**恒 `bool`**；抛异常 ⇒ 该门 `False`；**缺省 `Validator()` ⇒ `passed=False` 且理由含「未注入」**；review 拒 ⇒ 门未过且**不跑**门禁（fail-fast）；空测试集**不得**当通过（`all({})` 为真即 G2 成因）（锚点：`::test_run_gate_tests_runs_only_marked_gates` / `::test_run_gate_tests_marks_failed_gate` / `::test_run_gate_tests_runner_exception_fails_closed` / `::test_default_validator_denies` / `::test_validator_denies_when_only_one_producer_injected` / `::test_validator_passes_when_both_judgments_pass` / `::test_validator_denies_when_review_rejects` / `::test_validator_denies_when_a_gate_fails` / `::test_validator_denies_on_empty_test_set`） |
 | TC-EVGJ-04 | evolution/spec.md「验证门」（change `0120`，G5 锚点） | 装真判据（真 `review_with` + 真 `run_gate_tests`）后 `run_cycle`：未过门 / 过门；`GATE_CALIBER` 读数 | 未过门 ⇒ `status="rejected"`（**生产可达**，不再恒 pending）；门过 ⇒ 进留出评测（无基准 ⇒ `frozen`，非 `rejected`）；`GATE_CALIBER >= 2`（判定面真实化已递增口径）（锚点：`::test_run_cycle_reports_rejected_on_failed_gate` / `::test_run_cycle_reaches_eval_when_gate_passes` / `::test_gate_caliber_bumped_for_judgment_face`） |
 | TC-EVGJ-05 | evolution/spec.md「验证门」（change `0120`，装配级 + 回归改判） | 真 `build_runtime` 下 `run_cycle`（模型提供者与门禁子进程两外部面打桩）：审查者判过 / 模型端点不可用；既有依赖「缺省 `Validator()` 即通过」的测试文件显式注入过门替身 | 生产装配**真的走**真 review + 真门禁子集（实际跑 `["lint", "test"]`）⇒ 全过进留出评测 ⇒ `frozen`；模型不可用 ⇒ `rejected` 且门禁**零调用**（fail-fast）；既有用例改**显式注入**判据后仍**真实过门**（读数器仍是真 `Validator`，汇总逻辑不打折 —— 改判理由见 ADR-0113）（锚点：`tests/test_evolution_gate_judgment.py::test_runtime_runs_real_review_and_marked_gates` / `::test_runtime_denies_when_review_unavailable` / `tests/test_evolution_gate_data.py::test_runtime_evaluator_is_a_real_gate` / `tests/test_evolution.py`（46 例）/ `tests/test_evolution_attribution.py` / `tests/test_evolution_pending.py` / `tests/test_phase14.py` / `tests/test_phase15.py`） |
@@ -2728,22 +2728,23 @@ Requirement 做全量替换）。
 
 | 用例 | 场景 | 触发 | 断言 |
 |---|---|---|---|
-| TC-PROMPTPIN-01 | 关键事实抽取头逐字 | `extract._PROMPT_HEAD` | `== _EXTRACT_HEAD`（JSON 数组形状 / `<redacted>` / `ref` 只认 `coeffect:`）（`tests/test_prompt_pinning.py::test_extract_head_verbatim`） |
-| TC-PROMPTPIN-02 | 实体关系抽取头逐字 | `extract._RELATION_PROMPT_HEAD` | `== _RELATION_HEAD`（谓词必须归入下表 / 归不入不输出）（`...::test_relation_head_verbatim`） |
+| TC-PROMPTPIN-01 | 关键事实抽取头逐字 | `extract._PROMPT_HEAD` | `== _EXTRACT_HEAD`（JSON 数组形状 / `<redacted>` / `ref` 只认 `coeffect:` / entity 稳定命名 / 不推断补全）（`tests/test_prompt_pinning.py::test_extract_head_verbatim`） |
+| TC-PROMPTPIN-02 | 实体关系抽取头逐字 | `extract._RELATION_PROMPT_HEAD` | `== _RELATION_HEAD`（谓词语义与方向 / 谓词必须归入下表 / 归不入不输出）（`...::test_relation_head_verbatim`） |
 | TC-PROMPTPIN-03 | 会话摘要头逐字 | `summarize._PROMPT_HEAD` | `== _SUMMARIZE_HEAD`（`...::test_summarize_head_verbatim`） |
 | TC-PROMPTPIN-04 | 重要度评分头逐字 | `importance._PROMPT_HEAD` | `== _IMPORTANCE_HEAD`（`...::test_importance_head_verbatim`） |
 | TC-PROMPTPIN-05 | SOP 提炼头逐字 | `sop._PROMPT_HEAD` | `== _SOP_HEAD`（`...::test_sop_head_verbatim`） |
 | TC-PROMPTPIN-06 | 技能迭代头逐字 | `iteration._PROMPT_HEAD` | `== _ITERATION_HEAD`（`...::test_iteration_head_verbatim`） |
-| TC-PROMPTPIN-07 | 主推理规划头逐字 | `loop.planner._SYSTEM_PROMPT` | `== _PLANNER_SYSTEM`（工具 JSON 单独成块 / 不得围栏包裹）（`...::test_planner_system_prompt_verbatim`） |
-| TC-PROMPTPIN-08 | 任务拆解头逐字 | `orch.planner._DECOMPOSE_SYSTEM` | `== _DECOMPOSE_SYSTEM`（2–6 DAG / 不伪造依赖）（`...::test_decompose_system_verbatim`） |
+| TC-PROMPTPIN-07 | 主推理规划头逐字 | `loop.planner._SYSTEM_PROMPT` | `== _PLANNER_SYSTEM`（JSON 必须首字符且其后无字符 / 工具白名单 / 选①不得输出 JSON）（`...::test_planner_system_prompt_verbatim`） |
+| TC-PROMPTPIN-08 | 任务拆解头逐字 | `orch.planner._DECOMPOSE_SYSTEM` | `== _DECOMPOSE_SYSTEM`（1–6 DAG / goal 自包含 / 不伪造依赖·不成环 / priority 降序）（`...::test_decompose_system_verbatim`） |
 | TC-PROMPTPIN-09 | 验收判定头逐字 | `orch.planner._VERIFY_SYSTEM` | `== _VERIFY_SYSTEM`（`...::test_verify_system_verbatim`） |
 | TC-PROMPTPIN-10 | 六 builder 头恒首位 | 各 `build_*` | 产物以对应头开头（占位符 builder 取解析后头）（`...::test_builders_render_head_at_top`） |
 | TC-PROMPTPIN-11 | 条目行前缀 / 占位符 / 白名单 | `build_*` | `"\n- "` 出现；`{max}` 解析为实参、无残留；谓词**集合恒等**且全量出现（`...::test_item_lines_prefixed_and_placeholders_resolved`） |
 | TC-PROMPTPIN-12 | 节选上界字面量 + 有界 | 超长正文（10× 界） | 四个上界常量 `== 400`（**独立字面量**，非派生）；单条节选 ≤ 400、超长串不整段进 prompt（`...::test_entry_excerpts_bounded`） |
+| TC-PROMPTPIN-13 | SOP 提炼 prompt 轨迹分组 | `sop.build_sop_prompt(task, trajectories)` | 两次执行 ⇒ `轨迹 1：` / `轨迹 2：` 依次出现（**按轨迹分组**，防拍平）；条目仍 `- ` 前缀（`...::test_sop_prompt_groups_trajectories`） |
 
 > **反证（逐字锚非恒真，实测记录，四组）**：(A) `extract._PROMPT_HEAD` 的「绝不」→「请勿」⇒
 > TC-PROMPTPIN-01 **红**（实测 `1 failed, 11 passed`）；(B) `planner._SYSTEM_PROMPT` 删
-> 「，不得用代码块围栏包裹」⇒ TC-PROMPTPIN-07 **红**；(C) `_CANONICAL_PREDICATES` 去 `related_to`
+> 「，其后**不得**再有任何字符」⇒ TC-PROMPTPIN-07 **红**；(C) `_CANONICAL_PREDICATES` 去 `related_to`
 > ⇒ TC-PROMPTPIN-11 **红**（集合恒等）；(D) `extract._MAX_ENTRY_CHARS` 400 → 4000 ⇒
 > TC-PROMPTPIN-12 **红**（字面量锚）。全部复原 ⇒ `src/core/memory/extract.py` ／
 > `src/core/loop/planner.py` **`diff -q` 逐字节相同**，复测 **12 passed**。
@@ -2866,8 +2867,8 @@ Requirement 做全量替换）。
 | 用例 | 场景 | 触发 | 断言 |
 |---|---|---|---|
 | TC-PROMPTPIN2-01 | 情景归纳头逐字 | `episodic._PROMPT_HEAD` | `== _EPISODIC_HEAD`（四段结论快照：目标·经过·结果·教训 / 只输出归纳不复述）（`tests/test_prompt_pinning.py::test_episodic_head_verbatim`） |
-| TC-PROMPTPIN2-02 | 源码修补头逐字 | `author._PROMPT_HEAD` | `== _AUTHOR_HEAD`（只修一个模块 / 保持契约 / 只输出完整文件不围栏）（`...::test_author_head_verbatim`） |
-| TC-PROMPTPIN2-03 | 候选审查头逐字 | `validator._REVIEW_PROMPT_HEAD` | `== _REVIEW_HEAD`（只审自洽 / 不评收益 / PASS·REJECT 首行判词）（`...::test_review_head_verbatim`） |
+| TC-PROMPTPIN2-02 | 源码修补头逐字 | `author._PROMPT_HEAD` | `== _AUTHOR_HEAD`（只修一个模块 / 首尾即文件内容 / 最小改动 / 依赖方向）（`...::test_author_head_verbatim`） |
+| TC-PROMPTPIN2-03 | 候选审查头逐字 | `validator._REVIEW_PROMPT_HEAD` | `== _REVIEW_HEAD`（只审自洽 / 不评收益 / 首行只写 PASS 或 REJECT）（`...::test_review_head_verbatim`） |
 | TC-PROMPTPIN2-04 | 情景归纳 builder 结构 | `episodic.build_episodic_prompt` | 头恒首位、条目 `- ` 前缀、单条节选 ≤ 400（字面量）、`_MAX_ENTRY_CHARS == 400`（`...::test_episodic_builder_renders_head_and_bounded_lines`） |
 
 > **反证（逐字锚非恒真，实测记录，三组）**：(A) `episodic._PROMPT_HEAD`「结论快照」→「结论概览」

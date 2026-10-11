@@ -43,11 +43,15 @@ RunGate = Callable[[str], GateOutcome]
 _REVIEW_PROMPT_HEAD = (
     "你是候选变更的审查者。只审这一个候选**自身是否自洽**（候选类型 / 目标模块 / 变更内容三者"
     "是否互相说得通、是否是真该由该目标承担的变更）；不评收益、不写实现。"
-    "第一行以 PASS 起首表示通过，以 REJECT 起首表示不通过，其后可附一句理由。"
+    "输出格式：第一行**只写** PASS 或 REJECT 两个词之一，不要写别的；第二行起可附一句理由。"
+    "不确定、信息不足、或本就不该由该目标承担 ⇒ REJECT。"
+    "理由中不要回显变更内容里的密钥 / 凭据 / 口令明文。"
 )
 
-#: 判定词表：**首行**以「通过词」起首才算通过；其余（明确的 REJECT / 空 / 含糊 / 调用失败）
-#: 一律不通过。
+#: 判定词表：**首行恰为**「通过词」才算通过；其余（明确的 REJECT / 空 / 含糊 /
+#: 首行还带别的字 / 调用失败）一律不通过。**等值**而非「起首」是承重的：起首匹配会把
+#: 「通过不了」「PASS 但存在问题」这类否定 / 含糊首行读成通过（fail-open），
+#: 与本模块的 fail-closed 声明相反。
 _PASS_WORDS = ("PASS", "通过")
 
 
@@ -65,11 +69,15 @@ def build_review_prompt(candidate: GenerationCandidate) -> str:
 
 
 def parse_review(text: str) -> bool:
-    """解析审查判定：只认**首行**以通过词起首；词表外一律不通过（fail-closed）。"""
+    """解析审查判定：只认**首行恰为**通过词；词表外一律不通过（fail-closed）。
+
+    **等值**比较而非前缀匹配：`startswith` 会把「通过不了」「PASS 但存在问题」这类
+    否定 / 含糊首行读成通过 —— 一个驳回被读成放行，且放行后不可逆。
+    """
     lines = text.strip().splitlines()
     if not lines:
         return False
-    return lines[0].strip().upper().startswith(_PASS_WORDS)
+    return lines[0].strip().upper() in _PASS_WORDS
 
 
 def review_with(llm: LlmText) -> Review:

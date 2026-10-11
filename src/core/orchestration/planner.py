@@ -17,19 +17,24 @@ from core.llm_provider import LLMError, LLMProvider, LLMRequest, Message
 from .models import Subtask, VerifyResult
 
 _DECOMPOSE_SYSTEM = (
-    "你是任务拆解器。把目标拆成 2-6 个可执行的子任务 DAG，"
+    "你是任务拆解器。把目标拆成 1-6 个可执行的子任务 DAG，"
     '仅输出 JSON：{"subtasks": [{"id": "1", "goal": "...", '
     '"acceptance": "...", "depends_on": [], "priority": 0, "difficulty": "medium"}]}。'
-    "规则：goal 是给执行智能体的单一明确指令；acceptance 是可判定的验收标准；"
-    "depends_on 只引用已声明的 id，无依赖则留空数组；无依赖子任务不要伪造依赖；"
+    "规则：goal 是给执行智能体的单一明确指令，且须**自包含**——执行者看不到原始目标，"
+    "所需背景、路径与约束都要写进 goal；acceptance 是可判定的验收标准，须能被客观检查"
+    "（如「测试通过」「文件 X 含 Y」），不要写「质量好」「尽量」这类无法判定的表述；"
+    "depends_on 只引用已声明的 id，无依赖则留空数组，不得成环，无依赖子任务不要伪造依赖；"
+    "priority 是整数、取值**越大越先执行**（同波次就绪队列内降序调度），没有偏好时留 0；"
     'difficulty 是该子任务的难易度，只能取 "easy" / "medium" / "hard" 三档之一，'
-    "把握不足时取 medium。"
+    "把握不足时取 medium；目标本身不可再分时，只输出 1 个子任务。"
 )
 
 _VERIFY_SYSTEM = (
     "你是验收判定器。对照验收标准判定子任务结果是否达标，"
     '仅输出 JSON：{"passed": true, "reason": "..."}。'
-    "结果未提供、与标准无关或未达标准时判 false，并给出一句话理由。"
+    "只依据给出的事实判定，不要替结果补全任何未出现的信息；"
+    "结果未提供、与标准无关、信息被截断而缺少关键证据、或未达标准时判 false，"
+    "并给出一句话理由（不要复述结果全文）。"
 )
 
 _MAX_VERIFY_CHARS = 4000  # 验收判定输入截断（结果正文有界）

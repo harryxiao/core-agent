@@ -205,8 +205,8 @@ SopWriter = Callable[[str], str]
 # 质量门契约：(任务文本, 提炼正文) → 是否放行（0198；skills 不 import judgment，同 SopWriter 方向）
 SopGate = Callable[[str, str], bool]
 
-def build_sop_prompt(task: str, steps: Sequence[str]) -> str:
-    """把一组成功轨迹渲染为提炼 prompt（逐条节选，token 有界）。"""
+def build_sop_prompt(task: str, trajectories: Sequence[Sequence[str]]) -> str:
+    """把一组成功轨迹**按轨迹分组**渲染为提炼 prompt（逐条节选，token 有界）。"""
 
 def sop_writer_with(llm: Callable[[str], str]) -> SopWriter:
     """把「prompt → 文本」的模型调用适配为提炼契约（同 memory.Summarizer 方向）。"""

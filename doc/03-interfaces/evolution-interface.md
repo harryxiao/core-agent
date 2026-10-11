@@ -55,7 +55,7 @@ class Validator(Plugin):
 def build_review_prompt(candidate: GenerationCandidate) -> str:
     """渲染候选**自洽性**判据面（kind / target_plugin / delta）+ 判定词表说明。"""
 def parse_review(text: str) -> bool:
-    """解析审查判定：只认**首行**以「通过词」（PASS / 通过）起首；词表外一律不通过。"""
+    """解析审查判定：只认**首行恰为**「通过词」（PASS / 通过，**等值**而非前缀）；词表外一律不通过。"""
 def review_with(llm: Callable[[str], str]) -> Callable[[GenerationCandidate], bool]:
     """把「prompt → 文本」的模型调用适配为审查者契约（调用抛异常 ⇒ 不通过、不外抛）。"""
 

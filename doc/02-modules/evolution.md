@@ -57,7 +57,8 @@ L4 让 CORE **会进化**。它只读地观测 L3 循环的运行轨迹，通过
   门恒开、「不合格候选被挡在门外」这句承诺不成立）：
   - **review**：`build_review_prompt` 渲染 `kind` / `target_plugin` / `delta` 的自洽性判据面，
     模型调用经 `review_with(_llm_text)` 注入（照 `author.py`：evolution **不 import LLM 抽象**）。
-    判定只认**首行以「通过词」起首**；空输出 / 词表外 / 调用失败 ⇒ **未通过**（fail-closed）。
+    判定只认**首行恰为「通过词」（等值，非前缀）**；空输出 / 词表外 / 首行还带别的字 /
+    调用失败 ⇒ **未通过**（fail-closed）。
   - **运行时测试**：门禁子集**按标记派生**自门禁命令**单一真源** `GATE_COMMANDS`
     （`crystallization_gates()`：取 `lint` + `test` —— 轻量静态门与行为回归门；`typecheck` / `build`
     属**交付面**判据、不进结晶面）。标记命中未注册门名 ⇒ 派生**失败**（`CiCdError`，fail-closed）；

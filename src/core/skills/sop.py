@@ -48,13 +48,23 @@ _EXTRACT_TRACE = "skills.extract"
 _PROMPT_HEAD = (
     "你是 SOP 提炼器。下面是同一类任务的多次成功执行轨迹（任务 + 行动/结果序列）。"
     "请提炼为可复用的标准作业步骤：只输出编号步骤清单，不要复述轨迹、不要解释理由。"
+    "要求：合并多次执行中重复出现的步骤，只保留每次执行都成立的必要步骤，剔除偶发细节；"
+    "每步以动词开头，写清具体工具、路径、命令或参数，不要写「处理一下」这类空话；"
+    "步骤数控制在 3-10 步。"
 )
 
 
-def build_sop_prompt(task: str, steps: Sequence[str]) -> str:
-    """把一组成功轨迹渲染为提炼 prompt（逐条节选，token 有界）。"""
-    lines = [f"- {step[:_MAX_STEP_CHARS]}" for step in steps]
-    return "\n".join([_PROMPT_HEAD, "", f"任务：{task}", "", "成功轨迹：", *lines])
+def build_sop_prompt(task: str, trajectories: Sequence[Sequence[str]]) -> str:
+    """把一组成功轨迹渲染为提炼 prompt（**按轨迹分组**、逐条节选，token 有界）。
+
+    分组是提炼质量的前提：拍平成一个长列表后，模型分辨不出哪几步属于同一次执行，
+    也就识别不出「每次执行都出现」的公共步骤与偶发噪声。
+    """
+    blocks = [
+        f"轨迹 {index}：\n" + "\n".join(f"- {step[:_MAX_STEP_CHARS]}" for step in steps)
+        for index, steps in enumerate(trajectories, start=1)
+    ]
+    return "\n".join([_PROMPT_HEAD, "", f"任务：{task}", "", "成功轨迹：", *blocks])
 
 
 def sop_writer_with(llm: Callable[[str], str]) -> SopWriter:
@@ -109,7 +119,7 @@ class SopExtractor:
         self._persist()
         if len(group) < self._threshold:
             return None
-        text = self._writer(build_sop_prompt(task, [step for traj in group for step in traj]))
+        text = self._writer(build_sop_prompt(task, group))
         if not text.strip():
             return None  # 空提炼不入库（不写半成品），样本保留待下轮
         if self._gate is not None and not self._gate_ok(task, text):
