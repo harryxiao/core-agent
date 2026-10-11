@@ -81,6 +81,13 @@ _SESSION_TAG = "session:"
 # 摘要/关键事实材料，也不随压实迁 L4。`forget` **不**看本集合 ⇒ 仍按自然衰减归档（有界）。
 _PRESERVE_TAGS = frozenset({"failure"})
 
+# 遗忘面的**派生事实类**来源（change 0204 / ADR-0194）：`forget` 仅在开关
+# `semantic_forgetting` 开启时放行这些 `kind="semantic"` 条目参与衰减归档。**摘要类**
+# 语义来源（`{compaction, context}`，即本集合的补集）恒豁免。
+# 注意 —— **豁免评分（`_GATE_EXEMPT_SOURCES`）≠ 豁免遗忘**：前者管「写入时过不过 importance
+# 闸门」，后者管「衰减时归不归档」，二者是**不同面**（二集合恰好二分同一组来源）。
+_FORGETTABLE_SEMANTIC_SOURCES = frozenset({"extraction", "relation"})
+
 
 # 重要度评分器契约：条目 → [0,1] 分值（缺省 UNWIRED；由 L5 组合根注入，memory 不 import 模型）
 ImportanceScorer = Callable[[MemoryEntry], float]
@@ -253,6 +260,7 @@ class MemoryStore:
         key_fact_extractor: KeyFactExtractor | None = None,
         relation_extractor: RelationExtractor | None = None,
         importance_scorer: ImportanceScorer | None = None,
+        semantic_forgetting: bool = False,
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
         self._tracker = effect_tracker if effect_tracker is not None else EffectTracker()
@@ -263,6 +271,7 @@ class MemoryStore:
         self._key_fact_extractor = key_fact_extractor
         self._relation_extractor = relation_extractor
         self._importance_scorer = importance_scorer
+        self._semantic_forgetting = semantic_forgetting
         self._hot: dict[str, MemoryEntry] = {}
         self._vectors: dict[str, list[float]] = {}
         self._embed_failed = False
@@ -610,16 +619,24 @@ class MemoryStore:
         return content if written is not None else None
 
     def forget(self, *, threshold: float = _FORGET_THRESHOLD) -> list[MemoryId]:
-        """遗忘：衰减评分低于 ``threshold`` 的 **L2 episodic** 条目迁 L4 归档（可逆）。
+        """遗忘：衰减评分低于 ``threshold`` 的 L2 条目迁 L4 归档（可逆）。
 
         评分 ``recency_decay × (1 + log1p(reuse_count)) × (1 + importance)``——新鲜度、
-        复用频次与重要度三者皆低才归档；时间未知（``ts<=0``）不惩罚。semantic（提炼产物）、
-        L0（人格）与 L3（技能）不参与衰减；**不物理删除**（``audit`` 可见、检索降权）。
-        返回被归档条目 id（撤销句柄：``forgetting.<id>``）。
+        复用频次与重要度三者皆低才归档；时间未知（``ts<=0``）不惩罚。**摘要类** semantic
+        条目（``source ∈ {compaction, context}``）、L0（人格）与 L3（技能）不参与衰减；
+        **派生事实类** semantic 条目（``source ∈ {extraction, relation}``）仅在构造开关
+        ``semantic_forgetting`` 开启时参与（缺省关闭 ⇒ 与摘要类同不受影响）。
+        **不物理删除**（``audit`` 可见、检索降权）。返回被归档条目 id
+        （撤销句柄：``forgetting.<id>``）。
         """
         forgotten: list[MemoryId] = []
         for entry in self._all_entries():
-            if entry.kind != "episodic" or entry.layer != "L2":
+            forgettable = entry.kind == "episodic" or (
+                self._semantic_forgetting
+                and entry.kind == "semantic"
+                and entry.source in _FORGETTABLE_SEMANTIC_SOURCES
+            )
+            if entry.layer != "L2" or not forgettable:
                 continue
             if _decay_score(entry) >= threshold:
                 continue

@@ -273,6 +273,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         map_to="memory.relation_extract",
         exposure=ConfigExposure.ADVANCED,
     ),
+    ConfigSpec(
+        "memory.semantic_forgetting",
+        "--memory-semantic-forgetting",
+        "CORE_MEMORY_SEMANTIC_FORGETTING",
+        default=False,
+        map_to="memory.semantic_forgetting",
+        exposure=ConfigExposure.ADVANCED,
+    ),
 ]
 
 _FEATURE_ENV_PREFIX = "CORE_FEATURES_"
@@ -639,6 +647,23 @@ class ConfigManager:
             return False
         raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
         value = raw.get("relation_extract", False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in _FEATURE_TRUE
+
+    def semantic_forgetting(self) -> bool:
+        """语义遗忘面开关（缺省 ``False`` = 派生事实不参与遗忘；change 0204 / ADR-0194）。
+
+        **独立访问器**（同 `relation_extract()` 先例）：取值归一与 feature flag 同集；
+        `memory` 为**非结构化段**（同 `importance_gate`）⇒ 集合外取值归一为**关闭**。
+        关闭 ⇒ 派生事实与摘要类语义条目**同**不受遗忘影响（既有路径逐字不变）；开启 ⇒ 组合根
+        以 `MemoryStore(semantic_forgetting=True)` 接线，派生事实（`source ∈ {extraction,
+        relation}`）参与同一衰减归档，摘要类（`source ∈ {compaction, context}`）恒豁免。
+        """
+        if self._config is None:
+            return False
+        raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
+        value = raw.get("semantic_forgetting", False)
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in _FEATURE_TRUE

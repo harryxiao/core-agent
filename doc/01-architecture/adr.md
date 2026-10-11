@@ -6496,6 +6496,62 @@ change**（新块 = 提示词契约变更，且必须在 `0201` **之后**）。
   ④ **无图存储 / 无遍历 API**：关系以普通 L2 条目 + 标签约定承载，不做 `MemoryBackend` 扩展
   （接口变更 + 迁移成本，且当前**零消费者**）。
 
+## ADR-0194：语义遗忘面 —— 派生事实参与衰减，摘要类永久豁免（change 0204 / 账本 E141）
+
+**背景 —— 语义记忆只增不减。** `MemoryStore.forget()` 的守卫（`store.py:622`）是
+`entry.kind != "episodic" or entry.layer != "L2" ⇒ continue`，`kind="semantic"` 条目**永不遗忘**。
+这不是实现疏漏，而是**规格写死的**：`memory/spec.md:391-392` 的「记忆遗忘」SHALL 明文「semantic
+条目、L0 元策略与 L3 技能 SHALL 不受遗忘影响」，且 Scenario `提炼产物与元策略不被遗忘`
+（`spec.md:423-426`）断言其不变。后果：结构化抽取的 `keyfact.*`（`source="extraction"`）与
+`relation.*`（`source="relation"`）**只增不减**；`read()`/`_gather_facts` 无层过滤（L4 仅加性降权）
+⇒ 陈旧派生事实持续占注入预算。四类记忆「语义」一类的**遗忘面缺半**。
+
+**D1 收窄既有 `记忆遗忘` 的豁免面，不新开遗忘面。** 语义条目的归档语义与 episodic **完全同构**
+（同一衰减评分 / 同一阈值 / 同一 L4 去向 / 同一可撤销效应）。新开一个「语义遗忘」要求会复制这四样
+中的每一样，并留下**两套可漂移的判据**。收窄既有要求 = 在**同一条判据**上多放行一类条目 ⇒
+改动面仅**一处布尔守卫**、零新评分逻辑。这也是本仓**首次**对一条既有 Requirement 做
+**MODIFIED**（全量替换）—— 风险最高，靠 `openspec validate` + 手工归档断言
+（0 Requirement-header / 0 Scenario-title 丢失）兜底。
+
+**D2 豁免边界 = `{compaction, context}` vs `{extraction, relation}`（用户裁决②）。** `source`
+取值经 grep 核实（`store.py:604,806` 的 `compaction`、`compactor.py:109,123` 的 `context`、
+`store.py:899` 的 `extraction`、`store.py:963` 的 `relation`）—— 恰是 `_GATE_EXEMPT_SOURCES` 的
+四成员**二分**。**摘要类永久豁免**：会话/中层摘要与压缩产出是「**已准入材料的派生骨架**」，遗忘
+它们会丢失记忆的结构。**派生事实类参与**：实体/关系三元组是可再抽取、可衰减的**细节层**。
+**关键澄清**：**豁免评分（`_GATE_EXEMPT_SOURCES`）≠ 豁免遗忘** —— 前者管「写入时过不过 importance
+闸门」，后者管「衰减时归不归档」，二者是**不同面**，本 ADR 是后者的首次裁决。
+
+**D3 开关缺省关、显式开启（用户裁决④）。** 构造参 `semantic_forgetting: bool = False` + 配置
+`memory.semantic_forgetting`（缺省 `False`）。缺省关 ⇒ 派生事实条目与摘要类**同**不受影响 ⇒ 既有
+路径**逐字不变**（沿 `0181`/`0202`/`0203` 先例）。**`forget()` 签名不动** ⇒ 三处零参调用点
+（`loop/default.py:601,685`、`entry.py:1206`）逐字不变。
+
+**D4 守卫用短路布尔，判据常量模块级。** `_FORGETTABLE_SEMANTIC_SOURCES = frozenset({"extraction",
+"relation"})`（与 `_GATE_EXEMPT_SOURCES` 并列，注释点明二者是不同面）。`forget()` 守卫改
+`forgettable = entry.kind == "episodic" or (self._semantic_forgetting and entry.kind == "semantic"
+and entry.source in _FORGETTABLE_SEMANTIC_SOURCES)` —— 缺省关时 `and` 首项即假 ⇒ 退化为
+`entry.kind == "episodic"` ⇒ **与旧守卫逐字等价**；短路布尔**不新增 `If` 嵌套层级**（守
+`test_control_flow_nesting_max_three`，`0203` 教训）。归档仍走既有
+`migrate(entry.id, "L2", "L4", trace_id=f"forgetting.{entry.id}")` + `_decay_score` +
+`_FORGET_THRESHOLD`。
+
+**D5 零既有测试破坏（实测）。** 既有遗忘用例全走缺省构造 `MemoryStore()` ⇒ 派生事实仍不被遗忘 ⇒
+逐字不变（核验 `test_memory.py` / `test_loop.py` / `test_skills.py` 无一处翻转该新参）。⇒ 反证
+**必须显式翻转构造参**（`False` vs `True` 对同一陈旧条目给出相反结果），否则新旧路径不可区分。
+
+- **落点**：`src/core/memory/store.py`（`_FORGETTABLE_SEMANTIC_SOURCES` / 构造参 / `forget()` 守卫
+  / docstring）、`src/core/configuration/manager.py`、`src/core/runtime.py`、
+  `tests/test_semantic_forgetting.py`（新）、`doc/04-testing/test-cases.md` §117、
+  `coding-plan/known-risk.md`、`doc/02-modules/memory.md`。
+- **规格**：`memory` **MODIFIED**「记忆遗忘」+ **ADD** 3 Scenario（canonical 15 req 不变 /
+  108 → 111 scen）。
+- **反证**：摘掉 `self._semantic_forgetting and` 短路项 ⇒ 「缺省关」零回归锚转红；复原 ⇒ 全绿。
+- **局限**：① **归档 ≠ 移出注入面** —— `read()`/`_gather_facts` 无层过滤、L4 仅加性降权 0.2 ⇒
+  归档派生事实**仍可被注入**（与 episodic 遗忘**同一既有语义**；语义事实 `session_id=""` 为全局层
+  ⇒ 跨会话注入亦不受会话过滤）；② **只归档「不再被重抽」的事实** —— `_write_key_fact` /
+  `_write_relation` 每次压实**新建**条目并经 `_persist` 刷新 `ts` ⇒ 活跃重抽的事实永不陈旧
+  （期望性质），代价是**反复出现却无用**的事实不会被遗忘 + 重抽**重置 `reuse_count`**。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -6684,3 +6740,4 @@ change**（新块 = 提示词契约变更，且必须在 `0201` **之后**）。
 | ADR-0191 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/context.md |
 | ADR-0192 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md |
 | ADR-0193 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md |
+| ADR-0194 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/memory.md |

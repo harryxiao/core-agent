@@ -308,6 +308,33 @@ MemoryStore
   **预期的可观测信号**；**无图存储 / 无遍历 API**（不做 `MemoryBackend` 扩展）。详见
   `coding-plan/known-risk.md` §3 ADR-0193 行。
 
+### 3.10 语义遗忘面（派生事实参与遗忘，change `0204`／ADR-0194／账本 E141）
+
+`forget()` 的旧守卫是 `kind != "episodic" or layer != "L2" ⇒ continue` ⇒ `kind="semantic"` 条目
+**永不遗忘**（规格写死的：`memory/spec.md` 原文「semantic 条目 … SHALL 不受遗忘影响」）。结果
+是语义一类**只增不减** —— 派生事实（`keyfact.*` / `relation.*`）持续占注入预算。本 change
+**收窄**该豁免面（**首次对既有 Requirement 做 MODIFIED / 全量替换**）。
+
+- **豁免边界（二分 `_GATE_EXEMPT_SOURCES` 的四个来源）**：**摘要类** semantic
+  （`source ∈ {compaction, context}`）**永久豁免** —— 它们是「已准入材料的**骨架**」，遗忘会丢结构；
+  **派生事实类**（`source ∈ {extraction, relation}`）**可参与** —— 是可再抽取、可衰减的**细节层**。
+  **关键澄清**：**豁免评分（`_GATE_EXEMPT_SOURCES`）≠ 豁免遗忘** —— 前者管「写入时过不过
+  importance 闸门」，后者管「衰减时归不归档」，二者是**不同面**（二集合恰好二分同一组来源）。
+- **复用同一判据**：派生事实的归档仍走 `_decay_score`（新鲜度 × 复用 × 重要度）+ 同阈值
+  `_FORGET_THRESHOLD` + `migrate` → L4 + `forgetting.<id>` 效应 ⇒ **零新评分逻辑、零新去向、
+  零新撤销面**；改动面仅**一处布尔守卫**。开关**不**表达「多老算老」（配比 / 判据面不加键）。
+- **守卫用短路布尔**：`forgettable = kind=="episodic" or (self._semantic_forgetting and
+  kind=="semantic" and source in _FORGETTABLE_SEMANTIC_SOURCES)` —— 缺省关时首项即假 ⇒ 退化为旧守卫
+  （**逐字等价**），且**不新增 `If` 嵌套层级**（守架构门禁）。常量
+  `_FORGETTABLE_SEMANTIC_SOURCES = {extraction, relation}` 与 `_GATE_EXEMPT_SOURCES` 并列。
+- **DI 接缝 + 配置门（缺省关）**：构造参 `MemoryStore(semantic_forgetting=False)` + 配置
+  `memory.semantic_forgetting`（缺省 `False`）⇒ 派生事实与摘要类**同**不受影响（既有路径**逐字
+  不变**）；组合根 `semantic_forgetting=config.semantic_forgetting()`。**`forget()` 签名不动** ⇒
+  三处零参调用点（`loop/default.py` / `entry.py`）逐字不变。
+- **已知局限**：归档 **≠** 移出注入面（`read()`/`_gather_facts` 无层过滤，L4 仅加性降权 0.2）；
+  只归档「不再被重抽」的事实（活跃重抽的 `ts` 被刷新 ⇒ 永不陈旧，且重抽**重置 `reuse_count`**）；
+  缺省关使能力**惰性**。详见 `coding-plan/known-risk.md` §3 ADR-0194 行。
+
 ---
 
 ## 4. 记忆写入规范（"无行动不记忆"的落地）

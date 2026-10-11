@@ -490,6 +490,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         # 写入侧重要度闸门（0181 / ADR-0172）：缺省不评分（逐字不变）；显式开启才构造评分器。
         # 同一 `_llm_text` 接缝；系统管道派生产物（compaction/context/extraction）在 store 侧豁免。
         importance_scorer=score_with(_llm_text) if config.importance_gate() else None,
+        # 语义遗忘面（0204 / ADR-0194）：缺省关 ⇒ 派生事实（extraction/relation）不参与遗忘
+        # （与摘要类同不受影响，逐字不变）；显式开启才放行其参与同一衰减归档。
+        semantic_forgetting=config.semantic_forgetting(),
     )
     # 上下文压实接线（0041）：多轮历史 → persist 落 L2；此前 context.Compactor 与
     # memory.compact 都无生产调用方（死路径），现由 loop 的**工具步数**/预算阈值触发。

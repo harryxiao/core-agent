@@ -2352,3 +2352,43 @@ bullet（缺省不启用 / 未过 ⇒ 不入库 + 清组 + 只报组键 / 判定
 > **互不重写**（`Relation` 独立于 `KeyFact`，不给后者加字段）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0193 行（压实多一次模型调用 / 事实面三分 /
 > 长尾谓词仍会 drop / 无图存储与遍历 API / 缺省关使能力惰性）。
+
+## 117. 语义遗忘面（TC-SEMFORGET，change `0204`／ADR-0194，台账 E141）
+
+**行为规格锚点**：`memory/spec.md`「记忆遗忘（forgetting）」（**MODIFIED** —— 本仓首次对既有
+Requirement 做全量替换）。
+三面：**零回归**（缺省关 ⇒ 派生事实与摘要类**同**不受影响）、**遗忘面**（开 ⇒ 派生事实参与**同一**
+衰减归档且可逆）、**豁免与配置**（摘要类 / L0 / L3 恒豁免；新键三面齐备 + 组合根接线）。
+
+| 用例 | 锚点 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| TC-SEMFORGET-01 | 遗忘面集合本身 | `_FORGETTABLE_SEMANTIC_SOURCES` | 恰为 `{extraction, relation}`（评分豁免面 `{compaction, context}` 的**补集**）（`tests/test_semantic_forgetting.py::test_forgettable_sources_are_the_derived_fact_sources`） |
+| TC-SEMFORGET-02 | **零回归锚**：缺省关 ⇒ 派生事实不动 | `MemoryStore()`（**缺省** `semantic_forgetting=False`）写陈旧 `extraction` / `relation` 条目 | `forget() == []`；两条层级仍 `L2` ⇒ 与变更前逐字一致（`...::test_default_store_spares_stale_derived_facts`） |
+| TC-SEMFORGET-03 | 开 ⇒ 陈旧 `extraction` 归档 | `MemoryStore(semantic_forgetting=True)` 写陈旧 `keyfact.x` | `forget() == ["keyfact.x"]`；层级 `L4`；`audit()` 仍可见（`...::test_enabled_forgets_stale_extraction_fact`） |
+| TC-SEMFORGET-04 | 开 ⇒ 陈旧 `relation` 归档 | 同上，条目 `relation.a--uses--b` | `forget() == ["relation.a--uses--b"]`；层级 `L4`（`...::test_enabled_forgets_stale_relation_entry`） |
+| TC-SEMFORGET-05 | 开 ⇒ **新鲜**派生事实不留 | 开关开，写**新鲜** `keyfact.fresh` | `forget() == []`；层级 `L2` ⇒ 判据仍是衰减评分（非「见派生即忘」）（`...::test_enabled_spares_fresh_derived_fact`） |
+| TC-SEMFORGET-06 | 判别性：复用**延缓**语义遗忘 | 99 天陈旧 + `reuse_count=1` 的派生事实（开） | `forget() == []` ⇒ 复用调制对语义遗忘**同样**生效（旧公式会归档）（`...::test_enabled_slows_reuse_for_derived_fact`） |
+| TC-SEMFORGET-07 | 摘要类**永久豁免** | 开关开，写陈旧 `compaction` / `context` 条目 | `forget() == []`；两条层级仍 `L2` ⇒ 开关只放行派生事实类（`...::test_enabled_spares_stale_summaries`） |
+| TC-SEMFORGET-08 | L0 / L3 恒豁免 | 开关开，陈旧 L0 人格 + L3 技能 | `forget() == []`；层级仍 `L0` / `L3`（`...::test_enabled_spares_l0_and_l3`） |
+| TC-SEMFORGET-09 | 归档**可逆** | 开关开 + `EffectTracker`，陈旧 `keyfact.x` 归档 → `tracker.rollback("forgetting.keyfact.x")` | 回滚前 `L4`；`undo_failed == []`；回滚后 `L2` ⇒ 与 episodic 同一撤销面（`...::test_enabled_forgetting_is_reversible_by_trace`） |
+| TC-SEMFORGET-10 | **反证锚**：开关翻转同一陈旧条目 | 同一陈旧 `extraction` 条目，`False` 与 `True` 各建一 store | `off.forget() == []`（不进遗忘面）；`on.forget() == ["keyfact.x"]`（进）⇒ 必须**显式翻转构造参**方可区分新旧路径（`...::test_flag_flips_outcome_for_same_entry`） |
+| TC-SEMFORGET-11 | 单一真源：新键三面齐备 | `config_specs()` 取 `memory.semantic_forgetting` | `(cli_flag, env_var, default, map_to) == ("--memory-semantic-forgetting", "CORE_MEMORY_SEMANTIC_FORGETTING", False, "memory.semantic_forgetting")`（`...::test_spec_declares_semantic_forgetting`） |
+| TC-SEMFORGET-12 | 配置缺省关 | 无 `memory:` 段 | `manager.semantic_forgetting() is False`（`...::test_config_default_is_off`） |
+| TC-SEMFORGET-13 | yaml 面可达 | `memory:\n  semantic_forgetting: true\n` | `is True`（`...::test_config_yaml_enables`） |
+| TC-SEMFORGET-14 | env 面可达 | `CORE_MEMORY_SEMANTIC_FORGETTING=true` | `is True`（字符串口径与 feature flag 同集）（`...::test_config_env_overrides`） |
+| TC-SEMFORGET-15 | 组合根缺省**不接线** | `build_runtime(ConfigManager(…))` | `runtime.memory._semantic_forgetting is False` ⇒ 缺省关（`...::test_build_runtime_default_wires_semantic_forgetting_off`） |
+| TC-SEMFORGET-16 | 组合根置 true ⇒ 接线 | 同上 + `memory: semantic_forgetting: true` | `runtime.memory._semantic_forgetting is True`（`...::test_build_runtime_wires_semantic_forgetting_when_enabled`） |
+
+> **反证（逐字锚非恒真，实测记录）**：摘掉 `forget()` 守卫里的短路项 `self._semantic_forgetting and`
+> （模拟「忘记接线」）⇒ TC-SEMFORGET-02 与 TC-SEMFORGET-10 **红**（`Left contains one more item:
+> 'keyfact.x'`）；复原 ⇒ 16 green。**实测 2 red**。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2310 passed**（基线 **2294**，**+16**，与批次预估一致）。
+> **零既有测试破坏（实测）**：既有遗忘用例全走缺省构造 `MemoryStore()` ⇒ `_semantic_forgetting=False`
+> ⇒ 派生事实仍不被遗忘 ⇒ 逐字不变（核验 `test_memory.py` / `test_loop.py` / `test_skills.py`
+> 无一处翻转该新参）⇒ 这是**唯一**一个既有测试**不必**改动的记忆面 change。
+> **不重复**：`tests/test_memory.py::test_forget_archives_only_stale_low_value_l2_episodic`（change
+> 前既有）覆盖 episodic 与**摘要类 semantic** 的豁免；本 change 覆盖**派生事实类**的放行 —— 前者
+> **不重写**（缺省关下逐字一致）。`tests/test_memory.py::test_gate_exempt_face_is_the_pipeline_sources`
+> 覆盖**评分**豁免面（`_GATE_EXEMPT_SOURCES`）—— 与本 change 的**遗忘**面是**不同面**（ADR-0194 明写）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0194 行（归档 ≠ 移出注入面 / 只归档「不再被重抽」
+> 的事实 / 缺省关使能力惰性 / 首次 MODIFIED 既有 Requirement / 配比面无新键）。
