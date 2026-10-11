@@ -7186,6 +7186,41 @@ prompt。**为何把「上界 = 400」也钉成字面量**：若测试从模块�
   ③ 结构锚只钉「有界 / 前缀 / 占位符」，不钉**块拼接顺序**（归 `0201` 的 `plan_blocks` 锚域）。
 - 来源另见 `doc/openspec/changes/archive/2026-10-11-0215-prompt-text-pinning/design.md`。
 
+## ADR-0206：关键事实抽取门控 —— 缺省 True 的 kill-switch（change 0216 / 台账 E153）
+
+**背景 —— 同族三键两门控，唯一缺口。** `runtime.py` 的组合根接线里，关键事实抽取（`0155`）**无条件**
+`extract_with(_llm_text)`；而实体关系抽取（`0203`，`:581`）与重要度闸门（`0181`，`:584`）都门控。
+关键事实抽取**每次压实跑一次模型**（烧 token）却**无法关闭** ⇒ 缺一个 kill-switch。
+
+**D1 缺省 `True`（kill-switch 而非 opt-in）。** 本键是**既在用能力**的开关，**非**新能力。翻缺省为
+False 等于**静默删除一个在用能力**（非缺陷修复），方向与「缺省关 ⇒ 逐字不变」纪律的**初衷相反**
+（该纪律保护的是**既有行为不被新特性改变**，而非让既有能力默认消失）。缺省 True ⇒ 恒走原分支
+`extract_with(_llm_text)` ⇒ 与今日**逐字等价**。
+
+**D2 非法取值回落 `True`（与同段其余键**相反**）。** `memory` 段**非结构化**（不在
+`_STRUCTURED_SECTIONS`）⇒ 非法取值不阻断启动、只归一。同段 `relation_extract`/`importance_gate`
+归一方向是**关闭**（安全侧 = 「不做那件事」）；本键的保守侧是**保持能力** ⇒ 归一为**开启**
+（`not in _FEATURE_FALSE`）—— 一次拼写错误**不得**静默停用在用能力。
+
+**D3 规格 MODIFIED 末句 ＋ ADD Scenario ×2。** 末句扩为「未注入抽取器**或配置关闭**⇒ SHALL NOT 抽取」，
+并声明新键 SHALL 为**组合根接线闸**、缺省 true、只决定**是否接线**、SHALL NOT 改本条其余
+脱敏/有界/落库判据；**既有 15 Scenario 逐字保留**（MODIFIED = 整段替换，须原样带上）。
+
+- **规格**：`memory` **MODIFIED**「结构化实体抽取（关键事实）」＋ **ADD Scenario ×2**（配置关闭不接线 /
+  缺省开保留既有抽取）⇒ canonical memory **16 → 16** req / **117 → 119（+2）** scen；
+  `openspec validate --all` 32 → 归档后 **31 passed**。
+- **反证（两组，实测）**：(A) `runtime.py:578` 恢复无条件接线 ⇒ `1 failed, 7 passed`（仅
+  `test_build_runtime_omits_extractor_when_disabled`）；(B) ConfigSpec `default` ＋ 访问器缺省 ＋
+  `raw.get` 缺省一并翻 False ⇒ `3 failed, 5 passed`（`test_spec_declares_key_fact_extract` /
+  `test_default_is_on` / `test_build_runtime_default_wires_extractor`）。两次复原 ⇒
+  `src/core/configuration/manager.py` / `src/core/runtime.py` **`diff -q` 逐字节相同**，复测 8 绿。
+  测试 **+8**（2433 → **2441**）。
+- **局限**：① 只补关键事实抽取，同族「会话摘要 / SOP 提炼 / 编排 / RAG」的同类门控**未补**
+  —— 用户裁决只补本键；② `memory` 非结构化 ⇒ 非法取值**不阻断启动**（与同段其余键同口径），
+  拼错只静默回落 True；③ 门控是**组合根接线闸**，`MemoryStore` 类级缺省仍是 UNWIRED（逐字不变），
+  二者语义不同不可混同。
+- 来源另见 `doc/openspec/changes/archive/2026-10-11-0216-key-fact-extract-gate/design.md`。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7386,3 +7421,4 @@ prompt。**为何把「上界 = 400」也钉成字面量**：若测试从模块�
 | ADR-0203 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/notes.md, 02-modules/rag.md, 03-interfaces/notes-interface.md |
 | ADR-0204 | 04-testing/test-cases.md, coding-plan/known-risk.md, 02-modules/durability.md, 02-modules/loop.md, 03-interfaces/durability-interface.md |
 | ADR-0205 | 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0206 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -282,6 +282,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "memory.key_fact_extract",
+        "--memory-key-fact-extract",
+        "CORE_MEMORY_KEY_FACT_EXTRACT",
+        default=True,
+        map_to="memory.key_fact_extract",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "memory.importance_gate",
         "--memory-importance-gate",
         "CORE_MEMORY_IMPORTANCE_GATE",
@@ -728,6 +736,24 @@ class ConfigManager:
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in _FEATURE_TRUE
+
+    def key_fact_extract(self) -> bool:
+        """关键事实抽取开关（缺省 ``True`` = 接线抽取器；change 0216 / ADR-0206）。
+
+        **独立访问器**（同 `relation_extract()` 先例）：取值归一与 feature flag 同集；`memory`
+        为**非结构化段**（同 `importance_gate`）⇒ 非法取值不阻断启动。**本键缺省 `True`**
+        （与同段其余门**相反**）—— 它是**既有在用能力**（`0155` 以来无条件接线）的 **kill-switch**，
+        非 opt-in 新能力：翻缺省即**静默停用**在用能力。故集合外取值归一为**开启**（保证一个
+        拼写错误不会静默关掉能力）。关闭 ⇒ 组合根**不构造**抽取器（`key_fact_extractor=None`）
+        ⇒ 压实逐字不变；缺省 ⇒ 恒走原分支，与引入本键前**逐字等价**。
+        """
+        if self._config is None:
+            return True
+        raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
+        value = raw.get("key_fact_extract", True)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() not in _FEATURE_FALSE
 
     def relation_extract(self) -> bool:
         """实体关系抽取开关（缺省 ``False`` = 不接线抽取器；change 0203 / ADR-0193）。

@@ -575,7 +575,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         summarizer=summarizer,
         summary_promoter=_promote_summary,
         # 结构化关键事实抽取（0155 / 路线图 G4）：同一 `_llm_text` 接缝；脱敏在 store 侧无条件执行。
-        key_fact_extractor=extract_with(_llm_text),
+        # 门控（0216 / ADR-0206）：键 `memory.key_fact_extract` **缺省 True**（既在用能力的
+        # kill-switch）⇒ 缺省恒走原分支，与引入本键前逐字等价；显式关闭才不接线。
+        key_fact_extractor=extract_with(_llm_text) if config.key_fact_extract() else None,
         # 实体关系抽取（0203 / ADR-0193）：**缺省不接线**（`memory.relation_extract` 缺省关）
         # ⇒ 未配置时压实逐字不变。与关键事实**刻意分离**：合并会改 0155 的提示词字节。
         relation_extractor=extract_relations_with(_llm_text) if config.relation_extract() else None,

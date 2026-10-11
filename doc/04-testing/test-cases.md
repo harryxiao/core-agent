@@ -2751,3 +2751,30 @@ Requirement 做全量替换）。
 > **零回归**：`git diff --stat src/` **为空**（本 change 的核心承诺）。**规格中性**：`openspec validate --all`
 > 32 passed（31 canonical ＋ 1 change）→ 归档后 **31 passed**，canonical 计数**不变**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0205 行。
+
+---
+
+## 129. 关键事实抽取门控（TC-KFGATE，change `0216`／ADR-0206，台账 E153）
+
+`memory.key_fact_extract`（**缺省 True** = 既在用能力的 kill-switch）；关闭 ⇒ 组合根不接线抽取器。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-KFGATE-01 | 单一真源三面齐备 | `config_specs()` | `(--memory-key-fact-extract, CORE_MEMORY_KEY_FACT_EXTRACT, True, memory.key_fact_extract)`（`tests/test_key_fact_gate.py::test_spec_declares_key_fact_extract`） |
+| TC-KFGATE-02 | 缺省 on | 仅 llm 段 | `manager.key_fact_extract() is True`（`...::test_default_is_on`） |
+| TC-KFGATE-03 | yaml 关（＋非「未知段」） | `memory:\n  key_fact_extract: false` | `is False`；无「未知配置段」告警（`...::test_yaml_disables_gate`） |
+| TC-KFGATE-04 | env 关 | `CORE_MEMORY_KEY_FACT_EXTRACT=false` | `is False`（`...::test_env_disables_gate`） |
+| TC-KFGATE-05 | 非法值回落 on | `memory:\n  key_fact_extract: maybe` | `is True`（拼写错误不停用能力）（`...::test_unknown_value_falls_back_on`） |
+| TC-KFGATE-06 | 接线：缺省注入抽取器 | `build_runtime` 缺省 | `_key_fact_extractor is not None`（`...::test_build_runtime_default_wires_extractor`） |
+| TC-KFGATE-07 | 接线：关 ⇒ 不注入 | `memory.key_fact_extract: false` | `_key_fact_extractor is None`（`...::test_build_runtime_omits_extractor_when_disabled`） |
+| TC-KFGATE-08 | **逐字锚**：门只切抽取 | 注入 vs `None`，同一会话压实 | 两者 `compaction.summary.s1` 正文**逐字相同**；注入侧有 `keyfact.*`、`None` 侧无（`...::test_disabled_gate_only_switches_extraction`） |
+
+> **反证（实测两组）**：(A) `runtime.py:578` 恢复无条件接线 ⇒ TC-KFGATE-07 **红**（`1 failed, 7 passed`）；
+> (B) ConfigSpec `default` ＋ 访问器缺省 ＋ `raw.get` 缺省一并翻 False ⇒ TC-KFGATE-01/02/06 **红**
+> （`3 failed, 5 passed`）；两次复原 ⇒ `src/core/configuration/manager.py` / `src/core/runtime.py`
+> **`diff -q` 逐字节相同**，复测 **8 passed**。TC-KFGATE-06 与 07 **成对** ⇒ 缺一即「门要么恒开要么恒关」
+> 的证据缺口；TC-KFGATE-05 独立于 02 ⇒ 钉死「非法值方向 = 保持能力」。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2441 passed**（基线 **2433**，**+8**，与用例数一致）。
+> **规格**：`memory` **MODIFIED**「结构化实体抽取（关键事实）」（末句扩为「未注入抽取器**或配置关闭**」，
+> 既有 15 Scenario 逐字保留）＋ **ADD Scenario ×2** ⇒ canonical memory **16 → 16** req /
+> **117 → 119（+2）** scen。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0206 行。

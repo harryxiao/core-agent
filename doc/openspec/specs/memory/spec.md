@@ -626,7 +626,10 @@ SHALL **首尾保留**（头尾各半、中以 `…` 连接，总长 SHALL NOT �
 - **WHEN** 计算 cap(n)
 - **THEN** cap(n) ≥ 既有固定上界 `MAX_KEY_FACTS_PER_COMPACT` 的原取值（宽松化而非收紧）
 
-未注入抽取器（缺省）⇒ SHALL NOT 抽取，压实行为（摘要写回、条目迁移、评分）**逐字不变**。
+未注入抽取器**或配置关闭**（`memory.key_fact_extract` = false）⇒ SHALL NOT 抽取，压实行为
+（摘要写回、条目迁移、评分）**逐字不变**。配置键 `memory.key_fact_extract` SHALL 为**组合根接线闸**——
+缺省 **true**（保留既有行为，不得静默停用在用能力）；显式关闭时组合根 SHALL **不**注入
+`key_fact_extractor`。该键 SHALL 只决定**是否接线**，SHALL NOT 改变本条其余任何落库/脱敏/有界判据。
 
 #### Scenario: 未注入抽取器 ⇒ 零抽取、逐字不变
 - **GIVEN** `MemoryStore` **未**注入 `key_fact_extractor`（缺省）
@@ -709,6 +712,17 @@ SHALL **首尾保留**（头尾各半、中以 `…` 连接，总长 SHALL NOT �
 - **WHEN** 该事实落库
 - **THEN** 该条 SHALL **不落库**（视同「无可用 `ref`」），并 SHALL 经 `warnings.warn` 留痕
   （含实体名、**不含**取值）；同批**其余**合规事实照常落库
+
+#### Scenario: 配置关闭 ⇒ 不接线、压实逐字不变
+- **GIVEN** `memory.key_fact_extract` 显式置 **false**
+- **WHEN** 组合根装配 `MemoryStore`
+- **THEN** **不**注入 `key_fact_extractor`（`None`）⇒ 不产出任何 `key_fact` 条目，摘要写回 /
+  条目迁移 / 评分与**未引入该键时**逐字一致
+
+#### Scenario: 门控缺省开 ⇒ 保留既有抽取
+- **GIVEN** **未**显式配置 `memory.key_fact_extract`（缺省）
+- **WHEN** 组合根装配 `MemoryStore`
+- **THEN** 照常注入抽取器 ⇒ 关键事实抽取行为与引入该键前**逐字一致**（缺省不改变在用能力）
 ### Requirement: 失效关键事实的运维修复
 
 系统 SHALL 提供**失效关键事实**的运维修复入口：识别**失效条目** —— `tags` 含 `ref:` 标签、该 `ref` **非** `coeffect:<名称>` 形态、且 `content` 取值为 `"<redacted>"`（change `0173` 修复前判据的产物：模型自造的出处说明被当成真引用 ⇒ 取值整条被抹 ⇒ 该条目**已不含任何可用信息**）；对**产生它的会话**（由 `session:<会话标识>` 标签溯源）用该会话的**材料**重抽关键事实 —— 材料为该会话的 episodic 条目（**含已归档 L4 的条目**），重抽 SHALL 复用「结构化实体抽取（关键事实）」的 prompt 与脱敏判据（判据**只有一处定义**，不写第二份）。
