@@ -7758,6 +7758,52 @@ canonical 计数不变）。行为在 `doc/03-interfaces/tool-use-interface.md` 
 的目标路径父目录不存在，执行会得到 `EXECUTION_FAILED`（**可见的工具错误**、ReAct 下一轮可自愈），
 与本缺陷（整轮报废、零执行）不是一回事；④ `loop.parse_retry` 缺省仍**关**（不在本 change 范围）。
 
+## ADR-0220：TUI 回合收尾异常安全化 —— 忙态复位是不变式（change 0231 / 台账 E167）
+
+**背景（用户实跑）**：2026-10-12 用户报告 core-agent TUI 一轮后**永久停在「思考中…」、输入被吞**。
+只读取证（PID 727119 / `traces.jsonl` / CPU / socket）显示：该轮轮末 **maintenance 记忆调用**打到
+`glm-5.3` **超时**（`maintenance_failed LLM_TIMEOUT: 调用超时（>60.0s）`），经 provider 缺省
+`timeout=60.0, max_retries=3` ⇒ **4 次串行 60s 尝试（≈232s，08:49:17→08:53:09）**；期间
+`_turn_busy=True` ⇒ `on_input_submitted` 一律拒绝（「处理中，请稍候（Ctrl+B 打断）」）⇒ **表现为卡死**。
+进程实际健康（CPU 0、无 socket、epoll 空闲），事后自愈、**无需 kill**。
+
+**根因**：表象是「长等待」，但**真缺陷**是**收尾顺序把表现层失败倒灌为状态失败** ——
+`src/core/ui/repl.py` 三个 turn runner（`_run_turn` / `_run_beast_turn` / `_run_task_turn`）的
+`finally` 里，`self._flush_live()` / `self._spin_stop()` 排在 `self._turn_busy = False` **之前**；
+任一步抛错即**跳过忙态复位** ⇒ **一次瞬时收尾错误 = UI 永久拒收输入**。此外 `self._spin_start(...)`
+与 `run_worker(...)` 调用点亦在 `try` **之外**，其失败同样遗留忙态。
+
+**决策**：
+
+- **D1 忙态复位是「不变式」，呈现收尾是「尽力而为」**。新 helper `_end_turn(self, *, flush_live=False)`：
+  两个呈现收尾**各自** `contextlib.suppress(Exception)`（收尾失败类无法穷举：挂载 / 取件 / 屏幕栈
+  拆除期），**最后必定** `self._turn_busy = False`。`ui` spec「回复收尾（含异常 / 中断）时挂起尾段
+  SHALL 被最终固化」在收尾**成功**路径仍成立，失败路径降级为**尽力而为**。
+- **D2 三个 runner 统一收尾 + `_spin_start` 移入 `try`**。`_run_turn` → `_end_turn(flush_live=True)`；
+  `_run_beast_turn` / `_run_task_turn` → `_end_turn()`；各自 `_spin_start(...)` 移入 `try`（其失败也
+  触发收尾复位）。
+- **D3 分发口补同一不变式**。`on_input_submitted` 在 `_turn_busy = True` 之后的派发段（`/task` 分支 /
+  `_handle_beast_command` / `run_worker`）包 `try/except Exception: self._turn_busy = False; raise`
+  —— 派发失败亦复位，但异常**仍冒泡**（崩溃可见性不变）。
+- **D4 不吞轮体异常**。`_end_turn` 只容错**收尾**，轮体异常仍由 worker 冒泡 —— 崩溃语义逐字不变。
+- **D5 规格中性、不设门**。`ui` spec **无**任何 Requirement 约束「收尾顺序 / 忙态复位」；忙态仅被
+  **负向**引用（「忙碌中 SHALL 拒绝并提示等待」「切换 SHALL 仅在本轮执行结束之后发生」）。本 change
+  只**恢复**「忙态 ⇔ 本轮在跑」这一**既有不变式** ⇒ `skip_specs: true`（判例 `0220`/`0228`：缺陷修复）。
+- **D6 「长等待本身」不属本 change**。232s 等待的**时长**由 change `0232`（`llm.timeout` /
+  `llm.max_retries` 可配）治理；「重试进度可见」为后续独立 change。
+
+**规格**：**规格中性**（`skip_specs: true`）—— 零 spec delta，canonical **31 → 31** 不变。测试 **+6
+新增**（`tests/test_ui_turn_cleanup.py`，2574 → **2580**）。
+
+**反证（实测，两组独立）**：① 把 `_end_turn` 还原为**裸序列**（去掉两处 `contextlib.suppress`）⇒
+**5 红**（单元 2 ＋ 三 runner 集成 3）；② 摘掉派发守卫的复位语句（保留 `raise`）⇒ **1 红**
+（`test_dispatch_failure_resets_busy`）。复原 ⇒ `md5sum` 逐字节相同（`170f8fff…`）。
+
+**局限**：① **只保证「收尾失败不倒灌为状态失败」，不治收尾失败的根因** —— 收尾真抛错时降级为
+「挂起尾段可能未固化 / 状态行可能残留」，而非「UI 卡死」；② **刻意宽捕 `Exception`** —— 收尾失败类
+无法穷举，而状态复位是不变式；③ **不改 `_turn_busy` 置位时机**（与忙检同上下文、无竞态窗口）；
+④ **不治「长等待本身」**（由 change `0232` 治理）；⑤ **不做「重试进度可见」**（后续 change）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7972,3 +8018,4 @@ canonical 计数不变）。行为在 `doc/03-interfaces/tool-use-interface.md` 
 | ADR-0217 | 03-interfaces/prompts.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0218 | 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0219 | 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0220 | 04-testing/test-cases.md, coding-plan/known-risk.md |

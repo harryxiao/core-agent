@@ -19,6 +19,7 @@ CLIBridge.connect() 落地为 Textual 交互会话循环；textual 仅此文件�
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -675,6 +676,22 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 self._spin_timer = None
             self.query_one("#spinner", Static).display = False
 
+        def _end_turn(self, *, flush_live: bool = False) -> None:
+            """回合收尾（异常安全）：先**尽力**收尾呈现，最后**必定**复位忙态。
+
+            `_flush_live` / `_spin_stop` 是**表现层**收尾 —— 失败类无法穷举（挂载 / 取件 /
+            屏幕栈拆除期的多种 `Exception`）；而忙态复位是 `ui` 规格「忙碌中拒绝 / 切换仅在
+            本轮结束后」的**不变式**。故此处**刻意**宽捕（`contextlib.suppress(Exception)`）：
+            任一呈现收尾失败只降级，绝不**倒灌**为状态失败 —— 否则一次瞬时收尾错误即便 UI
+            永久拒收输入（change 0231 根因）。本函数**不吞**轮体异常：轮体异常仍由 worker 冒泡。
+            """
+            if flush_live:
+                with contextlib.suppress(Exception):  # 固化挂起尾段：尽力而为
+                    self._flush_live()
+            with contextlib.suppress(Exception):  # 隐藏状态行：尽力而为
+                self._spin_stop()
+            self._turn_busy = False  # ★ 不变式：无论其上成败，忙态必定复位
+
         async def _ask_approval(self, tool_id: str, args: dict[str, Any], reason: str) -> bool:
             """审批提示落时间线，输入 y/n 决断；同刻仅一单（重复请求 fail-closed）。"""
             self._set_focus("")  # 审批提示须可见（否则挂起提示落进被隐藏的时间线）
@@ -844,19 +861,25 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 Static(f"[{_ACCENT}]❯[/] {escape(text)}", classes="echo", markup=True)
             )
             self._turn_busy = True  # handler 内同步置位（与忙检同上下文，无竞态窗口）
-            # 本轮执行进 worker：handler 即刻返回，消息泵保持可响应
-            # （审批 y/n、Ctrl+B 打断等后续输入才能被分发——泵内 await 会死锁）
-            if text.startswith("/task "):  # 任务命令：驱动编排器（不进普通对话）
-                goal = text[len("/task ") :].strip()
-                if goal:
-                    self.run_worker(self._run_task_turn(goal))
-                else:
-                    self._turn_busy = False
-                    self._add(Static("用法：/task <目标>", classes="hint"))
-                return
-            if self._handle_beast_command(text):  # 神兽斜杠入口（change 0137）
-                return
-            self.run_worker(self._run_turn(text))
+            # 派发段守卫（change 0231）：`run_worker` / 神兽入口若抛错，须**先复位忙态再冒泡**
+            # —— 否则派发失败会遗留忙态，使 UI 永久拒收输入（与收尾异常安全同不变式）。
+            try:
+                # 本轮执行进 worker：handler 即刻返回，消息泵保持可响应
+                # （审批 y/n、Ctrl+B 打断等后续输入才能被分发——泵内 await 会死锁）
+                if text.startswith("/task "):  # 任务命令：驱动编排器（不进普通对话）
+                    goal = text[len("/task ") :].strip()
+                    if goal:
+                        self.run_worker(self._run_task_turn(goal))
+                    else:
+                        self._turn_busy = False
+                        self._add(Static("用法：/task <目标>", classes="hint"))
+                    return
+                if self._handle_beast_command(text):  # 神兽斜杠入口（change 0137）
+                    return
+                self.run_worker(self._run_turn(text))
+            except Exception:  # 派发失败：复位忙态后原样冒泡（崩溃可见性不变）
+                self._turn_busy = False
+                raise
 
         # ---- 斜杠命令浮层与补全（change 0159 / ADR-0151） ----
 
@@ -977,8 +1000,8 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
 
         async def _run_beast_turn(self, verb: str, target: str, beast_task: str) -> None:
             """神兽轮：状态行落时间线；召唤后结果**有才打印**（与 `summon` CLI 同口径）。"""
-            self._spin_start("神兽就位中" if verb == "summon" else "召回中")
             try:
+                self._spin_start("神兽就位中" if verb == "summon" else "召回中")
                 summary = await api.beast_command(verb, target, task=beast_task)
                 verb_cn = "已召唤神兽" if verb == "summon" else "已召回神兽"
                 self._add(
@@ -997,15 +1020,14 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 if line:
                     self._add(Static(line, classes="fail", markup=False))
             finally:
-                self._spin_stop()
-                self._turn_busy = False
+                self._end_turn()
 
         # ---- 任务轮（/task）----
 
         async def _run_task_turn(self, goal: str) -> None:
             """任务轮：经 /task 驱动编排器，进度事件落时间线（单行提示+折叠块）。"""
-            self._spin_start("任务执行中")
             try:
+                self._spin_start("任务执行中")
                 async for event in api.run_task(self._session_id, goal):
                     self._add_task_widget(event)
             except UiError as err:
@@ -1013,8 +1035,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 if line:
                     self._add(Static(line, classes="fail", markup=False))
             finally:
-                self._spin_stop()
-                self._turn_busy = False
+                self._end_turn()
 
         def _add_task_widget(self, event: Event) -> None:  # noqa: PLR0911 — 一分支一事件
             """编排事件 → 时间线 widget：任务/波次浅灰单行，子任务折叠块，终态高亮。"""
@@ -1346,9 +1367,9 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
 
         async def _run_turn(self, text: str) -> None:
             """单轮执行：流式增量上 live、终态/错误落时间线；结束复位状态。"""
-            self._spin_start("思考中")
-            self._reasoning = None  # 思考块按**轮**归并（跨轮不复用同一折叠块）
             try:
+                self._spin_start("思考中")
+                self._reasoning = None  # 思考块按**轮**归并（跨轮不复用同一折叠块）
                 async for event in api.run_loop(self._session_id, text):
                     delta = _event_delta(event)
                     if delta is not None:
@@ -1371,9 +1392,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 if line:
                     self._add(Static(line, classes="fail", markup=False))
             finally:
-                self._flush_live()
-                self._spin_stop()
-                self._turn_busy = False
+                self._end_turn(flush_live=True)
 
     class _PaletteSuggester(Suggester):
         """内联幽灵补全：与浮层候选**同源**（复用同一候选取口），`→` 由 `Input` 原生采纳。

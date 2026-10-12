@@ -3147,3 +3147,35 @@ Scenario ＋ ADDED 1 Scenario；既有其余 7 Scenario 逐字保留）。承 `0
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0219 行（纯符号「真解释」会被当残渣 / 不改 0222 对
 > 「JSON 在真正文中间」的拒绝 / 执行成功 ≠ 该轮成功（本例目标父目录不存在 ⇒ `EXECUTION_FAILED`，可见
 > 工具错误、ReAct 可自愈）/ `loop.parse_retry` 缺省仍关）。
+
+## 143. TUI 回合收尾异常安全化：忙态复位是不变式（TC-TURNCLEAN，change `0231`／ADR-0220，台账 E167）
+
+**背景**：用户实跑（2026-10-12）core-agent TUI 一轮后**永久停在「思考中…」、输入被吞**。只读取证
+（PID 727119 / `traces.jsonl` / CPU / socket）：该轮轮末 maintenance 记忆调用打到 `glm-5.3` **超时**
+（provider 缺省 `timeout=60.0, max_retries=3` ⇒ 4 次串行 ≈232s），期间 `_turn_busy=True` ⇒
+`on_input_submitted` 一律拒绝 ⇒ **表现为卡死**（进程健康、事后自愈）。真缺陷 = 三个 turn runner 的
+`finally` 里 `_flush_live()` / `_spin_stop()` 排在 `_turn_busy = False` **之前** ⇒ 一次瞬时收尾错误
+即跳过忙态复位、UI **永久**拒收输入。修法：新 `_end_turn(*, flush_live=False)` 使呈现收尾**各自**容错、
+忙态复位**必定**执行（不变式）；`_spin_start` 移入 `try`；派发口补同一守卫（异常仍冒泡）。
+
+| 用例 | 面 | 输入 | 断言（`tests/test_ui_turn_cleanup.py::…`） |
+|---|---|---|---|
+| TC-TURNCLEAN-01 | **承重**：`_end_turn` 收尾容错 | `_flush_live` 抛错（`flush_live=True`） | 忙态**仍复位**（`app._turn_busy is False`）（`…::test_end_turn_resets_busy_when_flush_live_raises`） |
+| TC-TURNCLEAN-02 | `_end_turn` 收尾容错 | `_spin_stop` 抛错 | 忙态**仍复位**（`…::test_end_turn_resets_busy_when_spin_stop_raises`） |
+| TC-TURNCLEAN-03 | 普通轮（`_run_turn`）集成 | `_spin_stop` 抛错 ＋ 输入 `hi` | 轮后忙态复位、**不再永久卡死**（`…::test_turn_resets_busy_when_spin_stop_raises`） |
+| TC-TURNCLEAN-04 | 任务轮（`_run_task_turn`）集成 | `_spin_stop` 抛错 ＋ 输入 `/task 查答案` | 轮后忙态复位（`…::test_task_turn_resets_busy_when_spin_stop_raises`） |
+| TC-TURNCLEAN-05 | 神兽轮（`_run_beast_turn`）集成 | `_spin_stop` 抛错 ＋ 输入 `/summon 小狗` | 轮后忙态复位（无激活器 ⇒ 走既有 `UiError` 降级，收尾仍复位）（`…::test_beast_turn_resets_busy_when_spin_stop_raises`） |
+| TC-TURNCLEAN-06 | 分发口（`on_input_submitted`） | `run_worker` 抛错 | 忙态**复位** 且异常**仍冒泡**（崩溃可见性不变）（`…::test_dispatch_failure_resets_busy`） |
+
+> **反证（实测两组独立）**：**(A)** 把 `_end_turn` 还原为**裸序列**（去掉两处 `contextlib.suppress`）
+> ⇒ **5 failed**（单元 TC-TURNCLEAN-01/02 ＋ 三 runner 集成 03/04/05）；TC-TURNCLEAN-06 **仍绿**
+> （派发口是**另一半**、与 `_end_turn` 无耦合）。**(B)** 摘掉派发守卫里的 `self._turn_busy = False`
+> （保留 `raise`）⇒ **恰 1 failed**（TC-TURNCLEAN-06）⇒ D1/D2 与 D3 各自被锚定。
+> 复原 ⇒ `src/core/ui/repl.py` `md5sum`（`170f8fffda4d3220397cce9e984f86ff`）**逐字节相同**。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2580 passed**（基线 **2574**，**+6**）；四门禁：`ruff check` ✓ /
+> `ruff format --check` ✓ / `pyright`（**无参**，0-0-0）✓ / `pytest` ✓；`openspec validate --all`
+> 归档期 **32 passed**（归档后 **31 passed**）；**规格中性**（`skip_specs: true`，零 spec delta，
+> canonical **31 → 31** 不变 —— `ui` spec 无 Requirement 约束收尾顺序 / 忙态复位，本 change 只**恢复**
+> 「忙态 ⇔ 本轮在跑」既有不变式）。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0220 行
+> （只保证不倒灌为状态失败、不治收尾失败根因 / 刻意宽捕 `Exception` / 不改 `_turn_busy` 置位时机 /
+> 不治「长等待本身」（change `0232`）/ 不做「重试进度可见」）。
