@@ -3116,3 +3116,34 @@ Scenario ＋ ADDED 1 Scenario；既有其余 7 Scenario 逐字保留）。承 `0
 > **32 passed**（归档后 **31 passed**；canonical 计数不变 ⇒ 规格中性复核）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0218 行（只展开 `~` / `code_run` 的 `cwd`
 > 未纳入（同源缺口、后续候选）/ 沙箱相对路径基准仍是进程 cwd（展开后对宠物 loop 是**更严**的拦截））。
+
+## 142. 形态 5 判据收窄：退化残渣 ≠「追加了正文」（TC-RESIDUE，change `0229`／ADR-0219，台账 E166）
+
+**背景**：生产事故（2026-10-12 08:25，session `88a6a6b9…` / trace `6925d31f…`）—— 子 Agent 交出**完整
+可执行**的 `tools.file_write` 动作（1996 字符全文、**未被截断**），**末尾仅多出一个 `}`** ⇒
+`json.loads` 报 `Extra data` ⇒ 形态 5 误判「动作 JSON 之后仍跟有正文」⇒ **整轮报废、零执行**，且提示
+措辞与事实不符（后面没有正文）。`loop.parse_retry` 缺省关 ⇒ 无补救。判据收窄为「余部含词元才算正文」
+（`_has_word`），同一谓词在 `_trailing_json_object` / `_embedded_action_payload` 两处**朝向相反**地复用。
+
+| 用例 | 面 | 输入 | 断言（`tests/test_loop_output_protocol.py::…`） |
+|---|---|---|---|
+| TC-RESIDUE-01 | **事故复刻**（形态 2 容残渣） | 完整 `file_write` 动作 ＋ 末尾一个 `}` | `tool_id == "tools.file_write"`、`args` 取自该对象、`is_terminal is False`、`failed is False`、`raw_output == ""`（未失败 ⇒ 不留原始产出）（`…::test_action_json_with_trailing_stray_brace_executes`） |
+| TC-RESIDUE-02 | 残渣形态枚举（无词元） | 同上 ＋ 残渣 `\n``` ` / `。` / ` }}` / `\n\n` / ` ;` | 五种残渣**一律执行**（`…::test_action_json_with_trailing_punctuation_or_fence_residue_executes`） |
+| TC-RESIDUE-03 | 「正文 + 动作 + **`}`** 残渣」（形态 3 锚） | `_PROSE + 动作 + "}"` | 工具动作、`failed is False`（`…::test_prose_then_action_then_residue_executes`） |
+| TC-RESIDUE-04 | 「正文 + 动作 + **纯标点**残渣」（**去门槛锚，承重**） | `_PROSE + 动作 + "。"` | **仍执行** —— 若保留「须以 `}` 收尾」前置门槛则落「整段当答复」的**静默零执行**（`…::test_prose_then_action_then_punctuation_residue_executes`） |
+| TC-RESIDUE-05 | **边界锚：含词元正文仍失败**（形态 5 语义不变） | 完整动作 ＋ `\n已完成写入。` | `is_terminal`、`failed is True`、`reply` 含「动作 JSON 之后仍跟有正文」、`raw_output` 非空（`…::test_action_json_then_worded_text_still_fails`） |
+
+> **反证（实测三组）**：**(A)** `_has_word` 恒返 `True`（＝还原旧判据）⇒ **7 red, 21 passed**：转红者为
+> TC-RESIDUE-01~04 ＋ **既有锚** 2 条（`test_trailing_action_json_after_prose_is_tool_call` /
+> `test_fenced_trailing_action_json_is_tool_call` / `test_trailing_action_json_executes_in_loop` 中命中者）；
+> **TC-RESIDUE-05 恒绿**（含词元正文两态皆命中 ⇒ 非反证失效）。**(B1)** 只把 `_trailing_json_object`
+> 的余部判据还原为「非空白」⇒ **2 failed**（03/04）。**(B2)** 余部保持「无词元」但**加回**
+> 「须以 `}` 收尾」前置门槛 ⇒ **恰 1 failed**（04）⇒ D3 的两半（同步收窄 / 去门槛）各自被锚定。
+> 复原 ⇒ `src/core/loop/planner.py` `md5sum`（`6567f3e7ede4afb648eea390e863a45a`）**逐字节相同**。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2574 passed**（基线 **2569**，**+5**）；四门禁：`ruff check` ✓ /
+> `ruff format --check` ✓ / `pyright`（**无参**，0-0-0）✓ / `pytest` ✓；`openspec validate --all`
+> 归档期 **32 passed**（归档后 **31 passed**）；规格 `loop` **MODIFIED**（形态 2/3 容残渣 ＋ 形态 5 须含
+> 词元 ＋ ADDED 2 Scenario，既有 16 Scenario 逐字保留）⇒ req **6 → 6**、scen **89 → 91**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0219 行（纯符号「真解释」会被当残渣 / 不改 0222 对
+> 「JSON 在真正文中间」的拒绝 / 执行成功 ≠ 该轮成功（本例目标父目录不存在 ⇒ `EXECUTION_FAILED`，可见
+> 工具错误、ReAct 可自愈）/ `loop.parse_retry` 缺省仍关）。

@@ -210,7 +210,7 @@ def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "
 - **失败可见**：`_parse` 各 `LLM_PLAN_PARSE_FAILED` 分支与两处 `LLM 调用失败: {exc}` 均置
   `Action.failed=True` ⇒ `act()` 终止分支透出 ⇒ `trajectory.ok` / `step_completed.failed` /
   `_notify_turn(ok=…)` / `LoopResult.failed` 四处同口径。
-- **原始产出可诊断（change `0170` / `0222` / `0227`）**：「首字符 `{` 解析失败」、「形态 4」与**形态 5** 三类失败态终止动作 SHALL
+- **原始产出可诊断（change `0170` / `0222` / `0227` / `0229`）**：「首字符 `{` 解析失败」、「形态 4」与**形态 5** 三类失败态终止动作 SHALL
   另带**有界**原始产出（`Action.raw_output` → `LoopResult.raw_output`；上界 `_RAW_OUTPUT_MAX`，超出即
   截断）。该产出 SHALL NOT 写入转录 / 记忆 / 笔记，SHALL NOT 并入 `reply`（`reply` 为可读提示）；
   TUI 折叠呈现（见 `ui-interface.md` §2）。**成因措辞**（形态 4 **与「首字符 `{` 但整体不可解析」类**，
@@ -218,6 +218,13 @@ def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "
   ⇒ **未闭合（疑似截断或写坏）**；**对象在前、正文在后** ⇒ 形态 5 措辞（「动作 JSON 之后仍跟有正文」）；
   三类**皆不命中** ⇒ 通用「无法解析」文案**逐字**。四类措辞**失败语义相同**，仅信息量不同
   （`_first_brace_reply` 复用既有判据、无新启发式）。
+- **退化残渣容差（change `0229` / ADR-0219，无条件生效）**：形态 2 / 3 / 5 的余部判据统一为
+  `_has_word`（余部是否含字母 / 数字 / CJK）—— **含**词元才算「追加了正文」（形态 5）；
+  **仅**为退化残渣（多余闭合符 / 围栏符 / 标点 / 空白，无词元）⇒ 残渣可忽略、动作**照常执行**
+  （形态 2 的 `{` 开头分支先试「首个对象 + 残渣」，形态 3 的尾部对象亦同）。**缺词元残渣此前一律
+  整轮报废**（`Extra data` ⇒ 误判形态 5，且 `loop.parse_retry` 缺省关 ⇒ 无补救）⇒ 本改为
+  **缺陷修复**，不设配置键。含词元余部（形态 5 真正要防的**解释性正文**）行为**逐字不变**。
+
 - **解析失败回喂重试（change `0227` / ADR-0217，**缺省关**）**：键 `loop.parse_retry` 开启、且
   ①失败门（空 `tool_id` ＋ `reply` 前缀 `LLM_PLAN_PARSE_FAILED`；`LLM 调用失败` 前缀自然排除）
   ②外发门（本轮**未外发**内容增量）皆命中 ⇒ 追加**用户角色** nudge（成因 ＋ 输出格式协议重申 ＋

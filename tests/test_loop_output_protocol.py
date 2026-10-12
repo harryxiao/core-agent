@@ -338,3 +338,68 @@ def test_brace_first_no_discriminator_keeps_generic_wording() -> None:
     action = _parse('{"hello": "world", broken')
     assert action.args["reply"] == "LLM_PLAN_PARSE_FAILED: 无法解析模型输出为动作"
     assert action.failed is True
+
+
+# ---- ⑤ 退化残渣不等于「追加正文」（change 0229 / ADR-0219）----
+#
+# 事故（trace 6925d31f…，2026-10-12 08:25）：模型交出一个**完整可用**的动作 JSON，末尾只多出
+# **一个孤零零的 `}`** ⇒ `json.loads` 报 `Extra data` ⇒ 「形态 5」把它误判为「动作 JSON 之后仍
+# 跟有正文」⇒ 整轮报废、**零执行**（且 `loop.parse_retry` 缺省关 ⇒ 无补救）。
+#
+# 判据收窄：余部**含词元**（字母/数字/CJK）才算「正文」；**仅**结构性残渣（无词元：多余闭合符 /
+# 围栏符 / 零散标点 / 空白）⇒ 残渣可忽略、动作照常执行。同一谓词两处朝向相反
+# （`_embedded_action_payload` 要求含词元；`_trailing_json_object` 要求无词元）。
+
+# 事故现场的最小复刻：**完整**的 file_write 动作（1806 字符正文压成短串，结构不变）
+_INCIDENT = (
+    '{"tool_id": "tools.file_write", "args": {"path": "~/x/proposal.md", '
+    '"content": "# Proposal\\n\\n## Why\\n\\n一段正文。"}}'
+)
+
+
+def test_action_json_with_trailing_stray_brace_executes() -> None:
+    """事故复刻：完整动作 JSON + 末尾多出的一个 `}` ⇒ **工具动作**（不得整轮报废）。"""
+    action = _parse(_INCIDENT + "}")
+    assert action.tool_id == "tools.file_write"
+    assert action.args["path"] == "~/x/proposal.md"
+    assert action.args["content"].startswith("# Proposal")
+    assert action.is_terminal is False
+    assert action.failed is False
+    assert action.raw_output == ""  # 未发生解析失败 ⇒ 无原始产出留存
+
+
+def test_action_json_with_trailing_punctuation_or_fence_residue_executes() -> None:
+    """围栏符 / 零散标点 / 多余空白残渣 ⇒ 一律按工具动作执行（残渣二分：无词元）。"""
+    for residue in ("\n```", "。", " }}", "\n\n", " ;"):
+        action = _parse(_INCIDENT + residue)
+        assert action.tool_id == "tools.file_write", residue
+        assert action.failed is False, residue
+
+
+def test_prose_then_action_then_residue_executes() -> None:
+    """「正文 + 动作 JSON + 残渣」⇒ 执行 —— 尾部对象判据同步收窄（否则会**落回整段当答复**）。"""
+    action = _parse(_PROSE + _ACTION + "}")
+    assert action.tool_id == "tools.echo"
+    assert action.args == {"text": "hi"}
+    assert action.failed is False
+
+
+def test_prose_then_action_then_punctuation_residue_executes() -> None:
+    """残渣**不以 `}` 收尾**（纯标点，形态 3 路径）⇒ 仍执行 —— 余部判据无「须以 `}` 收尾」门槛。
+
+    承重：若 `_trailing_json_object` 保留该门槛，本例会落到**整段当答复**的**静默零执行**
+    （`_embedded` 已收窄、不命中）—— 即 0222 / ADR-0212 修掉的那类。
+    """
+    action = _parse(_PROSE + _ACTION + "。")
+    assert action.tool_id == "tools.echo"
+    assert action.args == {"text": "hi"}
+    assert action.failed is False
+
+
+def test_action_json_then_worded_text_still_fails() -> None:
+    """边界锚：其后跟随**含词元**的正文 ⇒ 形态 5 **语义不变**（可见失败、不执行）。"""
+    action = _parse(_INCIDENT + "\n已完成写入。")
+    assert action.is_terminal
+    assert action.failed is True
+    assert "动作 JSON 之后仍跟有正文" in action.args["reply"]
+    assert action.raw_output  # 有界原始产出照旧

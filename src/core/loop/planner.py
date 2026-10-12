@@ -86,19 +86,48 @@ def _retry_nudge(reply: str) -> str:
     return _RETRY_NUDGE.format(cause=cause)
 
 
+def _has_word(text: str) -> bool:
+    """余部是否含**词元**（字母 / 数字 / CJK）—— 「正文」与「退化残渣」的二分判据。
+
+    change 0229 / ADR-0219：模型交出**完整可用**的动作后偶发多带一个 `}`（产出退化），
+    旧判据把「一个多余 `}`」与「一整段解释正文」当成同一件事 ⇒ 0222 的形态 5 误伤、
+    整轮报废零执行。判据收窄为「含词元才算正文」；纯结构符号（闭合符 / 围栏 / 标点 /
+    空白）视为**残渣**、可忽略。同一谓词在 `_trailing_json_object`（要求**无**词元）与
+    `_embedded_action_payload`（要求**有**词元）两处**朝向相反**地复用。
+    """
+    return any(ch.isalnum() for ch in text)
+
+
+def _leading_object(text: str) -> tuple[dict[str, Any], int] | None:
+    """解码 ``text`` **首个**（即自首字符起的）JSON 对象，返回对象与其结束下标。
+
+    供 `_parse` 的 `{` 开头分支做「首个对象 + 退化残渣」归一（change 0229 / ADR-0219）；
+    首字符不是 `{`、或整体不可解码为非对象 ⇒ ``None``。
+    """
+    try:
+        obj, end = json.JSONDecoder().raw_decode(text)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    return cast("dict[str, Any]", obj), end
+
+
 def _trailing_json_object(text: str) -> dict[str, Any] | None:
-    """取 ``text`` **尾部**的 JSON 对象；其后仅允许空白与 Markdown 围栏符。
+    """取 ``text`` **尾部**的 JSON 对象；其后仅允许**退化残渣**（无词元的余部）。
 
     模型常把动作写成「解释文字 + 换行 + JSON」的混写形态（见 change 0166 / ADR-0156）：
     ``_parse`` 只认首字符 ``{`` 时，这类输出会被整段当作最终答复而**静默零执行**。
     本函数从每个 ``{`` 起试解析（``raw_decode``），只认**收在文末**的那个对象 ——
     正文中间夹带的 JSON（如解释协议时引用的示例）**不**命中，避免把「解释」当「执行」。
+    余部只按 ``_has_word`` 二分（change 0229 / ADR-0219）：含词元 ⇒ 非尾部、不认；
+    纯残渣（围栏 / 标点 / 空白 / 多余闭合符）⇒ 仍认，避免 0222 修掉的静默零执行回潮。
+    故**不设**「文本须以 `}` 收尾」的前置门槛（承重：残渣可为纯标点，如 `…}。`）——
+    否则这类输出会落到「整段当答复」的静默零执行。
     """
     tail = text.rstrip()
     if tail.endswith("```"):  # 允许 ```json … ``` 围栏收尾
         tail = tail[:-3].rstrip()
-    if not tail.endswith("}"):
-        return None
     decoder = json.JSONDecoder()
     for index, char in enumerate(tail):
         if char != "{":
@@ -107,7 +136,7 @@ def _trailing_json_object(text: str) -> dict[str, Any] | None:
             obj, end = decoder.raw_decode(tail, index)
         except ValueError:
             continue
-        if isinstance(obj, dict) and not tail[end:].strip():
+        if isinstance(obj, dict) and not _has_word(tail[end:]):
             return cast(dict[str, Any], obj)
     return None
 
@@ -173,6 +202,10 @@ def _embedded_action_payload(text: str) -> bool:
     又追加了正文」的形态 —— 旧实现把它整段当最终答复（静默零执行：动作丢失、记为成功、JSON 进
     转录与记忆）。本判据把这类输出归一为**可见失败**，与 ``_unclosed_action_payload`` 同型
     （承 change 0166/0170；**取代** ADR-0156「正文中间夹带一律按回复」的语义）。
+
+    余部判据自 change 0229 / ADR-0219 起收窄为 ``_has_word``：余部**含词元**才算「追加了正文」；
+    其后**仅**为退化残渣 ⇒ **不**命中（否则一个多余的 `}` 就会丢弃一个**完整可用**的动作，
+    且 0227 的提示措辞「之后仍跟有正文」与事实不符）。
     """
     decoder = json.JSONDecoder()
     for index, char in enumerate(text):
@@ -185,7 +218,7 @@ def _embedded_action_payload(text: str) -> bool:
         if not isinstance(obj, dict):
             continue
         payload = cast("dict[str, Any]", obj)
-        if payload.get("tool_id") and text[end:].strip():
+        if payload.get("tool_id") and _has_word(text[end:]):
             return True
     return False
 
@@ -540,6 +573,12 @@ class LLMPlanner:
         if not text:
             return Action(args={"reply": f"{_PARSE_FAILED}: 空响应"}, failed=True)
         if text.startswith("{"):
+            # 形态 2 容残渣（change 0229 / ADR-0219）：首个对象完整、其后**仅**退化残渣
+            # （无词元）⇒ 按该对象处理（`{"reply": …}` 亦然，避免「同一谓词、两种朝向、
+            # 三种结论」的新不对称）。余部含词元 ⇒ 落到下方既有路径（成因措辞逐字不变）。
+            leading = _leading_object(text)
+            if leading is not None and not _has_word(text[leading[1] :]):
+                return self._from_dict(leading[0])
             try:
                 data = json.loads(text)
             except ValueError:
