@@ -16,7 +16,6 @@ from core.ui import Event, UIAPILayer, UiError, UiErrorCode
 from core.ui.repl import (
     _COMMANDS,
     _MAX_TARGET_CHARS,
-    _STEP_TAIL_LINES,
     _action_title,
     _event_delta,
     _format_event,
@@ -378,7 +377,8 @@ def test_task_subtask_collapsible_lifecycle() -> None:
             return _timeline_text(app)
 
     text = asyncio.run(drive())
-    assert "▸ 子任务 1  ✓ 查资料" in text  # 完成后标题更新（单行提示）
+    assert "子任务 1  ✓ 查资料" in text  # 完成后标题更新（无 ▸；ui-scheme）
+    assert "▸" not in text
     assert "验收：给出来源" in text  # 展开区：验收标准
     assert "判定：验收通过" in text  # 展开区：判定理由
     assert "答案 42" in text  # 展开区：结果节选
@@ -445,7 +445,7 @@ def test_tui_action_widget_lifecycle() -> None:
     assert "1" in text  # 展开后可见输出
 
 
-# ---- TUI 步骤块（change 0233：缺省收起 + 友好标题；承 0169 展开后缩略窗口）----
+# ---- TUI 步骤块（ui-scheme / 0233：缺省收起；展开即全文）----
 
 _LONG_LINES = 20
 _LONG_OUTPUT = "\n".join(f"第 {i} 行" for i in range(1, _LONG_LINES + 1))
@@ -547,8 +547,8 @@ def test_action_title_paren_form() -> None:
     assert "⏺" not in _action_title("Bash", "echo hi")
 
 
-def test_tui_step_block_truncates_tail_and_expands() -> None:
-    """步骤块缺省**收起**；展开后缩略末尾 8 行；点正文 ⇒ 全文，再点 ⇒ 回缩略。"""
+def test_tui_step_block_expand_shows_full_text() -> None:
+    """步骤块缺省**收起**；点标题展开 ⇒ **全文**（ui-scheme：无缩略中间态）。"""
     app = _step_app(_LONG_OUTPUT)
 
     async def drive() -> None:
@@ -563,29 +563,15 @@ def test_tui_step_block_truncates_tail_and_expands() -> None:
             await pilot.pause()
             assert block.collapsed is False
             assert block.query_one(Collapsible.Contents).display is True
-            shown = _inner(block, ".step-body")
-            more = _inner(block, ".step-more")
-            body = str(shown.render())
-            assert len(body.split("\n")) == _STEP_TAIL_LINES
-            assert "第 13 行" in body and "第 20 行" in body
-            assert "第 12 行" not in body
-            assert str(more.render()) == "⋯ 还有 12 行 · 点击展开全文"
-            assert await pilot.click(shown)
-            await pilot.pause()
-            full = str(_inner(block, ".step-body").render())
-            assert len(full.split("\n")) == _LONG_LINES
-            more_full = str(_inner(block, ".step-more").render())
-            assert "第 1 行" in full and more_full == "⋯ 点击正文收起"
-            assert await pilot.click(_inner(block, ".step-body"))
-            await pilot.pause()
-            assert len(str(_inner(block, ".step-body").render()).split("\n")) == _STEP_TAIL_LINES
-            assert str(_inner(block, ".step-more").render()) == "⋯ 还有 12 行 · 点击展开全文"
+            body = str(_inner(block, ".step-body").render())
+            assert len(body.split("\n")) == _LONG_LINES
+            assert "第 1 行" in body and "第 20 行" in body
 
     asyncio.run(drive())
 
 
 def test_tui_step_block_title_toggles_collapse() -> None:
-    """点**标题** ⇒ 从收起展开；再点 ⇒ 收起。"""
+    """点**标题** ⇒ 从收起展开；再点 ⇒ 收起。展开即全文。"""
     app = _step_app(_LONG_OUTPUT)
 
     async def drive() -> None:
@@ -601,13 +587,66 @@ def test_tui_step_block_title_toggles_collapse() -> None:
             await pilot.pause()
             assert block.collapsed is False
             assert block.query_one(Collapsible.Contents).display is True
-            assert len(str(_inner(block, ".step-body").render()).split("\n")) == _STEP_TAIL_LINES
+            assert len(str(_inner(block, ".step-body").render()).split("\n")) == _LONG_LINES
             assert await pilot.click(title)
             await pilot.pause()
             assert block.collapsed is True
             assert block.query_one(Collapsible.Contents).display is False
 
     asyncio.run(drive())
+
+
+def test_tui_spinner_hides_when_activity_block_appears() -> None:
+    """活动块出现后、终态前：全局 spinner 已隐藏（ui-scheme：标题优先，spinner 兜底）。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+    hold = asyncio.Event()
+
+    class _HeldLoop:
+        async def astream(self, user_input: str, *, session_id: str = ""):
+            from core.loop import LoopEvent  # noqa: PLC0415
+
+            yield LoopEvent("loop_started", {"trace_id": "t1"})
+            yield LoopEvent(
+                "action_started",
+                {"round": 0, "tool_id": "tools.code_run", "args": {"script": "x"}},
+            )
+            await hold.wait()
+            yield LoopEvent(
+                "action_completed",
+                {
+                    "round": 0,
+                    "tool_id": "tools.code_run",
+                    "ok": True,
+                    "duration_ms": 1,
+                    "output": "ok",
+                },
+            )
+            yield LoopEvent("loop_finished", {"reply": "done", "trace_id": "t1"})
+
+    api._loop = _HeldLoop()  # noqa: SLF001
+
+    async def drive() -> bool:
+        async with app.run_test(size=(100, 40)) as pilot:
+            from textual.widgets import Input, Static  # noqa: PLC0415
+
+            inp = pilot.app.query_one("#input", Input)
+            inp.focus()
+            inp.value = "跑"
+            await pilot.press("enter")
+            for _ in range(40):
+                await pilot.pause()
+                if _blocks(app):
+                    break
+            shown = bool(app.query_one("#spinner", Static).display)
+            hold.set()
+            for _ in range(20):
+                await pilot.pause()
+            return shown
+
+    assert asyncio.run(drive()) is False
 
 
 def test_tui_step_block_body_wraps_wide_line() -> None:
@@ -711,7 +750,7 @@ def test_tui_thinking_stream_merges_and_updates_in_place() -> None:
     text, blocks, all_collapsed, reply, title = asyncio.run(drive())
     assert blocks == 1, "同 round 思考增量归并到同一块（不逐段新建）"
     assert all_collapsed, "思考块缺省**收起**"
-    assert title == "Thinking", "轮结束标题落静；不含思考原文"
+    assert title.startswith("Thinking · "), f"轮结束应带耗时后缀，得 {title!r}"
     assert "先读文件" not in title and "再改配置" not in title
     assert "Thinking" in text
     assert "先读文件，再改配置" in text
@@ -744,9 +783,79 @@ def test_tui_thinking_title_stays_without_content_while_streaming() -> None:
             return str(blocks[0].title)
 
     title = asyncio.run(drive())
-    assert title in {"Thinking", "Thinking…"}
+    # 终态已 settle ⇒ 带耗时；进行中形态测点见下方 hold 用例
+    assert title.startswith("Thinking"), title
     assert "分析路径" not in title
     assert "对比路径" not in title
+
+
+def test_tui_thinking_settle_appends_duration() -> None:
+    """Thinking 落静标题带耗时：`Thinking · 12ms` / `Thinking · 1.2s`（对齐工具块完成后缀）。"""
+    from core.ui.repl import _thinking_title  # noqa: PLC0415
+
+    assert _thinking_title(True) == "Thinking…"
+    assert _thinking_title(False) == "Thinking"
+    assert _thinking_title(False, ms=12) == "Thinking · 12ms"
+    assert _thinking_title(False, ms=1500) == "Thinking · 1.5s"
+
+
+def test_step_symbols_differ_by_kind() -> None:
+    """活动块折叠符按种类区分（不再统一 ▶；ui-scheme 图标表）。"""
+    from core.ui.repl import _step_symbol  # noqa: PLC0415
+
+    assert _step_symbol("Thinking") == "✦"
+    assert _step_symbol("Bash") == "$"
+    assert _step_symbol("Read") == "◇"
+    assert _step_symbol("WebFetch") == "◎"
+    assert _step_symbol("SubAgent") == "⊕"
+    assert len({_step_symbol(k) for k in ("Thinking", "Bash", "Read", "WebFetch", "SubAgent")}) == 5
+
+
+def test_tui_thinking_and_bash_use_distinct_collapse_symbols() -> None:
+    """时间线上 Thinking 与 Bash 的折叠符不相同。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    class _Mixed:
+        async def astream(self, user_input: str, *, session_id: str = ""):
+            from core.loop import LoopEvent  # noqa: PLC0415
+
+            yield LoopEvent("loop.reasoning", {"text": "想", "round": 0})
+            yield LoopEvent(
+                "action_started",
+                {"round": 0, "tool_id": "tools.code_run", "args": {"script": "echo"}},
+            )
+            yield LoopEvent(
+                "action_completed",
+                {
+                    "round": 0,
+                    "tool_id": "tools.code_run",
+                    "ok": True,
+                    "duration_ms": 1,
+                    "output": "ok",
+                },
+            )
+            yield LoopEvent("loop_finished", {"reply": "done", "trace_id": "t1"})
+
+    api._loop = _Mixed()  # noqa: SLF001
+
+    async def drive() -> tuple[str, str]:
+        async with app.run_test(size=(100, 40)) as pilot:
+            from textual.widgets._collapsible import CollapsibleTitle  # noqa: PLC0415
+
+            await _step_submit(pilot)
+            blocks = _blocks(app)
+            assert len(blocks) == 2  # noqa: PLR2004
+            t0 = blocks[0].query_one(CollapsibleTitle)
+            t1 = blocks[1].query_one(CollapsibleTitle)
+            return str(t0.collapsed_symbol), str(t1.collapsed_symbol)
+
+    think_sym, bash_sym = asyncio.run(drive())
+    assert think_sym == "✦"
+    assert bash_sym == "$"
+    assert think_sym != bash_sym
 
 
 def test_tui_thinking_splits_by_round() -> None:
@@ -1071,8 +1180,8 @@ def test_subtask_title_shows_running_mark_until_completion() -> None:
 
     running, done = asyncio.run(drive())
     assert "⟳" in running and "✓" not in running  # 运行中标记（尚未收尾）
-    assert running.startswith("▸ 子任务 1")  # 主题（goal）与 sid 仍在
-    assert done == "▸ 子任务 1  ✓ 查资料"  # 收尾替换为既有 ✓ 口径
+    assert running.startswith("子任务 1")  # 主题（goal）与 sid 仍在；无 ▸
+    assert done == "子任务 1  ✓ 查资料"
 
 
 def test_progress_for_unknown_subtask_is_ignored() -> None:
@@ -1291,7 +1400,7 @@ def test_focus_shows_subtask_panel_and_hides_timeline() -> None:
 
     focused = asyncio.run(drive())
     assert loop.inputs == []  # 焦点命令不进推理
-    assert "▸ 子任务 1" in focused  # 主题（sid + goal）沿用折叠块口径
+    assert "子任务 1" in focused  # 主题（sid + goal）沿用折叠块口径；无 ▸
     assert "⟳" in focused  # 运行态徽标
     assert "验收：给出来源" in focused  # 详情：验收标准
 

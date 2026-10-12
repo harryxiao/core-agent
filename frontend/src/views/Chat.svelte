@@ -1,31 +1,31 @@
 <script>
   import { fetchMessages, runStream } from "../lib/api.js";
+  import { labeledTitle, thinkingTitle, titleFromAction, toolName } from "../lib/activity.js";
 
-  // 会话由父组件持有（右栏列表同一真源）；本组件只负责该会话的呈现与发送。
+  // 会话由父组件持有；本组件负责该会话时间线呈现与发送（ui-scheme：TUI/Web 一套）。
   let { sessionId = "", onTurnEnd = () => {} } = $props();
 
   let input = $state("");
-  let lines = $state([]);
+  /** @type {Array<Record<string, unknown>>} */
+  let timeline = $state([]);
   let busy = $state(false);
+  let phase = $state("idle"); // idle | thinking | awaiting_approval
   let error = $state("");
-  // 思考回显（change 0145 / ADR-0137）：**纯呈现**态 —— 独立于 `lines`（不落转录、不参与
-  // 会话回放），单轮归并到同一折叠块、终态帧不改写；未开启时恒为空串（不渲染任何块）。
-  let thinking = $state("");
 
-  // 切会话 ⇒ 拉该会话转录并按追加次序渲染（竞态守门：回来时目标会话已变则丢弃）。
+  // 切会话 ⇒ 拉转录；思考/工具为纯呈现态，不入转录，切走即丢。
   $effect(() => {
     const sid = sessionId;
-    thinking = ""; // 切会话 ⇒ 丢弃上一会话的思考块（呈现态，不入转录）
     if (!sid) {
-      lines = [];
+      timeline = [];
+      phase = "idle";
       return;
     }
     (async () => {
       try {
         const body = await fetchMessages(sid);
         if (sid !== sessionId) return;
-        lines = (body.messages ?? []).map((m) => ({
-          role: m.role === "user" ? "user" : "agent",
+        timeline = (body.messages ?? []).map((m) => ({
+          kind: m.role === "user" ? "user" : "agent",
           text: m.content,
         }));
       } catch (exc) {
@@ -33,6 +33,127 @@
       }
     })();
   });
+
+  function settleThinking() {
+    const now = performance.now();
+    timeline = timeline.map((item) => {
+      if (item.kind !== "thinking" || !item.active) return item;
+      const started = Number(item.startedAt);
+      const ms = Number.isFinite(started) ? Math.max(0, Math.round(now - started)) : undefined;
+      return { ...item, active: false, ms };
+    });
+  }
+
+  function appendThinking(text, round) {
+    const roundId = Number.isFinite(Number(round)) ? Number(round) : null;
+    const idx = [...timeline]
+      .map((item, i) => ({ item, i }))
+      .reverse()
+      .find(({ item }) => item.kind === "thinking" && item.round === roundId)?.i;
+    if (idx !== undefined) {
+      const cur = timeline[idx];
+      timeline = [
+        ...timeline.slice(0, idx),
+        { ...cur, text: String(cur.text || "") + text, active: true },
+        ...timeline.slice(idx + 1),
+      ];
+      return;
+    }
+    settleThinking();
+    timeline = [
+      ...timeline,
+      { kind: "thinking", round: roundId, text, active: true, startedAt: performance.now() },
+    ];
+  }
+
+  function startAction(payload) {
+    settleThinking();
+    const toolId = payload.tool_id;
+    const args = payload.args ?? {};
+    timeline = [
+      ...timeline,
+      {
+        kind: "action",
+        toolId,
+        round: payload.round,
+        title: titleFromAction(toolId, args),
+        output: "",
+      },
+    ];
+  }
+
+  function completeAction(payload) {
+    const toolId = payload.tool_id;
+    const round = payload.round;
+    let found = -1;
+    for (let i = timeline.length - 1; i >= 0; i--) {
+      const item = timeline[i];
+      if (item.kind === "action" && item.toolId === toolId && item.round === round) {
+        found = i;
+        break;
+      }
+    }
+    if (found < 0) {
+      for (let i = timeline.length - 1; i >= 0; i--) {
+        if (timeline[i].kind === "action" && timeline[i].toolId === toolId) {
+          found = i;
+          break;
+        }
+      }
+    }
+    if (found < 0) return;
+    const cur = timeline[found];
+    // 完成事件常无完整 args：保留进行中标题的括号摘要，只换完成后缀。
+    const base = String(cur.title).replace(/\s·\s.*$/, "");
+    const done = titleFromAction(toolId, {}, {
+      ok: Boolean(payload.ok),
+      ms: payload.duration_ms,
+    });
+    const suffix = done.includes(" · ") ? done.slice(done.lastIndexOf(" · ")) : "";
+    timeline = [
+      ...timeline.slice(0, found),
+      {
+        ...cur,
+        title: base + suffix,
+        output: payload.output != null ? String(payload.output) : cur.output,
+      },
+      ...timeline.slice(found + 1),
+    ];
+  }
+
+  function appendDelta(delta) {
+    const last = timeline[timeline.length - 1];
+    if (last && last.kind === "agent" && last.streaming) {
+      timeline = [
+        ...timeline.slice(0, -1),
+        { ...last, text: String(last.text || "") + delta },
+      ];
+    } else {
+      timeline = [...timeline, { kind: "agent", text: delta, streaming: true }];
+    }
+  }
+
+  function finalizeReply(reply, rawOutput) {
+    settleThinking();
+    const last = timeline[timeline.length - 1];
+    if (last && last.kind === "agent" && last.streaming) {
+      timeline = [
+        ...timeline.slice(0, -1),
+        { kind: "agent", text: String(reply) },
+      ];
+    } else if (reply !== undefined && reply !== null && String(reply).length) {
+      // 已流式过则上面收口；非流式终态补一行
+      if (!(last && last.kind === "agent" && !last.streaming && last.text === String(reply))) {
+        timeline = [...timeline, { kind: "agent", text: String(reply) }];
+      }
+    }
+    if (rawOutput) {
+      timeline = [
+        ...timeline,
+        { kind: "raw", text: String(rawOutput) },
+      ];
+    }
+  }
 
   async function send() {
     const text = input.trim();
@@ -43,60 +164,77 @@
     }
     error = "";
     busy = true;
+    phase = "thinking";
     input = "";
-    thinking = ""; // 新一轮 ⇒ 思考块重新起（同轮增量归并到同一块）
-    lines = [...lines, { role: "user", text }];
+    timeline = [...timeline, { kind: "user", text }];
     try {
       for await (const ev of runStream(sessionId, text)) {
         if (ev.type === "error") {
           error = `${ev.payload.code}: ${ev.payload.message}`;
         } else if (ev.type === "loop.delta") {
-          // 流式增量（专类型，载荷 {text}）：追加到**同一条**回复尾部 —— 首帧新建行，
-          // 其后原地拼接（不逐帧新建行、不渲染 JSON 载荷）。与 TUI _show_delta 同语义。
-          const delta = String(ev.payload.text ?? "");
-          const last = lines[lines.length - 1];
-          if (last && last.role === "agent" && last.streaming) {
-            lines = [...lines.slice(0, -1), { ...last, text: last.text + delta }];
-          } else {
-            lines = [...lines, { role: "agent", text: delta, streaming: true }];
-          }
+          appendDelta(String(ev.payload.text ?? ""));
         } else if (ev.type === "loop.reasoning") {
-          // 思考回显（专类型，载荷 {text}）：追加到**同一**折叠块 —— 不逐帧新建块、不渲染
-          // JSON 载荷；纯呈现层（不落 `lines`），终态帧不改写该块。
-          thinking += String(ev.payload.text ?? "");
+          appendThinking(String(ev.payload.text ?? ""), ev.payload.round);
+        } else if (ev.type === "loop.action_started") {
+          startAction(ev.payload ?? {});
+        } else if (ev.type === "loop.action_completed") {
+          completeAction(ev.payload ?? {});
         } else if (ev.type === "loop.result" || ev.type === "loop.error") {
-          // 终态帧：若本轮有流式行则**原位收口**为完整回复（不重复一行），否则新建行。
-          const reply = ev.payload.reply ?? ev.payload.message ?? JSON.stringify(ev.payload);
-          const last = lines[lines.length - 1];
-          if (last && last.role === "agent" && last.streaming) {
-            lines = [...lines.slice(0, -1), { role: "agent", text: String(reply) }];
-          } else {
-            lines = [...lines, { role: "agent", text: String(reply) }];
-          }
+          const reply =
+            ev.payload?.reply ?? ev.payload?.message ?? JSON.stringify(ev.payload);
+          finalizeReply(reply, ev.payload?.raw_output);
+          phase = "idle"; // 终态即闲置（收尾后台不得占「思考中」）
+          busy = false;
         }
       }
     } catch (exc) {
       error = String(exc.message || exc);
     } finally {
+      settleThinking();
+      phase = "idle";
       busy = false;
-      onTurnEnd(); // 最近活跃变化 ⇒ 刷新右栏排序
+      onTurnEnd();
     }
   }
 </script>
 
 <section>
   <p class="meta">会话：{sessionId || "（尚未选择）"}</p>
-  <ul>
-    {#each lines as line}
-      <li class={line.role}><strong>{line.role}</strong> {line.text}</li>
+  {#if phase === "thinking"}
+    <p class="phase" aria-live="polite">思考中…</p>
+  {/if}
+  <ul class="timeline">
+    {#each timeline as item}
+      {#if item.kind === "user"}
+        <li class="user"><strong>user</strong> {item.text}</li>
+      {:else if item.kind === "agent"}
+        <li class="agent"><strong>agent</strong> {item.text}</li>
+      {:else if item.kind === "thinking"}
+        <li class="step">
+          <details>
+            <summary
+              >{labeledTitle("Thinking", thinkingTitle(Boolean(item.active), item.ms))}</summary
+            >
+            <pre>{item.text}</pre>
+          </details>
+        </li>
+      {:else if item.kind === "action"}
+        <li class="step">
+          <details>
+            <summary>{labeledTitle(toolName(item.toolId), item.title)}</summary>
+            {#if item.output}<pre>{item.output}</pre>{/if}
+          </details>
+        </li>
+      {:else if item.kind === "raw"}
+        <li class="step">
+          <details>
+            <summary>{labeledTitle("raw", "未能解析的模型原始输出")}</summary>
+            <pre>{item.text}</pre>
+          </details>
+        </li>
+      {/if}
     {/each}
   </ul>
-  {#if thinking}
-    <details class="thinking">
-      <summary>思考</summary>
-      <pre>{thinking}</pre>
-    </details>
-  {/if}
   {#if error}<p class="error">{error}</p>{/if}
   <form
     onsubmit={(e) => {
@@ -105,7 +243,7 @@
     }}
   >
     <input bind:value={input} placeholder="说点什么…" disabled={busy} />
-    <button type="submit" disabled={busy}>{busy ? "运行中…" : "发送"}</button>
+    <button type="submit" disabled={busy}>{busy ? "思考中…" : "发送"}</button>
   </form>
 </section>
 
@@ -118,7 +256,12 @@
     color: #59636e;
     font-size: 0.85rem;
   }
-  ul {
+  .phase {
+    color: #59636e;
+    font-size: 0.9rem;
+    margin: 0.25rem 0;
+  }
+  ul.timeline {
     list-style: none;
     padding: 0;
     min-height: 4rem;
@@ -134,22 +277,22 @@
   li.user {
     background: #ddf4ff;
   }
-  .error {
-    color: #cf222e;
-  }
-  details.thinking {
-    margin-bottom: 0.4rem;
+  li.step {
+    background: #f6f8fa;
     color: #59636e;
     font-size: 0.9rem;
   }
-  details.thinking summary {
+  li.step details summary {
     cursor: pointer;
   }
-  details.thinking pre {
+  li.step pre {
     margin: 0.3rem 0 0;
     white-space: pre-wrap;
     font: inherit;
     color: #59636e;
+  }
+  .error {
+    color: #cf222e;
   }
   form {
     display: flex;

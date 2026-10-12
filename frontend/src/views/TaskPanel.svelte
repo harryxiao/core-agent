@@ -1,5 +1,6 @@
 <script>
   import { runTask } from "../lib/api.js";
+  import { titleFromAction } from "../lib/activity.js";
 
   // 任务区（右栏，与会话列表**并列不混池**）：任务是**在途**运行态、会话是**持久**记录。
   // 数据全部来自 `POST /task` 的 `task.*` 事件载荷（不建第二数据源；子 agent 会话流无数据源）。
@@ -24,12 +25,17 @@
     );
   }
 
-  /** 里程碑事件 → 详情行（载荷已由后端按内层类型白名单化）。 */
+  /** 里程碑事件 → 详情行（标题语法与 Chat/TUI 同源；载荷已白名单化）。 */
   function milestone(ev) {
     const d = ev.payload.data ?? {};
-    if (ev.payload.event === "action_started") return `▸ 第 ${d.round} 轮：${d.tool_id}`;
+    if (ev.payload.event === "action_started") {
+      return titleFromAction(d.tool_id, d.args ?? {});
+    }
     if (ev.payload.event === "action_completed") {
-      return `${d.ok ? "✓" : "✗"} 第 ${d.round} 轮：${d.tool_id}（${d.duration_ms}ms）`;
+      return titleFromAction(d.tool_id, d.args ?? {}, {
+        ok: Boolean(d.ok),
+        ms: d.duration_ms,
+      });
     }
     return `· 第 ${d.round} 步${d.failed ? "（失败）" : "完成"}`;
   }

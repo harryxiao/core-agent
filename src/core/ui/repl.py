@@ -151,8 +151,6 @@ _TOOL_NAMES = {  # tool_id → 友好名（用户可见层不暴露内部 id/参
 # 括号摘要式标题（`Bash(…)` / `Read(…)`）；未列入者退化为 `Name  target`（极少见兜底）
 _PAREN_TITLES = frozenset(_TOOL_NAMES.values()) | {"Planner", "Thinking"}
 
-_STEP_TAIL_LINES = 8  # 展开后可选缩略窗口的**末尾**行数（缺省块为收起，见 change 0233）
-
 _TARGET_FIELDS = {  # tool_id → 标题目标摘要的**白名单结构性字段**（正文类参数永不取）
     "tools.file_read": "path",
     "tools.file_write": "path",
@@ -167,6 +165,36 @@ _TARGET_FIELDS = {  # tool_id → 标题目标摘要的**白名单结构性字�
 _MAX_TARGET_CHARS = 60  # 目标摘要上界（超长以省略号收尾）
 _THINKING_TITLE = "Thinking"
 _THINKING_TITLE_ACTIVE = "Thinking…"  # 进行中：仅省略号，不刷思考原文（防标题闪烁）
+
+# 活动块折叠符：按种类区分（取代统一 ▶/▼；ui-scheme.md）
+_STEP_SYMBOLS: dict[str, str] = {
+    "Thinking": "✦",
+    "Bash": "$",
+    "Read": "◇",
+    "Write": "✎",
+    "Edit": "✏",
+    "Delete": "⌫",
+    "SubAgent": "⊕",
+    "Planner": "▤",
+    "WebFetch": "◎",  # Exploring / 外网
+    "Gate": "☑",
+    "Context": "⊞",
+    "raw": "⚠",
+    "subtask": "◈",
+}
+
+
+def _step_symbol(kind: str) -> str:
+    """活动种类 → 折叠符；未知种类退化为中点（仍异于 Textual 默认 ▶）。"""
+    return _STEP_SYMBOLS.get(kind, "·")
+
+
+def _thinking_title(active: bool, *, ms: object = None) -> str:
+    """Thinking 块标题：进行中 `Thinking…`；落静 `Thinking`，可附 ` · 1.2s`（对齐工具完成后缀）。"""
+    if active:
+        return _THINKING_TITLE_ACTIVE
+    elapsed = _fmt_ms(ms)
+    return f"{_THINKING_TITLE} · {elapsed}" if elapsed else _THINKING_TITLE
 
 
 def _tool_target(tool_id: object, args: object) -> str:
@@ -401,18 +429,24 @@ def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — �
         """命令浮层：**不可聚焦**（`Tab` 不得把焦点从输入框抢走），仅由代码驱动高亮。"""
 
     class _StepBlock(Collapsible):
-        """步骤块（思考 / 工具动作共用）：缺省**收起**（change 0233）。
+        """步骤块（思考 / 工具动作共用）：缺省**收起**；展开即**全文**（ui-scheme.md）。
 
-        三态 = `collapsed`（点标题切）× `_full`（展开后点正文：缩略窗口 ⇄ 全文）。
+        折叠符按活动种类区分（``symbol``），展开/收起用同一符 ⇒ 不以统一 ▶/▼ 示意。
         行缓冲 append-only（末元素是未完成行）⇒ 消原全文重拼的 O(n²)。
         """
 
-        def __init__(self, title: str, *, collapsed: bool = True) -> None:
+        def __init__(
+            self, title: str, *, collapsed: bool = True, symbol: str = "·"
+        ) -> None:
             self._lines: list[str] = [""]
-            self._full = False
             self._body = Static("", classes="step-body", markup=False)
-            self._more = Static("", classes="step-more")
-            super().__init__(self._body, self._more, title=title, collapsed=collapsed)
+            super().__init__(
+                self._body,
+                title=title,
+                collapsed=collapsed,
+                collapsed_symbol=symbol,
+                expanded_symbol=symbol,
+            )
 
         def feed(self, text: str) -> None:
             """增量追加片段（只追加、不重拼 ⇒ 长流实时可见）。"""
@@ -431,24 +465,8 @@ def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — �
             return "\n".join(self._lines)
 
         def _render_body(self) -> None:
-            """切窗口 → 落正文与剩余提示（无肘线符号；change 0233）。"""
-            total = len(self._lines)
-            lines = self._lines if self._full else self._lines[-_STEP_TAIL_LINES:]
-            self._body.update("\n".join(lines))
-            hidden = 0 if self._full else total - len(lines)
-            if hidden:
-                self._more.update(f"⋯ 还有 {hidden} 行 · 点击展开全文")
-            elif self._full and total > _STEP_TAIL_LINES:
-                self._more.update("⋯ 点击正文收起")
-            else:
-                self._more.update("")
-
-        def on_click(self, event: events.Click) -> None:
-            """点**正文**：缩略 ⇄ 全文（收起态或无剩余行时空操作 —— 不出现「点了没变化」）。"""
-            if self.collapsed or len(self._lines) <= _STEP_TAIL_LINES:
-                return
-            self._full = not self._full
-            self._render_body()
+            """展开态落**全文**（无缩略中间态；ui-scheme / 0233）。"""
+            self._body.update("\n".join(self._lines))
 
     class ReplApp(App[None]):
         """core-agent 交互会话 TUI：时间线（❯ 行/Markdown/折叠块）+ 工作状态行。"""
@@ -516,14 +534,10 @@ def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — �
     color: $text-muted;
     width: auto;
 }
-.step-body {  /* 步骤块正文：灰显 + 确定宽度折行（change 0233） */
+.step-body {  /* 步骤块正文：灰显 + 确定宽度折行（ui-scheme / 0233） */
     color: $text-muted;
     width: 1fr;
     text-wrap: wrap;
-}
-.step-more {  /* 步骤块剩余行提示：更浅一档（不抢正文） */
-    color: $text-disabled;
-    width: 1fr;
 }
 .ok {
     color: $success;
@@ -677,7 +691,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
         # ---- 工作状态行（✻ label… (Ns)，Claude CLI 式自转） ----
 
         def _spin_start(self, label: str) -> None:
-            """启动（或改标签）工作状态行：glyph 轮换 + 秒计时。"""
+            """启动（或改标签）工作状态行：glyph 轮换 + 秒计时（无活动块时的兜底相位）。"""
             if self._spin_timer is None:
                 self._spin_t0 = time.monotonic()
                 self._spin_timer = self.set_interval(0.12, self._spin_tick)
@@ -702,6 +716,10 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 self._spin_timer.stop()
                 self._spin_timer = None
             self.query_one("#spinner", Static).display = False
+
+        def _spin_defer_to_blocks(self) -> None:
+            """有活动步骤块后隐藏全局 spinner（ui-scheme：标题优先，spinner 仅兜底）。"""
+            self._spin_stop()
 
         def _end_turn(self, *, flush_live: bool = False) -> None:
             """回合收尾（异常安全）：先**尽力**收尾呈现，最后**必定**复位忙态。
@@ -731,12 +749,13 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             self._approval_future = future
             self._add(Static(f"⚠ 需审批: {reason}", classes="fail", markup=False))
             self._add(Static("输入 y 批准 / n 拒绝", classes="hint"))
-            self._spin_relabel("等待审批")
+            # 审批期无活动块可表达进度 ⇒ 重新拉起兜底相位（可能已因工具块 defer 掉）
+            self._spin_start("等待审批")
             try:
                 return await future
             finally:
                 self._approval_future = None
-                self._spin_relabel("思考中")
+                self._spin_start("思考中")
 
         def action_barge_in(self) -> None:
             line = _format_event(barge_in_event(api))
@@ -1113,12 +1132,15 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             if kind == "started":
                 self._settle_thinking_titles()  # 工具开始 ⇒ 上一 Thinking 结束闪烁态
                 target = _tool_target(data.get("tool_id"), data.get("args"))
+                friendly = _tool_name(data.get("tool_id"))
                 box = _StepBlock(
-                    _action_title(_tool_name(data.get("tool_id")), target),
+                    _action_title(friendly, target),
                     collapsed=True,
+                    symbol=_step_symbol(friendly),
                 )
                 self._add(box)
                 self._actions[key] = (box, target)
+                self._spin_defer_to_blocks()  # 标题已表达进度
                 return
             if entry is None:
                 return
@@ -1131,22 +1153,29 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             )
             box.set_text(str(data.get("output", "")))
 
+        def _settle_one_thinking(self, box: _StepBlock) -> None:
+            """单块 Thinking 落静：去掉省略号，附客户端测得的耗时后缀。"""
+            title = str(box.title)
+            if title.startswith(f"{_THINKING_TITLE} · "):
+                return  # 已落静
+            if title not in (_THINKING_TITLE, _THINKING_TITLE_ACTIVE):
+                return
+            started = getattr(box, "_started_at", None)
+            ms = int((time.monotonic() - started) * 1000) if isinstance(started, float) else None
+            box.title = _thinking_title(False, ms=ms)
+
         def _settle_thinking_titles(self) -> None:
-            """Thinking 进行中标题落回静态 `Thinking`（不保留省略号）。"""
+            """Thinking 进行中标题落静为 `Thinking · …`（不保留省略号；带耗时）。"""
             for box in self._reasoning_by_round.values():
-                if box.title in (_THINKING_TITLE, _THINKING_TITLE_ACTIVE):
-                    box.title = _THINKING_TITLE
-            if self._reasoning_fallback is not None and self._reasoning_fallback.title in (
-                _THINKING_TITLE,
-                _THINKING_TITLE_ACTIVE,
-            ):
-                self._reasoning_fallback.title = _THINKING_TITLE
+                self._settle_one_thinking(box)
+            if self._reasoning_fallback is not None:
+                self._settle_one_thinking(self._reasoning_fallback)
 
         def _add_reasoning_widget(self, event: Event) -> None:
             """思考回显 → `Thinking` 步骤块（change 0233：缺省**收起**，按 `round` 归并）。
 
             同 `round` 增量归并同一块；缺 `round` 时降级到单一 fallback 块（不丢文本）。
-            收起态标题固定为 `Thinking` / `Thinking…`，**不**把思考原文刷进标题（防闪烁）。
+            收起态标题固定为 `Thinking` / `Thinking…`，落静附 ` · 耗时`；**不**把思考原文刷进标题。
             思考原文是**纯呈现层**：只在此处落块，不进转录 / 记忆 / 日志。
             """
             payload = event.payload
@@ -1163,43 +1192,57 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             except (TypeError, ValueError):
                 round_id = None
 
+            def _new_thinking_box() -> _StepBlock:
+                box = _StepBlock(
+                    _THINKING_TITLE,
+                    collapsed=True,
+                    symbol=_step_symbol("Thinking"),
+                )
+                box._started_at = time.monotonic()  # noqa: SLF001 — 块内计时锚点
+                return box
+
             def _feed_thinking(box: _StepBlock, chunk: str) -> None:
                 box.feed(chunk)
                 # 收起态：只标进行中，不刷原文进标题
                 if box.collapsed and box.title != _THINKING_TITLE_ACTIVE:
-                    box.title = _THINKING_TITLE_ACTIVE
+                    box.title = _thinking_title(True)
 
             if round_id is not None:
                 entry = self._reasoning_by_round.get(round_id)
                 if entry is None:
                     self._settle_thinking_titles()  # 新 round ⇒ 上一步 Thinking 落静
-                    box = _StepBlock(_THINKING_TITLE, collapsed=True)
+                    box = _new_thinking_box()
                     self._add(box)
                     _feed_thinking(box, text)
                     self._reasoning_by_round[round_id] = box
+                    self._spin_defer_to_blocks()
                     return
                 _feed_thinking(entry, text)
                 return
             entry = self._reasoning_fallback
             if entry is None:
-                box = _StepBlock(_THINKING_TITLE, collapsed=True)
+                box = _new_thinking_box()
                 self._add(box)
                 _feed_thinking(box, text)
                 self._reasoning_fallback = box
+                self._spin_defer_to_blocks()
                 return
             _feed_thinking(entry, text)
 
         def _add_raw_output_widget(self, event: Event) -> None:
             """未能解析的模型原始产出 → `⚠` 步骤块（**缺省收起**，change `0170` / ADR-0161）。
 
-            与思考块 / 工具块的缺省缩略态**有意不同**：本块正文是未解析的原始载荷（可能被截断
-            或写坏），缺省收起以免污染时间线；点标题展开归因。原始产出**只在此处呈现**：
+            缺省收起以免污染时间线；点标题展开归因。原始产出**只在此处呈现**：
             不进转录 / 记忆 / 笔记 / 日志（正常轮 `raw_output` 为空 ⇒ 不落块）。
             """
             raw = getattr(event.payload, "raw_output", "")
             if not raw:
                 return
-            box = _StepBlock("⚠ 未能解析的模型原始输出", collapsed=True)
+            box = _StepBlock(
+                "未能解析的模型原始输出",
+                collapsed=True,
+                symbol=_step_symbol("raw"),
+            )
             box.set_text(str(raw))
             self._add(box)
 
@@ -1211,7 +1254,14 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 classes="hint",
                 markup=False,
             )
-            box = Collapsible(detail, title=f"▸ 子任务 {sid}  ⟳ {escape(goal)}", collapsed=True)
+            sym = _step_symbol("subtask")
+            box = Collapsible(
+                detail,
+                title=f"子任务 {sid}  ⟳ {escape(goal)}",
+                collapsed=True,
+                collapsed_symbol=sym,
+                expanded_symbol=sym,
+            )
             self._add(box)
             self._open[sid] = (box, detail, goal)
 
@@ -1243,12 +1293,12 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 return
             box, detail, goal = entry
             if data.get("skipped"):
-                box.title = f"▸ 子任务 {sid}  ✓ 已完成（续跑跳过）"
+                box.title = f"子任务 {sid}  ✓ 已完成（续跑跳过）"
                 if detail is self._focus_detail:
                     self._render_panel()
                 return
             mark = "✓" if data.get("ok") else "✗"
-            box.title = f"▸ 子任务 {sid}  {mark} {escape(goal)}"
+            box.title = f"子任务 {sid}  {mark} {escape(goal)}"
             lines = [str(detail.render()), f"判定：{data.get('reason', '')}"]
             reply = str(data.get("reply", "")).strip()
             if reply:
