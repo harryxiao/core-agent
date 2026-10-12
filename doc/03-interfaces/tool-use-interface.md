@@ -110,6 +110,14 @@ class ToolError:
 > 给出**不需注入执行器**的五件（`file_read` / `file_write` / `file_patch` / `code_run` / `web_fetch`）；
 > 组合根 `build_runtime` 的注册与只读诊断面（`doctor` / `status` 的「内置工具数」）**共用同一份** ——
 > 计数面不另抄一张表（`gate_run` / `context_read` 的执行器由组合根注入，故不在其中，另装配）。
+>
+> **文件工具的 `~` 展开（change `0228` / ADR-0218）**：三个 `file_*` 工具的 `path` 参数在入口做
+> **`~` 展开**（`Path(path).expanduser()`，与 `core_profile.loader` 同口径）—— `~/x` 指**家目录**，
+> 不再是当前工作目录下的字面 `~` 目录。**无条件**生效（属缺陷修复、非可选能力，不设门）；**只**展开
+> `~`（`~user` 一并处理），不 `resolve` / 不 `abspath` / 不展开环境变量；对无 `~` 的路径是恒等变换。
+> `file_write` / `file_patch` 把**展开后**路径存入撤销快照 ⇒ 撤销点与写入点一致（**不**误建字面 `~`）。
+> 返回体 `{"path": …}` 仍回**模型给的原文**（contract 不变）。`code_run` 的 `cwd` **未**纳入（非
+> `file_*` 工具，同源缺口登记为后续候选）。
 
 ---
 

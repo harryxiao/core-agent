@@ -7658,6 +7658,47 @@ change 乙 `~` 展开与 maintenance 400 专项）⇒ 沿仓纪律缺省关：�
 - 来源另见 `doc/openspec/changes/…-0227-parse-failure-retry/design.md`；上游减压见 change 乙（`~` 展开）
   与 maintenance HTTP 400 专项（长任务 G 线）。
 
+## ADR-0218：文件工具 `~` 展开（change 0228 / 台账 E165）
+
+**背景**：模型/用户以 `~/.core/…` 这类**家目录路径**调用 `tools.file_read` / `file_write` /
+`file_patch` 时，`Path(path)` **不做** `~` 展开 ⇒ 路径被解释为**当前工作目录下字面名为 `~` 的目录**
+下的文件。父目录 `./~` 不存在 ⇒ 读/写均以 `FileNotFoundError` 失败（实测 `Path('~/x').write_text(…)`
+抛 `No such file or directory: '~/x'`）。**意图（家目录）与行为（字面 `~` 目录）静默背离**，错误信息
+（`'~/x'` 不存在）对模型毫无线索 ⇒ 易触发重试 / 退化（与 ADR-0217 的上游压力同源）。
+
+**D1 属缺陷修复、非新能力 ⇒ 无条件生效（不设门）。** 字面 `~` 目录不是任何合理用法；模型写 `~/…`
+**无条件**指家目录。与 ADR-0210（`strip_fence` 兜底）同类：修的是「意图与行为背离」，不引入**可选**
+行为 ⇒ **不设配置键**。区别于 ADR-0206 的 kill-switch（那个门保的是**既有**在用能力；本处的既有行为
+是**缺陷**，翻默认不适用）。
+
+**D2 落点 = 工具入口、动作前展开一次；撤销点与写入点一致。** `Path(path).expanduser()`（与
+`core_profile.loader` 同口径）在 `handler` 入口做一次，**展开后**的路径用于实际 I/O **并存入撤销
+快照**。理由：撤销闭包 `_restore(snap)` 按 `snap["path"]` 恢复 —— 若快照存**未展开**原串，撤销会恢复
+到家目录**之外**的字面 `~` 路径（与写入点不一致 ⇒ 撤销失效 / 误建）。故「展开一次、全程一致」；
+`_restore` 自身**不改**（快照已存展开路径 ⇒ 天然正确）。
+
+**D3 只覆盖 `~` 展开，不引入其它路径语义。** 不做 `resolve()`（会解软链、改相对路径语义）；不做
+`abspath`；不做环境变量展开（`$HOME`）；不改沙箱 / 权限的相对路径基准。最小语义：`~`（及 `~user`，
+由 `expanduser` 一并处理）→ 家目录。
+
+**D4 返回体仍回**输入**路径（contract 不变）。** `file_read` / `file_write` / `file_patch` 的返回
+`{"path": …}` 保持**模型给的原文**（`~/x`）—— 形状与值域语义不变，仅**落盘位置**改变；避免为「回显
+解析后路径」引入契约变更（若将来确需，另立 change）。
+
+**规格**：`tool-use` spec **不约束**文件工具路径语义（该 spec 覆盖：工具定义与注册 / 参数校验 /
+coeffect 契约 / 撤销回滚 / 超时上限 / 异步 / 插件安装 / 内置原子工具（**代码执行·网页读取**）/
+质量门禁 —— **无文件工具专属 Requirement**）⇒ **规格中性**（`skip_specs: true`；零 spec delta、
+canonical 计数不变）。行为在 `doc/03-interfaces/tool-use-interface.md` §3 落注。
+
+**反证（实测）**：摘 `_expand` 的 `expanduser`（还原 `Path(path)`）⇒ 家目录三用例 ＋ 撤销两用例红；
+复原 ⇒ `md5sum` 同。
+
+**局限**：① **只展开 `~`** —— `$VAR` 与相对路径语义不动（最小语义的刻意边界）；② **`code_run`
+的 `cwd` 未纳入** —— 非 `file_*` 工具，同源缺口（同样不展开 `~`），登记为**后续候选**；③ **沙箱 /
+权限的相对路径基准仍是进程 cwd** —— 展开后的绝对家目录路径走既有判定，无新暴露面；对宠物 loop
+而言 `~/…` 展开后落在 `SafetyBounds`（cwd 白名单）**之外** ⇒ 从「写进字面 `./~`」变为「**被正确
+拦截**」（安全方向的改善，非回退）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7870,3 +7911,4 @@ change 乙 `~` 展开与 maintenance 400 专项）⇒ 沿仓纪律缺省关：�
 | ADR-0215 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0216 | 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0217 | 03-interfaces/prompts.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0218 | 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -82,11 +82,22 @@ _MAX_FETCH_BYTES = 65536  # web_fetch 正文截断（64 KiB）
 _USER_AGENT = "core-agent/0.1"
 
 
+def _expand(path: str) -> Path:
+    """把用户侧路径归一为 ``Path``：**展开 ``~``**（家目录，change 0228 / ADR-0218）。
+
+    ``Path`` 不做 ``~`` 展开 ⇒ 模型写 ``~/.core/…`` 会被当作**当前工作目录下字面名为 ``~``
+    的目录**下的文件（父目录不存在 ⇒ ``FileNotFoundError``）。与 ``core_profile.loader`` 的
+    ``Path(path).expanduser()`` 同口径；只展开 ``~``（``~user`` 一并处理），不 ``resolve`` /
+    不 ``abspath`` / 不展开环境变量。对无 ``~`` 的路径是**恒等变换**。
+    """
+    return Path(path).expanduser()
+
+
 def file_read() -> Tool:
     """读文件（只读，自动放行）。"""
 
     def handler(path: str, start: int = 0, count: int | None = None) -> dict[str, Any]:
-        lines = Path(path).read_text(encoding="utf-8").splitlines()
+        lines = _expand(path).read_text(encoding="utf-8").splitlines()
         selected = lines[start:] if count is None else lines[start : start + count]
         return {"path": path, "content": "\n".join(selected)}
 
@@ -112,11 +123,12 @@ def file_write() -> Tool:
     def handler(path: str, content: str, mode: str = "w") -> dict[str, Any]:
         # 模型侧语义值归一为 Python open 模式；未知值由 EXECUTION_FAILED 结构化兜底
         normalized = {"write": "w", "overwrite": "w", "append": "a"}.get(mode, mode)
-        target = Path(path)
+        target = _expand(path)
         before = target.read_text(encoding="utf-8") if target.exists() else None
         with target.open(normalized, encoding="utf-8") as fh:
             fh.write(content)
-        snaps.append({"path": path, "before": before})  # 写入**成功后**压栈
+        # 快照存**展开后**路径 ⇒ `_restore` 恢复点与写入点一致（change 0228 / ADR-0218）
+        snaps.append({"path": str(target), "before": before})  # 写入**成功后**压栈
         return {"path": path, "bytes_written": len(content)}
 
     def undo() -> Callable[[], None]:
@@ -144,10 +156,11 @@ def file_patch() -> Tool:
     snaps: list[dict[str, str | None]] = []
 
     def handler(path: str, old_content: str, new_content: str) -> dict[str, Any]:
-        target = Path(path)
+        target = _expand(path)
         original = target.read_text(encoding="utf-8")
         target.write_text(original.replace(old_content, new_content), encoding="utf-8")
-        snaps.append({"path": path, "before": original})  # 写入**成功后**压栈
+        # 快照存**展开后**路径 ⇒ `_restore` 恢复点与写入点一致（change 0228 / ADR-0218）
+        snaps.append({"path": str(target), "before": original})  # 写入**成功后**压栈
         return {"path": path, "replaced": old_content in original}
 
     def undo() -> Callable[[], None]:

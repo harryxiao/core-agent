@@ -3084,3 +3084,35 @@ Scenario ＋ ADDED 1 Scenario；既有其余 7 Scenario 逐字保留）。承 `0
 > （归档后 **31 passed**）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0217 行（重试不治疗退化本身 / `show_thinking`
 > 两段思考增量 / 轻失败也重试 / 非流式恒可重试）。
+
+---
+
+## 141. 文件工具 `~` 展开（TC-TILDE，change `0228`／ADR-0218，台账 E165）
+
+**缺陷**：`file_read` / `file_write` / `file_patch` 的 `path` **不做** `~` 展开 ⇒ 模型写 `~/x`
+指向**当前工作目录下字面名为 `~` 的目录**下的文件（父目录不存在 ⇒ `FileNotFoundError`），
+意图（家目录）与行为（字面 `~`）静默背离。**修法**：入口 `_expand(path) = Path(path).expanduser()`
+（与 `core_profile.loader` 同口径）；撤销快照存**展开后**路径 ⇒ `_restore` 恢复点与写入点一致。
+**规格中性**（`skip_specs: true`；`tool-use` spec 无文件工具专属 Requirement）；行为落
+`doc/03-interfaces/tool-use-interface.md` §3。测试文件 `tests/test_tilde_expansion.py`。
+
+| 用例 | 面 | 输入 | 断言（`tests/test_tilde_expansion.py::…`） |
+|---|---|---|---|
+| TC-TILDE-01 | `file_read` 展开 | `~/x.txt`（`$HOME` 指临时目录） | 命中**家目录**文件、`content == "hello"`（`…::test_file_read_expands_tilde`） |
+| TC-TILDE-02 | `file_write` 展开 ＋ 返回原文 | `path="~/x.txt"` | 落到**家目录**；`result.data["path"] == "~/x.txt"`（回显输入、非解析后路径）（`…::test_file_write_expands_tilde_keeps_input_in_result`） |
+| TC-TILDE-03 | `file_patch` 展开 | `~/x.txt` 内容 `one two` | 家目录文件变为 `one three`（`…::test_file_patch_expands_tilde`） |
+| TC-TILDE-04 | **撤销点与写入点一致（承重）** | 写 `~/x.txt` 后 `rollback` | 家目录文件恢复 `orig`；**且** `Path.cwd()/"~"` **不存在**（撤销 SHALL NOT 触及字面 `~`）（`…::test_undo_restores_home_file_not_literal_tilde`） |
+| TC-TILDE-05 | 新建文件的撤销 | 写原本不存在的 `~/new.txt` 后 `rollback` | 该家目录文件被删除（`…::test_undo_of_new_home_file_deletes_it`） |
+| TC-TILDE-06 | 无 `~` 路径逐字不变 | 绝对路径写 ＋ 读 | 行为不变、`content == "A"`（`…::test_relative_and_absolute_paths_unchanged`） |
+| TC-TILDE-07 | `_expand` 恒等性 | `"a/b/c.txt"` | `== Path("a/b/c.txt")`（无解析、无绝对化）（`…::test_expand_is_identity_without_tilde`） |
+| TC-TILDE-08 | `_expand` 归一到家目录 | `"~/x.txt"` | `== home/"x.txt"`（与 `core_profile.loader` 同口径）（`…::test_expand_resolves_tilde_to_home`） |
+
+> **反证（实测一组）**：摘 `_expand` 的 `expanduser`（还原 `Path(path)`）⇒
+> `tests/test_tilde_expansion.py` **6 failed, 2 passed** —— 转红者为 01~05 ＋ 08；**绿的两条是恒等性
+> 断言（06/07），两态皆须成立**（非反证失效）。复原 ⇒
+> `src/core/tools/builtin.py` `md5sum`（`228bc1f5f1b3c4495d45dbe76e798d62`）**逐字节相同**。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2569 passed**（基线 **2561**，**+8**）；四门禁：`ruff check` ✓ /
+> `ruff format --check` ✓ / `pyright`（**无参**，0-0-0）✓ / `pytest` ✓；`openspec validate --all`
+> **32 passed**（归档后 **31 passed**；canonical 计数不变 ⇒ 规格中性复核）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0218 行（只展开 `~` / `code_run` 的 `cwd`
+> 未纳入（同源缺口、后续候选）/ 沙箱相对路径基准仍是进程 cwd（展开后对宠物 loop 是**更严**的拦截））。
