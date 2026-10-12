@@ -210,11 +210,20 @@ def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "
 - **失败可见**：`_parse` 各 `LLM_PLAN_PARSE_FAILED` 分支与两处 `LLM 调用失败: {exc}` 均置
   `Action.failed=True` ⇒ `act()` 终止分支透出 ⇒ `trajectory.ok` / `step_completed.failed` /
   `_notify_turn(ok=…)` / `LoopResult.failed` 四处同口径。
-- **原始产出可诊断（change `0170` / `0222`）**：「首字符 `{` 解析失败」、「形态 4」与**形态 5** 三类失败态终止动作 SHALL
+- **原始产出可诊断（change `0170` / `0222` / `0227`）**：「首字符 `{` 解析失败」、「形态 4」与**形态 5** 三类失败态终止动作 SHALL
   另带**有界**原始产出（`Action.raw_output` → `LoopResult.raw_output`；上界 `_RAW_OUTPUT_MAX`，超出即
   截断）。该产出 SHALL NOT 写入转录 / 记忆 / 笔记，SHALL NOT 并入 `reply`（`reply` 为可读提示）；
-  TUI 折叠呈现（见 `ui-interface.md` §2）。**成因措辞**（形态 4）：provider 报 `finish_reason="length"`
-  ⇒ 提示明示**被截断**；信号不可用 ⇒ **未闭合（疑似截断或写坏）**；二者**失败语义相同**。
+  TUI 折叠呈现（见 `ui-interface.md` §2）。**成因措辞**（形态 4 **与「首字符 `{` 但整体不可解析」类**，
+  change `0227` / ADR-0217）：provider 报 `finish_reason="length"` ⇒ 提示明示**被截断**；信号不可用
+  ⇒ **未闭合（疑似截断或写坏）**；**对象在前、正文在后** ⇒ 形态 5 措辞（「动作 JSON 之后仍跟有正文」）；
+  三类**皆不命中** ⇒ 通用「无法解析」文案**逐字**。四类措辞**失败语义相同**，仅信息量不同
+  （`_first_brace_reply` 复用既有判据、无新启发式）。
+- **解析失败回喂重试（change `0227` / ADR-0217，**缺省关**）**：键 `loop.parse_retry` 开启、且
+  ①失败门（空 `tool_id` ＋ `reply` 前缀 `LLM_PLAN_PARSE_FAILED`；`LLM 调用失败` 前缀自然排除）
+  ②外发门（本轮**未外发**内容增量）皆命中 ⇒ 追加**用户角色** nudge（成因 ＋ 输出格式协议重申 ＋
+  长内容分次写提示）**恰重试一次**。nudge SHALL NOT 携带原始退化产出（回喂会重注入重复模式）。
+  流式下**已外发内容增量 ⇒ 不重试**（不得让已见内容「回滚」）；缓冲路径（首字符 `{`）重试且对外
+  只有第二次产出（首次失败动作不 yield）。缺省关 ⇒ 请求形状与调用次数**逐字不变**。
 - **不改终止语义**：解析失败**照旧以回复收尾**（`loop_failed` 仍**只**由 `limit_reason` 触发），
   变的只是**成败核算**；合成文案仍进转录（既有口径），转录追加逻辑零改动。
 - **同族但不动**：审批拒绝 `decline()` 与 `pet/safety` 阻断属**审批**语义，不置 `failed`

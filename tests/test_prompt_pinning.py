@@ -92,6 +92,15 @@ _PLANNER_SYSTEM = (
     "选①时：不要输出任何 JSON。"
 )
 
+# 解析失败回喂重试的 nudge 模板（change 0227）：成因 + 协议重申 + 分次写提示；
+# **不含原始退化产出**（安全承重 —— 回喂退化文本会重新注入重复模式）。
+_RETRY_NUDGE = (
+    "你上一轮的输出无法解析为动作（{cause}），该轮作废。请重新输出并严格遵守输出格式协议："
+    '整条回复只能是①自然语言回复，或②形如 {{"tool_id": …, "args": {{…}}}} 的单个 JSON 对象 —— '
+    "选②时 JSON 必须是整条回复的第一个字符，其后不得再有任何字符（含解释、总结、围栏、"
+    "或重复一份动作对象）；要写入的内容较长时，请分多次、每次写一小段。"
+)
+
 _DECOMPOSE_SYSTEM = (
     "你是任务拆解器。把目标拆成 1-6 个可执行的子任务 DAG，"
     '仅输出 JSON：{"subtasks": [{"id": "1", "goal": "...", '
@@ -197,6 +206,11 @@ def test_iteration_head_verbatim() -> None:
 def test_planner_system_prompt_verbatim() -> None:
     """主推理规划头逐字钉死（二选一格式 / JSON 必须首字符且其后无字符 / 工具白名单）。"""
     assert loop_planner._SYSTEM_PROMPT == _PLANNER_SYSTEM
+
+
+def test_retry_nudge_verbatim() -> None:
+    """回喂重试模板逐字钉死（成因 + 协议重申 + 分次写；**不携带原始退化产出**是安全承重）。"""
+    assert loop_planner._RETRY_NUDGE == _RETRY_NUDGE
 
 
 def test_decompose_system_verbatim() -> None:

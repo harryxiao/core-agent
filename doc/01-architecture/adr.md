@@ -7608,6 +7608,56 @@ helper；`skills/router.py`、`crystallizer.py` 已 import `core.memory` ⇒ **�
 - 来源另见 `doc/openspec/changes/…-0226-longtask-memory-arbitration/design.md`、
   `coding-plan/Pending-Arbitration.md` PA-08~PA-12。
 
+## ADR-0217：解析失败回喂重试 ＋ 首字符花括号失败成因细化（change 0227 / 台账 E164）
+
+**背景**：2026-10-11 实跑事故（session `88a6a6b9…`，子 Agent trace `1c7cfb24…`）：delegate 子 Agent
+在长上下文压力下（maintenance HTTP 400 → turn observer 超时 >60s）最终一轮产出**退化重复**形态 ——
+`{` 开头、完整动作 JSON 缺最外层收尾 `}`、后随省略号垃圾与第二份重复对象、5029 字符截断。`_parse`
+的**首字符分支**整体 `json.loads` 失败 ⇒ 通用文案终止回复、**无重试** ⇒ 子 Agent 5.6 分钟工作全部丢弃
+（第一份对象里内容已完整写出）。取证确认**非 0220~0224 回归**（`{`-first 分支 0166 起未动）。
+
+**D1 重试放规划器层、非 FaultChain。** `FaultChain`（ADR-0199）是**行动阶段**白名单容错（可逆工具的
+`{TIMEOUT, EXECUTION_FAILED}`）；解析失败发生在**推理阶段**，重试单位是「一次推理请求」。放 planner 内
+⇒ `DefaultLoop` 零改动、上下文一致（宪法/事实/技能照常装配）、且与流式外发边界判定（首个 `{` 缓冲）
+天然同层 ——「本轮是否已外发内容增量」的信号只有这里有。
+
+**D2 三门同时开才重试。** ① 配置门 `loop.parse_retry`（缺省关）；② 失败门 `_retryable`（空 tool_id ＋
+reply 以 `LLM_PLAN_PARSE_FAILED` 前缀 —— 覆盖 `_parse` 全部失败分支；LLMError 分支前缀不同、天然
+不命中）；③ 外发门 `not reply_stream`（已逐段外发的自然语言流不重试 —— 不得让已见内容「回滚」；
+**PA-01 现象②流式泄漏不在本 change**）。**恰一次**（平铺两次调用，无递归失控面）；重试成功 ⇒ 按正常
+结果处理，仍失败 ⇒ 第二次结果即终态。原生 tool_calls 终态同样过失败门（缺 name/参数不可解析可受益）。
+
+**D3 nudge 不携带原始退化产出（安全承重）。** 内容 = **成因**（`{cause}` 填既有区分措辞）＋ 输出格式
+协议重申（复用 `_SYSTEM_PROMPT` 措辞、不新造语义）＋「长内容分多次写」用法提示；**绝不**回喂首次的
+退化文本 —— 守 0170「raw_output 只进 trace/呈现」：回喂退化文本会把重复模式重新注入，是**自激而非
+纠错**。用户角色消息（同轮纠错遵从度惯例）；追加到当次 request（`_build_request` 每次新造 ⇒ 不污染 ctx）。
+
+**D4 `{` 开头成因细化复用既有判据、零新启发式。** `_first_brace_reply` 三段：`_unclosed_action_payload`
+⇒ 按 `finish_reason` 分截断/未闭合（与形态 4 同文）；`_embedded_action_payload` ⇒ 形态 5 措辞（事故的
+重复对象即「对象在前、正文在后」）；皆不命中 ⇒ 通用文案**逐字**。0170/0222 的措辞承诺本就按成因区分，
+只是判据在 `{`-first 分支**不可达** —— 修的是可达性，故**无条件**生效（非门控行为）；只改提示信息量，
+失败语义/raw_output/终止语义不变（既有断言只断前缀 ⇒ 天然兼容）。
+
+**D5 缺省关 ⇒ 零回归承诺。** 本能力是**韧性增强**而非缺陷修复（退化本身是模型/负载问题，上游减压是
+change 乙 `~` 展开与 maintenance 400 专项）⇒ 沿仓纪律缺省关：关闭时请求形状、模型调用次数、失败语义
+与既有实现**逐字一致**。部署侧在 `~/.core/config.yaml` 翻 `loop.parse_retry: true` 启用。配置镜像
+`failure_lessons` 全套（三面 ConfigSpec / 访问器归一化 / `_loop_errors` bool 校验阻断启动）。
+
+**D6 提词三处同改。** 新常量 `_RETRY_NUDGE` ⇒ pin 副本（`test_prompt_pinning`）＋ 镜像（prompts.md ⑮，
+含注入条件与安全承重旁注）＋ 镜像门禁（`test_prompt_mirror` 落点表扩 ①~⑮）。常量置于 `_SYSTEM_PROMPT`
+**之后** ⇒ ① 的落点行号（`planner.py:53`）不漂移。
+
+- **规格**：`loop` MODIFIED「推理动作解析与失败可见」—— 成因措辞条款扩到 `{` 开头类 ＋ 新增回喂重试
+  段（三门 / 恰一次 / nudge 约束 / 缺省关逐字不变）＋ ADDED 7 Scenario；既有 8 Scenario 逐字保留
+  （82→89 scen，6→6 req）。
+- **反证（实测三组）**：(A) 摘 `_retryable` 的前缀条件 ⇒ 缺省关/LLMError 用例红；(B) 摘 `_first_brace_reply`
+  接线（还原通用文案）⇒ 成因区分三用例红；(C) 缺省翻 True ⇒ 缺省关用例红。复原 ⇒ `md5sum` 逐字节同。
+- **局限**：① 重试**不治疗退化本身**，只把「一次退化 ⇒ 整轮报废」变为「多一次干净产出机会」；②
+  `show_thinking=True` 时第一次已外发的思考增量会出现两段（呈现层折叠，登记）；③ 空响应/缺字段类轻失败
+  也会被重试（成本一次、机会一次，有益无害）；④ 非流式路径无外发概念 ⇒ 恒可重试。
+- 来源另见 `doc/openspec/changes/…-0227-parse-failure-retry/design.md`；上游减压见 change 乙（`~` 展开）
+  与 maintenance HTTP 400 专项（长任务 G 线）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -7819,3 +7869,4 @@ helper；`skills/router.py`、`crystallizer.py` 已 import `core.memory` ⇒ **�
 | ADR-0214 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0215 | 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0216 | 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
+| ADR-0217 | 03-interfaces/prompts.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

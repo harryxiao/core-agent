@@ -61,6 +61,30 @@ _SYSTEM_PROMPT = (
     "选①时：不要输出任何 JSON。"
 )
 
+# 解析失败回喂重试的提示模板（change 0227 / ADR-0217）：**成因**（`{cause}`）＋ 输出格式
+# 协议重申 ＋ 长内容分次写的用法提示 —— **绝不携带原始退化产出**（0170 纪律：raw_output
+# 只进 trace/呈现；回喂退化文本会把重复模式重新注入，是自激而非纠错）。`{{`/`}}` 为
+# `.format` 转义（镜像记录渲染后形态，见 prompts.md ⑮）。
+_RETRY_NUDGE = (
+    "你上一轮的输出无法解析为动作（{cause}），该轮作废。请重新输出并严格遵守输出格式协议："
+    '整条回复只能是①自然语言回复，或②形如 {{"tool_id": …, "args": {{…}}}} 的单个 JSON 对象 —— '
+    "选②时 JSON 必须是整条回复的第一个字符，其后不得再有任何字符（含解释、总结、围栏、"
+    "或重复一份动作对象）；要写入的内容较长时，请分多次、每次写一小段。"
+)
+
+
+def _retryable(action: Action) -> bool:
+    """重试的**失败门**：解析失败（`_PARSE_FAILED` 前缀的终止动作）才命中 —— 模型调用失败
+    （`LLM 调用失败` 前缀）、工具动作等一律不命中。空 `tool_id` 限定「终止动作」。"""
+    reply = action.args.get("reply")
+    return not action.tool_id and isinstance(reply, str) and reply.startswith(_PARSE_FAILED)
+
+
+def _retry_nudge(reply: str) -> str:
+    """把失败提示转成回喂消息：成因（前缀之后的部分）填入 `_RETRY_NUDGE` 模板。"""
+    cause = reply.removeprefix(f"{_PARSE_FAILED}: ").strip() or "输出无法解析"
+    return _RETRY_NUDGE.format(cause=cause)
+
 
 def _trailing_json_object(text: str) -> dict[str, Any] | None:
     """取 ``text`` **尾部**的 JSON 对象；其后仅允许空白与 Markdown 围栏符。
@@ -188,6 +212,9 @@ class LLMPlanner:
         # 由 `context.plan_blocks` 按五区块份额从 `LoopContext.token_budget` 派生；
         # 关闭 ⇒ **逐字**沿用既有字面常量（提示词零变化）。
         block_plan: bool = False,
+        # 解析失败回喂重试（change 0227 / ADR-0217，缺省**关**）。开启 ⇒ 解析失败且本轮未
+        # 外发内容增量时追加用户角色 nudge 重试**恰一次**；关闭 ⇒ 请求形状与调用次数逐字不变。
+        parse_retry: bool = False,
     ) -> None:
         self._llm = llm
         self._model = model
@@ -198,6 +225,7 @@ class LLMPlanner:
         self._tools = tools
         self._max_tokens = max_tokens if (max_tokens is not None and max_tokens > 0) else None
         self._block_plan = block_plan
+        self._parse_retry = parse_retry
         # 最近一次装配的提示 token 观测（记账下界）：由 `last_prompt_tokens()` 对外暴露，
         # 供 loop 侧以 duck-typing 探针消费（见 change 0152 / 账本 E96）。
         self._last_prompt_tokens = 0
@@ -210,8 +238,23 @@ class LLMPlanner:
         return action
 
     async def _complete(self, ctx: LoopContext) -> tuple[Action, str]:
-        """非流式一次补全 →（终态动作, 推理原文）。``__call__`` 与降级分支共用。"""
+        """非流式一次补全 →（终态动作, 推理原文）。``__call__`` 与降级分支共用。
+
+        解析失败回喂重试（change 0227 / ADR-0217）：门开且命中失败判据 ⇒ 追加 nudge **恰
+        再试一次**（非流式路径本就不外发增量 ⇒ 恒可重试）；仍失败 ⇒ 第二次的结果即终态。
+        """
+        action, thinking = await self._complete_once(ctx)
+        if self._parse_retry and _retryable(action):
+            action, thinking = await self._complete_once(
+                ctx, nudge=_retry_nudge(action.args["reply"])
+            )
+        return action, thinking
+
+    async def _complete_once(self, ctx: LoopContext, *, nudge: str = "") -> tuple[Action, str]:
+        """一次非流式补全（不带重试门；`_complete` 负责恰一次重试）。"""
         request = self._build_request(ctx)
+        if nudge:
+            request.messages.append(Message(role="user", content=nudge))
         self._last_prompt_tokens = self._estimate_prompt(request)
         try:
             response = await self._llm.acompletion(request)
@@ -226,9 +269,7 @@ class LLMPlanner:
             response.thinking,
         )
 
-    async def astream(  # noqa: C901 — 长管道：降级分支 + 回复增量 + 原生工具片段 + 思考增量
-        self, ctx: LoopContext
-    ) -> AsyncIterator[str | Action | Thinking]:
+    async def astream(self, ctx: LoopContext) -> AsyncIterator[str | Action | Thinking]:
         """流式推理：自然语言回复逐 delta 外发，末态产出终 Action。
 
         首个 ``{`` 判定为工具调用 JSON：缓冲不外泄（逐 token 外发半截 JSON 无意义），
@@ -238,14 +279,45 @@ class LLMPlanner:
 
         思考回显开启（``show_thinking``）时**额外**外发 ``Thinking`` 增量；关闭时该
         分支整体不产出（事件面与既有缺省逐字一致）。
+
+        解析失败回喂重试（change 0227 / ADR-0217）：**缓冲路径**（未外发任何内容增量）
+        的解析失败 ⇒ 第一次的终态不外发、回喂重试**恰一次**（对外只有第二次的产出）；
+        已外发内容增量（自然语言流）⇒ 不重试（不得让已见内容「回滚」）。
         """
         if not hasattr(self._llm, "astream"):
+            # 降级分支的重试由 `_complete` 承担（同一门；非流式本就不外发增量）
             action, thinking = await self._complete(ctx)  # completion-only provider
             if self._show_thinking and thinking:
                 yield Thinking(thinking)  # 终态思考一次性全文（先于终态动作）
             yield action
             return
+        streamed_content = False  # 外发门：内容增量一旦外发即不可重试
+        async for item in self._stream_attempt(ctx):
+            if isinstance(item, str):
+                streamed_content = True
+                yield item
+                continue
+            if (
+                isinstance(item, Action)
+                and not streamed_content
+                and self._parse_retry
+                and _retryable(item)
+            ):
+                # 缓冲路径的解析失败：吞掉第一次的终态，回喂重试恰一次（对外零痕迹）
+                async for retry_item in self._stream_attempt(
+                    ctx, nudge=_retry_nudge(item.args["reply"])
+                ):
+                    yield retry_item
+                return
+            yield item
+
+    async def _stream_attempt(  # noqa: C901 — 长管道：回复增量 + 原生工具片段 + 思考增量
+        self, ctx: LoopContext, *, nudge: str = ""
+    ) -> AsyncIterator[str | Action | Thinking]:
+        """一次流式推理尝试（不带重试门；外发门与恰一次重试由 ``astream`` 承担）。"""
         request = self._build_request(ctx)
+        if nudge:
+            request.messages.append(Message(role="user", content=nudge))
         self._last_prompt_tokens = self._estimate_prompt(request)
         chunks: list[str] = []
         reply_stream = False  # 已判定为自然语言回复才外发
@@ -472,7 +544,7 @@ class LLMPlanner:
                 data = json.loads(text)
             except ValueError:
                 return Action(
-                    args={"reply": f"{_PARSE_FAILED}: 无法解析模型输出为动作"},
+                    args={"reply": self._first_brace_reply(text, finish_reason)},
                     raw_output=_bounded_raw(text),
                     failed=True,
                 )
@@ -494,6 +566,21 @@ class LLMPlanner:
                 args={"reply": _UNPARSED_EMBEDDED}, raw_output=_bounded_raw(text), failed=True
             )
         return Action(args={"reply": text})
+
+    @staticmethod
+    def _first_brace_reply(text: str, finish_reason: str) -> str:
+        """`{` 开头但整体不可解析时的失败提示：复用形态 4/5 判据区分成因（change 0227）。
+
+        只改提示信息量（失败语义、有界原始产出均不变）：命中未闭合载荷判据 ⇒ 按
+        `finish_reason` 区分截断/未闭合（与形态 4 同文）；命中夹带判据（含**对象在前、
+        正文在后**的形态）⇒ 形态 5 措辞；皆不命中 ⇒ 通用文案（逐字）。事故形态
+        （trace `1c7cfb24…`：缺收尾 `}` ＋ 重复对象 ＋ 截断）在此前只有通用文案。
+        """
+        if _unclosed_action_payload(text):
+            return _UNPARSED_TRUNCATED if finish_reason == "length" else _UNPARSED_UNCLOSED
+        if _embedded_action_payload(text):
+            return _UNPARSED_EMBEDDED
+        return f"{_PARSE_FAILED}: 无法解析模型输出为动作"
 
     def _from_tool_calls(self, calls: list[ToolCall]) -> Action:
         """原生 tool_calls → Action（Action 为单工具协议，并行多调用取首个）。"""

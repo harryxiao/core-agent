@@ -46,6 +46,7 @@ _PROMPT_CONSTANTS: dict[str, str] = {
     "⑪": author._PROMPT_HEAD,
     "⑫": validator._REVIEW_PROMPT_HEAD,
     "⑭": _DOC_SUMMARY_PROMPT,
+    "⑮": loop_planner._RETRY_NUDGE,
 }
 
 
@@ -76,7 +77,7 @@ def test_mirror_registers_persona_and_doc_summary() -> None:
 # 本节把该列也钉住：所列行**必须**含所列符号。
 
 _LANDING_ROW = re.compile(
-    r"^\|\s*(?P<no>[①-⑭])\s*\|[^|]*\|[^|]*\|\s*"
+    r"^\|\s*(?P<no>[①-⑮])\s*\|[^|]*\|[^|]*\|\s*"
     r"`(?P<path>[^`]+):(?P<line>\d+)`\s*`(?P<sym>[^`]+)`"
 )
 
@@ -102,8 +103,8 @@ _LANDING_ROWS = _landing_rows()
 
 
 def test_mirror_landing_column_covers_all_rows() -> None:
-    """§1 落点列须覆盖 ①~⑭（顺序一致）—— 漏一行即行号失守而不自知。"""
-    assert [row[0] for row in _LANDING_ROWS] == list("①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭")
+    """§1 落点列须覆盖 ①~⑮（顺序一致）—— 漏一行即行号失守而不自知。"""
+    assert [row[0] for row in _LANDING_ROWS] == list("①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮")
 
 
 @pytest.mark.parametrize(

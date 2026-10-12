@@ -282,6 +282,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "loop.parse_retry",
+        "--loop-parse-retry",
+        "CORE_LOOP_PARSE_RETRY",
+        default=False,
+        map_to="loop.parse_retry",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "context.rag_info_map",
         "--context-rag-info-map",
         "CORE_CONTEXT_RAG_INFO_MAP",
@@ -734,6 +742,23 @@ class ConfigManager:
             return False
         raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
         value = raw.get("failure_lessons", False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in _FEATURE_TRUE
+
+    def parse_retry(self) -> bool:
+        """解析失败回喂重试开关（缺省 ``False`` = 不重试；change 0227 / ADR-0217）。
+
+        **独立访问器**（同 `failure_lessons()` 先例）。``loop`` 为**结构化段**（非法取值已在
+        校验期阻断启动，见 `_loop_errors`），故此处只做字符串归一（与 feature flag 同集）。
+
+        关闭 ⇒ planner 的重试面关：请求形状与模型调用次数与既有实现**逐字一致**。读取面
+        `parse_retry` 恒可用（组合根注入四个 loop 的全部 planner）。
+        """
+        if self._config is None:
+            return False
+        raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
+        value = raw.get("parse_retry", False)
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in _FEATURE_TRUE
@@ -1203,6 +1228,11 @@ def _loop_errors(raw: dict[str, Any]) -> list[str]:
         _FEATURE_TRUE | _FEATURE_FALSE
     ):
         errors.append(f"非法失败教训块开关: loop.failure_lessons={value}（须为 true/false 之一）")
+    value = raw.get("parse_retry", False)
+    if not isinstance(value, bool) and str(value).strip().lower() not in (
+        _FEATURE_TRUE | _FEATURE_FALSE
+    ):
+        errors.append(f"非法解析失败重试开关: loop.parse_retry={value}（须为 true/false 之一）")
     return errors
 
 

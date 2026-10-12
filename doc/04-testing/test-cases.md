@@ -3047,3 +3047,40 @@ Scenario ＋ ADDED 1 Scenario；既有其余 7 Scenario 逐字保留）。承 `0
 > **不变**（沿 `0220`/`0225` 同口径）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0216 行（登记≠裁决 / 守卫不判内容 /
 > 实测是快照 / 未合并进 known-risk / PA-11 根治在自身）。
+
+## 140. 解析失败回喂重试 ＋ 首字符花括号失败成因细化（TC-PARSE，change `0227`／ADR-0217，台账 E164）
+
+事故复刻：退化的 `{` 开头输出（缺收尾 `}` ＋ 重复对象 ＋ 截断）⇒ 旧实现整段不可解析、通用文案终态、
+**无重试**。本 change 两半：**成因细化**（`{` 开头失败复用形态 4/5 判据，**无条件**可达性修复）＋
+**回喂重试**（键 `loop.parse_retry`，**缺省关**，三门 ＋ 恰一次）。
+
+| 用例 | 场景 | 触发 | 断言 |
+|---|---|---|---|
+| TC-PARSE-01 | 成因细化按 `finish_reason` 区分 | `{` 开头未闭合载荷 + `finish_reason=length` / `""` | 截断与未闭合两种措辞**不同**且均非通用文案；`raw_output` 非空（`tests/test_loop_output_protocol.py::test_brace_first_unclosed_distinguishes_cause_by_finish_reason`） |
+| TC-PARSE-02 | 对象在前正文在后命夹带判据 | `{...} 已完成上述写入。`（整体 `json.loads` 失败） | 措辞明示「动作 JSON 之后仍跟有正文」（`...::test_brace_first_closed_object_then_prose_names_cause`） |
+| TC-PARSE-03 | 判据皆不命中维持通用文案 | `{"hello": "world", broken` | **逐字**等于 `LLM_PLAN_PARSE_FAILED: 无法解析模型输出为动作`（`...::test_brace_first_no_discriminator_keeps_generic_wording`） |
+| TC-PARSE-04 | 重试恰一次、二次成功即采用 | 脚本 `[退化, 好动作]`、`parse_retry=True` | 动作取自第二次、`failed=False`、模型调用**恰 2 次**（`tests/test_parse_retry.py::test_retry_once_then_succeeds`） |
+| TC-PARSE-05 | nudge 是用户角色且不携带原始产出 | 退化文本含唯一标记 | 末条消息 `role=="user"`、**仅追加一条**、标记**不出现**、含成因与「JSON」协议重申（`...::test_nudge_is_user_role_with_cause_not_raw`） |
+| TC-PARSE-06 | 两次均退化 ⇒ 恰两次、不第三次 | 脚本 `[退化, 退化]` | 终态 `failed=True`、前缀 `LLM_PLAN_PARSE_FAILED`、调用**恰 2 次**（`...::test_retry_still_fails_exactly_two_calls`） |
+| TC-PARSE-07 | 模型调用失败不命中失败门 | `acompletion` 抛 `LLMError` | `reply` 含「LLM 调用失败」、调用**恰 1 次**（前缀不同自然排除）（`...::test_retry_not_triggered_for_llm_error`） |
+| TC-PARSE-08 | 缺省关零回归（锚构造缺省） | `LLMPlanner(llm)` **不传** `parse_retry` | 恰 1 次调用（无第二次）⇒ 恰无 nudge（`...::test_default_off_single_call`） |
+| TC-PARSE-09 | 已外发流式增量不重试 | 自然语言流后接退化载荷 | 调用**恰 1 次**、终态 1 个且 `failed=True`（`...::test_streamed_reply_delta_not_retried`） |
+| TC-PARSE-10 | 缓冲路径重试对外零痕迹 | 脚本 `[退化, 好动作]`、首个 `{` ⇒ 全缓冲 | 调用 2 次；**无** `str` 增量；终态**仅 1 个**（第二次、`tool_id` 正确）—— 第一次失败动作与退化文本均不外发（`...::test_streamed_buffered_degenerate_retried_clean`） |
+| TC-PARSE-11 | 正常回复流零干扰 | 纯自然语言回复 | 外发增量拼接 == 原文、调用恰 1 次（`...::test_streamed_good_reply_untouched`） |
+| TC-PARSE-12 | 配置三面齐备、缺省关、ADVANCED | `config_specs()` | `--loop-parse-retry` / `CORE_LOOP_PARSE_RETRY` / `False` / `loop.parse_retry`（`...::test_spec_declares_parse_retry`） |
+| TC-PARSE-13 | yaml / env 两面对称可达 | yaml `loop.parse_retry: true`、env `…=on` | 缺省 `False`；两态 `True`（`...::test_default_off_and_yaml_env_enable`） |
+| TC-PARSE-14 | 非法取值阻断启动 | yaml `loop.parse_retry: maybe` | 抛 `ConfigurationError` `match="解析失败重试开关"`（`loop` 是结构化段）（`...::test_illegal_value_blocks_startup`） |
+| TC-PARSE-15 | 组合根注入主 planner | `build_runtime` + yaml 开 | `runtime.loop._planner._parse_retry is True`（`...::test_runtime_wires_parse_retry_to_main_planner`） |
+| TC-PARSE-16 | 组合根缺省关 | `build_runtime` 无该键 | `…_parse_retry is False`（既有路径逐字不变）（`...::test_runtime_default_off`） |
+| TC-PARSE-17 | 提词三处同改（常量 pin） | `loop_planner._RETRY_NUDGE` | 逐字 == pin 副本（`tests/test_prompt_pinning.py::test_retry_nudge_verbatim`） |
+| TC-PARSE-18 | 镜像门禁（正文 ＋ 落点列） | `prompts.md` ⑮ | 常量的每一非空行出现在镜像；§1 落点列 ①~⑮ 齐、`planner.py:68` 指向 `_RETRY_NUDGE`（`tests/test_prompt_mirror.py`） |
+
+> **反证（实测三组）**：(A) 摘 `_retryable` 的前缀条件 ⇒ `test_retry_not_triggered_for_llm_error`
+> **转红**；(B) 摘 `_first_brace_reply` 接线（还原通用文案）⇒ 两条成因区分用例
+> **转红**；(C) 构造缺省翻 `True` ⇒ `test_default_off_single_call` **转红**。复原 ⇒
+> `src/core/loop/planner.py` `md5sum`（`4097ac693a2731bb43dd8540d33d7d4b`）**逐字节相同**。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2561 passed**（基线 **2542**，**+19**）；四门禁：`ruff check` ✓ /
+> `ruff format --check` ✓ / `pyright`（**无参**，0-0-0）✓ / `pytest` ✓；`openspec validate --all` **32 passed**
+> （归档后 **31 passed**）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0217 行（重试不治疗退化本身 / `show_thinking`
+> 两段思考增量 / 轻失败也重试 / 非流式恒可重试）。

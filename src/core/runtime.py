@@ -870,6 +870,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     # **四个 loop** 的全部 planner。缺省**关** ⇒ 注入预算沿用字面量 ⇒ 提示词逐字不变。
     block_plan = config.block_plan()
     causal_links = config.causal_links()
+    # 解析失败回喂重试（change 0227 / ADR-0217）：与上面两参同型 —— 算一次，注入**四个 loop**
+    # 的全部 planner。缺省**关** ⇒ 解析失败路径逐字不变。宠物 loop 也接：这是**协议层**自愈
+    # （推理输出协议），不是记忆/转录面（宠物隔离注记约束的是后者的注入面）。
+    parse_retry = config.parse_retry()
     planner = LLMPlanner(
         llm,
         model=app.llm.model,
@@ -882,6 +886,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         tools=tools,
         max_tokens=max_tokens,
         block_plan=block_plan,
+        parse_retry=parse_retry,
     )
     # 门控（0067）：evolution 关闭 ⇒ 引擎/worker 不建，loop 冷路径与 trace 完成回调一并置 None
     # （不为「未装配」造空转闭包 —— DefaultLoop 本就接受 cold_path / trace_observer =None）。
@@ -1064,6 +1069,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             tools=provider,
             max_tokens=max_tokens,
             block_plan=block_plan,
+            parse_retry=parse_retry,
         )
         return cast(
             LoopPlugin,
@@ -1108,6 +1114,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             tools=provider,
             max_tokens=max_tokens,
             block_plan=block_plan,
+            parse_retry=parse_retry,
         )
         return cast(
             LoopPlugin,
@@ -1342,6 +1349,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                         tools=provider,
                         max_tokens=max_tokens,
                         block_plan=block_plan,
+                        parse_retry=parse_retry,
                     ),
                     memory=memory,
                     tools=provider,

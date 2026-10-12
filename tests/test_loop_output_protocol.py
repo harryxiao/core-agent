@@ -302,3 +302,39 @@ def test_unclosed_action_payload_keeps_raw_out_of_persisted_surfaces() -> None:
     assert "tools.file_write" in result.raw_output  # 原始产出另路可诊断
     persisted = "\n".join(entry.content for entry in memory.written)
     assert '"tool_id"' not in persisted  # 红线：不进转录 / 记忆 / 笔记
+
+
+# ---- ④ `{` 开头失败的成因细化（change 0227 / ADR-0217）----
+#
+# 事故形态（trace 1c7cfb24…）：`{` 开头、缺最外层收尾 `}`（或闭合对象后仍有重复正文）
+# ⇒ 首字符分支整体 json.loads 失败 ⇒ 旧实现只给通用文案。形态 4/5 的判据本就覆盖
+# 同根因输出，此处把判据接进该分支（复用、零新启发式），只改提示信息量。
+
+
+def test_brace_first_unclosed_distinguishes_cause_by_finish_reason() -> None:
+    """`{` 开头未闭合载荷：length ⇒ 截断措辞；信号缺省 ⇒ 未闭合措辞（失败语义相同）。"""
+    provider = ToolProvider()
+    planner = LLMPlanner(_FakeLLM("x"), tools=provider)
+    degenerate = '{"tool_id": "tools.file_write", "args": {"path": "a.md", "content": "x'
+    truncated = planner._parse(degenerate, finish_reason="length")
+    unclosed = planner._parse(degenerate)
+    assert "截断" in truncated.args["reply"]
+    assert "未闭合" in unclosed.args["reply"]
+    assert truncated.args["reply"] != unclosed.args["reply"]
+    assert truncated.failed is True and unclosed.failed is True
+    assert truncated.raw_output and unclosed.raw_output  # 有界原始产出照旧
+
+
+def test_brace_first_closed_object_then_prose_names_cause() -> None:
+    """`{` 开头、闭合动作对象后仍有正文（事故的重复对象形态）⇒ EMBEDDED 措辞。"""
+    action = _parse('{"tool_id": "tools.echo", "args": {"text": "hi"}} 已完成上述写入。')
+    assert "动作 JSON 之后仍跟有正文" in action.args["reply"]
+    assert action.failed is True
+    assert action.raw_output
+
+
+def test_brace_first_no_discriminator_keeps_generic_wording() -> None:
+    """`{` 开头但既无未闭合载荷、亦无夹带动作对象 ⇒ 通用文案逐字（零回归锚）。"""
+    action = _parse('{"hello": "world", broken')
+    assert action.args["reply"] == "LLM_PLAN_PARSE_FAILED: 无法解析模型输出为动作"
+    assert action.failed is True
