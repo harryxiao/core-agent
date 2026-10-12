@@ -738,7 +738,7 @@ def test_task_streams_progress_events(
     out = capsys.readouterr().out
     assert rc == 0
     assert "[task] 任务 t1：复合目标" in out
-    assert "[plan] 拆解 1 个子任务" in out
+    assert "Planner(1 subtasks)" in out
     assert "[task_finished] 任务完成（1/1 子任务通过）" in out
 
 

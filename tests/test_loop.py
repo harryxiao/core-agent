@@ -192,8 +192,8 @@ def test_astream_thinking_planner_emits_loop_reasoning() -> None:
     reasoning = [(e.type, e.payload) for e in events if e.type == "loop.reasoning"]
     deltas = [(e.type, e.payload) for e in events if e.type == "reply_delta"]
     assert reasoning == [
-        ("loop.reasoning", {"text": "想"}),
-        ("loop.reasoning", {"text": "一下"}),
+        ("loop.reasoning", {"text": "想", "round": 0}),
+        ("loop.reasoning", {"text": "一下", "round": 0}),
     ]
     assert deltas == [("reply_delta", {"text": "好"})]
     assert events[-1].payload.reply == "好"

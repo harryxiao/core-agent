@@ -12,6 +12,7 @@ cannot be called from a running event loop` ⇒ 被既有降级链吞成一条�
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -241,3 +242,32 @@ def test_turn_observer_failure_still_degrades() -> None:
     assert result.reply == "done"
     assert result.failed is False
     assert "turn_observer_failed" in traced
+
+
+# ---- ⑤ loop_finished 不得被慢收尾堵住（TUI「思考中」挂死根因） ----
+
+
+def test_loop_finished_emitted_before_slow_turn_observer() -> None:
+    """慢 turn_observer 不得推迟 ``loop_finished`` 事件（旧实现：先 await 收尾再外发终态）。"""
+    release = threading.Event()
+    observed = threading.Event()
+
+    def observer(task: str, steps: list[str], ok: bool) -> None:
+        observed.set()
+        release.wait(timeout=2.0)
+
+    async def main() -> float:
+        loop = _reply_loop(turn_observer=observer)
+        t0 = time.monotonic()
+        finished_at = 0.0
+        async for event in loop.astream("hi"):
+            if event.type == "loop_finished":
+                finished_at = time.monotonic() - t0
+                release.set()  # 放行观察者；终态**已经**外发
+        await loop._await_post_turn()  # noqa: SLF001 — 测接缝：收束后台收尾
+        return finished_at
+
+    elapsed = asyncio.run(main())
+
+    assert observed.is_set(), "收尾钩子确已调度"
+    assert elapsed < 0.25, f"loop_finished 被慢收尾堵住（{elapsed:.3f}s）"

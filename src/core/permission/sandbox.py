@@ -15,15 +15,27 @@ import subprocess
 import threading
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol, cast
 
 from .errors import AccessControlError, PermissionErrorCode
 from .models import ResourceBudget, SandboxDomain, SandboxHandle, SandboxResult
 
+
+class _ResourceModule(Protocol):
+    """POSIX ``resource`` 模块的窄接口（Windows 无此模块，用 Protocol 供类型检查）。"""
+
+    RLIMIT_AS: int
+    RLIMIT_CPU: int
+
+    def setrlimit(self, resource: int, limits: tuple[int, int]) -> None: ...
+
+
 try:
-    import resource as _resource  # POSIX only；Windows 无此模块
+    import resource as _resource_mod  # POSIX only；Windows 无此模块
 except ImportError:  # pragma: no cover — Windows / 无 rlimit 平台
-    _resource = None
+    _resource: _ResourceModule | None = None
+else:
+    _resource = cast("_ResourceModule", _resource_mod)
 
 SandboxBackend = Callable[[list[str], dict[str, str] | None, ResourceBudget], SandboxResult]
 
@@ -89,7 +101,10 @@ def _subprocess_backend(
     if preexec is not None:
         run_kwargs["preexec_fn"] = preexec
     try:
-        proc = subprocess.run(cmd, **run_kwargs)
+        proc = cast(
+            "subprocess.CompletedProcess[str]",
+            subprocess.run(cmd, **run_kwargs),  # noqa: S603 — 沙箱后端；cmd 由调用方约束
+        )
     except subprocess.TimeoutExpired as exc:
         raise AccessControlError(PermissionErrorCode.QUOTA_EXCEEDED, "沙箱资源配额超限") from exc
     if proc.returncode < 0:  # 被信号终止（内存/CPU 配额触发 SIGKILL/SIGXCPU）

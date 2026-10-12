@@ -279,6 +279,70 @@ def test_closed_action_object_with_trailing_prose_is_embedded_failure() -> None:
     assert action.raw_output == closed
 
 
+def test_trailing_xml_arg_value_residue_still_executes() -> None:
+    """完整 JSON 后仅跟 ``</arg_value>`` 等工具协议残渣 ⇒ 仍按动作执行（非「正文」）。
+
+    现场（traces.jsonl）：合法 ``{"tool_id","args"}`` 后多了 ``</arg_value>``，旧判据
+    ``_has_word`` 把标签名当词元 ⇒ 误报「动作 JSON 之后仍跟有正文」。
+    """
+    content = (
+        '{"tool_id": "tools.code_run", "args": {"script": "echo hi", "type": "bash"}}'
+        "</arg_value>"
+    )
+    action = _parse(content)
+    assert action.failed is False
+    assert action.tool_id == "tools.code_run"
+    assert action.args["script"] == "echo hi"
+
+
+def test_hybrid_json_head_plus_xml_parameters_recovers() -> None:
+    """JSON 头被 ``">`` 打断 + ``<parameter>`` 混写 ⇒ 恢复为可执行动作。
+
+    现场（trace ``69100bfe…`` raw_output）：
+    ``{"tool_id": "tools.file_read">\\n<parameter name="path">…</parameter>…</invoke>``
+    """
+    content = (
+        '{"tool_id": "tools.file_read">\n'
+        "<parameter name=\"path\">D:\\work\\AI\\core-agent\\src\\core\\llm_provider"
+        "\\stdlib_provider.py</parameter>\n"
+        '<parameter name="start">1</parameter>\n'
+        '<parameter name="count">120</parameter>\n'
+        "</invoke>"
+    )
+    action = _parse(content)
+    assert action.failed is False
+    assert action.tool_id == "tools.file_read"
+    assert action.args["path"].endswith("stdlib_provider.py")
+    assert action.args["start"] == 1  # noqa: PLR2004 — 数值参数应 JSON 强制
+    assert action.args["count"] == 120  # noqa: PLR2004
+
+
+def test_flat_and_truncated_file_read_json_recovers() -> None:
+    """扁平 + 缺收尾 ``}`` 的 file_read ⇒ 仍恢复为 ``args.path``。
+
+    现场（trace ``ae257340…``，重启后新失败）：
+    ``{"tool_id": "tools.file_read", "path": "…_review_planner.diff"``
+    （无 ``args`` 包裹、字符串未闭合对象）。
+    """
+    content = (
+        '{"tool_id": "tools.file_read", "path": '
+        '"D:\\\\work\\\\AI\\\\core-agent\\\\_review_planner.diff"'
+    )
+    action = _parse(content)
+    assert action.failed is False
+    assert action.tool_id == "tools.file_read"
+    assert action.args["path"].endswith("_review_planner.diff")
+
+
+def test_flat_complete_tool_json_hoists_into_args() -> None:
+    """完整但扁平的动作对象（字段与 tool_id 同级）⇒ 抬入 ``args``。"""
+    content = '{"tool_id": "tools.file_read", "path": "a.py", "start": 1}'
+    action = _parse(content)
+    assert action.failed is False
+    assert action.tool_id == "tools.file_read"
+    assert action.args == {"path": "a.py", "start": 1}
+
+
 def test_unclosed_payload_finish_reason_length_distinguishes_cause() -> None:
     """成因可辨：provider 报 `length` ⇒ 提示明示「截断」；信号缺省 ⇒ 「未闭合」（失败语义相同）。"""
     provider = ToolProvider()

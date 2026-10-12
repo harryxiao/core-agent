@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 
@@ -52,13 +53,15 @@ def _format_skill_hint(hint: SkillHint) -> str:
 
 _SYSTEM_PROMPT = (
     "你是 CORE-Harness 无特权核心的推理规划器，把用户任务推理为下一步动作。\n"
-    "输出格式二选一，整条回复只能是其中之一：\n"
-    "①自然语言回复——用于任务已完成、无需调用工具、或需要向用户澄清时；\n"
+    "输出格式二选一，整条回复只能是其中之一（硬性互斥，须 100% 可解析）：\n"
+    "①自然语言回复——用于任务已完成、无需调用工具、澄清、或文字评审/说明时；\n"
     '②JSON 工具调用——形如 {"tool_id": "...", "args": {...}}。\n'
     "选②时：JSON 必须是整条回复的**第一个字符**，其后**不得**再有任何字符"
     "（含解释、总结、结尾语、代码块围栏）；tool_id 必须取自「可用工具」列表，"
     "不得臆造；args 必须符合该工具声明的参数。\n"
-    "选①时：不要输出任何 JSON。"
+    "选①时：整条只能是自然语言；**禁止**以任何形式夹杂 JSON"
+    "（含 Markdown 代码块、示例、半截或完整的 {\"tool_id\":…}）——"
+    "夹杂一律解析失败、本轮作废。解释与调工具不得写在同一条回复里。"
 )
 
 # 解析失败回喂重试的提示模板（change 0227 / ADR-0217）：**成因**（`{cause}`）＋ 输出格式
@@ -69,7 +72,8 @@ _RETRY_NUDGE = (
     "你上一轮的输出无法解析为动作（{cause}），该轮作废。请重新输出并严格遵守输出格式协议："
     '整条回复只能是①自然语言回复，或②形如 {{"tool_id": …, "args": {{…}}}} 的单个 JSON 对象 —— '
     "选②时 JSON 必须是整条回复的第一个字符，其后不得再有任何字符（含解释、总结、围栏、"
-    "或重复一份动作对象）；要写入的内容较长时，请分多次、每次写一小段。"
+    "或重复一份动作对象）；选①时禁止在正文中夹杂任何 JSON / tool_id 示例"
+    "（评审说明只用自然语言）；要写入的内容较长时，请分多次、每次写一小段。"
 )
 
 
@@ -96,6 +100,138 @@ def _has_word(text: str) -> bool:
     `_embedded_action_payload`（要求**有**词元）两处**朝向相反**地复用。
     """
     return any(ch.isalnum() for ch in text)
+
+
+# 仅剥**闭合**标签残渣（不碰 ``<parameter>…</parameter>`` 对，以免破坏混写恢复）。
+_TRAILING_CLOSE_MARKUP = re.compile(
+    r"(?:\s*</(?:arg_value|invoke|parameter|function_calls?|tool_call|function_call"
+    r"|tool_calls?|parameters?)>)+\s*$",
+    re.IGNORECASE,
+)
+_TOOL_ID_HEAD = re.compile(r'\{\s*"tool_id"\s*:\s*"([^"]+)"')
+_XML_PARAMETER = re.compile(
+    r'<parameter\s+name=["\']([^"\']+)["\']\s*>(.*?)</parameter>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_tool_markup_residue(text: str) -> str:
+    """剥掉动作 JSON **之后**的 XML **闭合**标签残渣（如 ``</arg_value>`` / ``</invoke>``）。
+
+    现场：完整 ``{"tool_id","args"}`` 后多带闭合标签 ⇒ 标签名含字母被 ``_has_word`` 判为正文
+    ⇒ 误报「动作 JSON 之后仍跟有正文」。剥渣后余部无词元 ⇒ 按完整动作执行。
+    """
+    prev = None
+    cleaned = text
+    while prev != cleaned:
+        prev = cleaned
+        cleaned = _TRAILING_CLOSE_MARKUP.sub("", cleaned).rstrip()
+    return cleaned
+
+
+def _coerce_param_value(raw: str) -> Any:
+    """``<parameter>`` 正文 → 标量：能 JSON 解码则用解码值，否则保留字符串。"""
+    text = raw.strip()
+    if not text:
+        return ""
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def _recover_hybrid_tool_call(text: str) -> dict[str, Any] | None:
+    """JSON 头 + XML ``<parameter>`` 混写 → ``{tool_id, args}``；不可恢复 ⇒ ``None``。
+
+    现场（``~/.core/state/traces.jsonl``）：
+    ``{"tool_id": "tools.file_read">\\n<parameter name="path">…</parameter>…</invoke>``
+    —— 以 ``">`` 打断 JSON，后接 Anthropic 式参数标签。有 tool_id 且至少一参数才恢复。
+    """
+    head = _TOOL_ID_HEAD.search(text)
+    if head is None:
+        return None
+    params = _XML_PARAMETER.findall(text)
+    if not params:
+        return None
+    args = {name: _coerce_param_value(value) for name, value in params}
+    return {"tool_id": head.group(1), "args": args}
+
+
+_ACTION_META_KEYS = frozenset({"tool_id", "args", "reply"})
+
+
+def _normalize_action_dict(obj: dict[str, Any]) -> dict[str, Any]:
+    """扁平动作（``path`` 等与 ``tool_id`` 同级）→ 标准 ``{tool_id, args}``。"""
+    tool_id = obj.get("tool_id")
+    if not isinstance(tool_id, str) or not tool_id:
+        return obj
+    raw_args = obj.get("args")
+    args = dict(cast("dict[str, Any]", raw_args)) if isinstance(raw_args, dict) else {}
+    flat = {key: value for key, value in obj.items() if key not in _ACTION_META_KEYS}
+    if flat:
+        args = {**args, **flat}
+    return {"tool_id": tool_id, "args": args}
+
+
+def _brace_close_tool_json(text: str) -> dict[str, Any] | None:
+    """对未闭合 JSON 只补 ``}``（不补引号）；成功且含 args ⇒ 归一化对象。"""
+    for suffix in ("}", "}}", "}}}"):
+        try:
+            obj = json.loads(text + suffix)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("tool_id"):
+            normalized = _normalize_action_dict(cast("dict[str, Any]", obj))
+            if normalized.get("args"):
+                return normalized
+    return None
+
+
+def _flat_fields_from_partial_json(text: str) -> dict[str, Any]:
+    """从半截扁平 JSON 抽出已闭合的字符串 / 数值字段（不含 tool_id/args/reply）。"""
+    args: dict[str, Any] = {}
+    for match in re.finditer(r'"(\w+)"\s*:\s*"((?:[^"\\]|\\.)*)"', text):
+        key, raw = match.group(1), match.group(2)
+        if key in _ACTION_META_KEYS:
+            continue
+        try:
+            args[key] = json.loads(f'"{raw}"')
+        except ValueError:
+            args[key] = raw
+    for match in re.finditer(r'"(\w+)"\s*:\s*(-?\d+(?:\.\d+)?)(?=\s*[,}]|$)', text):
+        key = match.group(1)
+        if key in _ACTION_META_KEYS or key in args:
+            continue
+        args[key] = json.loads(match.group(2))
+    return args
+
+
+def _recover_truncated_tool_json(text: str) -> dict[str, Any] | None:  # noqa: PLR0911 — 多门早退
+    """未闭合 / 扁平的 ``{…tool_id…}`` → 只补括号或抽**扁平**字段；不可恢复 ⇒ ``None``。
+
+    现场（trace ``ae257340…``）：
+    ``{"tool_id": "tools.file_read", "path": "…_review_planner.diff"``（缺收尾 ``}``）。
+
+    纪律：① 已有完整首对象 ⇒ 不恢复（交给形态 5）；② 只补 ``}``、**不**补引号
+    （避免半截 ``content`` 假闭合）；③ 已出现 ``"args"`` 的嵌套半截 ⇒ 不猜。
+    """
+    stripped = text.strip()
+    if not stripped.startswith("{") or '"tool_id"' not in stripped:
+        return None
+    if _leading_object(stripped) is not None:
+        return None
+    closed = _brace_close_tool_json(stripped)
+    if closed is not None:
+        return closed
+    if '"args"' in stripped:
+        return None
+    head = _TOOL_ID_HEAD.search(stripped)
+    if head is None:
+        return None
+    args = _flat_fields_from_partial_json(stripped)
+    if not args:
+        return None
+    return {"tool_id": head.group(1), "args": args}
 
 
 def _leading_object(text: str) -> tuple[dict[str, Any], int] | None:
@@ -566,12 +702,18 @@ class LLMPlanner:
 
     # ---- 解析 ----
 
-    def _parse(  # noqa: PLR0911 — 五种形态 + 空/首字符分支，逐形态早返更清晰
+    def _parse(  # noqa: PLR0911,C901 — 五种形态 + 空/首字符分支，逐形态早返更清晰
         self, content: str, *, finish_reason: str = ""
     ) -> Action:
-        text = content.strip()
-        if not text:
+        raw = content.strip()
+        if not raw:
             return Action(args={"reply": f"{_PARSE_FAILED}: 空响应"}, failed=True)
+        # JSON 头 + <parameter> 混写：在剥渣**之前**恢复（否则尾部 </parameter> 会被剥掉）
+        recovered = _recover_hybrid_tool_call(raw)
+        if recovered is not None:
+            return self._from_dict(recovered)
+        # 剥 XML 闭合残渣，避免 </arg_value> 被 ``_has_word`` 当成「正文」
+        text = _strip_tool_markup_residue(raw)
         if text.startswith("{"):
             # 形态 2 容残渣（change 0229 / ADR-0219）：首个对象完整、其后**仅**退化残渣
             # （无词元）⇒ 按该对象处理（`{"reply": …}` 亦然，避免「同一谓词、两种朝向、
@@ -582,9 +724,12 @@ class LLMPlanner:
             try:
                 data = json.loads(text)
             except ValueError:
+                repaired = _recover_truncated_tool_json(text)
+                if repaired is not None:
+                    return self._from_dict(repaired)
                 return Action(
                     args={"reply": self._first_brace_reply(text, finish_reason)},
-                    raw_output=_bounded_raw(text),
+                    raw_output=_bounded_raw(raw),
                     failed=True,
                 )
             return self._from_dict(data)
@@ -593,16 +738,22 @@ class LLMPlanner:
         embedded = _trailing_json_object(text)
         if embedded is not None and embedded.get("tool_id"):
             return self._from_dict(embedded)
+        # 未闭合但可补全的扁平动作（与 `{` 分支同口径）
+        repaired = _recover_truncated_tool_json(text)
+        if repaired is not None:
+            return self._from_dict(repaired)
         # 未闭合的动作载荷（change 0170 / ADR-0161）：模型在**发出**动作协议，只是产出被截断/写坏
         # —— 旧实现会把整段 JSON 当答复且记为成功（静默 + JSON 进转录与记忆）。
         if _unclosed_action_payload(text):
             reply = _UNPARSED_TRUNCATED if finish_reason == "length" else _UNPARSED_UNCLOSED
-            return Action(args={"reply": reply}, raw_output=_bounded_raw(text), failed=True)
+            return Action(args={"reply": reply}, raw_output=_bounded_raw(raw), failed=True)
         # 夹带的动作 JSON（change 0222 / ADR-0212）：闭合的动作对象之后仍有正文 ⇒ 可见失败
         # （旧实现整段当答复 ⇒ 静默零执行；本判据**取代** ADR-0156「中间夹带一律按回复」）。
         if _embedded_action_payload(text):
             return Action(
-                args={"reply": _UNPARSED_EMBEDDED}, raw_output=_bounded_raw(text), failed=True
+                args={"reply": _UNPARSED_EMBEDDED},
+                raw_output=_bounded_raw(raw),
+                failed=True,
             )
         return Action(args={"reply": text})
 
@@ -641,7 +792,7 @@ class LLMPlanner:
     def _from_dict(self, data: Any) -> Action:
         if not isinstance(data, dict):
             return Action(args={"reply": f"{_PARSE_FAILED}: 模型输出非 JSON 对象"}, failed=True)
-        obj = cast(dict[str, Any], data)
+        obj = _normalize_action_dict(cast("dict[str, Any]", data))
         tool_id = obj.get("tool_id")
         if tool_id:
             raw_args = obj.get("args")

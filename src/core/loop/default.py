@@ -93,12 +93,27 @@ _FAILURE_REASON_FALLBACK = "终止动作未达成"  # 轮级失败无 `limit_rea
 _FAILURE_STEP_MARK = "错误："  # 失败动作的渲染前缀（`_summarize_result`），供失败条目筛行
 
 
-def _args_excerpt(args: dict[str, Any]) -> dict[str, Any] | str:
-    """动作参数节选：短载荷原样（结构化消费友好），长载荷 str 化截断。"""
-    text = str(args)
-    if len(text) <= _MAX_ACTION_EXCERPT:
-        return args
-    return text[:_MAX_ACTION_EXCERPT]
+def _args_excerpt(args: dict[str, Any]) -> dict[str, Any]:
+    """动作参数节选：恒为映射、逐值有界（≤ ``_MAX_ACTION_EXCERPT``）。
+
+    过长字符串就地截断并加省略号；非字符串超长值退化为有界 ``str``。
+    保留 dict 结构 ⇒ TUI 标题可取白名单字段（如 ``script`` / ``task`` / ``path``），
+    避免整包 ``str(args)`` 截断后变成空 ``Bash()``（change 0233 / ADR-0160 根治）。
+    """
+    out: dict[str, Any] = {}
+    for key, value in args.items():
+        if isinstance(value, str):
+            if len(value) <= _MAX_ACTION_EXCERPT:
+                out[key] = value
+            else:
+                out[key] = value[:_MAX_ACTION_EXCERPT] + "…"
+            continue
+        if isinstance(value, (int, float, bool)) or value is None:
+            out[key] = value
+            continue
+        text = str(value)
+        out[key] = text if len(text) <= _MAX_ACTION_EXCERPT else text[:_MAX_ACTION_EXCERPT] + "…"
+    return out
 
 
 def _trajectory_line(item: Any) -> str:
@@ -352,6 +367,9 @@ class DefaultLoop(Plugin):
         self._act: ActFn = act_wrapper(self.act) if act_wrapper is not None else self.act
         # 会话轮级检查点外发口（缺省 None ⇒ 轮首/轮末均不调用，零 I/O、逐字不变；change 0214）
         self._turn_checkpoint = turn_checkpoint
+        # 轮末后台收尾（turn_observer / maintain）：不得堵住 `loop_finished` 外发，否则 TUI
+        # 「思考中」会挂到技能迭代与维护节拍跑完（生产事故：自然语言终态已上屏，spinner 仍计时）。
+        self._post_turn_task: asyncio.Task[None] | None = None
 
     # ---- Plugin 生命周期 ----
 
@@ -389,8 +407,14 @@ class DefaultLoop(Plugin):
         return asyncio.run(self.arun(user_input, session_id=session_id))
 
     async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
-        """异步执行入口：只取终态（三态归一由 `collect_result` 单一实现）。"""
-        return await collect_result(self.astream(user_input, session_id=session_id))
+        """异步执行入口：只取终态（三态归一由 `collect_result` 单一实现）。
+
+        ``collect_result`` 在 ``loop_finished`` 处提前返回 ⇒ 生成器其后不再推进；轮末
+        收尾以后台 task 挂出，此处**等候收束**，保证 ``run``/``arun`` 语义仍含完整收尾。
+        """
+        result = await collect_result(self.astream(user_input, session_id=session_id))
+        await self._await_post_turn()
+        return result
 
     async def _reason_events(self, ctx: LoopContext) -> AsyncIterator[LoopEvent | Action]:
         """推理步事件流：planner 支持流式时逐 delta 转 reply_delta，末态产出 Action。
@@ -407,7 +431,8 @@ class DefaultLoop(Plugin):
             if isinstance(item, str):
                 yield LoopEvent("reply_delta", {"text": item})
             elif isinstance(item, Thinking):
-                yield LoopEvent("loop.reasoning", {"text": item.delta})
+                # round 与同轮 action_started 对齐，供 TUI 按步归并 Thinking（change 0233）
+                yield LoopEvent("loop.reasoning", {"text": item.delta, "round": ctx.rounds})
             else:
                 yield item
 
@@ -417,6 +442,8 @@ class DefaultLoop(Plugin):
         trace_id = self._start_trace(user_input)
         yield LoopEvent("loop_started", {"trace_id": trace_id})
         self._trace(trace_id, "loop_started", {"trace_id": trace_id})
+        # 与上一轮后台收尾串行：避免新一轮感知/记忆与旧轮技能迭代、维护节拍并发踩踏。
+        await self._await_post_turn()
         ctx = self.perceive(user_input, session_id=session_id)
         self._consult_notes(ctx, trace_id)
         self._load_pinned_notes(ctx, trace_id)
@@ -499,12 +526,7 @@ class DefaultLoop(Plugin):
             if self._token_budget > 0 and ctx.token_used >= self._token_budget:
                 limit_reason = "TOKEN_BUDGET_EXCEEDED"
                 break
-        # 收尾钩子：成功/失败都提交（失败信号供技能迭代判据；SOP 提炼仍只吸收成功）
-        # 收尾钩子同样卸载：注入的 `turn_observer` 内含同步模型调用（SOP 提炼 / 技能迭代），
-        # 语义与降级链不变，只换执行线程（change 0167 / ADR-0157）。
-        await asyncio.to_thread(
-            self._notify_turn, ctx, trace_id, ok=not limit_reason and not turn_failed
-        )
+        turn_ok = not limit_reason and not turn_failed
         if limit_reason:
             ctx.reply = f"{limit_reason}: 本轮终止"
             yield LoopEvent("loop_failed", {"reason": limit_reason, "trace_id": trace_id})
@@ -524,9 +546,6 @@ class DefaultLoop(Plugin):
         # 轮末写点（change 0214 / ADR-0204）：成功路与 `limit_reason` 终止路**都**到达此处
         # （`remember` 在两分支之外） ⇒ 终止轮同样被标记完结。
         self._mark_turn(trace_id, session_id, ctx, done=True)
-        # 维护节拍同样卸载：冷路径（进化 review / patch author）内含同步模型调用
-        # （change 0167 / ADR-0157）。
-        await asyncio.to_thread(self._maintain, trace_id, session_id)
         self._trace(
             trace_id,
             "loop_finished",
@@ -542,6 +561,10 @@ class DefaultLoop(Plugin):
         self._notify_trace_complete(trace_id)
         # 顺序约束：回调之后才封口（回调须能完整回放本轮事件；封口交付导出器 + 释放内存）
         self._end_trace(trace_id)
+        # 收尾钩子 + 维护节拍**后台**执行：二者均可含同步模型调用（0167），若 await 在
+        # `loop_finished` 之前，TUI 终态已上屏却仍显示「思考中」。`collect_result` 在
+        # `loop_finished` 提前返回 ⇒ 不可把 await 写在 yield 之后（会被 aclose 吞掉）。
+        self._schedule_post_turn(ctx, trace_id, session_id, ok=turn_ok)
         if not streamed:  # 未流式外发过 delta 才补一次全文（非流式 planner 兼容路径）
             yield LoopEvent("reply_delta", {"text": ctx.reply})
         yield LoopEvent(
@@ -608,6 +631,34 @@ class DefaultLoop(Plugin):
         if self._turn_checkpoint is None:
             return
         self._turn_checkpoint(trace_id, session_id, _task_text(ctx), done)
+
+    def _schedule_post_turn(
+        self, ctx: LoopContext, trace_id: str, session_id: str, *, ok: bool
+    ) -> None:
+        """把 ``turn_observer`` + ``maintain`` 挂为后台 task（不阻塞 ``loop_finished`` 外发）。
+
+        收尾钩子 / 维护节拍均可含同步模型调用（0167）⇒ 必须 ``to_thread``；又因
+        ``collect_result`` 在 ``loop_finished`` 提前返回，不可把 await 写在 yield 之后。
+        """
+
+        async def _run() -> None:
+            await asyncio.to_thread(self._notify_turn, ctx, trace_id, ok=ok)
+            await asyncio.to_thread(self._maintain, trace_id, session_id)
+
+        self._post_turn_task = asyncio.get_running_loop().create_task(
+            _run(), name="loop-post-turn"
+        )
+
+    async def _await_post_turn(self) -> None:
+        """等候上一轮后台收尾收束（无在途 task ⇒ 立即返回）。"""
+        task = self._post_turn_task
+        if task is None:
+            return
+        try:
+            await task
+        finally:
+            if self._post_turn_task is task:
+                self._post_turn_task = None
 
     def _notify_turn(self, ctx: LoopContext, trace_id: str, *, ok: bool) -> None:
         """收尾钩子：把任务文本 + 行动/结果序列 + 本轮成败交给注入的观察者（缺省不启用）。
