@@ -11,14 +11,19 @@
 
 from __future__ import annotations
 
-import resource
 import subprocess
 import threading
 import uuid
 from collections.abc import Callable
+from typing import Any
 
 from .errors import AccessControlError, PermissionErrorCode
 from .models import ResourceBudget, SandboxDomain, SandboxHandle, SandboxResult
+
+try:
+    import resource as _resource  # POSIX only；Windows 无此模块
+except ImportError:  # pragma: no cover — Windows / 无 rlimit 平台
+    _resource = None
 
 SandboxBackend = Callable[[list[str], dict[str, str] | None, ResourceBudget], SandboxResult]
 
@@ -49,19 +54,22 @@ class SandboxPolicy:
 
 
 def _apply_resource_limits(budget: ResourceBudget) -> Callable[[], None] | None:
-    """把内存/CPU 配额映射为 POSIX rlimit 的 preexec_fn（无配额返回 None）。"""
+    """把内存/CPU 配额映射为 POSIX rlimit 的 preexec_fn（无配额 / 非 POSIX 返回 None）。"""
 
+    if _resource is None:
+        return None
     if budget.max_memory_bytes is None and budget.max_cpu_seconds is None:
         return None
 
     def _limits() -> None:
+        assert _resource is not None
         if budget.max_memory_bytes is not None:
-            resource.setrlimit(
-                resource.RLIMIT_AS, (budget.max_memory_bytes, budget.max_memory_bytes)
+            _resource.setrlimit(
+                _resource.RLIMIT_AS, (budget.max_memory_bytes, budget.max_memory_bytes)
             )
         if budget.max_cpu_seconds is not None:
             soft = max(1, int(budget.max_cpu_seconds))
-            resource.setrlimit(resource.RLIMIT_CPU, (soft, soft))
+            _resource.setrlimit(_resource.RLIMIT_CPU, (soft, soft))
 
     return _limits
 
@@ -69,16 +77,19 @@ def _apply_resource_limits(budget: ResourceBudget) -> Callable[[], None] | None:
 def _subprocess_backend(
     cmd: list[str], env: dict[str, str] | None, budget: ResourceBudget
 ) -> SandboxResult:
+    # preexec_fn 仅 POSIX；Windows 传该参数会 NotImplementedError，故有限额才注入。
+    run_kwargs: dict[str, Any] = {
+        "env": env,
+        "capture_output": True,
+        "text": True,
+        "timeout": budget.timeout_s,
+        "check": False,
+    }
+    preexec = _apply_resource_limits(budget)
+    if preexec is not None:
+        run_kwargs["preexec_fn"] = preexec
     try:
-        proc = subprocess.run(
-            cmd,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=budget.timeout_s,
-            preexec_fn=_apply_resource_limits(budget),
-            check=False,
-        )
+        proc = subprocess.run(cmd, **run_kwargs)
     except subprocess.TimeoutExpired as exc:
         raise AccessControlError(PermissionErrorCode.QUOTA_EXCEEDED, "沙箱资源配额超限") from exc
     if proc.returncode < 0:  # 被信号终止（内存/CPU 配额触发 SIGKILL/SIGXCPU）
