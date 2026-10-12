@@ -35,13 +35,15 @@ from core.runtime import _RAG_INFO_MAP_MAX_DOCS, _index_rag_docs, build_runtime
 class _StubProvider(LLMProvider):
     """替代 `StdlibLLMProvider` 的桩：构造签名兼容组合根调用点，调用期不出网。"""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — 桩镜像 provider 构造签名
         self,
         *,
         api_key: str = "",
         base_url: str | None = None,
         model: str = "",
         provider: str = "",
+        timeout: float = 60.0,
+        max_retries: int = 3,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url

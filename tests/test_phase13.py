@@ -719,8 +719,15 @@ def _fake_provider_cls(constructed: list[tuple[str, str | None]], *, fail: bool 
     """假 provider 类：记录 (model, base_url)，embedding 返回定长向量或抛错（不触网）。"""
 
     class _FakeProvider:
-        def __init__(
-            self, *, api_key: str, base_url: str | None, model: str, provider: str = ""
+        def __init__(  # noqa: PLR0913 — 桩镜像 provider 构造签名
+            self,
+            *,
+            api_key: str,
+            base_url: str | None,
+            model: str,
+            provider: str = "",
+            timeout: float = 60.0,
+            max_retries: int = 3,
         ) -> None:
             constructed.append((model, base_url))
 

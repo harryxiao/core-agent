@@ -202,6 +202,22 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "llm.timeout",
+        "--llm.timeout",
+        "CORE_LLM_TIMEOUT",
+        default=60.0,
+        map_to="llm.timeout",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "llm.max_retries",
+        "--llm.max-retries",
+        "CORE_LLM_MAX_RETRIES",
+        default=3,
+        map_to="llm.max_retries",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "loop.output_reserve",
         "--loop.output-reserve",
         "CORE_LOOP_OUTPUT_RESERVE",
@@ -1040,6 +1056,8 @@ class ConfigManager:
             embedding_model=str(llm_raw.get("embedding_model", "")),
             context_window=_llm_context_window(llm_raw),
             show_thinking=_llm_show_thinking(llm_raw),
+            timeout=_llm_timeout(llm_raw),
+            max_retries=_llm_max_retries(llm_raw),
         )
         features_raw = cast(dict[str, Any], merged.get("features") or {})
         features = _normalize_features(features_raw)
@@ -1177,6 +1195,38 @@ def _llm_show_thinking(raw: dict[str, Any]) -> bool:
         f"非法思考回显开关: llm.show_thinking={value!r}"
         "（须为布尔或 true/false、yes/no、on/off、1/0）"
     )
+
+
+def _llm_timeout(raw: dict[str, Any]) -> float:
+    """llm 段 `timeout` 解析（结构化段 ⇒ **构建前阻断**，对齐 `context_window` 口径）。
+
+    缺省 ``60.0``（= 实现类缺省）；须为 ``> 0`` 的数值，``bool`` / 非数值 / ≤ 0 一律当场拒绝 ——
+    ``timeout <= 0`` 在 provider 侧语义是「立即超时 / 不可用」，放行等于把配置笔误静默变成
+    「所有调用必失败」，与「未配置时行为逐字一致」的可证伪边界相冲突。
+    """
+    value = raw.get("timeout", 60.0)
+    timeout = _as_number(value)
+    if timeout is None or timeout <= 0:
+        raise ConfigurationError(  # noqa: TRY003
+            f"非法调用超时: llm.timeout={value!r}（须为 > 0 的数值，单位秒）"
+        )
+    return timeout
+
+
+def _llm_max_retries(raw: dict[str, Any]) -> int:
+    """llm 段 `max_retries` 解析（结构化段 ⇒ **构建前阻断**，对齐 `context_window` 口径）。
+
+    缺省 ``3``（= 实现类缺省）；须为 ``≥ 0`` 的整数，``bool`` / 小数 / 非数值 / 负数一律当场
+    拒绝 —— 次数不是分数、``true`` 不是数字；放行小数会在 provider 侧静默截断为「少于声明的
+    重试次数」，放行负数语义不明。
+    """
+    value = raw.get("max_retries", 3)
+    retries = _parse_int(value)
+    if retries is None or retries < 0:
+        raise ConfigurationError(  # noqa: TRY003
+            f"非法最大重试次数: llm.max_retries={value!r}（须为 ≥ 0 的整数）"
+        )
+    return retries
 
 
 def _loop_errors(raw: dict[str, Any]) -> list[str]:
@@ -1465,6 +1515,8 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
             embedding_model=str(llm_raw.get("embedding_model", "")),
             context_window=_llm_context_window(llm_raw),
             show_thinking=_llm_show_thinking(llm_raw),
+            timeout=_llm_timeout(llm_raw),
+            max_retries=_llm_max_retries(llm_raw),
         ),
         features=features,
         im=im,

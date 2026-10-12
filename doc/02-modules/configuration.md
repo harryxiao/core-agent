@@ -58,6 +58,10 @@ Configuration（横切）
   拒绝并阻断启动**，不经 `bool()` 静默强转（`off` 之类假值写法不得被当作开启）。CLI 面
   `--feature <模块>[=<布尔>]` 经覆盖层 `features.<模块>` 参与优先级链（裸名视为开）。
 - 未配置 judgment 段（或 provider 为空）时决策能力关闭，回退主 LLM 兜底。
+- **LLM 调用超时 / 重试可配**（change `0232` / ADR-0221，账本 E168）：`llm.timeout`（缺省 `60.0` 秒，
+  须 > 0 的数值）与 `llm.max_retries`（缺省 `3`，须 ≥0 的整数）经 ConfigSpec 单一真源声明（CLI / env / yaml
+  三面齐备），校验期阻断非法值（不静默强转），组合根注入主 `StdlibLLMProvider`。**缺省 = 实现类缺省 ⇒
+  未配置时行为零改变**（新增可调控点，非 kill-switch）；`embed_provider` / `JEVProvider` 不接同名键。
 
 ### 3.4 密钥分级与安全
 

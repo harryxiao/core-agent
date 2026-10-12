@@ -7804,6 +7804,66 @@ canonical 计数不变）。行为在 `doc/03-interfaces/tool-use-interface.md` 
 无法穷举，而状态复位是不变式；③ **不改 `_turn_busy` 置位时机**（与忙检同上下文、无竞态窗口）；
 ④ **不治「长等待本身」**（由 change `0232` 治理）；⑤ **不做「重试进度可见」**（后续 change）。
 
+## ADR-0221：LLM 调用超时 / 重试可配置（change 0232 / 台账 E168）
+
+**背景**：2026-10-12 用户实跑 TUI 卡死的那一轮，轮末 maintenance 记忆调用打到 `glm-5.3` **超时**，
+经 `StdlibLLMProvider` 缺省 `timeout=60.0, max_retries=3` ⇒ **4 次串行 60s 尝试（≈232s）**。
+表象的收尾问题由 change `0231` 治理；**长等待本身**是本 change 的对象。
+
+**根因**：provider 构造参 `timeout` / `max_retries` **早已存在**（`stdlib_provider.py`），但
+① `_CONFIG_SPECS` 无对应配置键；② 组合根 `runtime.py` 构造主 provider 时只传
+`api_key / base_url / model / provider` ⇒ 恒取实现类缺省，操作者**无法**收窄单次等待上限。
+而 maintenance / 摘要调用走的正是**主 provider**（`_llm_text` → `llm.completion`），
+故这两个键**直接**为该等待时长设上限。
+
+**决策**：
+
+- **D1 新增两个可调控点，单一真源仍是 ConfigSpec**。`llm.timeout`（`default=60.0`）与
+  `llm.max_retries`（`default=3`），均 `exposure=ADVANCED`、`map_to` 同名 ⇒ CLI flag / env /
+  yaml 三面自动生成，`_CONFIG_SPECS` 不引入第二真源。
+- **D2 校验期阻断，不静默强转**。新增两个**镜像 `_llm_context_window`** 的解析器
+  （结构化段 ⇒ 构建前 `raise ConfigurationError`）：`timeout` 须 `> 0` 的数值、
+  `max_retries` 须 `≥ 0` 的整数（`bool` / 小数 / 负数 / 非数值一律拒）。理由与 `context_window`
+  同源：取值一旦化为数值便不可追溯，留到 `validate_schema` 已看不见原值；而 `timeout ≤ 0`
+  在 provider 侧语义是「立即失败」⇒ 放行等于把配置笔误静默变成「所有调用必失败」。
+- **D3 缺省 = 实现类缺省 ⇒ 行为零改变**。`LLMConfig` 与 `_CONFIG_SPECS` 与解析器回落值三处
+  同为 `60.0` / `3`，与 `StdlibLLMProvider.__init__` 类缺省**逐字一致** ⇒ 未配置时组合根传入值
+  与原先相同。（**有别于 `0216` 的 kill-switch**：此处是**新增可调控点**，缺省取「保留行为」侧。）
+- **D4 两处 `LLMConfig` 构造点同步**。`_build_config`（冷启动）与 `apply_change`（热更新补丁）
+  各构造一次 `LLMConfig`，两处**都**接线 —— 只改一处会让 `config set llm.timeout` 看似生效、
+  实际被静默丢弃。
+- **D5 「重试进度可见」不属本 change**。provider 逐次重试回调 → loop `astream` 并发排空 →
+  api → TUI 重标注，跨 4 层 + 新增接口契约 + 改 `astream` 并发 ⇒ 另立 change。
+- **D6 `embed_provider` / `JEVProvider` 不接同名键**。各自独立语义（embedding 无重试语义、
+  JEV 走 `DecisionRouter` 回退主 LLM），留默认；`llm.fallback_models` / `llm.backoff` /
+  `constraints.retry_attempts`（容错中间件，另一轴）亦不新增。
+
+**规格**：`configuration`「LLM 提供商配置（必选）」**MODIFIED**（可选子项扩为
+`embedding_model / context_window / show_thinking / timeout / max_retries`，新增两句取值/缺省/
+拒绝口径 ＋ **ADDED 2 Scenario**：经三面解析且缺省 60.0/3 / 非法取值阻断）⇒ req **10 → 10**、
+scen **60 → 62**。`llm-provider`「模型调用可靠性」**MODIFIED**（＋ 缺省 60.0s / 3 次与可覆盖
+一句 ＋ **ADDED 1 Scenario**）⇒ req **10 → 10**、scen **25 → 26**。既有 Scenario **逐字保留**。
+
+**反证（实测三组独立）**：**(A)** 拆掉 `runtime.py` 的两行传参 ⇒ **1 红**
+（`test_build_runtime_injects_configured_values`）⇒ 接线被锚定；**(B1)** 把两处 ConfigSpec
+`default` 改为 `0.0` / `0` ⇒ **1 红**（`test_specs_declare_timeout_and_max_retries`）；
+**(B2)** 把两个解析器的回落值改为 `1.0` / `9` ⇒ **2 红**
+（`test_defaults_match_provider_class_defaults` / `test_build_runtime_defaults_unchanged`）
+⇒ 「缺省不变」被锚定。复原 ⇒ 三文件 `md5sum` 逐字节相同。
+测试 **+17**（`tests/test_llm_reliability_config.py`，2580 → **2597**）。
+
+**连带**：`tests/test_rag_wiring.py` / `tests/test_phase13.py` 的 provider **桩**镜像组合根构造
+签名（原仅 4 参）⇒ 本 change 补 `timeout` / `max_retries` 两参（+`PLR0913` noqa），属**测试替身
+随签名漂移**，非行为变化。
+
+**局限**：① **`LLMConfig` 的 dataclass 缺省在配置路径上不可观测** —— 管理器恒经解析器显式注入
+（回落值 `60.0` / `3`），故「缺省不变」的真实锚点是 **ConfigSpec default ＋ 解析器回落值**；
+dataclass 缺省只服务**直接构造**（测试 / 内部代码）——反证 (B0)「把 dataclass 缺省改为 `0.0`」
+实测 **17 全绿**（故未采用该组）；② **不改 provider 层的重试语义** —— 指数退避 / 降级 /
+fallback_models 仍按实现类既有行为，本 change 只让**次数与单次超时**可配；③ **不给
+`embed_provider` / `JEVProvider` 接线**（D6）；④ **不提供「重试进度可见」**（D5）；
+⑤ **`constraints.retry_attempts` 未动**（不同轴：容错中间件重试「动作」而非「模型调用」）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8019,3 +8079,4 @@ canonical 计数不变）。行为在 `doc/03-interfaces/tool-use-interface.md` 
 | ADR-0218 | 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0219 | 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0220 | 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0221 | 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

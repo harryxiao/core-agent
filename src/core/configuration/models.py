@@ -42,6 +42,8 @@ class LLMConfig:
     embedding_model: str = ""  # 记忆检索向量化模型（可选；空=不注入 embedder，回退词法）
     context_window: int = 0  # 模型上下文窗口（可选；0=未配置，不派生预算 —— 见 loop 预算控制）
     show_thinking: bool = False  # 思考回显开关（可选；缺省关 ⇒ 事件面零新增，见 loop / ui）
+    timeout: float = 60.0  # 单次调用超时上限（秒，可选；缺省=实现类缺省，见 llm-provider）
+    max_retries: int = 3  # 调用失败最大重试次数（可选；缺省=实现类缺省）
 
 
 @dataclass(frozen=True)

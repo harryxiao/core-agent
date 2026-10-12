@@ -364,3 +364,32 @@ known_window(llm.model)  ──►  表命中 ⇒ 该族真实窗口（本 chang
   ③ 减法只有一处（归一窗口后统一 `window − output_reserve`）。
 - 已知局限（不过 `_window_reserve_errors` 闸门 / 子串无边界语义 / 静态表不自更新）见 ADR-0175。
 - 口径来源：`doc/openspec/specs/configuration/spec.md`「LLM 提供商配置（必选）」（**MODIFIED**）。
+
+### 2.11 LLM 调用超时与重试可配（change `0232` / ADR-0221，账本 E168）
+
+`StdlibLLMProvider` 的 `timeout` / `max_retries` 构造参**早已存在**，但 `_CONFIG_SPECS` 无键、
+组合根 `build_runtime` 构造主 provider 时未传 ⇒ 恒取实现类缺省，操作者无法收窄「单次调用等待上限」
+（2026-10-12 实跑：轮末 maintenance 调用超时 ⇒ 4×60s ≈ 232s）。本项把两者接入配置链：
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `llm.timeout` | `60.0` | **> 0 的数值**（单位秒） | 单次模型调用超时上限 |
+| `llm.max_retries` | `3` | **≥0 的整数** | 调用失败最大重试次数 |
+
+- **单一真源**：两键由 `ConfigSpec` 声明（`map_to="llm.timeout"` / `"llm.max_retries"`，
+  `exposure=ADVANCED`），自动获得 CLI flag（`--llm.timeout` / `--llm.max-retries`）、
+  env（`CORE_LLM_TIMEOUT` / `CORE_LLM_MAX_RETRIES`）与优先级链（CLI > env > config.yaml > 缺省）。
+- **缺省 = 实现类缺省 ⇒ 行为零改变**：三处（dataclass / ConfigSpec / 解析器回落）同为 `60.0` / `3`，
+  与 `StdlibLLMProvider.__init__` 类缺省**逐字一致**。这是**新增可调控点**（非 kill-switch）。
+- **构建前阻断（不静默强转）**：`_llm_timeout` / `_llm_max_retries` 镜像 `_llm_context_window` 口径，
+  在 `_build_config` 当场 `raise ConfigurationError`：`timeout` 须 `> 0` 的数值、`max_retries` 须
+  `≥ 0` 的整数（`bool` / 小数 / 负数 / 非数值一律拒）。`timeout <= 0` 在 provider 侧语义是
+  「立即失败」⇒ 放行等于把配置笔误静默变成「所有调用必失败」。
+- **两处构造点同步**：`_build_config`（冷启动）与 `apply_change`（热更新补丁）**都**接线 ——
+  只改一处会让 `config set llm.timeout` 看似生效、实际被静默丢弃。
+- **消费方**：组合根 `build_runtime` 把两值注入主 `StdlibLLMProvider`
+  （`timeout=app.llm.timeout, max_retries=app.llm.max_retries`）；`embed_provider` 与 `JEVProvider`
+  **不**接同名键（各自独立语义，留默认）。
+- 已知局限（dataclass 缺省在配置路径不可观测 / 不改 provider 重试语义 / 不做「重试进度可见」）见 ADR-0221。
+- 口径来源：`doc/openspec/specs/configuration/spec.md`「LLM 提供商配置（必选）」、
+  `doc/openspec/specs/llm-provider/spec.md`「模型调用可靠性」（均 **MODIFIED**）。

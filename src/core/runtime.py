@@ -505,6 +505,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         # 审计标签按配置注入（change 0184 / ADR-0175）：`LLMResponse.provider` 反映
         # `llm.provider`（该键必填、校验非空），不再是与配置无关的硬编码 `"stdlib"`。
         provider=app.llm.provider,
+        # 超时 / 重试按配置注入（change 0232 / ADR-0221）：未配置时取值与类缺省逐字一致
+        # （60.0 / 3）⇒ 行为零改变；配置后操作者可收窄「单次调用等待上限」。
+        timeout=app.llm.timeout,
+        max_retries=app.llm.max_retries,
     )
     # 缺省导出面（change 0089）：JSONL 落 $CORE_STATE_DIR，经缓冲/退避重试包装 ——
     # 导出失败降级为内存缓冲，绝不抛进主循环（规格「遥测故障不阻塞主循环」）；注入者优先。

@@ -3179,3 +3179,43 @@ Scenario ＋ ADDED 1 Scenario；既有其余 7 Scenario 逐字保留）。承 `0
 > 「忙态 ⇔ 本轮在跑」既有不变式）。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0220 行
 > （只保证不倒灌为状态失败、不治收尾失败根因 / 刻意宽捕 `Exception` / 不改 `_turn_busy` 置位时机 /
 > 不治「长等待本身」（change `0232`）/ 不做「重试进度可见」）。
+
+## 144. LLM 调用超时 / 重试可配置（TC-LLMREL，change `0232`／ADR-0221，台账 E168）
+
+**背景**：2026-10-12 用户实跑 TUI 卡死那一轮，轮末 maintenance 调用打到 `glm-5.3` 超时，经
+`StdlibLLMProvider` 缺省 `timeout=60.0, max_retries=3` ⇒ **4 次串行 60s ≈ 232s**。其构造参**早已
+存在**，但 `_CONFIG_SPECS` 无配置键、`runtime.py` 构造主 provider 未传 ⇒ 恒取类缺省，操作者**无法**
+收窄单次等待上限。本 change 新增 `llm.timeout` / `llm.max_retries` 两键（ConfigSpec 单一真源 ⇒
+CLI/env/yaml 三面），校验期阻断非法值，组合根注入主 provider；**缺省 = 实现类缺省**（60.0 / 3）⇒
+未配置时行为零改变。
+
+| 用例 | 面 | 输入 | 断言（`tests/test_llm_reliability_config.py::…`） |
+|---|---|---|---|
+| TC-LLMREL-01 | ConfigSpec 单一真源 | — | `llm.timeout` → `--llm.timeout`/`CORE_LLM_TIMEOUT`/`llm.timeout`/default `60.0`；`llm.max_retries` → `--llm.max-retries`/`CORE_LLM_MAX_RETRIES`/`llm.max_retries`/default `3`（`…::test_specs_declare_timeout_and_max_retries`） |
+| TC-LLMREL-02 | **缺省不变**（承重） | 未配置两键 | `LLMConfig.timeout == 60.0`、`max_retries == 3`（与实现类缺省逐字一致）（`…::test_defaults_match_provider_class_defaults`） |
+| TC-LLMREL-03 | 三面：yaml | `llm.timeout: 30` / `max_retries: 1` | 解析为 `30.0` / `1`（`…::test_from_yaml`） |
+| TC-LLMREL-04 | 三面：env 覆盖 yaml | env `45` / `2` 压 yaml `30` / `1` | 取 env 值（`…::test_env_overrides_yaml`） |
+| TC-LLMREL-05 | 三面：CLI 压 env 与 yaml | `--llm.timeout 12.5` 压 env `45` | 取 `12.5`（`…::test_cli_overrides_env_and_yaml`） |
+| TC-LLMREL-06 | 非法阻断（timeout） | `timeout ∈ {0, -1, abc, true}` | `ConfigurationError`（「非法调用超时」）（`…::test_invalid_timeout_blocks_startup[*]`） |
+| TC-LLMREL-07 | 非法阻断（max_retries） | `max_retries ∈ {-1, 1.5, abc, true}` | `ConfigurationError`（「非法最大重试次数」）（`…::test_invalid_max_retries_blocks_startup[*]`） |
+| TC-LLMREL-08 | 非法不静默兜底 | `timeout: 0` | 抛错（**不**退化成缺省）（`…::test_invalid_value_does_not_silently_fall_back`） |
+| TC-LLMREL-09 | 段名白名单 | env `CORE_LLM_TIMEOUT=30` | 无「未知配置段」告警 且 解析为 `30.0`（`…::test_llm_keys_do_not_trigger_unknown_section_warning`） |
+| TC-LLMREL-10 | **接线**（组合根） | 配置 `timeout: 30` / `max_retries: 1` | 主 provider `_timeout == 30.0`、`_max_retries == 1`（`…::test_build_runtime_injects_configured_values`） |
+| TC-LLMREL-11 | **接线缺省不变** | 未配置 | 主 provider `_timeout == 60.0`、`_max_retries == 3`（`…::test_build_runtime_defaults_unchanged`） |
+
+> **反证（实测三组独立）**：**(A)** 拆掉 `runtime.py` 的两行传参 ⇒ **恰 1 红**（TC-LLMREL-10）⇒
+> 接线被锚定。**(B1)** 把两处 ConfigSpec `default` 改为 `0.0` / `0` ⇒ **恰 1 红**（TC-LLMREL-01）。
+> **(B2)** 把两个解析器的回落值改为 `1.0` / `9` ⇒ **2 红**（TC-LLMREL-02 / TC-LLMREL-11）⇒
+> 「缺省不变」被锚定。**(B0)** 把 **dataclass** `LLMConfig` 缺省改为 `0.0` / `0` ⇒ **17 全绿**
+> —— 配置路径上管理器**恒经解析器显式注入**，dataclass 缺省**不可观测** ⇒ 该组不构成反证（已记入
+> ADR-0221 局限①）。复原 ⇒ `runtime.py` / `models.py` / `manager.py` 三文件 `md5sum` **逐字节相同**。
+> 绿后全量 `.venv/bin/pytest -q` ⇒ **2597 passed**（基线 **2580**，**+17**）；四门禁：`ruff check` ✓ /
+> `ruff format --check` ✓ / `pyright`（**无参**，0-0-0）✓ / `pytest` ✓；`openspec validate --all`
+> 归档期 **32 passed**（归档后 **31 passed**，唯一 failed 为 `0230` 子 Agent 遗留、非本批）；
+> 规格 `configuration` **MODIFIED** ＋ ADDED 2 Scenario（**10 → 10** req、**60 → 62** scen）、
+> `llm-provider` **MODIFIED** ＋ ADDED 1 Scenario（**10 → 10** req、**25 → 26** scen），既有
+> Scenario **逐字保留**。**连带**：`test_rag_wiring.py` / `test_phase13.py` 的 provider **桩**镜像
+> 构造签名 ⇒ 补 `timeout` / `max_retries` 两参（+`PLR0913` noqa；测试替身随签名漂移，非行为变化）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0221 行（dataclass 缺省在配置路径不可观测 /
+> 不改 provider 重试语义 / 不给 `embed_provider`·`JEVProvider` 接线 / 不做「重试进度可见」/
+> `constraints.retry_attempts` 未动（不同轴））。
