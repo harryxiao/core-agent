@@ -14,7 +14,7 @@ import contextlib
 from collections.abc import Sequence
 from typing import Any
 
-from core.memory import Crystallizer, MemoryBackend, MemoryEntry
+from core.memory import Crystallizer, MemoryBackend, MemoryEntry, redact_secrets
 from core.permission import ApprovalTicket, is_approved
 from core.skills import Skill, SkillLibrary
 
@@ -27,6 +27,7 @@ from .models import (
     GATE_CALIBER,
     DiagnosisReport,
     EvolutionOutcome,
+    GateReport,
     GenerationCandidate,
     Trace,
     TraceRef,
@@ -35,6 +36,9 @@ from .observation import ObservationRegistry
 from .pending import PendingQueue
 from .proposer import Proposer
 from .validator import Validator
+
+# 门禁拒绝教训里 issue 片段上界（与 diagnoser._MAX_NOTE_CHARS 同口径；change 0234）
+_MAX_ISSUE_CHARS = 400
 
 
 class EvolutionEngine:
@@ -99,6 +103,7 @@ class EvolutionEngine:
         gate = self._validator.validate(candidate)
         if not gate.passed:
             self._pending.record(candidate, gate)
+            self._write_rejected_lesson(candidate, gate)
             return EvolutionOutcome(
                 status="rejected", diagnosis=diagnosis, candidate=candidate, gate=gate
             )
@@ -263,6 +268,41 @@ class EvolutionEngine:
                     trace_id="evolution",
                 )
             )
+
+    def _write_rejected_lesson(self, candidate: GenerationCandidate, gate: GateReport) -> None:
+        """未过门教训写回：L2 全文（issue 有界）+ L3 短指针；memory 未注入则跳过（0234）。"""
+        if self._memory is None:
+            return
+        issue = str(candidate.delta.get("issue", ""))[:_MAX_ISSUE_CHARS]
+        gates = {key: bool(value) for key, value in gate.test_results.items()}
+        l2_id = f"evolution.gate_rejected.{candidate.candidate_id}"
+        l2_body = redact_secrets(
+            f"rejected[{candidate.candidate_id}] {candidate.target_plugin}: "
+            f"issue={issue} review={gate.review} gates={gates}"
+        )
+        l3_body = redact_secrets(
+            f"ref={l2_id}; target={candidate.target_plugin}; review={gate.review}"
+        )
+        self._memory.put(
+            MemoryEntry(
+                id=l2_id,
+                layer="L2",
+                content=l2_body,
+                tags=["evolution", "gate_rejected"],
+                source="evolution",
+                trace_id="evolution",
+            )
+        )
+        self._memory.put(
+            MemoryEntry(
+                id=f"evolution.gate_rejected.l3.{candidate.candidate_id}",
+                layer="L3",
+                content=l3_body,
+                tags=["evolution", "gate_rejected", "l3"],
+                source="evolution",
+                trace_id="evolution",
+            )
+        )
 
     def _crystallize_skill(self, candidate: GenerationCandidate) -> EvolutionOutcome:
         skill = Skill(
