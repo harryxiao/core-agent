@@ -16,6 +16,7 @@ from .builtin import (
     gate_run,
     web_fetch,
 )
+from .env_shell import EnvironmentSnapshot, format_env_block, probe_environment
 from .errors import ToolErrorCode, ToolUseError
 from .install_tools import StubPlugin, install_tool, list_tool, uninstall_tool
 from .models import GateDecision, ToolDef, ToolError, ToolResult
@@ -24,6 +25,7 @@ from .safety_gate import SafetyGate
 from .tool import Tool
 
 __all__ = [
+    "EnvironmentSnapshot",
     "GateDecision",
     "SafetyGate",
     "StubPlugin",
@@ -40,9 +42,11 @@ __all__ = [
     "file_patch",
     "file_read",
     "file_write",
+    "format_env_block",
     "gate_run",
     "web_fetch",
     "install_tool",
     "list_tool",
+    "probe_environment",
     "uninstall_tool",
 ]

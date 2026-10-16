@@ -8,6 +8,7 @@ auto、不可逆写/高风险 confirm、显式拒绝 deny）、效应记录与�
 from __future__ import annotations
 
 import asyncio
+import subprocess as sp
 import time
 from unittest.mock import patch
 
@@ -31,6 +32,7 @@ from core.tools import (
     web_fetch,
 )
 from core.tools.builtin import _MAX_FETCH_BYTES  # noqa: PLC2701 — 截断上界断言
+from core.tools.env_shell import EnvironmentSnapshot
 
 _DELAY = 0.1
 _HTTP_OK = 200  # FakeHTTPResponse 默认状态码
@@ -447,24 +449,56 @@ def test_async_true_concurrency() -> None:
 # ---- code_run / web_fetch 内置原子工具 ----
 
 
-def test_code_run_python_and_bash() -> None:
+def test_code_run_python_and_bash(monkeypatch: pytest.MonkeyPatch) -> None:
     """code_run 执行 python/bash 片段，返回码与 stdout 正确映射。"""
     provider = _provider()
     provider.register(code_run())
     py = provider.invoke(
         "tools.code_run", {"script": "print(21 * 2)", "type": "python"}, trace_id="t", approved=True
     )
-    sh = provider.invoke(
+    assert py.ok and py.data["returncode"] == 0 and py.data["stdout"].strip() == "42"
+
+    # bash：注入「有 bash」快照 + 替身 run（宿主未必装 Git Bash，change 0237 fail-closed）
+    def fake_run(cmd: list, **_kw: object) -> object:
+        assert cmd[:2] == ["bash", "-c"]
+        return type("R", (), {"returncode": 0, "stdout": "bash-ok\n", "stderr": ""})()
+
+    monkeypatch.setattr("core.tools.builtin.subprocess.run", fake_run)
+    snap = EnvironmentSnapshot(
+        os="Linux",
+        default_shell="bash",
+        shell_label="bash",
+        path_style="posix",
+        has_pwsh=False,
+        has_powershell=False,
+        has_bash=True,
+    )
+    provider2 = _provider()
+    provider2.register(code_run(env_snapshot=snap))
+    sh = provider2.invoke(
         "tools.code_run", {"script": "echo bash-ok", "type": "bash"}, trace_id="t", approved=True
     )
-    assert py.ok and py.data["returncode"] == 0 and py.data["stdout"].strip() == "42"
     assert sh.ok and sh.data["stdout"].strip() == "bash-ok"
 
 
-def test_code_run_timeout_structured() -> None:
+def test_code_run_timeout_structured(monkeypatch: pytest.MonkeyPatch) -> None:
     """脚本超时：子进程被杀并归一 EXECUTION_FAILED，不向调用方抛裸异常。"""
+
+    def fake_run(*_a: object, **_kw: object) -> object:
+        raise sp.TimeoutExpired(cmd="bash", timeout=0.05)
+
+    monkeypatch.setattr("core.tools.builtin.subprocess.run", fake_run)
+    snap = EnvironmentSnapshot(
+        os="Linux",
+        default_shell="bash",
+        shell_label="bash",
+        path_style="posix",
+        has_pwsh=False,
+        has_powershell=False,
+        has_bash=True,
+    )
     provider = _provider()
-    provider.register(code_run())
+    provider.register(code_run(env_snapshot=snap))
     result = provider.invoke(
         "tools.code_run",
         {"script": "sleep 1", "type": "bash", "timeout": 0.05},
@@ -473,7 +507,7 @@ def test_code_run_timeout_structured() -> None:
     )
     assert result.ok is False
     assert result.error is not None and result.error.code == ToolErrorCode.EXECUTION_FAILED
-    assert "timed out" in result.error.message
+    assert "timed out" in result.error.message.lower() or "Timeout" in result.error.message
 
 
 def test_code_run_blocked_without_approval() -> None:

@@ -137,7 +137,7 @@ def format_task_event(kind: str, payload: object) -> str | None:  # noqa: PLR091
 
 
 _TOOL_NAMES = {  # tool_id → 友好名（用户可见层不暴露内部 id/参数；change 0233）
-    "tools.code_run": "Bash",
+    # code_run 按 args.type 动态命名（change 0237），不进本表恒映射
     "tools.file_read": "Read",
     "tools.file_write": "Write",
     "tools.file_patch": "Edit",
@@ -149,7 +149,13 @@ _TOOL_NAMES = {  # tool_id → 友好名（用户可见层不暴露内部 id/参
 }
 
 # 括号摘要式标题（`Bash(…)` / `Read(…)`）；未列入者退化为 `Name  target`（极少见兜底）
-_PAREN_TITLES = frozenset(_TOOL_NAMES.values()) | {"Planner", "Thinking"}
+_PAREN_TITLES = frozenset(_TOOL_NAMES.values()) | {
+    "Planner",
+    "Thinking",
+    "Bash",
+    "PowerShell",
+    "Python",
+}
 
 _TARGET_FIELDS = {  # tool_id → 标题目标摘要的**白名单结构性字段**（正文类参数永不取）
     "tools.file_read": "path",
@@ -170,6 +176,8 @@ _THINKING_TITLE_ACTIVE = "Thinking…"  # 进行中：仅省略号，不刷思�
 _STEP_SYMBOLS: dict[str, str] = {
     "Thinking": "✦",
     "Bash": "$",
+    "PowerShell": "$",
+    "Python": "λ",
     "Read": "◇",
     "Write": "✎",
     "Edit": "✏",
@@ -181,6 +189,12 @@ _STEP_SYMBOLS: dict[str, str] = {
     "Context": "⊞",
     "raw": "⚠",
     "subtask": "◈",
+}
+
+_CODE_RUN_NAMES = {
+    "powershell": "PowerShell",
+    "python": "Python",
+    "bash": "Bash",
 }
 
 
@@ -230,9 +244,21 @@ def _action_title(tool: str, target: str, *, ok: bool | None = None, ms: object 
     return f"{base} · failed"
 
 
-def _tool_name(tool_id: object) -> str:
+def _code_run_name(args: object) -> str:
+    """``tools.code_run`` 按有效 ``type`` 命名（缺省按 bash 心智兼容旧调用）。"""
+    type_name = "bash"
+    if isinstance(args, Mapping):
+        raw = args.get("type")
+        if isinstance(raw, str) and raw.strip():
+            type_name = raw.strip().lower()
+    return _CODE_RUN_NAMES.get(type_name, "Bash")
+
+
+def _tool_name(tool_id: object, args: object = None) -> str:
     """tool_id → 友好名；未映射的去掉 tools. 前缀兜底。"""
     name = str(tool_id or "")
+    if name == "tools.code_run":
+        return _code_run_name(args)
     mapped = _TOOL_NAMES.get(name)
     if mapped:
         return mapped
@@ -254,8 +280,9 @@ def format_action_event(kind: str, payload: object) -> str | None:
     if not isinstance(payload, dict):
         return None
     data = cast(dict[str, Any], payload)
-    tool = _tool_name(data.get("tool_id"))
-    target = _tool_target(data.get("tool_id"), data.get("args"))
+    args = data.get("args")
+    tool = _tool_name(data.get("tool_id"), args)
+    target = _tool_target(data.get("tool_id"), args)
     if kind == "action_started":
         return _action_title(tool, target)
     if kind == "action_completed":
@@ -612,7 +639,8 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             self._focus_sid: str = ""  # 焦点中的子任务标识（"" = 主视图）
             self._focus_box: Collapsible | None = None  # 焦点折叠块（身份绑定：sid 跨任务复用）
             self._focus_detail: Static | None = None  # 焦点折叠块详情（面板正文取此渲染文本）
-            self._actions: dict[str, tuple[_StepBlock, str]] = {}  # round:tool→(块, 目标摘要)
+            self._actions: dict[str, tuple[_StepBlock, str, object]] = {}
+            # round:tool → (块, 目标摘要, args) —— args 供完成态按 code_run type 命名
             self._reasoning_by_round: dict[int, _StepBlock] = {}  # round→思考块（同 round 归并）
             self._reasoning_fallback: _StepBlock | None = None  # 无 round 时的降级块
             self._spin_timer: Timer | None = None  # 工作状态行驱动
@@ -1131,22 +1159,23 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             entry = self._actions.get(key)
             if kind == "started":
                 self._settle_thinking_titles()  # 工具开始 ⇒ 上一 Thinking 结束闪烁态
-                target = _tool_target(data.get("tool_id"), data.get("args"))
-                friendly = _tool_name(data.get("tool_id"))
+                args = data.get("args")
+                target = _tool_target(data.get("tool_id"), args)
+                friendly = _tool_name(data.get("tool_id"), args)
                 box = _StepBlock(
                     _action_title(friendly, target),
                     collapsed=True,
                     symbol=_step_symbol(friendly),
                 )
                 self._add(box)
-                self._actions[key] = (box, target)
+                self._actions[key] = (box, target, args)
                 self._spin_defer_to_blocks()  # 标题已表达进度
                 return
             if entry is None:
                 return
-            box, target = entry
+            box, target, args = entry
             box.title = _action_title(
-                _tool_name(data.get("tool_id")),
+                _tool_name(data.get("tool_id"), args),
                 target,
                 ok=bool(data.get("ok")),
                 ms=data.get("duration_ms"),

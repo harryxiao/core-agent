@@ -1,0 +1,63 @@
+## MODIFIED Requirements
+
+### Requirement: 内置原子工具（代码执行 / 网页读取）
+
+系统 SHALL 内置代码执行与网页读取原子工具，与文件工具一致地经 schema 校验、coeffect 确认门、
+超时与输出截断约束执行。
+
+- **代码执行方言**：`tools.code_run` SHALL 支持 `type` 为 `python`、`bash`、`powershell` 三档。
+  - `python`：以当前解释器执行脚本片段（既有语义）。
+  - `bash`：经 `bash -c`（或平台等价）执行；目标解释器不在 PATH ⇒ **结构化拒绝**，SHALL NOT
+    改跑 powershell 或其它方言。
+  - `powershell`：经 PowerShell 执行（优先 `pwsh`，回落 `powershell`）；目标解释器不在 PATH ⇒
+    **结构化拒绝**，SHALL NOT 改跑 bash。
+- **平台缺省**：调用方未指定 `type` 时，Windows 宿主 SHALL 缺省 `powershell`；Darwin / Linux
+  宿主 SHALL 缺省 `bash`；显式 `type` 优先于缺省。未知 / 其它 OS 的缺省 SHALL 保持与历史
+  「未传则按 bash 路径解析」兼容或要求显式（实现与 design 钉死一种，测试锚定）。
+- **超时与截断 / 确认门**：返回码与 stdout/stderr 截断、不可逆高风险确认门语义 SHALL 与既有
+  一致（本 change 不放宽、不收紧确认门策略）。
+
+#### Scenario: 代码执行（python）
+
+- **GIVEN** Agent 需执行一段 Python 代码
+- **WHEN** 调用 `tools.code_run` 且 `type` 为 `python`（或等价显式）
+- **THEN** 子进程以当前 Python 解释器执行并返回返回码与 stdout/stderr（按上限截断）；
+  超时/异常归一为结构化错误；副作用声明经确认门
+
+#### Scenario: 代码执行（bash）
+
+- **GIVEN** Agent 需执行 bash 脚本且宿主 PATH 上存在 bash
+- **WHEN** 调用 `tools.code_run` 且 `type` 为 `bash`
+- **THEN** 经 bash 执行并返回返回码与输出（截断口径同既有）
+
+#### Scenario: 代码执行（powershell）
+
+- **GIVEN** Agent 需执行 PowerShell 且宿主存在 `pwsh` 或 `powershell`
+- **WHEN** 调用 `tools.code_run` 且 `type` 为 `powershell`
+- **THEN** 经 PowerShell 执行（优先 pwsh）并返回返回码与输出（截断口径同既有）
+
+#### Scenario: Windows 未指定 type 时缺省 powershell
+
+- **GIVEN** 宿主为 Windows，且调用未指定 `type`
+- **WHEN** 调用 `tools.code_run`
+- **THEN** 按 `powershell` 方言解析并执行（或因缺解释器而结构化拒绝），SHALL NOT 在未显式
+  指定时走 bash
+
+#### Scenario: Darwin/Linux 未指定 type 时缺省 bash
+
+- **GIVEN** 宿主为 Darwin 或 Linux，且调用未指定 `type`
+- **WHEN** 调用 `tools.code_run`
+- **THEN** 按 `bash` 方言解析并执行（或因缺解释器而结构化拒绝）
+
+#### Scenario: 缺解释器不得改方言
+
+- **GIVEN** 请求的 `type` 为 `bash` 或 `powershell`，但对应解释器不在 PATH
+- **WHEN** 调用 `tools.code_run`
+- **THEN** 结构化拒绝，SHALL NOT 静默改用另一 shell 方言执行
+
+#### Scenario: 网页读取
+
+- **GIVEN** Agent 需读取一个网页
+- **WHEN** 调用 `tools.web_fetch`（仅接受 http/https URL）
+- **THEN** GET 抓取返回状态码与正文（按字节上限截断），网络错误归一为结构化错误；出站网络
+  coeffect 经确认门（高风险需人工审批）

@@ -24,6 +24,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
+from .env_shell import (
+    EnvironmentSnapshot,
+    probe_environment,
+    resolve_run_type,
+    shell_argv,
+)
 from .models import ToolDef
 from .tool import Tool
 
@@ -61,7 +67,14 @@ _RUN_SCHEMA = {
     "type": "object",
     "properties": {
         "script": {"type": "string"},
-        "type": {"type": "string", "enum": ["python", "bash"]},
+        "type": {
+            "type": "string",
+            "enum": ["python", "bash", "powershell"],
+            "description": (
+                "python=解释器 -c；bash / powershell=对应壳。"
+                "省略时：Windows→powershell，Darwin/Linux→bash。"
+            ),
+        },
         "timeout": {"type": "number"},
         "cwd": {"type": "string"},
     },
@@ -181,13 +194,34 @@ def file_patch() -> Tool:
     )
 
 
-def code_run() -> Tool:
-    """执行代码片段（python/bash 子进程，超时与输出截断；高风险经确认门）。"""
+def code_run(
+    *,
+    env_snapshot: EnvironmentSnapshot | Callable[[], EnvironmentSnapshot] | None = None,
+) -> Tool:
+    """执行代码片段（python / bash / powershell；超时与输出截断；高风险经确认门）。
+
+    ``env_snapshot``：缺省方言与壳可得性；``None`` ⇒ 每次调用时 ``probe_environment()``。
+    """
+
+    def _snap() -> EnvironmentSnapshot:
+        if env_snapshot is None:
+            return probe_environment()
+        if callable(env_snapshot):
+            return env_snapshot()
+        return env_snapshot
 
     async def handler(
-        script: str, type: str = "python", timeout: float = 10.0, cwd: str | None = None
+        script: str,
+        type: str | None = None,
+        timeout: float = 10.0,
+        cwd: str | None = None,
     ) -> dict[str, Any]:
-        cmd = [sys.executable, "-c", script] if type == "python" else ["bash", "-c", script]
+        snap = _snap()
+        run_type = resolve_run_type(type, snap)
+        if run_type == "python":
+            cmd = [sys.executable, "-c", script]
+        else:
+            cmd = shell_argv(run_type, script, snap)
         proc = await asyncio.to_thread(
             subprocess.run,
             cmd,
@@ -200,7 +234,7 @@ def code_run() -> Tool:
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
         return {
-            "type": type,
+            "type": run_type,
             "returncode": proc.returncode,
             "stdout": stdout[:_MAX_OUTPUT_CHARS],
             "stderr": stderr[:_MAX_OUTPUT_CHARS],
@@ -211,7 +245,11 @@ def code_run() -> Tool:
     return Tool(
         definition=ToolDef(
             tool_id="tools.code_run",
-            description="执行代码片段（python 或 bash），返回返回码与输出；不可逆高风险，需审批",
+            description=(
+                "执行代码片段（python / bash / powershell），返回返回码与输出；"
+                "未指定 type 时 Windows 缺省 powershell、Darwin/Linux 缺省 bash；"
+                "不可逆高风险，需审批"
+            ),
             schema=_RUN_SCHEMA,
             coeffects=["process:spawn", "filesystem:write"],
             reversible=False,

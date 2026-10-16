@@ -147,6 +147,7 @@ from core.tools import (
     list_tool,
     uninstall_tool,
 )
+from core.tools.env_shell import probe_environment
 
 # 门控名单（change 0067 / 账本 E10）：组合根装配的**可选**模块 —— 本元组是单一真源，
 # configuration 层不认识模块名。名单内模块缺省装配（未声明即开，兼容既有行为），仅显式
@@ -879,6 +880,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     # 的全部 planner。缺省**关** ⇒ 解析失败路径逐字不变。宠物 loop 也接：这是**协议层**自愈
     # （推理输出协议），不是记忆/转录面（宠物隔离注记约束的是后者的注入面）。
     parse_retry = config.parse_retry()
+    # 运行环境事实（change 0237）：探测一次，主 / 子 / 神兽 / 宠物 planner 共用同一快照。
+    env_snapshot = probe_environment()
     planner = LLMPlanner(
         llm,
         model=app.llm.model,
@@ -892,6 +895,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         max_tokens=max_tokens,
         block_plan=block_plan,
         parse_retry=parse_retry,
+        env_snapshot=env_snapshot,
     )
     # 门控（0067）：evolution 关闭 ⇒ 引擎/worker 不建，loop 冷路径与 trace 完成回调一并置 None
     # （不为「未装配」造空转闭包 —— DefaultLoop 本就接受 cold_path / trace_observer =None）。
@@ -1079,6 +1083,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             max_tokens=max_tokens,
             block_plan=block_plan,
             parse_retry=parse_retry,
+            env_snapshot=env_snapshot,
         )
         return cast(
             LoopPlugin,
@@ -1124,6 +1129,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             max_tokens=max_tokens,
             block_plan=block_plan,
             parse_retry=parse_retry,
+            env_snapshot=env_snapshot,
         )
         return cast(
             LoopPlugin,
@@ -1359,6 +1365,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                         max_tokens=max_tokens,
                         block_plan=block_plan,
                         parse_retry=parse_retry,
+                        env_snapshot=env_snapshot,
                     ),
                     memory=memory,
                     tools=provider,

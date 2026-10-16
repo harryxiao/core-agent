@@ -18,6 +18,7 @@ from typing import Any, cast
 from core.context import DynamicAssembler, estimate_tokens, plan_blocks
 from core.llm_provider import LLMError, LLMProvider, LLMRequest, Message, TokenUsage, ToolCall
 from core.tools import ToolProvider
+from core.tools.env_shell import EnvironmentSnapshot, format_env_block
 
 from .protocol import Action, LoopContext, Thinking
 
@@ -60,7 +61,7 @@ _SYSTEM_PROMPT = (
     "（含解释、总结、结尾语、代码块围栏）；tool_id 必须取自「可用工具」列表，"
     "不得臆造；args 必须符合该工具声明的参数。\n"
     "选①时：整条只能是自然语言；**禁止**以任何形式夹杂 JSON"
-    "（含 Markdown 代码块、示例、半截或完整的 {\"tool_id\":…}）——"
+    '（含 Markdown 代码块、示例、半截或完整的 {"tool_id":…}）——'
     "夹杂一律解析失败、本轮作废。解释与调工具不得写在同一条回复里。"
 )
 
@@ -384,6 +385,9 @@ class LLMPlanner:
         # 解析失败回喂重试（change 0227 / ADR-0217，缺省**关**）。开启 ⇒ 解析失败且本轮未
         # 外发内容增量时追加用户角色 nudge 重试**恰一次**；关闭 ⇒ 请求形状与调用次数逐字不变。
         parse_retry: bool = False,
+        # 运行环境事实（change 0237）：注入快照或工厂 ⇒ 系统提示产「运行环境」块；
+        # ``None`` ⇒ 不产块（既有提示逐字不变）。
+        env_snapshot: EnvironmentSnapshot | Callable[[], EnvironmentSnapshot] | None = None,
     ) -> None:
         self._llm = llm
         self._model = model
@@ -395,6 +399,7 @@ class LLMPlanner:
         self._max_tokens = max_tokens if (max_tokens is not None and max_tokens > 0) else None
         self._block_plan = block_plan
         self._parse_retry = parse_retry
+        self._env_snapshot = env_snapshot
         # 最近一次装配的提示 token 观测（记账下界）：由 `last_prompt_tokens()` 对外暴露，
         # 供 loop 侧以 duck-typing 探针消费（见 change 0152 / 账本 E96）。
         self._last_prompt_tokens = 0
@@ -644,10 +649,21 @@ class LLMPlanner:
         skills = self._skill_hints(self._task(ctx), ctx.session_id)
         if skills:
             blocks.append("可用技能：\n" + "\n".join(_format_skill_hint(s) for s in skills))
+        env_block = self._env_block()
+        if env_block:
+            blocks.append(env_block)
         if self._tools is not None:
             schemas = [f"- {t.tool_id}: {t.description}" for t in self._tools.active_tools()]
             blocks.append("可用工具：\n" + "\n".join(schemas))
         return "\n\n".join(blocks)
+
+    def _env_block(self) -> str:
+        """运行环境事实块；未注入 ⇒ 空串（不产块）。"""
+        raw = self._env_snapshot
+        if raw is None:
+            return ""
+        snap = raw() if callable(raw) else raw
+        return "运行环境：\n" + format_env_block(snap)
 
     def _tool_schemas(self) -> list[Any] | None:
         if self._tools is None:
