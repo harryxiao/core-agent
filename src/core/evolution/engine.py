@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 from core.memory import Crystallizer, MemoryBackend, MemoryEntry, redact_secrets
 from core.permission import ApprovalTicket, is_approved
 from core.skills import Skill, SkillLibrary
 
 from .collector import Collector
+from .content import validate_skill_content
 from .curriculum import EvolutionGoal
 from .diagnoser import Diagnoser
 from .errors import EvolutionError, EvolutionErrorCode
@@ -305,12 +306,45 @@ class EvolutionEngine:
         )
 
     def _crystallize_skill(self, candidate: GenerationCandidate) -> EvolutionOutcome:
-        skill = Skill(
-            skill_id=f"skills.evolution.{candidate.target_plugin}",
-            description=candidate.delta.get("issue", ""),
-            param_schema=candidate.delta.get("schema", {}),
-            status="active",
-        )
+        raw_any = candidate.delta.get("content")
+        if validate_skill_content(raw_any) and isinstance(raw_any, dict):
+            raw = cast("dict[str, Any]", raw_any)
+            task_types_raw = raw.get("task_types", [])
+            preconditions_raw = raw.get("preconditions", [])
+            schema_val: Any = raw.get("param_schema") or {}
+            task_types = (
+                [str(t) for t in cast("list[Any]", task_types_raw)]
+                if isinstance(task_types_raw, list)
+                else []
+            )
+            preconditions = (
+                [str(p) for p in cast("list[Any]", preconditions_raw)]
+                if isinstance(preconditions_raw, list)
+                else []
+            )
+            schema: dict[str, Any] = (
+                dict(cast("dict[str, Any]", schema_val)) if isinstance(schema_val, dict) else {}
+            )
+            desc = str(raw.get("description") or "").strip() or str(
+                candidate.delta.get("issue", "")
+            )
+            skill = Skill(
+                skill_id=f"skills.evolution.{candidate.target_plugin}",
+                description=desc,
+                task_types=task_types,
+                preconditions=preconditions,
+                param_schema=schema,
+                instructions=redact_secrets(str(raw.get("instructions") or "")),
+                status="active",
+            )
+        else:
+            # 缺省 / 无效 content ⇒ 既有空壳回退（回归锚点）
+            skill = Skill(
+                skill_id=f"skills.evolution.{candidate.target_plugin}",
+                description=candidate.delta.get("issue", ""),
+                param_schema=candidate.delta.get("schema", {}),
+                status="active",
+            )
         if self._library is not None:
             self._library.register(skill)
         return EvolutionOutcome(status="published", candidate=candidate, skill_id=skill.skill_id)

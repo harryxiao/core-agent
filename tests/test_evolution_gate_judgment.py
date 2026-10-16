@@ -314,15 +314,29 @@ class _Reply:
         self.content = content
 
 
+#: change 0236：技能内容蒸馏 prompt 命中时返回合法 JSON（与审查 PASS 分流）
+_SKILL_CONTENT_JSON = (
+    '{"task_types":["t"],"instructions":"步骤","param_schema":{},'
+    '"preconditions":[],"description":""}'
+)
+
+
 def _stub_llm_provider(content: str, *, boom: bool = False) -> Any:
-    """模型提供者替身：`content` 是审查者输出；`boom` 模拟端点不可达。"""
+    """模型提供者替身：`content` 是审查者输出；`boom` 模拟端点不可达。
+
+    技能内容蒸馏（change 0236）与审查共用 `_llm_text`：蒸馏 prompt 返回合法 JSON，
+    其余 prompt 返回 ``content``（审查词）。
+    """
 
     class _Provider:
         def __init__(self, **_kwargs: Any) -> None: ...
 
-        def completion(self, _request: Any) -> _Reply:
+        def completion(self, request: Any) -> _Reply:
             if boom:
                 raise RuntimeError("端点不可达")
+            prompt = request.messages[0].content
+            if "技能内容蒸馏器" in prompt:
+                return _Reply(_SKILL_CONTENT_JSON)
             return _Reply(content)
 
     return _Provider

@@ -340,18 +340,29 @@ def test_caliber_persists_with_pending_queue(tmp_path: Any) -> None:
 
 
 class _Reply:
-    """模型回复替身（只要求 `.content` = 审查者输出）。"""
+    """模型回复替身（只要求 `.content`）。"""
 
-    content = "PASS"
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+#: change 0236：技能内容蒸馏 prompt 命中时返回合法 JSON，否则审查者 PASS
+_SKILL_CONTENT_JSON = (
+    '{"task_types":["t"],"instructions":"步骤","param_schema":{},'
+    '"preconditions":[],"description":""}'
+)
 
 
 class _StubProvider:
-    """组合根构造的模型提供者替身：审查者恒判过，调用期不出网。"""
+    """组合根构造的模型提供者替身：内容蒸馏 / 审查者均可用，调用期不出网。"""
 
     def __init__(self, **_kw: Any) -> None: ...
 
-    def completion(self, _request: Any) -> _Reply:
-        return _Reply()
+    def completion(self, request: Any) -> _Reply:
+        prompt = request.messages[0].content
+        if "技能内容蒸馏器" in prompt:
+            return _Reply(_SKILL_CONTENT_JSON)
+        return _Reply("PASS")
 
 
 def _passing_gate_executor(**_kw: Any) -> Any:

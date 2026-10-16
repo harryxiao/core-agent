@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
+from .content import validate_skill_content
 from .models import GateReport, GenerationCandidate
 
 
@@ -117,9 +118,12 @@ class Validator:
         *,
         review: Review | None = None,
         tests: GateTests | None = None,
+        require_skill_content: bool = False,
     ) -> None:
         self._review = review
         self._tests = tests
+        # change 0236：装配内容 writer 时同开；缺省 False ⇒ 行为逐字不变
+        self._require_skill_content = require_skill_content
 
     def validate(self, candidate: GenerationCandidate) -> GateReport:
         review, tests = self._review, self._tests
@@ -130,6 +134,13 @@ class Validator:
             return GateReport(
                 passed=False, review=f"{missing}生产者未注入：无法判定", test_results={}
             )
+        if (
+            self._require_skill_content
+            and candidate.kind == "skill"
+            and not validate_skill_content(candidate.delta.get("content"))
+        ):
+            # 空壳 fail-closed + fail-fast：不跑 review / 运行时测试
+            return GateReport(passed=False, review="空壳：技能候选无有效 content", test_results={})
         if not review(candidate):
             # fail-fast：门已未过，不做无谓的子进程开销（也不据空结果伪装成「测过」）。
             return GateReport(passed=False, review="拒绝", test_results={})

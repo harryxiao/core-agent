@@ -62,6 +62,7 @@ from core.evolution import (
 # 原生实施（0112，可选能力）：执行器与补丁生产者接缝按子模块引入 —— 不进包出口
 # （它们的消费方只有组合根与操作面；包出口保持「进化闭环本体」的语义）。
 from core.evolution.author import patch_author_with
+from core.evolution.content import skill_content_writer_with
 from core.evolution.executor import EvolutionExecutor, source_reader
 from core.evolution.validator import review_with, run_gate_tests
 from core.judgment import (
@@ -920,20 +921,24 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             if config.is_enabled("evolution_benchmark_runner")
             else None
         )
+        # 技能内容面（change 0236）：先工厂再注入；与 `require_skill_content` 同开同关。
+        skill_content_writer = skill_content_writer_with(_llm_text)
         evolution_engine = EvolutionEngine(
             # 记忆面 → 诊断面桥（change 0188 / ADR-0179）：注入失败摘要查询接缝（依赖倒置，
             # Diagnoser 不 import memory）⇒ 已沉淀的 `loop.failure.<trace_id>` 并入诊断报告。
             diagnoser=Diagnoser(failure_lookup=_failure_lookup(backend)),
-            proposer=Proposer(),
+            proposer=Proposer(writer=skill_content_writer),
             # 结晶面门的**判定面**（0120）：review 接组合根模型接缝 `_llm_text`（与摘要/补丁同一
             # 依赖方向：evolution 不 import LLM 抽象），运行时测试跑**按标记派生**的结晶面门禁
             # 子集（`lint` + `test`；命令仍只有单一真源 `GATE_COMMANDS` 一份），执行器复用门禁工具面
             # 那份 `gate_executor`（不造第二份执行面）。两判据均 fail-closed：未注入 / 模型不可用 /
             # 门禁跑不起来 ⇒ 门未过 ⇒ 不发布（此前 `Validator()` 无参 = 两个恒通过桩，门恒开）。
             # 代价如实登记：冷路径**同步**跑子进程门禁（ADR-0113 已知局限①，reopen：冷路径异步化）。
+            # change 0236：装配内容 writer 时同开技能内容判据（空壳 fail-closed）。
             validator=Validator(
                 review=review_with(_llm_text),
                 tests=run_gate_tests(run_gate=_run_gate, gates=crystallization_gates()),
+                require_skill_content=True,
             ),
             # 留出评测接**真实打分器**（0119）：留出分由绑定基准的样本经执行器真实执行产出。
             # 执行器映射（`task_type` → 可调用体）由组合根注入 —— **门控开**才接（change 0212 /
