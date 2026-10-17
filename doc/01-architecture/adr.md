@@ -8182,6 +8182,54 @@ python env ⇒ `test_code_run_python_sets_utf8_io_env` 红；摘掉 `default_she
 可能短暂不一致（既定取舍）；⑤ 未在真实 Windows 上跑执行面（本机 Linux），编码路径以注入
 测试与子进程 kwargs 锚定。
 
+## ADR-0229：记忆与进化高危面收口 —— 评测异常 fail-closed / 派生豁免 / 密钥脱敏（change 0241 / 台账 E176）
+
+**背景**：对记忆模块与 evolution 决策路径的全量 review 发现三处「规格已要求、实现未闭合」：
+① `BenchmarkScorer` 的 runner 异常按规格冒泡，但 `Evaluator.evaluate` 未捕获 ⇒ 异常直穿
+`EvolutionEngine.run_cycle` / `EvolutionWorker.maybe_run`，候选不进台账、不产 `frozen`，
+`_sample_observations` 与 `_completed.clear()` 均不执行；② `episodic`（情景归纳产物）漏登记
+`_GATE_EXEMPT_SOURCES`，作为派生结论却会因低分被拒收/降层；③ 摘要、循环轨迹、进化写回
+（`dissolve` / `reject` / 技能内容字段）均原样落库，模型或人工输入不构成信任边界。
+
+**决策**：
+
+- **D1 评测器 fail-closed**：`Evaluator.evaluate` 对 `_held_out_score` 包 `try/except Exception`
+  ⇒ 返回 `_frozen(baseline=baseline)`。打分异常 = **无法评测**，与「无基线/无留出分」同结论；
+  SHALL NOT 冒出击穿闭环，SHALL NOT 吞成 `rollback` / `publish`。只捕 `Exception`（Ctrl-C /
+  `SystemExit` 仍中断）；不新增日志出口（避免回显异常 message）。
+- **D2 `episodic` 纳入评分豁免面**：`_GATE_EXEMPT_SOURCES` 增 `"episodic"`（与
+  `compaction` / `context` / `extraction` / `relation` 同面）。同步修正注释：豁免评分（写入面）
+  与豁免遗忘（衰减面）不是同一组来源，`episodic` 是第三类 —— `forget` 按 `kind == "episodic"`
+  走衰减，不受该集合约束（**刻意设计，不改遗忘策略**）。
+- **D3 写回脱敏闭环**（统一用 `core.memory.redact_secrets`，纯函数、方向 over-redact）：
+  | 写回点 | 处理 |
+  |---|---|
+  | `_commit_summary` 会话摘要 | store 侧**无条件** `redact_secrets(summary)` |
+  | 循环轨迹条目 | 整条内容 `redact_secrets("\n".join(lines))` 后写入 |
+  | `dissolve` 原因 | `content=redact_secrets(reason)` |
+  | `reject` 人工理由 | 拼接文本 `redact_secrets` 后落库 |
+  | `_crystallize_skill` | `description` / `preconditions` / `task_types` 脱敏；`instructions` 既有已脱敏；`param_schema` 不改写 |
+  | `_crystallize_plugin` | 交付 crystallizer 的 `issue` 脱敏 |
+  未命中密钥形态时为**恒等变换**，正文与结局逐字不变。
+
+**规格**：`memory` **MODIFIED**「记忆压实」（＋1 Scenario）与「写入侧重要度闸门」（豁免面补
+`relation` / `episodic`，＋1 Scenario）（17 req 不变、128 → 130 scen）；`loop` **MODIFIED**
+「执行循环」（轨迹内容口径改为「除密钥形态脱敏外逐字不变」，＋1 Scenario）（7 req 不变、
+96 → 97 scen）；`evolution` **ADDED**「进化写回与技能内容的密钥形态脱敏」＋3 Scenario
+（18 → 19 req、95 → 98 scen）。evaluator 面**规格中性**：evolution「留出评测」已要求异常冒泡
+给评测器判 `freeze`，本 change 只让实现对齐。既有 Scenario 逐字保留。
+
+**反证（实测）**：逐项还原 —— 摘 `try/except` ⇒ 2 红；摘 `episodic` 豁免 ⇒ 1 红；还原三处
+脱敏（摘要 / 轨迹 / 进化写回）⇒ 6 红；复原 ⇒ 相关文件 `md5sum` 同。测试锚点：新增 9 例
+（`test_evolution_gate_data.py` 2 / `test_evolution.py` 4 / `test_memory_episodic.py` 1 /
+`test_memory_summary_promotion.py` 1 / `test_loop_memory_sequence.py` 1）＋
+`test_memory.py` 豁免面集合断言同步扩为五来源。全量 2670 → **2679** passed。
+
+**局限**：① 评测器只捕 `Exception`，进程级中断仍直穿（刻意）；② 脱敏为**行内替换**，不识别
+跨行拼接或编码变形后的密钥（既有判据边界，全仓同源）；③ `episodic` 的遗忘面仍按 `kind` 走
+衰减，本 change 只修注释与评分豁免，不改遗忘策略；④ 摘要脱敏发生在 `_commit_summary`，
+`_deliver_promotion` 的长度判据仍按**脱敏前**摘要计算（越界判定不变，属既定口径）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8405,3 +8453,4 @@ python env ⇒ `test_code_run_python_sets_utf8_io_env` 红；摘掉 `default_she
 | ADR-0226 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0227 | 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0228 | 03-interfaces/prompts.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0229 | 03-interfaces/memory-interface.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

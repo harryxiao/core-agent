@@ -274,6 +274,7 @@ def reject(self, candidate: GenerationCandidate, *, reason: str | None = None) -
 | **结论随候选** | 门禁与评测报告、以及（可选）**原生实施制品**都与候选**同一条记录**落盘：不留「候选在而结论缺」的半状态（否则重启后 `crystallize` 误判 `GATE_REJECTED` / `EVAL_REGRESSED`） |
 | **待确认子集** | `pending()` 只列 `status == "pending"`；`confirm`/`reject` 后即出队，记录留在台账充当最小审计痕迹 |
 | **拒绝语义** | `reject` 置 `rejected` 并落盘；被拒候选 `crystallize` 抛 `CANDIDATE_PENDING` |
+| **写回脱敏** | `dissolve` / `reject` 的教训正文、`_crystallize_skill` 的 `description` / `preconditions` / `task_types`、`_crystallize_plugin` 的 `issue` 写前**无条件** `redact_secrets`（注入内容不构成信任边界；`param_schema` 不改写；change `0241`） |
 | **持久化** | 组合根注入 `$CORE_STATE_DIR/evolution-pending.json`；缺省纯内存（零行为变化）；落盘缺失/损坏降级为**空台账**（不抛、不阻断启动） |
 
 操作面（CLI，`core-agent evolve`）：

@@ -139,6 +139,10 @@ SHALL 只聚合**该会话**的 L2 episodic 条目（含其重要度打分写回
 丢弃既有摘要中未被新摘要显式合并的内容。摘要条目的 `id` 与「每会话至多一条、不增长」口径 SHALL
 保持不变（滚动的是**内容**，不是条目数）。
 
+摘要条目落库前 SHALL 由 store 侧**无条件**执行 `redact_secrets`（与中层摘要 / 情景归纳同一红线
+口径，方向 over-redact；注入的摘要器**不构成信任边界**）—— 密钥只引用不读取、绝不进记忆。
+该脱敏 SHALL NOT 改变未命中密钥形态的正文（逐字不变）。
+
 `MemoryStore` SHALL 提供**只读**访问器 `summary_for(session_id) -> MemoryEntry | None`：按 `session_id`
 取回该会话既有摘要条目（`id == f"compaction.summary.{session_id or 'default'}"`，口径与摘要写入**同一**）；
 无则返回 `None`。该访问器 SHALL NOT 产生任何写入或效应记录，SHALL NOT 变更条目的
@@ -154,6 +158,11 @@ SHALL NOT 交付，压实行为**逐字不变**。钩子抛错 SHALL **降级**�
 `warnings.warn` 留痕，不静默吞异常）。
 
 会话**因价值门控被跳过**时（条目取得的最高分低于阈值），系统 SHALL 经 `warnings.warn` **留痕**（只报**会话键**，SHALL NOT 回显摘要 / 事件正文 —— 承密钥红线），SHALL NOT 静默跳过。
+
+#### Scenario: 摘要落库前脱敏
+- **GIVEN** 摘要器返回的摘要含密钥形态子串
+- **WHEN** 压实写回摘要条目
+- **THEN** 落库内容不含该明文（替换为 `<redacted>`），其余正文保持不变
 
 #### Scenario: 索引最小化
 - **GIVEN** L1 索引膨胀
@@ -343,10 +352,11 @@ L5 组合根注入；**缺省 UNWIRED**。注入后，写入路径 SHALL 先评�
 - 评分器抛错或返回界外值 ⇒ SHALL **降级放行**（不评分、不拒收、不降层，按原意向层写入），
   `warnings.warn` 留痕，SHALL NOT 牵连写入主流程。
 - **未注入（缺省）⇒ 写入行为 SHALL 与现状逐字一致**：不评分、不拒收、不降层、不写 `importance`。
-- **内部/派生产物豁免**：条目 `source` 属**豁免面**（`compaction` / `context` / `extraction` —— 分别
-  对应会话摘要与中层摘要、上下文压实产物、结构化关键事实，皆由系统管道从**已准入**的材料派生）
-  ⇒ 条目 SHALL NOT 经评分（不拒收、不降层、不写 `importance`），其写入 SHALL 与该条目不注入评分器时
-  **逐字一致**（派生结论 SHALL NOT 因评分而丢失或降层）。
+- **内部/派生产物豁免**：条目 `source` 属**豁免面**（`compaction` / `context` / `extraction` /
+  `relation` / `episodic` —— 分别对应会话摘要与中层摘要、上下文压实产物、结构化关键事实、
+  实体关系、情景归纳结论，皆由系统管道从**已准入**的材料派生）⇒ 条目 SHALL NOT 经评分
+  （不拒收、不降层、不写 `importance`），其写入 SHALL 与该条目不注入评分器时**逐字一致**
+  （派生结论 SHALL NOT 因评分而丢失或降层）。
 
 #### Scenario: 未注入评分器时写入不变
 - **GIVEN** 未注入 importance scorer 的 `MemoryStore`
@@ -377,6 +387,11 @@ L5 组合根注入；**缺省 UNWIRED**。注入后，写入路径 SHALL 先评�
 - **GIVEN** 注入了 scorer，其对任何条目返回 0.1（低于 `IMPORTANCE_FLOOR`）
 - **WHEN** 写入一条来源属豁免面（如 `source="compaction"` 的会话摘要 / 中层摘要）的派生条目
 - **THEN** 条目按原意向层入库、不降层、不写 `importance`，且**无**评分留痕（派生结论不因评分而丢失）
+
+#### Scenario: 情景归纳产物豁免评分
+- **GIVEN** 注入了 scorer，其对任何条目返回 0.1（低于 `IMPORTANCE_FLOOR`）
+- **WHEN** 写入一条 `source="episodic"` 的情景归纳产物
+- **THEN** 条目按原意向层 L2 入库、不降层、不写 `importance`，且**无**评分留痕（派生结论不因评分而丢失）
 
 #### Scenario: 非豁免来源（loop）仍受评分
 - **GIVEN** 注入了 scorer，其对任何条目返回 0.1

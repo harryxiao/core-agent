@@ -229,7 +229,7 @@ class EvolutionEngine:
         return self._observations
 
     def dissolve(self, plugin_id: str, reason: str) -> None:
-        """溶解退化：技能标 deprecated，教训写回 L2。"""
+        """溶解退化：技能标 deprecated，教训写回 L2（写回前脱敏，change 0241）。"""
         skill_id = f"skills.evolution.{plugin_id}"
         if self._library is not None:
             with contextlib.suppress(KeyError):
@@ -239,7 +239,7 @@ class EvolutionEngine:
                 MemoryEntry(
                     id=f"evolution.dissolve.{plugin_id}",
                     layer="L2",
-                    content=reason,
+                    content=redact_secrets(reason),
                     tags=["evolution", "dissolve"],
                     source="evolution",
                     trace_id="evolution",
@@ -255,7 +255,7 @@ class EvolutionEngine:
         return self._pending.find(candidate_id)
 
     def reject(self, candidate: GenerationCandidate, *, reason: str | None = None) -> None:
-        """人工拒绝候选：置 ``rejected`` 并落盘（留 L2 教训），后续发布被拒。"""
+        """人工拒绝候选：置 ``rejected`` 并落盘（留 L2 教训，写回前脱敏，change 0241）。"""
         candidate.status = "rejected"
         self._pending.flush()
         if self._memory is not None and reason:
@@ -263,7 +263,7 @@ class EvolutionEngine:
                 MemoryEntry(
                     id=f"evolution.rejected.{candidate.candidate_id}",
                     layer="L2",
-                    content=f"候选被拒（{candidate.target_plugin}）：{reason}",
+                    content=redact_secrets(f"候选被拒（{candidate.target_plugin}）：{reason}"),
                     tags=["evolution", "reject"],
                     source="evolution",
                     trace_id="evolution",
@@ -325,14 +325,14 @@ class EvolutionEngine:
             schema: dict[str, Any] = (
                 dict(cast("dict[str, Any]", schema_val)) if isinstance(schema_val, dict) else {}
             )
-            desc = str(raw.get("description") or "").strip() or str(
-                candidate.delta.get("issue", "")
+            desc = redact_secrets(
+                str(raw.get("description") or "").strip() or str(candidate.delta.get("issue", ""))
             )
             skill = Skill(
                 skill_id=f"skills.evolution.{candidate.target_plugin}",
                 description=desc,
-                task_types=task_types,
-                preconditions=preconditions,
+                task_types=[redact_secrets(t) for t in task_types],
+                preconditions=[redact_secrets(p) for p in preconditions],
                 param_schema=schema,
                 instructions=redact_secrets(str(raw.get("instructions") or "")),
                 status="active",
@@ -341,7 +341,7 @@ class EvolutionEngine:
             # 缺省 / 无效 content ⇒ 既有空壳回退（回归锚点）
             skill = Skill(
                 skill_id=f"skills.evolution.{candidate.target_plugin}",
-                description=candidate.delta.get("issue", ""),
+                description=redact_secrets(str(candidate.delta.get("issue", ""))),
                 param_schema=candidate.delta.get("schema", {}),
                 status="active",
             )
@@ -355,7 +355,7 @@ class EvolutionEngine:
                 MemoryEntry(
                     id=f"evolution.candidate.{candidate.generation}",
                     layer="L3",
-                    content=candidate.delta.get("issue", ""),
+                    content=redact_secrets(str(candidate.delta.get("issue", ""))),
                     tags=["evolution", "candidate"],
                     source="evolution",
                     trace_id="evolution",

@@ -57,6 +57,19 @@ def test_summary_crossing_bound_delivers_promotion_once() -> None:
     assert len(spy.calls) == 1, "越界一次 ⇒ 交付恰一次，不重复"
 
 
+def test_summary_is_redacted_before_persisting() -> None:
+    """摘要落库前 store 侧**无条件**脱敏（注入摘要器不构成信任边界；change 0241）。"""
+    store = MemoryStore(summarizer=lambda entries: "结论：api_key: sk-abcdefghijklmnop")
+    store.write("L2", _episodic("e0", "s1"))
+
+    store.compact(session_id="s1")
+
+    summary = store.summary_for("s1")
+    assert summary is not None
+    assert "sk-abcdefghijklmnop" not in summary.content, "明文密钥不得落库"
+    assert "<redacted>" in summary.content
+
+
 def test_summary_below_bound_never_delivers() -> None:
     """摘要未越界 ⇒ 钩子从不被调用（边界护栏）。"""
     spy = _Spy()

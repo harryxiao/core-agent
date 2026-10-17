@@ -924,7 +924,8 @@ class DefaultLoop(Plugin):
         ``source`` 取构造注入的命名空间（缺省 ``"loop"``，神兽 loop 为 ``beast.<agent_id>``）。
 
         ``steps``（change 0173 / ADR-0164）非空时**另立一条** L2 条目承载本轮**行动与结果**序列
-        —— 与轨迹条目**并存**、轨迹条目内容**逐字不变**。另立而非合并：抽取器对**每条** L2 条目
+        —— 与轨迹条目**并存**、轨迹条目内容**除密钥形态脱敏外逐字不变**（写入前对整条内容
+        ``redact_secrets``，change 0241）。另立而非合并：抽取器对**每条** L2 条目
         只取前 ``extract._MAX_ENTRY_CHARS``(400) 字符入 prompt，而 keyfact 的实体历来产自轨迹条目的
         **散文** ⇒ 合并会把散文顶出窗口。序列逐行经 ``redact_secrets`` 脱敏（判据与关键事实抽取
         **同源**，方向 over-redact）⇒ 密钥只引用不读取、绝不进记忆。缺省空 ⇒ 行为与变更前逐字一致。
@@ -949,7 +950,7 @@ class DefaultLoop(Plugin):
             MemoryEntry(
                 id=f"loop.{trace_id}",
                 layer="L2",
-                content="\n".join(lines)[:_MAX_MEMORY_ENTRY],
+                content=redact_secrets("\n".join(lines))[:_MAX_MEMORY_ENTRY],
                 tags=["loop", "trajectory"],
                 source=self._source,
                 trace_id=trace_id,

@@ -210,6 +210,24 @@ def test_not_fed_back_to_summarizer() -> None:
     assert "episodic.s1" not in fed, "归纳产物**不**回喂（`kind` 承重，无自激环）"
 
 
+def test_derived_entry_bypasses_importance_gate() -> None:
+    """归纳产物属**派生结论** ⇒ 低分也不拒收、不降层、不写 `importance`（change 0241）。"""
+    # 材料条目（loop）给高分放行；派生归纳产物本应豁免评分（若被评分则 0.1 ⇒ 拒收）
+    store = MemoryStore(
+        importance_scorer=lambda entry: 0.9 if entry.source == "loop" else 0.1,
+        episodic_extractor=lambda _entries: "归纳：完成",
+    )
+    store.write("L2", _episodic("e0", "s1"))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        store.compact(session_id="s1")
+
+    entry = next(e for e in store.audit() if e.id == "episodic.s1")
+    assert entry.layer == "L2", "不因评分降层"
+    assert entry.importance == 0.0, "不写 importance"
+    assert not [w for w in caught if "importance gate" in str(w.message)], "无评分拒收留痕"
+
+
 def test_content_redacted_and_bounded() -> None:
     """store 侧**无条件**脱敏 ＋ 截断有界（归纳器不构成信任边界）。"""
     raw = "api_key: sk-abcdefghijklmnop  " + "乙" * (MAX_EPISODIC_CHARS * 3)

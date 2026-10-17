@@ -32,6 +32,7 @@ from core.evolution import (
     Trace,
     Validator,
 )
+from core.memory import MemoryEntry
 from core.observability import TraceEvent, TraceLogger, Tracer
 from core.permission import ApprovalRequest, ApprovalTicket, ApprovalWorkflow
 from core.skills import Skill, SkillLibrary
@@ -307,6 +308,86 @@ def test_dissolve_deprecates_skill_and_writes_lesson() -> None:
     assert library.lookup("skills.evolution.memory.retrieve").status == "deprecated"
     assert len(backend.put_entries) == 1
     assert backend.put_entries[0].layer == "L2"
+
+
+def test_dissolve_redacts_secret_in_reason() -> None:
+    """溶解原因落库前脱敏（模型/人工输入不构成信任边界；change 0241）。"""
+    backend = _SpyBackend()
+    engine = _engine(memory=backend)
+
+    engine.dissolve("memory.retrieve", "留出集退化：api_key sk-abcdefghijklmnop")
+
+    content = str(backend.put_entries[0].content)
+    assert "sk-abcdefghijklmnop" not in content, "明文密钥不得落库"
+    assert "<redacted>" in content
+    assert "留出集退化" in content, "其余正文不变"
+
+
+def test_reject_redacts_secret_in_reason() -> None:
+    """人工拒绝理由落库前脱敏（change 0241）。"""
+    backend = _SpyBackend()
+    engine = _engine(memory=backend)
+    candidate = _pending(engine)
+
+    engine.reject(candidate, reason="api_key sk-abcdefghijklmnop")
+
+    content = str(backend.put_entries[0].content)
+    assert "sk-abcdefghijklmnop" not in content, "明文密钥不得落库"
+    assert "<redacted>" in content
+
+
+def test_crystallize_redacts_secret_in_skill_fields() -> None:
+    """技能内容的自由文本字段落库前脱敏；`param_schema` 结构化字段不改写（change 0241）。"""
+    library = SkillLibrary()
+    engine = _engine(library=library)
+    candidate = _pending(engine)
+    candidate.delta["content"] = {
+        "task_types": ["api_key sk-abcdefghijklmnop"],
+        "instructions": "use sk-abcdefghijklmnop",
+        "param_schema": {"key": {"type": "string"}},
+        "preconditions": ["api_key sk-abcdefghijklmnop"],
+        "description": "api_key sk-abcdefghijklmnop",
+    }
+    engine.confirm(candidate)
+
+    engine.crystallize(candidate)
+
+    skill = library.lookup("skills.evolution.memory.retrieve")
+    assert skill is not None
+    for text in (skill.description, skill.instructions, *skill.task_types, *skill.preconditions):
+        assert "sk-abcdefghijklmnop" not in text, "明文密钥不得落库"
+        assert "<redacted>" in text
+    assert skill.param_schema == {"key": {"type": "string"}}, "结构化字段不改写"
+
+
+def test_crystallize_plugin_redacts_secret_in_issue() -> None:
+    """架构级候选交付给 crystallizer 的 `issue` 落库前脱敏（change 0241）。"""
+    crystallizer = _SpyCrystallizer()
+    engine = EvolutionEngine(
+        diagnoser=Diagnoser(),
+        proposer=Proposer(kind="plugin"),
+        validator=_passing_validator(),
+        evaluator=_passing_evaluator(),
+        memory_crystallizer=crystallizer,
+    )
+    candidate = _pending(engine)
+    candidate.delta["issue"] = "api_key sk-abcdefghijklmnop"
+    engine.confirm(candidate, approval=_ticket(candidate.target_plugin))
+
+    engine.crystallize(candidate)
+
+    assert crystallizer.entries
+    content = str(crystallizer.entries[0].content)
+    assert "sk-abcdefghijklmnop" not in content
+    assert "<redacted>" in content
+
+
+class _SpyCrystallizer:
+    def __init__(self) -> None:
+        self.entries: list[MemoryEntry] = []
+
+    def crystallize(self, entry: MemoryEntry) -> None:
+        self.entries.append(entry)
 
 
 # ---- HITL confirm 门（0046：架构级候选强制人工审批）----

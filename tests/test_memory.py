@@ -816,12 +816,16 @@ def test_gate_out_of_range_score_degrades_to_normal_write() -> None:
 
 
 def test_gate_exempt_face_is_the_pipeline_sources() -> None:
-    """豁免面即四个系统管道来源 —— 新增派生来源须同步登记（漏登记 ⇔ 该来源被评分）。
+    """豁免面即系统管道派生产物 —— 新增派生来源须同步登记（漏登记 ⇔ 该来源被评分）。
 
     `relation` 于 change 0203 登记：关系三元组与关键事实同属压实期派生产物
-    （`source="relation"`，见「实体关系抽取（relations）」）。
+    （`source="relation"`，见「实体关系抽取（relations）」）。`episodic` 于 change 0241
+    登记：情景归纳结论同为派生结论（`source="episodic"`，见「情景归纳」）。
     """
-    assert frozenset({"compaction", "context", "extraction", "relation"}) == _GATE_EXEMPT_SOURCES
+    assert (
+        frozenset({"compaction", "context", "extraction", "relation", "episodic"})
+        == _GATE_EXEMPT_SOURCES
+    )
 
 
 @pytest.mark.parametrize("source", sorted(_GATE_EXEMPT_SOURCES))

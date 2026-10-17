@@ -3409,3 +3409,30 @@ PowerShell 输出编码不一致；环境块不列可用 shell、默认壳缺失
 > `tool-use` **MODIFIED** +2 scen（9 / 29 → 31）、`ui` **MODIFIED** +1 scen（22 / 92 → 93）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0228 行（标签粒度 / 替换符不可逆 /
 > Web 无事实注入 / 执行面每调用探测 / 未在真实 Windows 跑 / 不自动降级）。
+
+## 152. 记忆与进化高危面收口：评测异常 / 派生豁免 / 密钥脱敏（TC-MEVH，change `0241`／ADR-0229，台账 E176）
+
+**背景**：全量 review 发现三处规格已要求、实现未闭合 —— 评测器未捕获执行器异常（击穿进化
+闭环）、`episodic` 漏登记评分豁免面（派生结论被低分误伤）、摘要/轨迹/进化写回未脱敏
+（模型或人工输入不构成信任边界）。闭法：`evaluate` fail-closed 判 `freeze`；豁免面补
+`episodic`；六处写回统一 `redact_secrets`。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-MEVH-01 | **评测 fail-closed**（承重） | `score_fn` 抛 `RuntimeError` | `evaluate` 返回 `verdict="freeze"` / `passed=False`，不抛出（`tests/test_evolution_gate_data.py::test_evaluator_freezes_when_scorer_raises`） |
+| TC-MEVH-02 | 闭环收口 | 同上，经 `run_cycle` | `outcome.status=="frozen"`、`eval.verdict=="freeze"`、候选已入台账（`…::test_run_cycle_freezes_when_scorer_raises`） |
+| TC-MEVH-03 | **派生豁免** | 材料源 0.9、其余 0.1 的 scorer + episodic 抽取器 | 归纳产物留 L2、不降层、`importance==0.0`、无评分拒收留痕（`tests/test_memory_episodic.py::test_derived_entry_bypasses_importance_gate`） |
+| TC-MEVH-04 | 豁免面集合 | 常量断言 | `_GATE_EXEMPT_SOURCES == {compaction, context, extraction, relation, episodic}`（`tests/test_memory.py::test_gate_exempt_face_is_the_pipeline_sources`） |
+| TC-MEVH-05 | 摘要脱敏 | 摘要器返回含 `sk-…` 的文本 | 摘要条目无明文、含 `<redacted>`（`tests/test_memory_summary_promotion.py::test_summary_is_redacted_before_persisting`） |
+| TC-MEVH-06 | 轨迹脱敏 | 终态回复含 `sk-…` | `loop.<trace>` 无明文，轮次/成败结构保留（`tests/test_loop_memory_sequence.py::test_trajectory_entry_redacts_secret_substrings`） |
+| TC-MEVH-07 | 溶解脱敏 | `dissolve(reason=…)` 含 `sk-…` | L2 无明文、`<redacted>` 在，其余正文不变（`tests/test_evolution.py::test_dissolve_redacts_secret_in_reason`） |
+| TC-MEVH-08 | 拒绝脱敏 | `reject(reason=…)` 含 `sk-…` | L2 无明文、含 `<redacted>`（`…test_reject_redacts_secret_in_reason`） |
+| TC-MEVH-09 | 技能字段脱敏 | `delta["content"]` 四字段含 `sk-…` | 技能对象自由文本字段无明文、`param_schema` 不改写（`…test_crystallize_redacts_secret_in_skill_fields`） |
+| TC-MEVH-10 | 架构候选脱敏 | `delta["issue"]` 含 `sk-…` | crystallizer 收到的 `content` 无明文、含 `<redacted>`（`…test_crystallize_plugin_redacts_secret_in_issue`） |
+
+> **反证**：摘 `try/except` ⇒ TC-MEVH-01/02 红；摘 `episodic` ⇒ TC-MEVH-03/04 红；还原
+> 摘要/轨迹/进化三处脱敏 ⇒ TC-MEVH-05~10 红；复原 ⇒ 相关文件 `md5sum` 同。规格：`memory`
+> **MODIFIED** +2 scen（17 / 128 → 130）、`loop` **MODIFIED** +1 scen（7 / 96 → 97）、
+> `evolution` **ADDED** 1 req/3 scen（18 → 19 / 95 → 98）。**已知局限**：见
+> `coding-plan/known-risk.md` §3 ADR-0229 行（只捕 `Exception` / 行内替换不识别跨行拼接 /
+> `episodic` 遗忘策略不变 / 摘要越界判据按脱敏前长度）。

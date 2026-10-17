@@ -102,6 +102,20 @@ def test_sequence_entry_redacts_secret_substrings() -> None:
     assert content.startswith("code_run（")
 
 
+def test_trajectory_entry_redacts_secret_substrings() -> None:
+    """轨迹条目写入前整条脱敏；未命中密钥形态的正文与结构逐字不变（change 0241）。"""
+    store = MemoryStore()
+
+    DefaultLoop(memory=store).remember(
+        "t3", [{"round": 1, "ok": True}, {"reply": "api_key: sk-abcdefghijklmnop"}]
+    )
+
+    content = _contents(store)["loop.t3"]
+    assert content.startswith("round 1 ok\n"), "轮次/成败结构保留"
+    assert "sk-abcdefghijklmnop" not in content, "明文密钥不得落库"
+    assert "<redacted>" in content
+
+
 def test_sequence_entry_is_bounded() -> None:
     """超长行动序列 ⇒ 条目长度不超过 `_MAX_MEMORY_ENTRY`（token 有界）。"""
     store = MemoryStore()

@@ -273,15 +273,21 @@ class Evaluator:
         self._margin = margin
 
     def evaluate(self, candidate: GenerationCandidate) -> EvalReport:
-        """留出评测：未注册基线 / 无留出分 ⇒ `freeze`（无法评测）；否则对比基线判退化。
+        """留出评测：未注册基线 / 无留出分 / 打分异常 ⇒ `freeze`（无法评测）；否则对比基线判退化。
 
         阈值口径：已注册的基线分**就是绝对阈值**（`held_out < baseline - margin` 即退化），
         `margin` 缺省 `0.0`（分毫不许退）—— 不新增第二阈值参数。
+
+        打分器（基准执行器等）抛异常 ⇒ **无法评测**：收口为 `freeze`，SHALL NOT 冒出击穿
+        进化闭环，也 SHALL NOT 吞成 rollback / publish（change 0241）。
         """
         baseline = self._registry.baseline_of(candidate.target_plugin)
         if baseline is None:
             return self._frozen(baseline=0.0)
-        held_out = self._held_out_score(candidate)
+        try:
+            held_out = self._held_out_score(candidate)
+        except Exception:  # noqa: BLE001 — 执行器异常 ⇒ 无法评测（fail-closed），不吞成通过/退化
+            return self._frozen(baseline=baseline)
         if held_out is None:
             return self._frozen(baseline=baseline)
         if held_out < baseline - self._margin:

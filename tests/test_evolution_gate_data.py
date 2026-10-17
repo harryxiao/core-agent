@@ -213,6 +213,37 @@ def test_evaluator_freezes_when_score_unavailable() -> None:
     assert report.passed is False
 
 
+def test_evaluator_freezes_when_scorer_raises() -> None:
+    """打分器（执行器）抛异常 ⇒ 无法评测 ⇒ `freeze`（不冒出、不吞成 rollback / publish）。"""
+    registry = BenchmarkRegistry()
+    registry.register(_benchmark())
+    registry.set_baseline("memory.retrieve", 0.9)
+
+    def _boom(_candidate: GenerationCandidate) -> float | None:
+        raise RuntimeError("执行器炸了")
+
+    report = Evaluator(registry=registry, score_fn=_boom).evaluate(_candidate())
+    assert report.verdict == "freeze"
+    assert report.passed is False
+
+
+def test_run_cycle_freezes_when_scorer_raises() -> None:
+    """闭环在打分器抛异常时仍收口为 `status="frozen"`（候选进台账，不击穿 worker）。"""
+    registry = BenchmarkRegistry()
+    registry.register(_benchmark())
+    registry.set_baseline("memory.retrieve", 0.9)
+
+    def _boom(_candidate: GenerationCandidate) -> float | None:
+        raise RuntimeError("执行器炸了")
+
+    engine = _engine(Evaluator(registry=registry, score_fn=_boom))
+    outcome = engine.run_cycle([_trace()])
+    assert outcome.status == "frozen"
+    assert outcome.eval is not None and outcome.eval.verdict == "freeze"
+    assert outcome.candidate is not None
+    assert engine.find(outcome.candidate.candidate_id) is not None, "候选已入台账"
+
+
 def test_evaluator_freezes_without_baseline() -> None:
     """有基准 + 有执行器但**未注册基线** ⇒ 无对比面 ⇒ 无法评测（不静默按 0.0 放行）。"""
     registry = BenchmarkRegistry()

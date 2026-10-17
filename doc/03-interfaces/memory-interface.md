@@ -225,6 +225,9 @@ def relevance(entry, query, embedder=None) -> float:
 | `trace_id` | `compaction.<session_id>`（摘要写入与全部迁移共用，`rollback(trace_id)` 整体逆转） |
 | `tags` | `["compaction", "summary", "from:<原条目 id>", ...]`（出处可追溯） |
 
+摘要落库前 store 侧**无条件** ``redact_secrets``（change `0241`）：注入的摘要器**不构成信任
+边界**，其输出可能夹带模型复述的明文密钥；未命中密钥形态时正文逐字不变。
+
 未注入 ``summarizer`` 时**只评分不写**：不写摘要条目、不改动原条目层级（降级）。摘要提炼
 异常**不吞**：向上传播给触发点记录重试，原条目保持不变。
 

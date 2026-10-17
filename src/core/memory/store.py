@@ -54,10 +54,11 @@ _CONSOLIDATE_THRESHOLD = 0.5
 _IMPORTANCE_FLOOR = 0.2
 _IMPORTANCE_AMBIT = 0.4
 
-# 闸门**豁免面**（change 0181 / ADR-0172）：来源属此面的条目**不经评分** —— 它们皆由系统管道
-# 从**已准入**的材料派生（会话摘要与中层摘要 `compaction` / 压实产物 `context` / 结构化关键事实
-# `extraction`），派生结论不得因评分而丢失或降层。新增派生来源须同步登记。
-_GATE_EXEMPT_SOURCES = frozenset({"compaction", "context", "extraction", "relation"})
+# 闸门**豁免面**（change 0181 / ADR-0172，0241 补 `episodic`）：来源属此面的条目**不经评分**
+# —— 它们皆由系统管道从**已准入**的材料派生（会话摘要与中层摘要 `compaction` / 压实产物
+# `context` / 结构化关键事实 `extraction` / 实体关系 `relation` / 情景归纳 `episodic`），
+# 派生结论不得因评分而丢失或降层。新增派生来源须同步登记。
+_GATE_EXEMPT_SOURCES = frozenset({"compaction", "context", "extraction", "relation", "episodic"})
 
 # 遗忘阈值：衰减评分低于此值即归档（≈19 天零复用零重要度）
 _FORGET_THRESHOLD = 0.05
@@ -86,7 +87,8 @@ _PRESERVE_TAGS = frozenset({"failure"})
 # `semantic_forgetting` 开启时放行这些 `kind="semantic"` 条目参与衰减归档。**摘要类**
 # 语义来源（`{compaction, context}`，即本集合的补集）恒豁免。
 # 注意 —— **豁免评分（`_GATE_EXEMPT_SOURCES`）≠ 豁免遗忘**：前者管「写入时过不过 importance
-# 闸门」，后者管「衰减时归不归档」，二者是**不同面**（二集合恰好二分同一组来源）。
+# 闸门」，后者管「衰减时归不归档」，二者是**不同面**。`episodic` 是第三类：评分面豁免
+# （派生结论），遗忘面按 `kind == "episodic"` 走衰减（不受本集合约束）。
 _FORGETTABLE_SEMANTIC_SOURCES = frozenset({"extraction", "relation"})
 
 
@@ -844,7 +846,11 @@ class MemoryStore:
         return self._entry_by_id(f"compaction.summary.{session_id or 'default'}")
 
     def _commit_summary(self, session_id: str, entries: list[MemoryEntry], summary: str) -> None:
-        """写摘要条目（tags 带原条目 id 出处）并把原条目迁 L4，同一 trace 可回滚。"""
+        """写摘要条目（tags 带原条目 id 出处）并把原条目迁 L4，同一 trace 可回滚。
+
+        摘要落库前**无条件** ``redact_secrets``（change 0241）：注入的摘要器**不构成信任边界**，
+        其输出可能夹带模型复述的明文密钥；未命中密钥形态时逐字不变。
+        """
         key = session_id or "default"
         trace_id = f"compaction.{key}"
         tags = ["compaction", "summary", *[f"from:{entry.id}" for entry in entries]]
@@ -853,7 +859,7 @@ class MemoryStore:
             MemoryEntry(
                 id=f"compaction.summary.{key}",
                 layer="L2",
-                content=summary,
+                content=redact_secrets(summary),
                 tags=tags,
                 source="compaction",
                 trace_id=trace_id,
