@@ -3485,3 +3485,22 @@ PowerShell 输出编码不一致；环境块不列可用 shell、默认壳缺失
 > `evolution` **MODIFIED** ×2 +6 scen（19 req / 101 → 107 scen）。**已知局限**：见
 > `coding-plan/known-risk.md` §3 ADR-0231 行（进程内单文件无锁 / `frozen` 仍可 find /
 > 基线与在线样本量纲差 / 重复 confirm 覆盖状态 / max 与 min 不校验）。
+
+## 155. 记忆批量落盘与守卫（TC-MEMBATCH，change `0244`／ADR-0232，台账 E179）
+
+**根因**：`_reinforce` 逐条 `put` 触发全量 JSONL 重写（写放大 ×k）；`_hot` 无上界；空摘要
+仍照常提交并派生抽取（同批材料逐轮重复，模型调用放大）；失败教训块单条正文不限长。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-MEMBATCH-01 | **一次检索一次落盘**（承重） | 计数后端 3 条命中 | 恰好 1 次 `put_many`（集合 = 3 条），0 次 `put`（`tests/test_memory.py::test_reuse_writeback_batches_into_one_persist`） |
+| TC-MEMBATCH-02 | 无批量入口回退 | 鸭子类型后端（仅五入口） | 逐条 `put`，`reuse_count` 仍 +1（`…test_reuse_writeback_falls_back_for_backend_without_put_many`） |
+| TC-MEMBATCH-03 | **热集有界 + 冷区真源** | 写入 `_HOT_MAX+10` 条 | `len(_hot)==_HOT_MAX`；`_all_entries()` 全量；被淘汰条目仍在后端；撤销 importance 回退冷区生效（`…test_hot_cache_is_bounded_and_backend_remains_source_of_truth`） |
+| TC-MEMBATCH-04 | **空摘要跳过派生** | summarizer 返回空 | 派生抽取 0 调用 + 告警；原条目标签/层级不变（`…test_compact_empty_summary_skips_derived_extraction`） |
+| TC-MEMBATCH-05 | 教训块预算 | 5 条 ×2000 字符 | ≤5 行，单行 ≤500，总正文 ≤1500（`tests/test_failure_lessons.py::test_failure_lesson_block_is_bounded`） |
+
+> **反证**：摘 `put_many` 分支 ⇒ TC-MEMBATCH-01 红；摘 `_hot` 裁剪 ⇒ 03 红；摘空摘要
+> `continue` ⇒ 04 红；摘教训截断 ⇒ 05 红；复原 ⇒ 两文件 `md5sum` 同。规格：`memory`
+> **MODIFIED** ×2 +2 scen（17 req / 134 → 136）、`loop` **MODIFIED** ×1 +1 scen（7 / 97 → 98）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0232 行（FIFO 非 LRU / 冷区线性定位 /
+> 空摘要逐轮重试 / `put_many` 能力探测 / 字符而非 token）。

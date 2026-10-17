@@ -13,7 +13,7 @@ import asyncio
 import os
 import sys
 import warnings
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -484,6 +484,28 @@ _TURN_KIND = "turn"
 # ⇒ 块长有界（每条正文在写入时已受单条 L2 沉淀条目长度上界约束）。
 _FAILURE_LESSON_LIMIT = 5
 
+# 教训块的**独立预算**（change 0244）：单条折叠后 ≤500 字符、整块正文 ≤1500 字符 —— 教训块
+# 不占事实预算名额，但自身必须有界，避免若干条长教训挤掉事实 / 历史块。
+_FAILURE_LESSON_MAX_CHARS = 500
+_FAILURE_LESSON_TOTAL_CHARS = 1500
+
+
+def _render_failure_lessons(entries: Sequence[MemoryEntry]) -> str:
+    """渲染「既往失败教训」块（**有界**；change 0244）。
+
+    每条先折叠为一行（与既往渲染一致），再按单条上界截断；整块正文累计到总预算即停止
+    （最后一条按剩余预算截断）。空输入 ⇒ 空串（planner 不产块）。
+    """
+    lines: list[str] = []
+    budget = _FAILURE_LESSON_TOTAL_CHARS
+    for entry in entries:
+        if budget <= 0:
+            break
+        text = " ".join(entry.content.split())[: min(_FAILURE_LESSON_MAX_CHARS, budget)]
+        lines.append(f"- {text}")
+        budget -= len(text)
+    return "\n".join(lines)
+
 
 def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     config: ConfigManager,
@@ -719,10 +741,12 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
 
         走 ``MemoryStore.failure_lessons``（**零效应只读** —— 不走 ``read()``，后者会强化
         ``reuse_count`` 并落盘效应）；**至多** `_FAILURE_LESSON_LIMIT` 条、每条**折叠为一行**
-        （正文已在写入时逐行脱敏，此处无需二次脱敏）。无教训 ⇒ 空串 ⇒ planner 不产块。
+        （正文已在写入时逐行脱敏，此处无需二次脱敏），渲染由 `_render_failure_lessons` 按
+        单条 / 整块预算截断（change 0244）。无教训 ⇒ 空串 ⇒ planner 不产块。
         """
-        entries = memory.failure_lessons(session_id, limit=_FAILURE_LESSON_LIMIT)
-        return "\n".join(f"- {' '.join(entry.content.split())}" for entry in entries)
+        return _render_failure_lessons(
+            memory.failure_lessons(session_id, limit=_FAILURE_LESSON_LIMIT)
+        )
 
     def _loop_hooks(
         domain: str | None = None,

@@ -202,7 +202,9 @@ def relevance(entry, query, embedder=None) -> float:
 - **复用强化**：命中条目 ``reuse_count`` 递增并**写回持久后端**（change 0187 / ADR-0178）——
   ``read`` 是**有副作用的读**（副作用**有界**：只覆盖进入预算的**选中**条目；非选中候选不写、不强化），
   每条写回记**可撤销效应**（``op="memory.reuse"``，``trace_id="reuse.<entry_id>"``，undo **还原**
-  强化前的值、幂等非自减）。跨会话 / 进程重启后强化保持 ⇒ 遗忘曲线（``_decay_score`` 的
+  强化前的值、幂等非自减）。**批量提交**（change `0244`）：后端提供 ``put_many`` 时，一次检索
+  的全部选中条目经**一次批量落盘**写回（不逐条全量重写）；无批量入口时逐条回退、语义不变。
+  跨会话 / 进程重启后强化保持 ⇒ 遗忘曲线（``_decay_score`` 的
   ``freshness ** (1/(1+log1p(reuse_count)))`` 项）连续。``summary_for`` / ``mid_summary_for``
   **不经** ``read`` ⇒ 其「零写入 / 零效应」契约**不受影响**（逐字不变）。
 
@@ -424,9 +426,12 @@ class MemoryBackend(Protocol):
     def search(self, query, layer) -> list[MemoryEntry]: ...
     def list_index(self) -> IndexEntry: ...
     def delete(self, entry_id) -> None: ...
+    # 可选能力（change 0244）：批量写回 = 单次落盘。未实现时 `_reinforce` 逐条 `put` 回退。
+    def put_many(self, entries) -> None: ...
 ```
 
-MVP 实现：`FileBackend`（`memory/*.md` + `memory/*.jsonl`）。
+MVP 实现：`FileBackend`（`memory/*.md` + `memory/*.jsonl`）。`put_many` 是**可选**成员（不进
+`MemoryBackend` Protocol 的必选面，鸭子类型后端不受影响）：一次更新内存集与索引后**只落盘一次**。
 
 **落盘耐久承诺（change `0206`／ADR-0196，缺省生效）**：`FileBackend` 的 JSONL 落盘**原子提交**
 （写同目录 tmp ＋ `os.replace` ⇒ 目标文件不出现半写/空文件）；`_load` **逐行容错**（坏行跳过、
@@ -439,7 +444,9 @@ MVP 实现：`FileBackend`（`memory/*.md` + `memory/*.jsonl`）。
 
 - 密钥/敏感内容**只存引用**，绝不进入任何记忆层。
 - `read` 返回 token 硬性 ≤ budget，超限截断并标记被截断项。
-- `read` 命中即 `reuse_count += 1`（复用即强化；进程内强化，不落盘避免写放大）。
+- `read` 命中即 `reuse_count += 1`（复用即强化；**落盘**，写放大有界于选中集，且经
+  `put_many` 单次批量落盘 —— change `0244`）。写入侧热字典有界（`_HOT_MAX=512`，写入序淘汰）；
+  后端内存集才是全量真源，读面不受淘汰影响。
 - `read` 的会话过滤在**排名/预算之前**生效（被滤项不吃预算、不被强化），与来源排除同口径；
   空标识不过滤 ⇒ 存量未归属条目构成全局层（ADR-0107）。
 - 来源排除的**例外面**（`allow_source_prefixes`）与排除**同一位置**生效（排名/预算之前）；

@@ -30,6 +30,7 @@ from core.memory import (
 from core.memory.embedding import batch_embed
 from core.memory.store import (
     _GATE_EXEMPT_SOURCES,
+    _HOT_MAX,
     _IMPORTANCE_AMBIT,
     _IMPORTANCE_FLOOR,
     _decay_score,
@@ -303,6 +304,28 @@ def test_compact_without_summarizer_only_scores() -> None:
     assert decision is not None and decision.primitive is DecisionPrimitive.SCORE
     assert dict(store.index().entries)["e0"] == "L2", "无摘要器 → 原条目层级不变"
     assert [e for e in store.audit() if e.kind == "semantic"] == [], "无摘要器 → 不写摘要条目"
+
+
+def test_compact_empty_summary_skips_derived_extraction() -> None:
+    """空摘要 ⇒ 跳过派生抽取并留痕（change 0244）：不重复调用、原条目层级不变。"""
+    calls: list[list[str]] = []
+
+    def extract(entries: list[MemoryEntry]) -> list[object]:
+        calls.append([e.id for e in entries])
+        return []
+
+    store = MemoryStore(
+        summarizer=lambda entries: "",
+        key_fact_extractor=extract,
+    )
+    store.write("L2", _session_entry("e0", "事实零", "s1"))
+
+    with pytest.warns(RuntimeWarning, match="s1"):
+        store.compact(session_id="s1")
+
+    assert calls == [], "空摘要不调用派生抽取器"
+    assert dict(store.index().entries)["e0"] == "L2", "原条目未归档"
+    assert [e for e in store.audit() if e.kind == "semantic"] == [], "不写摘要条目"
 
 
 def test_compact_is_reversible_by_trace() -> None:
@@ -1116,6 +1139,91 @@ def test_read_without_hit_records_no_write() -> None:
     assert store.read("什么都没有", budget=100) == []
     assert backend.puts == [], "未命中不落盘"
     assert tracker.rollback().reverted == [], "未命中不记效应"
+
+
+class _BatchCountingBackend(FileBackend):
+    """计数 ``put`` / ``put_many`` 的 ``FileBackend``（``path=None`` ⇒ 纯内存）。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.puts: list[str] = []
+        self.batches: list[list[str]] = []
+
+    def put(self, entry: MemoryEntry) -> str:
+        self.puts.append(entry.id)
+        return super().put(entry)
+
+    def put_many(self, entries: list[MemoryEntry]) -> None:
+        self.batches.append([entry.id for entry in entries])
+        super().put_many(entries)
+
+
+class _NoBatchBackend:
+    """鸭子类型后端：只实现五入口、**没有** ``put_many``（回退路径）。"""
+
+    def __init__(self) -> None:
+        self._inner = FileBackend()
+        self.puts: list[str] = []
+
+    def get(self, layer: Layer, entry_id: str) -> MemoryEntry | None:
+        return self._inner.get(layer, entry_id)
+
+    def put(self, entry: MemoryEntry) -> str:
+        self.puts.append(entry.id)
+        return self._inner.put(entry)
+
+    def search(self, query: str, layer: Layer | None = None) -> list[MemoryEntry]:
+        return self._inner.search(query, layer)
+
+    def list_index(self) -> object:
+        return self._inner.list_index()
+
+    def delete(self, entry_id: str) -> None:
+        self._inner.delete(entry_id)
+
+
+def test_reuse_writeback_batches_into_one_persist() -> None:
+    """一次检索的复用强化**只触发一次批量落盘**（不逐条重写；change 0244）。"""
+    backend = _BatchCountingBackend()
+    store = MemoryStore(backend=backend)  # type: ignore[arg-type]
+    for i in range(3):
+        store.write("L2", _entry(f"e{i}", "L2", "alpha beta"))
+    backend.puts.clear()
+
+    store.read("alpha", budget=1000)
+
+    assert len(backend.batches) == 1, "一次检索只有一次批量写回"
+    assert set(backend.batches[0]) == {"e0", "e1", "e2"}, "选中集全部写入同一批"
+    assert backend.puts == [], "批量路径不逐条调 put"
+
+
+def test_reuse_writeback_falls_back_for_backend_without_put_many() -> None:
+    """后端无 ``put_many`` ⇒ 逐条 ``put``（语义不变；change 0244）。"""
+    backend = _NoBatchBackend()
+    store = MemoryStore(backend=backend)  # type: ignore[arg-type]
+    store.write("L2", _entry("e1", "L2", "hello"))
+    backend.puts.clear()
+
+    store.read("hello", budget=100)
+
+    assert backend.puts == ["e1"], "回退为逐条写回"
+    assert backend.search("")[0].reuse_count == 1
+
+
+def test_hot_cache_is_bounded_and_backend_remains_source_of_truth() -> None:
+    """写入侧热字典有界（change 0244）：淘汰不影响全量可见性与撤销回退。"""
+    backend = FileBackend()
+    store = MemoryStore(backend=backend)
+    for i in range(_HOT_MAX + 10):
+        store.write("L2", _entry(f"e{i}", "L2", "hello"))
+
+    assert len(store._hot) == _HOT_MAX  # noqa: SLF001 — 边界断言
+    assert len(store._all_entries()) == _HOT_MAX + 10  # noqa: SLF001 — 冷区仍是真源
+    assert backend.get("L2", "e0") is not None, "被淘汰条目仍在后端"
+
+    store._restore_importance("e0", 0.7)  # noqa: SLF001 — 撤销回退冷区
+    restored = backend.get("L2", "e0")
+    assert restored is not None and restored.importance == pytest.approx(0.7)
 
 
 def test_reuse_writeback_is_reversible(tmp_path: Path) -> None:

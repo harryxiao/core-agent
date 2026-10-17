@@ -46,6 +46,9 @@ _TOKEN_DIVISOR = 4
 # 向量缓存上界（超出按 FIFO 逐出）；进程内易失，不落盘
 _VEC_CACHE_MAX = 4096
 
+# 写入侧热字典上界（超出按写入序逐出；change 0244）：后端 `_entries` 才是真源，读面不受影响
+_HOT_MAX = 512
+
 # 价值门控阈值：会话内最高分低于此值则不提炼（仅本轮取得分值时才设门槛）
 _CONSOLIDATE_THRESHOLD = 0.5
 
@@ -348,16 +351,17 @@ class MemoryStore:
         ``_backend.put`` 持久化（后端 ``search`` 返回同引用，故此处只是「同一对象 + 触发落盘」）；
         **不**把条目插入 ``_hot``（``_hot`` 是写入侧热字典，读路径填充会使其无界增长）。
         """
+        previous = [entry.reuse_count for entry in entries]
         for entry in entries:
-            previous = entry.reuse_count
-            entry.reuse_count = previous + 1
-            self._backend.put(entry)
+            entry.reuse_count += 1
+        self._put_many(entries)  # 一次批量落盘（后端无 put_many 时逐条回退；change 0244）
+        for entry, prior in zip(entries, previous, strict=True):
             self._tracker.record(
                 Effect(
                     op="memory.reuse",
                     target=entry.id,
-                    undo=lambda entry_id=entry.id, layer=entry.layer, value=previous: (
-                        self._undo_reuse(entry_id, layer, value)
+                    undo=lambda entry_id=entry.id, layer=entry.layer, value=prior: self._undo_reuse(
+                        entry_id, layer, value
                     ),
                     reversible=True,
                     coeffect=[],
@@ -365,6 +369,15 @@ class MemoryStore:
                     ts=time.time(),
                 )
             )
+
+    def _put_many(self, entries: list[MemoryEntry]) -> None:
+        """批量写回：后端提供 ``put_many`` 则一次落盘，否则逐条 ``put``（鸭子类型后端）。"""
+        put_many = getattr(self._backend, "put_many", None)
+        if callable(put_many):
+            put_many(entries)
+            return
+        for entry in entries:
+            self._backend.put(entry)
 
     def write(self, layer: Layer, entry: MemoryEntry) -> MemoryId | None:
         """按意向层写入条目（可逆）；可注入**重要度闸门**（change 0177 / ADR-0168）。
@@ -406,7 +419,7 @@ class MemoryStore:
         if entry.ts <= 0:
             entry.ts = time.time()
         self._backend.put(entry)
-        self._hot[entry.id] = entry
+        self._hot_put(entry)
         self._tracker.record(
             Effect(
                 op="memory.write",
@@ -461,7 +474,7 @@ class MemoryStore:
             return
         entry.layer = dst
         self._backend.put(entry)
-        self._hot[entry.id] = entry
+        self._hot_put(entry)
         self._tracker.record(
             Effect(
                 op="memory.migrate",
@@ -759,9 +772,18 @@ class MemoryStore:
                 prior = self._existing_summary(sid)
                 material = [prior, *entries] if prior is not None else entries
                 summary = summarizer(material)
-                if summary:
-                    self._commit_summary(sid, entries, summary)
-                    self._deliver_promotion(sid, prior, summary)
+                if not summary:
+                    # 空摘要 ⇒ 原条目不会归档、下轮仍是材料：本轮跳过派生抽取，避免同批材料
+                    # 以同一 trace 重复覆盖写并放大模型调用（留痕只报会话键；change 0244）
+                    warnings.warn(
+                        f"memory compaction produced an empty summary for session {sid!r}; "
+                        "derived extraction skipped",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    continue
+                self._commit_summary(sid, entries, summary)
+                self._deliver_promotion(sid, prior, summary)
             self._extract_key_facts(sid, entries)
             self._extract_relations(sid, entries)
             self._consolidate_episodic(sid, entries)
@@ -801,7 +823,7 @@ class MemoryStore:
         previous = entry.importance
         entry.importance = value
         self._backend.put(entry)
-        self._hot[entry.id] = entry
+        self._hot_put(entry)
         self._tracker.record(
             Effect(
                 op="memory.importance",
@@ -1125,7 +1147,7 @@ class MemoryStore:
     def _restore_entry(self, entry: MemoryEntry) -> None:
         """把条目放回后端与热区（`_delete_entry` 的进程内 undo）。"""
         self._backend.put(entry)
-        self._hot[entry.id] = entry
+        self._hot_put(entry)
 
     def _group_stale_by_session(
         self, stale: list[MemoryEntry], report: RepairReport
@@ -1254,8 +1276,25 @@ class MemoryStore:
         self._hot.pop(entry_id, None)
         self._backend.delete(entry_id)
 
+    def _hot_put(self, entry: MemoryEntry) -> None:
+        """放入写入侧热字典并**保持有界**（写入序淘汰最旧；change 0244）。
+
+        热字典只是写入侧引用缓存 —— 后端 ``_entries`` 才是真源，淘汰不影响 ``_all_entries()``
+        的冷热并集；撤销路径（``_undo_reuse`` / ``_undo_migrate`` / ``_restore_importance``）
+        对已淘汰条目回退冷区。
+        """
+        self._hot.pop(entry.id, None)
+        self._hot[entry.id] = entry
+        while len(self._hot) > _HOT_MAX:
+            self._hot.pop(next(iter(self._hot)))
+
     def _restore_importance(self, entry_id: str, value: float) -> None:
         entry = self._hot.get(entry_id)
+        if entry is None:
+            entry = next(
+                (candidate for candidate in self._backend.search("") if candidate.id == entry_id),
+                None,
+            )
         if entry is None:
             return
         entry.importance = value
@@ -1282,4 +1321,4 @@ class MemoryStore:
             return
         entry.layer = to_layer
         self._backend.put(entry)
-        self._hot[entry.id] = entry
+        self._hot_put(entry)

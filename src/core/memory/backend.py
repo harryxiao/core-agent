@@ -12,6 +12,7 @@ import json
 import os
 import threading
 import warnings
+from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
 
@@ -43,6 +44,19 @@ class FileBackend:
             self._index.append((entry.id, entry.layer))
             self._persist()
         return entry.id
+
+    def put_many(self, entries: Sequence[MemoryEntry]) -> None:
+        """批量写回：一次更新内存集与索引，**单次落盘**（change 0244）。
+
+        复用强化一次检索命中多条时，逐条 ``put`` 会触发 N 次全量 JSONL 重写；批量入口把
+        N 次重写降为 1 次。语义与逐条 ``put`` 相同（同 id 覆盖、索引去重后追加）。
+        """
+        with self._lock:
+            ids = {entry.id for entry in entries}
+            self._entries.update({entry.id: entry for entry in entries})
+            self._index = [(i, layer) for i, layer in self._index if i not in ids]
+            self._index.extend((entry.id, entry.layer) for entry in entries)
+            self._persist()
 
     def search(self, query: str, layer: Layer | None = None) -> list[MemoryEntry]:
         # 候选集按层过滤；query 词元与 content/tags 重叠打分后降序返回

@@ -24,7 +24,7 @@ from core.loop.planner import LLMPlanner
 from core.memory import MemoryEntry, MemoryStore
 from core.observability import Tracer
 from core.plugin_registry import EffectTracker
-from core.runtime import build_runtime
+from core.runtime import _render_failure_lessons, build_runtime
 
 # 单会话失败条目的默认条数（用例构造的轮数）
 _ROUNDS = 5
@@ -187,6 +187,31 @@ def test_block_precedes_skills_and_follows_notes() -> None:
     assert "可用技能：" in prompt, "桩路由须产出技能块（顺序比对需要）"
     assert prompt.index("相关笔记：") < prompt.index("既往失败教训：")
     assert prompt.index("既往失败教训：") < prompt.index("可用技能：")
+
+
+def test_failure_lesson_block_is_bounded() -> None:
+    """组合根渲染有界（change 0244）：单条正文 ≤500 字符、整块正文 ≤1500 字符。"""
+    entries = [
+        MemoryEntry(
+            id=f"loop.failure.{i}",
+            layer="L2",
+            content="长" * 2000,
+            tags=["loop", "failure"],
+            source="loop",
+            trace_id=f"t{i}",
+            session_id="s1",
+        )
+        for i in range(_ROUNDS)
+    ]
+
+    block = _render_failure_lessons(entries)
+    lines = block.splitlines()
+
+    assert 0 < len(lines) <= _ROUNDS, "条数上界不变"
+    assert all(line.startswith("- ") for line in lines)
+    assert all(len(line[2:]) <= 500 for line in lines), "单条正文 ≤500"  # noqa: PLR2004
+    assert sum(len(line[2:]) for line in lines) <= 1500, "总正文 ≤1500"  # noqa: PLR2004
+    assert lines[0] == "- " + "长" * 500, "按预算从最近条目开始截断"
 
 
 # ── 3. 闭包注入（会话标识入参 + 降级留痕）────────────────────────────────────

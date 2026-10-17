@@ -8316,6 +8316,48 @@ fail-closed、未知 status 不恢复为 pending）。全量 2687 → **2696** p
 未做在线基线标定；④ 已确认（`confirmed`）后 `confirm` 再次调用仍会覆盖状态（既有行为，本
 change 未收紧）；⑤ `max_samples` 与 `min_samples` 的关系不校验，误配靠「永不触发」兜底。
 
+## ADR-0232：记忆批量落盘、热集有界与派生抽取/教训块预算（change 0244 / 台账 E179）
+
+**背景**：记忆与 evolution 全量 review 的批次 C 暴露三处**规模/放大**问题：① `_reinforce` 对
+本次检索选中的每条目逐条 `put`，而 `FileBackend._persist` 是**全量 JSONL 重写** ⇒ 一次 read
+命中 k 条即 k 次 O(N) 落盘；`_hot`（写入侧热字典）无上界，长跑写入持续增长。② 压实
+`_summarize_sessions` 在 summarizer 返回**空摘要**时仍照常提交并跑派生抽取（关键事实/关系/
+情节巩固）；空摘要使原条目**不会归档**、下轮仍是同一批材料 ⇒ 每轮对同一材料重复抽取（模型
+调用放大）且以同一 trace 覆盖写。③ 既往失败教训注入块最多 5 条但**每条正文不限长** ⇒ 单条
+长教训即可占满 prompt 预算。
+
+**决策**：
+
+- **D1 批量落盘**：新增 `FileBackend.put_many(entries)` —— 一次更新 `_entries` / `_index`
+  后**单次** `_persist`，语义与逐条 `put` 相同（同 id 覆盖、索引去重后追加）。`MemoryStore`
+  经 `getattr` 特性探测调用，后端无该入口时逐条 `put` **回退**（鸭子类型后端不受影响）。
+  `put_many` **不进** `MemoryBackend` Protocol 必选面（避免强制既有/测试后端实现）。
+  逐条 `memory.reuse` 可撤销效应与其顺序**不变**。
+- **D2 热集有界**：`_HOT_MAX = 512`，`_hot_put` 统一入口按**写入序淘汰最旧**（读路径从不填
+  `_hot`，故为 FIFO 而非严格 LRU）。后端内存集才是全量真源，`_all_entries()` 冷热并集与读面
+  不受淘汰影响；`_restore_importance` 对已淘汰条目**回退冷区**定位，保证撤销正确。
+- **D3 空摘要守卫**：summarizer 返回空 ⇒ 告警（只报会话键，不回显正文）并 `continue`，
+  本轮跳过提交与派生抽取/巩固。**不**引入持久「已尝试」状态位——材料未归档是事实，下轮重试
+  是必要行为（模型侧持续失败则持续告警）。
+- **D4 教训块预算**：抽出纯函数 `_render_failure_lessons`：条数上限 5 不变，单条正文 ≤500
+  字符、总正文 ≤1500（按选取顺序消耗预算），每行折叠为单行。
+
+**规格**：`memory` **MODIFIED**「温度分层检索」（＋1 Scenario）与「记忆压实」（＋1 Scenario）
+⇒ 17 req 不变、134 → 136 scen；`loop` **MODIFIED**「执行循环」（＋1 Scenario）⇒ 7 req / 97 →
+98 scen。既有 Scenario 逐字保留。
+
+**反证（实测）**：摘 `put_many` 分支（强制逐条）⇒ 批量用例红；摘 `_hot` 裁剪 ⇒ 热集上界用例
+红；摘空摘要 `continue` ⇒ 跳过抽取用例红；摘教训截断 ⇒ 有界用例红。复原后两文件 `md5sum` 同。
+测试锚点：新增 5 例（`test_memory.py` 4：批量一次落盘 / 无 `put_many` 回退 / 热集有界且后端为
+真源 / 空摘要跳过；`test_failure_lessons.py` 1：教训块有界）。全量 2696 → **2701** passed。
+
+**局限**：① `_hot` 是 FIFO 而非严格 LRU（读路径不填充热集；严格 LRU 需读时提升，收益不抵
+写路径外的新变动）；② `_restore_importance` 冷区回退用 `search("")` 线性定位，撤销路径罕见、
+未建二级索引；③ 空摘要守卫只作用于**本轮**，摘要模型持续失败会逐轮重复 summarize + 告警（材料
+未归档，属必要重试），未做退避；④ `put_many` 靠能力探测而非类型约束，后端实现偏离时只在批量
+路径退化；⑤ 教训预算按**字符**计而非 token，CJK 下偏保守，与 token 估计口径问题同源（留
+change 0245）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8542,3 +8584,4 @@ change 未收紧）；⑤ `max_samples` 与 `min_samples` 的关系不校验，�
 | ADR-0229 | 03-interfaces/memory-interface.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0230 | 03-interfaces/prompts.md, 03-interfaces/memory-interface.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0231 | 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0232 | 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
