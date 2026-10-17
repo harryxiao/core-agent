@@ -39,6 +39,11 @@ Emit = Callable[[LoopEvent | None], None]
 _MAX_HANDOFF_CHARS = 2000  # 依赖结果注入/检查点留存的回复截断（上下文有界）
 _MAX_EVENT_EXCERPT = 600  # 进度事件携带的回复节选（UI 折叠详情用）
 
+# 失败恢复预算（change 0246）：任一子任务验收/执行失败 ⇒ 仅失败项重试 1 次；
+# 仍失败 ⇒ 重新拆解 1 次；预算耗尽 ⇒ FAILED。固定策略，不做配置旋钮。
+_MAX_SUBTASK_RETRIES = 1
+_MAX_REPLANS = 1
+
 # 同波次调度策略取值（change 0123；词表来源：doc/openspec/specs/orchestration/spec.md）：
 #   off（缺省）  —— 同波次按依赖拓扑并发（上限 max_concurrency），与引入策略前逐字一致；
 #   difficulty —— 同波次**含 hard** 时该波次串行，否则维持并发
@@ -91,6 +96,7 @@ class SubtaskOutcome:
     """子任务执行结果：通过与否 + 结构化错误码 + 原因 + 追溯 trace + 回复摘要。
 
     reply 携带验收通过的结果（截断有界），供依赖子任务交接与检查点续跑重建。
+    attempt 为本次结果的执行序号（1 = 首发，2 = 重试），用于终态计数与可观测性。
     """
 
     subtask_id: str
@@ -99,6 +105,49 @@ class SubtaskOutcome:
     reason: str = ""
     trace_id: str = ""
     reply: str = ""
+    attempt: int = 1
+
+
+@dataclass
+class _Failure:
+    """恢复回路收口的一次失败：错误码 + 原因 + 失败项 + 已用尝试次数。"""
+
+    code: OrchestrationErrorCode
+    reason: str
+    failed: list[str]
+    attempts: int = 1
+
+
+@dataclass
+class _WaveResult:
+    """波次执行收口：累计结果 + 该波次失败（None = 通过）。"""
+
+    outcomes: list[SubtaskOutcome]
+    failure: _Failure | None = None
+
+
+def _merge_outcomes(
+    outcomes: list[SubtaskOutcome], updates: list[SubtaskOutcome]
+) -> list[SubtaskOutcome]:
+    """按子任务 id 合并结果（重试以新结果覆盖旧结果，保留原顺序）。"""
+    by_id = {outcome.subtask_id: outcome for outcome in outcomes}
+    for outcome in updates:
+        by_id[outcome.subtask_id] = outcome
+    return list(by_id.values())
+
+
+def _failure_from(outcomes: list[SubtaskOutcome]) -> _Failure | None:
+    """一轮结果聚合为失败收口；全部通过返回 None。"""
+    failed = [outcome for outcome in outcomes if not outcome.ok]
+    if not failed:
+        return None
+    last = failed[-1]
+    return _Failure(
+        code=last.error or OrchestrationErrorCode.SUBTASK_VERIFY_FAILED,
+        reason=last.reason or f"子任务 {last.subtask_id} 执行失败",
+        failed=[outcome.subtask_id for outcome in failed],
+        attempts=last.attempt,
+    )
 
 
 class TaskScheduler:
@@ -188,7 +237,7 @@ class TaskScheduler:
         results: dict[str, str] | None = None,
         session_id: str = "",
     ) -> AsyncIterator[LoopEvent]:
-        """流式任务执行：拆解 → 波次扇出 → 验收推进，进度事件依序外发。"""
+        """流式任务执行：拆解 → 波次扇出 → 验收推进 → 有限恢复，进度事件依序外发。"""
         yield LoopEvent("task_started", {"task_id": task_id, "goal": goal})
         for subtask_id in completed or set():
             self._tracker.record(task_id, subtask_id)  # 续跑：已完成集回填
@@ -203,101 +252,133 @@ class TaskScheduler:
                     "task_failed", {"task_id": task_id, "code": exc.code, "reason": str(exc)}
                 )
                 return
-        self._trace(
-            task_id, "plan_ready", {"subtasks": [s.id for s in plan.subtasks], "waves": plan.waves}
-        )
-        yield LoopEvent(
-            "plan_ready",
-            {
-                "task_id": task_id,
-                "goal": plan.goal,
-                "subtasks": [
-                    {
-                        "id": s.id,
-                        "goal": s.goal,
-                        "acceptance": s.acceptance,
-                        "depends_on": list(s.depends_on),
-                    }
-                    for s in plan.subtasks
-                ],
-                "waves": [list(w) for w in plan.waves],
-            },
-        )
-        self._enter_executing(task_id)
         outcomes: list[SubtaskOutcome] = []
-        for wave in plan.waves:
-            yield LoopEvent("wave_started", {"task_id": task_id, "wave": list(wave)})
-            queue: asyncio.Queue[LoopEvent | None] = asyncio.Queue()
-            gather_task = asyncio.create_task(
-                self._fan_out(task_id, plan, wave, queue.put_nowait, session_id=session_id)
-            )
-            while True:  # 排水子任务事件（None 哨兵 = 波次收拢）
-                event = await queue.get()
-                if event is None:
-                    break
-                yield event
-            await gather_task  # fan-out 异常在此重放（fan-in 语义不变）
-            wave_outcomes = gather_task.result()
-            outcomes.extend(wave_outcomes)
-            self._state_machine.transition(task_id, TaskState.VERIFYING)
-            failed = [o.subtask_id for o in wave_outcomes if not o.ok]
-            if failed:
-                self._state_machine.transition(task_id, TaskState.RECOVERING)
+        while True:  # 恢复回路：重试 / 重拆后重入，预算耗尽才终止
+            if not plan.subtasks or not plan.waves:
+                self._state_machine.transition(task_id, TaskState.FAILED)
                 yield self._failed(
                     task_id,
                     OrchestrationErrorCode.SUBTASK_VERIFY_FAILED,
-                    f"子任务校验失败: {failed}",
-                    failed=failed,
+                    f"任务 {task_id} 的计划为空，无法执行",
                 )
                 return
-            if self._tracker.detect_stall(task_id):
-                self._state_machine.transition(task_id, TaskState.RECOVERING)
+            self._trace(
+                task_id,
+                "plan_ready",
+                {
+                    "subtasks": [s.id for s in plan.subtasks],
+                    "waves": plan.waves,
+                    "replan": plan.replans,
+                },
+            )
+            yield LoopEvent(
+                "plan_ready",
+                {
+                    "task_id": task_id,
+                    "goal": plan.goal,
+                    "subtasks": [
+                        {
+                            "id": s.id,
+                            "goal": s.goal,
+                            "acceptance": s.acceptance,
+                            "depends_on": list(s.depends_on),
+                        }
+                        for s in plan.subtasks
+                    ],
+                    "waves": [list(w) for w in plan.waves],
+                    "replan": plan.replans,
+                },
+            )
+            self._enter_executing(task_id)
+            failure: _Failure | None = None
+            for wave in plan.waves:
+                yield LoopEvent("wave_started", {"task_id": task_id, "wave": list(wave)})
+                wave_result = _WaveResult(outcomes=outcomes)
+                async for event in self._execute_wave(
+                    task_id, plan, wave, session_id=session_id, result=wave_result
+                ):
+                    yield event
+                outcomes = wave_result.outcomes
+                failure = wave_result.failure
+                if failure is not None:
+                    break
+            if failure is None:
+                self._state_machine.transition(task_id, TaskState.VERIFYING)
+                if plan.success_criteria and self._success_checker is None:
+                    self._state_machine.transition(task_id, TaskState.FAILED)
+                    yield self._failed(
+                        task_id,
+                        OrchestrationErrorCode.MISSING_SUCCESS_CHECKER,
+                        f"任务 {task_id} 提供了 success_criteria 但未注入 success_checker",
+                    )
+                    return
+                if not self._success_met(plan.success_criteria):
+                    failure = _Failure(
+                        OrchestrationErrorCode.PROGRESS_NOT_MET,
+                        f"任务 {task_id} 未达成成功标准: {plan.success_criteria}",
+                        [],
+                        attempts=max((o.attempt for o in outcomes), default=1),
+                    )
+            if failure is None:
+                self._state_machine.transition(task_id, TaskState.DONE)
+                if self._on_done is not None:
+                    # 完成回调卸载出事件循环（change 0196）：回调可承载模型调用等重活，
+                    # 不得在事件循环上同步阻塞（先例：loop/default.py change 0167 / ADR-0157）。
+                    await asyncio.to_thread(self._on_done, task_id, outcomes, plan, session_id)
+                self._trace(
+                    task_id,
+                    "task_finished",
+                    {"ok": sum(1 for o in outcomes if o.ok), "total": len(outcomes)},
+                )
+                yield LoopEvent("task_finished", {"task_id": task_id, "outcomes": outcomes})
+                return
+            if plan.replans >= _MAX_REPLANS:
+                self._state_machine.transition(task_id, TaskState.FAILED)
                 yield self._failed(
                     task_id,
-                    OrchestrationErrorCode.DEADLOOP_DETECTED,
-                    f"任务 {task_id} 检测到死循环（进度无推进）",
+                    failure.code,
+                    failure.reason,
+                    failed=failure.failed or None,
+                    extra={"attempts": failure.attempts, "replans": plan.replans},
                 )
                 return
+            # 重新拆解：先落计数与检查点（崩溃续跑不重置预算），再重入执行
+            self._state_machine.transition(task_id, TaskState.RECOVERING)
+            plan.replans += 1
+            yield LoopEvent(
+                "task_replanning",
+                {
+                    "task_id": task_id,
+                    "replan": plan.replans,
+                    "max_replans": _MAX_REPLANS,
+                    "failed": failure.failed,
+                    "reason": failure.reason,
+                },
+            )
+            self._trace(task_id, "task_replanning", {"replan": plan.replans})
             if self._checkpoint is not None:
                 self._checkpoint(task_id, outcomes, plan, session_id)
-                yield LoopEvent(
-                    "task_checkpoint",
-                    {
-                        "task_id": task_id,
-                        "wave": list(wave),
-                        "completed": sorted(self._tracker.completed(task_id)),
-                    },
+            replan_input = self._replan_input(task_id, goal, plan, failure)
+            try:
+                new_plan = await self._decomposer.decompose(replan_input)
+            except OrchestrationError as exc:
+                self._state_machine.transition(task_id, TaskState.FAILED)
+                yield self._failed(
+                    task_id,
+                    exc.code,
+                    f"重新拆解失败：{exc}",
+                    extra={"replans": plan.replans},
                 )
-                self._trace(task_id, "task_checkpoint", {"wave": list(wave)})
-            self._state_machine.transition(task_id, TaskState.EXECUTING)
-        self._state_machine.transition(task_id, TaskState.VERIFYING)
-        if plan.success_criteria and self._success_checker is None:
-            self._state_machine.transition(task_id, TaskState.FAILED)
-            yield self._failed(
-                task_id,
-                OrchestrationErrorCode.MISSING_SUCCESS_CHECKER,
-                f"任务 {task_id} 提供了 success_criteria 但未注入 success_checker",
-            )
-            return
-        if not self._success_met(plan.success_criteria):
-            self._state_machine.transition(task_id, TaskState.RECOVERING)
-            yield self._failed(
-                task_id,
-                OrchestrationErrorCode.PROGRESS_NOT_MET,
-                f"任务 {task_id} 未达成成功标准: {plan.success_criteria}",
-            )
-            return
-        self._state_machine.transition(task_id, TaskState.DONE)
-        if self._on_done is not None:
-            # 完成回调卸载出事件循环（change 0196）：回调可承载模型调用等重活，
-            # 不得在事件循环上同步阻塞（先例：loop/default.py change 0167 / ADR-0157）。
-            await asyncio.to_thread(self._on_done, task_id, outcomes, plan, session_id)
-        self._trace(
-            task_id,
-            "task_finished",
-            {"ok": sum(1 for o in outcomes if o.ok), "total": len(outcomes)},
-        )
-        yield LoopEvent("task_finished", {"task_id": task_id, "outcomes": outcomes})
+                return
+            new_plan.goal = goal
+            if plan.success_criteria:
+                new_plan.success_criteria = list(plan.success_criteria)
+            new_plan.replans = plan.replans
+            # 新 DAG 可能复用 id：清空旧完成集/结果与累计 outcomes，避免误跳过与脏依赖
+            self._tracker.reset(task_id)
+            self._results.pop(task_id, None)
+            outcomes = []
+            plan = new_plan
 
     def suspend(self, task_id: str) -> None:
         """挂起：持久化执行上下文（进度已留存于 tracker）并转入 SUSPENDED。"""
@@ -319,12 +400,15 @@ class TaskScheduler:
         reason: str,
         *,
         failed: list[str] | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> LoopEvent:
         """失败收口：trace + task_failed 事件（run 消费端还原为抛错）。"""
-        self._trace(task_id, "task_failed", {"code": str(code), "reason": reason})
+        self._trace(task_id, "task_failed", {"code": str(code), "reason": reason, **(extra or {})})
         payload: dict[str, Any] = {"task_id": task_id, "code": code, "reason": reason}
         if failed:
             payload["failed"] = failed
+        if extra:
+            payload.update(extra)
         return LoopEvent("task_failed", payload)
 
     def _success_met(self, criteria: list[str]) -> bool:
@@ -335,16 +419,133 @@ class TaskScheduler:
         return self._success_checker(criteria)
 
     def _enter_executing(self, task_id: str) -> None:
-        """新任务 CREATED→PLANNING→EXECUTING；挂起/已执行任务直接进 EXECUTING。"""
+        """新任务 CREATED→PLANNING→EXECUTING；挂起/恢复中任务直接进 EXECUTING。"""
         state = self._state_machine.state(task_id)
         if state == TaskState.CREATED:
             self._state_machine.transition(task_id, TaskState.PLANNING)
             self._state_machine.transition(task_id, TaskState.EXECUTING)
-        elif state == TaskState.SUSPENDED:
+        elif state in (TaskState.SUSPENDED, TaskState.RECOVERING):
             self._state_machine.transition(task_id, TaskState.EXECUTING)
 
-    async def _fan_out(
-        self, task_id: str, plan: Plan, wave: list[str], emit: Emit, *, session_id: str = ""
+    async def _execute_wave(  # noqa: PLR0913 — 波次执行注入面（会话/结果）
+        self,
+        task_id: str,
+        plan: Plan,
+        wave: list[str],
+        *,
+        session_id: str,
+        result: _WaveResult,
+    ) -> AsyncIterator[LoopEvent]:
+        """执行一波次并完成重试收口；累计结果与失败写回 ``result``。"""
+        wave_outcomes: list[SubtaskOutcome] = []
+        async for event in self._stream_wave(
+            task_id, plan, wave, session_id=session_id, sink=wave_outcomes
+        ):
+            yield event
+        outcomes = _merge_outcomes(result.outcomes, wave_outcomes)
+        self._state_machine.transition(task_id, TaskState.VERIFYING)
+        failure = _failure_from(wave_outcomes)
+        if failure is not None:
+            self._state_machine.transition(task_id, TaskState.EXECUTING)
+            retried: list[SubtaskOutcome] = []
+            for retry_round in range(_MAX_SUBTASK_RETRIES):
+                if failure is None:
+                    break
+                attempt = 2 + retry_round
+                yield LoopEvent(
+                    "task_retrying",
+                    {
+                        "task_id": task_id,
+                        "attempt": attempt,
+                        "failed": failure.failed,
+                        "reason": failure.reason,
+                    },
+                )
+                self._trace(
+                    task_id, "task_retrying", {"attempt": attempt, "failed": failure.failed}
+                )
+                async for event in self._stream_wave(
+                    task_id,
+                    plan,
+                    failure.failed,
+                    session_id=session_id,
+                    sink=retried,
+                    attempt=attempt,
+                    previous={sid: failure.reason for sid in failure.failed},
+                ):
+                    yield event
+                outcomes = _merge_outcomes(outcomes, retried)
+                failure = _failure_from(retried)
+                if failure is not None:
+                    failure.attempts = attempt
+            self._state_machine.transition(task_id, TaskState.VERIFYING)
+        if failure is not None:
+            result.outcomes, result.failure = outcomes, failure
+            return
+        if self._tracker.detect_stall(task_id):
+            result.outcomes = outcomes
+            result.failure = _Failure(
+                OrchestrationErrorCode.DEADLOOP_DETECTED,
+                f"任务 {task_id} 检测到死循环（进度无推进）",
+                [],
+            )
+            return
+        if self._checkpoint is not None:
+            self._checkpoint(task_id, outcomes, plan, session_id)
+            yield LoopEvent(
+                "task_checkpoint",
+                {
+                    "task_id": task_id,
+                    "wave": list(wave),
+                    "completed": sorted(self._tracker.completed(task_id)),
+                },
+            )
+            self._trace(task_id, "task_checkpoint", {"wave": list(wave)})
+        self._state_machine.transition(task_id, TaskState.EXECUTING)
+        result.outcomes = outcomes
+
+    async def _stream_wave(  # noqa: PLR0913 — 波次执行注入面（会话/结果/重试）
+        self,
+        task_id: str,
+        plan: Plan,
+        wave: list[str],
+        *,
+        session_id: str,
+        sink: list[SubtaskOutcome],
+        attempt: int = 1,
+        previous: dict[str, str] | None = None,
+    ) -> AsyncIterator[LoopEvent]:
+        """执行一个波次并排水子任务事件；收拢结果追加进 ``sink``（fan-in 语义不变）。"""
+        queue: asyncio.Queue[LoopEvent | None] = asyncio.Queue()
+        gather_task = asyncio.create_task(
+            self._fan_out(
+                task_id,
+                plan,
+                wave,
+                queue.put_nowait,
+                session_id=session_id,
+                attempt=attempt,
+                previous=previous,
+            )
+        )
+        while True:  # 排水子任务事件（None 哨兵 = 波次收拢）
+            event = await queue.get()
+            if event is None:
+                break
+            yield event
+        await gather_task  # fan-out 异常在此重放（守卫已把子任务异常归一为失败）
+        sink.extend(gather_task.result())
+
+    async def _fan_out(  # noqa: PLR0913 — 波次扇出注入面（会话/重试）
+        self,
+        task_id: str,
+        plan: Plan,
+        wave: list[str],
+        emit: Emit,
+        *,
+        session_id: str = "",
+        attempt: int = 1,
+        previous: dict[str, str] | None = None,
     ) -> list[SubtaskOutcome]:
         """波次内子任务优先级排序 + 真并发扇出（资源上限分批）+ 汇总。"""
         subtasks = [s for s in plan.subtasks if s.id in wave]
@@ -353,8 +554,15 @@ class TaskScheduler:
         try:
             outcomes = await asyncio.gather(
                 *(
-                    self._run_subtask(
-                        task_id, plan, subtask, semaphore, emit, session_id=session_id
+                    self._guarded_subtask(
+                        task_id,
+                        plan,
+                        subtask,
+                        semaphore,
+                        emit,
+                        session_id=session_id,
+                        attempt=attempt,
+                        previous_reason=(previous or {}).get(subtask.id, ""),
                     )
                     for subtask in ordered
                 )
@@ -362,6 +570,69 @@ class TaskScheduler:
             return list(outcomes)
         finally:
             emit(None)  # 收尾哨兵：异常路径也必须解除事件排水阻塞
+
+    async def _guarded_subtask(  # noqa: PLR0913 — 子任务执行注入面（会话/重试）
+        self,
+        task_id: str,
+        plan: Plan,
+        subtask: Subtask,
+        semaphore: asyncio.Semaphore,
+        emit: Emit,
+        *,
+        session_id: str = "",
+        attempt: int = 1,
+        previous_reason: str = "",
+    ) -> SubtaskOutcome:
+        """子任务异常归一：结构化错误保留原码，其余异常 → SUBTASK_EXECUTION_FAILED。
+
+        ``CancelledError`` 属 ``BaseException``，不在此捕获（取消必须透传）。
+        """
+        try:
+            return await self._run_subtask(
+                task_id,
+                plan,
+                subtask,
+                semaphore,
+                emit,
+                session_id=session_id,
+                attempt=attempt,
+                previous_reason=previous_reason,
+            )
+        except OrchestrationError as exc:
+            return self._failed_outcome(task_id, subtask.id, exc.code, str(exc), emit, attempt)
+        except Exception as exc:  # noqa: BLE001 — 执行异常归一为子任务失败（不裸崩调度器）
+            return self._failed_outcome(
+                task_id,
+                subtask.id,
+                OrchestrationErrorCode.SUBTASK_EXECUTION_FAILED,
+                str(exc) or type(exc).__name__,
+                emit,
+                attempt,
+            )
+
+    def _failed_outcome(  # noqa: PLR0913, PLR0917 — 归一失败结果入参
+        self,
+        task_id: str,
+        subtask_id: str,
+        code: OrchestrationErrorCode,
+        reason: str,
+        emit: Emit,
+        attempt: int,
+    ) -> SubtaskOutcome:
+        """异常归一后的失败结果（与常规验收失败同形，进入同一恢复回路）。"""
+        emit(
+            LoopEvent(
+                "subtask_completed",
+                {
+                    "task_id": task_id,
+                    "subtask_id": subtask_id,
+                    "ok": False,
+                    "reason": reason,
+                    "attempt": attempt,
+                },
+            )
+        )
+        return SubtaskOutcome(subtask_id, ok=False, error=code, reason=reason, attempt=attempt)
 
     def _wave_limit(self, subtasks: list[Subtask]) -> int:
         """本波次并发度（change 0123 难易度感知调度策略）。
@@ -385,10 +656,13 @@ class TaskScheduler:
         emit: Emit,
         *,
         session_id: str = "",
+        attempt: int = 1,
+        previous_reason: str = "",
     ) -> SubtaskOutcome:
         """执行单个子任务：幂等跳过已完成 → 匹配 Agent → 异步执行 → 验收门。
 
         ``session_id`` 为发起方会话标识（缺省空串 = 未归属），透传至子 Agent 执行。
+        ``attempt`` / ``previous_reason`` 为重试面（1 = 首发；>1 时把上次失败原因注入目标）。
         """
         if subtask.id in self._tracker.completed(task_id):
             emit(
@@ -406,6 +680,7 @@ class TaskScheduler:
                     "subtask_id": subtask.id,
                     "goal": subtask.goal,
                     "acceptance": subtask.acceptance,
+                    "attempt": attempt,
                 },
             )
         )
@@ -423,6 +698,7 @@ class TaskScheduler:
                             "subtask_id": subtask.id,
                             "ok": False,
                             "reason": "无匹配 Agent",
+                            "attempt": attempt,
                         },
                     )
                 )
@@ -431,8 +707,15 @@ class TaskScheduler:
                     ok=False,
                     error=OrchestrationErrorCode.NO_AGENT_MATCH,
                     reason="无匹配 Agent",
+                    attempt=attempt,
                 )
             goal = self._handoff_goal(task_id, plan, subtask)
+            if attempt > 1 and previous_reason:
+                goal = (
+                    f"{goal}\n\n[重试提示] 上一次执行未通过："
+                    f"{previous_reason[:_MAX_EVENT_EXCERPT]}"
+                    f"（第 {attempt} 次执行，请针对该原因修正）"
+                )
             # 子任务轨迹按**发起方会话**归属（缺省空串 = 未归属）⇒ 非空才传第二实参
             stream = (
                 profile.loop.astream(goal, session_id=session_id)
@@ -447,7 +730,12 @@ class TaskScheduler:
             self._trace(
                 task_id,
                 "subtask_verified",
-                {"subtask_id": subtask.id, "passed": verify.passed, "reason": verify.reason},
+                {
+                    "subtask_id": subtask.id,
+                    "passed": verify.passed,
+                    "reason": verify.reason,
+                    "attempt": attempt,
+                },
             )
             # E63：验收通过**且**执行未失败才算通过（对齐 delegate 正解 `not result.failed`）；
             # 执行失败态（循环未达成 / 异常终止 / 预算耗尽）fail-closed，不因合成回复非空而假成功。
@@ -465,6 +753,7 @@ class TaskScheduler:
                         "reason": reason,
                         "trace_id": result.trace_id,
                         "reply": result.reply[:_MAX_EVENT_EXCERPT],
+                        "attempt": attempt,
                     },
                 )
             )
@@ -478,6 +767,7 @@ class TaskScheduler:
                     ok=True,
                     trace_id=result.trace_id,
                     reply=result.reply[:_MAX_HANDOFF_CHARS],
+                    attempt=attempt,
                 )
             error = (
                 OrchestrationErrorCode.SUBTASK_VERIFY_FAILED
@@ -490,7 +780,23 @@ class TaskScheduler:
                 error=error,
                 reason=reason,
                 trace_id=result.trace_id,
+                attempt=attempt,
             )
+
+    def _replan_input(self, task_id: str, goal: str, plan: Plan, failure: _Failure) -> str:
+        """重新拆解输入：原目标 + 已完成摘要 + 失败项与原因（有界）。"""
+        completed = [s for s in plan.subtasks if s.id in self._tracker.completed(task_id)]
+        lines = [f"原始目标：{goal}"]
+        if completed:
+            lines.append("已完成子任务（不要重复安排）：")
+            lines.extend(f"- {s.id}: {s.goal}" for s in completed)
+        if failure.failed:
+            lines.append("失败子任务（需重新安排）：")
+            lines.extend(f"- {sid}: {failure.reason}" for sid in failure.failed)
+        elif failure.code == OrchestrationErrorCode.DEADLOOP_DETECTED:
+            lines.append("上一轮未取得进展（疑似死循环），请换一种拆解策略。")
+        lines.append("请重新拆解尚未完成的部分；已完成的部分不要重复。")
+        return "\n".join(lines)[:_MAX_HANDOFF_CHARS]
 
     def _emit_progress(self, task_id: str, subtask_id: str, event: LoopEvent, emit: Emit) -> None:
         """里程碑事件按白名单转译为 `subtask_progress`；表外类型与非字典载荷**静默丢弃**。"""

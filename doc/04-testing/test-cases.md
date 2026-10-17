@@ -3528,3 +3528,26 @@ episodic）并写 canonical 提升。token 估计统一 `len // 4`，中文按 1
 > 窗口改回 4 ⇒ 11 红；复原 ⇒ 三文件 `md5sum` 同。规格：`evolution` **MODIFIED** ×1 +1 scen
 > （19 req / 107 → 108 scen）。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0233 行
 > （skills/SOP/notes 学习信号仍注入 / 基准条目仍被打分 / 构造期集合 / 字符集粗估 / 2 字符折中）。
+
+## 157. 编排失败恢复（TC-ORCHRECOVER，change `0246`／ADR-0234，台账 E181）
+
+**根因**：线性 `for wave` 在首个失败子任务后即 `RECOVERING` + `return`（非终态 ⇒ 永久悬置）；
+`_fan_out` 的 `gather` 无异常兜底；检查点不携带恢复预算；空计划被「空标准视为通过」误判 `DONE`。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-ORCHRECOVER-01 | **重试通过不重拆**（承重） | 首跑失败、重试成功 | `DONE`；`task_retrying` 一次；`plan_ready.replan == 0`；`subtask_started.attempt` 序列 `[1, 2]`（`tests/test_orchestration.py::test_run_retry_succeeds_without_replan`） |
+| TC-ORCHRECOVER-02 | 重试仍失败触发重拆 | 两轮均失败，重拆后成功 | `DONE`；`task_replanning` 一次；`plan_ready.replan == [0, 1]`；最后一次执行输入来自新计划（`…test_run_replan_after_retry_exhausted`） |
+| TC-ORCHRECOVER-03 | 预算耗尽终态 | 始终失败 | `FAILED`；`SUBTASK_VERIFY_FAILED`；planner 2 次、loop 4 次（首发 + 重试 × 2 计划）（`…test_run_verify_failure_retries_then_replans_then_fails`） |
+| TC-ORCHRECOVER-04 | **重拆清空旧完成集/结果** | 计划 1 的 A 成功、B 失败；计划 2 复用 id A 但目标不同 | 新目标 `t-new` 确实被执行（旧完成集/结果未误跳过）（`…test_run_replan_clears_old_completed_and_results`） |
+| TC-ORCHRECOVER-05 | 执行异常归一 | 子 loop `astream` 抛 `RuntimeError` | 最终 `SUBTASK_EXECUTION_FAILED`（不裸崩）；`FAILED`（`…test_run_execution_exception_normalized`） |
+| TC-ORCHRECOVER-06 | 空计划守卫 | planner 返回 `[]` | `FAILED`，`SUBTASK_VERIFY_FAILED`（不判 `DONE`）（`…test_run_empty_plan_fails_instead_of_done`） |
+| TC-ORCHRECOVER-07 | 目标未达标接恢复 | checker 恒 `False` | 触发一次重拆后 `FAILED`；`PROGRESS_NOT_MET`（`…test_run_success_criteria_unmet_recovers_then_fails`） |
+| TC-ORCHRECOVER-08 | 计数持久化 | `Plan(replans=1)` 往返；旧 dict 缺键 | 往返保持 1；旧检查点缺键回落 0（`…test_plan_dict_roundtrip`） |
+| TC-ORCHRECOVER-09 | 失败态仍 fail-closed | 执行失败态 + 无验收标准 | `subtask_completed.ok is False`；进入重试后 `FAILED`（`…test_failed_execution_without_acceptance_does_not_pass`） |
+
+> **反证**：`_MAX_SUBTASK_RETRIES=0` ⇒ 01 红；`_MAX_REPLANS=0` ⇒ 02/03 红；摘
+> `_enter_executing` 的 `RECOVERING` 分支 ⇒ 02 红；复原 ⇒ `scheduler.py` `md5sum` 同
+> （`c97840f7f12ff7c65db08e5394af49f0`）。规格：`orchestration` **MODIFIED** ×2 +7 scen
+> （11 req / 50 → 57 scen）。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0234 行
+> （固定预算 / 判定误判只恢复一次 / cancel 不断流 / 重试进程内计数 / 重拆后依赖上下文）。

@@ -8404,6 +8404,62 @@ ephemeral 派生 0 调用 + 普通会话对照 + CJK 读预算；`test_benchmark
 token/字符偏保守；⑤ `_CHARS_PER_TOKEN=2` 是混合折中：纯中文摘要仍可能有 ≤2 倍预算误差，
 纯英文摘要比旧行为短一半。
 
+## ADR-0234：编排失败恢复（重试 1 次 + 重新拆解 1 次）（change 0246 / 台账 E181）
+
+**背景**：`TaskScheduler.astream` 此前是线性 `for wave`：任一波次出现失败子任务即
+`VERIFYING→RECOVERING` 后直接 `return`。`RECOVERING` 不是终态，任务永久悬置；`run()`
+消费端虽把 `task_failed` 还原为抛错，但生产路径（`--resume` / delegate）拿到的是一个既无
+终态、也无法继续的状态。规格 `orchestration` R2 早已要求「回退重试（有限次）或重新规划」，
+实现未闭合。另有三处同源缺口：① `_fan_out` 的 `asyncio.gather` 无异常兜底，子 Agent 抛出
+的异常直穿调度器；② 检查点不携带恢复预算；③ 空计划（planner 返回空 / 旧检查点无子任务）
+因「空成功标准视为通过」被判 `DONE`。
+
+**决策**：
+
+- **D1 有限恢复回路**：把「拆解 → 波次执行 → 终态判定」包进 `while True`。波次 fan-in 后
+  `EXECUTING→VERIFYING`；有失败 ⇒ `VERIFYING→EXECUTING`，**只对失败子任务**重跑 1 次
+  （`_MAX_SUBTASK_RETRIES = 1`，新建同波次信号量、复用事件排水；`SubtaskOutcome.attempt`
+  与 `subtask_started.attempt` 标记执行序号；重试目标追加有界失败提示）；仍失败 ⇒
+  `VERIFYING→RECOVERING`，重新拆解 1 次（`_MAX_REPLANS = 1`）。预算耗尽 ⇒ `FAILED`，
+  错误码沿用最后一次失败原因（`SUBTASK_VERIFY_FAILED` / `SUBTASK_EXECUTION_FAILED` /
+  `DEADLOOP_DETECTED` / `PROGRESS_NOT_MET`），payload 增 `attempts` / `replans`；**不新增
+  错误码**，保调用方兼容。
+- **D2 重新拆解语义**：输入 = 原 goal + 已完成子任务摘要 + 失败项与原因（有界
+  `_MAX_HANDOFF_CHARS`）；新计划保留原 `goal` 与原 `success_criteria`（原标准非空时）。
+  重拆后**清空本任务的 tracker 完成集、`_results` 与累计 outcomes** —— 新 DAG 可能复用 id
+  但语义不同，清理避免误跳过与脏依赖。重拆异常或空计划 ⇒ 直接 `FAILED`，不再消耗预算。
+- **D3 计数持久化**：`Plan.replans: int = 0` 随 `plan_to_dict` / `plan_from_dict` 往返；
+  重拆前**先落计数与检查点**，崩溃续跑不重置恢复预算。子任务重试次数是**进程内**有界计数，
+  不跨进程持久化（崩溃续跑重新获得 1 次重试，仍有界）。`CheckpointFn` 4 参签名不动。
+- **D4 异常归一**：`_guarded_subtask` 捕获 `OrchestrationError` 保留原码，其余 `Exception`
+  → `SUBTASK_EXECUTION_FAILED`；`CancelledError`（`BaseException`）透传。执行异常进入同一
+  重试/重拆回路，不再裸崩调度器。
+- **D5 空计划守卫**：`plan.subtasks` 为空或 `plan.waves` 为空 ⇒ `FAILED`
+  （`SUBTASK_VERIFY_FAILED`），不因「空标准视为通过」误判 `DONE`（顺带闭合 P0-6 的空计划
+  续跑假成功）。
+- **D6 状态机**：`_enter_executing` 增 `RECOVERING→EXECUTING` 分支；既有转移表已含该边，
+  无需新边。成功路径的事件序列逐字不变；新增事件 `task_retrying` / `task_replanning` 仅在
+  失败路径出现，`plan_ready` 增 `replan` 字段。
+
+**规格**：`orchestration` R2「子任务拆解」**MODIFIED**（恢复回路段落 + 6 Scenario）、
+R4「断点续跑」**MODIFIED**（`Plan.replans` 持久化 + 1 Scenario）—— 11 req 不变、
+50 → **57** scen。
+
+**反证（实测）**：`_MAX_SUBTASK_RETRIES = 0` ⇒ `test_run_retry_succeeds_without_replan` 红；
+`_MAX_REPLANS = 0` ⇒ `test_run_verify_failure_retries_then_replans_then_fails` /
+`test_run_replan_after_retry_exhausted` 红；摘 `_enter_executing` 的 `RECOVERING` 分支 ⇒
+`test_run_replan_after_retry_exhausted` 红；复原 ⇒ `scheduler.py` `md5sum` 同
+（`c97840f7f12ff7c65db08e5394af49f0`）。测试 +6（1 例改名替换既有用例，净 +5：
+2711 → **2716**）。四门禁全绿；`openspec validate --all` 中本 change 绿（`0230` / `0233`
+两项为**既有**归档欠账，见 ADR-0223 / ADR-0225 局限④）。
+
+**局限**：① 重试/重拆各 1 次是**固定策略**（无配置旋钮），费用有界但复杂故障可能不够；
+② 任务级判定可能误判，fail-closed 只触发一次恢复（`0248` 接判定器后同）；③ `cancel`
+只转状态、不断流（D1 既有缺口，不在本 change）；④ 消费方断流/运行中取消未覆盖；
+⑤ 重试是**进程内**计数，崩溃续跑会重新获得 1 次重试；⑥ 重拆清空 `_results` 后，新计划
+若复用已完成子任务 id 且不重新执行，依赖上下文需由新执行重新填充（由「已完成摘要 +
+不重复安排」提示约束，非硬保证）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8632,3 +8688,4 @@ token/字符偏保守；⑤ `_CHARS_PER_TOKEN=2` 是混合折中：纯中文摘�
 | ADR-0231 | 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0232 | 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0233 | 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0234 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

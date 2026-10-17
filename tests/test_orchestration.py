@@ -294,29 +294,168 @@ def test_run_priority_order() -> None:
     assert tracker.order == ["t-high", "t-mid", "t-low"]
 
 
-def test_run_verify_failure_recovers() -> None:
-    profile = AgentProfile(agent_id="a", capabilities=["t"], loop=_loop(""))
-    decomposer = SubtaskDecomposer(
-        planner=lambda goal: [Subtask(id="1", goal="t-one", acceptance="")]
-    )
-    router = MultiAgentRouter(agents=[profile])
+class _ScriptedLoop(DefaultLoop):
+    """按调用次序回放回复；记录收到的子任务输入（重试/重拆断言）。"""
+
+    def __init__(self, replies: list[str]) -> None:
+        self._replies = replies
+        self.calls = 0
+        self.inputs: list[str] = []
+        super().__init__(planner=self._plan)
+
+    def _plan(self, ctx: Any) -> Action:
+        reply = self._replies[min(self.calls, len(self._replies) - 1)]
+        self.calls += 1
+        return Action(args={"reply": reply})
+
+    async def astream(self, user_input: str, *, session_id: str = "") -> AsyncIterator[LoopEvent]:
+        self.inputs.append(user_input)
+        async for event in super().astream(user_input, session_id=session_id):
+            yield event
+
+
+class _RaisingLoop(DefaultLoop):
+    """执行即抛异常（异常归一断言）。"""
+
+    def __init__(self) -> None:
+        super().__init__(planner=lambda ctx: Action(args={"reply": "ok"}))
+
+    async def astream(self, user_input: str, *, session_id: str = "") -> AsyncIterator[LoopEvent]:
+        raise RuntimeError("boom")
+        yield  # pragma: no cover — 使函数成为异步生成器
+
+
+class _ScriptedPlanner:
+    """按调用次序回放计划；记录每次收到的拆解输入。"""
+
+    def __init__(self, plans: list[list[Subtask]]) -> None:
+        self._plans = plans
+        self.calls: list[str] = []
+
+    def __call__(self, goal: str) -> list[Subtask]:
+        self.calls.append(goal)
+        return self._plans[min(len(self.calls) - 1, len(self._plans) - 1)]
+
+
+def test_run_verify_failure_retries_then_replans_then_fails() -> None:
+    """首次失败 → 重试 1 次 → 重拆 1 次；预算耗尽落 FAILED（不再悬置 RECOVERING）。"""
+    loop = _ScriptedLoop([""])
+    profile = AgentProfile(agent_id="a", capabilities=["t"], loop=loop)
+    planner = _ScriptedPlanner([[Subtask(id="1", goal="t-one", acceptance="")]])
     sm = StateMachine()
-    scheduler = TaskScheduler(decomposer=decomposer, router=router, state_machine=sm)
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(planner=planner),
+        router=MultiAgentRouter(agents=[profile]),
+        state_machine=sm,
+    )
     with pytest.raises(OrchestrationError) as exc:
         asyncio.run(scheduler.run("task", "goal"))
     assert exc.value.code == OrchestrationErrorCode.SUBTASK_VERIFY_FAILED
-    assert sm.state("task") == TaskState.RECOVERING
+    assert sm.state("task") == TaskState.FAILED
+    assert len(planner.calls) == 2  # noqa: PLR2004 — 首拆 + 重拆各一次
+    assert loop.calls == 4  # noqa: PLR2004 — 首计划 2 次（首发 + 重试）+ 重拆计划 2 次
 
 
-def test_run_success_criteria_unmet_recovers() -> None:
-    profile = AgentProfile(agent_id="a", capabilities=["t"], loop=_loop("ok"))
-    decomposer = SubtaskDecomposer(
-        planner=lambda goal: [Subtask(id="1", goal="t-one", acceptance="")]
+def test_run_retry_succeeds_without_replan() -> None:
+    loop = _ScriptedLoop(["", "ok"])
+    profile = AgentProfile(agent_id="a", capabilities=["t"], loop=loop)
+    planner = _ScriptedPlanner([[Subtask(id="1", goal="t-one", acceptance="")]])
+    sm = StateMachine()
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(planner=planner),
+        router=MultiAgentRouter(agents=[profile]),
+        state_machine=sm,
     )
+    events = _collect(scheduler, "task", "goal")
+    types = [e.type for e in events]
+    assert sm.state("task") == TaskState.DONE
+    assert len(planner.calls) == 1
+    assert types.count("task_retrying") == 1
+    assert "task_replanning" not in types
+    started = [cast(dict[str, Any], e.payload) for e in events if e.type == "subtask_started"]
+    assert [p["attempt"] for p in started] == [1, 2]
+    assert cast(dict[str, Any], events[1].payload)["replan"] == 0
+
+
+def test_run_replan_after_retry_exhausted() -> None:
+    loop = _ScriptedLoop(["", "", "ok"])
+    profile = AgentProfile(agent_id="a", capabilities=["t"], loop=loop)
+    planner = _ScriptedPlanner(
+        [
+            [Subtask(id="1", goal="t-one", acceptance="")],
+            [Subtask(id="2", goal="t-two", acceptance="")],
+        ]
+    )
+    sm = StateMachine()
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(planner=planner),
+        router=MultiAgentRouter(agents=[profile]),
+        state_machine=sm,
+    )
+    events = _collect(scheduler, "task", "goal")
+    types = [e.type for e in events]
+    assert sm.state("task") == TaskState.DONE
+    assert types.count("task_replanning") == 1
+    ready = [cast(dict[str, Any], e.payload) for e in events if e.type == "plan_ready"]
+    assert [p["replan"] for p in ready] == [0, 1]
+    assert loop.inputs[-1].startswith("t-two")
+
+
+def test_run_replan_clears_old_completed_and_results() -> None:
+    """重拆后的新 DAG 复用 id 时不得被旧完成集误跳过。"""
+    loop = _ScriptedLoop(["ok", "", "", "ok"])
+    profile = AgentProfile(agent_id="a", capabilities=["t"], loop=loop)
+    planner = _ScriptedPlanner(
+        [
+            [
+                Subtask(id="A", goal="t-a", acceptance=""),
+                Subtask(id="B", goal="t-b", acceptance=""),
+            ],
+            [Subtask(id="A", goal="t-new", acceptance="")],
+        ]
+    )
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(planner=planner),
+        router=MultiAgentRouter(agents=[profile]),
+        state_machine=StateMachine(),
+    )
+    asyncio.run(scheduler.run("task", "goal"))
+    assert "t-new" in loop.inputs
+
+
+def test_run_execution_exception_normalized() -> None:
+    profile = AgentProfile(agent_id="a", capabilities=["t"], loop=_RaisingLoop())
+    planner = _ScriptedPlanner([[Subtask(id="1", goal="t-one", acceptance="")]])
+    sm = StateMachine()
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(planner=planner),
+        router=MultiAgentRouter(agents=[profile]),
+        state_machine=sm,
+    )
+    with pytest.raises(OrchestrationError) as exc:  # 不是裸 RuntimeError
+        asyncio.run(scheduler.run("task", "goal"))
+    assert exc.value.code == OrchestrationErrorCode.SUBTASK_EXECUTION_FAILED
+    assert sm.state("task") == TaskState.FAILED
+
+
+def test_run_empty_plan_fails_instead_of_done() -> None:
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(planner=lambda goal: []),
+        router=MultiAgentRouter(),
+        state_machine=StateMachine(),
+    )
+    with pytest.raises(OrchestrationError) as exc:
+        asyncio.run(scheduler.run("task", "goal"))
+    assert exc.value.code == OrchestrationErrorCode.SUBTASK_VERIFY_FAILED
+
+
+def test_run_success_criteria_unmet_recovers_then_fails() -> None:
+    profile = AgentProfile(agent_id="a", capabilities=["t"], loop=_loop("ok"))
+    planner = _ScriptedPlanner([[Subtask(id="1", goal="t-one", acceptance="")]])
     router = MultiAgentRouter(agents=[profile])
     sm = StateMachine()
     scheduler = TaskScheduler(
-        decomposer=decomposer,
+        decomposer=SubtaskDecomposer(planner=planner),
         router=router,
         state_machine=sm,
         success_checker=lambda _: False,
@@ -324,7 +463,8 @@ def test_run_success_criteria_unmet_recovers() -> None:
     with pytest.raises(OrchestrationError) as exc:
         asyncio.run(scheduler.run("task", "goal", success_criteria=["c1"]))
     assert exc.value.code == OrchestrationErrorCode.PROGRESS_NOT_MET
-    assert sm.state("task") == TaskState.RECOVERING
+    assert sm.state("task") == TaskState.FAILED
+    assert len(planner.calls) == 2  # noqa: PLR2004 — 未达标触发一次重拆
 
 
 def test_run_empty_success_criteria_done() -> None:
@@ -485,8 +625,12 @@ def test_plan_dict_roundtrip() -> None:
         order=["1", "2"],
         success_criteria=["c"],
         waves=[["1"], ["2"]],
+        replans=1,
     )
     assert plan_from_dict(plan_to_dict(plan)) == plan
+    legacy = plan_to_dict(plan)
+    legacy.pop("replans")
+    assert plan_from_dict(legacy).replans == 0  # 旧检查点缺键回落 0
 
 
 # ---- 调度器事件流 / 断点续跑 / 审计 ----
@@ -805,7 +949,9 @@ def test_failed_execution_without_acceptance_does_not_pass() -> None:
     assert completed and cast(dict[str, Any], completed[0].payload)["ok"] is False
     assert events[-1].type == "task_failed"
     assert tracker.completed("task") == set()
-    assert sm.state("task") == TaskState.RECOVERING
+    # 执行失败态进入恢复回路（change 0246）：重试后仍失败 ⇒ 预算耗尽落终态
+    assert any(e.type == "task_retrying" for e in events)
+    assert sm.state("task") == TaskState.FAILED
 
 
 def test_failed_execution_with_acceptance_fails_closed() -> None:

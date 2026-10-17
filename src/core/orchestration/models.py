@@ -68,6 +68,7 @@ class Plan:
     order: list[str] = field(default_factory=list[str])
     success_criteria: list[str] = field(default_factory=list[str])
     waves: list[list[str]] = field(default_factory=list[list[str]])
+    replans: int = 0  # 已用重新拆解次数（随检查点持久化；change 0246）
 
 
 @dataclass
@@ -117,6 +118,7 @@ def plan_to_dict(plan: Plan) -> dict[str, Any]:
         "order": list(plan.order),
         "success_criteria": list(plan.success_criteria),
         "waves": [list(wave) for wave in plan.waves],
+        "replans": plan.replans,
     }
 
 
@@ -143,4 +145,6 @@ def plan_from_dict(data: dict[str, Any]) -> Plan:
         order=[str(sid) for sid in data.get("order", [])],
         success_criteria=[str(c) for c in data.get("success_criteria", [])],
         waves=[[str(sid) for sid in wave] for wave in data.get("waves", [])],
+        # 旧检查点缺该键 ⇒ 0（不保留恢复预算，行为与引入前一致）
+        replans=int(data.get("replans", 0)),
     )

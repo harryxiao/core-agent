@@ -22,10 +22,18 @@
 - **GIVEN** 任务在多轮执行后未向目标推进
 - **WHEN** 进度哨兵检测到重复模式
 - **THEN** 触发 `RECOVERING`（注入换策略提示或转人工）
+
 ### Requirement: 子任务拆解
 系统 SHALL 将大目标拆解为带验收标准的分步子任务，按依赖拓扑序执行，并逐步校验。子任务交给子 Agent 执行时
 SHALL 携带**发起方会话标识**（可选的 `session_id`，缺省空串 = 未归属），使子任务轨迹按**发起会话**归属
 （而非落入全局未归属条目）；空标识时归属语义 SHALL 与既往**逐字一致**。
+
+子任务验收失败 SHALL 进入**有限恢复回路**：先仅对**失败子任务**重试一次（已完成子任务 SHALL NOT
+重跑），仍失败则**重新拆解一次**（保留原目标与已定成功标准；新计划 SHALL 清空旧计划的完成集与
+结果上下文，避免子任务 id 复用导致误跳过或脏依赖）；恢复预算耗尽 SHALL 转 `FAILED`，错误码
+沿用最后一次失败原因。子 Agent 执行抛出结构化异常 SHALL 归一为子任务失败并进入同一恢复回路，
+SHALL NOT 让异常穿透调度器。空计划（无任何子任务）SHALL 判失败，SHALL NOT 以「空标准视为通过」
+误判 `DONE`。
 
 #### Scenario: 拆解与拓扑执行
 - **GIVEN** 一个复杂目标
@@ -61,6 +69,37 @@ SHALL 携带**发起方会话标识**（可选的 `session_id`，缺省空串 = 
 - **GIVEN** 一个子任务执行完成
 - **WHEN** 结果未通过其验收标准
 - **THEN** 不推进下一步，回退重试（有限次）或重新规划
+
+#### Scenario: 重试只重跑失败子任务
+- **GIVEN** 一波次内子任务 A 验收通过、子任务 B 验收失败
+- **WHEN** 调度器进入重试
+- **THEN** 仅 B 被重新执行一次（`subtask_started` 携带 `attempt=2`），A 不被重跑
+
+#### Scenario: 重试通过后继续推进
+- **GIVEN** 子任务首次验收失败
+- **WHEN** 重试后验收通过
+- **THEN** 该子任务记录完成，任务继续推进并最终可达 `DONE`（`replans=0`）
+
+#### Scenario: 重试仍失败触发重新拆解
+- **GIVEN** 子任务首次与重试均未通过验收
+- **WHEN** 恢复回路仍有重新拆解预算
+- **THEN** 任务转入 `RECOVERING`，以原目标、已完成摘要与失败原因重新拆解一次后重入执行
+
+#### Scenario: 恢复预算耗尽转 FAILED
+- **GIVEN** 重试与重新拆解预算均已用尽
+- **WHEN** 子任务仍未通过验收或目标仍未达成
+- **THEN** 任务转 `FAILED`，`task_failed` 携带最后一次失败原因与 `attempts` / `replans` 计数
+
+#### Scenario: 执行异常归一为子任务失败
+- **GIVEN** 子 Agent 执行抛出结构化异常
+- **WHEN** fan-out 回收结果
+- **THEN** 该子任务归一为失败（保留结构化错误码），进入同一重试/重拆回路，异常不穿透调度器
+
+#### Scenario: 空计划不误判完成
+- **GIVEN** 检查点或 planner 产出不含任何子任务的计划
+- **WHEN** 调度器开始执行
+- **THEN** 任务判 `FAILED`（`task_failed`），不因「空成功标准视为通过」而判 `DONE`
+
 ### Requirement: 子任务验收门
 系统 SHALL 对带验收标准的子任务结果经 LLM 对照判定（验收门）：判定通过才记录完成并推进；判定不通过或判定器不可用时标记失败不推进（fail-closed）；无验收标准时退化为离线非空判定，不调用模型。子任务**执行单元**返回**失败态**（循环未达成目标 / 异常终止 / 预算耗尽）时，验收门 SHALL 判**不通过**（fail-closed），SHALL NOT 因合成回复非空而通过；该失败态 SHALL 传播至子任务终态（`ok = 验收通过 且 执行未失败`）与 fan-in 推进判据。
 
@@ -83,6 +122,7 @@ SHALL 携带**发起方会话标识**（可选的 `session_id`，缺省空串 = 
 - **GIVEN** 子任务执行单元返回失败态（`failed=True`）却产出非空回复
 - **WHEN** 验收门校验结果
 - **THEN** 该子任务标记失败（含理由），不记录完成、不推进后继波次，任务转入 RECOVERING
+
 ### Requirement: 多 Agent 协同
 系统 SHALL 支持按任务类型路由到最合适的子 Agent，并通过标准化消息协议完成交接。
 
@@ -95,8 +135,12 @@ SHALL 携带**发起方会话标识**（可选的 `session_id`，缺省空串 = 
 - **GIVEN** 没有子 Agent 能处理当前子任务，且无可用 fallback
 - **WHEN** 路由器打分无命中
 - **THEN** 抛出 NO_AGENT_MATCH，调度器捕获并标记子任务失败
+
 ### Requirement: 断点续跑
 系统 SHALL 支持长任务挂起、恢复与取消（断点续跑）：挂起时持久化执行上下文与中间结果，恢复时从断点继续而非重头执行，取消时释放已占用资源。检查点持久化 SHALL 携带**发起方会话标识**（发起会话的 `session_id`，空串 = 未归属照实记录）；SHALL NOT 写占位值（如 `"default"`）——检查点的会话归属元数据 SHALL 与实际发起会话一致（发起方未携带会话时为空串）。波次检查点与终态检查点 SHALL 同口径。
+
+检查点 SHALL 持久化**重新拆解计数**（`Plan.replans`）；续跑重建 SHALL 保留该计数，SHALL NOT
+重置为 0。子任务重试次数为**进程内**有界计数，不跨进程持久化。
 
 #### Scenario: 任务挂起
 - **GIVEN** 一个长时间运行的任务
@@ -117,6 +161,12 @@ SHALL 携带**发起方会话标识**（可选的 `session_id`，缺省空串 = 
 - **GIVEN** 一次携带会话标识（非空）的任务执行
 - **WHEN** 波次收拢或任务终态触发检查点持久化
 - **THEN** 检查点的会话归属元数据等于该发起会话标识（非占位值）；未携带会话时为空串（照实记录未归属）
+
+#### Scenario: 续跑保留重新拆解计数
+- **GIVEN** 一次任务已用掉重新拆解预算（`Plan.replans=1`）并写入检查点
+- **WHEN** 进程退出后从该检查点续跑
+- **THEN** 重建的 `Plan.replans` 仍为 1，恢复回路不会再次获得重新拆解预算
+
 ### Requirement: 并行扇出
 系统 SHALL 支持并行扇出（fan-out/fan-in）波次调度：子任务按依赖拓扑分层为波次（wave），同一波次内无依赖子任务并行执行，波次全部完成并经 fan-in 汇总校验后推进下一波次，并行度受资源上限约束。
 
@@ -139,6 +189,7 @@ SHALL 携带**发起方会话标识**（可选的 `session_id`，缺省空串 = 
 - **GIVEN** 同一子任务因重试或网络抖动被重复派发
 - **WHEN** fan-out 调度收到重复派发请求
 - **THEN** 按子任务唯一标识去重，同一子任务仅执行一次，重复派发被忽略
+
 ### Requirement: 目标监控
 系统 SHALL 用 Goal 与 SuccessCriteria（SMART：具体/可度量/可达成/相关/有时限）定义任务级成功标准，子任务验收标准对齐父目标，并由 ProgressTracker 追踪每子任务进度与整体目标推进，进度未达标时触发重试或重规划。
 
@@ -156,6 +207,7 @@ SHALL 携带**发起方会话标识**（可选的 `session_id`，缺省空串 = 
 - **GIVEN** 子任务进度未达标
 - **WHEN** 进度监控检测到偏差
 - **THEN** 触发重试或重新规划（衔接状态机 RECOVERING）
+
 ### Requirement: 优先级调度
 系统 SHALL 支持子任务 priority 优先级字段，就绪队列（同波次无依赖子任务）按优先级降序调度，同优先级按入队序（FIFO）稳定执行，priority 缺省时取默认值。
 
@@ -173,6 +225,7 @@ SHALL 携带**发起方会话标识**（可选的 `session_id`，缺省空串 = 
 - **GIVEN** 子任务未指定 priority
 - **WHEN** 就绪队列调度
 - **THEN** 按默认优先级处理
+
 ### Requirement: 异步执行单元契约
 系统 SHALL 明确并行扇出的执行单元契约：扇出派发的每个执行单元复用 llm-provider 的 acompletion 与 tool-use 的 ainvoke 异步接口，支持事件循环内非阻塞与真并发执行，消除同步串行阻塞；同一波次内无依赖子任务经异步接口并发派发，不再是串行阻塞。
 
@@ -197,6 +250,7 @@ SHALL 携带**发起方会话标识**（可选的 `session_id`，缺省空串 = 
 - **GIVEN** 任务达成 `DONE` 且注入了完成回调（回调内含阻塞工作）
 - **WHEN** 编排器触发完成回调
 - **THEN** 回调在**工作线程**（非事件循环线程）执行，流式产出不被同步阻塞；回调的调用时机与次数不变（`DONE` 后一次）
+
 ### Requirement: 任务入口与进度事件
 系统 SHALL 提供 `core-agent task <目标>` CLI 入口与 TUI REPL `/task <目标>` 命令驱动编排器：流式产出任务进度事件（task_started / plan_ready / wave_started / subtask_started / subtask_progress / subtask_completed / task_checkpoint / task_finished / task_failed），关键节点（拆解、验收、检查点、终态）写入 trace 审计；支持从检查点断点续跑（重建原计划与已完成子任务集，未完成子任务续跑，已完成子任务不重复执行）。
 
@@ -249,6 +303,7 @@ SHALL 携带**发起方会话标识**（可选的 `session_id`，缺省空串 = 
 - **GIVEN** 一个携带有效会话标识的未完成检查点
 - **WHEN** 执行 `core-agent task --resume <task-id>`
 - **THEN** 续跑复用该检查点的会话标识（同一任务不分裂会话）；检查点为旧占位值 / 无会话时视作未归属并明示提示（行为与既往逐字一致）
+
 ### Requirement: 难易度感知的调度策略
 系统 SHALL 为子任务提供难易度字段 `difficulty`（三档 `easy` / `medium` / `hard`，缺省 `medium`；取值 SHALL 先去除首尾空白并大小写归一，再判集合成员，集合外归一为 `medium`，不抛裸异常、不阻断拆解），并 SHALL 提供**可配置**的同波次调度策略：策略取 `off`（缺省）时，同波次无依赖子任务 SHALL 按依赖拓扑并发扇出（并发度受 `max_concurrency` 上限约束，与引入本策略前**逐字一致**）；策略取 `difficulty` 时，同波次内**存在** `difficulty = hard` 的子任务则该波次 SHALL **串行**执行（按优先级降序逐个），否则维持并发。依赖拓扑 SHALL 仍是**硬约束**（有依赖的子任务必分属不同波次，本策略 SHALL NOT 改变波次划分）。策略取值与并发上限 SHALL 经配置面（ConfigSpec 单一真源）解析，并由**组合根**注入 `TaskScheduler` —— `max_concurrency` SHALL NOT 依赖构造缺省。
 

@@ -121,7 +121,8 @@ class TaskScheduler:
     ) -> AsyncIterator[LoopEvent]:
         """流式任务执行（进度事件）：task_started / plan_ready / wave_started /
         subtask_started / subtask_progress / subtask_completed / task_checkpoint /
-        task_finished / task_failed；关键节点（拆解/验收/检查点/终态）经 tracer 写 trace。"""
+        task_retrying / task_replanning / task_finished / task_failed；
+        关键节点（拆解/验收/检查点/终态）经 tracer 写 trace。"""
 ```
 
 - CLI 入口：`core-agent task <目标> [--task-id ID | --resume ID]` 流式打印进度事件；
@@ -136,12 +137,22 @@ class TaskScheduler:
 - **完成回调卸载**（change 0196 / ADR-0186）：任务完成回调（`on_done`）经 `asyncio.to_thread`
   **卸载至工作线程**执行 —— 回调 SHALL NOT 在事件循环上同步阻塞（可承载模型调用等重活）；调用
   时机（`DONE` 后**一次**）与检查点顺序**逐字不变**。波次检查点回调**不**卸载。
+- **失败恢复**（change 0246 / ADR-0234）：波次失败 ⇒ 仅失败子任务**重试 1 次**
+  （`subtask_started` / `subtask_completed` 载荷带 `attempt=2`，重试目标追加有界失败提示）；
+  仍失败 ⇒ `VERIFYING→RECOVERING`，**重新拆解 1 次**（`task_replanning`，输入为原目标 +
+  已完成摘要 + 失败原因）。预算耗尽 ⇒ `task_failed`，错误码沿用最后失败原因，载荷增
+  `attempts` / `replans`。子 Agent 执行异常归一为失败（`OrchestrationError` 保留原码，
+  其余 → `SUBTASK_EXECUTION_FAILED`，`CancelledError` 透传）。成功路径事件序列逐字不变。
 - 依赖结果交接：子任务验收通过的回复（截断 2000 字符）注入 `depends_on` 后继
   子任务的执行输入（「前置子任务结果」段），并随 `SubtaskOutcome.reply` 写入
   检查点 outcomes，续跑时经 `results` 参数重建依赖上下文。
+- **恢复计数持久化**（change 0246 / ADR-0234）：`Plan.replans` 随检查点往返（旧检查点缺键
+  ⇒ 0）；重拆前先落计数与检查点，续跑不重置恢复预算。重拆会清空该任务的已完成集与结果
+  上下文（新 DAG 可能复用 id）。子任务重试次数为进程内计数，不跨进程持久化。
 - 事件复用 `core.loop.LoopEvent`（type + dict 载荷），与 loop/ui 事件面同构；
   载荷携带 UI 折叠详情所需字段：`subtask_started` 含 `goal` + `acceptance`（验收
-  标准），`subtask_completed` 含 `reason`（判定）+ `reply` 节选（600 字符）。
+  标准）+ `attempt`，`subtask_completed` 含 `reason`（判定）+ `reply` 节选（600 字符）；
+  `plan_ready` 含 `replan`（当前计划已用的重拆次数）。
 - **子任务运行态回流**（change 0121 / ADR-0114）：子 Agent 经 `astream` 流式执行，
   里程碑事件实时转译为 `subtask_progress`（**附加通道**，与 `subtask_started` /
   `subtask_completed` 同源同序，**不**新建旁路；终态判定仍由 `SubtaskOutcome` 决定）。
@@ -219,14 +230,17 @@ class MultiAgentRouter:
 | 错误码 | 含义 |
 |---|---|
 | `INVALID_TRANSITION` | 非法状态转移 |
-| `SUBTASK_VERIFY_FAILED` | 子任务校验失败（触发回退/重规划） |
-| `SUBTASK_EXECUTION_FAILED` | 子任务执行未达成（循环失败态，fail-closed，change 0126） |
-| `DEADLOOP_DETECTED` | 检测到死循环（触发 RECOVERING） |
+| `SUBTASK_VERIFY_FAILED` | 子任务校验失败（失败项重试 → 重拆 → FAILED；空计划亦用此码） |
+| `SUBTASK_EXECUTION_FAILED` | 子任务执行未达成（循环失败态 / 执行异常归一，fail-closed，change 0126/0246） |
+| `DEADLOOP_DETECTED` | 检测到死循环（触发重拆；预算耗尽转 FAILED） |
 | `NO_AGENT_MATCH` | 无匹配子 Agent（抛错，调度器捕获并标记子任务失败） |
 | `WAVE_FANOUT_LIMIT` | 并行度超限（同波次分批执行，受资源上限约束） |
 | `INVALID_DISPATCH_POLICY` | 调度策略取值非法（构造器 fail-fast；change 0123） |
-| `PROGRESS_NOT_MET` | 进度未达目标（触发重试/重规划，衔接 RECOVERING） |
+| `PROGRESS_NOT_MET` | 进度未达目标（触发重拆；预算耗尽转 FAILED） |
 | `MISSING_SUCCESS_CHECKER` | 提供了成功标准但未注入判定器（配置错误，fail-fast，转 FAILED） |
+
+> 失败恢复预算固定为「每个失败子任务重试 1 次 + 重新拆解 1 次」（change 0246 / ADR-0234），
+> 不设配置键；`task_failed` 的 `attempts` / `replans` 为可观测计数。
 
 ---
 
