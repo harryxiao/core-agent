@@ -3823,3 +3823,29 @@ L2 只增不减（`FileBackend` 整份加载 + 线性扫描 ⇒ 内存与检索�
 > （178→181、403→406、48→49）并由 `test_prompt_mirror` 守护。四门禁全绿。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0245 行（启发式天花板 / 不做历史清洗 /
 > P1–P4 后续 / `_record_observation` 未截断 / SOP 提炼输入未脱敏）。
+
+## 168. 技能提炼质量门与字段上界（TC-SOPQ，change `0255`／ADR-0246，台账 E192）
+
+**根因**：P0（`0254`）只收口记忆写回的内容卫生；进化侧 SOP 提炼达阈值即 `active` 发布，而唯一
+发布前质量门（0198）仅在 JEV 配置时注入 ⇒ 缺省部署下单步 / 超短 / 逐字重复的输出直接成为可路由
+技能；`SkillLibrary.register` 亦无字段上界（evolution 另有一套常量，口径漂移）。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-SOPQ-01 | **两步提炼照常发布**（对照锚） | writer 返回 `1. 准备输入\n2. 输出结果` | `status="active"`、`lookup` 命中（`test_two_step_sop_publishes`） |
+| TC-SOPQ-02 | **单步拦截 + 清组**（承重） | writer 返回单个编号步骤 | 不入库；组样本清空；告警含组键、不含正文（`test_single_step_sop_rejected_and_group_cleared`） |
+| TC-SOPQ-03 | **超短拦截 + 清组**（承重） | writer 返回 `ok`（< 10 字符） | 不入库；组样本清空（`test_too_short_sop_rejected_and_group_cleared`） |
+| TC-SOPQ-04 | 超长拦截 | 两步 + 4500 字符正文（不含密钥形态） | 不入库（`test_too_long_sop_rejected`） |
+| TC-SOPQ-05 | **确定性门先于判定门**（承重） | 单步文本 + 记录型 `gate` | `gate` **未被调用**；不入库（`test_deterministic_gate_runs_before_injected_gate`） |
+| TC-SOPQ-06 | **逐字重复拦截**（承重） | 库中已有同 `instructions` 技能 | 条目数不变、既有正文逐字不变；清组（`test_duplicate_instructions_not_published`） |
+| TC-SOPQ-07 | **寄存器字段上界**（承重） | 7 类越界：id 121 / description 401 / instructions 4001 / task_type 81 / task_types 17 / precondition 201 / preconditions 9 | 均抛 `INVALID_SKILL_SCHEMA`，库为空（`test_register_rejects_field_over_bound`） |
+| TC-SOPQ-08 | 越界不覆盖 + 上界内不变 | 同 id 先合法注册，再越界注册；随后上界内覆盖 | 越界时既有技能逐字不变；上界内覆盖正常生效（`test_register_over_bound_does_not_overwrite_existing`、`test_register_within_bounds_unchanged`） |
+
+> **反证**：P1 摘确定性门调用 ⇒ 5 红；P2 `_MIN_STEPS=1` ⇒ 单步 1 红；P3 摘重复检查 ⇒ 1 红；
+> P4 摘 `_check_bounds` ⇒ 8 红；P5 摘确定性分支清组 ⇒ 3 红。五次复原后 `md5sum` 均一致。
+> 规格：`skills` **MODIFIED** ×2 req（原子技能库 +1 scen、SOP 提炼 +2 scen；既有场景名全保留）。
+> 测试净 **+15**（2819 → **2834**；既有单步桩改为两步属测试基线有意变更）。
+> `skills/sop.py` 顶部常量行号漂移，`prompts.md` §1 落点同步（49→57）并由 `test_prompt_mirror` 守护。
+> 四门禁全绿（`ruff check` / `ruff format --check` / `pyright` 0 / `pytest -q`）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0246 行（只拦逐字重复 / 误杀散文式 SOP /
+> 字符计长 / 无关闭开关 / `param_schema` 无上界 / P2–P4 后续）。

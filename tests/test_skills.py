@@ -355,7 +355,7 @@ def test_sop_extract_empty_text_not_registered_and_samples_kept() -> None:
     assert extractor.observe("task a", _steps()) is None
     assert lib.all_skills() == [], "空提炼不入库（不写半成品）"
 
-    extractor._writer = _writer("1. 步骤")  # type: ignore[assignment]
+    extractor._writer = _writer("1. 步骤一\n2. 步骤二")  # type: ignore[assignment]
     assert extractor.observe("task a", _steps()) is not None, "样本保留，下轮可再提炼"
 
 
@@ -416,7 +416,9 @@ def test_sop_extract_task_namespace_isolates_from_per_turn_group() -> None:
     assert turn_skill is not None
     assert turn_skill.task_types == ["report summarize"], "单轮面词法复用已有 task_type"
 
-    task_level = SopExtractor(lib, writer=_writer(), threshold=1, namespace="task")
+    task_level = SopExtractor(
+        lib, writer=_writer("1. 取数\n2. 汇总输出"), threshold=1, namespace="task"
+    )
     task_skill = task_level.observe("summarize report", ["子任务目标：取数"])
 
     assert task_skill is not None
@@ -430,7 +432,7 @@ def test_sop_extract_task_namespace_isolates_from_per_turn_group() -> None:
 def test_sop_extract_quality_gate_rejects_group_cleared_and_key_only() -> None:
     """门未过 ⇒ 不入库 + **清组** + 留痕**只报组键**（绝不回显正文）。"""
     lib = SkillLibrary()
-    body = "SOP 正文-不可复用"
+    body = "1. 步骤一\n2. 步骤二-不可复用"
     extractor = SopExtractor(lib, writer=_writer(body), threshold=2, gate=lambda _task, _sop: False)
 
     assert extractor.observe("task a", _steps()) is None, "未达阈值不提炼"

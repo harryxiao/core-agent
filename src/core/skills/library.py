@@ -21,7 +21,16 @@ from core.persistence import read_state, write_state
 from core.plugin_registry import Effect, EffectTracker
 
 from .errors import SkillError, SkillErrorCode
-from .models import Skill
+from .models import (
+    MAX_DESCRIPTION_CHARS,
+    MAX_INSTRUCTIONS_CHARS,
+    MAX_PRECONDITION_CHARS,
+    MAX_PRECONDITIONS,
+    MAX_SKILL_ID_CHARS,
+    MAX_TASK_TYPE_CHARS,
+    MAX_TASK_TYPES,
+    Skill,
+)
 
 # 启用效应按此 trace 登记（回滚即恢复启用前状态）
 _ACTIVATE_TRACE = "skills.activate"
@@ -36,6 +45,45 @@ def _domain(skill_id: str) -> str:
     return parts[1] if len(parts) > 1 else ""
 
 
+def _check_bounds(skill: Skill) -> None:
+    """字段上界校验（change 0255 / ADR-0246）：越界 ⇒ INVALID_SKILL_SCHEMA。
+
+    错误文案只报字段名与上界，**绝不回显字段内容**（instructions 可能复述明文密钥）。
+    """
+    scalar_bounds = (
+        ("skill_id", len(skill.skill_id), MAX_SKILL_ID_CHARS),
+        ("instructions", len(skill.instructions), MAX_INSTRUCTIONS_CHARS),
+        ("description", len(skill.description), MAX_DESCRIPTION_CHARS),
+    )
+    for name, size, limit in scalar_bounds:
+        if size > limit:
+            raise SkillError(
+                SkillErrorCode.INVALID_SKILL_SCHEMA,
+                f"技能 {skill.skill_id} {name} 超长（{size} > {limit}）",
+            )
+    if len(skill.task_types) > MAX_TASK_TYPES:
+        raise SkillError(
+            SkillErrorCode.INVALID_SKILL_SCHEMA,
+            f"技能 {skill.skill_id} task_types 超量（{len(skill.task_types)} > {MAX_TASK_TYPES}）",
+        )
+    if any(len(item) > MAX_TASK_TYPE_CHARS for item in skill.task_types):
+        raise SkillError(
+            SkillErrorCode.INVALID_SKILL_SCHEMA,
+            f"技能 {skill.skill_id} task_type 超长（≤{MAX_TASK_TYPE_CHARS}）",
+        )
+    if len(skill.preconditions) > MAX_PRECONDITIONS:
+        raise SkillError(
+            SkillErrorCode.INVALID_SKILL_SCHEMA,
+            f"技能 {skill.skill_id} preconditions 超量"
+            f"（{len(skill.preconditions)} > {MAX_PRECONDITIONS}）",
+        )
+    if any(len(item) > MAX_PRECONDITION_CHARS for item in skill.preconditions):
+        raise SkillError(
+            SkillErrorCode.INVALID_SKILL_SCHEMA,
+            f"技能 {skill.skill_id} precondition 超长（≤{MAX_PRECONDITION_CHARS}）",
+        )
+
+
 class SkillLibrary:
     """原子技能库：注册 / 检索 / 前置条件检查。"""
 
@@ -46,7 +94,7 @@ class SkillLibrary:
         self._load()
 
     def register(self, skill: Skill) -> None:
-        """入库；schema 非法抛 INVALID_SKILL_SCHEMA。"""
+        """入库；schema 非法或字段越界抛 INVALID_SKILL_SCHEMA。"""
         if not skill.skill_id:
             raise SkillError(SkillErrorCode.INVALID_SKILL_SCHEMA, "skill_id 不能为空")
         if not isinstance(skill.param_schema, dict):
@@ -54,6 +102,7 @@ class SkillLibrary:
                 SkillErrorCode.INVALID_SKILL_SCHEMA,
                 f"技能 {skill.skill_id} param_schema 非法（须为 dict）",
             )
+        _check_bounds(skill)
         self._skills[skill.skill_id] = skill
         self._index(skill)
         self._persist()

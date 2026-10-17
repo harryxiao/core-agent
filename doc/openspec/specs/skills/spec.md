@@ -6,7 +6,15 @@
 ## Requirements
 
 ### Requirement: 原子技能库
+
 系统 SHALL 维护原子技能库，每个技能封装为可复用单元，含 schema、前置条件与执行说明。
+`SkillLibrary.register()` SHALL 校验字段上界（上界常量在 `skills.models` **单一定义**）：
+
+- `skill_id` ≤ 120 字符；`instructions` ≤ 4000 字符；`description` ≤ 400 字符；
+- `task_types` ≤ 16 项，每项 ≤ 80 字符；`preconditions` ≤ 8 项，每项 ≤ 200 字符。
+
+任一越界 SHALL 拒绝入库并返回 `INVALID_SKILL_SCHEMA`，且 SHALL NOT 新增或覆盖既有技能
+（同 `skill_id` 的既有条目逐字不变）。上界内的注册语义 SHALL 逐字不变。
 
 #### Scenario: 技能注册校验
 - **GIVEN** 一个待入库的技能定义
@@ -17,6 +25,12 @@
 - **GIVEN** 一个技能的前置条件不满足
 - **WHEN** 尝试调用该技能
 - **THEN** 调用被拒绝并返回 `PRECONDITION_FAILED`
+
+#### Scenario: 字段越界被拒绝
+- **GIVEN** 一个技能定义，其 `instructions` / `description` / `task_types` / `preconditions` /
+  `skill_id` 中至少一项超过上界
+- **WHEN** 调用 `SkillLibrary.register()`
+- **THEN** 拒绝入库并返回 `INVALID_SKILL_SCHEMA`；技能库内容**逐字不变**（不新增、不覆盖）
 
 ### Requirement: 技能启用（draft → active）
 系统 SHALL 提供把 `draft` 技能迁至 `active` 的**显式启用**路径，使下载 / 注册所得的草稿技能
@@ -181,6 +195,7 @@
 - **THEN** 不抛出、返回空列表并记 miss（路由不得因打分器故障而中断）
 
 ### Requirement: SOP 提炼（skill extraction）
+
 系统 SHALL 提供 SOP 提炼能力：由注入的提炼器（DI 可调用，缺省不启用）把**同一类任务的
 成功轨迹**聚合、提炼为一条 `Skill`（`instructions` 承载 SOP 步骤、`task_types` 承载归组键），
 并 SHALL 经 `SkillLibrary.register()` 入库（复用既有 schema 校验），入库 SHALL 可逆。
@@ -191,6 +206,11 @@
   为新组键。归组口径 SHALL 确定性（离线可断言）。
 - **发布**：提炼产物 SHALL 以 `active` 入库（维度1 技能库属低风险自动发布）；提炼文本为空时
   SHALL 不入库。
+- **确定性质量门（缺省开启、零模型调用）**：提炼文本（脱敏后）SHALL 先经确定性门：非空；
+  `strip()` 后长度 ≥ 10 且 ≤ 4000 字符；至少 **2 个步骤行**（行首 `数字.` / `数字)` /
+  `数字、` / `-` / `*` / `•` 后接非空内容）；且 SHALL NOT 与技能库中**任一**技能
+  `instructions` 逐字相同（`strip()` 后比较）。门未过时：产物 SHALL NOT 入库、该组样本
+  SHALL 清空、SHALL 留痕（**只报组键，绝不回显提炼正文**）。该门无关闭开关。
 - **任务级过程输入**：除**单轮**轨迹外，系统 SHALL 提供以**编排任务粒度**为输入的观察面 ——
   其观察单位是「**任务目标 + 按 `plan.order` 聚合的子任务步序**」（任务过程），随任务**成功**
   收尾（`DONE`）提交一次。该面 SHALL 与单轮面**样本隔离**（独立命名空间与样本集，互不混组：
@@ -199,10 +219,10 @@
   样本不被聚合进同一提炼。
 - **自动质量门**：系统 SHALL 支持为提炼器注入**自动质量门**（DI 可调用，缺省不启用）——质量门
   SHALL 由**判定（judgment）原语**驱动的自动判定提供，SHALL NOT 引入人工确认（维度1 技能库
-  属全自动面）。门**未过**时：提炼产物 SHALL NOT 入库、该组样本 SHALL 清空（避免同批样本反复
-  触发提炼调用）、SHALL 留痕（**只报组键，绝不回显提炼正文**）。门判定**异常**或**缺答案**时
-  SHALL **放行**（fail-open：判定故障不阻断发布，亦不中断主流程）。未注入质量门时发布行为
-  SHALL 逐字不变。
+  属全自动面）。该判定门 SHALL 在确定性门**之后**执行。门**未过**时：提炼产物 SHALL NOT 入库、
+  该组样本 SHALL 清空（避免同批样本反复触发提炼调用）、SHALL 留痕（**只报组键，绝不回显提炼
+  正文**）。门判定**异常**或**缺答案**时 SHALL **放行**（fail-open：判定故障不阻断发布，亦不
+  中断主流程）。未注入质量门时，满足确定性门的发布行为 SHALL 逐字不变。
 - 未注入提炼器时 SHALL 不累积、不提炼（零额外调用）；提炼失败 SHALL NOT 中断 Agent 主流程。
 
 #### Scenario: 同类任务达阈值提炼入库
@@ -260,8 +280,18 @@
 
 #### Scenario: 未注入质量门时发布行为不变
 - **GIVEN** 已注入提炼器但**未**注入质量门
-- **WHEN** 同组样本达阈值且提炼产出非空文本
+- **WHEN** 同组样本达阈值且提炼产出**满足确定性门**的文本
 - **THEN** 技能照常以 `active` 入库（发布路径与未引入质量门时**逐字一致**）
+
+#### Scenario: 确定性门拦截退化提炼
+- **GIVEN** 已注入提炼器，样本达阈值
+- **WHEN** 提炼产出单步、超短（`strip()` 后 < 10 字符）或超长（> 4000 字符）的文本
+- **THEN** 不入库；该组样本被**清空**；留痕**只报组键**，**不**含提炼正文
+
+#### Scenario: 逐字重复的提炼不入库
+- **GIVEN** 技能库已有一条 `instructions` 为 X 的技能，同组样本达阈值
+- **WHEN** 提炼产出与 X 逐字相同（`strip()` 后）的文本
+- **THEN** 不入库（技能库条目数不变、既有技能逐字不变）；该组样本被**清空**
 
 ### Requirement: 技能命中注入（skill hint injection）
 系统 SHALL 把**路由命中的技能**以「技能 id + 版本 + `instructions` 节选」注入推理 prompt；

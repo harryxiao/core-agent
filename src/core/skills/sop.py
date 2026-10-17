@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import contextlib
+import re
 import time
 import warnings
 from collections.abc import Callable, Sequence
@@ -27,7 +28,7 @@ from core.persistence import read_state, write_state
 from core.plugin_registry import Effect, EffectTracker
 
 from .library import SkillLibrary
-from .models import Skill
+from .models import MAX_INSTRUCTIONS_CHARS, Skill
 from .router import terms_of
 
 # 提炼器契约：prompt → SOP 文本（同 ``memory.Summarizer`` 的「prompt → 文本」方向）
@@ -42,6 +43,13 @@ _SOP_MIN_SAMPLES = 3
 
 # 单条轨迹入 prompt 的节选上界（token 有界）
 _MAX_STEP_CHARS = 400
+
+# 确定性发布门（change 0255 / ADR-0246）：步骤行（编号 / 项目符号后接非空内容）
+_STEP_LINE = re.compile(r"^\s*(?:\d+[.、)]|[-*•])\s+\S", re.MULTILINE)
+
+# 正文下限（strip 后）；上限复用技能库同一上界常量
+_MIN_INSTRUCTIONS_CHARS = 10
+_MIN_STEPS = 2
 
 # 入库效应按此 trace 登记（回滚即移除本次提炼产物）
 _EXTRACT_TRACE = "skills.extract"
@@ -106,7 +114,9 @@ class SopExtractor:
         self._samples: dict[str, list[list[str]]] = {}
         self._load()
 
-    def observe(self, task: str, steps: Sequence[str], *, ok: bool = True) -> Skill | None:
+    def observe(  # noqa: PLR0911 — 发布前守卫分支（阈值 / 空 / 确定性门 / 判定门 / 退役）
+        self, task: str, steps: Sequence[str], *, ok: bool = True
+    ) -> Skill | None:
         """提交一条轨迹；达阈值则提炼入库并返回技能，否则返回 None。
 
         ``ok=False`` 的失败轨迹不是 SOP，直接丢弃（教训沉淀走 memory/evolution 通道）；
@@ -125,6 +135,13 @@ class SopExtractor:
         text = redact_secrets(self._writer(build_sop_prompt(task, group)))
         if not text.strip():
             return None  # 空提炼不入库（不写半成品），样本保留待下轮
+        if not _deterministic_ok(self._library, text):
+            # 确定性门（缺省开启、零模型调用）：单步 / 超短 / 超长 / 逐字重复 ⇒ 不发布。
+            # 与判定门失败路径同构：清组（免同批样本反复触发提炼）+ 留痕**只报组键**。
+            warnings.warn(f"SOP 未过确定性质量门，不入库（组键 {key}）", stacklevel=2)
+            del self._samples[key]
+            self._persist()
+            return None
         if self._gate is not None and not self._gate_ok(task, text):
             # 门未过 ⇒ 不发布 + **清组**（免同批样本反复触发提炼调用）+ 留痕**只报组键**。
             # 留痕绝不回显提炼正文（密钥红线）；未入库 ⇒ 无效应可回滚。
@@ -235,6 +252,20 @@ class SopExtractor:
         with contextlib.suppress(KeyError):
             if self._library.lookup(skill.skill_id) is skill:
                 self._library.remove(skill.skill_id)
+
+
+def _deterministic_ok(library: SkillLibrary, text: str) -> bool:
+    """确定性发布门：形式合格且不与库中技能逐字重复（change 0255 / ADR-0246）。
+
+    判据：`strip()` 后长度在 [10, MAX_INSTRUCTIONS_CHARS]；至少 2 个步骤行；
+    `instructions` 不与库中**任一**技能逐字相同。只拦逐字重复，不做相似度判定。
+    """
+    body = text.strip()
+    if len(body) < _MIN_INSTRUCTIONS_CHARS or len(body) > MAX_INSTRUCTIONS_CHARS:
+        return False
+    if len(_STEP_LINE.findall(text)) < _MIN_STEPS:
+        return False
+    return all(skill.instructions.strip() != body for skill in library.all_skills())
 
 
 def _skill_id_for(key: str) -> str:

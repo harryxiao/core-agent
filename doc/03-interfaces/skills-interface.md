@@ -29,7 +29,7 @@ class SkillLibrary:
         """``path`` 注入落盘位置（``None`` = 纯内存）；启动即恢复（见 §7）。"""
 
     def register(self, skill: Skill) -> None:
-        """入库；schema 非法抛 INVALID_SKILL_SCHEMA；注入 path 时落盘。"""
+        """入库；schema 非法或字段越界抛 INVALID_SKILL_SCHEMA；注入 path 时落盘。"""
 
     def lookup(self, skill_id: str) -> Skill: ...
 
@@ -44,6 +44,7 @@ class SkillLibrary:
 
 | 维度 | 口径 |
 |---|---|
+| **字段上界**（change `0255`／ADR-0246） | `skill_id ≤ 120`、`instructions ≤ 4000`、`description ≤ 400`、`task_types ≤ 16×80`、`preconditions ≤ 8×200`；越界 ⇒ `INVALID_SKILL_SCHEMA` 且**不新增 / 不覆盖**。常量单一定义于 `skills/models.py`，与 evolution 内容校验同源 |
 | **启用放行集** | 路由候选集仍只含 `active` / `gray` —— `activate` **只补迁移路径**，不扩大放行集、不自动启用（下载恒 draft） |
 | **启用可逆** | 注入 `effect_tracker` 时登记 `op="skills.activate"`（undo 恢复启用前状态）；未注入不记（同 `SopExtractor` 接缝口径） |
 | **生产触达点** | CLI `skill activate <name>`（作用于与组合根同源的持久库，故跨进程可见） |
@@ -245,13 +246,20 @@ class SopExtractor:
 | **阈值** | 同组累计达 3 条（`_SOP_MIN_SAMPLES`）提炼一次，提炼后**清空该组**（下批重新累积） |
 | **产物** | `skill_id="skills.sop.<组键 blake2b-8hex>"`（确定性、同组重复提炼覆盖同一条）、`description="SOP：<组键>"`、`task_types=[组键]`、`instructions=<提炼文本>`、`status="active"` |
 | **发布口径** | `active`（维度1 技能库层属低风险自动发布）；`draft` 对路由不可见 → 不置 draft |
-| **质量门**（0198） | 注入 `gate` 时：非空文本先过门，未过 ⇒ 不入库 + 清组 + 留痕（只报组键）；门故障 ⇒ 放行（fail-open）；`gate=None`（缺省）⇒ 发布路径逐字不变 |
+| **确定性质量门**（0255，缺省开启、零模型调用） | 非空文本先过确定性门：`strip()` 后 10 ≤ 长度 ≤ 4000；≥ 2 个步骤行（`1.` / `1)` / `1、` / `-` / `*` / `•` 后接非空内容）；不与库中任一技能 `instructions` 逐字相同。未过 ⇒ 不入库 + 清组 + 留痕（只报组键）；无关闭开关 |
+| **质量门**（0198） | 注入 `gate` 时：**在确定性门之后**执行，未过 ⇒ 不入库 + 清组 + 留痕（只报组键）；门故障 ⇒ 放行（fail-open）；`gate=None`（缺省）⇒ 满足确定性门的发布路径逐字不变 |
 | **降级** | 未注入 writer：不累积、不提炼（零额外模型调用）；提炼文本为空：不入库、样本保留待下轮 |
 | **可逆** | 入库登记 `Effect(op="skills.register", undo=移除)`（`trace_id="skills.extract"`）；回滚即移除，重复回滚幂等 |
 
 **提炼正文脱敏**（change 0254 / ADR-0245）：writer 输出在空文本判定、质量门与 `register()` **之前**
 统一 `redact_secrets` —— 门看到的是脱敏文本，入库 `instructions` 不含明文密钥；未含密钥形态的
 文本逐字不变。
+
+**确定性发布门**（change 0255 / ADR-0246）：脱敏后的非空文本先过**零模型调用**的结构门 ——
+长度区间、≥ 2 个步骤行、与库中任一技能 `instructions` 逐字不同。单步 / 超短 / 超长 / 逐字重复
+⇒ 不入库、清组、留痕只报组键（与判定门失败路径同构）。该门缺省开启且无关闭开关；判定门
+（0198）在其后执行。空文本仍**保留样本**（模型瞬时失败），确定性门拒绝则**清组**（同批样本
+已产出不可用文本，重抽只会放大调用）。
 
 已知缺口（如实记录）：无 judgment 质量门 —— **已闭（change `0198`／ADR-0188，见下）**。技能库与样本
 已可落盘（0050，见 §7），缺省仍纯内存——生产由 `build_runtime` 注入路径。

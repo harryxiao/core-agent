@@ -8979,6 +8979,56 @@ P1 确定性 SOP 发布质量门、P2 抽取拒绝反馈与去重、P3 任务记
 写回面，登记待 P3 一并收口）；⑤ **SOP 提炼的输入**（`build_sop_prompt` 的步骤轨迹）仍不经
 本模块脱敏（ADR-0214 局限③ 已有登记）—— 本 change 只约束落库的 `instructions`。
 
+## ADR-0246：技能提炼确定性质量门与字段上界（change 0255 / 台账 E192）
+
+**背景**：P0（`0254`／ADR-0245）只收口了记忆写回的**内容卫生**（脱敏 / 有界 / 空值 / 陈旧），
+进化侧的**内容质量**仍有缺口：
+
+1. SOP 提炼达阈值即自动 `active` 发布；唯一的发布前质量门（0198 `SopGate`）**仅在 JEV 配置时
+   注入**，缺省部署下**单步 / 超短 / 逐字重复**的模型输出会直接成为可路由技能；
+2. `SkillLibrary.register()` 只校验 `skill_id` 非空与 `param_schema` 为 dict，**无字段上界** ——
+   模型 / 下载内容可不限量入库；
+3. evolution 另有一份 `validate_skill_content` 上界（0242），与技能库**各写一套数值**，口径漂移
+   风险。
+
+**决策**：
+
+- **D1 确定性门缺省开启、零模型调用**：发布路径固定为
+  `writer → redact_secrets → 非空 → 确定性门 → 判定门（可选）→ 退役守卫 → register`。
+  判据：`strip()` 后 10 ≤ 长度 ≤ 4000；≥ 2 个步骤行（`_STEP_LINE` 接受数字 / `-` / `*` / `•`
+  列表）；不与库中任一技能 `instructions` 逐字相同。零模型调用使缺省开启不推翻「未配置 JEV
+  ⇒ 零额外调用」的既有承诺。
+- **D2 失败路径与判定门同构**：不入库 + **清组** + `warnings.warn` 只报组键（绝不回显正文）。
+  空文本仍**保留样本**（模型瞬时失败），确定性拒绝则清组（同批样本已产出不可用文本，重抽只会
+  放大调用）—— 沿用 0198 的既有取舍。
+- **D3 只拦逐字重复**：不做 embedding / 相似度阈值（需新依赖，且阈值成为不可解释的发布判据）。
+  同组重复本就覆盖同一 `skill_id`；跨组逐字相同 ⇒ 技能库不增长。
+- **D4 上界单一定义**：`skills/models.py` 定义公开常量（`MAX_SKILL_ID_CHARS=120`、
+  `MAX_INSTRUCTIONS_CHARS=4000`、`MAX_DESCRIPTION_CHARS=400`、`MAX_TASK_TYPES=16`、
+  `MAX_TASK_TYPE_CHARS=80`、`MAX_PRECONDITIONS=8`、`MAX_PRECONDITION_CHARS=200`）；
+  `SkillLibrary.register` 与 `evolution.content` 共同引用。`register` 越界抛既有
+  `INVALID_SKILL_SCHEMA`（不新增错误码），错误文案只报字段名与上界、**绝不回显字段内容**。
+- **D5 兼容性**：满足确定性门的多步 SOP 发布路径逐字不变（字段 / id / 状态 / 可逆效应 / 清组）；
+  上界内的 `register`（含同 id 覆盖）逐字不变；不新增配置键。缺省发布路径**有意收紧**
+  （单步 / 超短 / 重复不再入库），这正是本 change 的目的。
+
+**规格**：`skills` **MODIFIED** ×2 req ——「原子技能库」（+1 scen 字段越界）、「SOP 提炼」
+（+2 scen 确定性门 / 逐字重复；既有 10 场景名全部保留）。`openspec validate --all` 全绿。
+
+**测试**：`tests/test_skill_extraction_quality.py` 15 个用例（两步照常发布 / 单步与超短清组 /
+超长拒绝 / 确定性门先于判定门 / 逐字重复 / 7 类字段越界 + 不覆盖 + 上界内不变）。既有单步桩
+改为两步（`test_skills.py` / `test_skill_retirement.py`，测试基线有意变更）。反证 5/5：摘确定性
+门调用 ⇒ 5 红；`_MIN_STEPS=1` ⇒ 单步红；摘重复检查 ⇒ 重复红；摘 `_check_bounds` ⇒ 8 红；
+摘确定性分支清组 ⇒ 3 红。复原 `md5sum` 一致。四门禁：`ruff check` / `ruff format --check` 绿、
+`pyright` 0 errors、`pytest -q` **2834 passed**。`skills/sop.py` 顶部常量行号漂移，
+`prompts.md` §1 落点同步（49→57）。
+
+**局限**：① 只拦**逐字**重复，近似重复（换词 / 换序）不拦；② 步骤行判据依赖模型遵守
+「编号步骤清单」的结构契约，散文式合格 SOP 会被误杀（over-reject 侧，需 prompt 对齐）；
+③ 长度按字符计而非 token；④ 确定性门无关闭开关（缺省安全检查，关闭须改规格）；
+⑤ `param_schema` 仍无大小上界（结构化对象，截断会破坏 schema，与 ADR-0230 局限③同）；
+⑥ P2（抽取拒绝反馈 / 去重）、P3（任务记忆摘要）、P4（benchmark 执行候选）仍为后续批次。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9219,3 +9269,4 @@ P1 确定性 SOP 发布质量门、P2 抽取拒绝反馈与去重、P3 任务记
 | ADR-0243 | 02-modules/loop.md, 03-interfaces/observability-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0244 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0245 | 03-interfaces/notes-interface.md, 03-interfaces/context-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0246 | 02-modules/skills.md, 03-interfaces/skills-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

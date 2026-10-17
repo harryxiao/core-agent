@@ -229,7 +229,7 @@ def test_retired_sop_skill_is_not_resurrected_by_reextraction() -> None:
     lib = SkillLibrary()
     sid = _skill_id_for(_TASK)
     lib.register(_skill(sid, status="deprecated"))
-    extractor = SopExtractor(lib, writer=lambda _p: "1. 新步骤", threshold=1)
+    extractor = SopExtractor(lib, writer=lambda _p: "1. 新步骤一\n2. 新步骤二", threshold=1)
 
     published = extractor.observe(_TASK, ["step"], ok=True)
 
@@ -243,7 +243,7 @@ def test_reextraction_after_activate_publishes() -> None:
     sid = _skill_id_for(_TASK)
     lib.register(_skill(sid, status="deprecated"))
     lib.activate(sid)
-    extractor = SopExtractor(lib, writer=lambda _p: "1. 新步骤", threshold=1)
+    extractor = SopExtractor(lib, writer=lambda _p: "1. 新步骤一\n2. 新步骤二", threshold=1)
 
     published = extractor.observe(_TASK, ["step"], ok=True)
 

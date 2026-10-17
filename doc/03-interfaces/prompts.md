@@ -38,7 +38,7 @@
 | ⑥ | 数据面 | 实体关系抽取器 | `memory/extract.py:406` `_RELATION_PROMPT_HEAD` | JSON `[{head,predicate,tail}]` | ✓ `0215` |
 | ⑦ | 数据面 | 记忆重要度评分器 | `memory/importance.py:27` `_PROMPT_HEAD` | 数值 `0`–`1` | ✓ `0215` |
 | ⑧ | 数据面 | 情景归纳器 | `memory/episodic.py:35` `_PROMPT_HEAD` | 文本（四段结论快照） | ✓ `0219` |
-| ⑨ | 数据面 | SOP 提炼器 | `skills/sop.py:49` `_PROMPT_HEAD` | 文本（编号步骤清单） | ✓ `0215` |
+| ⑨ | 数据面 | SOP 提炼器 | `skills/sop.py:57` `_PROMPT_HEAD` | 文本（编号步骤清单） | ✓ `0215` |
 | ⑩ | 数据面 | 技能迭代器 | `skills/iteration.py:46` `_PROMPT_HEAD` | 文本（编号步骤清单） | ✓ `0215` |
 | ⑪ | 进化面 | 源码修补者 | `evolution/author.py:32` `_PROMPT_HEAD` | 文本（完整文件内容） | ✓ `0219` |
 | ⑫ | 进化面 | 候选审查者 | `evolution/validator.py:44` `_REVIEW_PROMPT_HEAD` | 文本（首行 `PASS`/`REJECT`） | ✓ `0219` |
@@ -155,7 +155,7 @@
 > （`kind="semantic"`、`session_id=""` 全局层，每会话至多一条覆盖式；store 侧无条件脱敏＋截断
 > `MAX_EPISODIC_CHARS = 2000`）。键 `memory.episodic_extract`（缺省关）。
 
-### ⑨ SOP 提炼器 · `skills/sop.py:49`
+### ⑨ SOP 提炼器 · `skills/sop.py:57`
 ```
 你是 SOP 提炼器。下面是同一类任务的多次成功执行轨迹（任务 + 行动/结果序列）。请提炼为可复用的标准作业步骤：只输出编号步骤清单，不要复述轨迹、不要解释理由。要求：合并多次执行中重复出现的步骤，只保留每次执行都成立的必要步骤，剔除偶发细节；每步以动词开头，写清具体工具、路径、命令或参数，不要写「处理一下」这类空话；步骤数控制在 3-10 步。
 ```

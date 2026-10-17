@@ -14,17 +14,27 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from core.skills.models import (
+    MAX_DESCRIPTION_CHARS,
+    MAX_INSTRUCTIONS_CHARS,
+    MAX_PRECONDITION_CHARS,
+    MAX_PRECONDITIONS,
+    MAX_TASK_TYPE_CHARS,
+    MAX_TASK_TYPES,
+)
+
 # 与 diagnoser 同口径字面量（本模块自持，不 import diagnoser）
 _MAX_FAILURE_NOTES = 3
 _MAX_NOTE_CHARS = 400
 
 # 内容字段上界（change 0242）：模型输出不构成信任边界，超界一律裁剪后再校验。
-_MAX_INSTRUCTIONS_CHARS = 4000
-_MAX_DESCRIPTION_CHARS = 400
-_MAX_TASK_TYPES = 16
-_MAX_TASK_TYPE_CHARS = 80
-_MAX_PRECONDITIONS = 8
-_MAX_PRECONDITION_CHARS = 200
+# change 0255：数值改由 `skills.models` **单一定义**（与技能库注册 / SOP 发布门同源）。
+_MAX_INSTRUCTIONS_CHARS = MAX_INSTRUCTIONS_CHARS
+_MAX_DESCRIPTION_CHARS = MAX_DESCRIPTION_CHARS
+_MAX_TASK_TYPES = MAX_TASK_TYPES
+_MAX_TASK_TYPE_CHARS = MAX_TASK_TYPE_CHARS
+_MAX_PRECONDITIONS = MAX_PRECONDITIONS
+_MAX_PRECONDITION_CHARS = MAX_PRECONDITION_CHARS
 
 _PROMPT_HEAD = (
     "你是技能内容蒸馏器。根据缺陷描述与失败摘要，产出一条可执行技能内容。"

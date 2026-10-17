@@ -11,6 +11,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+# 技能字段上界（change 0255 / ADR-0246）：技能库注册与 SOP 确定性发布门、evolution
+# 技能内容校验**共用同一组口径**（单一定义，避免两处各写一套数值漂移）。
+MAX_SKILL_ID_CHARS = 120
+MAX_INSTRUCTIONS_CHARS = 4000
+MAX_DESCRIPTION_CHARS = 400
+MAX_TASK_TYPES = 16
+MAX_TASK_TYPE_CHARS = 80
+MAX_PRECONDITIONS = 8
+MAX_PRECONDITION_CHARS = 200
+
 
 @dataclass
 class Skill:
