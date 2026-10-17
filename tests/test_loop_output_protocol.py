@@ -286,8 +286,7 @@ def test_trailing_xml_arg_value_residue_still_executes() -> None:
     ``_has_word`` 把标签名当词元 ⇒ 误报「动作 JSON 之后仍跟有正文」。
     """
     content = (
-        '{"tool_id": "tools.code_run", "args": {"script": "echo hi", "type": "bash"}}'
-        "</arg_value>"
+        '{"tool_id": "tools.code_run", "args": {"script": "echo hi", "type": "bash"}}</arg_value>'
     )
     action = _parse(content)
     assert action.failed is False
@@ -303,7 +302,7 @@ def test_hybrid_json_head_plus_xml_parameters_recovers() -> None:
     """
     content = (
         '{"tool_id": "tools.file_read">\n'
-        "<parameter name=\"path\">D:\\work\\AI\\core-agent\\src\\core\\llm_provider"
+        '<parameter name="path">D:\\work\\AI\\core-agent\\src\\core\\llm_provider'
         "\\stdlib_provider.py</parameter>\n"
         '<parameter name="start">1</parameter>\n'
         '<parameter name="count">120</parameter>\n'

@@ -270,4 +270,4 @@ def test_loop_finished_emitted_before_slow_turn_observer() -> None:
     elapsed = asyncio.run(main())
 
     assert observed.is_set(), "收尾钩子确已调度"
-    assert elapsed < 0.25, f"loop_finished 被慢收尾堵住（{elapsed:.3f}s）"
+    assert elapsed < 0.25, f"loop_finished 被慢收尾堵住（{elapsed:.3f}s）"  # noqa: PLR2004 — 时序上限

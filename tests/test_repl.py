@@ -808,7 +808,7 @@ def test_step_symbols_differ_by_kind() -> None:
     assert _step_symbol("Read") == "◇"
     assert _step_symbol("WebFetch") == "◎"
     assert _step_symbol("SubAgent") == "⊕"
-    assert len({_step_symbol(k) for k in ("Thinking", "Bash", "Read", "WebFetch", "SubAgent")}) == 5
+    assert len({_step_symbol(k) for k in ("Thinking", "Bash", "Read", "WebFetch", "SubAgent")}) == 5  # noqa: PLR2004 — 五类各异
 
 
 def test_tui_thinking_and_bash_use_distinct_collapse_symbols() -> None:
@@ -881,7 +881,6 @@ def test_tui_thinking_splits_by_round() -> None:
             return len(_blocks(app))
 
     assert asyncio.run(drive()) == 2  # noqa: PLR2004 — 两步各一块
-
 
 
 # ---- TUI 流式结构化块整体解析（change 0146 / 账本 E88）----

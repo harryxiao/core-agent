@@ -645,9 +645,7 @@ class DefaultLoop(Plugin):
             await asyncio.to_thread(self._notify_turn, ctx, trace_id, ok=ok)
             await asyncio.to_thread(self._maintain, trace_id, session_id)
 
-        self._post_turn_task = asyncio.get_running_loop().create_task(
-            _run(), name="loop-post-turn"
-        )
+        self._post_turn_task = asyncio.get_running_loop().create_task(_run(), name="loop-post-turn")
 
     async def _await_post_turn(self) -> None:
         """等候上一轮后台收尾收束（无在途 task ⇒ 立即返回）。"""

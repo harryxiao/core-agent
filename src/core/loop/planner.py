@@ -181,7 +181,7 @@ def _brace_close_tool_json(text: str) -> dict[str, Any] | None:
             obj = json.loads(text + suffix)
         except ValueError:
             continue
-        if isinstance(obj, dict) and obj.get("tool_id"):
+        if isinstance(obj, dict) and cast("dict[str, Any]", obj).get("tool_id"):
             normalized = _normalize_action_dict(cast("dict[str, Any]", obj))
             if normalized.get("args"):
                 return normalized
