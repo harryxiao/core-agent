@@ -10,6 +10,7 @@ orchestration 任务状态机 SUSPENDED 语义（宠物自身仅四态，不新�
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections import deque
 from collections.abc import Callable
@@ -17,6 +18,8 @@ from typing import Any, cast
 
 from core.loop import DefaultLoop, LoopPlugin, LoopResult
 from core.memory import MemoryEntry, MemoryStore
+from core.orchestration import TaskHandoff
+from core.orchestration.handoff import run_handoff
 
 from .errors import PetError, PetErrorCode
 from .layers import ExplorerLayer, PersonaLayer, SafetyLayer
@@ -42,7 +45,7 @@ class PetSession:
     ) -> None:
         self.session_id = session_id if session_id is not None else uuid.uuid4().hex
         self.state = PetSessionState.IDLE
-        self._loop = loop if loop is not None else DefaultLoop()
+        self._loop = loop if loop is not None else cast("LoopPlugin", DefaultLoop())
         self._memory = memory
         self._persona = persona
         self._explorer = explorer
@@ -146,7 +149,10 @@ class PetSession:
             self._go_idle()
             raise PetError(PetErrorCode.PET_YIELDING, "无待办任务，宠物入睡")
         task = self._tasks.popleft()
-        result = self._loop.run(self._compose_prompt(task.goal), session_id=self.session_id)
+        # 统一交接执行器（change 0247）：空上下文 ⇒ `render_handoff` 逐字返回任务文本，
+        # prompt / 会话 ID / 专属 loop 与改造前一致。
+        handoff = TaskHandoff(task=self._compose_prompt(task.goal), session_id=self.session_id)
+        result = asyncio.run(run_handoff(self._loop, handoff))
         self.last_result = result
         self._last_trace_id = result.trace_id
         self._wake_count += 1

@@ -48,6 +48,7 @@
 - **GIVEN** ~/.core-agent/.env 定义 KEY=VALUE，且进程 env 未定义同名变量
 - **WHEN** resolve_secret 解析 ${KEY}
 - **THEN** 取 .env 值解析成功；进程 env 存在同名变量时优先于 .env
+
 ### Requirement: LLM 提供商配置（必选）
 系统 SHALL 要求 LLM 配置（provider/model/endpoint/api_key）为必选项，缺失或不完整时阻断
 启动并报明确错误；并 SHALL 支持**可选**子项 `embedding_model`（复用 `endpoint` 与密钥
@@ -143,6 +144,7 @@
 - **WHEN** 系统加载配置
 - **THEN** 校验失败并阻断启动，错误信息指明键名与合法取值（`timeout` 须 > 0，`max_retries`
   须为 ≥ 0 的整数），SHALL NOT 静默强转
+
 ### Requirement: 循环预算配置
 系统 SHALL 将执行循环的预算参数纳入 ConfigSpec 单一真源：`loop.max_rounds`（单任务最大循环次数，
 默认 `10`）与 `loop.output_reserve`（输出预留 token，默认 `8192`）与 `loop.history_turns`（回灌最近 N 轮对话历史，默认 `20`，`0` 表示关闭回灌）与 `loop.compact_steps`（**本轮工具步数**达此值触发上下文压实，默认 `6`）。四项 SHALL 经 CLI flag / env /
@@ -188,23 +190,25 @@ config.yaml 三面一一对应生成，参与优先级链（CLI flag > env > con
 - **GIVEN** `llm.context_window` 已配置且不大于 `loop.output_reserve`
 - **WHEN** 配置校验运行
 - **THEN** 校验失败并阻断启动，错误信息指明上下文窗口不敷输出预留
+
 ### Requirement: 编排调度配置
-系统 SHALL 将编排调度策略纳入 ConfigSpec 单一真源：`orchestration.difficulty_policy`（同波次调度策略，默认 `off`，可选 `off` / `difficulty`）与 `orchestration.max_concurrency`（波次并发上限，默认 `4`）。两项 SHALL 经 CLI flag / env / config.yaml 三面一一对应生成，参与优先级链（CLI flag > env > config.yaml > 默认值）。取值 SHALL 在校验期校验：`orchestration.max_concurrency` 须为 ≥1 的整数（布尔非法），`orchestration.difficulty_policy` 须为 `off` / `difficulty` 之一，否则校验失败并阻断启动（不静默强转、不退化成缺省）。
+系统 SHALL 将编排调度策略纳入 ConfigSpec 单一真源：`orchestration.difficulty_policy`（同波次调度策略，默认 `off`，可选 `off` / `difficulty`）、`orchestration.max_concurrency`（波次并发上限，默认 `4`）与 `orchestration.subtask_timeout`（子任务交接超时秒数，默认 `0` = 不设限）。三项 SHALL 经 CLI flag / env / config.yaml 三面一一对应生成，参与优先级链（CLI flag > env > config.yaml > 默认值）。取值 SHALL 在校验期校验：`orchestration.max_concurrency` 须为 ≥1 的整数（布尔非法），`orchestration.difficulty_policy` 须为 `off` / `difficulty` 之一，`orchestration.subtask_timeout` 须为 ≥0 的整数（布尔非法），否则校验失败并阻断启动（不静默强转、不退化成缺省）。`orchestration.subtask_timeout` 的非零值 SHALL 由组合根注入调度器并生效为交接 deadline。
 
 #### Scenario: 编排键经 ConfigSpec 声明
-- **GIVEN** 配置了 orchestration 段的 difficulty_policy / max_concurrency
+- **GIVEN** 配置了 orchestration 段的 difficulty_policy / max_concurrency / subtask_timeout
 - **WHEN** 系统启动加载配置
-- **THEN** 两项经 ConfigSpec 单一真源解析，CLI flag / env / yaml 三面一一对应、无第二真源
+- **THEN** 三项经 ConfigSpec 单一真源解析，CLI flag / env / yaml 三面一一对应、无第二真源
 
 #### Scenario: 缺省取内置默认值
 - **GIVEN** orchestration 段未配置
 - **WHEN** 系统启动加载配置
-- **THEN** `orchestration.difficulty_policy` 取 `off`、`orchestration.max_concurrency` 取 `4`，系统正常启动
+- **THEN** `orchestration.difficulty_policy` 取 `off`、`orchestration.max_concurrency` 取 `4`、`orchestration.subtask_timeout` 取 `0`，系统正常启动
 
 #### Scenario: 非法取值校验期拒绝
-- **GIVEN** `orchestration.max_concurrency` 取 `0` / 负数 / 布尔 / 非整数，或 `orchestration.difficulty_policy` 取集合外的字符串
+- **GIVEN** `orchestration.max_concurrency` 取 `0` / 负数 / 布尔 / 非整数，或 `orchestration.difficulty_policy` 取集合外的字符串，或 `orchestration.subtask_timeout` 取负数 / 布尔 / 非整数
 - **WHEN** 配置校验运行
 - **THEN** 校验失败并阻断启动，错误信息指明键名与合法取值，不静默强转、不退化成缺省
+
 ### Requirement: 功能开关（feature flag）
 系统 SHALL 支持模块级 feature flag：关闭的模块不加载、不初始化，实现功能裁剪。feature flag SHALL ONLY 作用于**模块装配** —— 即组合根是否构造该模块的实例、是否注册其随装配产生的副作用（技能注册、状态文件读取）、是否接通其 CLI 与 Web UI 入口；SHALL NOT 改变模块**自身**的二级启用开关（如 `pet.enabled` 决定宠物模式是否启用，其缺省与语义不由 feature flag 改变）。**缺省口径**：白名单内的可选模块**未声明即视为开启**（缺省装配，保持既有行为）；只有显式 `false`（yaml `features.<模块>: false`、env `CORE_FEATURES_<模块>`、CLI `--feature <模块>=false`）SHALL 使该模块**完全不装配**。门控名单（**缺省装配**）与**缺省关名单**（**缺省关**，fail-closed）SHALL 均由组合根以**单一真源**维护（当前分别为 `pet` / `beast` / `evolution` 与 `evolution_executor`），二者之并即**已知模块名集合**（供未知开关名告警）；两个名单之外的模块名 SHALL NOT 触发任何装配裁剪，SHALL NOT 影响核心面。
 **第二条极性（缺省关）**：**缺省关名单**内的可选能力**未声明即视为关闭** —— 其装配判据 SHALL 是「显式开启查询」（`is_enabled`，缺省 `false`），只有显式 `true`（yaml / env / CLI 三面同口径，取值归一与校验规则同上）SHALL 使其装配，关时 SHALL NOT 构造其任何实例、不产生装配期副作用。**两种极性 SHALL 各由一份**独立**名单承载**：SHALL NOT 以同一份名单表达两种缺省语义，亦 SHALL NOT 因新增一种极性而改变既有门控名单的缺省语义。
@@ -274,6 +278,7 @@ config.yaml 三面一一对应生成，参与优先级链（CLI flag > env > con
 - **GIVEN** features 段声明一个**两个名单都不含**的模块名
 - **WHEN** 配置校验运行
 - **THEN** 仍产出「未知功能开关」告警（仅告警不阻断）—— 已知模块名集合 = 缺省装配名单 ∪ 缺省关名单
+
 ### Requirement: IM 接入配置
 系统 SHALL 支持 IM 接入配置（gateway/账户/ID/密钥），其中密钥经 env/keychain 分级存储，不落 yaml 明文。
 
@@ -286,6 +291,7 @@ config.yaml 三面一一对应生成，参与优先级链（CLI flag > env > con
 - **GIVEN** 未配置 im 段
 - **WHEN** 系统启动
 - **THEN** IM 网关不初始化，其余功能不受影响
+
 ### Requirement: 决策模型配置
 系统 SHALL 将决策模型（judgment）接入配置纳入 ConfigSpec 单一真源：judgment.provider / judgment.model / judgment.base_url / judgment.api_key / judgment.confidence_threshold；api_key 经 env/keychain 分级存储不落 yaml 明文，未配置时决策能力关闭、主 LLM 兜底。
 
@@ -303,6 +309,7 @@ config.yaml 三面一一对应生成，参与优先级链（CLI flag > env > con
 - **GIVEN** 未配置 judgment 段或 provider 为空
 - **WHEN** 系统需要决策
 - **THEN** 决策能力关闭，回退主 LLM 兜底
+
 ### Requirement: 宠物模式配置
 系统 SHALL 将宠物模式（pet）接入配置纳入 ConfigSpec 单一真源：pet.enabled（总开关）/ pet.persons_dir（多宠物 persona 目录）；默认关闭，开启后 PetSession 构造时经 resolve() 优先级链（CLI flag > env > config.yaml > 默认值）读取对应 pet.md 人格，禁止 pet 配置绕过 ConfigSpec 另起解析。
 
@@ -320,6 +327,7 @@ config.yaml 三面一一对应生成，参与优先级链（CLI flag > env > con
 - **GIVEN** pet.enabled 开启且 pet.persons_dir 指向含多个 <name>.md 的目录
 - **WHEN** PetSession 构造 / 激活宠物
 - **THEN** 经 resolve() 优先级链读取 persons_dir，加载对应 pet.md 人格（每只宠物一个文件）
+
 ### Requirement: 密钥分级与安全
 系统 SHALL 保证敏感密钥不入 yaml 明文，日志与报错输出对密钥脱敏（对齐 observability）。所有密钥引用（`llm.api_key` / `im.secret` / `judgment.api_key`）SHALL 在 schema 校验期**同口径**校验：非空且可经 env/keychain 解析，否则校验失败并阻断启动。
 
@@ -340,6 +348,7 @@ config.yaml 三面一一对应生成，参与优先级链（CLI flag > env > con
 - **GIVEN** IM 段已配置但 secret 为空，或其引用的环境变量 / keychain 条目不存在
 - **WHEN** 系统做 schema 校验
 - **THEN** 校验失败并指明该密钥引用缺失或无法解析，阻断启动
+
 ### Requirement: 配置校验与生效
 系统 SHALL 对配置做 schema 校验，校验通过才生效；变更即生效；写入失败回滚不留半写状态（对齐 ui spec）。取值受所属能力规格约束的配置项（如 `permission.mode` 限于权限规格的 read-only / interactive / auto-approve / high-risk-block 四档）SHALL 在校验期拒绝非法取值，并列出可选值。**写回 yaml 的变更 SHALL 记录可逆效应**：`write_patch` 落盘前 SHALL 向效应账注册一条撤销（恢复**写盘前的 yaml 原文**），并与内存变更（`apply_change`）记在**同一 trace** 之下——按该 trace 回滚时 SHALL 使**磁盘态与内存态一并回退**，SHALL NOT 只回退其一而留下内存/磁盘不一致。**未知配置段**（顶层段名不在已知段之内——五个结构化段 `llm` / `features` / `im` / `pet` / `judgment`、`ConfigSpec` 声明段、以及寄居 `extra` 但有运行时语义的 `permission`）SHALL **仅告警**：SHALL 产生含该段名的校验告警（指明其被收纳进 `extra` 且未做校验），SHALL NOT 因此阻断启动，SHALL NOT 静默丢弃该段。告警口径 SHALL ONLY 作用于**顶层段名**，不递归校验已知段内部的未知子键；**唯一例外是 `features` 段**——其子键是**模块名**，SHALL 以**组合根维护的已知模块名集合**（经注入提供）校验：子键不在集合内时 SHALL 产生含该子键名的告警（指明疑似拼写错误、模块名拼错将静默不生效），SHALL NOT 因此阻断启动；已知模块名集合**未注入**时 SHALL NOT 校验 `features` 段子键。
 

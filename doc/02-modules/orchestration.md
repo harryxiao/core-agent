@@ -56,8 +56,18 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
 
 - 注册多个不同能力的子 Agent（各自是一组插件 + profile）。
 - MultiAgentRouter 按任务类型匹配最合适的 Agent。
-- 通过**标准化消息协议**完成交接：`TaskHandoff {task, context_pack, acceptance, deadline}`。
-- 交接上下文由 context 模块打包（信息地图 + 必要事实），避免全量塞入。
+- 通过**标准化消息协议**完成交接：`TaskHandoff {task, context_pack, acceptance, deadline, priority, session_id}`；
+  **全部字段被消费**（change `0247`／ADR-0235）——`context_pack`（原目标 + 依赖结果）与
+  `acceptance` 进入 prompt，`priority` 决定就绪队列次序，`deadline` 经 `asyncio.timeout` 包住执行
+  （超时归一 `SUBTASK_TIMEOUT`），`session_id` 透传子 loop。
+- 交接上下文由 `handoff.build_context_pack` 打包并**有界**（总预算 `DEFAULT_CONTEXT_TOKENS`，
+  单字段 `MAX_HANDOFF_CHARS`），避免全量塞入。
+- **统一执行器**：beast / pet / 主任务复用 `orchestration/handoff.py`（`build_context_pack` /
+  `render_handoff` / `stream_handoff` / `run_handoff`），上下文隔离仍由各自 `session_id` 保证；
+  beast/pet 传空上下文 ⇒ `render_handoff` 逐字返回任务文本（行为不变）。
+- **委托会话透传**：主循环在 `_act` 期间把当前 `session_id` 写入 `current_session_id` ContextVar，
+  `runtime._dispatch` 读取后转交子 Agent ⇒ 委托轨迹归入发起会话；`source` 命名空间划分不变
+  （`exclude_source_prefixes=("beast.","pet")`）。
 
 ### 3.4 并行扇出（fan-out / fan-in 波次调度）
 

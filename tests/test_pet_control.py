@@ -33,6 +33,9 @@ class FakeLoop:
         self.prompts.append(user_input)
         return LoopResult(reply="ok", trace_id="t1")
 
+    async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
+        return self.run(user_input, session_id=session_id)
+
 
 class FakeMemory:
     """记录写入的 fake 记忆后端（供偏好落 L2）。"""

@@ -3551,3 +3551,33 @@ episodic）并写 canonical 提升。token 估计统一 `len // 4`，中文按 1
 > （`c97840f7f12ff7c65db08e5394af49f0`）。规格：`orchestration` **MODIFIED** ×2 +7 scen
 > （11 req / 50 → 57 scen）。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0234 行
 > （固定预算 / 判定误判只恢复一次 / cancel 不断流 / 重试进程内计数 / 重拆后依赖上下文）。
+
+## 158. TaskHandoff 统一执行框架（TC-ORCHHANDOFF，change `0247`／ADR-0235，台账 E182）
+
+**根因**：调度器直连 `profile.loop.astream(goal)` ⇒ `TaskHandoff` 四字段零消费；依赖注入为无界
+字符串拼接；`deadline` 无执行方；delegate 子 Agent 轨迹不随发起会话归组；`config set
+orchestration.*` 不可达且 `_merge_patch` 会静默丢弃该段。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-ORCHHANDOFF-01 | **全字段消费**（承重） | scheduler + 记录 loop | loop 收到 `[原始目标]` / `[前置子任务结果]` / `[验收标准]`，`session_id` 透传（`tests/test_orchestration_handoff.py::test_scheduler_consumes_task_handoff_all_fields`） |
+| TC-ORCHHANDOFF-02 | 上下文有界 | 超预算依赖列表 / 超长单字段 | 超出预算后停止装入；单字段 ≤ `MAX_HANDOFF_CHARS`；渲染 token 远小于原始总量（`…test_build_context_pack_stops_when_budget_exhausted` / `…caps_single_field` / `…fits_rendered_budget`） |
+| TC-ORCHHANDOFF-03 | **空上下文逐字不变** | `context_pack={}` + `acceptance=""` | `render_handoff` 返回 `task` 原文（beast/pet 行为不变）（`…test_render_handoff_empty_context_is_byte_identical`） |
+| TC-ORCHHANDOFF-04 | 超时取消并归一 | 挂起 loop + `deadline=0.01` | 抛 `SUBTASK_TIMEOUT`；子流被取消（`…test_stream_handoff_timeout_cancels_and_raises`） |
+| TC-ORCHHANDOFF-05 | run/stream 会话透传 | `session_id="s"` | `arun` / `astream` 收到该会话；`run_handoff` 走 `arun`（保留回合收尾）（`…test_run_handoff_uses_arun_and_forwards_session` / `…test_stream_handoff_passes_task_and_session`） |
+| TC-ORCHHANDOFF-06 | router 全字段 + fallback | 已注册 / fallback profile | `handoff` 消费上下文与验收；`handoff_stream` 能解析 fallback（不误报 `NO_AGENT_MATCH`）（`…test_router_handoff_consumes_all_fields` / `…resolves_fallback_profile`） |
+| TC-ORCHHANDOFF-07 | deadline / priority 构造 | `subtask_timeout=30`、`priority=7` | `_build_handoff` 产出 `deadline=30` / `priority=7`（`…test_scheduler_build_handoff_carries_deadline_and_priority`） |
+| TC-ORCHHANDOFF-08 | 超时进入恢复回路 | 子任务必超时 | 重试/重拆预算耗尽后 `FAILED`（`…test_scheduler_timeout_fails_after_recovery_budget`） |
+| TC-ORCHHANDOFF-09 | beast 异常也回归 | `handoff` 抛 `OrchestrationError` | 异常上抛但会话 `RECALLED`、`active() == []`（`tests/test_beast.py::test_manager_summon_recalls_on_handoff_error`） |
+| TC-ORCHHANDOFF-10 | pet prompt 逐字同 | 空上下文唤醒 | loop 输入 `== ["收集今日新闻"]`（`tests/test_pet_core.py::test_wake_prompt_unchanged_by_unified_handoff`） |
+| TC-ORCHHANDOFF-11 | 委托会话透传 | `current_session_id="sess-7"` | 子 Agent `arun` 收到 `sess-7`；`_act` 后 ContextVar 复位为 `""`（`tests/test_phase13.py::test_delegate_forwards_current_session_to_subagent` / `tests/test_loop.py::test_current_session_id_visible_in_act_and_reset_afterward`） |
+| TC-ORCHHANDOFF-12 | 配置三面/校验/注入 | 非法 `-1/2.5/abc/true`；yaml/env/CLI；`config set` | 非法值阻断启动（「非法子任务超时」）；三面优先级生效；`config set` 落盘可重载；runtime 注入 `_subtask_timeout`（`tests/test_orchestration_config.py`） |
+
+> **反证**：`render_handoff` 忽略上下文/验收 ⇒ 01/06/07 红；摘 `asyncio.timeout` 包装 ⇒ 04/08
+> **挂起**（15s 限时 `exit=124`）；scheduler 退回最小 `TaskHandoff(task, session_id)` ⇒ 01/07 红 +
+> 08 挂起；摘 `current_session_id` set/reset ⇒ 11 红（loop 面）；`runtime._dispatch` 丢会话 ⇒ 11 红
+> （delegate 面）。复原 ⇒ `handoff.py` / `scheduler.py` / `loop/default.py` / `runtime.py`
+> `md5sum` 同。规格：`orchestration` R3 **MODIFIED** +4 scen（11 req / 57 → 61 scen）；
+> `configuration`「编排调度配置」**MODIFIED**（3 scen 数不变）。测试净 +24（2716 → **2740**）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0235 行（deadline 默认关闭 / 上下文截断 /
+> cancel 不断流 / 跨命名空间既有风险 / 整数秒配置）。

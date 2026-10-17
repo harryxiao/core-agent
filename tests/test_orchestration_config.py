@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from core.configuration import ConfigManager, ConfigurationError, config_specs
+from core.entry import _key_to_patch
 from core.runtime import build_runtime
 
 _LLM_SECTION = (
@@ -67,6 +68,13 @@ def test_specs_declare_orchestration_keys() -> None:
         "orchestration.max_concurrency",
         4,
     )
+    timeout = specs["orchestration.subtask_timeout"]
+    assert (timeout.cli_flag, timeout.env_var, timeout.map_to, timeout.default) == (
+        "--orchestration.subtask-timeout",
+        "CORE_ORCHESTRATION_SUBTASK_TIMEOUT",
+        "orchestration.subtask_timeout",
+        0,
+    )
 
 
 # ---- 缺省与三面 ----
@@ -77,15 +85,20 @@ def test_defaults_match_code_defaults(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
     assert manager.orchestration_difficulty_policy() == "off"
     assert manager.orchestration_max_concurrency() == 4  # noqa: PLR2004 — 即代码缺省
+    assert manager.orchestration_subtask_timeout() == 0
 
 
 def test_values_from_yaml(tmp_path: Path) -> None:
     manager = _manager(
         tmp_path,
-        "orchestration:\n  difficulty_policy: difficulty\n  max_concurrency: 2\n",
+        "orchestration:\n"
+        "  difficulty_policy: difficulty\n"
+        "  max_concurrency: 2\n"
+        "  subtask_timeout: 15\n",
     )
     assert manager.orchestration_difficulty_policy() == "difficulty"
     assert manager.orchestration_max_concurrency() == 2  # noqa: PLR2004 — 即 yaml 取值
+    assert manager.orchestration_subtask_timeout() == 15  # noqa: PLR2004 — 即 yaml 取值
 
 
 def test_env_overrides_yaml(tmp_path: Path) -> None:
@@ -126,6 +139,22 @@ def test_invalid_max_concurrency_blocks_startup(tmp_path: Path, value: str) -> N
         _manager(tmp_path, f"orchestration:\n  max_concurrency: {value}\n")
 
 
+@pytest.mark.parametrize("value", ["-1", "2.5", "abc", "true"])
+def test_invalid_subtask_timeout_blocks_startup(tmp_path: Path, value: str) -> None:
+    """子任务超时须为 ≥0 的整数：负数 / 小数 / 非数值 / 布尔一律阻断启动。"""
+    with pytest.raises(ConfigurationError, match="非法子任务超时"):
+        _manager(tmp_path, f"orchestration:\n  subtask_timeout: {value}\n")
+
+
+def test_env_subtask_timeout(tmp_path: Path) -> None:
+    manager = _manager(
+        tmp_path,
+        "orchestration:\n  subtask_timeout: 5\n",
+        environ={"CORE_ORCHESTRATION_SUBTASK_TIMEOUT": "9"},
+    )
+    assert manager.orchestration_subtask_timeout() == 9  # noqa: PLR2004 — 即 env 取值
+
+
 @pytest.mark.parametrize("value", ["fast", "parallel", "OFF", "1"])
 def test_invalid_policy_blocks_startup(tmp_path: Path, value: str) -> None:
     """策略须为 `off` / `difficulty` 之一（拼错不得静默退化成缺省）。"""
@@ -145,12 +174,31 @@ def test_build_runtime_injects_policy_and_limit(
     runtime = build_runtime(
         _manager(
             tmp_path,
-            "orchestration:\n  difficulty_policy: difficulty\n  max_concurrency: 2\n",
+            "orchestration:\n"
+            "  difficulty_policy: difficulty\n"
+            "  max_concurrency: 2\n"
+            "  subtask_timeout: 7\n",
         )
     )
     # noqa: SLF001 — 接线断言（与 change 0115 的 loop 注入断言同型）
     assert runtime.orchestrator._difficulty_policy == "difficulty"  # noqa: SLF001
     assert runtime.orchestrator._max_concurrency == 2  # noqa: SLF001, PLR2004
+    assert runtime.orchestrator._subtask_timeout == 7  # noqa: SLF001, PLR2004
+
+
+def test_config_set_subtask_timeout_applies_and_persists(tmp_path: Path) -> None:
+    """`config set orchestration.subtask_timeout` 真的生效并落盘（change 0247）。"""
+    manager = _manager(tmp_path)
+    assert manager.orchestration_subtask_timeout() == 0
+
+    patch = _key_to_patch("orchestration.subtask_timeout", "30")
+    manager.apply_change(patch)
+    assert manager.orchestration_subtask_timeout() == 30  # noqa: PLR2004 — 即运行时取值
+
+    manager.write_patch(patch)
+    reloaded = ConfigManager(tmp_path / "config.yaml", environ={"OPENAI_API_KEY": "sk-test"})
+    reloaded.load()
+    assert reloaded.orchestration_subtask_timeout() == 30  # noqa: PLR2004 — 即落盘取值
 
 
 def test_build_runtime_defaults_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -160,3 +208,4 @@ def test_build_runtime_defaults_unchanged(tmp_path: Path, monkeypatch: pytest.Mo
     runtime = build_runtime(_manager(tmp_path))
     assert runtime.orchestrator._difficulty_policy == "off"  # noqa: SLF001
     assert runtime.orchestrator._max_concurrency == 4  # noqa: SLF001, PLR2004
+    assert runtime.orchestrator._subtask_timeout == 0  # noqa: SLF001

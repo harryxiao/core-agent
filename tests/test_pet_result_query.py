@@ -41,6 +41,9 @@ class FakeLoop:
         self.prompts.append(user_input)
         return LoopResult(reply=self.reply, trace_id="t1")
 
+    async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
+        return self.run(user_input, session_id=session_id)
+
 
 class FakeMemory:
     def __init__(self) -> None:
@@ -103,6 +106,9 @@ def test_result_reflects_failed_run() -> None:
 class _FailingLoop:
     def run(self, user_input: str, *, session_id: str = "") -> LoopResult:
         return LoopResult(reply="", trace_id="t1", failed=True)
+
+    async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
+        return self.run(user_input, session_id=session_id)
 
 
 # ---- 守护：status 返回面逐字不变（隐私条款不得被本 change 松动） ----

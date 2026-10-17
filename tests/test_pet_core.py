@@ -30,6 +30,9 @@ class FakeLoop:
         self.prompts.append(user_input)
         return LoopResult(reply=self.reply, trace_id=self.trace_id)
 
+    async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
+        return self.run(user_input, session_id=session_id)
+
 
 class FakeMemory:
     """记录写入并返回受控结果的 fake 记忆后端。"""
@@ -58,6 +61,16 @@ def test_start_wake_roundtrip() -> None:
     assert result.reply == "ok"
     assert result.trace_id == "t1"
     assert "收集今日新闻" in loop.prompts[0]
+
+
+def test_wake_prompt_unchanged_by_unified_handoff() -> None:
+    """统一执行器空上下文 ⇒ 宠物收到的 prompt 与任务目标逐字相同（change 0247）。"""
+    loop = FakeLoop()
+    session = PetSession(loop=loop)
+    session.start(_task())
+    result = session.wake()
+    assert result.reply == "ok"
+    assert loop.prompts == ["收集今日新闻"]
 
 
 def test_wake_notifies_owner_on_feedback_cycle() -> None:
@@ -259,6 +272,9 @@ class _FailOnSecondCallLoop:
         if self.calls > 1:
             raise RuntimeError("惊喜执行失败")
         return LoopResult(reply="ok", trace_id="t1")
+
+    async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
+        return self.run(user_input, session_id=session_id)
 
 
 def test_surprise_without_preference_returns_none() -> None:

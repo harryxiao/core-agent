@@ -40,10 +40,17 @@ class FakeMemory:
 class FakeRouter:
     """记录 register/handoff 并返回受控 LoopResult 的 fake 路由器。"""
 
-    def __init__(self, reply: str = "ok", trace_id: str = "t1", failed: bool = False) -> None:
+    def __init__(
+        self,
+        reply: str = "ok",
+        trace_id: str = "t1",
+        failed: bool = False,
+        error: Exception | None = None,
+    ) -> None:
         self.reply = reply
         self.trace_id = trace_id
         self.failed = failed
+        self.error = error
         self.profiles: list[AgentProfile] = []
         self.handoffs: list[tuple[str, object]] = []
 
@@ -52,6 +59,8 @@ class FakeRouter:
 
     async def handoff(self, target: str, handoff: object) -> LoopResult:
         self.handoffs.append((target, handoff))
+        if self.error is not None:
+            raise self.error
         return LoopResult(reply=self.reply, trace_id=self.trace_id, failed=self.failed)
 
 
@@ -192,6 +201,18 @@ def test_manager_summon_failed_still_recalled() -> None:
     assert session.last_result is not None
     assert session.last_result.failed is True
     assert session.state is BeastSessionState.RECALLED  # 失败也自动回归
+
+
+def test_manager_summon_recalls_on_handoff_error() -> None:
+    """交接抛错（含超时）也回归 RECALLED，不滞留 ACTIVE（change 0247）。"""
+    router = FakeRouter(error=OrchestrationError(OrchestrationErrorCode.NO_AGENT_MATCH, "boom"))
+    manager = BeastManager(router=router)
+    with pytest.raises(OrchestrationError):
+        asyncio.run(manager.summon("beast.qinglong"))
+    assert manager.active() == []
+    session = manager.get("beast.qinglong")
+    assert session is not None
+    assert session.state is BeastSessionState.RECALLED
 
 
 def test_manager_recall_resets_target_only() -> None:

@@ -298,6 +298,9 @@ class _PetSpyLoop:
         self.session_ids.append(session_id)
         return LoopResult(reply="ok", trace_id="t1")
 
+    async def arun(self, user_input: str, *, session_id: str = "") -> LoopResult:
+        return self.run(user_input, session_id=session_id)
+
 
 def test_pet_trajectory_carries_pet_session_id() -> None:
     """宠物唤醒经真实 loop 执行 ⇒ 携带**宠物会话标识**（不与主线未归属条目混同）。"""

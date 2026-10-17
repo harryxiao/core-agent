@@ -67,13 +67,16 @@ class BeastManager:
                 loop=session.loop,
             )
             self._router.register(profile)
-            result = await self._router.handoff(
-                beast.agent_id,
-                TaskHandoff(task=task or beast.domain, session_id=beast.agent_id),
-            )
+            try:
+                result = await self._router.handoff(
+                    beast.agent_id,
+                    TaskHandoff(task=task or beast.domain, session_id=beast.agent_id),
+                )
+            finally:
+                # 任务收口（成功 / 失败 / 超时 / 异常）都必须回归 RECALLED，不滞留 ACTIVE。
+                session.recall()
             session.last_result = result
             session.last_trace_id = result.trace_id
-            session.recall()  # 任务完成（无论成败）自动回归 RECALLED，成败见 last_result.failed
         return session
 
     def recall(self, agent_id: str) -> BeastSession:

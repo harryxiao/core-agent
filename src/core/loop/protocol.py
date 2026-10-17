@@ -11,8 +11,14 @@ LoopPlugin 声明同步 run / 异步 arun / 流式 astream 三入口 + 阶段方
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast, runtime_checkable
+
+# 当前动作所属会话（change 0247 / ADR-0235）：`DefaultLoop` 在每次 `_act` 调用前后
+# set/reset；工具处理器（如 `tools.delegate`）由此把发起会话转交子 Agent。
+# 缺省空串 = 未归属（与 `arun(..., session_id="")` 同口径）。
+current_session_id: ContextVar[str] = ContextVar("current_session_id", default="")
 
 
 @dataclass

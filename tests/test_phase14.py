@@ -172,12 +172,9 @@ def test_task_scheduler_multi_agent_checkpoint_per_wave() -> None:
 
     assert [o.ok for o in outcomes] == [True, True]
     assert calls == [("task-1", ["1"]), ("task-1", ["1", "2"])]  # 检查点携带累计结果
-    assert main.calls == ["run the default task"]
-    # 依赖结果交接：上游验收通过结果注入后继子任务输入（spec：依赖结果交接）
-    assert coder.calls == [
-        "write the code\n\n前置子任务结果（可直接引用）：\n"
-        "[前置子任务 1] run the default task\n结果：ok"
-    ]
+    assert main.calls == ["run the default task\n\n[原始目标] plan"]
+    # 依赖结果交接：上游验收通过结果注入后继子任务输入（spec：依赖结果交接 / change 0247）
+    assert coder.calls == ["write the code\n\n[原始目标] plan\n\n[前置子任务结果]\n- 1: ok"]
 
 
 def test_router_handoff_delegates_to_target_agent() -> None:

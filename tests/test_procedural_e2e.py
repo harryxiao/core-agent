@@ -96,9 +96,9 @@ class _StubLoop:
     """子 Agent 执行单元替身（**外部面**）：按目标返回确定性 trace_id 的终态，不触网。"""
 
     async def astream(self, user_input: str, *, session_id: str = "") -> AsyncIterator[LoopEvent]:
-        yield LoopEvent(
-            "loop_finished", LoopResult(reply=_REPLY, trace_id=_TRACE_BY_GOAL[user_input])
-        )
+        # 交接 prompt 首行为子任务目标（change 0247 追加原始目标/上下文段）
+        goal = user_input.split("\n\n", 1)[0]
+        yield LoopEvent("loop_finished", LoopResult(reply=_REPLY, trace_id=_TRACE_BY_GOAL[goal]))
 
 
 def _runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, judgment: bool = False) -> Runtime:

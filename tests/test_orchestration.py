@@ -291,7 +291,8 @@ def test_run_priority_order() -> None:
         decomposer=decomposer, router=router, state_machine=sm, max_concurrency=1
     )
     asyncio.run(scheduler.run("task", "goal"))
-    assert tracker.order == ["t-high", "t-mid", "t-low"]
+    # 交接 prompt 追加原始目标（change 0247），执行次序按首行判定
+    assert [item.split("\n\n")[0] for item in tracker.order] == ["t-high", "t-mid", "t-low"]
 
 
 class _ScriptedLoop(DefaultLoop):
@@ -420,7 +421,7 @@ def test_run_replan_clears_old_completed_and_results() -> None:
         state_machine=StateMachine(),
     )
     asyncio.run(scheduler.run("task", "goal"))
-    assert "t-new" in loop.inputs
+    assert any(item.startswith("t-new") for item in loop.inputs)
 
 
 def test_run_execution_exception_normalized() -> None:
@@ -857,7 +858,8 @@ def test_scheduler_resume_skips_completed() -> None:
         state_machine=StateMachine(),
     )
     events = _collect(scheduler, "task", "goal", plan=plan, completed={"1"})
-    assert executed.order == ["t-two"]  # 已完成子任务不重复执行
+    # 已完成子任务不重复执行（交接 prompt 追加原始目标，按首行判定）
+    assert [item.split("\n\n")[0] for item in executed.order] == ["t-two"]
     skipped = [
         e
         for e in events
@@ -886,7 +888,7 @@ def test_scheduler_passes_dependency_results() -> None:
 
     _collect(scheduler, "task", "goal", plan=plan)
 
-    assert loop.inputs[0] == "t-one"  # 无依赖子任务原样执行
+    assert loop.inputs[0].startswith("t-one")  # 无依赖子任务原样执行
     assert "一叶知秋" in loop.inputs[1]  # 前置结果注入后继输入
     assert "前置子任务结果" in loop.inputs[1]
 
@@ -910,9 +912,7 @@ def test_scheduler_resume_rebuilds_dependency_results() -> None:
 
     _collect(scheduler, "task", "goal", plan=plan, completed={"1"}, results={"1": "上游答复"})
 
-    assert loop.inputs == [
-        "t-two\n\n前置子任务结果（可直接引用）：\n[前置子任务 1] t-one\n结果：上游答复"
-    ]
+    assert loop.inputs == ["t-two\n\n[原始目标] goal\n\n[前置子任务结果]\n- 1: 上游答复"]
 
 
 # ---- 子任务失败态传播（E63：假成功收口） ----

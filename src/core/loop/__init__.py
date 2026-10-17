@@ -20,6 +20,7 @@ from .protocol import (
     LoopResult,
     Thinking,
     collect_result,
+    current_session_id,
 )
 
 __all__ = [
@@ -37,4 +38,5 @@ __all__ = [
     "Thinking",
     "TurnObserver",
     "collect_result",
+    "current_session_id",
 ]

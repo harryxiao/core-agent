@@ -1175,11 +1175,11 @@ def _yaml_scalar(value: Any) -> str:
 
 
 def _key_to_patch(key: str, value: str) -> dict[str, Any]:
-    """点分键 → apply_change 支持的嵌套 patch（llm./features./im./loop.）。"""
+    """点分键 → apply_change 支持的嵌套 patch（llm./features./im./loop./orchestration.）。"""
     top, _, rest = key.partition(".")
-    if top not in ("llm", "features", "im", "loop") or not rest:
+    if top not in ("llm", "features", "im", "loop", "orchestration") or not rest:
         raise ValueError(  # noqa: TRY003
-            f"config set 暂不支持键: {key}（仅支持 llm./features./im./loop.）"
+            f"config set 暂不支持键: {key}（仅支持 llm./features./im./loop./orchestration.）"
         )
     node: dict[str, Any] = {}
     parts = rest.split(".")

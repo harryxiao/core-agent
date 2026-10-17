@@ -10,7 +10,7 @@ import asyncio
 import time
 
 from core.context import Compactor
-from core.loop import Action, DefaultLoop, Thinking
+from core.loop import Action, DefaultLoop, Thinking, current_session_id
 from core.memory import MemoryEntry, MemoryStore
 from core.observability import TraceEvent, Tracer
 from core.plugin_registry import CoeffectResolver
@@ -50,6 +50,38 @@ def test_run_terminal_reply() -> None:
     result = loop.run("问题")
     assert result.reply == "你好"
     assert result.trace_id
+
+
+def test_current_session_id_visible_in_act_and_reset_afterward() -> None:
+    """动作期 ContextVar 携带会话标识；动作结束后复位（change 0247）。"""
+    seen: list[str] = []
+
+    def planner(ctx):
+        if ctx.rounds == 0:
+            return Action(tool_id="tools.echo", args={"text": "x"})
+        return Action(args={"reply": "done"})
+
+    def handler(text: str) -> str:
+        seen.append(current_session_id.get())
+        return f"echo:{text}"
+
+    provider = ToolProvider()
+    provider.register(
+        Tool(
+            definition=ToolDef(
+                tool_id="tools.echo",
+                description="echo",
+                schema={"type": "object", "properties": {"text": {"type": "string"}}},
+                coeffects=[],
+                reversible=True,
+            ),
+            handler=handler,
+        )
+    )
+    loop = DefaultLoop(planner=planner, tools=provider)
+    loop.run("q", session_id="sess-42")
+    assert seen == ["sess-42"]
+    assert current_session_id.get() == ""
 
 
 # ---- 中间件短路 ----

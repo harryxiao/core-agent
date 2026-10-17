@@ -122,7 +122,15 @@ def test_difficulty_policy_serializes_wave_containing_hard() -> None:
         _scheduler(subtasks, tracker, policy="difficulty", max_concurrency=4).run("task", "goal")
     )
     assert tracker.peak == 1
-    assert tracker.timeline == ["+t-h", "-t-h", "+t-m", "-t-m", "+t-e", "-t-e"]
+    # 交接 prompt 追加原始目标（change 0247），时序按首行判定
+    assert [m.split("\n\n")[0] for m in tracker.timeline] == [
+        "+t-h",
+        "-t-h",
+        "+t-m",
+        "-t-m",
+        "+t-e",
+        "-t-e",
+    ]
 
 
 def test_difficulty_policy_keeps_concurrency_without_hard() -> None:

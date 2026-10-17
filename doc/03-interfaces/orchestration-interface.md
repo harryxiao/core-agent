@@ -221,7 +221,40 @@ class MultiAgentRouter:
 
         ``handoff.session_id`` 随调用转交子 loop（``arun(handoff.task, session_id=…)``）。
         """
+
+    def handoff_stream(self, target: str, handoff: TaskHandoff) -> AsyncIterator[LoopEvent]:
+        """流式交接（调度器入口）：保留 ``subtask_progress`` 事件回流；超时归一 SUBTASK_TIMEOUT。"""
 ```
+
+**共享执行器（`orchestration/handoff.py`，change `0247` / ADR-0235）**：beast / pet / 主任务
+（scheduler）复用同一套交接代码，上下文隔离仍由调用方各自的 `session_id` 保证：
+
+```python
+MAX_HANDOFF_CHARS = 2000       # 单字段（goal / result）字符上界
+DEFAULT_CONTEXT_TOKENS = 2000  # context_pack 总预算（core.tokens.estimate_tokens 口径）
+
+def build_context_pack(goal, dependencies, *, max_tokens) -> dict[str, Any]
+    # {"goal": …, "dependencies": [{"id", "goal", "result"}]}；按依赖顺序装入，
+    # 最后一条按剩余预算截断（CJK 感知），单条不超过 MAX_HANDOFF_CHARS。
+
+def render_handoff(handoff: TaskHandoff) -> str
+    # task + [原始目标] + [前置子任务结果] + [验收标准]；
+    # context_pack 与 acceptance 均为空时**逐字返回 task**（beast / pet 行为不变）。
+
+async def stream_handoff(loop, handoff, *, deadline=None) -> AsyncIterator[LoopEvent]
+async def run_handoff(loop, handoff, *, deadline=None) -> LoopResult
+    # deadline（秒；None 或 ≤0 = 不设限）经 asyncio.timeout 包住整段执行；
+    # 超时取消子流并归一 OrchestrationError(SUBTASK_TIMEOUT)。
+```
+
+- **全字段消费**：调度器 `_build_handoff` 填充 `task` / `context_pack`（原目标 + 依赖结果）/
+  `acceptance` / `deadline`（配置 `orchestration.subtask_timeout`）/ `priority` / `session_id`；
+  `priority` 用于就绪队列排序，其余字段进入 prompt 或执行包装。
+- **会话隔离**：执行器只转发 `session_id`，不解释其语义 —— 主任务 = 发起会话
+  （`runtime._dispatch` 经 `current_session_id` ContextVar 透传给子 Agent）、beast = `beast.agent_id`、
+  pet = 自身 UUID；`runtime.py` 的 `exclude_source_prefixes=("beast.","pet")` **不变**。
+- **行为变更（有意）**：scheduler 路径的 prompt 新增「原始目标 / 前置结果 / 验收标准」段；
+  beast / pet 传空上下文，`render_handoff` 逐字返回任务文本，prompt 与改造前一致。
 
 ---
 
@@ -232,6 +265,7 @@ class MultiAgentRouter:
 | `INVALID_TRANSITION` | 非法状态转移 |
 | `SUBTASK_VERIFY_FAILED` | 子任务校验失败（失败项重试 → 重拆 → FAILED；空计划亦用此码） |
 | `SUBTASK_EXECUTION_FAILED` | 子任务执行未达成（循环失败态 / 执行异常归一，fail-closed，change 0126/0246） |
+| `SUBTASK_TIMEOUT` | 子任务交接超时（`TaskHandoff.deadline`，change 0247）；取消子流后归一，进入重试/重拆 |
 | `DEADLOOP_DETECTED` | 检测到死循环（触发重拆；预算耗尽转 FAILED） |
 | `NO_AGENT_MATCH` | 无匹配子 Agent（抛错，调度器捕获并标记子任务失败） |
 | `WAVE_FANOUT_LIMIT` | 并行度超限（同波次分批执行，受资源上限约束） |

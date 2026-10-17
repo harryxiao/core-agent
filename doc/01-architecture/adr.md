@@ -8460,6 +8460,71 @@ R4「断点续跑」**MODIFIED**（`Plan.replans` 持久化 + 1 Scenario）—�
 若复用已完成子任务 id 且不重新执行，依赖上下文需由新执行重新填充（由「已完成摘要 +
 不重复安排」提示约束，非硬保证）。
 
+## ADR-0235：TaskHandoff 统一执行框架（beast / pet / 主任务复用）（change 0247 / 台账 E182）
+
+**背景**：`TaskScheduler._run_subtask` 直接 `profile.loop.astream(goal)`，`TaskHandoff` 的
+`context_pack` / `acceptance` / `deadline` / `priority` **零消费**；beast 虽走
+`MultiAgentRouter.handoff`，也只用了 `task` / `session_id`。依赖结果靠手写字符串拼接、无总预算；
+`deadline` 无执行方（无子任务超时）；委托（delegate）子 Agent 的轨迹落全局层，不随发起会话归组。
+规格 `orchestration` R3 已承诺交接协议字段，实现未闭合。
+
+**决策**：
+
+- **D1 共享执行器**：新增 `src/core/orchestration/handoff.py` —— `build_context_pack` /
+  `render_handoff` / `stream_handoff` / `run_handoff`。scheduler / router / beast / pet 复用同一套
+  交接代码，**不合并**各自的 loop 与上下文：`session_id` 仍由调用方填对（主任务 = 发起会话、
+  beast = `beast.agent_id`、pet = UUID），执行器只转发、不解释。
+- **D2 上下文有界**：`build_context_pack` 以 `core.tokens.estimate_tokens`（change 0245 口径）
+  为预算单位（`DEFAULT_CONTEXT_TOKENS = 2000`），按依赖顺序装入；单字段（goal / result）以
+  `MAX_HANDOFF_CHARS = 2000` 字符封顶；最后一条按剩余预算几何截断（`_fit_tokens`）并在首次
+  截断后停止装入 ⇒ 交接文本不随依赖数量无界增长。`MAX_HANDOFF_CHARS` 成为单点真源，
+  scheduler 的依赖注入 / 检查点截断统一引用。
+- **D3 全字段消费**：`TaskScheduler._build_handoff` 构造完整 `TaskHandoff`（`task`、`context_pack`
+  含原目标与依赖结果、`acceptance`、`deadline`、`priority`、`session_id`），经
+  `MultiAgentRouter.handoff_stream` 执行 ⇒ 保留 `subtask_progress` 流式回流。`priority` 继续由
+  就绪队列排序消费；`deadline` 由配置 `orchestration.subtask_timeout` 注入（`0` ⇒ `None`）。
+- **D4 渲染语义（行为分界）**：`render_handoff` 在 `context_pack` 与 `acceptance` 均为空时
+  **逐字返回 `task`** ⇒ beast / pet 现有 prompt 逐字不变；scheduler 路径必然非空 ⇒ prompt 追加
+  「原始目标 / 前置子任务结果 / 验收标准」段，属**有意**行为变更（规格要求的字段消费，非隐藏开关）。
+- **D5 超时归一**：`stream_handoff` / `run_handoff` 以 `asyncio.timeout(deadline)` 包住整段执行，
+  超时取消子流并归一 `OrchestrationError(SUBTASK_TIMEOUT)`（新增错误码）；进入 `0246` 的
+  重试/重拆回路，不裸崩。`run_handoff` 经 `arun`（而非 `collect_result(astream)`）执行，保留
+  `DefaultLoop.arun` 的回合收尾语义。
+- **D6 配置与 `config set`**：照 `difficulty_policy` / `max_concurrency` 模板新增
+  `orchestration.subtask_timeout`（int ≥0，默认 `0`；CLI/env/yaml 三面；校验期阻断；组合根注入）。
+  `_key_to_patch` 白名单加入 `orchestration`，并修 `_merge_patch` 对 `extra` 寄居段的合并 ——
+  此前只浅合并 `loop`，`orchestration` patch 会被静默丢弃（「报成功却不生效」，与账本 E15 同型）。
+- **D7 会话隔离（委托透传）**：`DefaultLoop` 在 `_act` 前后 set/reset
+  `current_session_id` ContextVar（`finally` 复位，异常不泄漏）；`runtime._dispatch` 读取后传给
+  子 Agent `arun(task, session_id=…)`。`exclude_source_prefixes=("beast.","pet")` 与三命名空间
+  `source` 规则**逐字不动**；不引入 `AgentProfile.session_scope`。
+- **D8 beast / pet 收口**：beast `summon` 的 `session.recall()` 移入 `finally`（成功 / 失败 / 超时 /
+  异常均回归 `RECALLED`，不滞留 `ACTIVE`）；pet `wake` 经 `asyncio.run(run_handoff(...))`，
+  空上下文 ⇒ prompt 逐字相同。
+
+**规格**：`orchestration` R3「多 Agent 协同」**MODIFIED**（2 → 6 Scenario，+4）；`configuration`
+「编排调度配置」**MODIFIED**（新增 `subtask_timeout` 与校验口径，3 Scenario 数不变）。
+规格总量 11 req / 57 → **61** scen。
+
+**反证（实测）**：`render_handoff` 忽略上下文/验收 ⇒ 3 红（render / router / scheduler 全字段）；
+摘 `asyncio.timeout` 包装 ⇒ 超时用例**挂起**（15s 限时 `exit=124`，非绿）；scheduler 退回最小
+`TaskHandoff(task, session_id)` ⇒ 2 红（全字段 / deadline+priority），超时用例挂起；摘
+`current_session_id` set/reset ⇒ `test_current_session_id_visible_in_act_and_reset_afterward` 红；
+`runtime._dispatch` 丢弃会话 ⇒ `test_delegate_forwards_current_session_to_subagent` 红。
+复原后 `md5sum` 同：`handoff.py` `de07985ac72b935a45ef7b2263bf2e15`、
+`scheduler.py` `d0a1061e34023c4b82cf0b757702f682`、`loop/default.py`
+`e778e4e328e3537dcdab84f217e3980f`、`runtime.py` `3d738cd28cda2284fbe6315af905a420`。
+测试净 +24（2716 → **2740**）。四门禁全绿；`openspec validate --all` 中本 change 绿
+（`0230` / `0233` 两项为**既有**归档欠账，见 ADR-0223 / ADR-0225 局限④）。
+
+**局限**：① `deadline` 默认关闭（`0`），需显式配置；`asyncio.timeout` 依赖 Python 3.11+（项目基线）；
+② 单次交接上下文最多 2000 token，超长依赖结果被截断（保头不保尾，可能丢结论）；
+③ 委托/取消/挂起仍不安全（D1）：`cancel` 只转状态、不断流；`on_done` 异常仍可能逃逸；
+`_results` 不在终态清理；④ 跨命名空间既有风险（Agent 2）：`compact(session_id="")` 可能从
+beast/pet episodic 派生全局事实；canonical notes 提升绕过 source 排除；子 Agent 共享 loop 实例的
+单槽 `_post_turn_task`。三者**会话数据不混**，登记为已知局限；⑤ `subtask_timeout` 以整数秒配置，
+亚秒级仅测试可达（构造参数为 `float`）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8689,3 +8754,4 @@ R4「断点续跑」**MODIFIED**（`Plan.replans` 持久化 + 1 Scenario）—�
 | ADR-0232 | 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0233 | 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0234 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0235 | 02-modules/orchestration.md, 02-modules/beast-mode.md, 02-modules/pet.md, 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

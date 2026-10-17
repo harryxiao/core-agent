@@ -74,7 +74,7 @@ from core.judgment import (
     sop_gate_with,
 )
 from core.llm_provider import LLMProvider, LLMRequest, Message, StdlibLLMProvider
-from core.loop import Approver, DefaultLoop, LoopPlugin, TurnObserver
+from core.loop import Approver, DefaultLoop, LoopPlugin, TurnObserver, current_session_id
 from core.loop.constraints_adapter import build_constraints_chain
 from core.loop.fault_adapter import build_fault_chain
 from core.loop.planner import LLMPlanner, SkillHint
@@ -1216,7 +1216,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             return {"ok": False, "error": f"无匹配子 Agent: {exc}"}
         if profile.loop is None:
             return {"ok": False, "error": f"子 Agent {profile.agent_id} 无可用 loop"}
-        result = await profile.loop.arun(task)
+        # 委托轨迹归入发起会话（change 0247 / ADR-0235）：`DefaultLoop` 在动作期设置；
+        # 缺省空串 = 未归属，与 delegate 引入前的归属语义一致。
+        result = await profile.loop.arun(task, session_id=current_session_id.get())
         return {"ok": not result.failed, "reply": result.reply}
 
     async def _delegate(task: str) -> dict[str, object]:
@@ -1327,6 +1329,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         # （构造缺省 4 恰与既有行为同值，会掩盖未接线）。
         max_concurrency=config.orchestration_max_concurrency(),
         difficulty_policy=config.orchestration_difficulty_policy(),
+        # 子任务交接超时（change 0247）：0 = 不设限（不接线则不暴露，故必须显式传）。
+        subtask_timeout=config.orchestration_subtask_timeout(),
         checkpoint=_checkpoint,
         on_done=_finalize,
         tracer=tracer,

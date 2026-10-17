@@ -24,7 +24,8 @@ from core.observability import TraceEvent, Tracer
 
 from .decomposer import SubtaskDecomposer
 from .errors import OrchestrationError, OrchestrationErrorCode
-from .models import Plan, Subtask, TaskState
+from .handoff import DEFAULT_CONTEXT_TOKENS, MAX_HANDOFF_CHARS, build_context_pack
+from .models import Plan, Subtask, TaskHandoff, TaskState
 from .router import MultiAgentRouter
 from .state_machine import StateMachine
 
@@ -36,7 +37,7 @@ DoneFn = Callable[[str, "list[SubtaskOutcome]", Plan, str], None]
 # 子任务事件发射器：入队即返回（None 为波次收尾哨兵）。
 Emit = Callable[[LoopEvent | None], None]
 
-_MAX_HANDOFF_CHARS = 2000  # 依赖结果注入/检查点留存的回复截断（上下文有界）
+# 依赖结果注入/检查点留存的回复截断统一取 handoff.MAX_HANDOFF_CHARS（单点真源）
 _MAX_EVENT_EXCERPT = 600  # 进度事件携带的回复节选（UI 折叠详情用）
 
 # 失败恢复预算（change 0246）：任一子任务验收/执行失败 ⇒ 仅失败项重试 1 次；
@@ -162,6 +163,8 @@ class TaskScheduler:
         tracker: ProgressTracker | None = None,
         max_concurrency: int = 4,
         difficulty_policy: str = "off",
+        # 子任务交接超时（秒；`0` = 不设限，与配置缺省同值；change 0247）。
+        subtask_timeout: float = 0,
         success_checker: Callable[[list[str]], bool] | None = None,
         checkpoint: CheckpointFn | None = None,
         on_done: DoneFn | None = None,
@@ -177,12 +180,18 @@ class TaskScheduler:
                 OrchestrationErrorCode.INVALID_DISPATCH_POLICY,
                 f"非法调度策略: {difficulty_policy}（可选：{'/'.join(sorted(DISPATCH_POLICIES))}）",
             )
+        if subtask_timeout < 0:
+            raise OrchestrationError(
+                OrchestrationErrorCode.INVALID_DISPATCH_POLICY,
+                f"非法子任务超时: {subtask_timeout}（须为 ≥0 的秒数，0=不设限）",
+            )
         self._decomposer = decomposer
         self._router = router
         self._state_machine = state_machine
         self._tracker = tracker if tracker is not None else ProgressTracker()
         self._max_concurrency = max_concurrency
         self._difficulty_policy = difficulty_policy
+        self._subtask_timeout = subtask_timeout
         self._success_checker = success_checker
         self._checkpoint = checkpoint
         self._on_done = on_done
@@ -709,19 +718,17 @@ class TaskScheduler:
                     reason="无匹配 Agent",
                     attempt=attempt,
                 )
-            goal = self._handoff_goal(task_id, plan, subtask)
-            if attempt > 1 and previous_reason:
-                goal = (
-                    f"{goal}\n\n[重试提示] 上一次执行未通过："
-                    f"{previous_reason[:_MAX_EVENT_EXCERPT]}"
-                    f"（第 {attempt} 次执行，请针对该原因修正）"
-                )
-            # 子任务轨迹按**发起方会话**归属（缺省空串 = 未归属）⇒ 非空才传第二实参
-            stream = (
-                profile.loop.astream(goal, session_id=session_id)
-                if session_id
-                else profile.loop.astream(goal)
+            handoff = self._build_handoff(
+                task_id,
+                plan,
+                subtask,
+                session_id=session_id,
+                attempt=attempt,
+                previous_reason=previous_reason,
             )
+            # 统一执行器：TaskHandoff 全字段消费（context_pack / acceptance / deadline /
+            # priority / session_id；change 0247）。子任务轨迹按发起方会话归属。
+            stream = self._router.handoff_stream(profile.agent_id, handoff)
             # 流式执行：里程碑事件实时回流，终态仍归一为 LoopResult（附加通道，不改判定）
             result = await collect_result(
                 stream, lambda event: self._emit_progress(task_id, subtask.id, event, emit)
@@ -759,14 +766,12 @@ class TaskScheduler:
             )
             if ok:
                 self._tracker.record(task_id, subtask.id)
-                self._results.setdefault(task_id, {})[subtask.id] = result.reply[
-                    :_MAX_HANDOFF_CHARS
-                ]
+                self._results.setdefault(task_id, {})[subtask.id] = result.reply[:MAX_HANDOFF_CHARS]
                 return SubtaskOutcome(
                     subtask.id,
                     ok=True,
                     trace_id=result.trace_id,
-                    reply=result.reply[:_MAX_HANDOFF_CHARS],
+                    reply=result.reply[:MAX_HANDOFF_CHARS],
                     attempt=attempt,
                 )
             error = (
@@ -796,7 +801,7 @@ class TaskScheduler:
         elif failure.code == OrchestrationErrorCode.DEADLOOP_DETECTED:
             lines.append("上一轮未取得进展（疑似死循环），请换一种拆解策略。")
         lines.append("请重新拆解尚未完成的部分；已完成的部分不要重复。")
-        return "\n".join(lines)[:_MAX_HANDOFF_CHARS]
+        return "\n".join(lines)[:MAX_HANDOFF_CHARS]
 
     def _emit_progress(self, task_id: str, subtask_id: str, event: LoopEvent, emit: Emit) -> None:
         """里程碑事件按白名单转译为 `subtask_progress`；表外类型与非字典载荷**静默丢弃**。"""
@@ -818,18 +823,46 @@ class TaskScheduler:
             )
         )
 
-    def _handoff_goal(self, task_id: str, plan: Plan, subtask: Subtask) -> str:
-        """交接目标：子任务 goal + 前置依赖的验收通过结果（结果驱动后继）。"""
+    def _build_handoff(  # noqa: PLR0913 — 交接注入面（会话 / 重试）
+        self,
+        task_id: str,
+        plan: Plan,
+        subtask: Subtask,
+        *,
+        session_id: str,
+        attempt: int,
+        previous_reason: str,
+    ) -> TaskHandoff:
+        """构造交接：TaskHandoff 全字段（change 0247 / ADR-0235）。
+
+        ``task`` = 子任务目标（重试时追加有界失败提示）；``context_pack`` = 原目标 +
+        依赖的验收通过结果（有界）；``deadline`` 由构造注入的 ``subtask_timeout`` 给出
+        （`0` ⇒ 不设限）。
+        """
         results = self._results.get(task_id, {})
         by_id = {s.id: s for s in plan.subtasks}
-        deps = [dep for dep in subtask.depends_on if dep in results]
-        if not deps:
-            return subtask.goal
-        context = "\n\n".join(
-            f"[前置子任务 {dep}] {by_id[dep].goal if dep in by_id else ''}\n结果：{results[dep]}"
-            for dep in deps
+        dependencies = [
+            (dep, by_id[dep].goal if dep in by_id else "", results[dep])
+            for dep in subtask.depends_on
+            if dep in results
+        ]
+        task = subtask.goal
+        if attempt > 1 and previous_reason:
+            task = (
+                f"{task}\n\n[重试提示] 上一次执行未通过："
+                f"{previous_reason[:_MAX_EVENT_EXCERPT]}"
+                f"（第 {attempt} 次执行，请针对该原因修正）"
+            )
+        return TaskHandoff(
+            task=task,
+            context_pack=build_context_pack(
+                plan.goal, dependencies, max_tokens=DEFAULT_CONTEXT_TOKENS
+            ),
+            acceptance=subtask.acceptance,
+            deadline=float(self._subtask_timeout) if self._subtask_timeout > 0 else None,
+            priority=subtask.priority,
+            session_id=session_id,
         )
-        return f"{subtask.goal}\n\n前置子任务结果（可直接引用）：\n{context}"
 
     def _trace(self, task_id: str, kind: str, payload: dict[str, Any] | None = None) -> None:
         """关键节点写 trace（拆解/验收/检查点/终态——审计与断点续跑可查）。"""

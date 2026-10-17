@@ -54,6 +54,8 @@ _DEFAULT_COMPACT_STEPS = 6
 # 同波次仍按依赖拓扑并发（与引入前逐字一致）；并发上限默认与 `TaskScheduler` 构造缺省同值。
 _DEFAULT_ORCHESTRATION_POLICY = "off"
 _DEFAULT_ORCHESTRATION_MAX_CONCURRENCY = 4
+# 子任务交接超时（change 0247 / ADR-0235）：`0` = 不设限（缺省行为与引入前一致）。
+_DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT = 0
 # 策略词表（规格 `orchestration`「难易度感知的调度策略」；配置层不 import 能力层，故此处复述）
 _ORCHESTRATION_POLICIES = ("off", "difficulty")
 
@@ -263,6 +265,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_ORCHESTRATION_MAX_CONCURRENCY",
         default=_DEFAULT_ORCHESTRATION_MAX_CONCURRENCY,
         map_to="orchestration.max_concurrency",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "orchestration.subtask_timeout",
+        "--orchestration.subtask-timeout",
+        "CORE_ORCHESTRATION_SUBTASK_TIMEOUT",
+        default=_DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT,
+        map_to="orchestration.subtask_timeout",
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
@@ -939,6 +949,14 @@ class ConfigManager:
         limit = _parse_int(raw.get("max_concurrency", _DEFAULT_ORCHESTRATION_MAX_CONCURRENCY))
         return _DEFAULT_ORCHESTRATION_MAX_CONCURRENCY if limit is None else limit
 
+    def orchestration_subtask_timeout(self) -> int:
+        """子任务交接超时秒数（缺省 ``0`` = 不设限；change 0247）。"""
+        if self._config is None:
+            return _DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT
+        raw = cast("dict[str, Any]", self._config.extra.get("orchestration") or {})
+        timeout = _parse_int(raw.get("subtask_timeout", _DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT))
+        return _DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT if timeout is None else timeout
+
     def sandbox_host_allowlist(self) -> list[str]:
         """出站网络白名单（缺省空 = fail-closed 全拒，安全默认）。
 
@@ -1336,6 +1354,12 @@ def _orchestration_errors(raw: dict[str, Any]) -> list[str]:
             f"非法编排调度策略: orchestration.difficulty_policy={policy}"
             f"（可选：{'/'.join(_ORCHESTRATION_POLICIES)}）"
         )
+    timeout = _parse_int(raw.get("subtask_timeout", _DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT))
+    if timeout is None or timeout < 0:
+        errors.append(
+            f"非法子任务超时: orchestration.subtask_timeout={raw.get('subtask_timeout')}"
+            "（须为 ≥0 的整数，0=不设限）"
+        )
     return errors
 
 
@@ -1501,10 +1525,15 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
             secret_ref=str(base["secret"]),
         )
     extra = dict(config.extra)
-    # 寄居 extra 的已知段（`loop`）须**浅合并**：整份拷贝会把 patch 静默丢弃 ⇒ 报成功却不生效。
-    loop_patch = cast(dict[str, Any], patch.get("loop") or {})
-    if loop_patch:
-        extra["loop"] = {**cast(dict[str, Any], extra.get("loop") or {}), **loop_patch}
+    # 寄居 extra 的已知段（`loop` / `orchestration`）须**浅合并**：整份拷贝会把 patch 静默丢弃
+    # ⇒ 报成功却不生效。
+    for section in ("loop", "orchestration"):
+        section_patch = cast(dict[str, Any], patch.get(section) or {})
+        if section_patch:
+            extra[section] = {
+                **cast(dict[str, Any], extra.get(section) or {}),
+                **section_patch,
+            }
     return AppConfig(
         llm=LLMConfig(
             provider=str(llm_raw["provider"]),

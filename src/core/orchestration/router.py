@@ -4,14 +4,20 @@
 ``NO_AGENT_MATCH``。匹配为关键词式能力打分（离线简单判定），语义匹配
 留待进化引擎 / 模型路由（Phase 5）。
 
+交接执行统一委托 ``handoff`` 模块（beast / pet / 调度器同一实现；
+change 0247 / ADR-0235）。
+
 对应接口：doc/03-interfaces/orchestration-interface.md §3
 """
 
 from __future__ import annotations
 
-from core.loop import LoopResult
+from collections.abc import AsyncIterator
+
+from core.loop import LoopEvent, LoopPlugin, LoopResult
 
 from .errors import OrchestrationError, OrchestrationErrorCode
+from .handoff import run_handoff, stream_handoff
 from .models import AgentProfile, TaskHandoff
 
 
@@ -47,13 +53,22 @@ class MultiAgentRouter:
         raise OrchestrationError(OrchestrationErrorCode.NO_AGENT_MATCH, f"无匹配 Agent: {task}")
 
     async def handoff(self, target: str, handoff: TaskHandoff) -> LoopResult:
-        """显式交接任务给指定 Agent，异步执行并返回完整 LoopResult；无匹配抛错。
+        """显式交接任务给指定 Agent，异步执行并返回完整 LoopResult；无匹配抛错。"""
+        loop = self._resolve(target)
+        return await run_handoff(loop, handoff, deadline=handoff.deadline)
 
-        ``handoff.session_id`` 转交子 loop ⇒ 子 Agent 的轨迹条目按自身会话归组。
-        """
+    def handoff_stream(self, target: str, handoff: TaskHandoff) -> AsyncIterator[LoopEvent]:
+        """流式交接：先解析目标（同步 fail-fast），再按 deadline 产出子 Agent 事件流。"""
+        loop = self._resolve(target)
+        return stream_handoff(loop, handoff, deadline=handoff.deadline)
+
+    def _resolve(self, target: str) -> LoopPlugin:
+        """按 id 解析执行单元；包含未登记但被 ``match`` 命中的 fallback 画像。"""
         profile = self._agents.get(target)
+        if profile is None and self._fallback is not None and self._fallback.agent_id == target:
+            profile = self._fallback
         if profile is None or profile.loop is None:
             raise OrchestrationError(
                 OrchestrationErrorCode.NO_AGENT_MATCH, f"无匹配 Agent: {target}"
             )
-        return await profile.loop.arun(handoff.task, session_id=handoff.session_id)
+        return profile.loop

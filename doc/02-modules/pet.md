@@ -32,7 +32,9 @@ PetMode（后台自治循环扩展）
 ### 3.1 会话生命周期
 
 - 宠物会话以 `PetSessionState` 四态（IDLE / ACTIVE / BACKOFF / TERMINATED）管理启动、休眠、恢复、异常退避、终止全生命周期。
-- 每次唤醒复用 `Loop.run()` 同步薄壳（asyncio.run 桥接）逐次执行，异常退避不残留半运行状态。
+- 每次唤醒复用 **统一交接执行器** `handoff.run_handoff`（`asyncio.run` 桥接，change `0247`／ADR-0235）
+  逐次执行；宠物传空上下文 + 自身 `session_id` ⇒ `render_handoff` 逐字返回任务文本，loop prompt
+  与改造前一致。异常退避不残留半运行状态。
 
 ### 3.2 低优先级让行
 

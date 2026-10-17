@@ -19,7 +19,15 @@ from core.configuration import ConfigManager, ConfigurationError
 from core.context import DynamicAssembler
 from core.judgment import DecisionPrimitive, DecisionResult, SkillMatcher
 from core.llm_provider import Embedding, LLMChunk, LLMError, LLMResponse, TokenUsage, ToolCall
-from core.loop import Action, DefaultLoop, LLMPlanner, LoopContext, Thinking
+from core.loop import (
+    Action,
+    DefaultLoop,
+    LLMPlanner,
+    LoopContext,
+    LoopResult,
+    Thinking,
+    current_session_id,
+)
 from core.memory import MemoryEntry, MemoryStore
 from core.observability import TraceEvent, Tracer
 from core.permission import PermissionGuard
@@ -263,6 +271,31 @@ def test_delegate_depth_guard_blocks_nested(monkeypatch, tmp_path) -> None:
     assert result.ok is True  # 工具正常返回
     assert result.data["ok"] is False  # 但委托被护栏拒绝
     assert "深度上限" in result.data["error"]
+
+
+def test_delegate_forwards_current_session_to_subagent(monkeypatch, tmp_path) -> None:
+    """委托把发起会话转交子 Agent（change 0247）：子 loop 收到同一 session_id。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+    router = runtime.orchestrator._router  # noqa: SLF001 — 校验装配产物
+    coding = router._agents["coding"].loop  # noqa: SLF001
+    seen: list[str] = []
+
+    async def _fake_arun(task: str, *, session_id: str = "") -> LoopResult:
+        seen.append(session_id)
+        return LoopResult(reply="ok", trace_id="t1")
+
+    monkeypatch.setattr(coding, "arun", _fake_arun)
+    token = current_session_id.set("sess-7")
+    try:
+        result = asyncio.run(
+            runtime.tools.ainvoke("tools.delegate", {"task": "写代码"}, trace_id="t1")
+        )
+    finally:
+        current_session_id.reset(token)
+    assert result.ok is True
+    assert result.data["ok"] is True
+    assert seen == ["sess-7"]
 
 
 def test_general_fallback_handles_unmatched_subtask(monkeypatch, tmp_path) -> None:

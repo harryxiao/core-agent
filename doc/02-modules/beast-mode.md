@@ -41,6 +41,9 @@ BeastMode（前台重大任务执行层）
 ### 3.3 召唤与 handoff 交接
 
 - 召唤复用编排层 `MultiAgentRouter.handoff` 交接语义，不另造交接机制；三入口统一落 `BeastManager.summon`。
+- 交接与主任务/pet **复用同一执行器**（`orchestration/handoff.py`，change `0247`／ADR-0235）；
+  beast 只填 `task` / `session_id=beast.agent_id`（空上下文 ⇒ prompt 逐字不变），上下文隔离不破。
+- 任务收口（成功 / 失败 / 超时 / 异常）统一在 `finally` 回归 `RECALLED`，不滞留 `ACTIVE`。
 - 同兽重复召唤被拒（`BEAST_ALREADY_MANIFEST`）或先回归该兽——兽内串行，无同兽双实例。
 
 ### 3.4 独立子 Agent + 共享能力

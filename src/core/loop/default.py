@@ -35,6 +35,7 @@ from .protocol import (
     LoopResult,
     Thinking,
     collect_result,
+    current_session_id,
 )
 
 # 中间件契约：返回 Action 放行/改写，返回 None 表示拒绝（短路）。
@@ -491,7 +492,13 @@ class DefaultLoop(Plugin):
                     },
                 )
             act_t0 = time.monotonic()
-            result = await self._act(action, trace_id, approved=approved)
+            # 动作期会话归属（change 0247）：工具处理器（如 delegate）据此把发起会话
+            # 转交子 Agent；`finally` 复位，异常不得把会话 ID 泄漏到后续调用。
+            session_token = current_session_id.set(ctx.session_id)
+            try:
+                result = await self._act(action, trace_id, approved=approved)
+            finally:
+                current_session_id.reset(session_token)
             if action.is_terminal and result.failed:
                 turn_failed = True  # 终止动作的失败态（工具动作失败不入此列：ReAct 多轮自愈）
                 raw_output = action.raw_output  # 不可解析原始产出：另路留存，不进回复正文
