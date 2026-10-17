@@ -3504,3 +3504,27 @@ PowerShell 输出编码不一致；环境块不列可用 shell、默认壳缺失
 > **MODIFIED** ×2 +2 scen（17 req / 134 → 136）、`loop` **MODIFIED** ×1 +1 scen（7 / 97 → 98）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0232 行（FIFO 非 LRU / 冷区线性定位 /
 > 空摘要逐轮重试 / `put_many` 能力探测 / 字符而非 token）。
+
+## 156. 基准会话隔离与 CJK token 估计（TC-BENCHISO，change `0245`／ADR-0233，台账 E180）
+
+**根因**：基准会话只做了 `read` 侧会话过滤；压实仍为该会话派生全局层条目（关键事实/关系/
+episodic）并写 canonical 提升。token 估计统一 `len // 4`，中文按 1 token/字符时低估 2–4 倍。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-BENCHISO-01 | **基准会话不写全局派生**（承重） | `ephemeral_sessions=("bench",)`，长摘要（会触发提升） | 派生抽取与提升 0 调用；原条目迁 L4；会话摘要照常落 L2（`tests/test_memory.py::test_ephemeral_session_skips_global_derived_writes`） |
+| TC-BENCHISO-02 | 普通会话对照 | 同一 store、会话 `u1` | 提升与三类派生照常调用（守卫不误伤）（`…test_non_ephemeral_session_still_writes_global_derived`） |
+| TC-BENCHISO-03 | 组合根接线（开） | `features.evolution_benchmark_runner: true` | `runtime.memory._ephemeral_sessions == {"bench"}`（`tests/test_benchmark_runner.py::test_gate_on_marks_bench_session_ephemeral`） |
+| TC-BENCHISO-04 | 组合根接线（关） | 缺省 | 集合为空，压实语义逐字不变（`…test_gate_off_leaves_no_ephemeral_session`） |
+| TC-BENCHISO-05 | **CJK 按字计** | `"你好世界"` / `"中"*100` | 4 / 100 token（`tests/test_token_estimate.py::test_cjk_counts_per_char`） |
+| TC-BENCHISO-06 | ASCII 旧口径 | `"abcdefgh"` / `"abc"` | 2 / 1（`…test_ascii_keeps_legacy_divisor`） |
+| TC-BENCHISO-07 | 空串 | `""` | 1（`…test_empty_text_still_one`） |
+| TC-BENCHISO-08 | 混合分档 | `"你好abcdefgh"` | 2 + 2 = 4（`…test_mixed_text_sums_both_buckets`） |
+| TC-BENCHISO-09 | 单一估计器 | 三个导入面 | `context.budget` / `core.tokens` / `core.context` 同一函数对象（`…test_context_and_memory_share_one_estimator`） |
+| TC-BENCHISO-10 | 记忆读预算 | 100 中文 + 10 中文，预算 50 | 只保留首条（旧口径两条都进）（`tests/test_memory.py::test_read_budget_counts_cjk_per_char`） |
+| TC-BENCHISO-11 | 窗口换算 | 预算 32768 分层 | `mid_chars = int(32768*0.3)*2`（`tests/test_context_window.py::test_plan_window_tiered_splits_by_ratio`） |
+
+> **反证**：摘 `ephemeral` 守卫 ⇒ 01 红（02 仍绿）；估计器退回 `len // 4` ⇒ 05/08/10 红；
+> 窗口改回 4 ⇒ 11 红；复原 ⇒ 三文件 `md5sum` 同。规格：`evolution` **MODIFIED** ×1 +1 scen
+> （19 req / 107 → 108 scen）。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0233 行
+> （skills/SOP/notes 学习信号仍注入 / 基准条目仍被打分 / 构造期集合 / 字符集粗估 / 2 字符折中）。

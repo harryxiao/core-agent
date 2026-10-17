@@ -622,6 +622,12 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         # 情景归纳（0218 / ADR-0208）：**缺省不接线**（`memory.episodic_extract` 缺省关）⇒ 未配置
         # 时压实逐字不变。与关键事实 / 关系**刻意分离**：三者 prompt 材料口径各不相同。
         episodic_extractor=consolidate_with(_llm_text) if config.episodic_extract() else None,
+        # 基准执行隔离（change 0245 / ADR-0233）：执行面开启时把基准会话登记为 ephemeral ⇒
+        # 压实只做会话级摘要与归档，不写全局派生（关键事实/关系/episodic）与 canonical 提升；
+        # 门控关（缺省）⇒ 空集，本键不存在时压实语义逐字不变。
+        ephemeral_sessions=(
+            (_BENCH_SESSION,) if config.is_enabled("evolution_benchmark_runner") else ()
+        ),
         # 语义遗忘面（0204 / ADR-0194）：缺省关 ⇒ 派生事实（extraction/relation）不参与遗忘
         # （与摘要类同不受影响，逐字不变）；显式开启才放行其参与同一衰减归档。
         semantic_forgetting=config.semantic_forgetting(),

@@ -22,7 +22,7 @@ def test_plan_window_tiered_splits_by_ratio() -> None:
     assert plan.short_turns == 10  # noqa: PLR2004 — ceil(20 × 0.5)
     assert plan.mid_turns == 6  # noqa: PLR2004 — ceil(20 × 0.3)
     assert plan.short_tokens == 16384  # noqa: PLR2004 — int(32768 × 0.5)
-    assert plan.mid_chars == int(32768 * 0.3) * 4
+    assert plan.mid_chars == int(32768 * 0.3) * 2  # change 0245：CJK 混合口径 2 字符/token
 
 
 @pytest.mark.parametrize(("turns", "budget"), [(0, 32768), (-1, 32768), (20, 0), (20, -5), (0, 0)])

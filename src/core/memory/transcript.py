@@ -20,13 +20,15 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
+from core.tokens import estimate_tokens
+
 # 会话标题上限（派生读模型，不落盘）：`GET /sessions` 的 `title` 由此截断
 _TITLE_LIMIT = 30
 
 
 def _tokens(text: str) -> int:
-    """与 loop 的记账口径一致（``len // 4``）。"""
-    return len(text) // 4
+    """与上下文/记忆读预算同一 CJK 感知口径（change 0245 / ADR-0233）。"""
+    return estimate_tokens(text)
 
 
 def _title(content: str) -> str:

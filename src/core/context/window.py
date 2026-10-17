@@ -19,8 +19,9 @@ from dataclasses import dataclass
 # 仅短、中两层需显式配额，长层以会话摘要形式覆盖更早全部内容（无轮数/字符配额）。
 _SHORT_SHARE, _MID_SHARE = 0.5, 0.3
 
-# 字符 / token 换算（与 `context.budget.estimate_tokens` 的 `len // 4` 同口径）
-_CHARS_PER_TOKEN = 4
+# 字符 / token 换算（change 0245 / ADR-0233）：CJK 约 1 字符/token、其余 4 字符/token ⇒
+# 取 2 的混合口径（纯中文仍偏松、纯英文偏紧，两者都往「有界」侧收）。
+_CHARS_PER_TOKEN = 2
 
 
 @dataclass(frozen=True)

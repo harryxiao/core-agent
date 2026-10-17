@@ -112,6 +112,9 @@ MemoryStore(
                            # 一次（change 0153；缺省 UNWIRED ⇒ 不交付）
     importance_scorer=None,# ImportanceScorer：写入侧重要度闸门评分器 (MemoryEntry -> float)，
                            # 见 §3「写入侧重要度闸门」（change 0177；缺省 UNWIRED ⇒ 写入逐字不变）
+    ephemeral_sessions=(), # 临时会话集合（change 0245 / ADR-0233）：压实只做会话级摘要与归档，
+                           # SHALL NOT 写全局派生（关键事实/关系/episodic）或交付 canonical 提升；
+                           # 缺省空 ⇒ 压实逐字不变。组合根仅在执行面门控开启时传 ("bench",)
 )
 ```
 
@@ -443,7 +446,9 @@ MVP 实现：`FileBackend`（`memory/*.md` + `memory/*.jsonl`）。`put_many` �
 ## 6. 约束
 
 - 密钥/敏感内容**只存引用**，绝不进入任何记忆层。
-- `read` 返回 token 硬性 ≤ budget，超限截断并标记被截断项。
+- `read` 返回 token 硬性 ≤ budget，超限截断并标记被截断项。token 估计为 **CJK 感知**
+  （change 0245）：CJK 字符 ≈1 token/字符、其余 4 字符 ≈1 token（共享 `core.tokens`，
+  与 `context.budget` / 转录短带截断同一口径）。
 - `read` 命中即 `reuse_count += 1`（复用即强化；**落盘**，写放大有界于选中集，且经
   `put_many` 单次批量落盘 —— change `0244`）。写入侧热字典有界（`_HOT_MAX=512`，写入序淘汰）；
   后端内存集才是全量真源，读面不受淘汰影响。

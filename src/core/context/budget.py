@@ -8,15 +8,10 @@
 
 from __future__ import annotations
 
+from core.tokens import estimate_tokens
+
 from .errors import ContextError, ContextErrorCode
 from .models import ContextPack
-
-_TOKEN_DIVISOR = 4
-
-
-def estimate_tokens(text: str) -> int:
-    """粗略 token 估算（约 4 字符 ≈ 1 token）。"""
-    return max(1, len(text) // _TOKEN_DIVISOR)
 
 
 class BudgetManager:

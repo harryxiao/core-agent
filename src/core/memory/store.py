@@ -20,6 +20,7 @@ from pathlib import Path
 
 from core.judgment import Compactor, DecisionResult
 from core.plugin_registry import Effect, EffectTracker
+from core.tokens import estimate_tokens
 
 from .backend import FileBackend
 from .episodic import MAX_EPISODIC_CHARS, EpisodicExtractor
@@ -39,9 +40,6 @@ from .extract import (
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
 from .relevance import rank, recency_decay
 from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter
-
-# 粗略 token 估算：约 4 字符 ≈ 1 token（read 预算截断用）
-_TOKEN_DIVISOR = 4
 
 # 向量缓存上界（超出按 FIFO 逐出）；进程内易失，不落盘
 _VEC_CACHE_MAX = 4096
@@ -268,6 +266,7 @@ class MemoryStore:
         importance_scorer: ImportanceScorer | None = None,
         episodic_extractor: EpisodicExtractor | None = None,
         semantic_forgetting: bool = False,
+        ephemeral_sessions: tuple[str, ...] = (),
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
         self._tracker = effect_tracker if effect_tracker is not None else EffectTracker()
@@ -280,6 +279,10 @@ class MemoryStore:
         self._importance_scorer = importance_scorer
         self._episodic_extractor = episodic_extractor
         self._semantic_forgetting = semantic_forgetting
+        # 临时会话（change 0245 / ADR-0233）：基准/合成执行会话 —— 压实只做会话级摘要与
+        # 归档，SHALL NOT 产出全局层派生（关键事实/关系/episodic）或 canonical 摘要提升。
+        # 缺省空 ⇒ 压实逐字不变。
+        self._ephemeral_sessions = frozenset(sid for sid in ephemeral_sessions if sid)
         self._hot: dict[str, MemoryEntry] = {}
         self._vectors: dict[str, list[float]] = {}
         self._embed_failed = False
@@ -740,7 +743,7 @@ class MemoryStore:
         selected: list[MemoryEntry] = []
         used = 0
         for entry in entries:
-            cost = max(1, len(entry.content) // _TOKEN_DIVISOR)
+            cost = estimate_tokens(entry.content)
             if selected and used + cost > budget:
                 continue
             selected.append(entry)
@@ -783,7 +786,12 @@ class MemoryStore:
                     )
                     continue
                 self._commit_summary(sid, entries, summary)
-                self._deliver_promotion(sid, prior, summary)
+                if sid not in self._ephemeral_sessions:
+                    self._deliver_promotion(sid, prior, summary)
+            if sid in self._ephemeral_sessions:
+                # 基准/合成会话（change 0245 / ADR-0233）：只做会话级摘要与归档；三类派生
+                # 都以 `session_id=""` 全局层落库、提升写 canonical 真相层 ⇒ SHALL NOT 发生。
+                continue
             self._extract_key_facts(sid, entries)
             self._extract_relations(sid, entries)
             self._consolidate_episodic(sid, entries)

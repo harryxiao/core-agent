@@ -8358,6 +8358,52 @@ change 未收紧）；⑤ `max_samples` 与 `min_samples` 的关系不校验，�
 路径退化；⑤ 教训预算按**字符**计而非 token，CJK 下偏保守，与 token 估计口径问题同源（留
 change 0245）。
 
+## ADR-0233：基准会话隔离与 CJK 感知的 token 估计（change 0245 / 台账 E180）
+
+**背景**：记忆与 evolution 全量 review 的批次 C 剩余两项：① 基准执行以
+`session_id="bench"` 跑主 loop（`runtime.py:322-329`），会话隔离只覆盖 `read`；维护节拍
+仍会 `memory.compact(session_id="bench")`，而 `_summarize_sessions` 的关键事实 / 关系 /
+episodic 三类派生**均以 `session_id=""` 全局层落库**，摘要提升还写 canonical 真相层 ⇒
+合成基准内容经抽取进入用户全局检索面，违背 `evolution` 「评测基建」既有承诺（「会话隔离，
+SHALL NOT 污染全局记忆层」）。② 共享估计器与记忆读预算都用 `len // 4`（`context/budget.py`、
+`memory/store.py`、`memory/transcript.py`）⇒ 中文按 ≈1 token/字符时低估 2–4 倍，事实预算、
+历史/摘要预算与压实触发的事前判断在中文会话下失真。
+
+**决策**：
+
+- **D1 临时会话（ephemeral）**：`MemoryStore(ephemeral_sessions=(...))`（缺省空 ⇒ 逐字不变）。
+  命中会话的压实**只做会话级摘要与原条目归档**（L2 有界、条目迁 L4），**跳过**
+  `_deliver_promotion` 与三类全局派生。组合根仅在 `features.evolution_benchmark_runner`
+  开启时传 `("bench",)` ⇒ 与执行面**同开同关**；不新增配置键（`bench` 是内部约定，非用户旋钮）。
+  不采用「独立 bench loop + `maintenance_interval=0`」：`general_agent.loop` 与兜底子 Agent
+  共用实例，关维护会连带关闭普通子任务维护；独立 loop 只挡「维护」一条路径而读面仍写，
+  且装配重复。
+- **D2 单一估计器**：新增中性模块 `core/tokens.py` —— **CJK 字符 ≈1 token/字符**（统一表意
+  文字含扩展 A / CJK 标点 / 假名 / 谚文 / 全角形式），其余 4 字符 ≈1 token，空串至少 1。
+  `context.budget` 与 `memory.store` / `memory.transcript` 共用（memory 不能 import context
+  —— ADR-0045；`core.persistence` 已有「中性模块被能力包共用」先例）。CJK 取 1 token/字符
+  是**保守上界**（宁高勿低：低估使预算事后失真，高估只是更早裁剪）。
+- **D3 窗口换算 4 → 2**：`window._CHARS_PER_TOKEN = 2`（CJK 1 / 非 CJK 4 的混合折中），
+  避免中文中层摘要按 4 倍 token 预算产出；份额常量不变（规格只钉份额）。
+
+**规格**：`evolution` **MODIFIED**「评测基建」（Requirement 正文不动，＋1 Scenario：
+基准会话不写全局派生）—— 19 req 不变、107 → 108 scen。CJK 估计属规格中性缺陷修复
+（既有要求「token 控制在预算内」被低估破坏）；口径写入接口文档，防漂移。
+
+**反证（实测）**：摘 `ephemeral` 守卫 ⇒ 基准会话用例红（对照用例仍绿）；估计器退回
+`len // 4` ⇒ 3 红（CJK 计数 / 混合 / 记忆读预算）；窗口改回 4 ⇒ 1 红。复原后三文件
+`md5sum` 同。测试锚点：新增 10 例（`test_token_estimate.py` 5、`test_memory.py` 3：
+ephemeral 派生 0 调用 + 普通会话对照 + CJK 读预算；`test_benchmark_runner.py` 2：门控开/
+关的接线）。全量 2701 → **2711** passed。
+
+**局限**：① 基准执行仍注入 skills / SOP / notes（`_loop_hooks.on_turn` 会写 canonical 笔记与
+技能反馈）——读面与学习信号隔离是独立议题，本 change 只收口**记忆压实派生**；
+② `_score_importance` 仍对基准会话条目打分（会话内写 importance，非全局），省调用未做；
+③ `ephemeral_sessions` 是构造期集合：运行期新增合成会话若未登记仍会派生（当前仅 `bench`）；
+④ token 估计是**字符集粗估**：不区分代码/数字密集文本，不与供应商 tokenizer 对齐，CJK 取 1
+token/字符偏保守；⑤ `_CHARS_PER_TOKEN=2` 是混合折中：纯中文摘要仍可能有 ≤2 倍预算误差，
+纯英文摘要比旧行为短一半。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8585,3 +8631,4 @@ change 0245）。
 | ADR-0230 | 03-interfaces/prompts.md, 03-interfaces/memory-interface.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0231 | 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0232 | 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0233 | 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -216,6 +216,20 @@ def test_gate_on_injects_runner_for_produced_task_types(offline, tmp_path: Path)
     assert set(scorer._runners) == {"module_health", "tool_use"}  # noqa: SLF001
 
 
+def test_gate_on_marks_bench_session_ephemeral(offline, tmp_path: Path) -> None:
+    """门控开 ⇒ 基准会话登记为 ephemeral（change 0245）：压实不写全局派生。"""
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path, runner=True)))
+
+    assert runtime.memory._ephemeral_sessions == frozenset({"bench"})  # noqa: SLF001
+
+
+def test_gate_off_leaves_no_ephemeral_session(offline, tmp_path: Path) -> None:
+    """门控关（缺省）⇒ 不登记基准会话，压实语义逐字不变。"""
+    runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
+
+    assert runtime.memory._ephemeral_sessions == frozenset()  # noqa: SLF001
+
+
 def test_gate_on_produces_held_out_score(offline, tmp_path: Path) -> None:
     """门控开：逐样本真实执行（子 Agent 形状）⇒ 留出分 = 1.0，候选不再 `freeze`。"""
     _seed_benchmark()

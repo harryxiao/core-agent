@@ -177,6 +177,10 @@ class BudgetManager:
 
 - 保留策略：按**相关度降序**依次纳入可容纳项，**跳过**放不下的项（不掐断后续），
   避免单个大项阻塞其后更小的低相关项。
+- token 估计（change 0245 / ADR-0233）：`core.tokens.estimate_tokens` —— **CJK 字符
+  ≈1 token/字符**，其余 4 字符 ≈1 token，空串至少 1；`context.budget`、`memory` 读预算与
+  转录短带截断**共用同一函数**（memory 不得 import context，故估计器在中性模块）。
+  三层窗口的「token → 字符」换算按 2 字符/token（`window._CHARS_PER_TOKEN`）。
 
 ---
 

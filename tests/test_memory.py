@@ -328,6 +328,87 @@ def test_compact_empty_summary_skips_derived_extraction() -> None:
     assert [e for e in store.audit() if e.kind == "semantic"] == [], "不写摘要条目"
 
 
+def test_ephemeral_session_skips_global_derived_writes() -> None:
+    """基准会话（change 0245）：会话摘要与归档照常，全局派生与提升 0 调用。"""
+    calls: list[str] = []
+
+    def extract(entries: list[MemoryEntry]) -> list[object]:
+        calls.append("fact")
+        return []
+
+    def extract_relations(entries: list[MemoryEntry]) -> list[object]:
+        calls.append("relation")
+        return []
+
+    def consolidate(entries: list[MemoryEntry]) -> str:
+        calls.append("episodic")
+        return "情景"
+
+    def promote(session_id: str, entry: MemoryEntry) -> None:
+        calls.append("promote")
+
+    store = MemoryStore(
+        summarizer=lambda entries: "长" * (MAX_SUMMARY_CHARS + 1),
+        summary_promoter=promote,
+        key_fact_extractor=extract,  # type: ignore[arg-type]
+        relation_extractor=extract_relations,  # type: ignore[arg-type]
+        episodic_extractor=consolidate,  # type: ignore[arg-type]
+        ephemeral_sessions=("bench",),
+    )
+    store.write("L2", _session_entry("b0", "基准轨迹", "bench"))
+
+    store.compact(session_id="bench")
+
+    assert calls == [], "基准会话 SHALL NOT 产出全局派生与 canonical 提升"
+    layers = dict(store.index().entries)
+    assert layers["b0"] == "L4", "原条目照常归档（L2 不无界增长）"
+    assert layers["compaction.summary.bench"] == "L2", "会话级摘要照常产出"
+
+
+def test_non_ephemeral_session_still_writes_global_derived() -> None:
+    """对照（change 0245）：非基准会话照常走派生抽取与提升，守卫不误伤普通会话。"""
+    calls: list[str] = []
+
+    def extract(entries: list[MemoryEntry]) -> list[object]:
+        calls.append("fact")
+        return []
+
+    def extract_relations(entries: list[MemoryEntry]) -> list[object]:
+        calls.append("relation")
+        return []
+
+    def consolidate(entries: list[MemoryEntry]) -> str:
+        calls.append("episodic")
+        return "情景"
+
+    def promote(session_id: str, entry: MemoryEntry) -> None:
+        calls.append("promote")
+
+    store = MemoryStore(
+        summarizer=lambda entries: "长" * (MAX_SUMMARY_CHARS + 1),
+        summary_promoter=promote,
+        key_fact_extractor=extract,  # type: ignore[arg-type]
+        relation_extractor=extract_relations,  # type: ignore[arg-type]
+        episodic_extractor=consolidate,  # type: ignore[arg-type]
+        ephemeral_sessions=("bench",),
+    )
+    store.write("L2", _session_entry("u0", "用户轨迹", "u1"))
+
+    store.compact(session_id="u1")
+
+    assert calls == ["promote", "fact", "relation", "episodic"]
+
+
+def test_read_budget_counts_cjk_per_char() -> None:
+    """中文读预算按字符计（change 0245）：旧 `len//4` 会让同预算塞下 4 倍中文。"""
+    store = MemoryStore()
+    entries = [_entry("e1", "L2", "啊" * 100), _entry("e2", "L2", "啊" * 10)]
+
+    selected = store._truncate(entries, 50)  # noqa: SLF001 — 预算口径直测
+
+    assert [entry.id for entry in selected] == ["e1"], "e2 需 10 token，超预算应跳过"
+
+
 def test_compact_is_reversible_by_trace() -> None:
     tracker = EffectTracker()
     store = MemoryStore(effect_tracker=tracker, summarizer=lambda entries: "摘要：事实")
