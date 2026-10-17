@@ -75,6 +75,7 @@
       {
         kind: "action",
         toolId,
+        tool: toolName(toolId, args),
         round: payload.round,
         title: titleFromAction(toolId, args),
         output: "",
@@ -221,7 +222,7 @@
       {:else if item.kind === "action"}
         <li class="step">
           <details>
-            <summary>{labeledTitle(toolName(item.toolId), item.title)}</summary>
+            <summary>{labeledTitle(item.tool, item.title)}</summary>
             {#if item.output}<pre>{item.output}</pre>{/if}
           </details>
         </li>

@@ -8130,6 +8130,58 @@ Linux 缺省、显式方言、缺解释器 fail-closed、Python 回归等 51 例
 执行面（本机 Linux）；⑤ 只注入软事实 + 单工具多方言，未拆双 `tool_id` ⇒ 权限 / 确认规则仍是
 `code_run` 单一门（与 Claude 双工具模型不同）；⑥ 不感知 MCP / 远程执行面的宿主 OS。
 
+## ADR-0228：Windows 运行环境提示与 code_run 输出完整性（change 0240 / 台账 E175）
+
+**背景**：`0237` 的方向正确（软事实 + 硬方言同开），但 Windows 实测仍暴露三处缺口：
+① `subprocess.run(text=True)` 按宿主 locale 解码（zh-CN Windows 为 cp936），与 `pwsh` 7 的
+UTF-8 输出 / 5.1 的 `[Console]::OutputEncoding` 不一致 ⇒ 中文乱码，模型误判命令失败；
+② 环境块只报默认壳，不报**实际可用**的 shell，默认壳缺失时不给下一步，未知 OS 分支仍声称
+「默认壳为 bash」；未说明每次 `code_run` 是全新进程与 `cwd` 的 `~` 语义；③ TUI / Web 在
+`type` 缺省时一律标 Bash，Windows 上误导操作者。
+
+**决策**：
+
+- **D1 父侧解码确定**：`code_run` 的 `subprocess.run` 增 `encoding="utf-8",
+  errors="replace"`；解码不依赖子进程 locale，非法字节降级为替换符而非工具失败。
+- **D2 子侧输出配对**：powershell 在用户脚本前拼有界 preamble
+  `[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; $OutputEncoding = …`
+  （5.1 / 7+ 通用）；python 子进程 env 增 `PYTHONIOENCODING=utf-8`（保留其余宿主环境）。
+- **D3 环境块补全**：列 PATH 上实际可用的 `pwsh` / `powershell` / `bash`；标签区分
+  `PowerShell 7+ (pwsh)` 与 `Windows PowerShell 5.1 (powershell)`；默认壳不可用 ⇒ 明确建议
+  `type=python`；声明全新进程 / `cd` 与环境变量不保留 / `cwd`（绝对路径，支持 `~`）；给出
+  **有界** Python 回退规则（仅方言不可用或无法表达时；`pathlib` / `tempfile`，勿硬编码
+  `/tmp`，勿掩盖方言错误）；未知 OS 不再声称 bash。**执行层不自动降级**：回退是模型显式
+  选择 `type=python`，保持「缺解释器 ⇒ 结构化拒绝」契约。
+- **D4 活动标题用有效 type**：`_code_run_name(args, default_shell)` 显式 type 优先；缺省按注入
+  的平台事实（powershell ⇒ PowerShell，bash ⇒ Bash）；事实不可得 ⇒ 中性 `Shell`。
+  `UIAPILayer` 增可选 `env_snapshot` 与 `default_shell`；`Runtime` 增 `env_snapshot` 字段
+  （与 planner 共用启动探测），`_build_ui` / CLI `_stream` / TUI 动作与子任务里程碑统一接线。
+  Web 无运行时事实 ⇒ `toolName(toolId, args)` 缺省 `Shell`，`Chat.svelte` 在 `startAction`
+  时存友好名。
+- **D5 `cwd` `~` 展开**：`Path(cwd).expanduser()`，其余不 `resolve` / 不 `abspath`；空串保持
+  原语义。
+- **D6 纠偏 ADR-0227 D5**：原文「同一快照注入 planner 与 `code_run` 工具工厂」与生产不符 ——
+  `builtin_tools()` 不接收快照，生产 `code_run` **每次调用** `probe_environment()`。本 ADR
+  确认该口径为**既定取舍**：执行面即时反映 PATH 变化，planner / TUI 用启动快照；不改执行代码。
+
+**规格**：`loop` **MODIFIED**「运行环境事实」＋ 3 Scenario（7 req 不变、93 → 96 scen）；
+`tool-use` **MODIFIED**「内置原子工具（代码执行 / 网页读取）」＋ 2 Scenario（9 req 不变、
+29 → 31 scen）；`ui` **MODIFIED**「code_run 活动标题按方言命名」＋ 1 Scenario（22 req 不变、
+92 → 93 scen）。既有 Scenario 逐字保留。
+
+**反证（实测）**：摘掉 `encoding` / `errors` kwargs ⇒ `test_code_run_decodes_utf8_deterministically`
+红；摘掉 powershell preamble ⇒ `test_code_run_powershell_sets_utf8_output_encoding` 红；摘掉
+python env ⇒ `test_code_run_python_sets_utf8_io_env` 红；摘掉 `default_shell` 接线 ⇒ TUI
+有效 type 三例红；复原 ⇒ 相关文件 `md5sum` 同。测试锚点：`tests/test_windows_run_completeness.py`
+14 个函数 + `test_os_aware_shell.py` 既有 18 例（其中缺省标题断言改为中性 `Shell`）+
+`frontend/src/lib/activity.test.js` 11 个 `it`。
+
+**局限**：① 标签只到「7+ / 5.1」可执行名粒度，不起版本探测子进程；② `errors="replace"` 对
+真正非 UTF-8 字节不可逆（可辨识但不还原原文）；③ Web 端无环境事实注入，缺省只能中性
+`Shell`；④ 生产 `code_run` 每调用探测 PATH，与 planner / TUI 的启动快照在极端 PATH 变化下
+可能短暂不一致（既定取舍）；⑤ 未在真实 Windows 上跑执行面（本机 Linux），编码路径以注入
+测试与子进程 kwargs 锚定。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8352,3 +8404,4 @@ Linux 缺省、显式方言、缺解释器 fail-closed、Python 回归等 51 例
 | ADR-0225 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0226 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0227 | 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0228 | 03-interfaces/prompts.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

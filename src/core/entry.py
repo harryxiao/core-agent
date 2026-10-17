@@ -542,6 +542,8 @@ def _build_ui(
         # 只读诊断源（change 0163）：与 CLI `doctor`/`status` **同一**源；句柄复用已装配的
         # `runtime`（不重复装配），故 TUI 的工具面计数为**全量**（见 ADR-0154 决策④）
         diagnostics=_diag_deps(args, tools=runtime.tools, config=runtime.config),
+        # 运行环境事实（change 0240）：活动标题未显式 type 时按有效平台缺省命名
+        env_snapshot=runtime.env_snapshot,
     )
     api.set_llm_config(runtime.app.llm)
     return api
@@ -1917,7 +1919,9 @@ async def _stream(api: UIAPILayer, session_id: str, prompt: str) -> None:
         if event.type in ("loop.delta", "loop.reasoning"):
             continue
         if event.type.startswith("loop.action_"):  # 工具动作行（与 TUI 同构单行）
-            line = format_action_event(event.type.removeprefix("loop."), payload)
+            line = format_action_event(
+                event.type.removeprefix("loop."), payload, default_shell=api.default_shell
+            )
             if line:
                 print(line)
             continue

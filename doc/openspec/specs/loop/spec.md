@@ -255,7 +255,6 @@ L2 条目 `loop.failure.<trace_id>`（`tags=["loop","failure"]`、`kind="episodi
 - **GIVEN** 未注入「既往失败教训」取用钩子（缺省）
 - **WHEN** 装配本轮推理提示
 - **THEN** 不产教训块，`failure_lessons` 字段恒为空，提示词与引入本能力前**逐字不变**
-
 ### Requirement: 横切中间件插入
 系统 SHALL 支持在循环关键节点插入横切中间件（权限、约束、遥测、上下文）。中间件分两类接缝：
 ① **动作前链**（`middlewares`）：每个动作执行前按注册序调用，接收（`LoopContext`, `Action`），
@@ -288,7 +287,6 @@ L2 条目 `loop.failure.<trace_id>`（`tags=["loop","failure"]`、`kind="episodi
 - **GIVEN** 一轮推理产出终止动作（空 `tool_id`，如本轮回复）
 - **WHEN** 该动作「执行」完成后
 - **THEN** 结果侧观察者不被调用
-
 ### Requirement: 错误与预算控制
 系统 SHALL 限制单任务最大循环次数与 token 预算，超出即终止或转人工。两项上限 SHALL 可经配置链
 （CLI flag > env > config.yaml > 默认值）设定并经 ConfigSpec 单一真源声明：`loop.max_rounds`
@@ -347,7 +345,6 @@ SHALL NOT 低于它；不可用（如流式响应不携带用量、或 planner �
 - **GIVEN** 某次模型调用返回 provider 报告的提示 token 数（`usage.prompt_tokens`）
 - **WHEN** 该步执行完毕后判定预算
 - **THEN** 记账值**不低于**该实测值（估算偏低时以实测值抬升），预算终止与压实据此判定
-
 ### Requirement: 异步流式执行
 系统 SHALL 提供异步执行入口 arun 与流式入口 astream，与同步 run 共用同一执行循环语义；astream 返回 AsyncIterator[LoopEvent]，以 loop_started / action_started / action_completed / step_completed / reply_delta / loop_finished / loop_failed 七类事件流式产出执行生命周期，支持事件循环内非阻塞调用与流式编排；run 保留为薄壳（thin wrapper），内部经事件循环桥接调用对应异步实现，调用方无需感知事件循环、零改动。工具动作事件仅对非终止动作（tool_id 非空）产出：action_started 于工具执行前携带 round/tool_id/args 节选，action_completed 于执行后携带 round/tool_id/ok/duration_ms/output 节选；节选有界（≤400 字符），既有五类事件的节奏与语义不变。除上述**事件流**外，循环 SHALL 在**非终止动作**完成后**另行产出工具调用遥测**（`kind="tool_call"`，载荷含工具 id / 参数 / 成败与耗时，且**有界**），使「按工具 id 归因」的证据在**生产**链路可得（见 evolution「经验采集」①工具调用类）；该产出 SHALL NOT 改变上述 `LoopEvent` 的外发路径、事件序与既有消费语义，未注入 tracer 时 SHALL 不产出（行为与既有缺省一致）。
 planner 流式协议 SHALL **额外**支持**思考增量通道**：以独立的 `Thinking(delta)` item 承载推理原文增量，与既有 `str`（回复增量）与 `Action`（终态动作）**并存**，SHALL NOT 改变既有两类 item 的语义与外发路径。循环 SHALL 在**思考回显开启**时把该 item 转为 `loop.reasoning` 事件（载荷 `{"text": <增量>}`，与 `reply_delta` 的 `{"text": …}` 同形、**类型相异**），**未开启**时 SHALL NOT 产出该事件（事件面与既有缺省逐字一致）；非流式路径（`__call__` 与无 `astream` 的降级分支）SHALL **同样支持终态思考**（一次性全文外发）。
@@ -412,7 +409,6 @@ planner 流式协议 SHALL **额外**支持**思考增量通道**：以独立的
 - **GIVEN** 思考回显已开启且本轮产出 `loop.reasoning`
 - **WHEN** 本轮结束
 - **THEN** 会话转录、记忆沉淀、日志与 trace 遥测均**不含**思考原文；该事件亦**不**经编排层子任务运行态回流外发（回流白名单不含该类型）
-
 ### Requirement: 推理动作解析与失败可见
 
 循环 SHALL 把推理输出解析为**终止动作**（空 `tool_id`，本轮进入回复收尾）或**工具动作**
@@ -600,7 +596,6 @@ SHALL NOT 写入转录 / 记忆 / 笔记，SHALL NOT 并入 `reply`（`reply` SH
 - **GIVEN** `loop.parse_retry` 未开启（缺省）
 - **WHEN** 模型输出不可解析
 - **THEN** 模型调用恰一次、请求不含回喂消息，请求形状与失败语义与既有实现**逐字一致**
-
 ### Requirement: 收尾与维护工作的执行线程
 
 循环的收尾与维护工作（轮内上下文压实、收尾钩子 `turn_observer`、维护节拍含冷路径回调）SHALL 在
@@ -647,7 +642,6 @@ SOP 提炼、技能迭代、进化 review / patch author），而本仓 LLM 传�
 - **WHEN** 本轮收尾
 - **THEN** 仅降级留痕（`turn_observer_failed` / `cold_path_failed` / `maintenance_failed`），
   本轮回复、终止条件、事件序与既有实现**逐字一致**
-
 ### Requirement: 运行环境事实
 
 系统 SHALL 在推理用系统提示中提供可选的**运行环境事实**块，使模型按**宿主实际 OS 与默认
@@ -656,6 +650,17 @@ shell 方言**规划命令，而非假定一切为 POSIX bash。
 - **事实内容**：块 SHALL 至少包含操作系统标识（Windows / Darwin / Linux 等）与默认 shell
   方言（powershell / bash / unknown）；SHALL 在可得时附带壳的简短标签（含主次版本更佳）；
   SHALL 含与该方言相关的路径与句法约束（有界、不得无界膨胀）。
+- **可用性与标签**：块 SHALL 列出宿主 PATH 上**实际可用**的 shell（`pwsh` / `powershell` /
+  `bash` 中可用者）；SHALL 区分 `PowerShell 7+（pwsh）` 与 `Windows PowerShell 5.1
+  （powershell）` 两种标签；默认 shell 的解释器不可用时 SHALL 明确建议改用 `type=python`
+  （当前解释器始终可用）。
+- **进程与目录语义**：块 SHALL 说明每次 `code_run` 都是**全新进程**（`cd` 与环境变量不跨调用
+  保留），需要指定目录时使用 `cwd`（绝对路径；支持 `~` 展开）。
+- **有界回退**：块 SHALL 给出**有界**的 Python 回退规则 —— 仅在目标方言不可用或脚本无法用该
+  方言表达时回退 `type=python`，优先 `pathlib` / `tempfile` 等标准库，SHALL NOT 硬编码
+  `/tmp`，且 SHALL NOT 用 Python 回退掩盖方言错误。
+- **未知 OS 诚实**：OS 不在已知集合时，块 SHALL 声明默认 shell 未知并建议显式 `type`，
+  SHALL NOT 声称默认壳为 bash。
 - **装配位置**：事实块 SHALL 作为系统提示的**独立块**注入，SHALL NOT 仅埋在工具 description
   里才算满足本 Requirement。
 - **注入方向**：环境快照由组合根或测试替身注入；loop/planner SHALL NOT 在热路径强依赖不可
@@ -677,3 +682,21 @@ shell 方言**规划命令，而非假定一切为 POSIX bash。
 - **WHEN** 装配本轮系统提示
 - **THEN** 不出现「运行环境」块，其余块序与既有行为兼容（无该块时的提示与未引入本能力前一致）
 
+#### Scenario: Windows 且 bash 可用时提示可用方言与版本标签
+
+- **GIVEN** 宿主为 Windows，PATH 上同时存在 `pwsh` 与 `bash`
+- **WHEN** 渲染运行环境块
+- **THEN** 块中可见 `pwsh` 与 `bash` 两项可用 shell，且默认 shell 标签含 `PowerShell 7+`
+
+#### Scenario: 默认 shell 不可用时建议 python
+
+- **GIVEN** 宿主为 Windows，但 PATH 上既无 `pwsh` 也无 `powershell`
+- **WHEN** 渲染运行环境块
+- **THEN** 块中明确建议 `type=python`，且不声称默认 PowerShell 可用
+
+#### Scenario: 提示声明全新进程与 cwd 语义
+
+- **GIVEN** planner 已注入任一非空环境快照
+- **WHEN** 渲染运行环境块
+- **THEN** 块中说明每次 `code_run` 为全新进程、`cd` 与环境变量不保留，并指出用 `cwd`
+  （支持 `~`）指定目录

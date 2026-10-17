@@ -51,21 +51,21 @@ def probe_environment(
         default: ShellDialect = "powershell"
         path_style: PathStyle = "windows"
         if has_pwsh:
-            label = "pwsh"
+            label = "PowerShell 7+ (pwsh)"
         elif has_powershell:
-            label = "powershell"
+            label = "Windows PowerShell 5.1 (powershell)"
         else:
-            label = "powershell (未检测到解释器)"
+            label = "powershell（未检测到解释器）"
     elif sys_name == "Darwin":
         os_label = "Darwin"
         default = "bash"
         path_style = "posix"
-        label = "bash" if has_bash else "bash (未检测到解释器)"
+        label = "bash" if has_bash else "bash（未检测到解释器）"
     elif sys_name == "Linux":
         os_label = "Linux"
         default = "bash"
         path_style = "posix"
-        label = "bash" if has_bash else "bash (未检测到解释器)"
+        label = "bash" if has_bash else "bash（未检测到解释器）"
     else:
         os_label = sys_name or "Other"
         default = "unknown"
@@ -83,26 +83,61 @@ def probe_environment(
     )
 
 
+def _available_shells(snap: EnvironmentSnapshot) -> list[str]:
+    """PATH 上实际可用的壳（按 pwsh / powershell / bash 顺序）。"""
+    candidates = (
+        ("pwsh", snap.has_pwsh),
+        ("powershell", snap.has_powershell),
+        ("bash", snap.has_bash),
+    )
+    return [name for name, available in candidates if available]
+
+
+def _default_shell_available(snap: EnvironmentSnapshot) -> bool:
+    """默认方言是否有可执行解释器。"""
+    if snap.default_shell == "powershell":
+        return snap.has_pwsh or snap.has_powershell
+    if snap.default_shell == "bash":
+        return snap.has_bash
+    return False
+
+
 def format_env_block(snap: EnvironmentSnapshot) -> str:
     """渲染系统提示「运行环境」块正文（不含标题行）。"""
+    available = _available_shells(snap)
+    lines = [
+        f"OS：{snap.os}",
+        f"默认 shell：{snap.default_shell}（{snap.shell_label}）",
+        "可用 shell："
+        + ("、".join(available) if available else "未检测到 bash / pwsh / powershell"),
+    ]
     if snap.path_style == "windows":
-        path_hint = "路径可用盘符与 \\ 或 /；勿假设 /usr、/tmp 为 POSIX 根目录。"
-        syntax_hint = (
+        lines.append("路径可用盘符与 \\ 或 /；勿假设 /usr、/tmp 为 POSIX 根目录。")
+        lines.append(
             "默认壳为 PowerShell：避免 bash 独有的 && 链 / export / heredoc；"
             "改用 PowerShell 等价写法或分多次 code_run。"
         )
+    elif snap.default_shell == "bash":
+        lines.append("路径使用 POSIX 风格（/ 分隔）。")
+        lines.append("默认壳为 bash：使用 POSIX 句法；勿假设 PowerShell cmdlet 可用。")
     else:
-        path_hint = "路径使用 POSIX 风格（/ 分隔）。"
-        syntax_hint = "默认壳为 bash：使用 POSIX 句法；勿假设 PowerShell cmdlet 可用。"
-    return "\n".join(
-        [
-            f"OS：{snap.os}",
-            f"默认 shell：{snap.default_shell}（{snap.shell_label}）",
-            path_hint,
-            syntax_hint,
-            "文件读写优先 file_* 工具；shell（code_run）仅用于确需子进程的操作。",
-        ]
+        lines.append("路径风格未知：优先用 pathlib 拼接路径，勿硬编码 /tmp 或 /usr。")
+        lines.append(
+            "默认 shell 未知：执行前显式指定 type（bash / powershell / python），"
+            "不确定时用 type=python。"
+        )
+    if not _default_shell_available(snap):
+        lines.append("默认 shell 不可用：改用 type=python（当前解释器始终可用）。")
+    lines.append(
+        "每次 code_run 都是全新进程：cd 与环境变量不跨调用保留；"
+        "需要目录时用 cwd（绝对路径，支持 ~）。"
     )
+    lines.append(
+        "Python 回退规则：仅在方言不可用或脚本无法用该方言表达时改用 type=python；"
+        "优先 pathlib / tempfile 等标准库，勿硬编码 /tmp；勿用回退掩盖方言错误。"
+    )
+    lines.append("文件读写优先 file_* 工具；shell（code_run）仅用于确需子进程的操作。")
+    return "\n".join(lines)
 
 
 def resolve_run_type(type_value: str | None, snap: EnvironmentSnapshot) -> str:

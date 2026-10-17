@@ -3380,3 +3380,32 @@ fail-closed 不改方言；TUI 标题按有效 type；组合根注入真实探�
 > +3 scen（9 / 26 → 29）、`ui` **ADDED** 1 req/2 scen（21 → 22 / 90 → 92）。**已知局限**：见
 > `coding-plan/known-risk.md` §3 ADR-0227 行（构造期快照不刷新 / 未知 OS 落 bash / 不探版本 /
 > 未在真实 Windows 跑 / 未拆双 tool_id / 不感知 MCP 远程 OS）。
+
+## 151. Windows 运行完整性：输出解码 / 环境事实 / 活动标题（TC-WINRUN，change `0240`／ADR-0228，台账 E175）
+
+**背景**：`0237` 让提示与执行面感知 OS，但 Windows 实测仍失败：`text=True` 按 locale 解码与
+PowerShell 输出编码不一致；环境块不列可用 shell、默认壳缺失无下一步、未知 OS 称 bash、
+未说明全新进程与 `cwd` `~`；TUI / Web 缺省 `type` 一律标 Bash。闭法：父侧固定 UTF-8 解码 +
+子侧 PowerShell preamble / `PYTHONIOENCODING`；环境块补可用性、缺省缺失、进程语义与有界
+回退规则；`cwd` `~` 展开；活动标题按有效平台缺省、事实不可得用中性 `Shell`。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-WINRUN-01 | **父侧解码**（承重） | 捕获 `subprocess.run` kwargs | `encoding="utf-8"` / `errors="replace"`；UTF-8 输出原样返回（`tests/test_windows_run_completeness.py::test_code_run_decodes_utf8_deterministically`） |
+| TC-WINRUN-02 | 子侧配对 | python / powershell 调用 | python env 含 `PYTHONIOENCODING=utf-8` 且保留 `PATH`；powershell argv 含 `[Console]::OutputEncoding` / `UTF8Encoding` 且保留用户脚本（`…::test_code_run_python_sets_utf8_io_env` / `…test_code_run_powershell_sets_utf8_output_encoding`） |
+| TC-WINRUN-03 | 环境块事实 | Windows + pwsh + bash 快照 | 同时列出 `pwsh` / `bash`；标签含 `PowerShell 7+`（`…::test_env_block_lists_available_shells_and_version_label`） |
+| TC-WINRUN-04 | 缺省缺失建议 | Windows 无 pwsh / powershell | 明示 `type=python` 与「不可用」（`…::test_env_block_missing_default_shell_advises_python`） |
+| TC-WINRUN-05 | **进程 / cwd / 回退边界** | 任一 Windows 快照 | 含「全新进程」/ `cd` / `cwd` / `~`；回退规则含 `type=python` / `pathlib` / `tempfile` / 禁 `/tmp`（`…::test_env_block_declares_fresh_process_and_cwd` / `…bounded_python_fallback_rule`） |
+| TC-WINRUN-06 | 未知 OS 诚实 | `os=Other` / `default_shell=unknown` | 不出现「默认壳为 bash」，建议显式 type（`…::test_env_block_unknown_os_does_not_claim_bash`） |
+| TC-WINRUN-07 | `cwd` 展开 | `cwd="~/work"` | 子进程 `cwd` 为家目录下 `work`（`…::test_code_run_cwd_expands_home`） |
+| TC-WINRUN-08 | TUI 有效 type | `default_shell` = powershell / bash / None | 分别 `PowerShell` / `Bash` / `Shell`；`format_action_event` 同口径（`…::test_tui_code_run_uses_effective_default_shell` / `…without_facts_is_neutral` / `…format_action_event_uses_default_shell`） |
+| TC-WINRUN-09 | UI 注入面 | `UIAPILayer(env_snapshot=…)` / 未注入 | `default_shell` 回快照值 / `None`（`…::test_ui_api_exposes_default_shell`） |
+| TC-WINRUN-10 | Web 同源 | `node --test` | `code_run` 显式三档命名、缺省 `Shell`；`titleFromAction` 同口径；`PowerShell` / `Python` / `Shell` 有折叠符（`frontend/src/lib/activity.test.js`，11 `it`） |
+| TC-WINRUN-11 | 既有回归 | TUI 动作 / 子任务里程碑 | 无平台事实时标题为中性 `Shell(...)`（`tests/test_repl.py` 五处断言改为 `Shell`） |
+
+> **反证**：逐项摘除 `encoding` / `errors` ⇒ TC-WINRUN-01 红；摘除 PowerShell preamble ⇒
+> TC-WINRUN-02 红；摘除 python env ⇒ TC-WINRUN-02 红；摘除 `default_shell` 接线 ⇒ TC-WINRUN-08
+> 红；复原 ⇒ 相关文件 `md5sum` 同。规格：`loop` **MODIFIED** +3 scen（7 / 93 → 96）、
+> `tool-use` **MODIFIED** +2 scen（9 / 29 → 31）、`ui` **MODIFIED** +1 scen（22 / 92 → 93）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0228 行（标签粒度 / 替换符不可逆 /
+> Web 无事实注入 / 执行面每调用探测 / 未在真实 Windows 跑 / 不自动降级）。

@@ -147,7 +147,7 @@ from core.tools import (
     list_tool,
     uninstall_tool,
 )
-from core.tools.env_shell import probe_environment
+from core.tools.env_shell import EnvironmentSnapshot, probe_environment
 
 # 门控名单（change 0067 / 账本 E10）：组合根装配的**可选**模块 —— 本元组是单一真源，
 # configuration 层不认识模块名。名单内模块缺省装配（未声明即开，兼容既有行为），仅显式
@@ -203,6 +203,8 @@ class Runtime:
     pet_activator: PetActivator | None
     beast_manager: BeastManager | None  # 空 = features.beast: false（未装配）
     beast_activator: BeastActivator | None
+    # 运行环境事实（change 0240）：与四个 planner 共用启动时的一次探测；UI 按有效缺省命名。
+    env_snapshot: EnvironmentSnapshot
 
     def recover(self) -> list[RestoreHandle]:
         """启动时扫描检查点，恢复无 done 标记的任务（返回续跑句柄）。"""
@@ -1444,6 +1446,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         pet_activator=pet_activator,
         beast_manager=beast_manager,
         beast_activator=beast_activator,
+        env_snapshot=env_snapshot,
     )
 
 

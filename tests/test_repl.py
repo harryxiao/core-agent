@@ -385,7 +385,7 @@ def test_task_subtask_collapsible_lifecycle() -> None:
 
 
 def test_tui_action_widget_lifecycle() -> None:
-    """TUI 工具动作：`Bash(...)` 标题随完成落耗时；**缺省收起**；展开后可见输出。"""
+    """TUI 工具动作：`Shell(...)` 标题随完成落耗时；**缺省收起**；展开后可见输出。"""
     loop = RecordingLoop()
     api = UIAPILayer(loop=loop)
     api.set_llm_config(_llm())
@@ -439,7 +439,7 @@ def test_tui_action_widget_lifecycle() -> None:
             return _timeline_text(app)
 
     text = asyncio.run(drive())
-    assert "Bash(print(1)) · 1.5s" in text
+    assert "Shell(print(1)) · 1.5s" in text
     assert "⏺" not in text
     assert "'script'" not in text
     assert "1" in text  # 展开后可见输出
@@ -681,7 +681,7 @@ def test_tui_step_block_shows_target_but_not_raw_args() -> None:
             return _timeline_text(app)
 
     text = asyncio.run(drive())
-    assert "Bash(echo hi) · 12ms" in text
+    assert "Shell(echo hi) · 12ms" in text
     assert "⏺" not in text
     assert "tools.code_run" not in text
     assert "{'script'" not in text
@@ -1128,7 +1128,7 @@ def test_subtask_milestones_render_in_collapsible_detail() -> None:
     text = _drive_task(build_app(api), "查答案")
 
     # 依序可见：验收 → 里程碑（开工/完成/轮次级）→ 判定 → 结果节选
-    assert "验收：给出来源\nBash()\nBash() · 1.5s\n· 第 1 轮完成\n判定：验收通过\n答案 42" in text
+    assert "验收：给出来源\nShell()\nShell() · 1.5s\n· 第 1 轮完成\n判定：验收通过\n答案 42" in text
     assert "tools.code_run" not in text  # 内部 tool_id 不进用户可见层
     assert "print(1)" not in text  # 原始参数不进用户可见层（白名单字段是 script 非 code）
 
@@ -1429,7 +1429,7 @@ def test_focus_panel_refreshes_on_milestone_and_completion() -> None:
             return mid, _panel_text(app)
 
     mid, after = asyncio.run(drive())
-    assert "Bash() · 1.5s" in mid  # 里程碑：友好名 + 耗时（复用动作行口径）
+    assert "Shell() · 1.5s" in mid  # 里程碑：友好名 + 耗时（复用动作行口径）
     assert "✓" in after and "⟳" not in after  # 收尾替换运行态徽标
     assert "判定：验收通过" in after
     assert "答案 42" in after  # 结果节选
@@ -1566,7 +1566,7 @@ def test_focus_panel_does_not_leak_tool_id_or_args() -> None:
             return panel
 
     panel = asyncio.run(drive())
-    assert "Bash" in panel  # 友好名
+    assert "Shell" in panel  # 友好名（未注入平台事实 ⇒ 中性名）
     assert "tools.code_run" not in panel  # 内部 tool_id 不进用户可见层
     assert "print(1)" not in panel  # 原始参数不进用户可见层
 

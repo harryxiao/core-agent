@@ -255,7 +255,7 @@ def test_tui_code_run_name_by_type() -> None:
     assert _tool_name("tools.code_run", {"type": "powershell", "script": "x"}) == "PowerShell"
     assert _tool_name("tools.code_run", {"type": "bash", "script": "x"}) == "Bash"
     assert _tool_name("tools.code_run", {"type": "python", "script": "x"}) == "Python"
-    assert _tool_name("tools.code_run", {"script": "x"}) == "Bash"
+    assert _tool_name("tools.code_run", {"script": "x"}) == "Shell"
 
 
 def test_format_action_powershell_title() -> None:

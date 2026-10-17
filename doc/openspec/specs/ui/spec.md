@@ -43,7 +43,6 @@ UI 界面与启动模式是 core-agent 面向用户的统一呈现层：CLI / We
 - **GIVEN** 用户在任一模式配置了 LLM API
 - **WHEN** 切换到另一模式
 - **THEN** 该配置生效且无需重复配置
-
 ### Requirement: LLM API 可配置
 系统 SHALL 支持在 Web 与桌面 UI 内配置 LLM provider、endpoint、API key、base URL 与**模型上下文窗口**
 （`context_window`，用于派生 token 预算），并可配置执行循环的预算旋钮（`output_reserve`、
@@ -75,7 +74,6 @@ UI 界面与启动模式是 core-agent 面向用户的统一呈现层：CLI / We
 - **GIVEN** 用户经 UI 保存 `context_window` / `output_reserve` / `max_rounds`
 - **WHEN** 重新加载配置（新进程 / 重新 `load()`）
 - **THEN** 保存的值原样生效（非仅内存态），非法取值不落盘
-
 ### Requirement: CLI 友好交互
 系统 SHALL 在 CLI 模式提供声明式、响应式的终端交互（折叠块、流式输出、多面板、焦点管理），复刻 Claude Code 式 Ink 体验。
 
@@ -158,7 +156,6 @@ CLI SHALL 以**单一真源**维护斜杠命令清单（命令名 / 参数 / 说
 - **GIVEN** 输入框内容为某命令名的**前缀**（如 `/re`）
 - **WHEN** CLI 呈现该输入
 - **THEN** 输入框内联显示剩余字符的**幽灵补全**（与浮层候选**同源**）；按 `→` 采纳该补全
-
 ### Requirement: TUI 子任务运行态与详情
 
 TUI（REPL `/task`）SHALL 逐子任务呈现**标题**与**运行状态**（运行中 / 完成 / 失败 / 续跑跳过），并可展开查看该子任务的**详情**（里程碑事件 / 验收标准 / 判定理由 / 结果节选）。详情数据 SHALL 全部取自既有 `task.*` 事件载荷，SHALL NOT 新建第二数据源。
@@ -186,7 +183,6 @@ TUI（REPL `/task`）SHALL 逐子任务呈现**标题**与**运行状态**（运
 - **GIVEN** 某 `subtask_progress` 事件的子任务标识**没有**对应折叠块（未收到其 `subtask_started`）
 - **WHEN** TUI 处理该事件
 - **THEN** 静默忽略（不新建折叠块、不抛裸异常、不影响其它子任务的详情）
-
 ### Requirement: TUI 子 Agent 焦点视图
 
 TUI（REPL）SHALL 支持**主视图 ⇄ 子任务焦点视图**的切换：`/focus <子任务标识>` SHALL 进入该子任务的焦点视图，`/main` 或 `F2` SHALL 返回主视图。
@@ -226,7 +222,6 @@ TUI（REPL）SHALL 支持**主视图 ⇄ 子任务焦点视图**的切换：`/fo
 - **GIVEN** 已聚焦某子任务且其已产生工具类里程碑
 - **WHEN** 焦点面板呈现里程碑
 - **THEN** 面板文本含**友好名**（如 `Bash`），且**不含**内部 `tool_id` 与工具原始参数
-
 ### Requirement: Web 界面访问
 系统 SHALL 支持以 HTTP 服务 + 单页应用（SPA）形式提供 Web 界面，流式输出通过 SSE 推送。
 后端 SHALL 在 SPA 构建产物存在时将其挂载为站点根，并在**产物缺失时降级为纯 API 模式**（后端照常
@@ -263,7 +258,6 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** SPA 构建产物已挂载为站点根
 - **WHEN** 客户端请求既有 REST 端点（如 `GET /llm-config`）
 - **THEN** 返回该端点的 JSON 响应，不被静态文件兜底吞掉
-
 ### Requirement: 桌面打包
 系统 SHALL 支持将桌面端打包为可执行安装文件（Windows / macOS / Linux），并内置拉起本地后端的能力。
 桌面壳 SHALL 复用与 Web 相同的 SPA 构建产物，且 sidecar 拉起 SHALL 由 `DesktopBridge` 实现
@@ -280,7 +274,6 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** 桌面入口启动
 - **WHEN** 调用 sidecar 拉起
 - **THEN** 以本地后端进程形式 spawn（不经 shell 解释执行、参数逐项传递），失败以结构化错误报告而非静默成功
-
 ### Requirement: Web 与桌面体验一致
 系统 SHALL 使桌面端复用与 Web 相同的 SPA 构建产物，保证二者体验 100% 一致。
 
@@ -288,7 +281,6 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** 同一版本的 Web 与桌面端
 - **WHEN** 打开同一功能页面
 - **THEN** 二者界面与交互完全一致
-
 ### Requirement: 多模态输入
 系统 SHALL 支持图像与语音等多模态输入的接入，并统一路由到具备对应能力的模型处理。
 
@@ -306,7 +298,6 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** 当前配置的模型不具备某模态理解能力
 - **WHEN** 用户提交该模态输入
 - **THEN** 系统明确提示不支持并给出可替换建议，不静默丢弃输入
-
 ### Requirement: 实时语音输出
 系统 SHALL 支持将内核生成的文本回复以流式 TTS 合成语音实时播报，允许用户在播报过程中打断（barge-in），并保留语音与文本会话上下文的双向引用。
 
@@ -324,7 +315,6 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** 会话中既有语音输入又有语音播报
 - **WHEN** 用户后续引用或追问先前内容
 - **THEN** 语音与文本共享同一会话记录可相互引用，必要时保留原始音频引用
-
 ### Requirement: Web Client 分离
 系统 SHALL 支持 Web 前端作为纯静态资源独立托管，与常驻 Harness Host 后端解耦部署：前端经统一后端 API 连接 Host，前端升级不要求后端重启。
 
@@ -337,7 +327,6 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** Web Client 与 Host 后端独立部署
 - **WHEN** 前端发布新版本
 - **THEN** 前端可独立升级，无需重启 Host 后端（后端 API 兼容时）
-
 ### Requirement: 会话注册表持久化与跨入口共享
 统一后端 API 层 SHALL 将对话会话标识登记于**跨进程共享的持久注册表**（落 `$CORE_STATE_DIR` 下 JSON 快照），使 CLI / Web / Desktop 三种入口（含各自独立进程）对会话标识的**创建与校验共享同一事实来源**。注册表 SHALL 采用**读透 + 写时合并**语义：校验（`exists`）与枚举（`list`）每次读回磁盘，创建（`create`）先读回磁盘再合并写回 —— 以支持「长驻 `serve` 进程看到另一进程（CLI）新建的会话」；创建 SHALL 以**进程内互斥**保护，使**同进程多线程**并发创建不相互覆盖。**跨进程**同刻并发创建 SHALL NOT 被声称受保护（进程内互斥不跨进程，属已知局限，不得据此断言跨进程安全）。
 
@@ -361,7 +350,6 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** 一个未登记于注册表的 `session_id`
 - **WHEN** 经后端 API 发起会话操作
 - **THEN** 返回 `UI_SESSION_NOT_FOUND`（fail-closed，不放宽既有校验）
-
 ### Requirement: 会话转录的读取面
 
 后端 API 层 SHALL 提供会话转录的读取面：HTTP `GET /session/{session_id}/messages` 返回该会话的
@@ -398,7 +386,6 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** 未注入转录存储
 - **WHEN** 经 HTTP `GET /sessions` 枚举
 - **THEN** 条目保持既有形状（标识 + 模式 + 创建时间），不新增派生字段
-
 ### Requirement: Web 会话列表与切换
 
 Web SPA SHALL 呈现**会话列表**（数据取自 `GET /sessions`），条目 SHALL 展示该会话的**派生标题**
@@ -427,7 +414,6 @@ SPA SHALL 提供**显式**新建会话入口。未选中会话时 SHALL NOT 以�
 - **GIVEN** 用户打开 Web 界面且尚未选中任何会话
 - **WHEN** 未新建会话即发送消息
 - **THEN** 提示先新建或选择会话（不隐式创建会话）；点击「新建会话」后列表出现该新会话并可开始对话
-
 ### Requirement: 任务编排的 HTTP 面与 Web 任务区
 
 统一后端 API 层 SHALL 经 HTTP `POST /task`（请求含会话标识与目标）以 **SSE** 流式返回编排任务的
@@ -481,7 +467,6 @@ SHALL NOT 为此新建第二数据源。
 - **GIVEN** 一个在途任务
 - **WHEN** 该任务收尾（`task_finished` / `task_failed`）
 - **THEN** 该任务移出任务区的在途列表（任务区回落），且**不**出现在会话列表中
-
 ### Requirement: 思考过程回显（Think）
 系统 SHALL 在**三端**（TUI / Web / APP）以**折叠块**呈现模型的思考原文（`loop.reasoning` 事件），用户可展开查看全文；同一轮的思考增量 SHALL **归并到同一个折叠块**（增量更新，SHALL NOT 逐段新建块）。思考原文 SHALL ONLY 经该事件面呈现，SHALL NOT 写入转录 / 记忆 / 日志 / trace 遥测（思考回显是**纯呈现层**）。
 
@@ -503,7 +488,6 @@ SHALL NOT 为此新建第二数据源。
 - **GIVEN** 思考回显未开启（缺省），且模型响应携思考原文
 - **WHEN** 一轮对话在三端任一端结束
 - **THEN** 事件面**不产** `loop.reasoning`，三端呈现中**不出现**思考块，输出与既有缺省**逐字一致**
-
 ### Requirement: TUI 会话切换（`/resume`）
 
 TUI SHALL 提供 `/resume <会话标识>` 斜杠命令，把交互会话**切换到既有会话**并**还原其内容**：时间线
@@ -543,7 +527,6 @@ SHALL 被清空并以目标会话的既有转录**重新铺入**（agent 回复 
 - **GIVEN** 一轮执行**尚未结束**（忙碌）
 - **WHEN** 用户提交 `/resume <已登记标识>`
 - **THEN** 拒绝切换（提示处理中）、当前会话与时间线**逐字不变**
-
 ### Requirement: 可选 Web 依赖测试守卫
 Web 能力的测试文件（如 `tests/test_serve.py`）对可选依赖（fastapi/starlette 等）的模块级导入 MUST 位于 `pytest.importorskip` 守卫之后；守卫 SHALL 作为文件首个导入动作执行。在未安装 Web 可选依赖的环境中，测试文件 SHALL 整体优雅 skip，不产生 collection error。
 
@@ -561,7 +544,6 @@ Web 能力的测试文件（如 `tests/test_serve.py`）对可选依赖（fastap
 - **GIVEN** 后续向 Web 测试文件新增可选依赖的模块级导入
 - **WHEN** 审查该导入位置
 - **THEN** 该导入位于 `importorskip` 守卫之后（可带 `# noqa: E402`），不得先于守卫裸导入
-
 ### Requirement: TUI 只读诊断命令
 
 TUI SHALL 提供一组**只读**斜杠命令（`/doctor` / `/status` / `/sessions` / `/config` / `/mcp` / `/skill` /
@@ -619,8 +601,6 @@ SHALL NOT 写转录 / 记忆 / 笔记、SHALL NOT 改动呈现态（会话标识
 - **GIVEN** TUI 就绪
 - **WHEN** 用户提交 `/doctor 额外参数` 或 `/zzz`
 - **THEN** 前者 ONLY 提示（不执行、不改动呈现态）；后者仍作为普通消息进入对话（既有行为不变）
-
-
 ### Requirement: TUI 步骤块（缩略 / 全文 / 收起）
 
 TUI 的**思考块**与**工具动作块** SHALL 统一为**步骤块**，其缺省形态为**缩略**（不是收起）：正文**可见**，但只呈现**末尾有界行数**（`N` 行），未呈现的部分以一行提示给出**剩余行数**。这样「Agent 正在干什么」在缺省视图下即可见（逐行滚动的原始执行信息），又不会让一则长输出淹没时间线。
@@ -669,7 +649,6 @@ TUI 的**思考块**与**工具动作块** SHALL 统一为**步骤块**，其缺
 - **GIVEN** 思考回显已开启，同一轮模型逐段返回思考原文
 - **WHEN** TUI 逐条消费 `loop.reasoning` 事件
 - **THEN** 增量**追加**到该轮的**同一个**步骤块（不逐段新建块），且随增量**实时**刷新（缩略态下亦即时反映最新末尾行）
-
 ### Requirement: TUI 折叠呈现未能解析的模型原始输出
 
 单轮以**推理产出不可解析**收尾（该轮 `LoopResult.failed` 为真且携带非空 `raw_output`）时，TUI
@@ -690,7 +669,6 @@ TUI SHALL NOT 新增任何块 —— 事件面与既有行为逐字一致。
 - **GIVEN** 一轮正常收尾（`LoopResult.raw_output` 为空）
 - **WHEN** TUI 消费该轮事件
 - **THEN** SHALL NOT 呈现该折叠块（时间线与既有行为逐字一致）
-
 ### Requirement: code_run 活动标题按方言命名
 
 系统 SHALL 在 TUI（或等价活动流）呈现 tools.code_run 时，按本次调用的有效 type 选用
@@ -699,6 +677,8 @@ TUI SHALL NOT 新增任何块 —— 事件面与既有行为逐字一致。
 - powershell => 友好名 SHALL 含 PowerShell（或同义固定词，实现钉死一处）；
 - bash => 友好名 SHALL 含 Bash；
 - python => 友好名 SHALL 含 Python；
+- **未指定 type**：友好名 SHALL 按注入的**有效平台缺省**命名（powershell → PowerShell，
+  bash → Bash）；平台事实不可得时 SHALL 用中性 `Shell`，SHALL NOT 谎报 Bash；
 - 括号内脚本摘要口径（首行有界）SHALL 与既有活动块摘要规则一致。
 
 #### Scenario: PowerShell 调用不以 Bash 为标题
@@ -713,3 +693,9 @@ TUI SHALL NOT 新增任何块 —— 事件面与既有行为逐字一致。
 - **WHEN** 渲染活动标题
 - **THEN** 标题友好名表明 Bash
 
+#### Scenario: 未指定 type 时按有效缺省命名
+
+- **GIVEN** 一次 tools.code_run 动作未指定 type
+- **WHEN** 注入的平台缺省为 powershell 或 bash
+- **THEN** 标题分别显示 PowerShell 或 Bash；平台事实不可得时显示中性 `Shell`，
+  SHALL NOT 显示为 Bash

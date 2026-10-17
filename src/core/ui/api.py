@@ -22,6 +22,7 @@ from core.orchestration import OrchestrationError, TaskScheduler
 from core.permission import ApprovalChannel
 from core.pet.core import PetActivator, PetControl
 from core.tools import ToolDef, ToolProvider, ToolResult
+from core.tools.env_shell import EnvironmentSnapshot
 
 from .errors import UiError, UiErrorCode
 from .models import Event
@@ -119,6 +120,7 @@ class UIAPILayer:
         registry: SessionRegistry | None = None,
         transcript: TranscriptStore | None = None,
         diagnostics: Deps | None = None,
+        env_snapshot: EnvironmentSnapshot | None = None,
     ) -> None:
         self._loop = loop if loop is not None else DefaultLoop()
         self._memory = memory
@@ -139,12 +141,19 @@ class UIAPILayer:
         # 只读诊断源（change 0163 / ADR-0154）：**单一接缝** —— 句柄由组合根装配后整体注入，
         # 本层不拆句柄（缺省未接线 ⇒ TUI 只读命令给提示而非崩）
         self._diagnostics = diagnostics
+        # 运行环境事实（change 0240）：活动标题在未显式给 type 时按有效平台缺省命名。
+        self._env_snapshot = env_snapshot
         self._llm_config: LLMConfig | None = None
 
     @property
     def approval(self) -> ApprovalChannel | None:
         """交互审批通道（高风险工具 confirm 门的终端 y/n）；非交互入口为 None。"""
         return self._approval
+
+    @property
+    def default_shell(self) -> str | None:
+        """平台默认 shell 方言（未注入环境快照 ⇒ None，呈现层用中性 `Shell`）。"""
+        return None if self._env_snapshot is None else self._env_snapshot.default_shell
 
     def diagnostics(self) -> Deps | None:
         """只读诊断源（`/doctor` `/status` 等只读命令的取数面）；未接线为 None。

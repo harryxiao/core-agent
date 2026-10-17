@@ -4,7 +4,7 @@
  */
 
 export const TOOL_NAMES = {
-  "tools.code_run": "Bash",
+  "tools.code_run": "Shell",
   "tools.file_read": "Read",
   "tools.file_write": "Write",
   "tools.file_patch": "Edit",
@@ -27,7 +27,15 @@ const TARGET_FIELDS = {
   "tools.context_read": "pointer",
 };
 
-const PAREN_TITLES = new Set([...Object.values(TOOL_NAMES), "Planner", "Thinking"]);
+const CODE_RUN_NAMES = { powershell: "PowerShell", bash: "Bash", python: "Python" };
+const PAREN_TITLES = new Set([
+  ...Object.values(TOOL_NAMES),
+  "Bash",
+  "PowerShell",
+  "Python",
+  "Planner",
+  "Thinking",
+]);
 const MAX_TARGET_CHARS = 60;
 
 export const THINKING_TITLE = "Thinking";
@@ -37,6 +45,9 @@ export const THINKING_TITLE_ACTIVE = "Thinking…";
 export const STEP_SYMBOLS = {
   Thinking: "✦",
   Bash: "$",
+  PowerShell: "$",
+  Python: "λ",
+  Shell: "$",
   Read: "◇",
   Write: "✎",
   Edit: "✏",
@@ -54,9 +65,16 @@ export function stepSymbol(kind) {
   return STEP_SYMBOLS[kind] || "·";
 }
 
-/** tool_id → 友好名；未映射则去掉 tools. 前缀。 */
-export function toolName(toolId) {
+/** tool_id → 友好名；code_run 按显式 type 命名，事实不可得 ⇒ 中性 Shell。 */
+export function toolName(toolId, args = null) {
   const name = String(toolId || "");
+  if (name === "tools.code_run") {
+    const type =
+      args && typeof args === "object" && !Array.isArray(args) && typeof args.type === "string"
+        ? args.type.trim().toLowerCase()
+        : "";
+    return CODE_RUN_NAMES[type] || "Shell";
+  }
   if (TOOL_NAMES[name]) return TOOL_NAMES[name];
   const short = name.startsWith("tools.") ? name.slice("tools.".length) : name;
   return short || name;
@@ -102,7 +120,7 @@ export function actionTitle(tool, target, opts = {}) {
 
 /** 由 tool_id + args 直接生成标题（Chat / TaskPanel 入口）。 */
 export function titleFromAction(toolId, args, opts = {}) {
-  return actionTitle(toolName(toolId), toolTarget(toolId, args), opts);
+  return actionTitle(toolName(toolId, args), toolTarget(toolId, args), opts);
 }
 
 /** Thinking 块标题：进行中带省略号；落静可附 ` · 1.2s`；禁止附原文。 */

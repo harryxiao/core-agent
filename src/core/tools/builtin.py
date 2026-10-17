@@ -17,6 +17,7 @@ web_fetch 出站抓取，均经确认门（高风险需人工审批）。
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import sys
 import urllib.request
@@ -63,6 +64,12 @@ _PATCH_SCHEMA = {
     "required": ["path", "old_content", "new_content"],
 }
 
+# PowerShell 5.1 与 7+ 通用：把控制台/管道输出统一为无 BOM UTF-8，与父进程解码配对。
+_PS_UTF8_PREAMBLE = (
+    "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; "
+    "$OutputEncoding = [Console]::OutputEncoding"
+)
+
 _RUN_SCHEMA = {
     "type": "object",
     "properties": {
@@ -72,11 +79,14 @@ _RUN_SCHEMA = {
             "enum": ["python", "bash", "powershell"],
             "description": (
                 "python=解释器 -c；bash / powershell=对应壳。"
-                "省略时：Windows→powershell，Darwin/Linux→bash。"
+                "显式 type 优先于平台缺省；省略时：Windows→powershell，Darwin/Linux→bash。"
             ),
         },
-        "timeout": {"type": "number"},
-        "cwd": {"type": "string"},
+        "timeout": {"type": "number", "description": "超时秒数（缺省 10）"},
+        "cwd": {
+            "type": "string",
+            "description": "工作目录（绝对路径；支持 ~ 展开；每次调用独立）",
+        },
     },
     "required": ["script"],
 }
@@ -218,18 +228,26 @@ def code_run(
     ) -> dict[str, Any]:
         snap = _snap()
         run_type = resolve_run_type(type, snap)
+        child_env: dict[str, str] | None = None
         if run_type == "python":
             cmd = [sys.executable, "-c", script]
+            child_env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
         else:
+            if run_type == "powershell":
+                script = f"{_PS_UTF8_PREAMBLE}\n{script}"
             cmd = shell_argv(run_type, script, snap)
+        run_cwd = str(Path(cwd).expanduser()) if cwd else cwd
         proc = await asyncio.to_thread(
             subprocess.run,
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
-            cwd=cwd,
+            cwd=run_cwd,
             check=False,
+            env=child_env,
         )
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
@@ -247,7 +265,8 @@ def code_run(
             tool_id="tools.code_run",
             description=(
                 "执行代码片段（python / bash / powershell），返回返回码与输出；"
-                "未指定 type 时 Windows 缺省 powershell、Darwin/Linux 缺省 bash；"
+                "显式 type 优先；未指定时 Windows 缺省 powershell、Darwin/Linux 缺省 bash；"
+                "每次调用为全新进程（cd/环境变量不保留），目录用 cwd（支持 ~）；"
                 "不可逆高风险，需审批"
             ),
             schema=_RUN_SCHEMA,

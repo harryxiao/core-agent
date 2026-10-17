@@ -155,6 +155,7 @@ _PAREN_TITLES = frozenset(_TOOL_NAMES.values()) | {
     "Bash",
     "PowerShell",
     "Python",
+    "Shell",
 }
 
 _TARGET_FIELDS = {  # tool_id → 标题目标摘要的**白名单结构性字段**（正文类参数永不取）
@@ -178,6 +179,7 @@ _STEP_SYMBOLS: dict[str, str] = {
     "Bash": "$",
     "PowerShell": "$",
     "Python": "λ",
+    "Shell": "$",
     "Read": "◇",
     "Write": "✎",
     "Edit": "✏",
@@ -244,21 +246,24 @@ def _action_title(tool: str, target: str, *, ok: bool | None = None, ms: object 
     return f"{base} · failed"
 
 
-def _code_run_name(args: object) -> str:
-    """``tools.code_run`` 按有效 ``type`` 命名（缺省按 bash 心智兼容旧调用）。"""
-    type_name = "bash"
+def _code_run_name(args: object, default_shell: str | None = None) -> str:
+    """``tools.code_run`` 按**有效** type 命名：显式 type 优先；缺省按平台事实；否则中性 Shell。"""
     if isinstance(args, Mapping):
         raw = cast("Mapping[str, Any]", args).get("type")
         if isinstance(raw, str) and raw.strip():
-            type_name = raw.strip().lower()
-    return _CODE_RUN_NAMES.get(type_name, "Bash")
+            return _CODE_RUN_NAMES.get(raw.strip().lower(), "Shell")
+    if default_shell == "powershell":
+        return "PowerShell"
+    if default_shell == "bash":
+        return "Bash"
+    return "Shell"
 
 
-def _tool_name(tool_id: object, args: object = None) -> str:
+def _tool_name(tool_id: object, args: object = None, *, default_shell: str | None = None) -> str:
     """tool_id → 友好名；未映射的去掉 tools. 前缀兜底。"""
     name = str(tool_id or "")
     if name == "tools.code_run":
-        return _code_run_name(args)
+        return _code_run_name(args, default_shell)
     mapped = _TOOL_NAMES.get(name)
     if mapped:
         return mapped
@@ -275,13 +280,15 @@ def _fmt_ms(ms: object) -> str:
     return f"{value / _MS_PER_SECOND:.1f}s" if value >= _MS_PER_SECOND else f"{value}ms"
 
 
-def format_action_event(kind: str, payload: object) -> str | None:
+def format_action_event(
+    kind: str, payload: object, *, default_shell: str | None = None
+) -> str | None:
     """工具动作事件 → 单行文本（CLI 与 TUI 共用）；非动作事件返回 None。"""
     if not isinstance(payload, dict):
         return None
     data = cast(dict[str, Any], payload)
     args = data.get("args")
-    tool = _tool_name(data.get("tool_id"), args)
+    tool = _tool_name(data.get("tool_id"), args, default_shell=default_shell)
     target = _tool_target(data.get("tool_id"), args)
     if kind == "action_started":
         return _action_title(tool, target)
@@ -1173,7 +1180,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 self._settle_thinking_titles()  # 工具开始 ⇒ 上一 Thinking 结束闪烁态
                 args = data.get("args")
                 target = _tool_target(data.get("tool_id"), args)
-                friendly = _tool_name(data.get("tool_id"), args)
+                friendly = _tool_name(data.get("tool_id"), args, default_shell=api.default_shell)
                 box = _StepBlock(
                     _action_title(friendly, target),
                     collapsed=True,
@@ -1187,7 +1194,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 return
             box, target, args = entry
             box.title = _action_title(
-                _tool_name(data.get("tool_id"), args),
+                _tool_name(data.get("tool_id"), args, default_shell=api.default_shell),
                 target,
                 ok=bool(data.get("ok")),
                 ms=data.get("duration_ms"),
@@ -1316,7 +1323,9 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 return
             _, detail, _ = entry
             inner = data.get("data")
-            line = format_action_event(str(data.get("event", "")), inner)
+            line = format_action_event(
+                str(data.get("event", "")), inner, default_shell=api.default_shell
+            )
             if line is None:  # 轮次级里程碑（动作行不覆盖）
                 if data.get("event") != "step_completed" or not isinstance(inner, dict):
                     return  # 表外/异常载荷不呈现（不落空行与占位）

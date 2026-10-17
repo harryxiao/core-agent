@@ -15,7 +15,12 @@ import {
 describe("toolName", () => {
   it("maps known tool_id", () => {
     assert.equal(toolName("tools.file_read"), "Read");
-    assert.equal(toolName("tools.code_run"), "Bash");
+  });
+  it("names code_run by explicit type, neutral without facts", () => {
+    assert.equal(toolName("tools.code_run", { type: "powershell" }), "PowerShell");
+    assert.equal(toolName("tools.code_run", { type: "bash" }), "Bash");
+    assert.equal(toolName("tools.code_run", { type: "python" }), "Python");
+    assert.equal(toolName("tools.code_run"), "Shell");
   });
   it("strips tools. for unknowns", () => {
     assert.equal(toolName("tools.custom"), "custom");
@@ -52,6 +57,11 @@ describe("titleFromAction", () => {
       titleFromAction("tools.file_read", { path: "D:/x.py" }, { ok: true, ms: 31 }),
       "Read(D:/x.py) · 31ms",
     );
+    assert.equal(
+      titleFromAction("tools.code_run", { type: "powershell", script: "Get-Date" }),
+      "PowerShell(Get-Date)",
+    );
+    assert.equal(titleFromAction("tools.code_run", { script: "Get-Date" }), "Shell(Get-Date)");
   });
 });
 

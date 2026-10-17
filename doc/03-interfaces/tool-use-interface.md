@@ -116,8 +116,13 @@ class ToolError:
 > 不再是当前工作目录下的字面 `~` 目录。**无条件**生效（属缺陷修复、非可选能力，不设门）；**只**展开
 > `~`（`~user` 一并处理），不 `resolve` / 不 `abspath` / 不展开环境变量；对无 `~` 的路径是恒等变换。
 > `file_write` / `file_patch` 把**展开后**路径存入撤销快照 ⇒ 撤销点与写入点一致（**不**误建字面 `~`）。
-> 返回体 `{"path": …}` 仍回**模型给的原文**（contract 不变）。`code_run` 的 `cwd` **未**纳入（非
-> `file_*` 工具，同源缺口登记为后续候选）。
+> 返回体 `{"path": …}` 仍回**模型给的原文**（contract 不变）。
+>
+> **`code_run` 的输出与目录（change `0240` / ADR-0228）**：`stdout` / `stderr` 固定以 **UTF-8**
+> 解码（`errors="replace"`），不依赖宿主 locale；PowerShell 子进程在用户脚本前设置
+> `[Console]::OutputEncoding`，Python 子进程带 `PYTHONIOENCODING=utf-8`。`cwd` 在入口做
+> **`~` 展开**（`Path(cwd).expanduser()`，其余不 `resolve`）；每次调用为**全新进程**，
+> `cd` / 环境变量不跨调用保留。显式 `type` 优先于平台缺省。
 
 ---
 
