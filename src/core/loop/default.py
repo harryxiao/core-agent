@@ -17,7 +17,15 @@ import json
 import time
 import uuid
 import warnings
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence, Sized
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterator,
+    Sequence,
+    Sized,
+)
 from typing import Any, cast
 
 from core.context import Compactor, ContextError, WindowPlan, estimate_tokens, plan_window
@@ -30,6 +38,7 @@ from core.tools import SafetyGate, ToolProvider
 from .protocol import (
     ActFn,
     Action,
+    ActionGroup,
     ActionResult,
     LoopContext,
     LoopEvent,
@@ -119,6 +128,48 @@ def _args_excerpt(args: dict[str, Any]) -> dict[str, Any]:
         text = str(value)
         out[key] = text if len(text) <= _MAX_ACTION_EXCERPT else text[:_MAX_ACTION_EXCERPT] + "…"
     return out
+
+
+def _action_key(action: Action) -> str:
+    """动作去重键：``tool_id`` + 规范化参数（键序无关、中文不转义）。"""
+    try:
+        args = json.dumps(action.args, sort_keys=True, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):  # 自引用等不可序列化 ⇒ 退化 repr（仅用于等值比较）
+        args = repr(action.args)
+    return f"{action.tool_id}\x00{args}"
+
+
+def _is_suppressible_write(action: Action) -> bool:
+    """轮内紧邻重复抑制的适用范围：覆盖写 / 补丁；追加写与读工具不适用。"""
+    if action.tool_id == "tools.file_patch":
+        return True
+    if action.tool_id != "tools.file_write":
+        return False
+    mode = action.args.get("mode", "w")
+    return not (isinstance(mode, str) and mode in {"a", "append"})
+
+
+def _iter_actions(result: Action | ActionGroup) -> Iterator[Action]:
+    """推理终态归一为动作序列：组 ⇒ 逐个动作（保持 planner 顺序）；单动作 ⇒ 自身。"""
+    if isinstance(result, ActionGroup):
+        yield from result.actions
+        return
+    yield result
+
+
+async def _convert_reason_item(item: object, round_no: int) -> AsyncIterator[LoopEvent | Action]:
+    """planner 流式条目归一：文本 / 思考 → 事件，动作组 → 逐个动作，单动作原样。"""
+    if isinstance(item, str):
+        yield LoopEvent("reply_delta", {"text": item})
+        return
+    if isinstance(item, Thinking):
+        yield LoopEvent("loop.reasoning", {"text": item.delta, "round": round_no})
+        return
+    if isinstance(item, ActionGroup):
+        for action in item.actions:
+            yield action
+        return
+    yield cast(Action, item)
 
 
 def _trajectory_line(item: Any) -> str:
@@ -301,7 +352,9 @@ class DefaultLoop(Plugin):
     def __init__(  # noqa: PLR0913 — 注入面均为可选依赖注入
         self,
         *,
-        planner: Callable[[LoopContext], Action | Awaitable[Action]] | None = None,
+        planner: (
+            Callable[[LoopContext], Action | ActionGroup | Awaitable[Action | ActionGroup]] | None
+        ) = None,
         memory: MemoryStore | None = None,
         tools: ToolProvider | None = None,
         gate: SafetyGate | None = None,
@@ -425,6 +478,16 @@ class DefaultLoop(Plugin):
         await self._await_post_turn()
         return result
 
+    async def _collect_reason(
+        self, ctx: LoopContext, actions: list[Action]
+    ) -> AsyncIterator[LoopEvent]:
+        """推理步：外发事件，并把本次推理产出的动作（组已展开）收进 ``actions``。"""
+        async for item in self._reason_events(ctx):
+            if isinstance(item, LoopEvent):
+                yield item
+            else:
+                actions.append(item)
+
     async def _reason_events(self, ctx: LoopContext) -> AsyncIterator[LoopEvent | Action]:
         """推理步事件流：planner 支持流式时逐 delta 转 reply_delta，末态产出 Action。
 
@@ -434,16 +497,14 @@ class DefaultLoop(Plugin):
         """
         planner = getattr(self._planner, "astream", None)
         if planner is None:
-            yield await self.reason(ctx)
+            for action in _iter_actions(await self.reason(ctx)):
+                yield action
             return
         async for item in planner(ctx):
-            if isinstance(item, str):
-                yield LoopEvent("reply_delta", {"text": item})
-            elif isinstance(item, Thinking):
-                # round 与同轮 action_started 对齐，供 TUI 按步归并 Thinking（change 0233）
-                yield LoopEvent("loop.reasoning", {"text": item.delta, "round": ctx.rounds})
-            else:
-                yield item
+            # 多原生调用（change 0257）：``ActionGroup`` 在此展开为多个动作，逐个进入既有执行体。
+            # ``round`` 与同轮 action_started 对齐，供 TUI 按步归并 Thinking（change 0233）。
+            async for converted in _convert_reason_item(item, ctx.rounds):
+                yield converted
 
     async def astream(self, user_input: str, *, session_id: str = "") -> AsyncIterator[LoopEvent]:
         """流式执行入口（薄包装）：中断轮留痕并封口（change 0256）。
@@ -509,20 +570,57 @@ class DefaultLoop(Plugin):
         # 压实不改变本轮消息记账（`ctx.token_used` 不因持久化而下降），故降级语义是
         # **给模型一轮收尾机会**：收尾轮完成即正常收口，仍未完成才按预算终止。
         budget_retried = False
+        # 一次推理产出的剩余动作（change 0257 / ADR-0248）：多原生调用组展开后逐个执行，
+        # 每个动作仍推进轮次、逐动作过中间件 / 确认门 / 观测 / 压实阈值。
+        pending: list[Action] = []
+        batch_seen: set[str] = set()  # 本批次已出现键：完全相同的调用只执行一次
+        batch_results: dict[str, ActionResult] = {}  # 本批次首个执行结果（供抑制调用复用）
+        last_key = ""  # 上一条**已执行**动作键（轮内紧邻写抑制判据）
+        last_result: ActionResult | None = None
         while not ctx.done():
             if ctx.rounds >= self._max_rounds:
                 limit_reason = "LOOP_LIMIT_EXCEEDED"
                 break
-            action: Action | None = None
-            async for item in self._reason_events(ctx):
-                if isinstance(item, LoopEvent):
-                    streamed = streamed or item.type == "reply_delta"
-                    yield item
-                else:
-                    action = item
-            assert action is not None  # noqa: S101 — _reason_events 末态必产 Action
-            action = self._apply_middlewares(ctx, action)
-            action, approved = await self._authorize(action)
+            if pending:
+                action = pending.pop(0)
+            else:
+                actions: list[Action] = []
+                async for event in self._collect_reason(ctx, actions):
+                    streamed = streamed or event.type == "reply_delta"
+                    yield event
+                assert actions  # noqa: S101 — 推理末态必产动作
+                action, pending = actions[0], actions[1:]
+                batch_seen = set()
+                batch_results = {}
+            scope = ""  # ""=正常执行 / "batch"=批内重复 / "turn"=轮内紧邻重复写
+            key = "" if action.is_terminal else _action_key(action)
+            if key and key in batch_seen:
+                scope = "batch"
+            elif (
+                key
+                and key == last_key
+                and last_result is not None
+                and not last_result.failed
+                and _is_suppressible_write(action)
+            ):
+                scope = "turn"
+            reused: ActionResult | None = None
+            approved = False
+            if scope:
+                reused = batch_results.get(key) if scope == "batch" else last_result
+                if reused is None:  # 兜底：无缓存则按正常执行处理（不静默丢动作）
+                    scope = ""
+            if scope:
+                self._trace(
+                    trace_id,
+                    "action_deduplicated",
+                    {"scope": scope, "tool_id": action.tool_id, "round": ctx.rounds},
+                )
+            else:
+                if key:
+                    batch_seen.add(key)
+                action = self._apply_middlewares(ctx, action)
+                action, approved = await self._authorize(action)
             if not action.is_terminal:  # 终止动作（空 tool_id）非工具调用，不发
                 yield LoopEvent(
                     "action_started",
@@ -533,18 +631,26 @@ class DefaultLoop(Plugin):
                     },
                 )
             act_t0 = time.monotonic()
-            # 动作期会话归属（change 0247）：工具处理器（如 delegate）据此把发起会话
-            # 转交子 Agent；`finally` 复位，异常不得把会话 ID 泄漏到后续调用。
-            session_token = current_session_id.set(ctx.session_id)
-            try:
-                result = await self._act(action, trace_id, approved=approved)
-            finally:
-                current_session_id.reset(session_token)
+            if scope:
+                result = cast(ActionResult, reused)
+            else:
+                # 动作期会话归属（change 0247）：工具处理器（如 delegate）据此把发起会话
+                # 转交子 Agent；`finally` 复位，异常不得把会话 ID 泄漏到后续调用。
+                session_token = current_session_id.set(ctx.session_id)
+                try:
+                    result = await self._act(action, trace_id, approved=approved)
+                finally:
+                    current_session_id.reset(session_token)
+            if not action.is_terminal:
+                if key:
+                    batch_seen.add(key)
+                    batch_results.setdefault(key, result)
+                last_key, last_result = key, result
             if action.is_terminal and result.failed:
                 turn_failed = True  # 终止动作的失败态（工具动作失败不入此列：ReAct 多轮自愈）
                 raw_output = action.raw_output  # 不可解析原始产出：另路留存，不进回复正文
             if not action.is_terminal:
-                duration_ms = int((time.monotonic() - act_t0) * 1000)
+                duration_ms = 0 if scope else int((time.monotonic() - act_t0) * 1000)
                 output = _output_excerpt(result.error if result.failed else result.data)
                 # 遥测先于事件外发：不依赖消费方继续拉取生成器（同判据、同点、同载荷）
                 self._log_tool_call(trace_id, action, result, latency_ms=duration_ms, output=output)
@@ -988,7 +1094,7 @@ class DefaultLoop(Plugin):
         self._append_transcript(session_id, "user", user_input)
         return ctx
 
-    async def reason(self, ctx: LoopContext) -> Action:
+    async def reason(self, ctx: LoopContext) -> Action | ActionGroup:
         if self._planner is None:
             return Action(args={"reply": self._echo(ctx)})
         result = self._planner(ctx)

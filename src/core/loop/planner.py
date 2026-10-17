@@ -20,7 +20,7 @@ from core.llm_provider import LLMError, LLMProvider, LLMRequest, Message, TokenU
 from core.tools import ToolProvider
 from core.tools.env_shell import EnvironmentSnapshot, format_env_block
 
-from .protocol import Action, LoopContext, Thinking
+from .protocol import Action, ActionGroup, LoopContext, Thinking
 
 # 解析模型输出失败时的结构化错误码（终端回复，不中断循环）。
 _PARSE_FAILED = "LLM_PLAN_PARSE_FAILED"
@@ -407,24 +407,26 @@ class LLMPlanner:
         # 本轮已花出的量无可行动作；见 change 0183 / ADR-0174）。
         self._last_completion_tokens = 0
 
-    async def __call__(self, ctx: LoopContext) -> Action:
+    async def __call__(self, ctx: LoopContext) -> Action | ActionGroup:
         action, _ = await self._complete(ctx)
         return action
 
-    async def _complete(self, ctx: LoopContext) -> tuple[Action, str]:
+    async def _complete(self, ctx: LoopContext) -> tuple[Action | ActionGroup, str]:
         """非流式一次补全 →（终态动作, 推理原文）。``__call__`` 与降级分支共用。
 
         解析失败回喂重试（change 0227 / ADR-0217）：门开且命中失败判据 ⇒ 追加 nudge **恰
         再试一次**（非流式路径本就不外发增量 ⇒ 恒可重试）；仍失败 ⇒ 第二次的结果即终态。
         """
         action, thinking = await self._complete_once(ctx)
-        if self._parse_retry and _retryable(action):
+        if self._parse_retry and isinstance(action, Action) and _retryable(action):
             action, thinking = await self._complete_once(
                 ctx, nudge=_retry_nudge(action.args["reply"])
             )
         return action, thinking
 
-    async def _complete_once(self, ctx: LoopContext, *, nudge: str = "") -> tuple[Action, str]:
+    async def _complete_once(
+        self, ctx: LoopContext, *, nudge: str = ""
+    ) -> tuple[Action | ActionGroup, str]:
         """一次非流式补全（不带重试门；`_complete` 负责恰一次重试）。"""
         request = self._build_request(ctx)
         if nudge:
@@ -443,7 +445,9 @@ class LLMPlanner:
             response.thinking,
         )
 
-    async def astream(self, ctx: LoopContext) -> AsyncIterator[str | Action | Thinking]:
+    async def astream(
+        self, ctx: LoopContext
+    ) -> AsyncIterator[str | Action | ActionGroup | Thinking]:
         """流式推理：自然语言回复逐 delta 外发，末态产出终 Action。
 
         首个 ``{`` 判定为工具调用 JSON：缓冲不外泄（逐 token 外发半截 JSON 无意义），
@@ -487,7 +491,7 @@ class LLMPlanner:
 
     async def _stream_attempt(  # noqa: C901 — 长管道：回复增量 + 原生工具片段 + 思考增量
         self, ctx: LoopContext, *, nudge: str = ""
-    ) -> AsyncIterator[str | Action | Thinking]:
+    ) -> AsyncIterator[str | Action | ActionGroup | Thinking]:
         """一次流式推理尝试（不带重试门；外发门与恰一次重试由 ``astream`` 承担）。"""
         request = self._build_request(ctx)
         if nudge:
@@ -788,21 +792,38 @@ class LLMPlanner:
             return _UNPARSED_EMBEDDED
         return f"{_PARSE_FAILED}: 无法解析模型输出为动作"
 
-    def _from_tool_calls(self, calls: list[ToolCall]) -> Action:
-        """原生 tool_calls → Action（Action 为单工具协议，并行多调用取首个）。"""
-        first = calls[0]
-        if not first.tool_id:
+    def _from_tool_calls(self, calls: list[ToolCall]) -> Action | ActionGroup:
+        """原生 tool_calls → Action / ActionGroup（多调用**全量**映射，change 0257）。
+
+        单调用仍返回 ``Action``（既有协议与断言逐字不变）；多调用按 provider ``index``
+        升序返回 ``ActionGroup``。任一调用非法 ⇒ 整个批次归一为**单个**失败终止动作
+        （``LLM_PLAN_PARSE_FAILED``），零部分执行 —— 部分执行会让模型看到的工具结果与它
+        发出的调用数量不一致。
+        """
+        actions: list[Action] = []
+        for call in sorted(calls, key=lambda item: item.index):
+            action = self._from_tool_call(call)
+            if action.failed:
+                return action
+            actions.append(action)
+        if len(actions) == 1:
+            return actions[0]
+        return ActionGroup(actions=actions)
+
+    def _from_tool_call(self, call: ToolCall) -> Action:
+        """单个原生调用 → Action；非法时返回失败终止动作（由批次映射归一整体失败）。"""
+        if not call.tool_id:
             return Action(args={"reply": f"{_PARSE_FAILED}: 工具调用缺 function.name"}, failed=True)
         try:
-            args = json.loads(first.arguments or "{}")
+            args = json.loads(call.arguments or "{}")
         except ValueError:
             return Action(args={"reply": f"{_PARSE_FAILED}: 工具参数无法解析为 JSON"}, failed=True)
         if not isinstance(args, dict):
             return Action(args={"reply": f"{_PARSE_FAILED}: 工具参数非 JSON 对象"}, failed=True)
         return Action(
-            tool_id=first.tool_id,
+            tool_id=call.tool_id,
             args=cast(dict[str, Any], args),
-            is_irreversible=self._is_irreversible(first.tool_id),
+            is_irreversible=self._is_irreversible(call.tool_id),
         )
 
     def _from_dict(self, data: Any) -> Action:

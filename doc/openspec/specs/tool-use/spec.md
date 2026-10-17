@@ -2,7 +2,9 @@
 
 ## Purpose
 工具使用把模型动作转化为带 schema 的可执行调用，通过 coeffect 约束注入副作用契约，是"插件即原子"的运行时侧实现；并提供 install/uninstall/list 插件安装工具（经 SafetyGate + 权限审批流约束）。调用入口同步（invoke）与异步（ainvoke）同构：异步为主、同步为薄壳，支持事件循环内非阻塞与真并发调用。
+
 ## Requirements
+
 ### Requirement: 工具定义与注册
 系统 SHALL 用 schema 定义工具，并在启动时校验注册，非法定义拒绝载入。
 
@@ -15,6 +17,7 @@
 - **GIVEN** 一个 schema 非法的工具定义
 - **WHEN** 启动时注册
 - **THEN** 返回 `INVALID_TOOL_SCHEMA` 且不载入
+
 ### Requirement: 参数校验
 系统 SHALL 在调用前按 schema 校验参数，缺参/错型直接拒绝。
 
@@ -22,6 +25,7 @@
 - **GIVEN** 一个工具调用缺少必需参数
 - **WHEN** 执行前校验
 - **THEN** 调用被拒绝并返回结构化错误
+
 ### Requirement: coeffect 副作用契约
 系统 SHALL 用 coeffect 声明工具副作用类型（read-only/write/secret/external），执行前由权限引擎校验。
 
@@ -34,6 +38,7 @@
 - **GIVEN** 工具实际产生超出 coeffect 声明的副作用
 - **WHEN** 遥测观测到偏差
 - **THEN** 记录偏差并标记该工具待复核
+
 ### Requirement: 撤销与时间旅行回滚
 系统 SHALL 为每个写类工具提供撤销函数（可逆效应），支持时间旅行回滚。撤销函数 SHALL **按次生成**：每次成功执行后由调用方取得**一份**绑定**该次**写入前快照的撤销闭包——同一工具实例跨多次调用 SHALL **各持独立快照**（按 trace 的 LIFO 序），SHALL NOT 让后续调用覆写先前调用的快照；撤销第 N 次调用 SHALL 恢复**该次**写入前的内容，SHALL NOT 恢复其后调用的快照。
 
@@ -56,6 +61,7 @@
 - **GIVEN** 执行历史记录了各步骤的工具调用与效应
 - **WHEN** 需要回滚到某个历史检查点
 - **THEN** 沿历史逆序执行各写类工具的撤销函数，状态恢复到检查点
+
 ### Requirement: 超时与资源上限
 系统 SHALL 为工具执行设置超时/资源上限，异常不拖垮主循环。
 
@@ -73,6 +79,7 @@
 - **GIVEN** 一个工具调用申请资源（内存 / CPU / 子进程）
 - **WHEN** 资源占用超过上限
 - **THEN** 限制或终止该调用，防止拖垮主循环
+
 ### Requirement: 异步工具调用
 系统 SHALL 提供异步工具调用入口 ainvoke，与同步 invoke 共用统一请求 / 响应模型与 schema / coeffect 校验链路；ainvoke 支持事件循环内非阻塞调用与真并发，invoke 保留为薄壳（thin wrapper），内部经事件循环桥接调用对应异步实现，调用方无需感知事件循环、零改动。
 
@@ -90,6 +97,7 @@
 - **GIVEN** 多个相互独立的工具调用
 - **WHEN** 经 ainvoke 并发发起
 - **THEN** 各调用真并发执行（非串行阻塞），总耗时约等于最慢单个调用而非各调用耗时之和
+
 ### Requirement: 插件安装工具
 系统 SHALL 提供 install / uninstall / list 三个工具，使 Agent 可经对话/工具调用通道安装、卸载、列出插件；安装经 SafetyGate 副作用校验与权限审批流约束，危险操作走审批。
 
@@ -107,6 +115,7 @@
 - **GIVEN** Agent 需管理已装插件
 - **WHEN** 调用 uninstall / list 工具
 - **THEN** 卸载对应插件 / 返回已安装插件清单
+
 ### Requirement: 内置原子工具（代码执行 / 网页读取）
 
 系统 SHALL 内置代码执行与网页读取原子工具，与文件工具一致地经 schema 校验、coeffect 确认门、
@@ -189,6 +198,7 @@
 - **WHEN** 调用 `tools.web_fetch`（仅接受 http/https URL）
 - **THEN** GET 抓取返回状态码与正文（按字节上限截断），网络错误归一为结构化错误；出站网络
   coeffect 经确认门（高风险需人工审批）
+
 ### Requirement: 质量门禁工具
 系统 SHALL 把既有的四道质量门禁（lint / typecheck / test / build）暴露为单个原子工具 `tools.gate_run`，使 Agent 可经工具调用通道按**门禁名**触发门禁并取回结构化结果。门禁名集合与门禁命令 SHALL 取自 `ci-cd` 的**单一真源**（`GATE_COMMANDS`），该工具 SHALL NOT 另立一套门禁命令或第二个门禁执行器；门禁执行器 SHALL 经**构造参数注入**（工具层 SHALL NOT 依赖交付流水线层）。该工具 SHALL 诚实声明 `process`/`filesystem` 副作用且为**不可逆**，照旧受确认门约束（高风险需人工审批）；门禁名不在真源内时 SHALL fail-closed 拒绝，SHALL NOT 触达执行器。
 
@@ -211,3 +221,30 @@
 - **GIVEN** 组合根装配了该工具
 - **WHEN** 读取其 schema 的门禁名枚举
 - **THEN** 枚举与 `GATE_COMMANDS` 的键集合**逐字一致**（无第二份门禁名清单）
+
+### Requirement: 文件写入原子性
+
+`tools.file_write` 的**覆盖模式**（`mode="w"` / `"write"` / `"overwrite"`）SHALL 原子替换目标文件：
+先在同目录写入临时文件并 `flush` + `fsync`，完成后以原子重命名替换目标。并发读者 SHALL 只可能
+看到**完整的旧内容**或**完整的新内容**，SHALL NOT 看到空文件或半截内容。
+
+- 写入失败（含替换失败）时 SHALL 清理临时文件，目标文件 SHALL 保持写入前的内容**逐字不变**。
+- 新建文件的权限 SHALL 与常规 `open()` 创建一致（受 umask 约束）；替换既有文件 SHALL 保留其
+  权限位。
+- 追加模式（`mode="a"` / `"append"`）SHALL 保持既有追加语义，不受本要求约束。
+- 撤销快照与逐次回滚语义 SHALL 不变：快照仍记录写入前的原内容，撤销仍恢复该内容。
+
+#### Scenario: 覆盖写入原子可见
+- **GIVEN** 目标文件已有内容
+- **WHEN** 以覆盖模式写入新内容
+- **THEN** 目标文件最终为新内容，目录中不残留临时文件
+
+#### Scenario: 写入失败目标不变
+- **GIVEN** 目标文件已有内容且替换阶段失败
+- **WHEN** 覆盖写入抛出错误
+- **THEN** 目标文件逐字保持原内容，临时文件被清理
+
+#### Scenario: 追加模式不受影响
+- **GIVEN** 目标文件已有内容
+- **WHEN** 以追加模式写入
+- **THEN** 内容按既有语义追加到末尾

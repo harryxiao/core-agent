@@ -130,6 +130,11 @@ class Action:
                                 # 非终止动作（工具调用）**不用**本字段：工具失败属 ReAct 自愈面
     raw_output: str = ""        # **仅对终止动作有意义**：原始产出的**有界**留存（change 0170 / ADR-0161）
                                 # SHALL NOT 并入 ``reply``（后者只放可读提示）/ 写入转录 / 记忆 / 笔记
+
+@dataclass
+class ActionGroup:
+    actions: list[Action]       # 一次推理产出的**多个**工具动作（按 provider index 升序）；
+                                # 单调用仍返回 Action（change 0257 / ADR-0248）
 ```
 
 ### 2.1 思考回显通道（`Thinking` / `loop.reasoning`，change `0145` / ADR-0137 / 账本 E57~E58）
@@ -160,11 +165,24 @@ class Thinking:
   边界）；**SHALL NOT** 进 `scheduler._PROGRESS_FIELDS` 白名单、**不外发**子任务回流通道
   —— 由「**只**主 planner 注入 `show_thinking`」天然保证。
 
+### 2.2 单次推理多动作（`ActionGroup`，change `0257` / ADR-0248）
+
+planner 在**原生** `tool_calls` 多于一个时返回 `ActionGroup`（按 `index` 升序）；单调用仍返回
+`Action`。循环把组内动作逐个送入既有单动作执行体（中间件 / 确认门 / 执行 / 观测 / 事件 / 压实
+阈值），每个动作推进一轮。批次内任一调用解析失败 ⇒ 单个 `LLM_PLAN_PARSE_FAILED` 终止动作，
+**零部分执行**。
+
+重复抑制（只作用于**完全相同**的调用）：批内规范化键去重；轮内**紧邻**重复的覆盖写
+（`tools.file_write` 非追加模式）与 `tools.file_patch`（上次成功）跳过执行并复用结果，任何其他
+动作执行后重置。被抑制调用仍产 `action_started` / `action_completed`（`duration_ms=0`）/
+`step_completed` 与观测回灌，trace 记 `action_deduplicated`（`scope` / `tool_id` / `round`；
+**不含**参数正文）。动作事件载荷键集不变。
+
 阶段方法签名（私有，但为策略替换点）：
 
 ```python
 def perceive(self, user_input: str, *, session_id: str = "") -> LoopContext
-def reason(self, ctx: LoopContext) -> Action
+def reason(self, ctx: LoopContext) -> Action | ActionGroup
 def act(self, action: Action, trace_id: str) -> ActionResult   # 经 EffectTracker.record
 def observe(self, ctx: LoopContext, result: ActionResult) -> LoopContext
 def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "",

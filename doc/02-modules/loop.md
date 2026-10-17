@@ -91,6 +91,15 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
   适配层落 loop 侧（`fault_adapter` 在 `core/loop/` 内、import `core.constraints`）：`loop → constraints`
   是合法依赖方向，`constraints → loop` 才是红线（`tests/test_architecture.py` 守护）。`ActFn` 协议在
   `core/loop/protocol.py`。
+- **单次推理多动作**（change `0257`／ADR-0248）：planner 多原生 `tool_calls` 时返回
+  `ActionGroup`（按 `index` 升序），循环把它展开进 `pending` 队列并**逐个**走既有单动作执行体
+  （中间件 → 确认门 → 执行 → 观测 → 事件 → 压实阈值）；每个动作推进一轮、逐动作受轮数 / 预算闸门。
+  单调用仍返回 `Action`，事件序与观测**逐字不变**。批次任一调用解析失败 ⇒ 单个
+  `LLM_PLAN_PARSE_FAILED` 终止动作、**零部分执行**。
+- **重复调用抑制**（change `0257`／ADR-0248）：批内完全相同的调用只执行一次（保留首个结果）；
+  轮内**紧邻重复**的覆盖写 / 补丁（上次成功）跳过执行并复用结果，任何其他动作执行后重置记忆。
+  被抑制调用仍产正常动作事件（`duration_ms=0`）、观测回灌与 `step_completed`，trace 记
+  `action_deduplicated`（`scope` / `tool_id` / `round`；不含参数正文）。
 
 ### 3.3 无行动不记忆（Remember 阶段）
 

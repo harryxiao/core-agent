@@ -8,6 +8,8 @@ auto、不可逆写/高风险 confirm、显式拒绝 deny）、效应记录与�
 from __future__ import annotations
 
 import asyncio
+import os
+import stat
 import subprocess as sp
 import time
 from unittest.mock import patch
@@ -37,6 +39,7 @@ from core.tools.env_shell import EnvironmentSnapshot
 _DELAY = 0.1
 _HTTP_OK = 200  # FakeHTTPResponse 默认状态码
 _SERIAL_THRESHOLD = 0.18  # 串行两次 sleep ≈ 2*_DELAY，真并发应显著低于此值
+_MODE_640 = 0o640  # 权限位保留断言用的既有文件模式
 
 _ECHO_SCHEMA = {
     "type": "object",
@@ -161,6 +164,61 @@ def test_file_write_normalizes_mode_alias(tmp_path) -> None:
     )
     assert first.ok and second.ok
     assert target.read_text(encoding="utf-8") == "xy"
+
+
+# ---- 覆盖写入原子性（change 0257 / ADR-0248） ----
+
+
+def test_file_write_overwrite_is_atomic_without_temp_residue(tmp_path) -> None:
+    """覆盖写入 ⇒ 目标为新内容，目录中不残留临时文件。"""
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+    provider = _provider()
+    provider.register(file_write())
+
+    result = provider.invoke(
+        "tools.file_write", {"path": str(target), "content": "new"}, trace_id="t"
+    )
+
+    assert result.ok
+    assert target.read_text(encoding="utf-8") == "new"
+    assert [entry.name for entry in tmp_path.iterdir()] == ["a.txt"]
+
+
+def test_file_write_replace_failure_leaves_target_unchanged(tmp_path) -> None:
+    """替换阶段失败 ⇒ 目标逐字保持原内容，临时文件被清理。"""
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+    provider = _provider()
+    provider.register(file_write())
+
+    with patch("core.tools.builtin.os.replace", side_effect=OSError("replace boom")):
+        result = provider.invoke(
+            "tools.file_write",
+            {"path": str(target), "content": "new"},
+            trace_id="t",
+        )
+
+    assert result.ok is False
+    assert target.read_text(encoding="utf-8") == "old"
+    assert [entry.name for entry in tmp_path.iterdir()] == ["a.txt"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX 权限位")
+def test_file_write_overwrite_preserves_permission_bits(tmp_path) -> None:
+    """替换既有文件 ⇒ 保留其权限位（临时文件的 0o666 不覆盖目标模式）。"""
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+    os.chmod(target, _MODE_640)
+    provider = _provider()
+    provider.register(file_write())
+
+    result = provider.invoke(
+        "tools.file_write", {"path": str(target), "content": "new"}, trace_id="t"
+    )
+
+    assert result.ok
+    assert stat.S_IMODE(target.stat().st_mode) == _MODE_640
 
 
 # ---- 只读自动执行 ----

@@ -3878,3 +3878,30 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > `pyright` 0 / `pytest -q`）。架构门（控制流嵌套 ≤3）促使等待封装为 `_await_chunk`。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0247 行（线程不可强杀 / 流式不重试 /
 > trace 非逐事件持久化 / P1 并行工具调用与原子写另批）。
+
+## 170. 并行工具调用、重复抑制与原子写（TC-PTC，change `0257`／ADR-0248，台账 E194）
+|---|---|---|---|
+| TC-PTC-01 | **非流式全量映射**（承重） | 原生返回两条 `tool_calls`（`tools.echo` / `tools.write`） | `ActionGroup.actions` 按 `index` 含两条，`tool_id` / `args` 逐字对应（`test_planner_maps_all_native_tool_calls`） |
+| TC-PTC-02 | 单调用协议不变（对照锚） | 原生返回一条 `tool_calls` | 仍为 `Action`（非组），`args` 逐字对应（`test_planner_single_native_tool_call_stays_action`） |
+| TC-PTC-03 | **流式多 index 顺序** | 单 chunk 携带 index 0/1 两条片段 | 产出单个 `ActionGroup`，顺序 `[echo, write]`（`test_planner_astream_maps_all_native_tool_calls`） |
+| TC-PTC-04 | **批次解析失败零执行** | 两个调用中第二个 `arguments="{oops"` | 单个 `Action`（`failed=True`），`reply` 含 `LLM_PLAN_PARSE_FAILED`，无部分动作组（`test_planner_batch_with_invalid_arguments_is_terminal_failure`） |
+| TC-PTC-05 | **动作组逐动作执行**（承重） | 组内两个不同 `echo`（`a` / `b`） | 处理器按序各调用一次；两组 `action_started` 的 `round` 为 `[0, 1]`；末事件 `loop_finished`（`test_loop_executes_every_action_in_group`） |
+| TC-PTC-06 | **批内重复只执行一次**（承重） | 同批两个完全相同的 `echo {text:x}` | 处理器仅调用一次；trace 一条 `action_deduplicated`，`scope="batch"`、`tool_id` 正确、payload **不含**参数正文（`test_duplicate_calls_in_one_batch_execute_once`） |
+| TC-PTC-07 | **轮内紧邻写复用**（承重） | 连续两轮相同 `file_write`（覆盖模式） | 处理器仅调用一次；trace `action_deduplicated`，`scope="turn"`（`test_consecutive_identical_write_is_deduplicated`） |
+| TC-PTC-08 | 隔动作不抑制（对照锚） | 写 A → `echo` → 写 A | 两次写均执行（`calls` 含两份）（`test_identical_write_after_other_action_is_not_deduplicated`） |
+| TC-PTC-09 | **原子覆盖无残留** | 既有文件 `old` → 覆盖写 `new` | 目标为 `new`，目录仅剩目标文件（无 `.tmp`）（`test_file_write_overwrite_is_atomic_without_temp_residue`） |
+| TC-PTC-10 | **替换失败目标不变**（承重） | `os.replace` 抛 `OSError` | 返回 `ok=False`；目标仍为 `old`；临时文件已清理（`test_file_write_replace_failure_leaves_target_unchanged`） |
+| TC-PTC-11 | 权限位保留 | 既有文件 `0o640` → 覆盖写 | 目标权限仍为 `0o640`（`test_file_write_overwrite_preserves_permission_bits`；Windows skip） |
+
+> **追加模式回归**：既有 `test_file_write_normalizes_mode_alias`（`write` 后 `append` ⇒ `xy`）逐字保留，
+> 追加路径未改 `open("a")`。
+> **反证**：P1 摘 planner 全量映射（只回首个）⇒ TC-PTC-01 红；P2 摘组展开（只执行首个）⇒
+> TC-PTC-05 红；P3 摘批内去重 ⇒ TC-PTC-06 红；P4 摘轮内去重 ⇒ TC-PTC-07 红；P5 摘原子替换
+> （回到 `open("w")`）⇒ TC-PTC-10 红。五次复原后 `md5sum` 均一致。
+> 规格：`loop` **ADDED**「单次推理多工具动作」（4 scen）；`tool-use` **ADDED**「文件写入原子性」
+> （3 scen）。`openspec validate --all` 32/0（归档前）。
+> 测试净 **+11**（2843 → **2854**）。四门禁全绿（`ruff check` / `ruff format --check` /
+> `pyright` 0 / `pytest -q`）。架构门（控制流嵌套 ≤3）促使流式条目归一抽为
+> `_convert_reason_item`（`elif` 链 + 内层循环曾达 4 层）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0248 行（串行 / 无依赖分析 / 仅完全相同键 /
+> `file_patch` 非原子 / fsync 成本）。

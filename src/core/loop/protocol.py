@@ -120,6 +120,18 @@ class Action:
 
 
 @dataclass
+class ActionGroup:
+    """一次推理产出的**多个**工具动作（change 0257 / ADR-0248）。
+
+    planner 仅在原生 ``tool_calls`` 多于一个时返回本类型（按 provider ``index`` 升序）；
+    单调用仍返回 :class:`Action`，既有协议消费方逐字不变。循环把组内动作**按序串行**
+    送入既有单动作执行体（中间件 / 确认门 / 观测 / 事件 / 压实阈值逐动作生效）。
+    """
+
+    actions: list[Action] = field(default_factory=list[Action])
+
+
+@dataclass
 class ActionResult:
     """动作执行结果。"""
 
@@ -179,7 +191,7 @@ class LoopPlugin(Protocol):
         """
         ...
 
-    async def reason(self, ctx: LoopContext) -> Action:
+    async def reason(self, ctx: LoopContext) -> Action | ActionGroup:
         """调用模型决策下一步动作（非法动作回传结构化错误，不中断）。"""
         ...
 

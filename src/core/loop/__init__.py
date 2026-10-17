@@ -12,6 +12,7 @@ from .default import ActionObserver, Approver, DefaultLoop, TurnObserver
 from .planner import LLMPlanner
 from .protocol import (
     Action,
+    ActionGroup,
     ActionResult,
     LimitsConfigurable,
     LoopContext,
@@ -25,6 +26,7 @@ from .protocol import (
 
 __all__ = [
     "Action",
+    "ActionGroup",
     "ActionObserver",
     "Approver",
     "ActionResult",

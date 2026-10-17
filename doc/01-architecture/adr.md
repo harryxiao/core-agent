@@ -9080,6 +9080,59 @@ P1 确定性 SOP 发布质量门、P2 抽取拒绝反馈与去重、P3 任务记
 增量在超时后可能继续产生（消费端已停止读取，队列随调用结束回收）；⑤ 会话复盘暴露的
 「并行 tool_calls 只执行首个 / 重复 file_write / 非原子写入」属 P1，另 change 处理。
 
+## ADR-0248：并行工具调用全量执行、重复抑制与原子写（change 0257 / 台账 E194）
+
+**背景**：会话 `cb37aba3ddf54bcc9336be2464c95c07` 复盘在 P0（ADR-0247）之外确认三条 P1 缺陷：
+
+1. **并行调用只执行首个**：planner 的 `_from_tool_calls` 直接取 `calls[0]`，其余原生
+   `tool_calls` **静默丢弃**。模型发出批量调用后只看到一个结果，误判失败并在后续轮次重发。
+2. **重复调用无抑制**：同一批次内完全相同的调用、以及相邻轮次完全相同的覆盖写，均会**重复执行**；
+   与缺陷 1 叠加形成「写一次 → 误判 → 再写」的放大回路。
+3. **覆盖写非原子**：`file_write` 以 `open("w")` 就地截断后写入。并发读者可能读到空文件 / 半截内容，
+   进程中断则留下截断文件；写工具是模型最常用的副作用面，风险高于读类工具。
+
+**决策**：
+
+- **D1 动作组 `ActionGroup`**：`Action` 保持单工具协议不变（避免 20+ 处测试桩与消费方漂移）；
+  新增并列类型 `ActionGroup(actions: list[Action])`。planner 仅在多调用时返回组（按 provider
+  `index` 升序），单调用仍返回 `Action`。批次内任一调用参数非法（非 JSON / 非对象 / 缺函数名）
+  ⇒ 整个批次归一为**单个**失败终止动作（`LLM_PLAN_PARSE_FAILED`），**零部分执行** —— 部分执行会
+  让模型看到的工具结果与它发出的调用数量不一致，且无法可靠对应 call id。
+- **D2 待执行队列**：循环维护 `pending`，组展开后逐个进入**既有单动作执行体**（中间件 → 确认门 →
+  执行 → 观测回灌 → 事件 → 压实阈值）。每个动作仍推进轮次、逐动作受 `max_rounds` / 预算闸门约束。
+  事件序为 N 组 `action_started` / `action_completed` / `step_completed`，**载荷键集不变**。
+  单调用路径的推理 / 事件 / 观测逐字不变（`pending` 为空时才推理）。
+- **D3 两层重复抑制**（只作用于**完全相同**的调用）：
+  1. **批内**：键 = `(tool_id, json.dumps(args, sort_keys=True, ensure_ascii=False, default=str))`，
+     保留首个，后续复用其结果；
+  2. **轮内紧邻**：写动作（`tools.file_write` 非追加模式、`tools.file_patch`）与**上一条已执行
+     动作**键相同且上次成功 ⇒ 跳过执行并复用结果；任何其他动作执行后重置「上一条」记忆（防止
+     轮询 / 读取类重复被误杀）。
+  被抑制的调用仍产出正常动作事件（`duration_ms=0`）、观测回灌与 `step_completed`，trace 增
+  `action_deduplicated`（`scope="batch"|"turn"` / `tool_id` / `round`；**不含参数正文**）。
+- **D4 覆盖写原子化**：`file_write` 覆盖模式在同目录创建 `.<name>.<uuid>.tmp`（`O_CREAT|O_EXCL`），
+  写入后 `flush` + `fsync`，既有文件复制其权限位，再 `os.replace` 原子替换；任一步失败 ⇒ 清理临时
+  文件并原样抛出，目标逐字不变。新建文件 0o666 经 umask 掩码，与 `open()` 一致；追加模式
+  `open("a")` 不变；快照仍在写入成功后压栈，撤销语义逐字不变。
+
+**规格**：`loop` **ADDED**「单次推理多工具动作」（4 scen）；`tool-use` **ADDED**「文件写入原子性」
+（3 scen）。`openspec validate --all` 32/0（归档前）。
+
+**测试**：`tests/test_parallel_tool_calls.py` 8 个（planner 非流式/流式全量映射、单调用保持 Action、
+批次解析失败零执行、动作组逐动作执行、批内重复、轮内紧邻写重复、隔其他动作不抑制）；
+`tests/test_tool_use.py` 3 个（原子覆盖无残留、替换失败目标不变且临时文件清理、权限位保留）。
+反证 5/5：摘全量映射 / 摘组展开 / 摘批内去重 / 摘轮内去重 / 摘原子替换 ⇒ 对应用例红；复原
+`md5sum` 一致。四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q`
+**2854 passed**。架构门「控制流嵌套 ≤3」促使把流式条目归一抽为模块级异步生成器
+`_convert_reason_item`（早期 `elif` 链 + 内层循环达 4 层）。
+
+**局限**：① 并行调用按 `index` **串行**执行，总时长为各调用之和（可预测优先，未做真并发）；
+② 无依赖分析 —— 同一批由模型一次性给出，后一个调用看不到前一个的观测，批次执行不做中途重规划；
+③ 抑制仅认**完全相同**的键：参数键序不同、路径写法不同（`~` / 绝对路径）均不抑制；
+④ 原子性只覆盖 `file_write` 覆盖模式，`file_patch` 仍为读-改-写（可后续复用同一助手）；
+⑤ 每次覆盖多一次 `fsync`，小文件写的相对开销上升；未 `fsync` 目录，跨崩溃目录项持久化不在本
+change 范围；⑥ 去重键基于 planner 原始参数，中间件改写后的参数不参与比较。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9322,3 +9375,4 @@ P1 确定性 SOP 发布质量门、P2 抽取拒绝反馈与去重、P3 任务记
 | ADR-0245 | 03-interfaces/notes-interface.md, 03-interfaces/context-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0246 | 02-modules/skills.md, 03-interfaces/skills-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0247 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 03-interfaces/llm-provider-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0248 | 02-modules/loop.md, 02-modules/tool-use.md, 03-interfaces/loop-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

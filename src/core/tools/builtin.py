@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import stat
 import subprocess
 import sys
 import urllib.request
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -136,6 +138,28 @@ def file_read() -> Tool:
     )
 
 
+def _atomic_overwrite(target: Path, content: str) -> None:
+    """原子覆盖：同目录临时文件 + ``fsync`` + ``os.replace``（change 0257 / ADR-0248）。
+
+    并发读者只可能看到**完整旧内容**或**完整新内容**，不会读到空文件 / 半截内容。
+    失败（含替换失败）⇒ 清理临时文件并原样抛出，目标逐字不变。
+    """
+    tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if target.exists():
+            # 临时文件按 umask 新建；替换既有文件须**保留其权限位**
+            os.chmod(tmp, stat.S_IMODE(target.stat().st_mode))
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def file_write() -> Tool:
     """写文件（可逆：撤销恢复原内容）。"""
 
@@ -148,8 +172,11 @@ def file_write() -> Tool:
         normalized = {"write": "w", "overwrite": "w", "append": "a"}.get(mode, mode)
         target = _expand(path)
         before = target.read_text(encoding="utf-8") if target.exists() else None
-        with target.open(normalized, encoding="utf-8") as fh:
-            fh.write(content)
+        if normalized == "w":
+            _atomic_overwrite(target, content)
+        else:
+            with target.open(normalized, encoding="utf-8") as fh:
+                fh.write(content)
         # 快照存**展开后**路径 ⇒ `_restore` 恢复点与写入点一致（change 0228 / ADR-0218）
         snaps.append({"path": str(target), "before": before})  # 写入**成功后**压栈
         return {"path": path, "bytes_written": len(content)}

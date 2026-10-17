@@ -118,6 +118,11 @@ class ToolError:
 > `file_write` / `file_patch` 把**展开后**路径存入撤销快照 ⇒ 撤销点与写入点一致（**不**误建字面 `~`）。
 > 返回体 `{"path": …}` 仍回**模型给的原文**（contract 不变）。
 >
+> **覆盖写原子性（change `0257` / ADR-0248）**：`file_write` 覆盖模式（`w` / `write` /
+> `overwrite`）经同目录临时文件 + `flush` + `fsync` + 保留既有权限位 + `os.replace` 原子替换；
+> 失败清理临时文件、目标逐字不变。并发读者只可能看到完整旧内容或完整新内容。追加模式
+> （`a` / `append`）语义不变；撤销快照仍在写入成功后压栈（记录写入前原内容）。
+>
 > **`code_run` 的输出与目录（change `0240` / ADR-0228）**：`stdout` / `stderr` 固定以 **UTF-8**
 > 解码（`errors="replace"`），不依赖宿主 locale；PowerShell 子进程在用户脚本前设置
 > `[Console]::OutputEncoding`，Python 子进程带 `PYTHONIOENCODING=utf-8`。`cwd` 在入口做

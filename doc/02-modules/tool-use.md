@@ -28,6 +28,11 @@ L1 提供**最小可逆能力单元（原子工具）**。原子工具是 LLM �
 
 > `file_read`/`file_write`/`file_patch` 对应现有 `file_read`/`file_write`/`file_patch` 能力；
 > `web_scan`/`web_execute_js` 对应现有 `web_scan`/`web_execute_js`；其余为 CORE 抽象后的统称。
+>
+> **覆盖写原子性**（change `0257`／ADR-0248）：`file_write` 的覆盖模式（`w` / `write` /
+> `overwrite`）先在同目录写临时文件并 `flush` + `fsync`，保留既有文件权限位后 `os.replace`
+> 原子替换；失败清理临时文件、目标逐字不变。追加模式（`a` / `append`）语义不变；撤销快照仍记录
+> 写入前原内容（写入成功后压栈），撤销语义逐字不变。
 
 ---
 
