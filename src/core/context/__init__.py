@@ -6,9 +6,11 @@
 对应规格：doc/openspec/specs/context/spec.md
 """
 
+from core.tokens import estimate_tokens
+
 from .assembler import DynamicAssembler
 from .blocks import BlockPlan, plan_blocks
-from .budget import BudgetManager, estimate_tokens
+from .budget import BudgetManager
 from .compactor import Compactor
 from .errors import ContextError, ContextErrorCode
 from .info_map import InfoMap

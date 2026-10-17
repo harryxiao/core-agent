@@ -65,6 +65,44 @@ def test_enforce_budget_exceeded_when_mandatory_over() -> None:
     assert exc_info.value.code is ContextErrorCode.BUDGET_EXCEEDED
 
 
+class _FixedEstimator:
+    """定值估算器：每次调用记 1 token（change 0230 / G1）。"""
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+        self.calls = 0
+
+    def estimate(self, text: str) -> int:
+        self.calls += 1
+        return self.value
+
+
+def test_budget_default_estimator_is_heuristic() -> None:
+    """未注入估算器 ⇒ 共享启发式（task/stage 各 1 token）。"""
+    pack = ContextPack(task="t", stage="s")
+    out = BudgetManager().enforce(pack, budget=100)
+    assert out.token_used == 2  # noqa: PLR2004 — task/stage 各 1
+
+
+def test_budget_uses_injected_estimator() -> None:
+    """注入估算器 ⇒ 测量与裁剪全部取自注入实现。"""
+    estimator = _FixedEstimator(7)
+    pack = ContextPack(task="t", stage="s")
+    out = BudgetManager(estimator=estimator).enforce(pack, budget=100)
+    assert out.token_used == 14  # noqa: PLR2004 — 两个字段 × 固定 7
+    assert estimator.calls > 0
+
+
+def test_assembler_passes_estimator_to_budget() -> None:
+    estimator = _FixedEstimator(5)
+    assembler = DynamicAssembler(
+        project_info=["project"], constitution=["rule"], token_estimator=estimator
+    )
+    pack = assembler.build("task", "stage", budget=100)
+    assert pack.token_used == 20  # noqa: PLR2004 — 四个字段 × 固定 5
+    assert estimator.calls > 0
+
+
 # ---- 信息地图 ----
 
 

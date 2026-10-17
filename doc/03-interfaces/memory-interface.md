@@ -115,6 +115,10 @@ MemoryStore(
     ephemeral_sessions=(), # 临时会话集合（change 0245 / ADR-0233）：压实只做会话级摘要与归档，
                            # SHALL NOT 写全局派生（关键事实/关系/episodic）或交付 canonical 提升；
                            # 缺省空 ⇒ 压实逐字不变。组合根仅在执行面门控开启时传 ("bench",)
+    token_estimator=None,  # 读预算/短带截断的 token 估算器（change 0230 / ADR-0237）：
+                           # 缺省 core.tokens.DEFAULT_ESTIMATOR（启发式，行为逐字不变）
+    l2_soft_max_entries=None,  # L2 活跃层软上限（change 0230 / ADR-0237）：缺省 None 关闭；
+                               # 超限先 forget，再按 ts 升序迁移可遗忘条目至 L4，异常降级不阻塞写
 )
 ```
 
@@ -272,7 +276,7 @@ object]``）时，某会话摘要**首次越过**上界（既有摘要长度 ≤
 
 | 字段 | 取值 |
 |---|---|
-| `id` | `keyfact.<实体 slug>`（**同实体至多一条**；重复抽取**覆盖式更新**、条目不增长） |
+| `id` | `keyfact.<实体 slug>`（**同实体至多一条**；重复抽取**覆盖式更新**、条目不增长；跨批次覆盖**保留首见正时间戳**，change 0230 / ADR-0237） |
 | `kind` | `semantic`（提炼事实，不再被下次聚合选中） |
 | `source` | `extraction`（短标签） |
 | `trace_id` | `compaction.<session_id>`（**与压实同 trace**：`rollback(trace_id)` 与摘要、迁移**一并**逆转） |

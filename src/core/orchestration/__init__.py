@@ -22,12 +22,19 @@ from .models import (
 )
 from .planner import LLMSubtaskPlanner, LLMTaskVerifier, LLMVerifier
 from .router import MultiAgentRouter
-from .scheduler import ProgressTracker, SubtaskOutcome, SuccessChecker, TaskScheduler
+from .scheduler import (
+    FileCheckpoint,
+    ProgressTracker,
+    SubtaskOutcome,
+    SuccessChecker,
+    TaskScheduler,
+)
 from .state_machine import StateMachine
 
 __all__ = [
     "AgentProfile",
     "DecomposeResult",
+    "FileCheckpoint",
     "LLMSubtaskPlanner",
     "LLMTaskVerifier",
     "LLMVerifier",

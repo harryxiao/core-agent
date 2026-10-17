@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from core.memory import MemoryStore
+from core.tokens import TokenEstimator
 
 from .budget import BudgetManager
 from .info_map import InfoMap
@@ -53,6 +54,8 @@ class DynamicAssembler:
         # 故本轴取 tags（与 `memory._PRESERVE_TAGS` 同为标签面惯用法）。缺省空 ⇒ 不建过滤、
         # 装配结果逐字一致。
         exclude_fact_tags: frozenset[str] = frozenset(),
+        # token 估算器注入（change 0230 / G1）：缺省回落共享启发式，预算测量行为逐字不变。
+        token_estimator: TokenEstimator | None = None,
     ) -> None:
         self._memory = memory
         self._info_map = info_map if info_map is not None else InfoMap()
@@ -62,6 +65,7 @@ class DynamicAssembler:
         self._allow_source_prefixes = tuple(allow_source_prefixes)
         self._exclude_fact_sources = tuple(exclude_fact_sources)
         self._exclude_fact_tags = frozenset(exclude_fact_tags)
+        self._token_estimator = token_estimator
 
     def with_allow_source_prefixes(self, *prefixes: str) -> DynamicAssembler:
         """派生装配器：**排除面逐字继承**，放行面替换为给定前缀（排除面的例外面）。
@@ -79,6 +83,7 @@ class DynamicAssembler:
             allow_source_prefixes=tuple(prefixes),
             exclude_fact_sources=self._exclude_fact_sources,
             exclude_fact_tags=self._exclude_fact_tags,
+            token_estimator=self._token_estimator,
         )
 
     def build(self, task: str, stage: str, *, budget: int, session_id: str = "") -> ContextPack:
@@ -96,7 +101,7 @@ class DynamicAssembler:
             pending=[],
             pointers=self._gather_pointers(task),
         )
-        return BudgetManager().enforce(pack, budget)
+        return BudgetManager(self._token_estimator).enforce(pack, budget)
 
     def fetch_detail(self, pointer: str) -> str:
         """按信息地图指针跳转取细节（``doc_id#section``）——模型按需取详情的消费面。

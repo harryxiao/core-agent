@@ -20,7 +20,7 @@ from pathlib import Path
 
 from core.judgment import Compactor, DecisionResult
 from core.plugin_registry import Effect, EffectTracker
-from core.tokens import estimate_tokens
+from core.tokens import DEFAULT_ESTIMATOR, TokenEstimator
 
 from .backend import FileBackend
 from .episodic import MAX_EPISODIC_CHARS, EpisodicExtractor
@@ -267,6 +267,10 @@ class MemoryStore:
         episodic_extractor: EpisodicExtractor | None = None,
         semantic_forgetting: bool = False,
         ephemeral_sessions: tuple[str, ...] = (),
+        # token 估算器注入（change 0230 / G1）：缺省回落共享启发式；读预算行为逐字不变。
+        token_estimator: TokenEstimator | None = None,
+        # L2 活跃层软上限（change 0230 / G5）：缺省 None = 不启用（行为逐字不变）。
+        l2_soft_max_entries: int | None = None,
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
         self._tracker = effect_tracker if effect_tracker is not None else EffectTracker()
@@ -279,6 +283,8 @@ class MemoryStore:
         self._importance_scorer = importance_scorer
         self._episodic_extractor = episodic_extractor
         self._semantic_forgetting = semantic_forgetting
+        self._estimator = token_estimator if token_estimator is not None else DEFAULT_ESTIMATOR
+        self._l2_soft_max_entries = l2_soft_max_entries
         # 临时会话（change 0245 / ADR-0233）：基准/合成执行会话 —— 压实只做会话级摘要与
         # 归档，SHALL NOT 产出全局层派生（关键事实/关系/episodic）或 canonical 摘要提升。
         # 缺省空 ⇒ 压实逐字不变。
@@ -414,6 +420,7 @@ class MemoryStore:
                 self.migrate(entry.id, layer, "L4", trace_id=f"gate.{entry.id}")
             else:
                 self._write_importance(entry, score, trace_id=entry.trace_id)
+        self._enforce_l2_cap()
         return entry.id
 
     def _persist(self, layer: Layer, entry: MemoryEntry) -> None:
@@ -683,18 +690,51 @@ class MemoryStore:
         """
         forgotten: list[MemoryId] = []
         for entry in self._all_entries():
-            forgettable = entry.kind == "episodic" or (
-                self._semantic_forgetting
-                and entry.kind == "semantic"
-                and entry.source in _FORGETTABLE_SEMANTIC_SOURCES
-            )
-            if entry.layer != "L2" or not forgettable:
+            if entry.layer != "L2" or not self._forgettable(entry):
                 continue
             if _decay_score(entry) >= threshold:
                 continue
             self.migrate(entry.id, "L2", "L4", trace_id=f"forgetting.{entry.id}")
             forgotten.append(entry.id)
         return forgotten
+
+    def _forgettable(self, entry: MemoryEntry) -> bool:
+        """遗忘面判据（`forget` 与 L2 软上限共用，单点真源）。"""
+        return entry.kind == "episodic" or (
+            self._semantic_forgetting
+            and entry.kind == "semantic"
+            and entry.source in _FORGETTABLE_SEMANTIC_SOURCES
+        )
+
+    def _enforce_l2_cap(self) -> None:
+        """L2 活跃层软上限（change 0230 / G5）：先遗忘、再按 ts 最旧迁 L4。
+
+        只走既有 ``forget`` / ``migrate`` 路径（可撤销），不物理删除；达上限或仅剩
+        不可遗忘条目（摘要类 / L0 / L3）即停。执行失败降级留痕，不阻塞写入。
+        """
+        cap = self._l2_soft_max_entries
+        if cap is None:
+            return
+        try:
+            active = [entry for entry in self._all_entries() if entry.layer == "L2"]
+            if len(active) <= cap:
+                return
+            self.forget()
+            active = [entry for entry in self._all_entries() if entry.layer == "L2"]
+            overflow = len(active) - cap
+            if overflow <= 0:
+                return
+            candidates = sorted(
+                (entry for entry in active if self._forgettable(entry)), key=lambda e: e.ts
+            )
+            for entry in candidates[:overflow]:
+                self.migrate(entry.id, "L2", "L4", trace_id=f"l2_cap.{entry.id}")
+        except Exception as err:  # noqa: BLE001 — 软上限失败降级，不阻塞写入
+            warnings.warn(
+                f"L2 soft cap enforcement failed ({type(err).__name__}); write completed",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     # ---- 内部辅助 ----
 
@@ -743,7 +783,7 @@ class MemoryStore:
         selected: list[MemoryEntry] = []
         used = 0
         for entry in entries:
-            cost = estimate_tokens(entry.content)
+            cost = self._estimator.estimate(entry.content)
             if selected and used + cost > budget:
                 continue
             selected.append(entry)
@@ -970,17 +1010,23 @@ class MemoryStore:
             )
 
     def _write_key_fact(self, fact: KeyFact, *, key: str, session_id: str) -> None:
-        """落一条关键事实（同实体同一 `id` ⇒ 覆盖式更新、条目不增长）。"""
+        """落一条关键事实（同实体同一 `id` ⇒ 覆盖式更新、条目不增长）。
+
+        跨压实覆盖更新保留**首次出现时间戳**（change 0230 / G4）：新值覆盖正文与本次
+        溯源标签，但 `ts` 沿用既有条目（非 0 时），使「首见时间」不被后续压实重置。
+        """
         slug = slug_entity(fact.entity)
         tags = [_KEY_FACT_TAG, f"entity:{slug}"]
         if fact.ref:
             tags.append(f"ref:{fact.ref}")
         if session_id:
             tags.append(f"session:{key}")
+        entry_id = f"keyfact.{slug}"
+        existing = self._entry_by_id(entry_id)
         self.write(
             "L2",
             MemoryEntry(
-                id=f"keyfact.{slug}",
+                id=entry_id,
                 layer="L2",
                 content=f"{fact.entity}: {fact.value}",
                 tags=tags,
@@ -988,6 +1034,7 @@ class MemoryStore:
                 trace_id=f"compaction.{key}",
                 session_id="",
                 kind="semantic",
+                ts=existing.ts if existing is not None and existing.ts > 0 else 0.0,
             ),
         )
 

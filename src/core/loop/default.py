@@ -468,6 +468,10 @@ class DefaultLoop(Plugin):
         # 在阈值步之后**步步为真**，若无此闸门则一轮内重复压实（每次含模型调用）。
         # 标记为本轮**执行态**（非上下文事实）⇒ 置于 `astream` 局部变量，随轮自然重置。
         compacted = False
+        # 预算降级标记（change 0230 / G2）：每轮至多一次「强制压实 + 收尾轮」。
+        # 压实不改变本轮消息记账（`ctx.token_used` 不因持久化而下降），故降级语义是
+        # **给模型一轮收尾机会**：收尾轮完成即正常收口，仍未完成才按预算终止。
+        budget_retried = False
         while not ctx.done():
             if ctx.rounds >= self._max_rounds:
                 limit_reason = "LOOP_LIMIT_EXCEEDED"
@@ -531,8 +535,16 @@ class DefaultLoop(Plugin):
                 await asyncio.to_thread(self._compact, ctx, trace_id)
                 compacted = True
             if self._token_budget > 0 and ctx.token_used >= self._token_budget:
-                limit_reason = "TOKEN_BUDGET_EXCEEDED"
-                break
+                # 预算降级续跑（change 0230 / G2），语义见 `_budget_retry`。
+                retry, compacted = await self._budget_retry(
+                    ctx, trace_id, budget_retried=budget_retried, compacted=compacted
+                )
+                budget_retried = budget_retried or retry
+                if retry:
+                    continue
+                if not (budget_retried and ctx.done()):
+                    limit_reason = "TOKEN_BUDGET_EXCEEDED"
+                    break
         turn_ok = not limit_reason and not turn_failed
         if limit_reason:
             ctx.reply = f"{limit_reason}: 本轮终止"
@@ -811,6 +823,29 @@ class DefaultLoop(Plugin):
             self._memory.forget()
         except Exception as err:  # noqa: BLE001 — 遗忘失败降级，本轮继续
             self._trace(trace_id, "maintenance_failed", {"error": str(err)})
+
+    async def _budget_retry(
+        self, ctx: LoopContext, trace_id: str, *, budget_retried: bool, compacted: bool
+    ) -> tuple[bool, bool]:
+        """预算触顶降级（change 0230 / G2）：返回 ``(是否续跑, 压实标记)``。
+
+        先强制压实（本轮至多一次），再给模型**一轮收尾机会**：压实不会降低本轮消息记账
+        （``ctx.token_used`` 不因持久化而下降），故降级不能表现为「压完继续跑」，只能表现为
+        「收尾轮完成即正常收口，否则按 ``TOKEN_BUDGET_EXCEEDED`` 终止」。未注入压实器
+        或已降级过 ⇒ 不续跑，既有行为不变。
+        """
+        if budget_retried or self._compactor is None:
+            return False, compacted
+        if not compacted:
+            await asyncio.to_thread(self._compact, ctx, trace_id)
+            compacted = True
+        ctx.token_used = max(_context_tokens(ctx), self._reported_prompt_tokens())
+        self._trace(
+            trace_id,
+            "budget_retry",
+            {"token_used": ctx.token_used, "token_budget": self._token_budget},
+        )
+        return True, compacted
 
     # ---- 阶段方法 ----
 

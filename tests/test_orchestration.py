@@ -11,6 +11,7 @@ import asyncio
 import json
 import threading
 from collections.abc import AsyncIterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -21,6 +22,7 @@ from core.loop import Action, DefaultLoop, LoopEvent, LoopResult
 from core.orchestration import (
     AgentProfile,
     DecomposeResult,
+    FileCheckpoint,
     LLMSubtaskPlanner,
     LLMTaskVerifier,
     LLMVerifier,
@@ -907,6 +909,65 @@ def test_scheduler_astream_emits_progress_events() -> None:
     assert [o.ok for o in finished["outcomes"]] == [True, True]
     kinds = {e.kind for e in recorder.events}  # 审计：关键节点写 trace
     assert {"plan_ready", "subtask_verified", "task_checkpoint", "task_finished"} <= kinds
+
+
+def test_file_checkpoint_atomic_write_and_roundtrip(tmp_path: Path) -> None:
+    """文件型检查点：单文件原子落盘，计划与结果可还原（change 0230 / G7）。"""
+    path = tmp_path / "scheduler-checkpoint.json"
+    checkpoint = FileCheckpoint(path)
+    plan = Plan(
+        subtasks=[Subtask(id="1", goal="g", acceptance="a")],
+        goal="G",
+        success_criteria=["c1"],
+        replans=1,
+    )
+    outcomes = [SubtaskOutcome(subtask_id="1", ok=True, reply="done")]
+
+    checkpoint("task-1", outcomes, plan, "sess-A")
+
+    raw = path.read_text(encoding="utf-8")
+    data = cast(dict[str, Any], json.loads(raw))
+    assert data["task_id"] == "task-1" and data["session_id"] == "sess-A"
+    assert data["completed"] == ["1"]
+    assert data["results"] == {"1": "done"}
+    rebuilt = plan_from_dict(cast(dict[str, Any], data["plan"]))
+    assert rebuilt.success_criteria == ["c1"] and rebuilt.replans == 1
+    assert checkpoint.load() == data
+    assert not path.with_name(path.name + ".tmp").exists(), "原子写不留临时文件"
+
+
+def test_file_checkpoint_load_filters_task(tmp_path: Path) -> None:
+    path = tmp_path / "cp.json"
+    checkpoint = FileCheckpoint(path)
+    plan = Plan(subtasks=[Subtask(id="1", goal="g", acceptance="")], goal="G")
+    checkpoint("task-1", [SubtaskOutcome(subtask_id="1", ok=True)], plan, "")
+
+    assert checkpoint.load("task-1") is not None
+    assert checkpoint.load("task-2") is None
+
+
+def test_injected_checkpoint_overrides_file_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """上层注入检查点 ⇒ 不产生文件 I/O（缺省不自行落盘）。"""
+    monkeypatch.chdir(tmp_path)
+    seen: list[str] = []
+    decomposer = SubtaskDecomposer(
+        planner=lambda goal: [Subtask(id="1", goal="t-one", acceptance="")]
+    )
+    scheduler = TaskScheduler(
+        decomposer=decomposer,
+        router=MultiAgentRouter(
+            [AgentProfile(agent_id="a", capabilities=["t"], loop=_FixedReplyLoop("ok"))]
+        ),
+        state_machine=StateMachine(),
+        checkpoint=lambda task_id, outcomes, plan, session_id: seen.append(task_id),
+    )
+
+    asyncio.run(scheduler.run("task-x", "goal"))
+
+    assert seen == ["task-x"]
+    assert not (tmp_path / ".core" / "scheduler-checkpoint.json").exists()
 
 
 def test_scheduler_checkpoint_callbacks_receive_session_id() -> None:

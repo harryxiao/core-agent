@@ -171,9 +171,15 @@ class Compaction:
 
 ```python
 class BudgetManager:
+    def __init__(self, estimator: TokenEstimator | None = None): ...
     def enforce(self, pack: ContextPack, budget: int) -> ContextPack:
         """裁剪低相关度内容至预算内；宪章/未决事项/验收标准优先保留。"""
 ```
+
+- **估算器注入**（change 0230 / ADR-0237）：`TokenEstimator` 协议（`estimate(text) -> int`）
+  定义于 `core.tokens`，缺省 `DEFAULT_ESTIMATOR` 为启发式（行为逐字不变）；
+  `DynamicAssembler(token_estimator=...)` 透传至 `BudgetManager`。注入面只影响测量，裁剪顺序
+  与必保判据不变。
 
 - 保留策略：按**相关度降序**依次纳入可容纳项，**跳过**放不下的项（不掐断后续），
   避免单个大项阻塞其后更小的低相关项。

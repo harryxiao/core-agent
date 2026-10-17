@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 from core.loop import LoopEvent, collect_result
@@ -26,7 +29,7 @@ from core.observability import TraceEvent, Tracer
 from .decomposer import SubtaskDecomposer
 from .errors import OrchestrationError, OrchestrationErrorCode
 from .handoff import DEFAULT_CONTEXT_TOKENS, MAX_HANDOFF_CHARS, build_context_pack
-from .models import Plan, Subtask, TaskHandoff, TaskState, VerifyResult
+from .models import Plan, Subtask, TaskHandoff, TaskState, VerifyResult, plan_to_dict
 from .router import MultiAgentRouter
 from .state_machine import StateMachine
 
@@ -35,6 +38,49 @@ from .state_machine import StateMachine
 CheckpointFn = Callable[[str, "list[SubtaskOutcome]", Plan, str], None]
 # 完成回调：任务 DONE 后落终态检查点（done=True）；第 4参与检查点回调同口径。
 DoneFn = Callable[[str, "list[SubtaskOutcome]", Plan, str], None]
+
+
+@dataclass
+class FileCheckpoint:
+    """文件型检查点（change 0230 / G7）：满足 `CheckpointFn`，原子写单 JSON 文件。
+
+    每次调用覆盖同一文件（单任务断点语义）：`task_id` / `session_id` / `plan`
+    （`plan_to_dict`）/ 已完成子任务 id 与结果。写入经同目录临时文件 + `os.replace`
+    原子替换，不留半写文件。**不**由调度器自动安装（缺省零 I/O，上层注入优先）。
+    """
+
+    path: str | Path = ".core/scheduler-checkpoint.json"
+
+    def __call__(
+        self, task_id: str, outcomes: list[SubtaskOutcome], plan: Plan, session_id: str
+    ) -> None:
+        payload = {
+            "task_id": task_id,
+            "session_id": session_id,
+            "plan": plan_to_dict(plan),
+            "completed": sorted(outcome.subtask_id for outcome in outcomes if outcome.ok),
+            "results": {outcome.subtask_id: outcome.reply for outcome in outcomes if outcome.ok},
+        }
+        target = Path(self.path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, target)
+
+    def load(self, task_id: str | None = None) -> dict[str, Any] | None:
+        """读取检查点（文件缺失/损坏/任务不匹配 ⇒ ``None``，不抛）。"""
+        try:
+            data = json.loads(Path(self.path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        payload = cast(dict[str, Any], data)
+        if task_id is not None and payload.get("task_id") != task_id:
+            return None
+        return payload
+
+
 # 子任务事件发射器：入队即返回（None 为波次收尾哨兵）。
 Emit = Callable[[LoopEvent | None], None]
 # 任务级判定器：Goal + 成功标准 + 子任务结果 → 判定（支持异步，change 0248）。

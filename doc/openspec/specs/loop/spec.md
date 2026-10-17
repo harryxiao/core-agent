@@ -2,7 +2,9 @@
 
 ## Purpose
 核心执行循环是 CORE-Harness 的引擎主轴，负责"观察→推理→行动→记忆"的稳态循环，所有横切能力（权限、约束、遥测、上下文）在此主轴上插入。执行入口同步（run）与异步（arun / astream）同构：异步为主、同步为薄壳，astream 以 AsyncIterator[LoopEvent] 流式产出执行生命周期事件。
+
 ## Requirements
+
 ### Requirement: 执行循环
 系统 SHALL 以固定节律运行"观察→推理→行动→记忆"循环，直到目标达成或达到停止条件。三个执行入口（`run`/`arun`/`astream`）SHALL 接受可选的会话标识 `session_id`（缺省空串，表示未归属会话），并在「记忆」步把该标识写入本轮沉淀 L2 条目的 `session_id`；标识随调用传递、**不驻留循环实例**（同一实例可并发服务多个会话，互不串号）。该标识 SHALL **经上下文包传递至推理（上下文装配）与技能路由阶段**，作为记忆检索与路由未命中记录归属的**会话维度**，SHALL NOT 只用于记忆写入；标识为空串时，各阶段的检索与归属语义 SHALL 与既往**逐字一致**。循环 SHALL 在「记忆」步把本轮的**行动与结果**序列（工具调用及其结果的**有界**渲染）沉淀为**另一条** L2 条目 —— 与轨迹条目**并存**，轨迹条目的内容口径 SHALL **除密钥形态脱敏外**逐字不变（写入前 SHALL 对整条内容执行与行动序列同源的 `redact_secrets`；未命中密钥形态时逐字不变）；轨迹条目承载「轮次/成败 + 语义正文」，行动序列条目承载「做了什么、得到什么」，二者共为压实的**抽取材料**。行动序列条目 SHALL **有界**（逐行截断 + 整体上界，不随轮次无限增长），且 SHALL 在写入前对每一行做**密钥形态脱敏**（判据与记忆侧关键事实抽取**同源**、方向 over-redact）—— 密钥只引用不读取、绝不进记忆。本轮**无工具调用**时 SHALL NOT 沉淀该条目（无行动不记忆）。循环 SHALL 在本轮开始时把**该会话的最近历史对话**载入上下文包的 `history` 字段（标识为空串时不载入），供推理期按「系统提示 → 历史 → 本轮消息」的次序组装请求；载入历史 SHALL 以**三层滑窗**组织：**短层**为最近若干轮**原文**，**中层**为紧邻短层之前若干轮的**中期模型摘要**，**长层**为该会话的**整体摘要**；三层 SHALL 由同一历史预算按份额切分（短 0.5 / 中 0.3 / 长 0.2，由确定性纯函数按 `loop.history_turns` 与历史预算算出、不含模型调用），且 `loop.history_turns` SHALL 为三层**轮数总量**（非仅短层）。两层摘要 SHALL 作为**独立系统块**注入（长层先于中层），SHALL NOT 折入 `history` 或本轮消息；两层摘要与前文历史的 token SHALL 一并计入本轮预算记账（否则预算终止与压实触发看不见它）。该会话**尚无任何摘要**时（冷会话）SHALL 退化为**仅短层原文回灌**，其轮数与 token 上界 SHALL 与既往「双重上界」**逐字一致**。两层摘要的注入 SHALL 与**历史回放开关解耦** —— `loop.history_turns` 为 `0`（关闭历史回放）时 SHALL NOT 连坐关闭摘要注入：该会话已有的两层摘要 SHALL **照常作为独立系统块注入**，而历史带为空（SHALL NOT 回灌任何历史原文）；`loop.history_turns` 大于 `0` 时行为 SHALL 与既往**逐字一致**。循环 SHALL 在收尾时把本轮「用户原话 + 最终回复」追加至该会话转录（标识为空串时 SHALL NOT 追加；本轮以**合成**终止原因结束——如预算耗尽——时，SHALL NOT 把合成文案当作模型回复追加）。循环收尾（「记忆」步之后）SHALL 检查**维护节拍**：距上次维护达 `maintenance_interval`（可配置，`<=0` 表示关闭）时执行一次维护；维护含①**会话级记忆维护**（按本轮会话标识触发一次记忆压实，产该会话整体摘要）②**中期摘要物化**（取该会话转录「中带」轮次经记忆压实通道滚合并为中层摘要，中带为空则不调用）③记忆遗忘与④冷路径节拍（注入的冷路径回调，缺省未注入则不做，见 evolution「冷路径驱动」），四者**各自失败降级、不中断本轮**；①② SHALL 仅在本轮会话标识非空时执行；节拍不改变终止条件与回复内容。
 
@@ -268,6 +270,7 @@ L2 条目 `loop.failure.<trace_id>`（`tags=["loop","failure"]`、`kind="episodi
 - **GIVEN** 某会话有 5 条超长失败条目
 - **WHEN** 组合根渲染「既往失败教训」注入块
 - **THEN** 块内至多 5 条、单条正文 ≤500 字符、总正文 ≤1500 字符
+
 ### Requirement: 横切中间件插入
 系统 SHALL 支持在循环关键节点插入横切中间件（权限、约束、遥测、上下文）。中间件分两类接缝：
 ① **动作前链**（`middlewares`）：每个动作执行前按注册序调用，接收（`LoopContext`, `Action`），
@@ -300,6 +303,7 @@ L2 条目 `loop.failure.<trace_id>`（`tags=["loop","failure"]`、`kind="episodi
 - **GIVEN** 一轮推理产出终止动作（空 `tool_id`，如本轮回复）
 - **WHEN** 该动作「执行」完成后
 - **THEN** 结果侧观察者不被调用
+
 ### Requirement: 错误与预算控制
 系统 SHALL 限制单任务最大循环次数与 token 预算，超出即终止或转人工。两项上限 SHALL 可经配置链
 （CLI flag > env > config.yaml > 默认值）设定并经 ConfigSpec 单一真源声明：`loop.max_rounds`
@@ -358,6 +362,7 @@ SHALL NOT 低于它；不可用（如流式响应不携带用量、或 planner �
 - **GIVEN** 某次模型调用返回 provider 报告的提示 token 数（`usage.prompt_tokens`）
 - **WHEN** 该步执行完毕后判定预算
 - **THEN** 记账值**不低于**该实测值（估算偏低时以实测值抬升），预算终止与压实据此判定
+
 ### Requirement: 异步流式执行
 系统 SHALL 提供异步执行入口 arun 与流式入口 astream，与同步 run 共用同一执行循环语义；astream 返回 AsyncIterator[LoopEvent]，以 loop_started / action_started / action_completed / step_completed / reply_delta / loop_finished / loop_failed 七类事件流式产出执行生命周期，支持事件循环内非阻塞调用与流式编排；run 保留为薄壳（thin wrapper），内部经事件循环桥接调用对应异步实现，调用方无需感知事件循环、零改动。工具动作事件仅对非终止动作（tool_id 非空）产出：action_started 于工具执行前携带 round/tool_id/args 节选，action_completed 于执行后携带 round/tool_id/ok/duration_ms/output 节选；节选有界（≤400 字符），既有五类事件的节奏与语义不变。除上述**事件流**外，循环 SHALL 在**非终止动作**完成后**另行产出工具调用遥测**（`kind="tool_call"`，载荷含工具 id / 参数 / 成败与耗时，且**有界**），使「按工具 id 归因」的证据在**生产**链路可得（见 evolution「经验采集」①工具调用类）；该产出 SHALL NOT 改变上述 `LoopEvent` 的外发路径、事件序与既有消费语义，未注入 tracer 时 SHALL 不产出（行为与既有缺省一致）。
 planner 流式协议 SHALL **额外**支持**思考增量通道**：以独立的 `Thinking(delta)` item 承载推理原文增量，与既有 `str`（回复增量）与 `Action`（终态动作）**并存**，SHALL NOT 改变既有两类 item 的语义与外发路径。循环 SHALL 在**思考回显开启**时把该 item 转为 `loop.reasoning` 事件（载荷 `{"text": <增量>}`，与 `reply_delta` 的 `{"text": …}` 同形、**类型相异**），**未开启**时 SHALL NOT 产出该事件（事件面与既有缺省逐字一致）；非流式路径（`__call__` 与无 `astream` 的降级分支）SHALL **同样支持终态思考**（一次性全文外发）。
@@ -422,6 +427,7 @@ planner 流式协议 SHALL **额外**支持**思考增量通道**：以独立的
 - **GIVEN** 思考回显已开启且本轮产出 `loop.reasoning`
 - **WHEN** 本轮结束
 - **THEN** 会话转录、记忆沉淀、日志与 trace 遥测均**不含**思考原文；该事件亦**不**经编排层子任务运行态回流外发（回流白名单不含该类型）
+
 ### Requirement: 推理动作解析与失败可见
 
 循环 SHALL 把推理输出解析为**终止动作**（空 `tool_id`，本轮进入回复收尾）或**工具动作**
@@ -609,6 +615,7 @@ SHALL NOT 写入转录 / 记忆 / 笔记，SHALL NOT 并入 `reply`（`reply` SH
 - **GIVEN** `loop.parse_retry` 未开启（缺省）
 - **WHEN** 模型输出不可解析
 - **THEN** 模型调用恰一次、请求不含回喂消息，请求形状与失败语义与既有实现**逐字一致**
+
 ### Requirement: 收尾与维护工作的执行线程
 
 循环的收尾与维护工作（轮内上下文压实、收尾钩子 `turn_observer`、维护节拍含冷路径回调）SHALL 在
@@ -655,6 +662,7 @@ SOP 提炼、技能迭代、进化 review / patch author），而本仓 LLM 传�
 - **WHEN** 本轮收尾
 - **THEN** 仅降级留痕（`turn_observer_failed` / `cold_path_failed` / `maintenance_failed`），
   本轮回复、终止条件、事件序与既有实现**逐字一致**
+
 ### Requirement: 运行环境事实
 
 系统 SHALL 在推理用系统提示中提供可选的**运行环境事实**块，使模型按**宿主实际 OS 与默认
@@ -713,3 +721,33 @@ shell 方言**规划命令，而非假定一切为 POSIX bash。
 - **WHEN** 渲染运行环境块
 - **THEN** 块中说明每次 `code_run` 为全新进程、`cd` 与环境变量不保留，并指出用 `cwd`
   （支持 `~`）指定目录
+
+### Requirement: 预算溢出的降级续跑
+
+token 预算触顶 SHALL 先尝试**一次降级**再终止：已注入压实器时，本轮 SHALL 至多触发一次
+强制压实（复用轮内 `compacted` 闸门防重入），并为模型**再给一轮**收尾机会；该收尾轮内任务
+完成（`ctx.done()`）⇒ SHALL 按正常完成收口，SHALL NOT 以 `TOKEN_BUDGET_EXCEEDED` 覆盖已完成的
+回复；收尾轮仍未完成 ⇒ SHALL 以 `TOKEN_BUDGET_EXCEEDED` 终止。降级 SHALL 每轮至多一次
+（`budget_retried` 标记），SHALL NOT 无限重试。未注入压实器 ⇒ SHALL 保持既有行为（预算触顶
+立即终止，零额外轮次）。降级发生 SHALL 经 trace 留痕（便于诊断预算配置过小），SHALL NOT
+改变既有终止码或事件类型。
+
+#### Scenario: 预算触顶先压实再重试一轮
+- **GIVEN** 已注入压实器且本轮记账值达到 token 预算
+- **WHEN** 一步执行完毕判定预算
+- **THEN** 先触发一次强制压实（若本轮尚未压实），记 `budget_retry` 留痕，再允许模型执行一轮
+
+#### Scenario: 收尾轮完成则正常收口
+- **GIVEN** 预算触顶并进入收尾轮
+- **WHEN** 收尾轮产出终止动作并完成本轮
+- **THEN** 按正常完成收口，回复为模型产出，不标记 `TOKEN_BUDGET_EXCEEDED`
+
+#### Scenario: 收尾轮仍未完成则终止
+- **GIVEN** 预算触顶并进入收尾轮
+- **WHEN** 收尾轮仍未完成且记账值仍不低于预算
+- **THEN** 以 `TOKEN_BUDGET_EXCEEDED` 终止（每轮至多一次降级，不重复重试）
+
+#### Scenario: 未注入压实器行为不变
+- **GIVEN** 未注入压实器
+- **WHEN** 本轮记账值达到 token 预算
+- **THEN** 立即以 `TOKEN_BUDGET_EXCEEDED` 终止，SHALL NOT 额外执行轮次

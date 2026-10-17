@@ -30,6 +30,12 @@ def _echo_tool() -> Tool:
     )
 
 
+def _echo_provider() -> ToolProvider:
+    provider = ToolProvider()
+    provider.register(_echo_tool())
+    return provider
+
+
 class _SpyProvider(ToolProvider):
     """记录回滚调用，验证单轮失败触发回滚。"""
 
@@ -628,15 +634,54 @@ def test_loop_compaction_persists_history_and_summarizes_prior_memory() -> None:
     assert dict(memory.index().entries)["loop.prior"] == "L4", "被摘要的原条目归档 L4"
 
 
-def test_loop_compaction_triggers_on_token_budget_and_still_terminates() -> None:
+def test_loop_compaction_triggers_on_token_budget_and_degrades() -> None:
+    """预算触顶 ⇒ 先压实并给一轮收尾；收尾轮完成 ⇒ 正常收口（change 0230 / G2）。"""
     memory = _summary_memory()
     memory.write("L2", _prior_entry())
     loop = _compacting_loop(memory, Compactor(memory=memory, step_threshold=100), token_budget=1)
 
     result = loop.run("hi")
 
-    assert "TOKEN_BUDGET_EXCEEDED" in result.reply, "压实不改终止语义"
+    assert result.reply == "done", "收尾轮完成 ⇒ 不被 TOKEN_BUDGET_EXCEEDED 覆盖"
     assert "compaction.summary.s1" in {e.id for e in memory.audit() if e.kind == "semantic"}
+
+
+def test_budget_overflow_without_compactor_terminates_immediately() -> None:
+    """未注入压实器 ⇒ 无降级路径，立即终止（既有行为不变）。"""
+    calls: list[int] = []
+
+    def planner(ctx):
+        calls.append(ctx.rounds)
+        return Action(tool_id="tools.echo", args={"text": "x"})
+
+    loop = DefaultLoop(planner=planner, tools=_echo_provider(), token_budget=1, max_rounds=5)
+    result = loop.run("hi")
+
+    assert "TOKEN_BUDGET_EXCEEDED" in result.reply
+    assert len(calls) == 1, "无压实器 ⇒ 不额外执行收尾轮"
+
+
+def test_budget_overflow_terminates_after_one_grace_round() -> None:
+    """收尾轮仍未完成 ⇒ 至多一轮降级后终止（不无限重试）。"""
+    calls: list[int] = []
+
+    def planner(ctx):
+        calls.append(ctx.rounds)
+        return Action(tool_id="tools.echo", args={"text": "x"})
+
+    memory = _summary_memory()
+    loop = DefaultLoop(
+        planner=planner,
+        tools=_echo_provider(),
+        memory=memory,
+        compactor=Compactor(memory=memory, step_threshold=100),
+        token_budget=1,
+        max_rounds=5,
+    )
+    result = loop.run("hi")
+
+    assert "TOKEN_BUDGET_EXCEEDED" in result.reply
+    assert len(calls) == 2, "预算触顶后恰好给一轮收尾，随后终止"  # noqa: PLR2004
 
 
 def _round_episodic(entry_id: str, session: str) -> MemoryEntry:

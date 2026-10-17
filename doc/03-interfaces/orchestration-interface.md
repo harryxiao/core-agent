@@ -161,6 +161,11 @@ class TaskScheduler:
   `--resume` 从该 task-id 最新检查点重建 Plan 与已完成集，续跑未完成子任务；
   检查点经 CheckpointStore 落盘 `$CORE_STATE_DIR/checkpoints.jsonl`（缺省
   `~/.core/state/`），跨进程 kill/重启可续跑。
+- **文件型检查点**（change 0230 / ADR-0237）：`FileCheckpoint(path=".core/scheduler-checkpoint.json")`
+  满足 `CheckpointFn` 四参契约，JSON 落盘 `task_id / session_id / plan / completed / results`，
+  同目录 `.tmp` + `os.replace` **原子写**；`load(task_id=None)` 读回（损坏/缺失返回 `None`，
+  传入任务 id 不匹配亦返回 `None`）。**opt-in**：未显式传入时调度器不自行落盘，上层注入的回调
+  仍优先、不产生文件 I/O。
 - **检查点会话归因**（change 0190 / ADR-0180）：检查点回调 `CheckpointFn` / `DoneFn` 签名为
   `(task_id, outcomes, plan, session_id)` —— 第 4 参即发起方会话标识（空串 = 未归属照实记录，
   **不**写占位值如 `"default"`）；波次检查点与终态检查点同口径。CLI `task` 新任务经共享会话

@@ -8,14 +8,23 @@
 
 from __future__ import annotations
 
-from core.tokens import estimate_tokens
+from core.tokens import DEFAULT_ESTIMATOR, TokenEstimator, estimate_tokens
 
 from .errors import ContextError, ContextErrorCode
 from .models import ContextPack
 
+# 兼容面：既有两个调用面「共用一把尺子」的守卫按模块属性比对（tests/test_token_estimate.py）。
+__all__ = ["BudgetManager", "estimate_tokens"]
+
 
 class BudgetManager:
-    """上下文预算控制：超预算裁剪低相关度内容，必保项优先。"""
+    """上下文预算控制：超预算裁剪低相关度内容，必保项优先。
+
+    ``estimator`` 注入精确 token 估算器（change 0230 / G1）；缺省回落共享启发式。
+    """
+
+    def __init__(self, estimator: TokenEstimator | None = None) -> None:
+        self._estimator = estimator if estimator is not None else DEFAULT_ESTIMATOR
 
     def enforce(self, pack: ContextPack, budget: int) -> ContextPack:
         """裁剪至预算内，返回（可能被裁剪的）pack；必保项超预算抛 BUDGET_EXCEEDED。"""
@@ -33,20 +42,22 @@ class BudgetManager:
         return pack
 
     def _measure(self, pack: ContextPack) -> int:
-        total = estimate_tokens(pack.task) + estimate_tokens(pack.stage)
-        total += sum(estimate_tokens(str(c)) for c in pack.constitution)
-        total += sum(estimate_tokens(str(p)) for p in pack.pending)
-        total += sum(estimate_tokens(str(f)) for f in pack.facts)
+        total = self._tokens(pack.task) + self._tokens(pack.stage)
+        total += sum(self._tokens(str(c)) for c in pack.constitution)
+        total += sum(self._tokens(str(p)) for p in pack.pending)
+        total += sum(self._tokens(str(f)) for f in pack.facts)
         return total
 
     def _mandatory_tokens(self, pack: ContextPack) -> int:
-        total = estimate_tokens(pack.task) + estimate_tokens(pack.stage)
-        total += sum(estimate_tokens(str(c)) for c in pack.constitution)
-        total += sum(estimate_tokens(str(p)) for p in pack.pending)
+        total = self._tokens(pack.task) + self._tokens(pack.stage)
+        total += sum(self._tokens(str(c)) for c in pack.constitution)
+        total += sum(self._tokens(str(p)) for p in pack.pending)
         return total
 
-    @staticmethod
-    def _trim(items: list[dict[str, str]], budget: int) -> list[dict[str, str]]:
+    def _tokens(self, text: str) -> int:
+        return self._estimator.estimate(text)
+
+    def _trim(self, items: list[dict[str, str]], budget: int) -> list[dict[str, str]]:
         """按序保留可容纳项，**跳过**放不下的项（不掐断后续）。
 
         入参按相关度降序（见 ``DynamicAssembler``）：单项超预算只裁该项本身，
@@ -55,7 +66,7 @@ class BudgetManager:
         kept: list[dict[str, str]] = []
         used = 0
         for item in items:
-            cost = estimate_tokens(str(item))
+            cost = self._tokens(str(item))
             if used + cost > budget:
                 continue
             kept.append(item)

@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+
 _DIVISOR = 4
 
 # CJK 字符区间：统一表意文字（含扩展 A）、CJK 标点、假名、谚文、全角形式
@@ -35,3 +37,19 @@ def estimate_tokens(text: str) -> int:
     """CJK 感知的粗略 token 估算（见模块 docstring）。"""
     cjk = sum(1 for char in text if _is_cjk(char))
     return max(1, cjk + (len(text) - cjk) // _DIVISOR)
+
+
+class TokenEstimator(Protocol):
+    """token 估算器契约（change 0230 / G1）：可注入精确实现替换启发式。"""
+
+    def estimate(self, text: str) -> int: ...
+
+
+class HeuristicEstimator:
+    """缺省估算器：委托共享启发式（CJK 感知，行为与引入注入点前逐字一致）。"""
+
+    def estimate(self, text: str) -> int:
+        return estimate_tokens(text)
+
+
+DEFAULT_ESTIMATOR: TokenEstimator = HeuristicEstimator()

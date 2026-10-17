@@ -64,6 +64,7 @@
 - **GIVEN** 装配结果 token 超预算
 - **WHEN** 预算管理器裁剪
 - **THEN** 裁剪低相关度内容，优先保留宪章/未决事项/验收标准
+
 ### Requirement: 信息地图
 系统 SHALL 把长文档转化为轻量化目录索引，模型按需跳转获取细节，不把全文塞入窗口。
 地图的**文档来源** SHALL 至少覆盖：项目信息段（Core.md，装配期从真源建索引）与 —— 旗开时 ——
@@ -103,6 +104,7 @@
 - **GIVEN** rag 库已索引的文档数超过 `_RAG_INFO_MAP_MAX_DOCS`
 - **WHEN** 旗开、装配器构建上下文
 - **THEN** 进地图的 rag 文档**不超过上限**（其余不进；指针块不受预算裁剪，故上限是硬约束）
+
 ### Requirement: 上下文自动压实
 系统 SHALL 对多轮关键信息自动摘要沉淀，写回记忆，避免重复传递冗余内容；沉淀产物 SHALL 为
 `kind="semantic"` 的记忆条目，且 SHALL 标注来源出处（`tags` 携带被沉淀历史的原始 id），
@@ -153,6 +155,7 @@
 - **GIVEN** 某会话（标识非空）的多轮消息触发上下文压实
 - **WHEN** 沉淀写回
 - **THEN** 产物条目的 `trace_id` 为 `compaction.<该会话键>`（与其他压实 trace 同口径），按该 trace 回滚即整批撤销本会话压实产物
+
 ### Requirement: 宪法约束注入
 系统 SHALL 将 Core Profile 的「宪法与全局规则」分区作为 constitution:v1 coeffect 注入上下文，作为必保约束参与执行。
 
@@ -160,6 +163,7 @@
 - **GIVEN** 全局 Core.md 含「宪法与全局规则」分区
 - **WHEN** 上下文装配器构建上下文
 - **THEN** 该分区内容作为 constitution:v1 coeffect 注入，并作为必保约束保留
+
 ### Requirement: 项目信息注入
 系统 SHALL 在载入项目时由 ContextEngine 按 cwd 向上查找项目级 Core.md，将其内容作为项目信息注入上下文窗口。
 
@@ -172,6 +176,7 @@
 - **GIVEN** 从 cwd 向上至文件系统根均未发现项目级 Core.md
 - **WHEN** ContextEngine 查找失败
 - **THEN** 静默降级，不注入项目信息，不影响任务执行
+
 ### Requirement: 三层窗口比例分配
 系统 SHALL 把会话历史回灌的**分层策略**收敛为**确定性纯函数**（零 I/O、零模型调用）：给定
 `loop.history_turns`（三层轮数总量）与历史预算（`token_budget // 2`），算出短层轮数、中层轮数、
@@ -216,6 +221,7 @@ LLM 压缩 SHALL 仍统一由**记忆压实通道**承担，本分配**不新增
 - **GIVEN** 分层，总量递增
 - **WHEN** 逐值计算三层配额
 - **THEN** 短层轮数与中层轮数**单调不减**
+
 ### Requirement: 压缩轴口径（轮 / 步两轴不可互换）
 
 系统 SHALL 区分并**分别**使用两个互不相通的时间轴；二者 SHALL NOT 互换、SHALL NOT 混算：
@@ -258,6 +264,7 @@ LLM 压缩 SHALL 仍统一由**记忆压实通道**承担，本分配**不新增
 - **WHEN** 分别以 `loop.history_turns = 20` 与 `40` 计算短层轮数
 - **THEN** 两者分别为 `10` 与 `20`（短层 = 总量 × 0.5）⇒ 边界是**轮比率**、随总量缩放，
   **非**固定字面轮数
+
 ### Requirement: 上下文区块配比（五区块 / 80-20 安全线）
 
 系统 SHALL 提供一个**确定性纯函数** `plan_blocks(total_budget, *, enabled) -> BlockPlan | None`
@@ -317,3 +324,26 @@ LLM 压缩 SHALL 仍统一由**记忆压实通道**承担，本分配**不新增
 - **GIVEN** 启用面开启且总预算 `T` 为正
 - **WHEN** 分别以 `T` 与 `T'`（`T' > T`）计算各块配额
 - **THEN** 每一块的配额在 `T'` 下**不小于**其在 `T` 下的取值
+
+### Requirement: 可注入的 token 估算器
+
+上下文预算测量 SHALL 支持**可注入的 token 估算器**：`BudgetManager` 与 `DynamicAssembler`
+SHALL 接受 `TokenEstimator` 协议实现（`estimate(text: str) -> int`），注入后预算测量与裁剪
+SHALL 使用该实现；未注入时 SHALL 回落共享启发式估算器（`core.tokens.estimate_tokens`，
+CJK 感知），行为与引入本能力前**逐字一致**。估算器 SHALL 由调用方注入，本能力 SHALL NOT
+引入任何第三方 tokenizer 依赖。
+
+#### Scenario: 缺省估算器保持启发式口径
+- **GIVEN** `BudgetManager` / `DynamicAssembler` 未注入估算器
+- **WHEN** 执行预算测量与裁剪
+- **THEN** 使用共享启发式估算器，测量结果与引入本能力前逐字一致
+
+#### Scenario: 注入估算器替换预算测量
+- **GIVEN** 注入了返回固定分值的 `TokenEstimator` 实现
+- **WHEN** `BudgetManager.enforce` 测量上下文包并裁剪
+- **THEN** `token_used` 与裁剪判定取自注入实现，SHALL NOT 再调用启发式估算
+
+#### Scenario: 装配器透传估算器
+- **GIVEN** `DynamicAssembler` 构造时注入估算器
+- **WHEN** 调用 `build` 装配上下文
+- **THEN** 预算测量使用该估算器（含派生装配器 `with_allow_source_prefixes`）

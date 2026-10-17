@@ -267,9 +267,15 @@ def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "
 - 预算/**工具步数**达阈值 → 触发压实（注入 `context.Compactor` 时）：多轮历史提炼沉淀（`persist`）
   → 记忆固化（`memory.compact`：打分写回 + 价值门控 + 会话摘要归档）→ 遗忘（`memory.forget`：
   低分条目迁 L4 归档）；任一步失败降级不中断本轮（记 `maintenance_failed`），**终止语义不变**
-  （仍按既有预算/轮数条件终止，不因压实而续跑）。压实触发口径（change 0182 / ADR-0173）：
+  （仍按既有预算/轮数条件终止）；**唯一例外**是预算触顶降级（change 0230 / ADR-0237，见下条）。
+  压实触发口径（change 0182 / ADR-0173）：
   第一维度是**本轮工具步数**（`ctx.rounds`，每用户轮自 `0` 起算，**非**对话轮数）达
   `loop.compact_steps`（缺省 `6`），第二维度是 token 达预算；**每轮至多压实一次**（本轮标记）。
+- **预算降级续跑**（change 0230 / ADR-0237）：token 达 `token_budget` 且本轮未降级过、已注入
+  压实器 ⇒ 先强制压实一次，再给模型**一轮收尾机会**；收尾轮完成 ⇒ 正常收口，仍未完成才以
+  `TOKEN_BUDGET_EXCEEDED` 终止（trace 记 `budget_retry`）。压实**不降低**本轮消息记账
+  （`ctx.token_used` 不因持久化下降），故降级只能表现为「收尾轮」而非「压完继续跑」；
+  未注入压实器 ⇒ 立即终止（既有行为逐字不变）。步数触发的压实**不**续跑。
 - 收尾/维护的执行线程（change 0167 / ADR-0157）：**轮内压实**、**收尾钩子**（`turn_observer`）、
   **维护节拍**（含 `cold_path`）三段工作 SHALL 在**事件循环之外**执行（循环以 `asyncio.to_thread`
   卸载并 `await` 其完成），SHALL NOT 在事件循环线程上同步执行 —— 这三段可能含**同步模型调用**

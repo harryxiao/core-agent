@@ -27,6 +27,7 @@
 - **GIVEN** 一个查询命中 L1 索引
 - **WHEN** 检索器解析索引
 - **THEN** 按热度路由到 L2/L3/L4 取详情，而非全库扫描
+
 ### Requirement: 温度分层检索
 系统 SHALL 提供**热/冷两档**检索，热数据常驻内存，冷数据按需加载；检索结果 SHALL 按
 **多因子得分**排序——语义相似 × 层结构权重（加性）再经 新鲜度衰减、复用频次
@@ -88,6 +89,7 @@ SHALL 逐条写回（语义不变）。批量写 SHALL 与逐条写回**同一�
 - **GIVEN** 一次检索选中多条条目，且后端提供批量写入口
 - **WHEN** 复用强化写回
 - **THEN** 本次检索只触发**一次**批量落盘（不逐条重写），且每条仍各留一条可撤销效应
+
 ### Requirement: 按会话隔离的检索
 系统 SHALL 使记忆检索接受可选的**调用方会话标识** `session_id`（缺省空串 = 未归属调用者）。
 标识**非空**时，检索结果 SHALL **只含**两类条目：① 归属该会话（`session_id` 等于该标识）的条目；
@@ -125,6 +127,7 @@ SHALL NOT 被复用计数（`reuse_count`）强化，与既有来源前缀排除
 - **GIVEN** 同时给出会话标识与来源前缀排除项
 - **WHEN** 检索
 - **THEN** 两类过滤同时生效（命中任一排除条件的条目都不出现）
+
 ### Requirement: 无行动不记忆
 系统 SHALL 只沉淀"行动与结果"产生的经验，不记录未经验证的空想。
 
@@ -132,6 +135,7 @@ SHALL NOT 被复用计数（`reuse_count`）强化，与既有来源前缀排除
 - **GIVEN** 模型产出一条未经执行验证的主张
 - **WHEN** 尝试写入长期记忆
 - **THEN** 被拒绝，需先有行动结果作为证据
+
 ### Requirement: 记忆压实
 系统 SHALL 定期压实记忆，合并重复条目、归档过期会话、保持 L1 索引最小；并 SHALL 在注入摘要器
 （`summarizer`）时，按会话（`session_id`）聚合 episodic 条目、提炼为**一条** `kind="semantic"`
@@ -343,6 +347,7 @@ SHALL NOT 被摘要提炼或关键事实抽取吸收，SHALL NOT 被迁至 L4（
 - **GIVEN** 注入了摘要器，其对某会话返回空串，且注入了关键事实抽取器
 - **WHEN** 压实该会话
 - **THEN** 不写摘要、不调用派生抽取器、原条目层级不变，且以 `RuntimeWarning` 留痕该会话键
+
 ### Requirement: 记忆固化（consolidation）
 系统 SHALL 对会话内 episodic 条目**自动打分**并据此**门控固化**：注入 scorer（judgment `score`
 原语，JEV 优先、低置信/不可达回退主 LLM）时，SHALL 将分值写回条目的 `importance`（写入可撤销，
@@ -366,6 +371,7 @@ SHALL NOT 被摘要提炼或关键事实抽取吸收，SHALL NOT 被迁至 L4（
 - **WHEN** 固化尝试打分
 - **THEN** 该条目 `importance` 保持原值（不被写为 0），该会话不因缺分值而被门槛拦下，
   固化流程不中断
+
 ### Requirement: 写入侧重要度闸门（importance write gate）
 
 系统 SHALL 支持注入 **importance scorer**（`MemoryStore` 构造形参，契约
@@ -427,6 +433,7 @@ L5 组合根注入；**缺省 UNWIRED**。注入后，写入路径 SHALL 先评�
 - **GIVEN** 注入了 scorer，其对任何条目返回 0.1
 - **WHEN** 写入一条来源**非**豁免面的条目（如 `source="loop"` 的轨迹条目）
 - **THEN** 条目被**拒收**（不落库）、`warnings.warn` 留痕 —— 豁免面只覆盖系统派生产物
+
 ### Requirement: 记忆遗忘（forgetting）
 
 系统 SHALL 按衰减评分（新鲜度 × 复用频次 × 重要度）识别低价值记忆并**归档**：评分低于阈值的
@@ -500,6 +507,7 @@ SHALL 与 episodic **同一**（同一衰减评分、同一阈值、同一 L4 �
   L3 存在技能条目
 - **WHEN** 遗忘运行
 - **THEN** 四者层级均不变（开关只放行派生事实类，摘要类与 L0/L3 恒豁免）
+
 ### Requirement: Core Profile 人格注入
 系统 SHALL 将 Core Profile 的「人格」分区作为 L0 元策略写入记忆，承载 Agent 的行为特色预设。
 
@@ -507,6 +515,7 @@ SHALL 与 episodic **同一**（同一衰减评分、同一阈值、同一 L4 �
 - **GIVEN** 全局 Core.md 含「人格」分区
 - **WHEN** Agent 启动读取 Core Profile
 - **THEN** 该分区内容作为 L0 元策略写入记忆，塑造 Agent 行为特色
+
 ### Requirement: 对话转录持久化（非记忆层级）
 
 系统 SHALL 以**按轮追加**（append-only）的方式持久化对话转录：每一条 SHALL 携带 `session_id`、
@@ -578,6 +587,7 @@ SHALL 与 episodic **同一**（同一衰减评分、同一阈值、同一 L4 �
 - **GIVEN** 短层轮数非正
 - **WHEN** 切分读取
 - **THEN** 短带与中带皆为空
+
 ### Requirement: 来源前缀排除与放行（读取面）
 
 系统 SHALL 在记忆检索的读取面支持**来源前缀排除**：`source` 前缀命中 `exclude_source_prefixes` 的条目
@@ -609,6 +619,7 @@ SHALL 在**排名与预算之前**剔除 —— 被剔除项 SHALL NOT 占用 to
 - **GIVEN** 既有调用方不传排除面与放行面
 - **WHEN** 检索
 - **THEN** 行为与引入该能力之前**逐字一致**（两参数缺省为空元组）
+
 ### Requirement: 结构化实体抽取（关键事实）
 
 系统 SHALL 提供**结构化关键事实抽取**：在记忆压实时，从**被聚合的 episodic 条目**中抽取
@@ -777,6 +788,7 @@ SHALL **首尾保留**（头尾各半、中以 `…` 连接，总长 SHALL NOT �
 - **GIVEN** **未**显式配置 `memory.key_fact_extract`（缺省）
 - **WHEN** 组合根装配 `MemoryStore`
 - **THEN** 照常注入抽取器 ⇒ 关键事实抽取行为与引入该键前**逐字一致**（缺省不改变在用能力）
+
 ### Requirement: 失效关键事实的运维修复
 
 系统 SHALL 提供**失效关键事实**的运维修复入口：识别**失效条目** —— `tags` 含 `ref:` 标签、该 `ref` **非** `coeffect:<名称>` 形态、且 `content` 取值为 `"<redacted>"`（change `0173` 修复前判据的产物：模型自造的出处说明被当成真引用 ⇒ 取值整条被抹 ⇒ 该条目**已不含任何可用信息**）；对**产生它的会话**（由 `session:<会话标识>` 标签溯源）用该会话的**材料**重抽关键事实 —— 材料为该会话的 episodic 条目（**含已归档 L4 的条目**），重抽 SHALL 复用「结构化实体抽取（关键事实）」的 prompt 与脱敏判据（判据**只有一处定义**，不写第二份）。
@@ -834,6 +846,7 @@ SHALL **首尾保留**（头尾各半、中以 `…` 连接，总长 SHALL NOT �
 - **GIVEN** 一条失效条目**不带** `session:` 标签（无法定位产生它的会话与材料）
 - **WHEN** 执行修复
 - **THEN** 该条目 SHALL NOT 被删除（无材料即无法重抽），报告 SHALL 标明其不可修复
+
 ### Requirement: 情景链（时序相邻标注）
 
 系统 SHALL 为**情景**（`kind="episodic"` 且 `layer="L2"`）条目提供**跨轮时序结构**，
@@ -954,6 +967,7 @@ loop「执行循环」），SHALL NOT 变更任何条目字段。
 - **WHEN** 装配本轮事实
 - **THEN** `exclude_fact_tags` **不含** `failure` ⇒ 失败条目**仍在**事实面，
   行为与引入本能力前**逐字一致**
+
 ### Requirement: 实体关系抽取（relations）
 
 系统 SHALL 提供**实体关系抽取**：在记忆压实时，从**被聚合的 episodic 条目**中抽取
@@ -1074,6 +1088,7 @@ SHALL NOT 另写第二份词表 —— 纯中文会话须能直接选词。
 - **GIVEN** 已落库一条 `relation` 条目，且注入面按 `source` 前缀排除压实产物
 - **WHEN** 装配本轮事实
 - **THEN** 该关系（渲染为 `head --predicate--> tail`）**SHALL** 出现在事实面
+
 ### Requirement: 记忆后端落盘耐久（backend durability）
 系统 SHALL 保证文件记忆后端（`memory.jsonl`）的落盘耐久：持久化写入 SHALL 为**原子提交**
 （先写临时文件再原子替换——写入中途被中断 SHALL NOT 损坏或清空既有条目集合）；加载 SHALL
@@ -1105,6 +1120,7 @@ SHALL NOT 另写第二份词表 —— 纯中文会话须能直接选词。
 - **GIVEN** 一个进程在完成记忆写入后被 `SIGKILL` 终止
 - **WHEN** 另一进程重载同一落盘文件
 - **THEN** 已持久化条目全部可读，无告警（原子替换 ⇒ 无半写残留）
+
 ### Requirement: 情景归纳（episodic consolidation）
 
 系统 SHALL 提供**可注入的情景归纳器**（`MemoryStore` 构造形参 `episodic_extractor`，契约
@@ -1161,3 +1177,60 @@ SHALL NOT 另写第二份词表 —— 纯中文会话须能直接选词。
 - **GIVEN** 情景归纳器在归纳某会话时抛错
 - **WHEN** 对该会话执行记忆压实
 - **THEN** 不落归纳条目、记录告警（只报会话键、不回显正文），而会话摘要与关键事实抽取**照常完成**
+
+### Requirement: 关键事实的跨压实合并
+
+跨压实批次重复抽取同一实体时，关键事实 SHALL 按实体 slug **覆盖式更新**既有条目
+（`id = f"keyfact.{slug}"`），SHALL NOT 新增条目；更新后 `content` SHALL 为新取值、
+`trace_id` / `tags` SHALL 随本次压实刷新（会话溯源随本次压实），但条目**首次出现的时间戳**
+（`ts`）SHALL 保留，SHALL NOT 被本次写入重置。同批归并语义（同批同 slug 只留首条）SHALL
+保持不变。
+
+#### Scenario: 跨压实同实体合并不新增条目
+- **GIVEN** 两个压实批次抽取到同一实体、不同取值
+- **WHEN** 第二批压实落库
+- **THEN** 仍只有一条 `keyfact.<slug>` 条目，`content` 为第二批取值
+
+#### Scenario: 跨压实更新保留首见时间戳
+- **GIVEN** 某实体的关键事实已在第一批压实落库
+- **WHEN** 第二批压实覆盖更新该实体
+- **THEN** 条目 `ts` 仍等于首次落库时间，未被重置为第二批写入时间
+
+### Requirement: L2 活跃层软上限
+
+`MemoryStore` SHALL 支持可选的 **L2 活跃层软上限**（构造形参 `l2_soft_max_entries`，
+缺省 `None` = 不启用，行为逐字不变）。启用后，每次写入落库后 SHALL 检查 L2 条目数；超限
+SHALL 先走既有 `forget(threshold)` 衰减归档路径，仍超限 SHALL 按 `ts` 从旧到新将**可遗忘**
+条目迁移至 L4（复用既有 `migrate` 路径，记可撤销效应），直至回到上限内或无可遗忘条目。
+软上限 SHALL NOT 物理删除条目、SHALL NOT 归档摘要类条目 / L0 / L3、SHALL NOT 阻塞写入
+主流程（执行失败降级留痕）。
+
+#### Scenario: 软上限超限触发遗忘归档
+- **GIVEN** 启用软上限且写入使 L2 条目数超过上限，其中存在低价值陈旧条目
+- **WHEN** 写入落库
+- **THEN** 既有遗忘路径先归档低分条目，L2 活跃条目数回到上限内
+
+#### Scenario: 软上限按最旧可遗忘条目收口
+- **GIVEN** 启用软上限且仅靠遗忘仍超限（条目评分均高于遗忘阈值）
+- **WHEN** 写入落库
+- **THEN** 按 `ts` 从旧到新迁移可遗忘条目至 L4，直至回到上限内或无可遗忘条目
+
+#### Scenario: 未启用软上限行为不变
+- **GIVEN** 未设置 `l2_soft_max_entries`（缺省 `None`）
+- **WHEN** 任意写入
+- **THEN** 不触发任何上限检查，L2 条目层级与引入本能力前逐字一致
+
+### Requirement: 记忆读预算的可注入估算器
+
+`MemoryStore` 的检索预算裁剪 SHALL 支持可注入的 token 估算器（构造形参 `token_estimator`）；
+注入后 SHALL 使用该实现计算条目成本；未注入时 SHALL 回落共享启发式估算器，行为逐字不变。
+
+#### Scenario: 注入估算器替换读预算测量
+- **GIVEN** `MemoryStore` 注入了返回固定分值的 `TokenEstimator`
+- **WHEN** 检索并按预算裁剪
+- **THEN** 条目成本取自注入实现，裁剪结果随之变化
+
+#### Scenario: 未注入估算器读预算不变
+- **GIVEN** `MemoryStore` 未注入估算器
+- **WHEN** 检索并按预算裁剪
+- **THEN** 使用共享启发式估算器，行为与引入本能力前逐字一致

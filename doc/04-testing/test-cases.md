@@ -3607,3 +3607,34 @@ orchestration.*` 不可达且 `_merge_patch` 会静默丢弃该段。
 > R6 **MODIFIED** +3 scen（11 req / 61 → 64 scen）。测试净 +12（2740 → **2752**）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0236 行（标准质量依赖模型 / 每任务一次额外
 > LLM 调用 / 结果节选截断 / 错误码粒度 / 重拆口径可能变化）。
+
+## 160. 长任务记忆缺口（TC-LTMEM，change `0230`／ADR-0237，台账 E184）
+
+**根因**：token 估算口径写死（无法注入精确实现）；loop 预算触顶直接终止；L2 活跃层只增不减；
+keyfact 跨批覆盖重置首见时间戳；编排检查点无缺省文件实现。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-LTMEM-01 | **缺省估算器不变**（承重） | 未注入，`task=ab` / `stage=cd` | `token_used == 2`（启发式逐字同前）（`tests/test_context.py::test_budget_default_estimator_is_heuristic`） |
+| TC-LTMEM-02 | 注入估算器替换预算测量 | 固定 `estimate→7` 的估算器 | 两字段合计 `14`（`…test_budget_uses_injected_estimator`） |
+| TC-LTMEM-03 | 装配器透传估算器 | `DynamicAssembler(token_estimator=…)` + 四字段 | `token_used == 20`（`…test_assembler_passes_estimator_to_budget`） |
+| TC-LTMEM-04 | **预算触顶降级续跑**（承重） | 预算 1、注入压实器、模型首轮未完成 | 先压实再给一轮收尾，收尾完成 ⇒ `reply == "done"` 且正常收口（`tests/test_loop.py::test_loop_compaction_triggers_on_token_budget_and_degrades`） |
+| TC-LTMEM-05 | 无压实器立即终止 | 预算 1、未注入压实器 | 只调用模型 1 次即 `TOKEN_BUDGET_EXCEEDED`（`…test_budget_overflow_without_compactor_terminates_immediately`） |
+| TC-LTMEM-06 | 收尾轮仍未完成 ⇒ 终止 | 预算 1、模型两轮都不完成 | 恰好 2 次调用后终止（`…test_budget_overflow_terminates_after_one_grace_round`） |
+| TC-LTMEM-07 | **L2 软上限归档**（承重） | `l2_soft_max_entries=2`、3 条旧 episodic | 活跃 L2 ≤ 2，溢出条目经 `migrate` 进 L4（`tests/test_memory_long_task_gaps.py::test_l2_soft_cap_archives_low_score_entries`） |
+| TC-LTMEM-08 | forget 不足时按最旧收口 | 3 条时间跨度大 | 仍超限时按 `ts` 升序迁移最旧可遗忘项（`…test_l2_soft_cap_evicts_oldest_when_forget_insufficient`） |
+| TC-LTMEM-09 | 非可遗忘条目不被上限迁移 | L2 内 semantic（非 opt-in）/ 其他层 | 只迁移 `_forgettable` 命中项（`…test_l2_soft_cap_skips_non_forgettable_entries`） |
+| TC-LTMEM-10 | 软上限缺省关闭 | 未传 `l2_soft_max_entries` | 写入多条后层级逐字不变（`…test_l2_soft_cap_disabled_by_default`） |
+| TC-LTMEM-11 | 记忆读预算注入 | 固定成本估算器 | 读预算按注入成本裁剪（`…test_store_read_budget_uses_injected_estimator`） |
+| TC-LTMEM-12 | 记忆读预算缺省不变 | 未注入、三条短条目 | 三条均保留（`…test_store_read_budget_default_unchanged`） |
+| TC-LTMEM-13 | **keyfact 首见时间戳** | 同实体二次写入（新 ts） | 覆盖值但保留首见正时间戳（`tests/test_memory_key_facts.py::test_same_entity_overwrite_preserves_first_seen_ts`） |
+| TC-LTMEM-14 | **文件检查点原子往返** | 波次完成回调 + `load()` | 单 JSON 含 task/session/plan/completed/results，可完整解析还原（`tests/test_orchestration.py::test_file_checkpoint_atomic_write_and_roundtrip`） |
+| TC-LTMEM-15 | 检查点按任务过滤 / 注入覆盖 | 其他任务 id；显式注入回调 | `load(task_id=…)` 不匹配返回 `None`；注入回调优先、不产生文件 I/O（`…test_file_checkpoint_load_filters_task` / `…test_injected_checkpoint_overrides_file_default`） |
+
+> **反证**：`budget._tokens` 改回直连启发式 ⇒ 01~03 区段 2 红；`_budget_retry` 首行改 `if True`
+> ⇒ 04/06 红；keyfact 摘 `ts=existing.ts` ⇒ 13 红；`write` 摘 `_enforce_l2_cap` ⇒ 07/08/09 红；
+> `FileCheckpoint` 的 `completed` 写空 ⇒ 14 红。复原 ⇒ `budget.py` / `default.py` / `store.py` /
+> `scheduler.py` `md5sum` 同。规格：context / loop / memory / orchestration 各 **ADDED**（+6 req /
+> +17 scen）。测试净 +15（2752 → **2767**）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0237 行（估算器覆盖范围 / 一轮收尾 / 条目数
+> 口径 / O(n) 扫描 / 单写者原子性 / keyfact 旧条目已归档）。

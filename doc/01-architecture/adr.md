@@ -8576,6 +8576,63 @@ ProgressTracker 追踪进度」，实现却空转：拆解 prompt 只产 subtask
 `PROGRESS_NOT_MET` 之外的错误码，调用方无法区分「子任务验收失败」与「整体目标未达成」的细粒度
 原因（payload 中带 reason）；⑤ 重拆时若原标准为空则采纳新标准，两条路径的判定口径可能随重拆变化。
 
+## ADR-0237：长任务记忆缺口修复（token 估算器注入 / 预算降级 / L2 软上限 / keyfact 跨批合并 / 文件检查点）（change 0230 / 台账 E184）
+
+**背景**：长任务存活面盘出五项「规格已承诺 / 结构上该有、实现缺失」的缺口：① token 估算口径
+写死为启发式，无法注入精确实现（预算与记忆读预算各自内联，口径漂移只能靠测试护栏）；
+② loop 预算触顶**直接终止**，不给模型收尾机会；③ L2 活跃层无软上限，长任务下只增不减；
+④ keyfact 跨批次重复抽取虽按 `keyfact.<slug>` 覆盖，但**首见时间戳被重置**（长任务时间线失真）；
+⑤ 编排检查点只有注入面，无缺省文件实现，进程重启即丢。G3/G6（检索预算阈值、记忆层间摘要）
+属 ADR-0045 刻意设计，本 change 只记录不改。
+
+**决策**：
+
+- **D1 token 估算器注入（G1）**：新增 `core.tokens.TokenEstimator` 协议（`estimate(text) -> int`）、
+  `HeuristicEstimator` 缺省实现与 `DEFAULT_ESTIMATOR`；`BudgetManager(estimator=None)`、
+  `DynamicAssembler(token_estimator=None)`、`MemoryStore(token_estimator=None)` 均接受注入，
+  未注入回落同一启发式 ⇒ **行为逐字不变**。`budget.py` 保留 `estimate_tokens` 模块属性并在
+  `__all__` 声明（既有两个调用面「共用一把尺子」的守卫按模块属性比对）。
+- **D2 预算降级续跑（G2）**：抽出 `DefaultLoop._budget_retry`：预算触顶且本轮未降级过、已注入
+  压实器 ⇒ 强制压实一次（复用 `compacted` 闸门）并给**一轮收尾机会**；收尾轮完成即正常收口，
+  仍未完成才 `TOKEN_BUDGET_EXCEEDED`。**口径调和**：压实只做持久化/摘要/遗忘，**不减少本轮
+  消息记账**（`ctx.token_used` 不因压实下降），故原任务书「压实后重试一轮」只能落为「收尾轮」，
+  不能落为「压完继续跑」；收尾轮后记账重算为 `max(_context_tokens, 上报 prompt tokens)`，
+  保证 trace 口径与模型实际输入一致。未注入压实器 ⇒ 立即终止（既有行为不变）。
+- **D3 L2 活跃层软上限（G5）**：`MemoryStore(l2_soft_max_entries=None)` 缺省关闭；写路径末尾
+  `_enforce_l2_cap`：超限先走既有 `forget()`，仍超限则按 `ts` 升序对**可遗忘条目**
+  （`_forgettable`，与 `forget` 共用判据）逐条 `migrate(L2 → L4)`；异常降级 `warnings.warn`，
+  **不阻塞写入**。语义是软上限：非可遗忘条目（L0/L3、非 opt-in semantic）不因上限被迁移。
+- **D4 keyfact 跨批合并（G4）**：同实体条目本就按 `keyfact.<slug>` 覆盖写入，本 change 补上
+  `ts=existing.ts`（首见为正时间戳时保留），使「跨批次同实体合并」不重置时间线；批内归并
+  （change 0172）语义不变。
+- **D5 文件型检查点（G7）**：新增 `FileCheckpoint(path=".core/scheduler-checkpoint.json")`
+  dataclass，满足 `CheckpointFn` 四参调用契约：JSON 落盘 `task_id / session_id / plan /
+  completed / results`，**原子写**（同目录 `.tmp` + `os.replace`）；`load(task_id=None)` 读回并可
+  按任务过滤，损坏/缺失返回 `None`。**保持 opt-in**：调度器未显式收到 `FileCheckpoint` 时
+  SHALL NOT 自行落盘（缺省行为逐字不变），上层注入的回调仍优先、不产生文件 I/O。
+
+**规格**：4 个 capability 新增 6 个 requirement / 17 个 Scenario（context +1/+3、loop +1/+4、
+memory +3/+7、orchestration +1/+3），全部 ADDED，既有 requirement 逐字不动。
+
+**测试**：新增 15 例（`test_context.py` 3、`test_loop.py` 2、`test_memory_key_facts.py` 1、
+`test_memory_long_task_gaps.py` 6、`test_orchestration.py` 3）；全量 2752 → **2767**。
+
+**反证（实测，`cp` 备份 + md5 复原）**：`budget._tokens` 改回直连启发式 ⇒ 注入估算器 2 红；
+`_budget_retry` 首行改 `if True` ⇒ 收尾轮 2 红；keyfact 去掉 `ts=existing.ts` ⇒ 首见时间戳 1 红；
+`write` 摘 `_enforce_l2_cap` 调用 ⇒ 软上限 3 红；`FileCheckpoint` 的 `completed` 写空 ⇒ 落盘往返
+1 红；复原后 md5 同：`budget.py` `b0569f6e704dd151d90be39131af11b4`、`default.py`
+`e6dfb9d97d0800a493201fe29895fc7e`、`store.py` `dc80f4fc3f2af3b789d11304c612b742`、
+`scheduler.py` `d6a0751414cd9965c69676041a50e90b`。四门禁全绿；`openspec validate --all` 中本
+change 绿（`0233` 为**既有**归档欠账，与本 change 无关）。
+
+**局限**：① 估算器只覆盖预算/读预算/短带截断，三层窗口的「token → 字符」换算仍按 2 字符/token
+（与 ADR-0233 同口径）；② 预算降级只给**一轮**收尾，收尾轮本身仍可能产出大量 token（上界由
+`max_rounds` 与单轮模型输出约束，非硬截断）；③ L2 软上限按**条目数**而非字节/token，单条超长
+内容不受限；④ `_enforce_l2_cap` 的排序+迁移是 O(n) 扫描，条目极多时写路径有额外开销（缺省关闭）；
+⑤ 文件检查点只保证**单进程单写者**原子性（`os.replace`），多进程并发同路径会互相覆盖（既有
+`CheckpointStore` 也未做跨进程锁）；⑥ keyfact 首见时间戳保留依赖旧条目仍在冷/热区，若旧条目已
+归档则新写以 `ts=0` 起算。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8807,3 +8864,4 @@ ProgressTracker 追踪进度」，实现却空转：拆解 prompt 只产 subtask
 | ADR-0234 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0235 | 02-modules/orchestration.md, 02-modules/beast-mode.md, 02-modules/pet.md, 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0236 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0237 | 03-interfaces/context-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

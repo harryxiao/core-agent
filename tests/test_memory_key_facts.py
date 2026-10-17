@@ -161,6 +161,26 @@ def test_same_entity_is_idempotent_overwrite() -> None:
     assert hits[0].content == "部署环境: 生产集群 B", "覆盖式更新"
 
 
+def test_same_entity_overwrite_preserves_first_seen_ts() -> None:
+    """跨压实合并保留首见时间戳（change 0230 / G4）。"""
+    holder: dict[str, list[KeyFact]] = {"facts": [KeyFact(entity="部署环境", value="生产集群 A")]}
+    store = MemoryStore(
+        summarizer=lambda entries: "摘要：事实",
+        key_fact_extractor=lambda entries: list(holder["facts"]),
+    )
+    store.write("L2", _episodic("e0", "s1"))
+    store.compact(session_id="s1")
+    first = next(e for e in _facts(store) if e.id == "keyfact.部署环境")
+
+    holder["facts"] = [KeyFact(entity="部署环境", value="生产集群 B")]
+    store.write("L2", _episodic("e1", "s1"))
+    store.compact(session_id="s1")
+
+    updated = next(e for e in _facts(store) if e.id == "keyfact.部署环境")
+    assert updated.content == "部署环境: 生产集群 B"
+    assert updated.ts == first.ts, "覆盖更新保留首次落库时间戳"
+
+
 def test_key_fact_is_global_so_visible_across_sessions() -> None:
     """全局层 ⇒ 他会话检索（`session_id` 过滤）仍可见。"""
     store = _store([KeyFact(entity="部署环境", value="生产集群 A")])
