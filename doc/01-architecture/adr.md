@@ -8525,6 +8525,57 @@ beast/pet episodic 派生全局事实；canonical notes 提升绕过 source 排�
 单槽 `_post_turn_task`。三者**会话数据不混**，登记为已知局限；⑤ `subtask_timeout` 以整数秒配置，
 亚秒级仅测试可达（构造参数为 `float`）。
 
+## ADR-0236：目标监控闭环（planner 生成成功标准 + 任务级判定）（change 0248 / 台账 E183）
+
+**背景**：规格 `orchestration` R6 承诺「用 Goal 与 SuccessCriteria 定义任务级成功标准，并由
+ProgressTracker 追踪进度」，实现却空转：拆解 prompt 只产 subtasks，`success_criteria` 无生产者；
+`decomposer.decompose` 忽略调用方传入的标准；`success_checker` 签名只拿标准、看不到子任务结果，
+组合根从未注入（无标准时无人调用，有标准时只会 `MISSING_SUCCESS_CHECKER`）；`ProgressTracker`
+只有完成集合，失败/重试不可见。
+
+**决策**：
+
+- **D1 标准由拆解产出**：`_DECOMPOSE_SYSTEM` 顶层改为
+  `{"success_criteria": ["..."], "subtasks": [...]}`，约定 2-5 条、每条可客观判定真伪、覆盖整体
+  目标而不复述子任务 acceptance。新增 `DecomposeResult(subtasks, success_criteria)`；`Planner`
+  协议接受 `list[Subtask] | DecomposeResult`（既有单参 lambda 桩零改动）。
+- **D2 解析与优先级**：`_parse_criteria` 只收非空字符串、strip、保序去重、至多 5 条；
+  `decompose` 的优先级为「显式非空 > planner 生成 > 空」；`_fallback` 恒不带标准 —— planner 调用
+  失败时若仍生成标准，同源 LLM 判定的 fail-closed 会把本可执行的任务拖死。重新拆解时原标准非空
+  则保留（`Plan.success_criteria` 随计划入检查点）。
+- **D3 任务级判定器**：新增 `LLMTaskVerifier`，**复用** `_VERIFY_SYSTEM` 与模块级 `_judge` /
+  `_fail_closed`（不新增 prompt 常量，镜像零改动）；输入 Goal + 标准逐条 + 每子任务状态与结果
+  节选（单条 ≤ `_MAX_OUTCOME_REPLY = 500`），整体 `redact_secrets` 脱敏后以
+  `_MAX_VERIFY_CHARS = 4000` 截断；单次重试后仍失败 ⇒ fail-closed。criteria 为空时直接判过、
+  不发请求。
+- **D4 调度器接线**：`SuccessChecker` 改为
+  `Callable[[str, list[str], list[SubtaskOutcome]], VerifyResult | Awaitable[VerifyResult]]`；
+  `_success_met` 改 async 并接收 outcomes；异常/非法返回经 `_coerce_verdict` 归一 fail-closed；
+  未达标以 `PROGRESS_NOT_MET` 进入 `0246` 恢复回路（重拆预算未用尽则重拆，否则 `FAILED`）。
+  存在标准但未注入 checker 仍 fail-fast（`MISSING_SUCCESS_CHECKER`）。
+- **D5 三态进度**：`ProgressTracker` 增 `started` / `failed` 两个集合与
+  `progress(task_id) -> {"started","completed","failed"}`；`start` / `record` 清 failed，
+  `fail` 标失败，`reset` 清空；`detect_stall` 仍以 completed 签名判定（口径不变）。
+- **D6 缺省开启**：组合根注入 `LLMTaskVerifier(llm, model=app.llm.model)`。用户裁决为缺省开启，
+  且**必须**与 D1 同 change 落地 —— 只生成标准不注入 checker 会让生产任务全量
+  `MISSING_SUCCESS_CHECKER` 失败（本 change 的 P0 前置）。
+
+**规格**：`orchestration` R6「目标监控」**MODIFIED**（3 → 6 Scenario，+3；既有
+「成功标准定义」逐字保留）。规格总量 11 req / 61 → **64** scen。
+
+**反证（实测）**：摘 `_parse` 的 criteria 解析 ⇒ DAG / 限条两用例红（生成标准为空）；摘组合根
+注入 ⇒ `test_build_runtime_injects_policy_and_limit` 红；`LLMTaskVerifier._render` 忽略子任务
+结果 ⇒ `test_llm_task_verifier_judges_goal_criteria_and_outcomes` 红。复原后 `md5sum` 同：
+`planner.py` `35348dbf13e89eb10bb7ef0002019085`、`runtime.py`
+`0504ee0f1ed5997ecc5238caecd23554`。测试净 +12（2740 → **2752**）。四门禁全绿；
+`openspec validate --all` 中本 change 绿（`0230` / `0233` 两项为**既有**归档欠账）。
+
+**局限**：① planner 生成的标准质量取决于模型，可能过宽/过窄；判定为同源 LLM，存在共模误判，
+仅 fail-closed 兜底；② 任务级判定每任务额外一次 LLM 调用（判失败时重试一次），费用有界但非零；
+③ 判定输入只含每子任务 500 字符结果节选，超长结果的关键证据可能被截断；④ 标准不参与
+`PROGRESS_NOT_MET` 之外的错误码，调用方无法区分「子任务验收失败」与「整体目标未达成」的细粒度
+原因（payload 中带 reason）；⑤ 重拆时若原标准为空则采纳新标准，两条路径的判定口径可能随重拆变化。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8755,3 +8806,4 @@ beast/pet episodic 派生全局事实；canonical notes 提升绕过 source 排�
 | ADR-0233 | 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0234 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0235 | 02-modules/orchestration.md, 02-modules/beast-mode.md, 02-modules/pet.md, 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0236 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

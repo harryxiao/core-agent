@@ -13,9 +13,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -25,7 +26,7 @@ from core.observability import TraceEvent, Tracer
 from .decomposer import SubtaskDecomposer
 from .errors import OrchestrationError, OrchestrationErrorCode
 from .handoff import DEFAULT_CONTEXT_TOKENS, MAX_HANDOFF_CHARS, build_context_pack
-from .models import Plan, Subtask, TaskHandoff, TaskState
+from .models import Plan, Subtask, TaskHandoff, TaskState, VerifyResult
 from .router import MultiAgentRouter
 from .state_machine import StateMachine
 
@@ -36,6 +37,10 @@ CheckpointFn = Callable[[str, "list[SubtaskOutcome]", Plan, str], None]
 DoneFn = Callable[[str, "list[SubtaskOutcome]", Plan, str], None]
 # 子任务事件发射器：入队即返回（None 为波次收尾哨兵）。
 Emit = Callable[[LoopEvent | None], None]
+# 任务级判定器：Goal + 成功标准 + 子任务结果 → 判定（支持异步，change 0248）。
+SuccessChecker = Callable[
+    [str, list[str], "list[SubtaskOutcome]"], VerifyResult | Awaitable[VerifyResult]
+]
 
 # 依赖结果注入/检查点留存的回复截断统一取 handoff.MAX_HANDOFF_CHARS（单点真源）
 _MAX_EVENT_EXCERPT = 600  # 进度事件携带的回复节选（UI 折叠详情用）
@@ -62,20 +67,40 @@ _PROGRESS_FIELDS: dict[str, tuple[str, ...]] = {
 
 
 class ProgressTracker:
-    """目标进度追踪 + 死循环哨兵：按进度签名重复检测无推进。"""
+    """目标进度追踪 + 死循环哨兵：三态进度（change 0248）与进度签名重复检测。"""
 
     def __init__(self, *, stall_limit: int = 3) -> None:
         self._completed: dict[str, set[str]] = {}
+        self._started: dict[str, set[str]] = {}
+        self._failed: dict[str, set[str]] = {}
         self._signatures: dict[str, list[tuple[str, ...]]] = {}
         self._stall_limit = stall_limit
 
+    def start(self, task_id: str, subtask_id: str) -> None:
+        """子任务开始派发（含重试）；重试开始即清除该子任务的失败标记。"""
+        self._started.setdefault(task_id, set()).add(subtask_id)
+        self._failed.get(task_id, set()).discard(subtask_id)
+
+    def fail(self, task_id: str, subtask_id: str) -> None:
+        """子任务失败待恢复（重试成功或重新拆解后清除）。"""
+        self._failed.setdefault(task_id, set()).add(subtask_id)
+
     def record(self, task_id: str, subtask_id: str) -> None:
-        """记录子任务完成，推进进度。"""
+        """记录子任务完成，推进进度并清除失败标记。"""
         self._completed.setdefault(task_id, set()).add(subtask_id)
+        self._failed.get(task_id, set()).discard(subtask_id)
 
     def completed(self, task_id: str) -> set[str]:
         """返回任务已完成的子任务 id 集合。"""
         return set(self._completed.get(task_id, set()))
+
+    def progress(self, task_id: str) -> dict[str, int]:
+        """三态计数：已开始 / 已完成 / 失败待恢复（按子任务去重）。"""
+        return {
+            "started": len(self._started.get(task_id, set())),
+            "completed": len(self._completed.get(task_id, set())),
+            "failed": len(self._failed.get(task_id, set())),
+        }
 
     def detect_stall(self, task_id: str) -> bool:
         """记录当前进度签名，最近 ``stall_limit`` 次签名一致 → 无推进 → 死循环。"""
@@ -89,6 +114,8 @@ class ProgressTracker:
     def reset(self, task_id: str) -> None:
         """清空任务进度（取消 / 重建时）。"""
         self._completed.pop(task_id, None)
+        self._started.pop(task_id, None)
+        self._failed.pop(task_id, None)
         self._signatures.pop(task_id, None)
 
 
@@ -137,6 +164,13 @@ def _merge_outcomes(
     return list(by_id.values())
 
 
+def _coerce_verdict(value: object) -> VerifyResult:
+    """判定器返回值归一：非 ``VerifyResult`` 一律 fail-closed（外部注入边界）。"""
+    if isinstance(value, VerifyResult):
+        return value
+    return VerifyResult(passed=False, reason="任务级判定器返回非法结果（fail-closed）")
+
+
 def _failure_from(outcomes: list[SubtaskOutcome]) -> _Failure | None:
     """一轮结果聚合为失败收口；全部通过返回 None。"""
     failed = [outcome for outcome in outcomes if not outcome.ok]
@@ -165,7 +199,7 @@ class TaskScheduler:
         difficulty_policy: str = "off",
         # 子任务交接超时（秒；`0` = 不设限，与配置缺省同值；change 0247）。
         subtask_timeout: float = 0,
-        success_checker: Callable[[list[str]], bool] | None = None,
+        success_checker: SuccessChecker | None = None,
         checkpoint: CheckpointFn | None = None,
         on_done: DoneFn | None = None,
         tracer: Tracer | None = None,
@@ -321,10 +355,11 @@ class TaskScheduler:
                         f"任务 {task_id} 提供了 success_criteria 但未注入 success_checker",
                     )
                     return
-                if not self._success_met(plan.success_criteria):
+                verdict = await self._success_met(task_id, goal, plan, outcomes)
+                if not verdict.passed:
                     failure = _Failure(
                         OrchestrationErrorCode.PROGRESS_NOT_MET,
-                        f"任务 {task_id} 未达成成功标准: {plan.success_criteria}",
+                        verdict.reason or f"任务 {task_id} 未达成成功标准: {plan.success_criteria}",
                         [],
                         attempts=max((o.attempt for o in outcomes), default=1),
                     )
@@ -420,12 +455,24 @@ class TaskScheduler:
             payload.update(extra)
         return LoopEvent("task_failed", payload)
 
-    def _success_met(self, criteria: list[str]) -> bool:
-        """成功标准判定：空标准视为通过；否则调用注入的 checker（缺失已在 run 入口校验）。"""
+    async def _success_met(
+        self, task_id: str, goal: str, plan: Plan, outcomes: list[SubtaskOutcome]
+    ) -> VerifyResult:
+        """任务级判定：空标准视为通过；checker 异常/非法返回 fail-closed（change 0248）。"""
+        criteria = list(plan.success_criteria)
         if not criteria:
-            return True
+            return VerifyResult(passed=True, reason="")
         assert self._success_checker is not None  # astream 已拦截缺失场景
-        return self._success_checker(criteria)
+        try:
+            # 防御性边界：checker 为外部注入，异常与非法返回一律 fail-closed
+            raw = self._success_checker(goal, criteria, outcomes)
+            verdict = _coerce_verdict(await raw if inspect.isawaitable(raw) else raw)
+        except Exception:  # noqa: BLE001 — 判定器异常一律按未达标收口（不裸崩任务）
+            verdict = VerifyResult(passed=False, reason="任务级判定器异常（fail-closed）")
+        self._trace(
+            task_id, "success_verdict", {"passed": verdict.passed, "reason": verdict.reason}
+        )
+        return verdict
 
     def _enter_executing(self, task_id: str) -> None:
         """新任务 CREATED→PLANNING→EXECUTING；挂起/恢复中任务直接进 EXECUTING。"""
@@ -597,7 +644,7 @@ class TaskScheduler:
         ``CancelledError`` 属 ``BaseException``，不在此捕获（取消必须透传）。
         """
         try:
-            return await self._run_subtask(
+            outcome = await self._run_subtask(
                 task_id,
                 plan,
                 subtask,
@@ -608,9 +655,9 @@ class TaskScheduler:
                 previous_reason=previous_reason,
             )
         except OrchestrationError as exc:
-            return self._failed_outcome(task_id, subtask.id, exc.code, str(exc), emit, attempt)
+            outcome = self._failed_outcome(task_id, subtask.id, exc.code, str(exc), emit, attempt)
         except Exception as exc:  # noqa: BLE001 — 执行异常归一为子任务失败（不裸崩调度器）
-            return self._failed_outcome(
+            outcome = self._failed_outcome(
                 task_id,
                 subtask.id,
                 OrchestrationErrorCode.SUBTASK_EXECUTION_FAILED,
@@ -618,6 +665,9 @@ class TaskScheduler:
                 emit,
                 attempt,
             )
+        if not outcome.ok:  # 三态进度：失败待恢复（重试开始 / 完成会清除）
+            self._tracker.fail(task_id, subtask.id)
+        return outcome
 
     def _failed_outcome(  # noqa: PLR0913, PLR0917 — 归一失败结果入参
         self,
@@ -681,6 +731,7 @@ class TaskScheduler:
                 )
             )
             return SubtaskOutcome(subtask.id, ok=True)
+        self._tracker.start(task_id, subtask.id)  # 三态进度：派发即计入（重试清 failed）
         emit(
             LoopEvent(
                 "subtask_started",

@@ -15,10 +15,13 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .errors import OrchestrationError, OrchestrationErrorCode
-from .models import Plan, Subtask, VerifyResult
+from .models import DecomposeResult, Plan, Subtask, VerifyResult
 
-# 拆解器注入面：目标 → 子任务集（支持异步，LLM 拆解经 acompletion）。
-Planner = Callable[[str], list[Subtask] | Awaitable[list[Subtask]]]
+# 拆解器注入面：目标 → 子任务集（可附带生成的成功标准；支持异步，LLM 拆解经 acompletion）。
+# 返回 list 的既有桩继续兼容（无生成标准）。
+Planner = Callable[
+    [str], list[Subtask] | DecomposeResult | Awaitable[list[Subtask] | DecomposeResult]
+]
 # 验收门注入面：子任务 + 结果 → 判定（支持异步，LLM 对照 acceptance）。
 Verifier = Callable[[Subtask, Any], VerifyResult | Awaitable[VerifyResult]]
 
@@ -31,12 +34,22 @@ class SubtaskDecomposer:
         self._verifier = verifier
 
     async def decompose(self, goal: str, success_criteria: list[str] | None = None) -> Plan:
-        """大目标 → 分步 Todo（含验收标准与依赖 DAG），划分拓扑序与波次。"""
+        """大目标 → 分步 Todo（含验收标准与依赖 DAG），划分拓扑序与波次。
+
+        成功标准优先级：显式非空 > planner 随拆解生成 > 空（change 0248）。
+        """
+        generated: list[str] = []
+        subtasks: list[Subtask]
         if self._planner is None:
             subtasks = [Subtask(id="1", goal=goal, acceptance="")]  # 离线默认
         else:
             produced = self._planner(goal)
-            subtasks = await produced if inspect.isawaitable(produced) else produced
+            resolved = await produced if inspect.isawaitable(produced) else produced
+            if isinstance(resolved, DecomposeResult):
+                subtasks = resolved.subtasks
+                generated = list(resolved.success_criteria)
+            else:
+                subtasks = resolved
         order = self._topological_order(subtasks)
         if len(order) < len(subtasks):
             raise OrchestrationError(
@@ -47,7 +60,7 @@ class SubtaskDecomposer:
             subtasks=subtasks,
             goal=goal,
             order=order,
-            success_criteria=success_criteria or [],
+            success_criteria=list(success_criteria or []) or generated,
             waves=waves,
         )
 

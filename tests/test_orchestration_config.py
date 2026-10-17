@@ -18,6 +18,7 @@ import pytest
 
 from core.configuration import ConfigManager, ConfigurationError, config_specs
 from core.entry import _key_to_patch
+from core.orchestration import LLMTaskVerifier
 from core.runtime import build_runtime
 
 _LLM_SECTION = (
@@ -184,6 +185,8 @@ def test_build_runtime_injects_policy_and_limit(
     assert runtime.orchestrator._difficulty_policy == "difficulty"  # noqa: SLF001
     assert runtime.orchestrator._max_concurrency == 2  # noqa: SLF001, PLR2004
     assert runtime.orchestrator._subtask_timeout == 7  # noqa: SLF001, PLR2004
+    # 任务级判定器缺省注入（change 0248）：只生成标准不注入 checker ⇒ 生产任务全量 MISSING 失败
+    assert isinstance(runtime.orchestrator._success_checker, LLMTaskVerifier)  # noqa: SLF001
 
 
 def test_config_set_subtask_timeout_applies_and_persists(tmp_path: Path) -> None:

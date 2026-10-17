@@ -11,6 +11,7 @@ from .decomposer import Planner, SubtaskDecomposer, Verifier
 from .errors import OrchestrationError, OrchestrationErrorCode
 from .models import (
     AgentProfile,
+    DecomposeResult,
     Plan,
     Subtask,
     TaskHandoff,
@@ -19,14 +20,16 @@ from .models import (
     plan_from_dict,
     plan_to_dict,
 )
-from .planner import LLMSubtaskPlanner, LLMVerifier
+from .planner import LLMSubtaskPlanner, LLMTaskVerifier, LLMVerifier
 from .router import MultiAgentRouter
-from .scheduler import ProgressTracker, SubtaskOutcome, TaskScheduler
+from .scheduler import ProgressTracker, SubtaskOutcome, SuccessChecker, TaskScheduler
 from .state_machine import StateMachine
 
 __all__ = [
     "AgentProfile",
+    "DecomposeResult",
     "LLMSubtaskPlanner",
+    "LLMTaskVerifier",
     "LLMVerifier",
     "MultiAgentRouter",
     "OrchestrationError",
@@ -38,6 +41,7 @@ __all__ = [
     "Subtask",
     "SubtaskDecomposer",
     "SubtaskOutcome",
+    "SuccessChecker",
     "TaskHandoff",
     "TaskScheduler",
     "TaskState",

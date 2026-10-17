@@ -95,8 +95,15 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
 ### 3.5 目标监控（Goal / SuccessCriteria + ProgressTracker）
 
 - 任务拆解时定义 **Goal 与 SuccessCriteria（SMART：具体/可度量/可达成/相关/有时限）**，子任务验收标准对齐父目标。
-- **ProgressTracker** 独立负责进度追踪：记录每子任务进度，汇总为整体目标推进度。
-- 进度未达标时触发重试或重新规划（衔接状态机 RECOVERING）。
+  **标准默认由 planner 随拆解生成**（顶层 `success_criteria`，2-5 条可客观判定真伪、覆盖整体目标
+  而不复述子任务 acceptance；`DecomposeResult`）；调用方显式非空标准优先；planner 失败回落的单子任务
+  计划**不带**标准（change `0248`／ADR-0236）。重新拆解时原标准非空则保留。
+- **任务级判定**：`LLMTaskVerifier` 对照 Goal + 标准 + 子任务结果判任务是否达成（输入脱敏、有界、
+  单次重试；异常/非法返回 fail-closed）。组合根缺省注入（开启）；带标准未注入判定器 ⇒
+  `MISSING_SUCCESS_CHECKER` fail-fast。
+- **ProgressTracker** 独立负责进度追踪：维护 `started` / `completed` / `failed` 三态，`progress(task_id)`
+  返回三计数；重试开始与完成清除 `failed`，重新拆解清空三态。
+- 进度或任务级判定未达标时触发重试或重新规划（衔接状态机 RECOVERING，重拆预算耗尽转 `FAILED`）。
 
 ### 3.6 优先级调度（priority）
 

@@ -3581,3 +3581,29 @@ orchestration.*` 不可达且 `_merge_patch` 会静默丢弃该段。
 > `configuration`「编排调度配置」**MODIFIED**（3 scen 数不变）。测试净 +24（2716 → **2740**）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0235 行（deadline 默认关闭 / 上下文截断 /
 > cancel 不断流 / 跨命名空间既有风险 / 整数秒配置）。
+
+## 159. 目标监控闭环（TC-ORCHGOAL，change `0248`／ADR-0236，台账 E183）
+
+**根因**：拆解 prompt 只产 subtasks（标准无生产者）；`decompose` 忽略调用方标准；
+`success_checker` 看不到子任务结果且组合根未注入；`ProgressTracker` 只有完成集合。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-ORCHGOAL-01 | **标准生成与解析**（承重） | 拆解 JSON 含 criteria（空白/重复/非字符串）、空白依赖、重复 id | criteria strip + 保序去重；空白依赖 strip 后仍有效；重复 id 保留首个；`subtasks` 与 `success_criteria` 同时产出（`tests/test_orchestration.py::test_llm_planner_produces_dag`） |
+| TC-ORCHGOAL-02 | 标准条数上界 | 8 条 criteria | 落定至多 5 条（`…test_llm_planner_caps_generated_criteria`） |
+| TC-ORCHGOAL-03 | 显式标准优先 | 显式非空 / 缺省 / 显式空列表 / 旧 list 桩 | 显式覆盖生成；缺省与空列表采纳生成；旧桩无标准（`…test_decompose_criteria_precedence`） |
+| TC-ORCHGOAL-04 | 回落无标准 | LLM 报错 / 输出不可解析 | 回落单子任务且 `success_criteria == []`（不得拖死任务）（`…test_llm_planner_fallback_on_error_or_garbage`） |
+| TC-ORCHGOAL-05 | **判定器输入面**（承重） | Goal + 标准 + 子任务结果 | prompt 含 Goal、逐条标准、每子任务状态与结果节选；密钥脱敏为 `<redacted>`；整体 ≤ 4000 字符（`…test_llm_task_verifier_judges_goal_criteria_and_outcomes` / `…test_llm_task_verifier_redacts_secrets_and_bounds_prompt`） |
+| TC-ORCHGOAL-06 | 空标准短路 | `criteria=[]` | 直接判过、不调用 LLM（`…test_llm_task_verifier_empty_criteria_passes_without_call`） |
+| TC-ORCHGOAL-07 | 判定器 fail-closed | LLM 报错/垃圾；checker 抛异常；checker 返回非法值 | 判未达标并进入恢复回路，不裸崩、不静默放行（`…test_llm_task_verifier_fail_closed` / `…test_run_success_checker_exception_fails_closed_then_replans` / `…test_run_success_checker_invalid_return_fails_closed`） |
+| TC-ORCHGOAL-08 | 未达标 → 恢复 | checker 恒 false / 无标准 / 有标准未注入 | 重拆 1 次后 `FAILED`；无标准直接 `DONE`；有标准未注入 `MISSING_SUCCESS_CHECKER`（`…test_run_success_criteria_unmet_recovers_then_fails` / `…test_run_empty_success_criteria_done` / `…test_run_criteria_without_checker_fails_fast`） |
+| TC-ORCHGOAL-09 | checker 三参 / async | 记录 checker 入参；`async def` checker | 收到 `(goal, criteria, outcomes)`；异步结果被 await（`…test_run_success_checker_receives_goal_criteria_and_outcomes` / `…test_run_async_success_checker_supported`） |
+| TC-ORCHGOAL-10 | 三态进度 | 直接驱动 / 重试成功 | `started`/`completed`/`failed` 计数与清除语义正确；重试成功后 `failed == 0`（`…test_progress_tracker_three_states` / `…test_run_retry_updates_tracker_states`） |
+| TC-ORCHGOAL-11 | 组合根注入 | 构建 runtime | `orchestrator._success_checker` 为 `LLMTaskVerifier`（缺省开启）（`tests/test_orchestration_config.py::test_build_runtime_injects_policy_and_limit`） |
+| TC-ORCHGOAL-12 | prompt 三处同改 | 常量 / pin / 镜像 | pin 逐字相等；镜像行号指向 `planner.py:23` / `:38`（`tests/test_prompt_pinning.py` / `tests/test_prompt_mirror.py`） |
+
+> **反证**：摘 `_parse` 的 criteria 解析 ⇒ 01/02 红；摘组合根注入 ⇒ 11 红；`LLMTaskVerifier._render`
+> 忽略子任务结果 ⇒ 05 红。复原 ⇒ `planner.py` / `runtime.py` `md5sum` 同。规格：`orchestration`
+> R6 **MODIFIED** +3 scen（11 req / 61 → 64 scen）。测试净 +12（2740 → **2752**）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0236 行（标准质量依赖模型 / 每任务一次额外
+> LLM 调用 / 结果节选截断 / 错误码粒度 / 重拆口径可能变化）。

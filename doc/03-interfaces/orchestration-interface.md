@@ -41,13 +41,14 @@ RECOVERING→EXECUTING | FAILED
 class SubtaskDecomposer:
     def __init__(
         self,
-        planner: Planner | None = None,        # Callable[[str], list[Subtask] | Awaitable[...]]
+        planner: Planner | None = None,        # Callable[[str], list[Subtask] | DecomposeResult | Awaitable[...]]
         verifier: Verifier | None = None,      # Callable[[Subtask, Any], VerifyResult | Awaitable[...]]
     ) -> None: ...
 
     async def decompose(self, goal: str, success_criteria: list[str] | None = None) -> Plan:
-        """大目标 → 分步 Todo（含验收标准与依赖 DAG）；success_criteria 透传至 Plan。
+        """大目标 → 分步 Todo（含验收标准与依赖 DAG）。
 
+        成功标准优先级：显式非空 > planner 随拆解生成 > 空（change 0248）。
         注入 planner 时经其生成子任务（支持异步）；未注入默认单子任务（离线）。
         """
 
@@ -76,6 +77,15 @@ class Plan:
 class VerifyResult:
     passed: bool
     reason: str
+
+@dataclass
+class DecomposeResult:
+    """拆解产物：子任务集 + 任务级成功标准（planner 生成；change 0248）。
+
+    返回 list[Subtask] 的既有 planner 桩继续兼容（视为无生成标准）。
+    """
+    subtasks: list[Subtask]
+    success_criteria: list[str] = field(default_factory=list)
 ```
 
 ### 2.1 LLM 拆解 / 验收适配器
@@ -84,16 +94,30 @@ class VerifyResult:
 class LLMSubtaskPlanner:
     """经 llm-provider acompletion 产子任务 DAG；失败/不可解析回落单子任务。"""
     def __init__(self, llm: LLMProvider, *, model: str | None = None) -> None: ...
-    async def __call__(self, goal: str) -> list[Subtask]: ...
+    async def __call__(self, goal: str) -> DecomposeResult: ...
 
 class LLMVerifier:
     """经 acompletion 对照 acceptance 判定结果；调用失败/不可解析 fail-closed。"""
     def __init__(self, llm: LLMProvider, *, model: str | None = None) -> None: ...
     async def __call__(self, subtask: Subtask, result: Any) -> VerifyResult: ...
+
+class LLMTaskVerifier:
+    """任务级判定器：对照整体目标 + 成功标准 + 子任务结果判任务是否达成（change 0248）。
+
+    复用验收判定 prompt 与 fail-closed 路径；输入脱敏、有界（4000 字符），单次重试。
+    criteria 为空时直接判过、不调用模型。
+    """
+    def __init__(self, llm: LLMProvider, *, model: str | None = None) -> None: ...
+    async def __call__(
+        self, goal: str, criteria: list[str], outcomes: list[SubtaskOutcome],
+    ) -> VerifyResult: ...
 ```
 
-- 拆解 prompt 约束输出 `{"subtasks": [{"id","goal","acceptance","depends_on","priority","difficulty"}]}`；
-  逐项校验（id/goal 非空、depends_on 引用已声明 id），非法项剔除，全非法则回落单子任务。
+- 拆解 prompt 约束输出 `{"success_criteria": [...], "subtasks": [{"id","goal","acceptance",
+  "depends_on","priority","difficulty"}]}`；`success_criteria` 为 2-5 条可客观判定真伪的标准
+  （覆盖整体目标、不复述子任务 acceptance）。逐项校验（id/goal 非空、depends_on 引用已声明 id），
+  非法项剔除；标准只收非空字符串、strip、保序去重、至多 5 条；全非法则回落单子任务（回落
+  **不带**标准 —— 同源判定 fail-closed 不得把任务拖死）。
 - `difficulty` 是**模型自报的弱信号**：归一为三档（去空白 + 小写），集合外取值回落 `medium`
   —— **不剔除**子任务、不抛裸异常（与 `priority` 非整数取 0 同口径；与**配置键**非法即阻断启动的
   口径**有意不同**，见 §4）。
@@ -104,7 +128,8 @@ class LLMVerifier:
 ```python
 class TaskScheduler:
     def __init__(self, ..., max_concurrency: int = 4, difficulty_policy: str = "off",
-                 tracer: Tracer | None = None) -> None: ...
+                 tracer: Tracer | None = None,
+                 success_checker: SuccessChecker | None = None) -> None: ...
 
     async def run(
         self, task_id: str, goal: str, success_criteria: list[str] | None = None,
@@ -125,6 +150,13 @@ class TaskScheduler:
         关键节点（拆解/验收/检查点/终态）经 tracer 写 trace。"""
 ```
 
+- **任务级判定**（change 0248）：`SuccessChecker = Callable[[str, list[str], list[SubtaskOutcome]],
+  VerifyResult | Awaitable[VerifyResult]]`（Goal / 成功标准 / 子任务结果）。计划带标准时于
+  `VERIFYING` 调用判定器，未达标以 `PROGRESS_NOT_MET` 进入恢复回路（重拆预算未用尽则重拆，
+  否则 `FAILED`）；判定器异常或返回非法值归一 **fail-closed**（判未达标），不裸崩、不静默放行；
+  带标准但未注入判定器 ⇒ `MISSING_SUCCESS_CHECKER`（fail-fast）。`ProgressTracker` 维护
+  `started` / `completed` / `failed` 三态，`progress(task_id)` 返回三计数字典；重试开始与完成
+  清除 `failed`，重新拆解清空三态。
 - CLI 入口：`core-agent task <目标> [--task-id ID | --resume ID]` 流式打印进度事件；
   `--resume` 从该 task-id 最新检查点重建 Plan 与已完成集，续跑未完成子任务；
   检查点经 CheckpointStore 落盘 `$CORE_STATE_DIR/checkpoints.jsonl`（缺省

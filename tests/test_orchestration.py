@@ -16,11 +16,13 @@ from typing import Any, cast
 
 import pytest
 
-from core.llm_provider import LLMError
+from core.llm_provider import LLMError, LLMRequest
 from core.loop import Action, DefaultLoop, LoopEvent, LoopResult
 from core.orchestration import (
     AgentProfile,
+    DecomposeResult,
     LLMSubtaskPlanner,
+    LLMTaskVerifier,
     LLMVerifier,
     MultiAgentRouter,
     OrchestrationError,
@@ -30,6 +32,7 @@ from core.orchestration import (
     StateMachine,
     Subtask,
     SubtaskDecomposer,
+    SubtaskOutcome,
     TaskHandoff,
     TaskScheduler,
     TaskState,
@@ -181,6 +184,20 @@ def test_progress_tracker_no_stall_when_progressing() -> None:
     tracker.detect_stall("t")
     tracker.record("t", "s2")
     assert tracker.detect_stall("t") is False
+
+
+def test_progress_tracker_three_states() -> None:
+    """三态进度（change 0248）：重试开始 / 完成清除失败标记；reset 清空三态。"""
+    tracker = ProgressTracker()
+    tracker.start("t", "1")
+    tracker.fail("t", "1")
+    assert tracker.progress("t") == {"started": 1, "completed": 0, "failed": 1}
+    tracker.start("t", "1")  # 重试开始 ⇒ 清除失败标记
+    assert tracker.progress("t")["failed"] == 0
+    tracker.record("t", "1")
+    assert tracker.progress("t") == {"started": 1, "completed": 1, "failed": 0}
+    tracker.reset("t")
+    assert tracker.progress("t") == {"started": 0, "completed": 0, "failed": 0}
 
 
 # ---- 调度器 ----
@@ -459,7 +476,7 @@ def test_run_success_criteria_unmet_recovers_then_fails() -> None:
         decomposer=SubtaskDecomposer(planner=planner),
         router=router,
         state_machine=sm,
-        success_checker=lambda _: False,
+        success_checker=lambda *_: VerifyResult(passed=False, reason="未达标"),
     )
     with pytest.raises(OrchestrationError) as exc:
         asyncio.run(scheduler.run("task", "goal", success_criteria=["c1"]))
@@ -480,7 +497,7 @@ def test_run_empty_success_criteria_done() -> None:
         decomposer=decomposer,
         router=router,
         state_machine=sm,
-        success_checker=lambda _: False,
+        success_checker=lambda *_: VerifyResult(passed=False, reason="未达标"),
     )
     outcomes = asyncio.run(scheduler.run("task", "goal"))
     assert all(o.ok for o in outcomes)
@@ -500,6 +517,101 @@ def test_run_criteria_without_checker_fails_fast() -> None:
         asyncio.run(scheduler.run("task", "goal", success_criteria=["c1"]))
     assert exc.value.code == OrchestrationErrorCode.MISSING_SUCCESS_CHECKER
     assert sm.state("task") == TaskState.FAILED
+
+
+def test_run_success_checker_receives_goal_criteria_and_outcomes() -> None:
+    """任务级判定器拿到 Goal + 标准 + 子任务结果（change 0248）。"""
+    seen: list[tuple[str, list[str], list[tuple[str, bool]]]] = []
+
+    def checker(goal: str, criteria: list[str], outcomes: list[SubtaskOutcome]) -> VerifyResult:
+        seen.append((goal, list(criteria), [(o.subtask_id, o.ok) for o in outcomes]))
+        return VerifyResult(passed=True, reason="达标")
+
+    profile = AgentProfile(agent_id="a", capabilities=["t"], loop=_loop("ok"))
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(
+            planner=lambda goal: [Subtask(id="1", goal="t-one", acceptance="")]
+        ),
+        router=MultiAgentRouter(agents=[profile]),
+        state_machine=StateMachine(),
+        success_checker=checker,
+    )
+    outcomes = asyncio.run(scheduler.run("task", "goal", success_criteria=["c1"]))
+    assert all(o.ok for o in outcomes)
+    assert seen == [("goal", ["c1"], [("1", True)])]
+
+
+def test_run_async_success_checker_supported() -> None:
+    async def checker(
+        goal: str, criteria: list[str], outcomes: list[SubtaskOutcome]
+    ) -> VerifyResult:
+        return VerifyResult(passed=True, reason="异步达标")
+
+    profile = AgentProfile(agent_id="a", capabilities=["t"], loop=_loop("ok"))
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(
+            planner=lambda goal: [Subtask(id="1", goal="t-one", acceptance="")]
+        ),
+        router=MultiAgentRouter(agents=[profile]),
+        state_machine=StateMachine(),
+        success_checker=checker,
+    )
+    asyncio.run(scheduler.run("task", "goal", success_criteria=["c1"]))
+    assert scheduler._state_machine.state("task") == TaskState.DONE  # noqa: SLF001
+
+
+def test_run_success_checker_exception_fails_closed_then_replans() -> None:
+    """判定器异常 ⇒ fail-closed（未达标），进入恢复回路并耗尽预算判 FAILED。"""
+
+    def checker(*_args: object) -> VerifyResult:
+        raise RuntimeError
+
+    profile = AgentProfile(agent_id="a", capabilities=["t"], loop=_loop("ok"))
+    planner = _ScriptedPlanner([[Subtask(id="1", goal="t-one", acceptance="")]])
+    sm = StateMachine()
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(planner=planner),
+        router=MultiAgentRouter(agents=[profile]),
+        state_machine=sm,
+        success_checker=checker,
+    )
+    with pytest.raises(OrchestrationError) as exc:
+        asyncio.run(scheduler.run("task", "goal", success_criteria=["c1"]))
+    assert exc.value.code == OrchestrationErrorCode.PROGRESS_NOT_MET
+    assert "fail-closed" in str(exc.value)  # 异常不外抛原样，按未达标收口
+    assert len(planner.calls) == 2  # noqa: PLR2004 — 未达标触发一次重拆
+    assert sm.state("task") == TaskState.FAILED
+
+
+def test_run_success_checker_invalid_return_fails_closed() -> None:
+    profile = AgentProfile(agent_id="a", capabilities=["t"], loop=_loop("ok"))
+    planner = _ScriptedPlanner([[Subtask(id="1", goal="t-one", acceptance="")]])
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(planner=planner),
+        router=MultiAgentRouter(agents=[profile]),
+        state_machine=StateMachine(),
+        success_checker=cast("Any", lambda *_: "yes"),  # 非法返回 ⇒ fail-closed
+    )
+    with pytest.raises(OrchestrationError) as exc:
+        asyncio.run(scheduler.run("task", "goal", success_criteria=["c1"]))
+    assert exc.value.code == OrchestrationErrorCode.PROGRESS_NOT_MET
+    assert "fail-closed" in str(exc.value)
+
+
+def test_run_retry_updates_tracker_states() -> None:
+    """首次失败 → 重试通过后 failed 清零、completed 计 1（三态随执行更新）。"""
+    loop = _ScriptedLoop(["", "ok"])
+    tracker = ProgressTracker()
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(
+            planner=lambda goal: [Subtask(id="1", goal="t-one", acceptance="")]
+        ),
+        router=MultiAgentRouter(agents=[AgentProfile(agent_id="a", capabilities=["t"], loop=loop)]),
+        state_machine=StateMachine(),
+        tracker=tracker,
+    )
+    asyncio.run(scheduler.run("task", "goal"))
+    assert tracker.progress("task") == {"started": 1, "completed": 1, "failed": 0}
 
 
 def test_suspend_resume_cancel() -> None:
@@ -551,24 +663,64 @@ class _FakeLLM:
 def test_llm_planner_produces_dag() -> None:
     dag = json.dumps(
         {
+            "success_criteria": ["页面正文已抓取", " 汇总文件存在 ", "汇总文件存在", "", 123],
             "subtasks": [
                 {"id": "1", "goal": "抓取页面", "acceptance": "正文非空", "depends_on": []},
-                {"id": "2", "goal": "汇总写文件", "acceptance": "文件存在", "depends_on": ["1"]},
+                {"id": "2", "goal": "汇总写文件", "acceptance": "文件存在", "depends_on": [" 1 "]},
                 {"id": "bad", "goal": "", "acceptance": "", "depends_on": []},  # 缺 goal 剔除
-            ]
+                {"id": "1", "goal": "重复 id 应保留首个", "acceptance": "", "depends_on": []},
+            ],
         }
     )
     llm = _FakeLLM(content=f"```json\n{dag}\n```")  # 围栏包裹也能解析
-    subtasks = asyncio.run(LLMSubtaskPlanner(llm)("复合目标"))
-    assert [(s.id, s.depends_on) for s in subtasks] == [("1", []), ("2", ["1"])]
-    assert subtasks[0].acceptance == "正文非空"
+    result = asyncio.run(LLMSubtaskPlanner(llm)("复合目标"))
+    assert [(s.id, s.depends_on) for s in result.subtasks] == [("1", []), ("2", ["1"])]
+    assert result.subtasks[0].acceptance == "正文非空"
+    # 标准：非空字符串、strip、去重；空白依赖被 strip 后仍是有效依赖（0248）
+    assert result.success_criteria == ["页面正文已抓取", "汇总文件存在"]
+
+
+def test_llm_planner_caps_generated_criteria() -> None:
+    dag = json.dumps(
+        {
+            "success_criteria": [f"标准{i}" for i in range(8)],
+            "subtasks": [{"id": "1", "goal": "g", "acceptance": ""}],
+        }
+    )
+    result = asyncio.run(LLMSubtaskPlanner(_FakeLLM(dag))("目标"))
+    assert result.success_criteria == [f"标准{i}" for i in range(5)]  # 至多 5 条
 
 
 def test_llm_planner_fallback_on_error_or_garbage() -> None:
     errored = asyncio.run(LLMSubtaskPlanner(_FakeLLM(error=LLMError("boom")))("目标"))
-    assert [s.id for s in errored] == ["1"] and errored[0].goal == "目标"
+    assert [s.id for s in errored.subtasks] == ["1"] and errored.subtasks[0].goal == "目标"
+    assert errored.success_criteria == []  # 回落不带标准（同源判定不得拖死任务）
     garbage = asyncio.run(LLMSubtaskPlanner(_FakeLLM(content="无法拆解"))("目标"))
-    assert [s.id for s in garbage] == ["1"] and garbage[0].goal == "目标"
+    assert [s.id for s in garbage.subtasks] == ["1"] and garbage.subtasks[0].goal == "目标"
+    assert garbage.success_criteria == []
+
+
+def test_decompose_criteria_precedence() -> None:
+    """显式非空标准优先；缺省/空列表采纳 planner 生成标准；返回 list 的旧桩无标准。"""
+
+    def planner(goal: str) -> DecomposeResult:
+        return DecomposeResult(
+            subtasks=[Subtask(id="1", goal=goal, acceptance="")],
+            success_criteria=["生成标准"],
+        )
+
+    explicit = asyncio.run(SubtaskDecomposer(planner=planner).decompose("g", ["显式标准"]))
+    assert explicit.success_criteria == ["显式标准"]
+    generated = asyncio.run(SubtaskDecomposer(planner=planner).decompose("g"))
+    assert generated.success_criteria == ["生成标准"]
+    empty = asyncio.run(SubtaskDecomposer(planner=planner).decompose("g", []))
+    assert empty.success_criteria == ["生成标准"]
+    legacy = asyncio.run(
+        SubtaskDecomposer(
+            planner=lambda goal: [Subtask(id="1", goal=goal, acceptance="")]
+        ).decompose("g")
+    )
+    assert legacy.success_criteria == []
 
 
 def test_llm_verifier_judges_acceptance() -> None:
@@ -605,6 +757,64 @@ def test_llm_verifier_fail_closed() -> None:
     assert boom.passed is False and "fail-closed" in boom.reason
     garbage = asyncio.run(LLMVerifier(_FakeLLM(content="看不懂"))(subtask, "r"))
     assert garbage.passed is False
+
+
+class _RecordingLLM:
+    """acompletion 桩：记录请求；可固定 content 或抛错。"""
+
+    def __init__(self, content: str = "", error: Exception | None = None) -> None:
+        self.requests: list[LLMRequest] = []
+        self._content = content
+        self._error = error
+
+    async def acompletion(self, request: LLMRequest) -> object:
+        self.requests.append(request)
+        if self._error is not None:
+            raise self._error
+        return SimpleNamespace(content=self._content)
+
+
+def test_llm_task_verifier_judges_goal_criteria_and_outcomes() -> None:
+    llm = _RecordingLLM(content='{"passed": false, "reason": "汇总文件缺失"}')
+    outcomes = [
+        SubtaskOutcome("1", ok=True, reply="抓取完成"),
+        SubtaskOutcome("2", ok=False, reason="文件不存在"),
+    ]
+    verdict = asyncio.run(LLMTaskVerifier(llm)("整体目标", ["汇总文件存在"], outcomes))
+    assert (verdict.passed, verdict.reason) == (False, "汇总文件缺失")
+    prompt = llm.requests[0].messages[1].content
+    assert "整体目标" in prompt and "汇总文件存在" in prompt
+    assert "文件不存在" in prompt and "抓取完成" in prompt
+
+
+def test_llm_task_verifier_redacts_secrets_and_bounds_prompt() -> None:
+    secret = "sk-" + "a" * 24
+    llm = _RecordingLLM(content='{"passed": true, "reason": "达标"}')
+    outcomes = [
+        SubtaskOutcome("1", ok=True, reply=f"token={secret}"),
+        SubtaskOutcome("2", ok=True, reply="正文" * 4000),
+    ]
+    asyncio.run(LLMTaskVerifier(llm)("目标", ["标准"], outcomes))
+    prompt = llm.requests[0].messages[1].content
+    assert secret not in prompt
+    assert "<redacted>" in prompt  # memory.extract.REDACTED
+    assert len(prompt) <= 4000  # noqa: PLR2004 — 有界（_MAX_VERIFY_CHARS）
+
+
+def test_llm_task_verifier_empty_criteria_passes_without_call() -> None:
+    llm = _RecordingLLM(content='{"passed": false}')
+    verdict = asyncio.run(LLMTaskVerifier(llm)("目标", [], []))
+    assert verdict.passed is True
+    assert llm.requests == []
+
+
+def test_llm_task_verifier_fail_closed() -> None:
+    boom = _RecordingLLM(error=LLMError("down"))
+    verdict = asyncio.run(LLMTaskVerifier(boom)("目标", ["标准"], []))
+    assert verdict.passed is False and "fail-closed" in verdict.reason
+    assert len(boom.requests) == 2  # noqa: PLR2004 — 首发 + 单次重试
+    garbage = _RecordingLLM(content="看不懂")
+    assert asyncio.run(LLMTaskVerifier(garbage)("目标", ["标准"], [])).passed is False
 
 
 def test_verify_gate_routes_by_acceptance() -> None:

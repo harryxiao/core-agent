@@ -262,5 +262,5 @@ def test_planner_parses_difficulty() -> None:
             ]
         }
     )
-    subtasks = asyncio.run(LLMSubtaskPlanner(_FakeLLM(dag))("复合目标"))
-    assert [s.difficulty for s in subtasks] == ["hard", "medium"]
+    result = asyncio.run(LLMSubtaskPlanner(_FakeLLM(dag))("复合目标"))
+    assert [s.difficulty for s in result.subtasks] == ["hard", "medium"]

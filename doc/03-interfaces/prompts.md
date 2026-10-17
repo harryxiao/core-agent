@@ -31,8 +31,8 @@
 | # | 面 | 提词 | 落点（`src/core/`） | 输出契约 | pin |
 |---|---|---|---|---|---|
 | ① | 控制面 | 推理规划器 | `loop/planner.py:55` `_SYSTEM_PROMPT` | 自然语言 **或** 工具 JSON | ✓ `0215` |
-| ② | 控制面 | 任务拆解器 | `orchestration/planner.py:19` `_DECOMPOSE_SYSTEM` | JSON `{subtasks:[…]}` | ✓ `0215` |
-| ③ | 控制面 | 验收判定器 | `orchestration/planner.py:32` `_VERIFY_SYSTEM` | JSON `{passed,reason}` | ✓ `0215` |
+| ② | 控制面 | 任务拆解器 | `orchestration/planner.py:23` `_DECOMPOSE_SYSTEM` | JSON `{success_criteria:[…],subtasks:[…]}` | ✓ `0215`/`0248` |
+| ③ | 控制面 | 验收判定器 | `orchestration/planner.py:38` `_VERIFY_SYSTEM` | JSON `{passed,reason}` | ✓ `0215` |
 | ④ | 数据面 | 记忆压实器 | `memory/summarize.py:37` `_PROMPT_HEAD` | 文本（更新后摘要） | ✓ `0215` |
 | ⑤ | 数据面 | 关键事实抽取器 | `memory/extract.py:178` `_PROMPT_HEAD` | JSON `[{entity,value,ref}]` | ✓ `0215` |
 | ⑥ | 数据面 | 实体关系抽取器 | `memory/extract.py:403` `_RELATION_PROMPT_HEAD` | JSON `[{head,predicate,tail}]` | ✓ `0215` |
@@ -84,12 +84,12 @@
 > ③ **流式未修**：`astream` 仍以首个非空 chunk 首字符定形态，判为回复后原样外发 ⇒ 尾随 JSON 会
 > 漏到屏幕（ADR-0212 局限②，须放弃边出边流的全缓冲，属产品级取舍）。
 
-### ② 任务拆解器 · `orchestration/planner.py:19`
+### ② 任务拆解器 · `orchestration/planner.py:23`
 ```
-你是任务拆解器。把目标拆成 1-6 个可执行的子任务 DAG，仅输出 JSON：{"subtasks": [{"id": "1", "goal": "...", "acceptance": "...", "depends_on": [], "priority": 0, "difficulty": "medium"}]}。规则：goal 是给执行智能体的单一明确指令，且须**自包含**——执行者看不到原始目标，所需背景、路径与约束都要写进 goal；acceptance 是可判定的验收标准，须能被客观检查（如「测试通过」「文件 X 含 Y」），不要写「质量好」「尽量」这类无法判定的表述；depends_on 只引用已声明的 id，无依赖则留空数组，不得成环，无依赖子任务不要伪造依赖；priority 是整数、取值**越大越先执行**（同波次就绪队列内降序调度），没有偏好时留 0；difficulty 是该子任务的难易度，只能取 "easy" / "medium" / "hard" 三档之一，把握不足时取 medium；目标本身不可再分时，只输出 1 个子任务。
+你是任务拆解器。把目标拆成 1-6 个可执行的子任务 DAG，仅输出 JSON：{"success_criteria": ["..."], "subtasks": [{"id": "1", "goal": "...", "acceptance": "...", "depends_on": [], "priority": 0, "difficulty": "medium"}]}。success_criteria 是整体目标的成功标准：2-5 条、每条可客观判定真伪（如「测试全部通过」「文件 X 存在且含 Y」），覆盖整体目标，不要复述子任务的 acceptance；规则：goal 是给执行智能体的单一明确指令，且须**自包含**——执行者看不到原始目标，所需背景、路径与约束都要写进 goal；acceptance 是可判定的验收标准，须能被客观检查（如「测试通过」「文件 X 含 Y」），不要写「质量好」「尽量」这类无法判定的表述；depends_on 只引用已声明的 id，无依赖则留空数组，不得成环，无依赖子任务不要伪造依赖；priority 是整数、取值**越大越先执行**（同波次就绪队列内降序调度），没有偏好时留 0；difficulty 是该子任务的难易度，只能取 "easy" / "medium" / "hard" 三档之一，把握不足时取 medium；目标本身不可再分时，只输出 1 个子任务。
 ```
 
-### ③ 验收判定器 · `orchestration/planner.py:32`
+### ③ 验收判定器 · `orchestration/planner.py:38`
 ```
 你是验收判定器。对照验收标准判定子任务结果是否达标，仅输出 JSON：{"passed": true, "reason": "..."}。只依据给出的事实判定，不要替结果补全任何未出现的信息；结果未提供、与标准无关、信息被截断而缺少关键证据、或未达标准时判 false，并给出一句话理由（不要复述结果全文）。
 ```

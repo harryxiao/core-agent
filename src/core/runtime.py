@@ -99,6 +99,7 @@ from core.observability import BufferedExporter, JSONLExporter, Tracer
 from core.orchestration import (
     AgentProfile,
     LLMSubtaskPlanner,
+    LLMTaskVerifier,
     LLMVerifier,
     MultiAgentRouter,
     OrchestrationError,
@@ -1331,6 +1332,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         difficulty_policy=config.orchestration_difficulty_policy(),
         # 子任务交接超时（change 0247）：0 = 不设限（不接线则不暴露，故必须显式传）。
         subtask_timeout=config.orchestration_subtask_timeout(),
+        # 任务级判定器（change 0248）：与 planner 生成标准同批落地，缺省开启。
+        success_checker=LLMTaskVerifier(llm, model=app.llm.model),
         checkpoint=_checkpoint,
         on_done=_finalize,
         tracer=tracer,

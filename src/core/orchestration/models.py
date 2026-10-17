@@ -72,6 +72,14 @@ class Plan:
 
 
 @dataclass
+class DecomposeResult:
+    """拆解产物：子任务集 + 任务级成功标准（planner 生成；change 0248）。"""
+
+    subtasks: list[Subtask]
+    success_criteria: list[str] = field(default_factory=list[str])
+
+
+@dataclass
 class VerifyResult:
     """子任务校验结果：通过与否 + 原因。"""
 

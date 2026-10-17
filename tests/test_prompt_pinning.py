@@ -106,8 +106,10 @@ _RETRY_NUDGE = (
 
 _DECOMPOSE_SYSTEM = (
     "你是任务拆解器。把目标拆成 1-6 个可执行的子任务 DAG，"
-    '仅输出 JSON：{"subtasks": [{"id": "1", "goal": "...", '
+    '仅输出 JSON：{"success_criteria": ["..."], "subtasks": [{"id": "1", "goal": "...", '
     '"acceptance": "...", "depends_on": [], "priority": 0, "difficulty": "medium"}]}。'
+    "success_criteria 是整体目标的成功标准：2-5 条、每条可客观判定真伪"
+    "（如「测试全部通过」「文件 X 存在且含 Y」），覆盖整体目标，不要复述子任务的 acceptance；"
     "规则：goal 是给执行智能体的单一明确指令，且须**自包含**——执行者看不到原始目标，"
     "所需背景、路径与约束都要写进 goal；acceptance 是可判定的验收标准，须能被客观检查"
     "（如「测试通过」「文件 X 含 Y」），不要写「质量好」「尽量」这类无法判定的表述；"
