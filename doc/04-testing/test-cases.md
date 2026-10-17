@@ -3282,3 +3282,101 @@ task ⇒ `CancelledError` 重放、杀死整轮。**组二 ×2（测试桩漂移
 > 非本 change）；**规格中性**（`skip_specs`，零 spec delta）。**已知局限**：见
 > `coding-plan/known-risk.md` §3 ADR-0223 行（极窄窗口误吞打断 / 残留 task 不主动清扫 /
 > 桩分派随 `_PROMPT_HEAD` 措辞漂移 / 0233 归档欠账不在范围）。
+
+## 147. 未过门候选教训写回（TC-EVRL，change `0234`／ADR-0224，台账 E171）
+
+**背景**：`evolution/spec.md`「验证门 / 未过门丢弃」承诺「丢弃候选，教训写回 L2/L3」，但
+`engine.py::run_cycle` 的 rejected 分支只 `_pending.record(candidate, gate)` 后返回 ⇒ `issue` /
+`review` / 各门结果全丢，规格承诺未兑现。闭法：L2 写完整教训（`issue` 有界 400 + `redact_secrets`），
+L3 只写短指针（`ref=<L2 id>`，不同文、不嵌完整 issue）；未注入记忆后端静默跳过；前缀与人工
+`reject` / `dissolve` 错开。**本记录为 2026-10-17 回溯补记**（代码于 `0d82507` 落地）。
+
+| 用例 | 面 | 输入 | 断言（`tests/test_evolution_rejected_lesson.py::…`） |
+|---|---|---|---|
+| TC-EVRL-01 | **L2 全文 + 有界**（承重） | 未过门候选（issue 超 480 字符）＋ `FileBackend` | L2 `evolution.gate_rejected.<cid>` 存在、含 target / `review=` / `issue=`；issue 片段恰 400 字符（`…::test_rejected_writes_bounded_l2_lesson`） |
+| TC-EVRL-02 | **L3 短指针不同文**（承重） | 同上 | L3 `.l3.<cid>` 存在、含 `ref=<L2 id>`；≠ L2 全文、不含 `issue=` / 超长 issue 片段（`…::test_rejected_writes_l3_pointer_not_full_copy`） |
+| TC-EVRL-03 | 未注入零写 | `memory=None` | 不抛、不写，outcome 仍 `rejected`（`…::test_rejected_skips_when_memory_missing`） |
+| TC-EVRL-04 | 与人工 reject 并存 | 先门禁拒绝，再 `reject(reason=…)` | `gate_rejected*`（L2+L3）与 `evolution.rejected.<cid>` 均可 get、互不覆盖（`…::test_gate_rejected_coexists_with_human_reject`） |
+| TC-EVRL-05 | 其它分支不写 | `no_evidence` / `frozen` | 后端无任何 `gate_rejected*` 条目（`…::test_other_branches_do_not_write_gate_rejected`） |
+
+> **反证（回溯补记时补做，实测）**：摘除 rejected 分支的 `_write_rejected_lesson` 调用 ⇒
+> **3 红**（TC-EVRL-01/02/04）；两条守护锚（03/05）恒绿。复原 ⇒ `engine.py` `md5sum` 逐字节同
+> （`aac77481…`）⇒ 5 passed。规格 `evolution` **ADDED**「未过门教训写回」＋4 Scenario（**16 → 17**
+> req、**87 → 91** scen）。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0224 行
+> （只覆盖 rejected 分支 / issue 400 前缀 / L3 指针检索价值 / 回溯反证不锚脱敏形态）。
+
+## 148. UI 活动呈现对齐 ui-scheme（TC-UISC，change `0235`／ADR-0225，台账 E172）
+
+**背景**：`doc/03-interfaces/ui-scheme.md` 要求 TUI 与 Web 一套时间线语义、分端材质。commit
+`b42479b`（2026-10-12）落地：步骤块**展开即全文**（删末尾预览中间态）、折叠符按种类（仅作
+`Collapsible` 指示符）、Thinking 落静带块内耗时、活动块出现后 spinner 让位（审批期重新拉起）、
+Web 抽零 DOM 纯函数 + 统一 `timeline[]`、TaskPanel 复用标题表。**change 记录于 2026-10-17
+回溯补建**；语义 delta 唯一归仍 open 的 `0233`（本 change **规格中性**）。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-UISC-01 | **展开即全文** | 20 行工具输出步骤块 | 缺省收起；点标题后 `collapsed=False`，正文含第 1 与第 20 行（无缩略窗口）（`tests/test_repl.py::test_tui_step_block_expand_shows_full_text`） |
+| TC-UISC-02 | **spinner 让位** | hold 住 `action_completed`，活动块已出现 | 终态前 spinner 已隐藏（标题表达进度）（`…::test_tui_spinner_hides_when_activity_block_appears`） |
+| TC-UISC-03 | **Thinking 耗时后缀**（承重） | `_thinking_title` 四态 | `Thinking…` / `Thinking` / `Thinking · 12ms` / `Thinking · 1.5s`（`…::test_tui_thinking_settle_appends_duration`） |
+| TC-UISC-04 | 种类折叠符相异 | `_step_symbol(kind)` | Thinking `✦` / Bash `$` / Read `◇` / WebFetch `◎` / SubAgent `⊕` 五类各不相同（`…::test_step_symbols_differ_by_kind`） |
+| TC-UISC-05 | 时间线折叠符实测 | Thinking + Bash 混合事件 | 两块的 `collapsed_symbol` 不相同（`…::test_tui_thinking_and_bash_use_distinct_collapse_symbols`） |
+| TC-UISC-W01 | Web 标题纯函数 | `activity.test.js` 10 个 `it` | `toolName` / `toolTarget` / `actionTitle`（无 `⏺`、带完成后缀）/ `thinkingTitle`（不嵌正文）/ `stepSymbol` 种类相异 / `fmtMs` 边界（`frontend/src/lib/activity.test.js`，`node --test`） |
+
+> **反证（回溯补记时补做，实测）**：把 `_thinking_title` 的耗时后缀摘掉 ⇒ **恰 1 红**
+> （TC-UISC-03）；其余 4 个 TUI 锚恒绿。复原 ⇒ `repl.py` `md5sum` 逐字节同（`4db7529d…`）⇒
+> 5 passed。Web 侧 `node --test` 与 `npm run build` **不在四门禁**（Node `v20.11.1` < Vite 8
+> 要求，构建未验）。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0225 行
+> （ui-scheme 解释性 / Web 门禁外 / 回溯反证仅一条 / 0233 仍 open / 折叠符为纯指示符）。
+
+## 149. 技能候选内容生成（TC-EVSC，change `0236`／ADR-0226，台账 E173）
+
+**背景**：技能级候选 delta 只含 `issue`，结晶产出 `instructions=""` / `task_types=[]` 的空壳
+（不可路由、不可执行）。闭法：新 `evolution/content.py`（`SkillContent` / 四态校验 / 有界
+prompt / DI writer 工厂）＋ Proposer 可选 writer（失败不写 `content` 键）＋ Validator
+`require_skill_content`（缺省关；开时空壳 fail-fast）＋ 结晶真技能（instructions 脱敏、
+description 优先 content）＋ `GATE_CALIBER` 2 → 3 ＋ 组合根同开同关。**本记录为 2026-10-17
+回溯补记**（代码于 `387aee2` 落地）。
+
+| 用例 | 面 | 输入 | 断言（`tests/test_evolution_skill_content.py::…`） |
+|---|---|---|---|
+| TC-EVSC-01 | 内容四态 + 有界 prompt | dataclass / dict / 空 task_types / 空 instructions / 非 dict schema | 前三者按契约 `True/False`；prompt 含 issue，notes ≤3 条、单条 ≤400（`test_validate_skill_content_four_states` / `test_build_skill_content_prompt_bounds_notes`） |
+| TC-EVSC-02 | writer 工厂 fail-closed | 合法 JSON / 非法 JSON / 结构不符 / `llm` 抛错 | 合法 ⇒ `SkillContent`；其余 ⇒ `None` **不抛**（`test_skill_content_writer_parses_valid_json` / `…returns_none_on_failure[*]`） |
+| TC-EVSC-03 | Proposer 写键语义 | 注入 writer + skill；writer 返 None；未注入；plugin + 注入 | 仅「skill + 非空 content」写 `delta["content"]`（asdict 往返）；其余 delta **仅** `{"issue": …}`（`test_proposer_injects_content_for_skill` / `…omits_content_key…` / `…plugin_never_gets_content`） |
+| TC-EVSC-04 | **空壳门 fail-fast**（承重） | `require_skill_content=True`，skill 无 content | `passed=False`、review 含「空壳」、`test_results={}`、不跑运行时测试；有 content 走既有路径；plugin / 缺省关不受影响（`test_validator_rejects_empty_shell_when_required` / `…runs_existing_path_with_content` / `…plugin_and_default_unaffected`） |
+| TC-EVSC-05 | 结晶映射 | 有效 content / 无 content | 真技能各字段落库、instructions 已脱敏、description 优先 content、空回退 issue；无效 ⇒ 空壳回退（`test_crystallize_maps_content_fields_and_description_fallback` / `…empty_shell_fallback_unchanged` / `…prefers_content_description`） |
+| TC-EVSC-06 | 口径递增 | caliber 2 / 3 | `GATE_CALIBER == 3`；caliber-2 已确认 ⇒ `GATE_CALIBER_STALE`；caliber-3 正常投放（`test_gate_caliber_is_three` / `test_caliber_2_confirmed_is_stale` / `test_caliber_3_crystallizes`） |
+| TC-EVSC-07 | 组合根同开同关 | runtime 装配 | `skill_content_writer_with(_llm_text)` + `require_skill_content=True` 同开、装配不抛；既有 evolution 回归绿（`test_runtime_wires_writer_and_require_together`） |
+
+> **反证（回溯补记时补做，实测）**：把 `validate_skill_content` 恒返 `True` ⇒ **3 红**
+> （TC-EVSC-01 四态 / 02 失败分支之一 / 04 空壳门）；其余 16 例恒绿。复原 ⇒ `content.py`
+> `md5sum` 逐字节同（`2d59c94d…`）⇒ 19 passed。连带：`test_evolution_gate_data.py` /
+> `test_evolution_gate_judgment.py` 的 provider **桩**按 prompt 头「技能内容蒸馏器」分派
+> 合法 JSON（测试替身随接缝漂移，非行为变化）。**已知局限**：见 `coding-plan/known-risk.md`
+> §3 ADR-0226 行（质量依赖模型 / caliber-2 需重提案 / 失败不留痕 / plugin 不生成 / 生产恒开 /
+> 桩随 prompt 措辞漂移）。
+
+## 150. 运行环境感知的 shell 方言（TC-OASH，change `0237`／ADR-0227，台账 E174）
+
+**背景**：系统提示与 `code_run` 默认 bash 心智，Windows 上模型产出 POSIX 句法而执行面无可用的
+bash。闭法：纯函数 `probe_environment` 产出 `EnvironmentSnapshot`（可注入 `system` / `which`）；
+planner 注入独立「运行环境」块（未注入不产块）；`code_run` 扩三方言并按平台选缺省、缺解释器
+fail-closed 不改方言；TUI 标题按有效 type；组合根注入真实探测。**本记录为 2026-10-17 回溯
+补记**（代码于 `b653d69` 落地）。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-OASH-01 | 平台默认表 | 注入 `system` / `which` 替身 | Windows ⇒ `default_shell=powershell` / `path_style=windows`；Linux、Darwin ⇒ `bash` / `posix`（`tests/test_os_aware_shell.py::test_probe_*`） |
+| TC-OASH-02 | 提示块注入 | planner + 快照 / `None` | 注入 ⇒ 系统提示含「运行环境」与 OS / 默认壳、路径与句法提示；`None` ⇒ 无该块（逐字兼容）（`…::test_planner_injects_env_block` / `…omits_env_block_when_unset` / `…format_env_block_mentions_path_and_syntax`） |
+| TC-OASH-03 | **方言 argv**（承重） | `powershell` / `bash` / `python` | PowerShell 优先 `pwsh` 并带 `-Command`；bash 用 `bash -c`；python 仍 `sys.executable -c`（`…::test_shell_argv_powershell_prefers_pwsh` / `…test_code_run_powershell_argv` / `…test_code_run_python_regression`） |
+| TC-OASH-04 | **缺解释器 fail-closed** | `has_pwsh=has_powershell=False` / `has_bash=False` | 结构化错误；**不**改跑另一方言（`…::test_shell_argv_missing_powershell_raises` / `…missing_bash_raises` / `…test_code_run_powershell_unavailable_structured` / `…test_code_run_bash_unavailable_no_fallback`） |
+| TC-OASH-05 | 缺省 type 按平台 | Win / Linux 快照 + 未传 `type` | Windows ⇒ powershell、Linux ⇒ bash（`…::test_resolve_run_type_defaults` / `…test_code_run_default_type_windows` / `…test_code_run_default_type_linux`） |
+| TC-OASH-06 | TUI 标题 | `args.type` = powershell / bash | `PowerShell(...)` / `Bash(...)`（`…::test_tui_code_run_name_by_type` / `…test_format_action_powershell_title`） |
+| TC-OASH-07 | 既有工具回归 | `test_tool_use.py` 新增 2 例 | python / bash 路径与超时结构化错误不变（`tests/test_tool_use.py::test_code_run_python_and_bash` / `…test_code_run_timeout_structured`） |
+
+> **反证（回溯补记时补做，实测）**：把 `resolve_run_type` 的平台判据改为恒不命中（Windows
+> 缺省落回 bash）⇒ **2 红**（TC-OASH-05 两条 Windows 锚）；Linux 缺省、显式方言、缺解释器
+> fail-closed、Python 回归等 51 例恒绿。复原 ⇒ `env_shell.py` `md5sum` 逐字节同（`f448d5fb…`）⇒
+> 53 passed。规格：`loop` **ADDED** 1 req/2 scen（6 → 7 / 91 → 93）、`tool-use` **MODIFIED**
+> +3 scen（9 / 26 → 29）、`ui` **ADDED** 1 req/2 scen（21 → 22 / 90 → 92）。**已知局限**：见
+> `coding-plan/known-risk.md` §3 ADR-0227 行（构造期快照不刷新 / 未知 OS 落 bash / 不探版本 /
+> 未在真实 Windows 跑 / 未拆双 tool_id / 不感知 MCP 远程 OS）。

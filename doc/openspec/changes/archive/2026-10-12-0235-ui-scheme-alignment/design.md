@@ -53,7 +53,8 @@ change `0233` 已落地 TUI 的**语义**（Thinking 缺省收起、友好标题
 - `test_tui_thinking_stream_merges_and_updates_in_place`（落静标题带耗时前缀）；
 - `frontend/src/lib/activity.test.js`（`node --test`，提交记录 9 passed）。
 
-回溯补记**未重跑反证**：代码未改动，上述用例为提交时已验收的承重锚。
+回溯补记时补做一条反证：摘掉 Thinking 耗时后缀 ⇒ **1 红**，复原后 `repl.py` `md5sum` 同；
+其余用例为提交时已验收的承重锚。
 
 ## 局限
 
@@ -61,5 +62,5 @@ change `0233` 已落地 TUI 的**语义**（Thinking 缺省收起、友好标题
 走 change；② Web 侧 `node --test` 与 `npm run build` 不在四门禁内（Node 版本受环境限制，
 构建未验）；③ 本记录为回溯补建 —— **提交时未留反证快照**，仅能引用既有测试；
 ④ 0233 仍 open（其 spec delta 待归档），本 change 的语义面正式规格以 0233 归档结果为准；
-⑤ 并行批次 `0234` / `0236` / `0237` 同样缺 ADR / 台账 / 测试节条目（由并行会话收口），本补记
-**不占用** ADR / `E` 编号，避免与其后续编号冲突。
+⑤ 并行批次的台账回填于 2026-10-17 一并进行：本 change 取 **ADR-0225 / 台账 E172 / 测试节
+§148**（与 `0234`、`0236`、`0237` 按 change 号顺序连号）。

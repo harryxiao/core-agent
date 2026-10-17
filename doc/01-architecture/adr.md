@@ -7949,6 +7949,187 @@ spec）；组二为测试桩适配 0236 既有规格语义。
 `_PROMPT_HEAD` 措辞变更需同步桩（镜像漂移风险同 ADR-0215 类）；④ 0233 自身的 spec delta
 归档欠账（validate 红）不在本 change 范围。
 
+## ADR-0224：未过门候选教训写回（change 0234 / 台账 E171）
+
+**背景**：`evolution/spec.md`「验证门」的「未过门丢弃」场景承诺「丢弃候选，**教训写回 L2/L3**」，
+但 `engine.py::run_cycle` 的 rejected 分支只 `self._pending.record(candidate, gate)` 后返回 ——
+候选携带的 `issue`、门禁 `review` 与各门结果在丢弃时**全部丢失** ⇒ **规格承诺未兑现**
+（spec–实现一致性缺陷，而非新能力）。
+
+**决策**：
+
+- **D1 L2 承载完整教训**：id `evolution.gate_rejected.<candidate_id>`；内容含目标插件、`issue`、
+  `review` 与各门结果。`issue` **有界**（`_MAX_ISSUE_CHARS = 400`，与 diagnoser note 同口径
+  字面量、本模块自持不 import diagnoser）；写前 `redact_secrets`。
+- **D2 L3 只写短指针**：id `evolution.gate_rejected.l3.<candidate_id>`；内容形如
+  `ref=<L2 id>; target=…; review=…`，**SHALL NOT** 与 L2 同文、**SHALL NOT** 再嵌入完整
+  `issue`。理由：L3 偏技能 / 程序知识面，同文双写会把门禁负样本全文当「技能料」检索，
+  污染检索与结晶；指针兑现「写回 L2/L3」，详情仍留在 L2。
+- **D3 未注入记忆后端 ⇒ 静默跳过**：零写、不抛、不改变 `EvolutionOutcome(status="rejected")`。
+- **D4 前缀与既有写面错开**：`evolution.gate_rejected*` 与人工 `reject` 的
+  `evolution.rejected.<id>`、`evolution.dissolve.*` 互不覆盖；本写回**不**经
+  `memory_crystallizer.crystallize`。
+- **D5 规格–实现一致性修复 ⇒ 无条件生效、不设配置门**（判例 0206/0210/0228）。
+
+**规格**：`evolution` **ADDED**「未过门教训写回」＋ 4 Scenario；canonical **16 → 17 req**、
+**87 → 91 scen**；既有「未过门丢弃」场景逐字保留。
+
+**反证（实测，回溯补记时补做）**：摘除 rejected 分支的 `_write_rejected_lesson` 调用 ⇒
+**3 红**（L2 全文 / L3 指针 / 与人工 reject 并存）；两条守护锚恒绿（`memory=None` 零写、
+其余分支不新增 `gate_rejected*`）。复原 ⇒ `engine.py` `md5sum` 逐字节同（`aac77481…`）。
+测试锚点 **5 例**（`tests/test_evolution_rejected_lesson.py`）。
+
+**局限**：① 只覆盖**结晶面验证门**的 rejected 分支；`no_evidence` / `manual` / `frozen` /
+`rollback` / pending 不写（只有「候选被判未过门」才是可归因的负样本）；② `issue` 有界 400
+字符 ⇒ 超长诊断只保留前缀；③ L3 指针的检索价值取决于上层是否会读取该前缀；④ 回溯补记 ——
+提交时（`0d82507`）未留反证快照，本次补做的反证只锚定「调用点存在」这一环，**不**锚定
+`redact_secrets` 的具体脱敏形态（脱敏行为由 memory 既有测试覆盖）。
+
+## ADR-0225：UI 活动呈现对齐 ui-scheme（change 0235 / 台账 E172）
+
+**背景**：`doc/03-interfaces/ui-scheme.md` 要求「TUI 与 Web 一套时间线语义、分端材质」。change
+`0233` 已落地 TUI 的**语义**（Thinking 缺省收起、友好标题、按 `round` 归并、撤回 Task 壳），
+但留下一组中间态与跨端缺口：步骤块「末尾有界行预览 ⇄ 全文」多一次点击且易误判；折叠符统一；
+spinner 与活动标题抢进度；Thinking 落静无耗时；子任务标题仍带 `▸`；Web `Chat` 无统一
+`timeline[]`、`TaskPanel` 暴露 `▸` / `tool_id`。代码于 2026-10-12 随 commit `b42479b` 落地；
+本记录于 2026-10-17 **回溯补建**（零代码改动）。
+
+**决策**：
+
+- **D1 展开即全文，去掉缩略中间态**：点击标题只在**收起 ⇄ 全文**间切换；
+  `_STEP_TAIL_LINES` / `_full` / `step-more` 一并删除（该中间态在 ui-scheme 中只是 MAY）。
+- **D2 折叠符按种类区分，且只做指示符**：`_STEP_SYMBOLS` 将活动种类映射到折叠符
+  （Thinking `✦` / Bash `$` / Read `◇` / Write `✎` / Edit `✏` / Delete `⌫` / SubAgent `⊕` /
+  Planner `▤` / WebFetch `◎` / Gate `☑` / Context `⊞` / raw `⚠` / subtask `◈`），注入
+  `Collapsible(collapsed_symbol=…, expanded_symbol=…)` **同一符号**，不以 `▶/▼` 示意开合；
+  **不进标题文本** ⇒ 不与 0233「标题 SHALL NOT 以 `⏺`/`▸` 为主标识」冲突；未知种类退化为 `·`。
+- **D3 Thinking 耗时用块内计时锚**：新块创建时记 `_started_at = time.monotonic()`，落静时
+  `_thinking_title(False, ms=…)` 生成 `Thinking · 1.2s`；耗时**不经事件载荷**（`loop.reasoning`
+  无 `duration_ms`），由呈现层自测；已落静（标题以 `Thinking · ` 开头）直接返回、幂等。
+- **D4 spinner 让位与审批期重新拉起**：有活动步骤块后 `_spin_defer_to_blocks()`（停 spinner）
+  —— 标题已表达进度，spinner 仅兜底；审批挂起时无活动块可表达进度 ⇒ `_spin_start("等待审批")`
+  重新拉起，结束后 `_spin_start("思考中")`（不用 `_spin_relabel`，spinner 可能已停）。
+- **D5 Web 抽零 DOM 纯函数**：`frontend/src/lib/activity.js` 只做标题 / 摘要 / 耗时 / 折叠符
+  映射，与 `repl.py` 同口径；`Chat.svelte` 消费统一 `timeline[]`；`TaskPanel.svelte` 复用
+  `actionTitle`。Web 测试用 Node 原生 `node --test`（仓内无 vitest）。
+- **D6 规格中性**：语义 delta **唯一归 open 的 change `0233`**；本 change 不写 spec delta ——
+  对同一 Requirement 双写 delta，归档时会按 Requirement 全量替换而互相覆盖（`0225`/`0228`
+  同属 `skip_specs` 先例）。
+
+**规格**：**规格中性**（`skip_specs`，零 spec delta；canonical 31 → 31 不变）。语义面正式规格
+以 `0233` 归档结果为准。
+
+**测试与反证**：TUI 锚点 5 例（`tests/test_repl.py`）：`test_tui_step_block_expand_shows_full_text`
+（展开即全文）、`test_tui_spinner_hides_when_activity_block_appears`（活动块后终态前 spinner
+隐藏）、`test_tui_thinking_settle_appends_duration`（`Thinking` / `Thinking · 12ms` /
+`Thinking · 1.5s`）、`test_step_symbols_differ_by_kind`、`test_tui_thinking_and_bash_use_distinct_collapse_symbols`；
+Web 侧 `frontend/src/lib/activity.test.js`（`node --test`，当前 10 个 `it`；提交记录 9 passed）。
+**反证（回溯补记时补做）**：把 `_thinking_title` 的耗时后缀摘掉 ⇒ **1 红**
+（`test_tui_thinking_settle_appends_duration`）；其余 4 个结构锚恒绿。复原 ⇒ `repl.py`
+`md5sum` 逐字节同（`4db7529d…`）。
+
+**局限**：① UI 呈现材质属快速迭代面，`ui-scheme.md` 是**解释性**文档（非规格真源），后续
+调整不必逐条走 change；② Web 侧 `node --test` 与 `npm run build` **不在**四门禁内 —— 当前
+Node `v20.11.1` < Vite 8 要求（`^20.19 || >=22.12`），构建未验；③ 本记录为回溯补建，提交时
+**未留**反证快照，本次只补一条 TUI 反证；④ `0233` 仍 open（其 spec delta 待归档）；⑤ 折叠符
+是**纯指示符**，开合状态靠 `Collapsible` 自身语义而非箭头（与「一眼看出开合」的直觉有取舍）。
+
+## ADR-0226：技能候选内容生成（change 0236 / 台账 E173）
+
+**背景**：技能级候选的**内容面为空** —— `Proposer.propose` 产出的 delta 只有 `{"issue": …}`；
+`_crystallize_skill` 用 `delta.get("schema", {})` 结晶，得到 `instructions=""` / `task_types=[]` /
+`preconditions=[]` 的**空壳占位技能**（不可路由、不可执行）。架构级（plugin）候选有 executor
+补丁生产者兜住内容，技能级**没有任何内容生成器** ⇒ skill distillation 只蒸馏出空壳。
+
+**决策**：
+
+- **D1 独立内容模块 `evolution/content.py`**：`SkillContent`（`task_types` / `instructions` /
+  `param_schema` 必填，`preconditions` / `description` 可选）；`validate_skill_content` 接受
+  **dataclass 或 delta 内 asdict 形态（Mapping）**（Proposer 写入 dict，Validator / 结晶读到
+  的也是 dict，不得要求调用方手工构造 dataclass）。
+- **D2 writer 工厂走 DI、fail-closed**：`skill_content_writer_with(llm) -> writer`（照
+  `skills.sop_writer_with` 先例）；evolution **不 import 任何 LLM 抽象**。非法 JSON / 结构
+  不符 / 调用异常 ⇒ `None`，**不抛**；`failure_notes` 有界（`_MAX_FAILURE_NOTES = 3`、
+  `_MAX_NOTE_CHARS = 400`，本模块自持字面量、不 import diagnoser）。
+- **D3 Proposer 可选注入**：`kind="skill"` 且 writer 返回非空 ⇒ `delta["content"] = asdict(...)`；
+  writer 返回 `None` 或未注入 ⇒ delta **仍只** `{"issue": …}`（**不**出现 `content` 键，
+  逐字兼容）；`plugin` 候选**不**经本接缝。
+- **D4 Validator 可选内容判据**：`require_skill_content`（缺省 `False`，裸构造逐字不变）；
+  装配为开且 skill 候选无有效 content ⇒ `passed=False`、review 含「空壳」、`test_results={}`、
+  **fail-fast**（不跑 review / 运行时测试）；plugin 不受影响。
+- **D5 结晶真技能**：有效 content ⇒ `Skill` 映射各字段，`instructions` 写前 `redact_secrets`；
+  `description` **优先** content 值、空则回退 `issue`；无效 content ⇒ 既有空壳回退（回归锚点）。
+- **D6 口径递增**：`GATE_CALIBER` 2 → 3（新增「技能内容有效」判据），`models.py` 版本轨迹注释
+  同步追加；caliber 2 的已确认候选 ⇒ `GATE_CALIBER_STALE`，须按现口径**重新提案**（不重判历史）。
+- **D7 组合根同开同关**：`skill_content_writer_with(_llm_text)` 先工厂再注入；有 writer ⇒
+  `require_skill_content=True`，无 writer ⇒ `False`。生产组合根当前**恒开**（不属于可选门控，
+  而是能力装配）；装配期不调 LLM。
+
+**规格**：`evolution` **ADDED**「技能候选内容生成」＋ MODIFIED「验证门」（内容判据 + 1 Scenario）；
+canonical **17 → 18 req**、**91 → 95 scen**；既有 Scenario 逐字保留。
+
+**反证（实测，回溯补记时补做）**：把 `validate_skill_content` 恒返 `True` ⇒ **3 红**
+（四态校验 / writer 失败分支 / 装配门拒空壳）；其余 16 例恒绿（writer 解析、Proposer 写键、
+结晶映射、caliber 等不依赖该谓词）。复原 ⇒ `content.py` `md5sum` 逐字节同（`2d59c94d…`）。
+测试锚点 **17 个函数 / 19 个用例**（`tests/test_evolution_skill_content.py`）；另同步修改
+`test_evolution_gate_data.py` / `test_evolution_gate_judgment.py` 的 provider **桩** —— 蒸馏
+prompt（头「技能内容蒸馏器」）回合法 JSON、审查 prompt 回判定词（测试替身随新接缝漂移，
+非行为变化）。
+
+**局限**：① 内容质量取决于注入模型与 prompt；writer 失败即 `None`，装配门开时候选被拒
+（fail-closed 降低产出率）；② `GATE_CALIBER` 2 → 3 使历史 caliber-2 候选 `STALE` 需重提案
+（**不**重判）；③ writer 失败原因**不留痕** —— 非法 JSON / 结构不符 / 调用异常统一 `None`，
+排障只能靠上层 rejected 教训（change `0234`）；④ plugin 候选不生成 content（有意：其内容面
+由 `EvolutionExecutor` 的补丁生产者承担）；⑤ 生产组合根**恒开**内容门，无「只生成不门禁」
+的配置面；⑥ 新增接缝使测试桩必须按 prompt 分派 —— change `0239` 的 benchmark 桩漂移即此
+风险的实例（ADR-0223 局限③）。
+
+## ADR-0227：运行环境感知的 shell 方言（change 0237 / 台账 E174）
+
+**背景**：预置 prompt 与 `tools.code_run` 把「命令执行」默认成 **bash 心智**：系统提示**不注入**
+宿主 OS / 默认壳 / 路径风格；`code_run` schema 仅 `python|bash` 且实现硬编码 `bash -c`；TUI
+一律渲染 `Bash(...)`。在 Windows 上模型产出 POSIX/`&&`/`export`，执行面找不到 bash 或语法
+非法，反复试错。对标 Claude（双工具 + 平台选主壳）与 Cursor（prompt 注入 `Shell: …`）的
+交集：**软事实 + 硬方言必须同开**。
+
+**决策**：
+
+- **D1 环境快照为纯函数、可整替**：`probe_environment(*, system=None, which=None)` 产出
+  `EnvironmentSnapshot`（`os` / `default_shell` / `shell_label` / `path_style` /
+  `has_pwsh` / `has_powershell` / `has_bash`）；`system` / `which` 可注入 ⇒ 单测**不打真实
+  PATH**。平台默认壳钉死：Windows ⇒ `powershell`；Darwin / Linux ⇒ `bash`；其它 ⇒ `unknown`。
+- **D2 Phase 0 系统提示独立块**：`LLMPlanner(env_snapshot=…)`；`_env_block()` 在工具块之前产
+  「运行环境：」独立块（OS、默认壳与标签、路径约定、句法禁忌、`file_*` 优先）；`None` ⇒
+  空串、**不产块**（既有提示逐字不变）。
+- **D3 Phase 1 `code_run` 多方言**：schema `type ∈ {python, bash, powershell}`；缺省由
+  `resolve_run_type` 按快照解析（Windows ⇒ powershell；bash / unknown ⇒ bash，保持历史
+  「未传则 bash」兼容）；显式 type 优先。argv：`python` ⇒ `sys.executable -c`；`bash` ⇒
+  `bash -c`；`powershell` ⇒ `pwsh -NoProfile -Command`（回落 `powershell`）。目标解释器不在
+  PATH ⇒ `ValueError` 由工具层归一为**结构化错误**，SHALL NOT 静默改方言。
+- **D4 TUI 标题按有效 type 命名**：`_code_run_name(args)` 映射 `powershell` ⇒ `PowerShell`、
+  `python` ⇒ `Python`、`bash` ⇒ `Bash`；括号摘要仍取 `script` 首行有界口径。
+- **D5 组合根注入真实探测**：`runtime.py` 构造期 `env_snapshot = probe_environment()`，同一
+  快照注入 planner（多处 planner 构造点）与 `code_run` 工具工厂；测试路径可整替快照。
+- **D6 不拆双工具**：保留单 `code_run` 多 `type`（权限 / 确认门策略不变）；不做 Phase 2 回喂。
+
+**规格**：`loop` **ADDED**「运行环境事实」＋ 2 Scenario（6 → 7 req、91 → 93 scen）；
+`tool-use` **MODIFIED**「内置原子工具（代码执行 / 网页读取）」＋ 3 Scenario（9 req 不变、
+26 → 29 scen）；`ui` **ADDED**「code_run 活动标题按方言命名」＋ 2 Scenario（21 → 22 req、
+90 → 92 scen）。既有 Scenario 逐字保留。
+
+**反证（实测，回溯补记时补做）**：把 `resolve_run_type` 的平台判据改为恒不命中（Windows 缺省
+落回 bash）⇒ **2 红**（`test_resolve_run_type_defaults` / `test_code_run_default_type_windows`）；
+Linux 缺省、显式方言、缺解释器 fail-closed、Python 回归等 51 例恒绿。复原 ⇒ `env_shell.py`
+`md5sum` 逐字节同（`f448d5fb…`）。测试锚点 **20 个函数**（`tests/test_os_aware_shell.py` 18 +
+`tests/test_tool_use.py` 2）。
+
+**局限**：① 生产快照在 runtime **构造期**探测一次 —— 长驻进程内新装 / 卸载 shell 不刷新；
+裸 `code_run` 工具工厂缺省（`env_snapshot=None`）则**每次调用**探测，两口径并存；② 未知 OS
+缺省仍落 bash（兼容历史），未强制显式 `type`；③ `shell_label` 只报解释器名，**不**探版本
+（design 曾写「版本可得则带」）；④ 单测以注入快照覆盖平台分支，**未**在真实 Windows 上跑
+执行面（本机 Linux）；⑤ 只注入软事实 + 单工具多方言，未拆双 `tool_id` ⇒ 权限 / 确认规则仍是
+`code_run` 单一门（与 Claude 双工具模型不同）；⑥ 不感知 MCP / 远程执行面的宿主 OS。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8167,3 +8348,7 @@ spec）；组二为测试桩适配 0236 既有规格语义。
 | ADR-0221 | 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0222 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0223 | 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0224 | 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0225 | 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0226 | 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0227 | 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
