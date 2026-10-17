@@ -1261,3 +1261,116 @@ def test_successful_execution_still_passes() -> None:
     assert events[-1].type == "task_finished"
     assert tracker.completed("task") == {"1"}
     assert sm.state("task") == TaskState.DONE
+
+
+# ---- 运行中取消与消费方断流（change 0249） ----
+
+
+class _HangingLoop(DefaultLoop):
+    """子任务执行后挂起，直到被取消（取消打断 / 断流回收断言）。"""
+
+    def __init__(self) -> None:
+        super().__init__(planner=lambda ctx: Action(args={"reply": "ok"}))
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def astream(self, user_input: str, *, session_id: str = "") -> AsyncIterator[LoopEvent]:
+        self.started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        yield LoopEvent("loop_finished", LoopResult(reply="ok", trace_id="t"))
+
+
+def _hanging_task(
+    loop: _HangingLoop,
+) -> tuple[TaskScheduler, StateMachine, ProgressTracker]:
+    decomposer = SubtaskDecomposer(
+        planner=lambda goal: [Subtask(id="1", goal="t-one", acceptance="")]
+    )
+    sm = StateMachine()
+    tracker = ProgressTracker()
+    scheduler = TaskScheduler(
+        decomposer=decomposer,
+        router=MultiAgentRouter([AgentProfile(agent_id="a", capabilities=["t"], loop=loop)]),
+        state_machine=sm,
+        tracker=tracker,
+    )
+    return scheduler, sm, tracker
+
+
+def test_cancel_interrupts_inflight_subtask() -> None:
+    """取消打断在途子任务，执行流以 TASK_CANCELLED 终止（不等待自然完成）。"""
+
+    async def scenario() -> list[LoopEvent]:
+        loop = _HangingLoop()
+        scheduler, sm, _ = _hanging_task(loop)
+        events: list[LoopEvent] = []
+
+        async def consume() -> None:
+            events.extend([event async for event in scheduler.astream("task", "goal")])
+
+        consumer = asyncio.create_task(consume())
+        await asyncio.wait_for(loop.started.wait(), timeout=5)
+        scheduler.cancel("task")
+        # 必须由取消本身打断在途子任务；若改用 wait_for，其超时会替取消兜底，掩盖缺陷
+        await asyncio.wait({consumer}, timeout=2)
+        assert consumer.done(), "取消必须打断在途子任务，而不是等待其自然完成"
+        assert loop.cancelled.is_set()
+        assert sm.state("task") == TaskState.FAILED  # noqa: SLF001 — 终态断言
+        assert scheduler._results == {}  # noqa: SLF001 — 终态清理断言
+        return events
+
+    events = asyncio.run(scenario())
+    failed = [event for event in events if event.type == "task_failed"]
+    assert failed, "取消必须给出终态事件"
+    assert failed[-1].payload["code"] == OrchestrationErrorCode.TASK_CANCELLED
+
+
+def test_consumer_disconnect_cancels_inflight_and_releases() -> None:
+    """消费方断流 ⇒ 取消在途扇出、任务转 FAILED、任务级缓存清空。"""
+
+    async def scenario() -> None:
+        loop = _HangingLoop()
+        scheduler, sm, _ = _hanging_task(loop)
+        stream = scheduler.astream("task", "goal")
+        while True:
+            event = await asyncio.wait_for(anext(stream), timeout=5)
+            if event.type == "subtask_started":
+                break
+        await asyncio.wait_for(stream.aclose(), timeout=5)
+        await asyncio.wait_for(loop.cancelled.wait(), timeout=5)
+        assert sm.state("task") == TaskState.FAILED  # noqa: SLF001 — 断流转失败（不伪装成功）
+        assert scheduler._results == {}  # noqa: SLF001 — 任务级结果缓存释放
+        assert scheduler._cancel_events == {}  # noqa: SLF001 — 取消信号登记释放
+        assert scheduler._wave_tasks == {}  # noqa: SLF001 — 在途任务登记释放
+
+    asyncio.run(scenario())
+
+
+def test_terminal_run_releases_task_context() -> None:
+    """正常终态后释放任务级缓存与取消信号登记。"""
+    scheduler, sm, tracker = _hanging_task(_HangingLoop())
+    scheduler._router = MultiAgentRouter(  # noqa: SLF001 — 换成可完成的 loop
+        [AgentProfile(agent_id="a", capabilities=["t"], loop=_loop("ok"))]
+    )
+    asyncio.run(scheduler.run("task", "goal"))
+    assert sm.state("task") == TaskState.DONE
+    assert tracker.completed("task") == {"1"}
+    assert scheduler._results == {}  # noqa: SLF001 — 终态清理断言
+    assert scheduler._cancel_events == {}  # noqa: SLF001
+    assert scheduler._wave_tasks == {}  # noqa: SLF001
+
+
+def test_cancel_terminal_task_is_idempotent() -> None:
+    """终态任务重复取消幂等：不抛 INVALID_TRANSITION、不改状态与进度。"""
+    scheduler, sm, tracker = _hanging_task(_HangingLoop())
+    scheduler._router = MultiAgentRouter(  # noqa: SLF001 — 换成可完成的 loop
+        [AgentProfile(agent_id="a", capabilities=["t"], loop=_loop("ok"))]
+    )
+    asyncio.run(scheduler.run("task", "goal"))
+    scheduler.cancel("task")
+    assert sm.state("task") == TaskState.DONE
+    assert tracker.completed("task") == {"1"}

@@ -8633,6 +8633,54 @@ change 绿（`0233` 为**既有**归档欠账，与本 change 无关）。
 `CheckpointStore` 也未做跨进程锁）；⑥ keyfact 首见时间戳保留依赖旧条目仍在冷/热区，若旧条目已
 归档则新写以 `ts=0` 起算。
 
+## ADR-0238：运行中取消与消费方断流（协作取消信号 / 在途扇出打断 / 任务级上下文终态释放）（change 0249 / 台账 E185）
+
+**背景**：D1 遗留（ADR-0236 局限行、任务书 D1）：① `cancel` 只把状态转 `FAILED` —— 在途
+波次继续跑、`_results` 不清、执行流仍可能朝 `VERIFYING` / `DONE` 推进（取消被后续事件覆盖）；
+② `astream` 无退出收口 —— 消费方 `aclose()` / 断流后后台扇出与任务级缓存残留、状态悬置；
+③ 取消不可观测（无 `TASK_CANCELLED`，调用方无法区分「取消」与「自然失败」）。
+
+**决策**：
+
+- **D1 协作取消信号**：`TaskScheduler` 维护 per-task `asyncio.Event`（`_cancel_events`）与当前
+  波次扇出任务登记（`_wave_tasks`，`task_id → gather Task`）。`cancel(task_id)`：终态任务
+  **幂等返回**（不抛 `INVALID_TRANSITION`）；否则置信号、**立即 `cancel()` 在途扇出**、转
+  `FAILED`、`tracker.reset`、清 `_results`。执行流在四个观察点检查信号（拆解后、每轮波次前、
+  波次 drained 后、任务级判定后），以 `task_failed {code: TASK_CANCELLED}` 终止（状态已由
+  `cancel` 转移，`_cancelled` **不重复转移**）。
+- **D2 消费方断流收口**：`astream` 拆为薄包装 + `_stream_task`（主管线），包装层
+  `finally: _release(task_id)` 覆盖**任意退出路径**（正常终态 / 取消 / 断流 / 异常）：取消在途
+  波次（若仍登记）、清 `_cancel_events` / `_wave_tasks` / `_results`；**未达终态 ⇒ `FAILED`** +
+  `tracker.reset` + trace `task_aborted`（`reason` 区分「任务已取消」/「消费方断流」，不伪装成功）。
+  正常 `DONE` / `FAILED` 路径只释放缓存，不动状态与进度。
+- **D3 单一清理归属**：在途波次取消有且只有两个主动点 —— `cancel()`（用户主动、立即打断）与
+  `_release()`（退出兜底）；`_stream_wave` 的 `finally` 只 `await` 收拢并注销登记，**不**二次
+  cancel。实测两条路径互为兜底 ⇒ 单独摘任一条，断流用例仍绿（无法反证）；收敛为单点后
+  `_release` 成为可反证的唯一兜底。
+- **D4 取消边界**：取消**不能**打断正在 `await` 的拆解 / 任务级判定等外部调用（此时无在途
+  波次），信号在其返回后观察；外部 `CancelledError`（非本调度器取消）照常透传，
+  `_stream_wave` 仅当信号已置时吞掉 `CancelledError`（安静收拢）。
+- **D5 事件与错误码**：不新增事件类型（UI/CLI 已按 `task_failed` 收口），新增错误码
+  `TASK_CANCELLED`；`run()` 消费 `astream` 时按既有语义抛出 `OrchestrationError`。
+
+**规格**：`orchestration` **ADDED**「运行中取消与消费方断流」1 req / 4 Scenario（取消打断在途
+子任务 / 断流释放执行单元 / 终态清理任务级缓存 / 重复取消终态任务幂等）；既有 requirement
+逐字不动。
+
+**测试**：`tests/test_orchestration.py` +4（2767 → **2771**）。反证（`cp` 备份 + md5 复原）：
+摘 `cancel` 的扇出取消 ⇒ 取消用例红；摘 `_release` 的在途取消 ⇒ 断流用例红（5.34s 超时）；
+摘 `_release` 的 `_results` 清理 ⇒ 终态清理用例红；摘波次后取消观察点 ⇒ 取消用例红；
+摘终态幂等守卫 ⇒ 幂等用例红。复原 md5 同：`scheduler.py`
+`b8d4f2551dd213a47da2cce5b9d81211`、`errors.py` `7fda28e4b1f721361352569ca3ac174f`、
+`test_orchestration.py` `cf371aa76b5aa2315a6bbc80b3a1d052`。四门禁全绿。
+
+**局限**：① 取消只能打断**波次内**子任务；拆解 / 任务级判定 `await` 进行中只能等其返回后观察
+（最长一个模型调用时延）；② 已执行子任务的副作用与检查点结果**不回滚**（可逆性由效应追踪与
+既有断点语义承担，取消不是回滚）；③ `cancel` 为事件循环内同步调用，跨线程 / 跨进程取消不覆盖；
+④ 取消与断流**同为 `FAILED`**，仅 trace `task_aborted.reason` 区分；⑤ 消费方只 `break` 而
+**不**调用 `aclose()` 时，异步生成器延迟终结 ⇒ 在途波次可能持续到下一次 GC / 事件循环关闭
+（调用方应显式 `aclose()`；`astream` 的 `finally` 只在生成器终结时运行）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8865,3 +8913,4 @@ change 绿（`0233` 为**既有**归档欠账，与本 change 无关）。
 | ADR-0235 | 02-modules/orchestration.md, 02-modules/beast-mode.md, 02-modules/pet.md, 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0236 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0237 | 03-interfaces/context-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0238 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

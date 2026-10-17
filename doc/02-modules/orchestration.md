@@ -51,6 +51,11 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
   `FAILED`（沿用最后错误码，载荷带 `attempts`/`replans`）。重拆清空该任务旧完成集/结果
   （新 DAG 可能复用 id），`Plan.replans` 随检查点持久化。子 Agent 执行异常归一为子任务失败
   （结构化错误保留原码，其余 → `SUBTASK_EXECUTION_FAILED`，取消透传）；空计划直接 `FAILED`。
+- **运行中取消与断流**（change `0249`／ADR-0238）：`cancel` 置 per-task 协作信号并**立即取消
+  在途波次**，执行流在拆解后 / 波次前后 / 任务级判定后观察信号并以 `TASK_CANCELLED` 终止
+  （终态重复取消幂等）；`astream` 的 `finally` 覆盖任意退出路径 —— 取消在途扇出、清
+  `_results` / 取消登记 / 波次登记，消费方断流（未达终态）按 `FAILED` 收口并 trace
+  `task_aborted`。取消**不回滚**已执行子任务的副作用与检查点结果。
 
 ### 3.3 多 Agent 协同编排
 

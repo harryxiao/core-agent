@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import os
@@ -277,6 +278,9 @@ class TaskScheduler:
         self._on_done = on_done
         self._tracer = tracer
         self._results: dict[str, dict[str, str]] = {}  # task_id → subtask_id → 验收通过的回复
+        # 运行中取消 / 断流登记（change 0249）：取消信号与当前波次的扇出任务，终态释放。
+        self._cancel_events: dict[str, asyncio.Event] = {}
+        self._wave_tasks: dict[str, asyncio.Task[list[SubtaskOutcome]]] = {}
 
     async def run(  # noqa: PLR0913 — 续跑注入面（plan/completed/results）
         self,
@@ -315,7 +319,7 @@ class TaskScheduler:
             OrchestrationErrorCode.PROGRESS_NOT_MET, "任务流意外终止（未达终态）"
         )
 
-    async def astream(  # noqa: C901, PLR0912, PLR0913, PLR0915 — 编排主管线多分支长管道
+    async def astream(  # noqa: PLR0913 — 续跑注入面（plan/completed/results）
         self,
         task_id: str,
         goal: str,
@@ -326,7 +330,38 @@ class TaskScheduler:
         results: dict[str, str] | None = None,
         session_id: str = "",
     ) -> AsyncIterator[LoopEvent]:
-        """流式任务执行：拆解 → 波次扇出 → 验收推进 → 有限恢复，进度事件依序外发。"""
+        """流式任务执行：拆解 → 波次扇出 → 验收推进 → 有限恢复，进度事件依序外发。
+
+        任意退出路径（正常终态 / 取消 / 消费方断流 / 异常）经 `finally` 释放任务级上下文
+        （change 0249）：在途扇出被取消、`_results` 与取消登记清空；未达终态转 `FAILED`。
+        """
+        try:
+            async for event in self._stream_task(
+                task_id,
+                goal,
+                success_criteria,
+                plan=plan,
+                completed=completed,
+                results=results,
+                session_id=session_id,
+            ):
+                yield event
+        finally:
+            self._release(task_id)
+
+    async def _stream_task(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — 主管线多早退/多分支
+        self,
+        task_id: str,
+        goal: str,
+        success_criteria: list[str] | None = None,
+        *,
+        plan: Plan | None = None,
+        completed: set[str] | None = None,
+        results: dict[str, str] | None = None,
+        session_id: str = "",
+    ) -> AsyncIterator[LoopEvent]:
+        """主管线：由 `astream` 包装，负责取消观察与（正常/失败）终态事件。"""
+        cancel_event = self._cancel_events.setdefault(task_id, asyncio.Event())
         yield LoopEvent("task_started", {"task_id": task_id, "goal": goal})
         for subtask_id in completed or set():
             self._tracker.record(task_id, subtask_id)  # 续跑：已完成集回填
@@ -341,8 +376,14 @@ class TaskScheduler:
                     "task_failed", {"task_id": task_id, "code": exc.code, "reason": str(exc)}
                 )
                 return
+        if cancel_event.is_set():
+            yield self._cancelled(task_id)
+            return
         outcomes: list[SubtaskOutcome] = []
         while True:  # 恢复回路：重试 / 重拆后重入，预算耗尽才终止
+            if cancel_event.is_set():
+                yield self._cancelled(task_id)
+                return
             if not plan.subtasks or not plan.waves:
                 self._state_machine.transition(task_id, TaskState.FAILED)
                 yield self._failed(
@@ -387,6 +428,9 @@ class TaskScheduler:
                     task_id, plan, wave, session_id=session_id, result=wave_result
                 ):
                     yield event
+                if cancel_event.is_set():
+                    yield self._cancelled(task_id)
+                    return
                 outcomes = wave_result.outcomes
                 failure = wave_result.failure
                 if failure is not None:
@@ -402,6 +446,9 @@ class TaskScheduler:
                     )
                     return
                 verdict = await self._success_met(task_id, goal, plan, outcomes)
+                if cancel_event.is_set():
+                    yield self._cancelled(task_id)
+                    return
                 if not verdict.passed:
                     failure = _Failure(
                         OrchestrationErrorCode.PROGRESS_NOT_MET,
@@ -479,9 +526,61 @@ class TaskScheduler:
         self._state_machine.transition(task_id, TaskState.EXECUTING)
 
     def cancel(self, task_id: str) -> None:
-        """取消：转入 FAILED 并释放进度上下文。"""
+        """取消：置取消信号、打断在途扇出，转 FAILED 并释放进度上下文（change 0249）。
+
+        终态任务重复取消**幂等**（不抛 `INVALID_TRANSITION`、不改状态与进度）；已持久化的
+        断点上下文沿用既有策略保留。执行流观察到信号后以 `TASK_CANCELLED` 终止。
+        """
+        if self._state_machine.state(task_id) in (TaskState.DONE, TaskState.FAILED):
+            return
+        self._cancel_events.setdefault(task_id, asyncio.Event()).set()
+        wave_task = self._wave_tasks.get(task_id)
+        if wave_task is not None and not wave_task.done():
+            wave_task.cancel()
         self._state_machine.transition(task_id, TaskState.FAILED)
         self._tracker.reset(task_id)
+        self._results.pop(task_id, None)
+
+    def _is_cancelled(self, task_id: str) -> bool:
+        event = self._cancel_events.get(task_id)
+        return event is not None and event.is_set()
+
+    def _cancelled(self, task_id: str) -> LoopEvent:
+        """取消终态事件（状态已由 `cancel` 转移，此处不重复转移）。"""
+        reason = f"任务 {task_id} 已取消"
+        self._trace(
+            task_id,
+            "task_failed",
+            {"code": str(OrchestrationErrorCode.TASK_CANCELLED), "reason": reason},
+        )
+        return LoopEvent(
+            "task_failed",
+            {
+                "task_id": task_id,
+                "code": OrchestrationErrorCode.TASK_CANCELLED,
+                "reason": reason,
+            },
+        )
+
+    def _release(self, task_id: str) -> None:
+        """任务流结束（任意原因）释放任务级上下文；未达终态转 FAILED（change 0249）。
+
+        正常 `DONE` / `FAILED` 路径只做缓存释放，不动状态与进度；消费方断流 / 外部异常
+        退出时按失败收口并 trace `task_aborted`（不伪装成功）。
+        """
+        cancelled = self._is_cancelled(task_id)
+        self._cancel_events.pop(task_id, None)
+        wave_task = self._wave_tasks.pop(task_id, None)
+        if wave_task is not None and not wave_task.done():
+            wave_task.cancel()
+        self._results.pop(task_id, None)
+        if self._state_machine.state(task_id) in (TaskState.DONE, TaskState.FAILED):
+            return
+        self._state_machine.transition(task_id, TaskState.FAILED)
+        self._tracker.reset(task_id)
+        self._trace(
+            task_id, "task_aborted", {"reason": "任务已取消" if cancelled else "消费方断流"}
+        )
 
     def _failed(
         self,
@@ -529,7 +628,7 @@ class TaskScheduler:
         elif state in (TaskState.SUSPENDED, TaskState.RECOVERING):
             self._state_machine.transition(task_id, TaskState.EXECUTING)
 
-    async def _execute_wave(  # noqa: PLR0913 — 波次执行注入面（会话/结果）
+    async def _execute_wave(  # noqa: C901, PLR0913 — 波次执行注入面（会话/结果）
         self,
         task_id: str,
         plan: Plan,
@@ -544,6 +643,8 @@ class TaskScheduler:
             task_id, plan, wave, session_id=session_id, sink=wave_outcomes
         ):
             yield event
+        if self._is_cancelled(task_id):
+            return  # 取消已置 FAILED：不做 VERIFYING 转移，避免非法转移
         outcomes = _merge_outcomes(result.outcomes, wave_outcomes)
         self._state_machine.transition(task_id, TaskState.VERIFYING)
         failure = _failure_from(wave_outcomes)
@@ -617,7 +718,13 @@ class TaskScheduler:
         attempt: int = 1,
         previous: dict[str, str] | None = None,
     ) -> AsyncIterator[LoopEvent]:
-        """执行一个波次并排水子任务事件；收拢结果追加进 ``sink``（fan-in 语义不变）。"""
+        """执行一个波次并排水子任务事件；收拢结果追加进 ``sink``（fan-in 语义不变）。
+
+        扇出任务登记进 `_wave_tasks`，由 `cancel` / `_release` 统一打断（change 0249）；
+        `finally` 只收拢已取消的扇出任务并注销登记，不再二次取消（单一清理归属）。
+        """
+        if self._is_cancelled(task_id):
+            return  # 波次尚未开始即已取消：不再派发新子任务
         queue: asyncio.Queue[LoopEvent | None] = asyncio.Queue()
         gather_task = asyncio.create_task(
             self._fan_out(
@@ -630,13 +737,23 @@ class TaskScheduler:
                 previous=previous,
             )
         )
-        while True:  # 排水子任务事件（None 哨兵 = 波次收拢）
-            event = await queue.get()
-            if event is None:
-                break
-            yield event
-        await gather_task  # fan-out 异常在此重放（守卫已把子任务异常归一为失败）
-        sink.extend(gather_task.result())
+        self._wave_tasks[task_id] = gather_task
+        try:
+            while True:  # 排水子任务事件（None 哨兵 = 波次收拢）
+                event = await queue.get()
+                if event is None:
+                    break
+                yield event
+            await gather_task  # fan-out 异常在此重放（守卫已把子任务异常归一为失败）
+            sink.extend(gather_task.result())
+        except asyncio.CancelledError:
+            # 协作取消（`cancel` 已取消扇出任务）安静收拢；外部取消照常透传
+            if not self._is_cancelled(task_id):
+                raise
+        finally:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await gather_task
+            self._wave_tasks.pop(task_id, None)
 
     async def _fan_out(  # noqa: PLR0913 — 波次扇出注入面（会话/重试）
         self,

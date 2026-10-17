@@ -3638,3 +3638,22 @@ keyfact 跨批覆盖重置首见时间戳；编排检查点无缺省文件实现
 > +17 scen）。测试净 +15（2752 → **2767**）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0237 行（估算器覆盖范围 / 一轮收尾 / 条目数
 > 口径 / O(n) 扫描 / 单写者原子性 / keyfact 旧条目已归档）。
+
+## 161. 运行中取消与消费方断流（TC-ORCHCANCEL，change `0249`／ADR-0238，台账 E185）
+
+**根因**：`cancel` 只转状态（在途波次继续跑、缓存不清）；`astream` 无退出收口（断流后扇出与
+任务级缓存残留）；取消不可观测（无 `TASK_CANCELLED`）。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-ORCHCANCEL-01 | **取消打断在途子任务**（承重） | 挂起子 loop；`started` 后 `cancel("task")` | 消费方在 2s 内经**取消本身**结束（`asyncio.wait` 非取消式等待，不用 `wait_for` 兜底）；loop 收到 `CancelledError`；状态 `FAILED`；`_results` 清空；末事件 `task_failed{code=TASK_CANCELLED}`（`tests/test_orchestration.py::test_cancel_interrupts_inflight_subtask`） |
+| TC-ORCHCANCEL-02 | **消费方断流释放执行单元**（承重） | 取到 `subtask_started` 后 `stream.aclose()` | 在途扇出被取消（loop 收到 `CancelledError`）；状态 `FAILED`（不伪装成功）；`_results` / `_cancel_events` / `_wave_tasks` 全空（`…test_consumer_disconnect_cancels_inflight_and_releases`） |
+| TC-ORCHCANCEL-03 | 终态清理任务级缓存 | 正常完成 | `DONE` + 完成集不变；`_results` / `_cancel_events` / `_wave_tasks` 全空（`…test_terminal_run_releases_task_context`） |
+| TC-ORCHCANCEL-04 | 重复取消终态任务幂等 | `DONE` 后再 `cancel` | 不抛 `INVALID_TRANSITION`；状态仍 `DONE`；完成集不变（`…test_cancel_terminal_task_is_idempotent`） |
+
+> **反证**：摘 `cancel` 的在途扇出取消 ⇒ 01 红；摘 `_release` 的在途取消 ⇒ 02 红（超时）；
+> 摘 `_release` 的 `_results` 清理 ⇒ 03 红；摘波次后取消观察点 ⇒ 01 红；摘终态幂等守卫 ⇒ 04 红。
+> 复原 ⇒ `scheduler.py` / `errors.py` / `test_orchestration.py` `md5sum` 同。规格：`orchestration`
+> **ADDED** 1 req / 4 scen（11 req / 64 → 68 scen）。测试净 +4（2767 → **2771**）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0238 行（拆解/判定 await 中不可打断 /
+> 不回滚副作用 / 跨线程不覆盖 / 取消与断流同码 / 未 `aclose` 时延迟终结）。

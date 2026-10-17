@@ -148,6 +148,10 @@ class TaskScheduler:
         subtask_started / subtask_progress / subtask_completed / task_checkpoint /
         task_retrying / task_replanning / task_finished / task_failed；
         关键节点（拆解/验收/检查点/终态）经 tracer 写 trace。"""
+
+    def cancel(self, task_id: str) -> None:
+        """取消运行中任务：置协作取消信号、立即打断在途波次、转 FAILED 并释放
+        进度/结果上下文；终态任务重复取消幂等（change 0249 / ADR-0238）。"""
 ```
 
 - **任务级判定**（change 0248）：`SuccessChecker = Callable[[str, list[str], list[SubtaskOutcome]],
@@ -183,6 +187,15 @@ class TaskScheduler:
 - 依赖结果交接：子任务验收通过的回复（截断 2000 字符）注入 `depends_on` 后继
   子任务的执行输入（「前置子任务结果」段），并随 `SubtaskOutcome.reply` 写入
   检查点 outcomes，续跑时经 `results` 参数重建依赖上下文。
+- **运行中取消与消费方断流**（change 0249 / ADR-0238）：`cancel(task_id)` 置 per-task 协作
+  取消信号并**立即取消在途波次**（已登记 `_wave_tasks`），状态转 `FAILED`；执行流在拆解后 /
+  每轮波次前 / 波次收拢后 / 任务级判定后观察信号，以 `task_failed {code: TASK_CANCELLED}`
+  终止（状态不重复转移）。`astream` 以 `finally` 收口**任意退出路径**：取消在途扇出、清
+  `_cancel_events` / `_wave_tasks` / `_results`；未达终态 ⇒ `FAILED` + trace `task_aborted`
+  （`reason` 区分取消 / 断流，不伪装成功）；正常终态只释放缓存。终态任务重复取消**幂等**。
+  **边界**：取消不能打断正在 `await` 的拆解 / 任务级判定（返回后才观察）；已执行子任务的
+  副作用与检查点结果不回滚；消费方只 `break` 而不 `aclose()` 时生成器延迟终结，调用方应显式
+  `aclose()`。`CancelledError` 仅在协作取消（信号已置）时被安静收拢，外部取消照常透传。
 - **恢复计数持久化**（change 0246 / ADR-0234）：`Plan.replans` 随检查点往返（旧检查点缺键
   ⇒ 0）；重拆前先落计数与检查点，续跑不重置恢复预算。重拆会清空该任务的已完成集与结果
   上下文（新 DAG 可能复用 id）。子任务重试次数为进程内计数，不跨进程持久化。
@@ -309,6 +322,7 @@ async def run_handoff(loop, handoff, *, deadline=None) -> LoopResult
 | `INVALID_DISPATCH_POLICY` | 调度策略取值非法（构造器 fail-fast；change 0123） |
 | `PROGRESS_NOT_MET` | 进度未达目标（触发重拆；预算耗尽转 FAILED） |
 | `MISSING_SUCCESS_CHECKER` | 提供了成功标准但未注入判定器（配置错误，fail-fast，转 FAILED） |
+| `TASK_CANCELLED` | 运行中任务被 `cancel` 取消（`task_failed` 终态，change 0249；断流同转 `FAILED`，trace `task_aborted` 分因） |
 
 > 失败恢复预算固定为「每个失败子任务重试 1 次 + 重新拆解 1 次」（change 0246 / ADR-0234），
 > 不设配置键；`task_failed` 的 `attempts` / `replans` 为可观测计数。
