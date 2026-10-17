@@ -221,6 +221,8 @@ def test_pet_run_drives_restored_sessions(tmp_path, monkeypatch, capsys) -> None
         def run(self, interval, *, on_tick=None) -> None:
             seen["interval"] = interval
             if on_tick is not None:
+                # 模拟驱动侧变更（唤醒消费/派发）后落盘：on_tick 边界必须写注册表
+                seen["sessions"][0].dispatch(PetTask(PetTaskKind.IDLE_EXPLORATION, "驱动期新任务"))
                 on_tick([WakeOutcome("p1", WOKEN)])
                 on_tick([WakeOutcome("p1", FAILED, "RuntimeError: loop 炸了")])
 
@@ -234,6 +236,9 @@ def test_pet_run_drives_restored_sessions(tmp_path, monkeypatch, capsys) -> None
     assert "已开始驱动 1 只宠物会话" in captured.out
     assert "已驱动 1 只宠物" in captured.out
     assert "p1 唤醒失败" in captured.err
+    reloaded = PetManager(state / "pets.json").get("p1")
+    assert reloaded is not None
+    assert [t["goal"] for t in reloaded.snapshot()["tasks"]] == ["观察环境", "驱动期新任务"]
 
 
 def test_pet_run_rejects_bad_interval(tmp_path, monkeypatch, capsys) -> None:

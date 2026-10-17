@@ -67,7 +67,7 @@ class PetSession:
     # ---- 快照 / 恢复（注册表落盘用） ----
 
     def snapshot(self) -> dict[str, Any]:
-        """序列化会话可持久化态（id/状态/故障/让行/唤醒计数/偏好/任务队列）。"""
+        """序列化会话可持久化态（id/状态/故障/让行/唤醒计数/偏好/人格/任务队列）。"""
         return {
             "session_id": self.session_id,
             "state": self.state.value,
@@ -75,6 +75,7 @@ class PetSession:
             "yielding": self._yielding,
             "wake_count": self._wake_count,
             "preferences": dict(self._preferences),
+            "persona": self._persona_snapshot(),
             "tasks": [
                 {"kind": task.kind.value, "goal": task.goal, "priority": task.priority}
                 for task in self._tasks
@@ -89,6 +90,7 @@ class PetSession:
         loop: LoopPlugin | None = None,
         memory: MemoryStore | None = None,
         persona: PersonaLayer | None = None,
+        persona_factory: Callable[[dict[str, Any]], PersonaLayer] | None = None,
         explorer: ExplorerLayer | None = None,
         safety: SafetyLayer | None = None,
         notifier: Callable[[str], None] | None = None,
@@ -96,12 +98,20 @@ class PetSession:
         microtasks: Callable[[], str | None] | None = None,
         feedback_period: int = 5,
     ) -> PetSession:
-        """从快照恢复会话（保留 id/状态/任务/偏好/唤醒计数）；依赖可再注入（缺省回退兜底）。"""
+        """从快照恢复会话（保留 id/状态/任务/偏好/人格/唤醒计数）；依赖可再注入（缺省回退兜底）。
+
+        人格解析序：**显式注入 > 快照 + `persona_factory` > 无**（无人格 ⇒ 既有裸任务行为）。
+        """
+        resolved_persona = persona
+        if resolved_persona is None and persona_factory is not None:
+            raw_persona = record.get("persona")
+            if isinstance(raw_persona, dict):
+                resolved_persona = persona_factory(cast("dict[str, Any]", raw_persona))
         session = cls(
             session_id=record.get("session_id"),
             loop=loop,
             memory=memory,
-            persona=persona,
+            persona=resolved_persona,
             explorer=explorer,
             safety=safety,
             notifier=notifier,
@@ -152,7 +162,11 @@ class PetSession:
         # 统一交接执行器（change 0247）：空上下文 ⇒ `render_handoff` 逐字返回任务文本，
         # prompt / 会话 ID / 专属 loop 与改造前一致。
         handoff = TaskHandoff(task=self._compose_prompt(task.goal), session_id=self.session_id)
-        result = asyncio.run(run_handoff(self._loop, handoff))
+        try:
+            result = asyncio.run(run_handoff(self._loop, handoff))
+        except Exception as exc:  # noqa: BLE001 — 唤醒故障置退避后原样上抛（驱动按 FAILED 记录）
+            self.backoff(exc)
+            raise
         self.last_result = result
         self._last_trace_id = result.trace_id
         self._wake_count += 1
@@ -177,6 +191,13 @@ class PetSession:
             raise PetError(PetErrorCode.PET_NOT_ACTIVE, "会话已终止，无法退避")
         self.state = PetSessionState.BACKOFF
         self._fault = str(err)
+
+    def recover(self) -> None:
+        """故障恢复：BACKOFF → ACTIVE 并清故障（控制面 `wake` 的退避出口）。"""
+        if self.state is not PetSessionState.BACKOFF:
+            raise PetError(PetErrorCode.PET_NOT_ACTIVE, "会话不处于异常退避态，恢复无效")
+        self.state = PetSessionState.ACTIVE
+        self._fault = ""
 
     def terminate(self) -> None:
         """终止释放：任务与资源释放，无悬空引用。"""
@@ -303,6 +324,18 @@ class PetSession:
     def _require_active(self, op: str) -> None:
         if self.state is not PetSessionState.ACTIVE:
             raise PetError(PetErrorCode.PET_NOT_ACTIVE, f"会话未激活，{op} 无效")
+
+    def _persona_snapshot(self) -> dict[str, Any] | None:
+        """可持久化人格（与 `Persona` 字段同构）；无人格 ⇒ None（裸任务行为不变）。"""
+        if self._persona is None:
+            return None
+        return {
+            "name": self._persona.name,
+            "species": self._persona.species,
+            "persona_text": self._persona.persona_text,
+            "traits": list(self._persona.traits),
+            "preferences": list(self._persona.preferences),
+        }
 
     def _compose_prompt(self, goal: str) -> str:
         if self._persona is None:

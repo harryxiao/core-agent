@@ -3657,3 +3657,32 @@ keyfact 跨批覆盖重置首见时间戳；编排检查点无缺省文件实现
 > **ADDED** 1 req / 4 scen（11 req / 64 → 68 scen）。测试净 +4（2767 → **2771**）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0238 行（拆解/判定 await 中不可打断 /
 > 不回滚副作用 / 跨线程不覆盖 / 取消与断流同码 / 未 `aclose` 时延迟终结）。
+
+## 162. 宠物人格固定与故障韧性（TC-PETRES，change `0250`／ADR-0240，台账 E186）
+
+**根因**：`snapshot` 不含人格且组合根恢复工厂未传 persona ⇒ 恢复会话退化为裸任务；注册表只在
+注册/启停落盘 ⇒ 唤醒进度与派发任务跨进程丢失（重放/丢失/计数归零）；`wake` 异常裸抛、`backoff`
+无调用方、`BACKOFF` 无出口 ⇒ 异常退避未落地。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-PETRES-01 | **人格随快照固定**（承重） | 带 `Persona` 的会话 `snapshot()` → `restore(..., persona_factory=…)` → 唤醒 | 快照 `persona` 字段逐键相等；恢复后唤醒 prompt 含完整人格（`test_snapshot_carries_persona_and_restore_rebuilds_it`） |
+| TC-PETRES-02 | 显式人格优先 | 快照人格 A，恢复时显式注入 B | prompt 含 B 不含 A（`test_explicit_persona_wins_over_snapshot`） |
+| TC-PETRES-03 | 无人格逐字不变 | 裸会话快照/恢复 | `snapshot["persona"] is None`；唤醒 prompt 仍等于任务文本（`test_bare_session_stays_bare_after_roundtrip`） |
+| TC-PETRES-04 | **唤醒异常置退避并上抛**（承重） | loop 抛 `RuntimeError` | 异常原样上抛；状态 `BACKOFF`；`fault` 含原因；失败任务不回队（`test_wake_failure_enters_backoff_and_reraises`） |
+| TC-PETRES-05 | 取消不置退避 | loop 抛 `CancelledError` | 异常上抛；状态仍 `ACTIVE`（`test_wake_cancelled_error_does_not_backoff`） |
+| TC-PETRES-06 | **控制面退避恢复**（承重） | `BACKOFF` 会话 `PetControl.wake` | `ACTIVE` + 故障清空；随后可派发并成功唤醒（`test_control_wake_recovers_backoff_session`） |
+| TC-PETRES-07 | 非退避唤醒语义不变 | `sleep` 后控制面 `wake` | 仍走 `resume()`：`yielding` 清空（`test_control_wake_on_active_session_keeps_resume_semantics`） |
+| TC-PETRES-08 | **派发落盘**（承重） | `PetControl.assign` → 新 `PetManager(path)` | 新进程可见两条任务、非让行、人格完整（`test_control_assign_persists_registry`） |
+| TC-PETRES-09 | 唤醒进度落盘 | 唤醒一次后 `persist()` → 新 manager | 剩余任务 1、`wake_count=1`、人格完整（`test_wake_progress_persists_across_processes`） |
+| TC-PETRES-10 | **组合根恢复工厂固定人格**（承重） | `CORE_STATE_DIR` 临时目录构建两次 runtime | 新 runtime 恢复的会话带同一人格（`test_runtime_restore_factory_pins_persona`） |
+| TC-PETRES-11 | 驱动 tick 落盘边界 | entry `pet run` 假驱动在 `on_tick` 前派发任务 | 进程结束后重读注册表可见驱动期新任务（`test_entry.py::test_pet_run_drives_restored_sessions`） |
+| TC-PETRES-12 | 单宠物异常不中断其余 | 一失败一正常 | 结局 `FAILED` / `WOKEN`（`test_wake_outcomes_still_isolated_per_pet`） |
+
+> **反证**：摘 `snapshot` 的 persona ⇒ 01 红；摘 `restore` 工厂分支 ⇒ 01/10 红；摘 `wake` 的
+> try/except ⇒ 04 红；摘控制面 BACKOFF 分支 ⇒ 06 红；摘 `assign` 的 persist ⇒ 08 红；摘
+> `on_tick` 的 persist ⇒ 11 红。复原 ⇒ `session.py` / `control.py` / `manager.py` / `persona.py` /
+> `entry.py` / `test_entry.py` `md5sum` 同。规格：`pet-mode` **MODIFIED** 4 req / +5 scen。
+> 测试净 +12（2771 → **2783**）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0240 行（整表写竞争 / 计数不重置 / 失败任务
+> 不回队 / 人格文本不校验 / 控制面进程内 / 非法形状静默降级）。

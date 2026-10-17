@@ -8701,6 +8701,56 @@ change 绿（`0233` 为**既有**归档欠账，与本 change 无关）。
 `doc/02-modules/evolution.md` §3.8 与台账 §1 行。**放弃的替代项**：缺省开 runner / 自动引导
 基线（理由同上）。无代码与规格变更（规格本就要求缺省关）。
 
+## ADR-0240：宠物人格固定与故障韧性（persona pinning / 落盘边界 / 唤醒退避恢复）（change 0250 / 台账 E186）
+
+**背景**：宠物专项复盘发现三处生产可达缺陷：① `PetSession.snapshot()` 不含人格，组合根恢复
+工厂也未传 `persona` ⇒ 从注册表恢复的会话是**无人格裸任务**，规格「独立人格」「人格约束行为」
+在新进程不成立；② 注册表只在 `register/start/stop/remove` 落盘 —— `wake`（消费任务、计数递增）、
+`assign`、`sleep` 全为内存态 ⇒ 新进程看到旧快照：已消费任务**重放**、已派发任务**丢失**、计数归零；
+③ `wake()` 直接 `asyncio.run(...)`，异常裸抛；`backoff()` 无生产调用方，`BACKOFF` 无出口 ⇒
+「异常退避」在唤醒路径未落地，失败任务静默丢失且宠物无恢复途径。
+
+**决策**：
+
+- **D1 人格随快照固定**：`snapshot()` 增 `persona` 字段（`name/species/persona_text/traits/
+  preferences`，无人格 ⇒ `None`）；`restore(..., persona_factory=...)` 解析序 = **显式人格 >
+  快照 + 工厂 > 无**。`persona_from_record()` 与 `Persona` 字段一一对应，缺键取 dataclass 缺省、
+  未知键忽略（描述性文本，无版本迁移面）。组合根恢复工厂传 `persona_factory=persona_from_record`。
+  无人格调用方（`persona=None` 且快照无该键）行为**逐字不变**。
+- **D2 落盘边界 = 变更后持久化**：新增公开 `PetManager.persist()`（无路径 ⇒ no-op）；`PetControl`
+  的 `sleep/wake/assign` 变更成功后落盘（`stop` 经 `manager.stop` 已落盘）；`pet run` 的 `on_tick`
+  **先** `manager.persist()` **再**呈现 —— 覆盖「驱动唤醒消费任务 / 计数递增」这类非控制面变更。
+  整表覆盖写、不追踪脏位：多余一次落盘无害，漏落盘就是丢进度。
+- **D3 唤醒故障 → BACKOFF + 上抛**：`wake()` 捕获 `Exception`（**不**捕获 `CancelledError` /
+  `KeyboardInterrupt`）⇒ `backoff(exc)` 置 `BACKOFF` + 故障原因 ⇒ **原样 re-raise**，驱动按
+  `FAILED` 记录且不中断其余宠物（既有隔离契约不变）。
+- **D4 控制面退避出口**：新增 `PetSession.recover()`（`BACKOFF → ACTIVE`、清故障；其余态抛
+  `PET_NOT_ACTIVE`）；`PetControl.wake` 对 `BACKOFF` 走 `recover()`，其余仍走既有 `resume()` ——
+  宿主无感内部态，同一动词即「睡醒」也「退避恢复」。
+- **D5 失败任务不回队**：任务在执行前出队（一次性语义），失败原因经 `_fault` 与驱动 `FAILED`
+  观测面可见；自动重放会绕开「主人派发」的明确意愿，且无退避上限 —— 是否重派由主人/控制面决定。
+
+**规格**：`pet-mode` **MODIFIED** 4 req（Background Pet Session Lifecycle / Multi-Pet Management /
+Pet Persona and Prompt / Pet Control Surface），新增 5 Scenario（唤醒异常退避与恢复 / 唤醒进度与
+人格跨进程还原 / 人格跨进程固定 / 退避恢复），既有 Scenario 与 Requirement 文本逐字保留。
+
+**测试**：新增 `tests/test_pet_resilience.py`（12 例）+ `test_entry.py::test_pet_run_drives_restored_sessions`
+扩为断言 tick 落盘（2771 → **2783**，+12）。反证（`cp` 备份 + md5 复原）：
+P1 摘 `snapshot` 的 persona 字段 ⇒ 人格往返用例红（KeyError）；P2 摘 `restore` 的工厂分支 ⇒ 人格
+往返 + 运行时工厂用例红；P3 摘 `wake` 的 try/except ⇒ 退避用例红（`ACTIVE`）；P4 摘控制面 BACKOFF
+分支 ⇒ 退避恢复用例红（`PET_NOT_ACTIVE`）；P5 摘 `assign` 的 persist ⇒ 跨进程可见用例红；P6 摘
+`on_tick` 的 persist ⇒ entry 驱动用例红。复原 md5 同：`session.py`
+`e1dd1f9dd72e2480019c41f5c47fade4`、`control.py` `ee002a18e5cc10bd0a0373ea68e96e01`、
+`manager.py` `c220892dc61213ea8db0d7bad3e875a3`、`persona.py` `a3a27207f1ed5ae8957f34e70cf4f494`、
+`entry.py` `dd723e374341879f75e0132729bb3a84`、`test_entry.py`
+`a66863b1b2e55de88cd309cefc79d40b`。四门禁全绿。
+
+**局限**：① 整表快照落盘，多进程**同时**写同一注册表为「最后写者胜出」（既有架构，未引入锁/合并）；
+② `recover()` 只清故障、**不**重置 `wake_count`（累计事实，不是故障状态）；③ 失败任务不回队，
+需主人重新 `assign`；④ `persona_from_record` 不校验人格内容语义（与 `parse_persona` 同口径：
+文本直通）；④ 控制面仍只作用本进程 live 会话（规格明文「有意不做跨进程」）；⑤ `restore` 对
+快照中**形状非法**的 persona（非 dict）静默按无人格处理（不 fail-fast）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8935,3 +8985,4 @@ change 绿（`0233` 为**既有**归档欠账，与本 change 无关）。
 | ADR-0237 | 03-interfaces/context-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0238 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0239 | 02-modules/evolution.md, coding-plan/known-risk.md |
+| ADR-0240 | 02-modules/pet.md, 03-interfaces/pet-mode-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

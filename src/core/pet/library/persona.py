@@ -9,6 +9,7 @@ pet.md/prompt 设定角色/性格/喜好，行为与输出风格受人格约束�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 
 @dataclass
@@ -30,3 +31,17 @@ class Persona:
             f"性格：{traits}。喜好：{likes}。\n"
             f"{self.persona_text}"
         )
+
+
+def persona_from_record(data: dict[str, Any]) -> Persona:
+    """从注册表快照重建人格（字段与 ``PetSession.snapshot()["persona"]`` 同构）。
+
+    缺键取 dataclass 缺省值；未知键忽略（人格是描述性文本，无版本迁移面）。
+    """
+    return Persona(
+        name=str(data.get("name", "")),
+        species=str(data.get("species", "")),
+        persona_text=str(data.get("persona_text", "")),
+        traits=[str(item) for item in cast("list[Any]", data.get("traits") or [])],
+        preferences=[str(item) for item in cast("list[Any]", data.get("preferences") or [])],
+    )

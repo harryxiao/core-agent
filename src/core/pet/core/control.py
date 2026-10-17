@@ -16,7 +16,7 @@ from typing import Any
 
 from .errors import PetError, PetErrorCode
 from .manager import PetManager
-from .models import PetTask, PetTaskKind
+from .models import PetSessionState, PetTask, PetTaskKind
 from .session import PetSession
 
 
@@ -45,6 +45,7 @@ class PetControl:
         """让宠物入睡/让行（复用 orchestration `SUSPENDED` 语义）。"""
         pet = self._resolve(session_id)
         pet.suspend()
+        self._manager.persist()
         return f"已让宠物 {pet.session_id} 入睡（让行态）"
 
     # ---- 结果查询（change 0113 / E46） ----
@@ -68,12 +69,16 @@ class PetControl:
         }
 
     def wake(self, session_id: str | None = None) -> str:
-        """叫醒宠物（清让行态恢复）。
+        """叫醒宠物：`BACKOFF` 会话执行故障恢复，其余清让行态恢复。
 
-        **注意**：此 `wake` 是「恢复让行」，非 `PetSession.wake()`（执行一次任务）。
+        **注意**：此 `wake` 是「恢复让行/退避」，非 `PetSession.wake()`（执行一次任务）。
         """
         pet = self._resolve(session_id)
-        pet.resume()
+        if pet.state is PetSessionState.BACKOFF:
+            pet.recover()
+        else:
+            pet.resume()
+        self._manager.persist()
         return f"已叫醒宠物 {pet.session_id}"
 
     def assign(self, goal: str, *, session_id: str | None = None) -> str:
@@ -81,6 +86,7 @@ class PetControl:
         pet = self._resolve(session_id)
         pet.dispatch(PetTask(kind=PetTaskKind.IDLE_EXPLORATION, goal=goal))
         pet.observe_owner(goal)  # 派发成功后观察主人原话（空 ⇒ observe_owner 自行跳过）
+        self._manager.persist()
         return f"已给宠物 {pet.session_id} 派发新任务：{goal}"
 
     def stop(self, session_id: str | None = None) -> str:

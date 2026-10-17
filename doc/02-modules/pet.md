@@ -35,6 +35,13 @@ PetMode（后台自治循环扩展）
 - 每次唤醒复用 **统一交接执行器** `handoff.run_handoff`（`asyncio.run` 桥接，change `0247`／ADR-0235）
   逐次执行；宠物传空上下文 + 自身 `session_id` ⇒ `render_handoff` 逐字返回任务文本，loop prompt
   与改造前一致。异常退避不残留半运行状态。
+- **唤醒故障韧性**（change `0250`／ADR-0240）：唤醒执行异常 ⇒ `backoff(exc)` 置 `BACKOFF` + 故障
+  原因后**原样上抛**（驱动按 `FAILED` 记录、不中断其余宠物）；`recover()`（`BACKOFF → ACTIVE`、
+  清故障）经控制面 `wake` 可达。失败任务**不回队**（一次性语义；重派由主人/控制面决定）。
+- **人格随快照固定**（persona pinning，change `0250`／ADR-0240）：`snapshot()` 携带
+  `name/species/persona_text/traits/preferences`；`restore` 按「显式人格 > 快照 + `persona_factory`
+  > 无」解析，组合根恢复工厂注入 `persona_from_record` ⇒ 新进程唤醒**不退化为裸任务**。无人格
+  会话行为逐字不变。
 
 ### 3.2 低优先级让行
 
@@ -122,6 +129,10 @@ PetMode（后台自治循环扩展）
   安全中间件，change `0081`）与 runtime 共享 memory）；
   `Runtime.pet_manager`/`pet_activator` 供 `entry._pet`（CLI）与 `UIAPILayer.activate_pet`（WebUI）共用，
   缺省（无组合根）仍走 echo loop 兜底、行为不变。
+- **注册表落盘边界**（change `0250`／ADR-0240）：注册 / 启停（既有）之外，控制面 `sleep` / `wake` /
+  `assign` 与 `pet run` 的**每次驱动 tick** 也落盘（`PetManager.persist()`）—— 唤醒消费任务、计数
+  递增、新派发任务对新进程可见；已消费任务**不重放**、已派发任务**不丢失**（整表覆盖写，多进程
+  同时写为最后写者胜出，登记局限）。
 - **门控**（change `0067`，账本 E10）：`features.pet: false` 时 pet **完全不装配** —— 不构造
   `PetManager`（**不读** `pets.json`）、`Runtime.pet_manager`/`pet_activator` 为空、`pet` CLI 与
   WebUI 入口一并拒绝。**两级开关各管各的**：`features.pet` 管**装配**（缺省开），`pet.enabled`

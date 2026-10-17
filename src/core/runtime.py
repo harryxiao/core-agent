@@ -113,6 +113,7 @@ from core.orchestration import (
 from core.permission import PermissionGuard, SandboxManager, SandboxPolicy
 from core.pet.core import PetActivator, PetManager, PetSession
 from core.pet.explore import Explorer
+from core.pet.library import persona_from_record
 from core.pet.microtask import MicrotaskRunner
 from core.pet.notify import AsyncNotifier
 from core.pet.safety import SafetyBounds, build_safety_middleware
@@ -1427,6 +1428,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 record,
                 loop=pet_loop,
                 memory=memory,
+                persona_factory=persona_from_record,
                 explorer=pet_explorer,
                 safety=pet_safety,
                 notifier=_pet_notify,

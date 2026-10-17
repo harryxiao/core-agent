@@ -32,7 +32,9 @@ class PetSession:
     def resume(self) -> None: ...
         """主循环释放资源后恢复，已完成的子任务结果不丢失。"""
     def backoff(self, err: Exception) -> None: ...
-        """异常退避：标记故障态、隔离，不阻塞主循环。"""
+        """异常退避：标记故障态、隔离，不阻塞主循环（`wake()` 失败时自动调用后原样上抛）。"""
+    def recover(self) -> None: ...
+        """故障恢复：BACKOFF → ACTIVE 并清故障（change 0250；控制面 `wake` 的退避出口）。"""
     def terminate(self) -> None: ...
         """终止释放：任务与资源释放，无悬空引用。"""
 
@@ -66,6 +68,12 @@ class PetSession:
 > **依赖注入与快照**（change `0053`）：`loop`/记忆/探索/安全/通知依赖由组合根（`build_runtime`）经 `PetActivator` 注入，
 > 生产激活的宠物因此持有 runtime 的真实 loop、共享记忆后端与 `MicrotaskRunner`（偏好落 L2、唤醒走真 loop、空闲跑真微任务）。`snapshot()` / `restore(record, **deps)`
 > 支持会话快照与恢复（注册表落盘用）；缺省依赖全 `None` → echo loop / 无记忆兜底，行为不变。
+> **人格固定与落盘边界（change `0250`／ADR-0240，账本 E186）**：`snapshot()` 增 `persona`
+> （`name/species/persona_text/traits/preferences`，无人格 ⇒ `None`）；`restore(..., persona_factory=…)`
+> 解析序 = **显式人格 > 快照 + 工厂 > 无**，组合根恢复工厂注入 `persona_from_record` ⇒ 新进程唤醒
+> 仍带同一人格。`PetManager.persist()` 公开（无路径 no-op），控制面 `sleep/wake/assign` 变更后落盘、
+> `pet run` 的 `on_tick` 先落盘再呈现；`wake()` 失败 ⇒ `backoff` 后**原样上抛**（驱动按 `FAILED`
+> 隔离），失败任务不回队。
 > **通知接线（change `0079`／ADR-0076，账本 E16）**：通知器此前只注入不投递（`_notifier` 零调用、`AsyncNotifier` 无 channel、`flush()` 零调用方）。现已三环连通 —— 生产者落 `wake()` 收尾（反馈周期命中时投递 `report()` 产出），缺省通道 = stderr 一行（主人可见的观测面），投递点由组合根收成单一可调用体（入队后即 flush）注入；真实 IM 通道仍由宿主注入替换。
 >
 > **偏好追踪接线（change `0110`／ADR-0103，账本 E39）**：`observe` 此前**零生产调用方**（`_preferences` 恒空、
@@ -221,9 +229,13 @@ change `0081` 之前二者只注入不消费，且宠物**跑在主 loop 上**�
 | `status` | `snapshot()` 过滤 | 结构化 `session_id` / `state` / `sleeping`(=yielding) / `pending` / `wake_count` / `fault`；**不含**主人偏好与任务正文 |
 | `result` | `PetSession.last_result` | **结果查询面**（change `0113`／ADR-0106，账本 E46）：最近一次任务结果的只读摘要 `session_id` / `has_result` / `reply` / `failed`。与 `status` **互不污染**（`status` 面逐字不变）；只**本进程**、只**最近一次**、**不落盘**（不进 `snapshot`）。无结果 ⇒ 明确报「无最近任务结果」，**不编造正文** |
 | `sleep` | `PetSession.suspend()` | 置让行态（休眠）；后续 `PetSession.wake()` 以 `PET_YIELDING` 拒绝 |
-| `wake` | `PetSession.resume()` | **清让行态恢复**。**命名陷阱**：与 `PetSession.wake()`（执行一次任务）语义不同，见 ADR-0083 |
+| `wake` | `PetSession.resume()` / `recover()` | **清让行态恢复**；`BACKOFF` 会话走 `recover()`（change `0250`：退避出口）。**命名陷阱**：与 `PetSession.wake()`（执行一次任务）语义不同，见 ADR-0083 |
 | `assign` | `dispatch()` | 换活：入队新任务并清让行态（自动唤醒，change `0087`） |
 | `stop` | `PetManager.stop()` | 终止会话并释放 |
+
+> **落盘边界（change `0250`／ADR-0240）**：`sleep` / `wake` / `assign` 变更成功后调用
+> `PetManager.persist()`（`stop` 经 `manager.stop` 已落盘）⇒ 新进程可见其效果；控制面本身仍只作用
+> **本进程** live 会话（规格明文）。
 
 **寻址**（`_resolve`）：显式 `--session ID` / `session_id=` ⇒ 按 id 取；**未指定且仅注册一只** ⇒ 默认作用于它；
 **未指定且多只** ⇒ `PET_TARGET_AMBIGUOUS` 并**列出可选 id**（不猜测）；**指定但未注册** ⇒ `PET_NOT_FOUND`

@@ -2187,8 +2187,13 @@ def _pet_run(manager: PetManager, rest: list[str]) -> int:
         )
         return 0
     print(f"已开始驱动 {len(pets)} 只宠物会话（间隔 {interval:g}s，Ctrl-C 停止）")
+
+    def _on_tick(outcomes: list[WakeOutcome]) -> None:
+        manager.persist()  # 唤醒消费任务 / 计数递增等驱动侧变更先落盘再呈现
+        _report_wake_tick(outcomes)
+
     try:
-        PetWakeDriver(manager.list).run(interval, on_tick=_report_wake_tick)
+        PetWakeDriver(manager.list).run(interval, on_tick=_on_tick)
     except KeyboardInterrupt:
         print("已停止驱动")
     return 0

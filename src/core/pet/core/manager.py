@@ -52,6 +52,10 @@ class PetManager:
         payload = [pet.snapshot() for pet in self._pets.values()]
         self._path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
+    def persist(self) -> None:
+        """把当前注册表快照落盘（无路径时无操作）——供驱动 tick / 控制面变更后调用。"""
+        self._persist()
+
     def register(self, pet: PetSession) -> None:
         """注册一只宠物（按 session_id 索引）。"""
         self._pets[pet.session_id] = pet

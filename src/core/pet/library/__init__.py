@@ -2,6 +2,13 @@
 
 from .library import CharacterLibrary
 from .loader import load_persona, load_personas, parse_persona
-from .persona import Persona
+from .persona import Persona, persona_from_record
 
-__all__ = ["CharacterLibrary", "Persona", "load_persona", "load_personas", "parse_persona"]
+__all__ = [
+    "CharacterLibrary",
+    "Persona",
+    "load_persona",
+    "load_personas",
+    "parse_persona",
+    "persona_from_record",
+]
