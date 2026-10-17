@@ -7947,7 +7947,7 @@ spec）；组二为测试桩适配 0236 既有规格语义。
 （吞掉一次打断；后果限于本轮多推进一步，无数据面影响）；② 跨 loop 残留 task 本体不清扫
 （引用在下次 `_await_post_turn` 的 `finally` 释放）；③ 桩按 prompt 特征子串分派，
 `_PROMPT_HEAD` 措辞变更需同步桩（镜像漂移风险同 ADR-0215 类）；④ 0233 自身的 spec delta
-归档欠账（validate 红）不在本 change 范围。
+归档欠账（validate 红）不在本 change 范围 —— 已于 2026-10-17 回溯收口（ADR-0244）。
 
 ## ADR-0224：未过门候选教训写回（change 0234 / 台账 E171）
 
@@ -8012,7 +8012,7 @@ spinner 与活动标题抢进度；Thinking 落静无耗时；子任务标题仍
 - **D5 Web 抽零 DOM 纯函数**：`frontend/src/lib/activity.js` 只做标题 / 摘要 / 耗时 / 折叠符
   映射，与 `repl.py` 同口径；`Chat.svelte` 消费统一 `timeline[]`；`TaskPanel.svelte` 复用
   `actionTitle`。Web 测试用 Node 原生 `node --test`（仓内无 vitest）。
-- **D6 规格中性**：语义 delta **唯一归 open 的 change `0233`**；本 change 不写 spec delta ——
+- **D6 规格中性**：语义 delta **唯一归 change `0233`**（已于 2026-10-17 归档，ADR-0244）；本 change 不写 spec delta ——
   对同一 Requirement 双写 delta，归档时会按 Requirement 全量替换而互相覆盖（`0225`/`0228`
   同属 `skip_specs` 先例）。
 
@@ -8031,7 +8031,7 @@ Web 侧 `frontend/src/lib/activity.test.js`（`node --test`，当前 10 个 `it`
 **局限**：① UI 呈现材质属快速迭代面，`ui-scheme.md` 是**解释性**文档（非规格真源），后续
 调整不必逐条走 change；② Web 侧 `node --test` 与 `npm run build` **不在**四门禁内 —— 当前
 Node `v20.11.1` < Vite 8 要求（`^20.19 || >=22.12`），构建未验；③ 本记录为回溯补建，提交时
-**未留**反证快照，本次只补一条 TUI 反证；④ `0233` 仍 open（其 spec delta 待归档）；⑤ 折叠符
+**未留**反证快照，本次只补一条 TUI 反证；④ `0233` 已于 2026-10-17 归档（ADR-0244）；⑤ 折叠符
 是**纯指示符**，开合状态靠 `Collapsible` 自身语义而非箭头（与「一眼看出开合」的直觉有取舍）。
 
 ## ADR-0226：技能候选内容生成（change 0236 / 台账 E173）
@@ -8451,7 +8451,7 @@ R4「断点续跑」**MODIFIED**（`Plan.replans` 持久化 + 1 Scenario）—�
 `test_run_replan_after_retry_exhausted` 红；复原 ⇒ `scheduler.py` `md5sum` 同
 （`c97840f7f12ff7c65db08e5394af49f0`）。测试 +6（1 例改名替换既有用例，净 +5：
 2711 → **2716**）。四门禁全绿；`openspec validate --all` 中本 change 绿（`0230` / `0233`
-两项为**既有**归档欠账，见 ADR-0223 / ADR-0225 局限④）。
+两项既有归档欠账均已收口；`0233` 于 2026-10-17 归档，ADR-0244）。
 
 **局限**：① 重试/重拆各 1 次是**固定策略**（无配置旋钮），费用有界但复杂故障可能不够；
 ② 任务级判定可能误判，fail-closed 只触发一次恢复（`0248` 接判定器后同）；③ `cancel`
@@ -8515,7 +8515,7 @@ R4「断点续跑」**MODIFIED**（`Plan.replans` 持久化 + 1 Scenario）—�
 `scheduler.py` `d0a1061e34023c4b82cf0b757702f682`、`loop/default.py`
 `e778e4e328e3537dcdab84f217e3980f`、`runtime.py` `3d738cd28cda2284fbe6315af905a420`。
 测试净 +24（2716 → **2740**）。四门禁全绿；`openspec validate --all` 中本 change 绿
-（`0230` / `0233` 两项为**既有**归档欠账，见 ADR-0223 / ADR-0225 局限④）。
+（`0230` / `0233` 两项既有归档欠账均已收口；`0233` 于 2026-10-17 归档，ADR-0244）。
 
 **局限**：① `deadline` 默认关闭（`0`），需显式配置；`asyncio.timeout` 依赖 Python 3.11+（项目基线）；
 ② 单次交接上下文最多 2000 token，超长依赖结果被截断（保头不保尾，可能丢结论）；
@@ -8568,7 +8568,7 @@ ProgressTracker 追踪进度」，实现却空转：拆解 prompt 只产 subtask
 结果 ⇒ `test_llm_task_verifier_judges_goal_criteria_and_outcomes` 红。复原后 `md5sum` 同：
 `planner.py` `35348dbf13e89eb10bb7ef0002019085`、`runtime.py`
 `0504ee0f1ed5997ecc5238caecd23554`。测试净 +12（2740 → **2752**）。四门禁全绿；
-`openspec validate --all` 中本 change 绿（`0230` / `0233` 两项为**既有**归档欠账）。
+`openspec validate --all` 中本 change 绿（`0230` / `0233` 两项既有归档欠账均已收口；`0233` 于 2026-10-17 归档，ADR-0244）。
 
 **局限**：① planner 生成的标准质量取决于模型，可能过宽/过窄；判定为同源 LLM，存在共模误判，
 仅 fail-closed 兜底；② 任务级判定每任务额外一次 LLM 调用（判失败时重试一次），费用有界但非零；
@@ -8623,7 +8623,7 @@ memory +3/+7、orchestration +1/+3），全部 ADDED，既有 requirement 逐字
 1 红；复原后 md5 同：`budget.py` `b0569f6e704dd151d90be39131af11b4`、`default.py`
 `e6dfb9d97d0800a493201fe29895fc7e`、`store.py` `dc80f4fc3f2af3b789d11304c612b742`、
 `scheduler.py` `d6a0751414cd9965c69676041a50e90b`。四门禁全绿；`openspec validate --all` 中本
-change 绿（`0233` 为**既有**归档欠账，与本 change 无关）。
+change 绿（`0233` 已于 2026-10-17 归档，ADR-0244，与本 change 无关）。
 
 **局限**：① 估算器只覆盖预算/读预算/短带截断，三层窗口的「token → 字符」换算仍按 2 字符/token
 （与 ADR-0233 同口径）；② 预算降级只给**一轮**收尾，收尾轮本身仍可能产出大量 token（上界由
@@ -8883,6 +8883,52 @@ md5 复原）：P1 摘 `maintenance` 事件 ⇒ 3 红；P2 摘 `compaction` 事�
 5. **线程内计时** —— `_compact` 在 `asyncio.to_thread` 工作线程执行，`elapsed_ms` 不含线程
    排队等待。
 
+## ADR-0244：TUI 活动块（Thinking 缺省收起 / 友好标题 / 撤回 Task 壳）（change 0233 / 台账 E190）
+
+**背景**：`0169` 把 TUI 思考/工具块的缺省态定为**缩略**（末尾 N 行可见）。产品反馈缩略仍占
+时间线、符号噪音大 ⇒ `0233` 改为**缺省收起**（仅标题行），「在干什么」由友好标题摘要承载；
+同时按 `round` 归并思考增量、撤回外层 `Task(<摘要>)` 壳。代码于 2026-10-12 随 commit `7357a11`
+落地，但 spec delta 归档被拒、change 长期 active ⇒ `openspec validate --all` 恒 1 红。本次
+2026-10-17 回溯收口：只校正规格 delta / 归档 / 台账，**零 `src/` 改动**。
+
+**决策**：
+
+- **D1 缺省收起优先于缩略**：思考块与工具块创建即 `collapsed=True`（仅标题可见）；点标题在
+  **收起 ⇄ 展开**间切换，展开即全文（若正文极长，展开态内部可再提供末尾预览，但不是缺省）。
+- **D2 标题无装饰符号**：`Read(path)` / `Write(path)` / `Edit(path)` / `Delete(path)` /
+  `Bash(script 首行)` / `SubAgent(task 摘要)` / `Planner(goal 或波次摘要)` / `Thinking`
+  （进行中 `Thinking…`；**不**把思考原文写进标题）。摘要只取白名单结构性字段、单行有界；
+  正文类参数与内部 `tool_id` 不进标题；取不到摘要只留友好名 / 空括号。
+- **D3 思考按 ReAct 步归并**：`loop.reasoning` 载荷增 `round`；同一 `round` 的增量追加到同一块，
+  不同步用不同块；缺 `round` 时降级归并到当前未完成步（或新建块），**不丢增量**。
+- **D4 撤回 Task 壳**：外层 `Task(<用户输入摘要>)` 折叠壳撤回，时间线改回扁平
+  （思考块 / 工具块 / 主回复直接挂时间线）。
+- **D5 delta 形态校正（本次回溯）**：旧「TUI 步骤块（缩略 / 全文 / 收起）」是 `0169` 的三态语义，
+  `0233` 以「活动块：缺省收起 + 友好标题」**整体替换** —— 用 `REMOVED`（旧块）+ `ADDED`（新块）
+  表达，而非沿用旧标题写 `MODIFIED`；「思考过程回显」属真 `MODIFIED`，场景名沿用
+  `TUI 思考折叠回显` 并更新内容（OpenSpec 的 `MODIFIED` 整块替换要求场景名连续）。Task 壳的
+  `REMOVED` 项在 canonical 中已不存在（历史上未归档即撤回）⇒ CLI 按「already removed」告警放行。
+
+**规格**：`ui` MODIFIED ×1（Think，3 → 4 scen）+ REMOVED ×1（旧步骤块，6 scen）+ ADDED ×1
+（新步骤块，7 scen）；canonical **22 req 不变、93 → 95 scen（+2）**。归档后
+`openspec validate --all` **31 passed / 0 failed**（此前恒有 1 红）。
+
+**测试**：代码与测试随 `7357a11` 已落地，本记录零新增。承载锚点（`tests/test_repl.py`）：
+`test_tui_thinking_stream_merges_and_updates_in_place`（同 round 归并）、
+`test_tui_thinking_splits_by_round`（不同步不同块）、
+`test_tui_thinking_title_stays_without_content_while_streaming`（标题不刷原文）、
+`test_tui_step_block_title_toggles_collapse`（收起 ⇄ 展开）、
+`test_tui_step_block_shows_target_but_not_raw_args`（标题只取结构化摘要）、
+`test_tui_bash_title_keeps_script_when_args_long` / `test_tui_subagent_title_from_task_field`
+（Bash / SubAgent 括号摘要）。
+
+**局限**：① 回溯收口未重跑 `tasks.md` 4.1 记的 Windows 8 红（路径分隔符 / `geteuid` /
+`SIGKILL` / sidecar / durability 时间窗，与 0233 无关）；② 旧步骤块 6 个场景整体废止，
+「缩略窗口 / 点正文切换」语义不再由规格承接（`0235` 已删除实现）；③ Task 壳 `REMOVED` 在
+canonical 无对应项，归档仅告警；④ 0233 原始提交无 ADR，本记录为回溯补建，反证未重做；
+⑤ 同一 commit 还含 planner 协议加严与轮末收尾后台化，其中跨 event-loop 取消传播缺陷由
+`0239` / ADR-0223 另行收口。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9121,3 +9167,4 @@ md5 复原）：P1 摘 `maintenance` 事件 ⇒ 3 红；P2 摘 `compaction` 事�
 | ADR-0241 | 02-modules/memory.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0242 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0243 | 02-modules/loop.md, 03-interfaces/observability-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0244 | 04-testing/test-cases.md, coding-plan/known-risk.md |

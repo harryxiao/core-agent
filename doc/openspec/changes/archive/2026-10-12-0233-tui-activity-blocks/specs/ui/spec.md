@@ -1,5 +1,3 @@
-# ui 规格 delta：tui-activity-blocks（0233）
-
 ## MODIFIED Requirements
 
 ### Requirement: 思考过程回显（Think）
@@ -11,7 +9,7 @@
 
 **未开启**思考回显时（`llm.show_thinking` 缺省 `false`）系统 SHALL NOT 产出该事件、三端呈现 SHALL NOT 出现思考块，事件面与既有缺省**逐字一致**。Web / APP 端 SHALL 复用既有 SSE 事件通道呈现（SHALL NOT 新建端点、SHALL NOT 新建第二数据源）；APP 复用与 Web 相同的 SPA 产物。
 
-#### Scenario: TUI 思考缺省收起并可展开
+#### Scenario: TUI 思考折叠回显
 - **GIVEN** 思考回显已开启，且模型逐段返回思考原文
 - **WHEN** TUI 消费 `loop.reasoning` 事件
 - **THEN** 思考文本落入**单个**步骤块，该块缺省为**收起**（正文不可见）；点标题展开后可见全文；同一 `round` 的增量归并到同一块；主回复呈现不受影响
@@ -30,6 +28,20 @@
 - **GIVEN** 思考回显未开启（缺省），且模型响应携思考原文
 - **WHEN** 一轮对话在三端任一端结束
 - **THEN** 事件面**不产** `loop.reasoning`，三端呈现中**不出现**思考块，输出与既有缺省**逐字一致**
+
+## REMOVED Requirements
+
+### Requirement: TUI 步骤块（缩略 / 全文 / 收起）
+
+~~旧三态步骤块（缩略 / 全文 / 收起）~~ — **由本 change 替换**：缺省形态改为「收起」，标题口径改为无装饰符号的友好名，手势改为只点标题切换（见 ADDED「TUI 步骤块（活动块）」）。
+
+### Requirement: TUI 回合活动组（Task 壳）
+
+~~外层 `Task(<用户输入摘要>)` 折叠壳~~ — **已撤回**（产品反馈：多一层点击不友好）。
+
+TUI 时间线改回**扁平**呈现：`Thinking…` / 工具步骤块（Read/Bash/…）直接挂时间线；主回复正文正常流式/终态显示；后续若再有思考，继续以 `Thinking…` 同形态追加。SHALL NOT 再建外层 Task 壳。
+
+## ADDED Requirements
 
 ### Requirement: TUI 步骤块（活动块：收起 / 展开 / 友好标题）
 
@@ -90,11 +102,3 @@ TUI 的**思考块**与**工具动作块**（及编排规划呈现）SHALL 统�
 - **GIVEN** 思考回显已开启，同一 `round` 模型逐段返回思考原文
 - **WHEN** TUI 逐条消费 `loop.reasoning` 事件
 - **THEN** 增量追加到该 round 的**同一个**收起步骤块（不逐段新建块）
-
-## REMOVED Requirements
-
-### Requirement: TUI 回合活动组（Task 壳）
-
-~~外层 `Task(<用户输入摘要>)` 折叠壳~~ — **已撤回**（产品反馈：多一层点击不友好）。
-
-TUI 时间线改回**扁平**呈现：`Thinking…` / 工具步骤块（Read/Bash/…）直接挂时间线；主回复正文正常流式/终态显示；后续若再有思考，继续以 `Thinking…` 同形态追加。SHALL NOT 再建外层 Task 壳。

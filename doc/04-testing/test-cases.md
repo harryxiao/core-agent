@@ -3765,3 +3765,36 @@ L2 只增不减（`FileBackend` 整份加载 + 线性扫描 ⇒ 内存与检索�
 > 四门禁全绿。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0243 行（只记时间 / 末尾发出 / 无聚合 /
 > steps 键契约 / 线程内计时）。
+
+## 166. TUI 活动块（TC-TUIACT，change `0233`／ADR-0244，台账 E190）
+
+**根因**：change `0233` 的代码与测试已于 `7357a11`（2026-10-12）落地，但 spec delta 与 canonical
+不一致（Think 场景名漏抄 + 步骤块以 `MODIFIED` 替换时标题不匹配），归档被拒、`validate --all`
+长期红灯。2026-10-17 回溯收口：delta 改为「Think MODIFIED（沿用场景名 `TUI 思考折叠回显`）+
+旧步骤块 REMOVED + 新步骤块 ADDED」，归档后 canonical 22 req / 93 → 95 scen；**零 `src/`、零新增测试**，
+本条只做既有测试与规格语义的对照锚定（全部在 `tests/test_repl.py`）。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-TUIACT-01 | **活动块缺省收起**（承重） | 一次长输出工具调用 | 块 `collapsed is True`，正文不可见（`test_tui_step_block_expand_shows_full_text`） |
+| TC-TUIACT-02 | **点标题展开/收起**（承重） | 同上，点击 `CollapsibleTitle` 两次 | 展开即全文；再点回到收起（`test_tui_step_block_title_toggles_collapse`） |
+| TC-TUIACT-03 | **友好标题**（承重） | `code_run` 带 `script` | 时间线文本含 `Shell(echo hi) · 12ms`，不含 `⏺` / `tools.code_run` / 原始 `{'script'`（`test_tui_step_block_shows_target_but_not_raw_args`） |
+| TC-TUIACT-04 | 长参数节选 | script 超 `_MAX_ACTION_EXCERPT` | 标题仍以 `Bash(echo ` 开头并以 `…` 收尾，不因整包截断变空壳（`test_tui_bash_title_keeps_script_when_args_long`） |
+| TC-TUIACT-05 | SubAgent 标题 | `delegate` 带 `task` | 摘要取 `task`，长 task 有界省略（`test_tui_subagent_title_from_task_field`） |
+| TC-TUIACT-06 | **同 round 思考归并**（承重） | 同一 `round` 两条 `loop.reasoning` | 仅 1 块；缺省收起；标题为 `Thinking · …` 不刷原文（`test_tui_thinking_stream_merges_and_updates_in_place`） |
+| TC-TUIACT-07 | 流式期标题 | 两条思考增量 | 标题只含 `Thinking`，不含思考文本（`test_tui_thinking_title_stays_without_content_while_streaming`） |
+| TC-TUIACT-08 | **按 round 分块**（承重） | 两个不同 `round` 各一条 | 两块，均缺省收起（`test_tui_thinking_splits_by_round`） |
+| TC-TUIACT-09 | 落静耗时后缀 | `_thinking_title(False, ms=…)` | `Thinking…` / `Thinking` / `Thinking · 12ms` / `Thinking · 1.5s`（`test_tui_thinking_settle_appends_duration`） |
+| TC-TUIACT-10 | 种类折叠符 | `_step_symbol` | Thinking `✦`、Bash `$`、Read `◇`、WebFetch `◎`、SubAgent `⊕`，五类各异（`test_step_symbols_differ_by_kind`、`test_tui_thinking_and_bash_use_distinct_collapse_symbols`） |
+| TC-TUIACT-11 | 正文折行 | 200 字符单行 | 正文宽 ≤ 时间线宽，不裁切（`test_tui_step_block_body_wraps_wide_line`） |
+| TC-TUIACT-12 | spinner 兜底 | 活动块已出现、未终态 | 全局 spinner 已隐藏（`test_tui_spinner_hides_when_activity_block_appears`） |
+
+> **反证**：本 change 无新增代码，不做摘除式反证；语义对照以 canonical `ui` 规格新增的 7 个
+> 场景（缺省收起 / 点标题切换 / 友好标题 / 有界摘要 / round 归并 / 种类折叠符 / 正文折行）为准。
+> 归档操作本身的反证：在 `/tmp` 副本上先跑 `openspec archive` 再 `diff` canonical —— 与仓内结果逐字相同。
+> 规格：`ui` **MODIFIED** ×1 req（Think，场景名不变、语义更新）+ **REMOVED** ×2 req（旧三态步骤块、
+> Task 壳）+ **ADDED** ×1 req（活动块 7 场景）；canonical 22 req 不变 / 93 → 95 scen（+2）。
+> 测试净 **0**（代码与测试已于 `7357a11` 落地；`tests/test_repl.py` 89 passed，全量 2813 passed）。
+> `openspec validate --all` **31 passed / 0 failed**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0244 行（Task 壳 REMOVED 警告 / 未回填旧五场景 /
+> 友好标题依赖 `_args_excerpt` 节选 / 展开状态不持久 / 仅 TUI 面）。

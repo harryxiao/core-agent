@@ -21,5 +21,8 @@
 ## 4. Gates & Archive
 - [x] 4.1 四门禁：`ruff check` / `ruff format --check` / `pyright` / `pytest -q`（相关 + 全量策略按仓规）。
   - ruff/pyright 全绿；pytest 本机 Windows 8 红（`ci_cd` 路径分隔符 / `geteuid` / `SIGKILL` / sidecar / durability 时间窗），与 0233 无关。
-- [ ] 4.2 `openspec validate --all`；归档本 change；台账/ADR 按仓规回填；提交
+- [x] 4.2 `openspec validate --all`；归档本 change；台账/ADR 按仓规回填；提交
       `feat(ui): TUI 活动块 — Thinking 默认收起、友好标题与 Task 壳（change 0233）`。
+  - 2026-10-17 收口：delta 校正为「Think MODIFIED（场景名沿用 `TUI 思考折叠回显`、内容更新为缺省收起）
+    + 旧步骤块 REMOVED + 新步骤块 ADDED」—— 旧的 MODIFIED 标题与 canonical 不一致、且漏抄场景，
+    归档被拒；代码于 `7357a11` 已落地，本次只补规格/归档与台账，不改 `src/`。

@@ -43,6 +43,7 @@ UI 界面与启动模式是 core-agent 面向用户的统一呈现层：CLI / We
 - **GIVEN** 用户在任一模式配置了 LLM API
 - **WHEN** 切换到另一模式
 - **THEN** 该配置生效且无需重复配置
+
 ### Requirement: LLM API 可配置
 系统 SHALL 支持在 Web 与桌面 UI 内配置 LLM provider、endpoint、API key、base URL 与**模型上下文窗口**
 （`context_window`，用于派生 token 预算），并可配置执行循环的预算旋钮（`output_reserve`、
@@ -74,6 +75,7 @@ UI 界面与启动模式是 core-agent 面向用户的统一呈现层：CLI / We
 - **GIVEN** 用户经 UI 保存 `context_window` / `output_reserve` / `max_rounds`
 - **WHEN** 重新加载配置（新进程 / 重新 `load()`）
 - **THEN** 保存的值原样生效（非仅内存态），非法取值不落盘
+
 ### Requirement: CLI 友好交互
 系统 SHALL 在 CLI 模式提供声明式、响应式的终端交互（折叠块、流式输出、多面板、焦点管理），复刻 Claude Code 式 Ink 体验。
 
@@ -156,6 +158,7 @@ CLI SHALL 以**单一真源**维护斜杠命令清单（命令名 / 参数 / 说
 - **GIVEN** 输入框内容为某命令名的**前缀**（如 `/re`）
 - **WHEN** CLI 呈现该输入
 - **THEN** 输入框内联显示剩余字符的**幽灵补全**（与浮层候选**同源**）；按 `→` 采纳该补全
+
 ### Requirement: TUI 子任务运行态与详情
 
 TUI（REPL `/task`）SHALL 逐子任务呈现**标题**与**运行状态**（运行中 / 完成 / 失败 / 续跑跳过），并可展开查看该子任务的**详情**（里程碑事件 / 验收标准 / 判定理由 / 结果节选）。详情数据 SHALL 全部取自既有 `task.*` 事件载荷，SHALL NOT 新建第二数据源。
@@ -183,6 +186,7 @@ TUI（REPL `/task`）SHALL 逐子任务呈现**标题**与**运行状态**（运
 - **GIVEN** 某 `subtask_progress` 事件的子任务标识**没有**对应折叠块（未收到其 `subtask_started`）
 - **WHEN** TUI 处理该事件
 - **THEN** 静默忽略（不新建折叠块、不抛裸异常、不影响其它子任务的详情）
+
 ### Requirement: TUI 子 Agent 焦点视图
 
 TUI（REPL）SHALL 支持**主视图 ⇄ 子任务焦点视图**的切换：`/focus <子任务标识>` SHALL 进入该子任务的焦点视图，`/main` 或 `F2` SHALL 返回主视图。
@@ -222,6 +226,7 @@ TUI（REPL）SHALL 支持**主视图 ⇄ 子任务焦点视图**的切换：`/fo
 - **GIVEN** 已聚焦某子任务且其已产生工具类里程碑
 - **WHEN** 焦点面板呈现里程碑
 - **THEN** 面板文本含**友好名**（如 `Bash`），且**不含**内部 `tool_id` 与工具原始参数
+
 ### Requirement: Web 界面访问
 系统 SHALL 支持以 HTTP 服务 + 单页应用（SPA）形式提供 Web 界面，流式输出通过 SSE 推送。
 后端 SHALL 在 SPA 构建产物存在时将其挂载为站点根，并在**产物缺失时降级为纯 API 模式**（后端照常
@@ -258,6 +263,7 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** SPA 构建产物已挂载为站点根
 - **WHEN** 客户端请求既有 REST 端点（如 `GET /llm-config`）
 - **THEN** 返回该端点的 JSON 响应，不被静态文件兜底吞掉
+
 ### Requirement: 桌面打包
 系统 SHALL 支持将桌面端打包为可执行安装文件（Windows / macOS / Linux），并内置拉起本地后端的能力。
 桌面壳 SHALL 复用与 Web 相同的 SPA 构建产物，且 sidecar 拉起 SHALL 由 `DesktopBridge` 实现
@@ -274,6 +280,7 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** 桌面入口启动
 - **WHEN** 调用 sidecar 拉起
 - **THEN** 以本地后端进程形式 spawn（不经 shell 解释执行、参数逐项传递），失败以结构化错误报告而非静默成功
+
 ### Requirement: Web 与桌面体验一致
 系统 SHALL 使桌面端复用与 Web 相同的 SPA 构建产物，保证二者体验 100% 一致。
 
@@ -281,6 +288,7 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** 同一版本的 Web 与桌面端
 - **WHEN** 打开同一功能页面
 - **THEN** 二者界面与交互完全一致
+
 ### Requirement: 多模态输入
 系统 SHALL 支持图像与语音等多模态输入的接入，并统一路由到具备对应能力的模型处理。
 
@@ -298,6 +306,7 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** 当前配置的模型不具备某模态理解能力
 - **WHEN** 用户提交该模态输入
 - **THEN** 系统明确提示不支持并给出可替换建议，不静默丢弃输入
+
 ### Requirement: 实时语音输出
 系统 SHALL 支持将内核生成的文本回复以流式 TTS 合成语音实时播报，允许用户在播报过程中打断（barge-in），并保留语音与文本会话上下文的双向引用。
 
@@ -315,6 +324,7 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** 会话中既有语音输入又有语音播报
 - **WHEN** 用户后续引用或追问先前内容
 - **THEN** 语音与文本共享同一会话记录可相互引用，必要时保留原始音频引用
+
 ### Requirement: Web Client 分离
 系统 SHALL 支持 Web 前端作为纯静态资源独立托管，与常驻 Harness Host 后端解耦部署：前端经统一后端 API 连接 Host，前端升级不要求后端重启。
 
@@ -327,6 +337,7 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** Web Client 与 Host 后端独立部署
 - **WHEN** 前端发布新版本
 - **THEN** 前端可独立升级，无需重启 Host 后端（后端 API 兼容时）
+
 ### Requirement: 会话注册表持久化与跨入口共享
 统一后端 API 层 SHALL 将对话会话标识登记于**跨进程共享的持久注册表**（落 `$CORE_STATE_DIR` 下 JSON 快照），使 CLI / Web / Desktop 三种入口（含各自独立进程）对会话标识的**创建与校验共享同一事实来源**。注册表 SHALL 采用**读透 + 写时合并**语义：校验（`exists`）与枚举（`list`）每次读回磁盘，创建（`create`）先读回磁盘再合并写回 —— 以支持「长驻 `serve` 进程看到另一进程（CLI）新建的会话」；创建 SHALL 以**进程内互斥**保护，使**同进程多线程**并发创建不相互覆盖。**跨进程**同刻并发创建 SHALL NOT 被声称受保护（进程内互斥不跨进程，属已知局限，不得据此断言跨进程安全）。
 
@@ -350,6 +361,7 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** 一个未登记于注册表的 `session_id`
 - **WHEN** 经后端 API 发起会话操作
 - **THEN** 返回 `UI_SESSION_NOT_FOUND`（fail-closed，不放宽既有校验）
+
 ### Requirement: 会话转录的读取面
 
 后端 API 层 SHALL 提供会话转录的读取面：HTTP `GET /session/{session_id}/messages` 返回该会话的
@@ -386,6 +398,7 @@ SHALL 以**文本追加**方式呈现（首帧新建、其后原地追加，终�
 - **GIVEN** 未注入转录存储
 - **WHEN** 经 HTTP `GET /sessions` 枚举
 - **THEN** 条目保持既有形状（标识 + 模式 + 创建时间），不新增派生字段
+
 ### Requirement: Web 会话列表与切换
 
 Web SPA SHALL 呈现**会话列表**（数据取自 `GET /sessions`），条目 SHALL 展示该会话的**派生标题**
@@ -414,6 +427,7 @@ SPA SHALL 提供**显式**新建会话入口。未选中会话时 SHALL NOT 以�
 - **GIVEN** 用户打开 Web 界面且尚未选中任何会话
 - **WHEN** 未新建会话即发送消息
 - **THEN** 提示先新建或选择会话（不隐式创建会话）；点击「新建会话」后列表出现该新会话并可开始对话
+
 ### Requirement: 任务编排的 HTTP 面与 Web 任务区
 
 统一后端 API 层 SHALL 经 HTTP `POST /task`（请求含会话标识与目标）以 **SSE** 流式返回编排任务的
@@ -467,17 +481,25 @@ SHALL NOT 为此新建第二数据源。
 - **GIVEN** 一个在途任务
 - **WHEN** 该任务收尾（`task_finished` / `task_failed`）
 - **THEN** 该任务移出任务区的在途列表（任务区回落），且**不**出现在会话列表中
-### Requirement: 思考过程回显（Think）
-系统 SHALL 在**三端**（TUI / Web / APP）以**折叠块**呈现模型的思考原文（`loop.reasoning` 事件），用户可展开查看全文；同一轮的思考增量 SHALL **归并到同一个折叠块**（增量更新，SHALL NOT 逐段新建块）。思考原文 SHALL ONLY 经该事件面呈现，SHALL NOT 写入转录 / 记忆 / 日志 / trace 遥测（思考回显是**纯呈现层**）。
 
-折叠的**缺省形态**分端：**TUI** SHALL 缺省呈现为**步骤块的缩略态**（正文可见、只呈现**末尾有界行数**，超出部分折叠），其标题口径、三态与手势 SHALL 遵循「TUI 步骤块（缩略 / 全文 / 收起）」Requirement（SHALL NOT 在本条内另立一份口径）；**Web / APP** SHALL 缺省**收起**（承既有形态，逐字不变）。
+### Requirement: 思考过程回显（Think）
+系统 SHALL 在**三端**（TUI / Web / APP）以**折叠块**呈现模型的思考原文（`loop.reasoning` 事件），用户可展开查看全文；**同一 ReAct 步**（同一 `round`）的思考增量 SHALL **归并到同一个折叠块**（增量更新，SHALL NOT 逐段新建块）；**不同步** SHALL 使用**不同**折叠块。思考原文 SHALL ONLY 经该事件面呈现，SHALL NOT 写入转录 / 记忆 / 日志 / trace 遥测（思考回显是**纯呈现层**）。
+
+`loop.reasoning` 事件载荷 SHALL 携带思考文本，并 SHALL 携带步标识 `round`（非负整数，与同轮 `action_started.round` 对齐）；若某路径暂时无法提供 `round`，TUI SHALL 降级归并到当前未完成步（或新建一步内块），SHALL NOT 丢弃增量。
+
+折叠的**缺省形态**分端：**TUI** SHALL 缺省**收起**（正文隐藏，仅标题可见；标题 SHALL 为 `Thinking`，进行中 MAY 为 `Thinking…`；**SHALL NOT** 把思考原文刷进标题行），用户点标题 SHALL 可展开查看全文；其标题口径与手势 SHALL 遵循「TUI 步骤块」Requirement（SHALL NOT 在本条内另立冲突口径）；**Web / APP** SHALL 缺省**收起**（承既有形态，逐字不变）。
 
 **未开启**思考回显时（`llm.show_thinking` 缺省 `false`）系统 SHALL NOT 产出该事件、三端呈现 SHALL NOT 出现思考块，事件面与既有缺省**逐字一致**。Web / APP 端 SHALL 复用既有 SSE 事件通道呈现（SHALL NOT 新建端点、SHALL NOT 新建第二数据源）；APP 复用与 Web 相同的 SPA 产物。
 
 #### Scenario: TUI 思考折叠回显
 - **GIVEN** 思考回显已开启，且模型逐段返回思考原文
 - **WHEN** TUI 消费 `loop.reasoning` 事件
-- **THEN** 思考文本落入**单个**步骤块（缺省为**缩略态**：正文可见、只呈现末尾有界行数），随增量**实时**持续更新且可展开查看全文；同一轮的主回复呈现（流式增量与终态收口）**不受影响**
+- **THEN** 思考文本落入**单个**步骤块，该块缺省为**收起**（正文不可见）；点标题展开后可见全文；同一 `round` 的增量归并到同一块；主回复呈现不受影响
+
+#### Scenario: 不同 ReAct 步使用不同思考块
+- **GIVEN** 思考回显已开启，且连续两个工具步均产生思考原文（`round` 分别为 n 与 n+1）
+- **WHEN** TUI 消费对应 `loop.reasoning` 事件
+- **THEN** 时间线上出现**两个** Thinking 步骤块（各缺省收起），分别归并各自 round 的增量
 
 #### Scenario: Web 思考折叠回显
 - **GIVEN** 思考回显已开启，Web 会话正在流式产出思考原文
@@ -488,6 +510,7 @@ SHALL NOT 为此新建第二数据源。
 - **GIVEN** 思考回显未开启（缺省），且模型响应携思考原文
 - **WHEN** 一轮对话在三端任一端结束
 - **THEN** 事件面**不产** `loop.reasoning`，三端呈现中**不出现**思考块，输出与既有缺省**逐字一致**
+
 ### Requirement: TUI 会话切换（`/resume`）
 
 TUI SHALL 提供 `/resume <会话标识>` 斜杠命令，把交互会话**切换到既有会话**并**还原其内容**：时间线
@@ -527,6 +550,7 @@ SHALL 被清空并以目标会话的既有转录**重新铺入**（agent 回复 
 - **GIVEN** 一轮执行**尚未结束**（忙碌）
 - **WHEN** 用户提交 `/resume <已登记标识>`
 - **THEN** 拒绝切换（提示处理中）、当前会话与时间线**逐字不变**
+
 ### Requirement: 可选 Web 依赖测试守卫
 Web 能力的测试文件（如 `tests/test_serve.py`）对可选依赖（fastapi/starlette 等）的模块级导入 MUST 位于 `pytest.importorskip` 守卫之后；守卫 SHALL 作为文件首个导入动作执行。在未安装 Web 可选依赖的环境中，测试文件 SHALL 整体优雅 skip，不产生 collection error。
 
@@ -544,6 +568,7 @@ Web 能力的测试文件（如 `tests/test_serve.py`）对可选依赖（fastap
 - **GIVEN** 后续向 Web 测试文件新增可选依赖的模块级导入
 - **WHEN** 审查该导入位置
 - **THEN** 该导入位于 `importorskip` 守卫之后（可带 `# noqa: E402`），不得先于守卫裸导入
+
 ### Requirement: TUI 只读诊断命令
 
 TUI SHALL 提供一组**只读**斜杠命令（`/doctor` / `/status` / `/sessions` / `/config` / `/mcp` / `/skill` /
@@ -601,54 +626,7 @@ SHALL NOT 写转录 / 记忆 / 笔记、SHALL NOT 改动呈现态（会话标识
 - **GIVEN** TUI 就绪
 - **WHEN** 用户提交 `/doctor 额外参数` 或 `/zzz`
 - **THEN** 前者 ONLY 提示（不执行、不改动呈现态）；后者仍作为普通消息进入对话（既有行为不变）
-### Requirement: TUI 步骤块（缩略 / 全文 / 收起）
 
-TUI 的**思考块**与**工具动作块** SHALL 统一为**步骤块**，其缺省形态为**缩略**（不是收起）：正文**可见**，但只呈现**末尾有界行数**（`N` 行），未呈现的部分以一行提示给出**剩余行数**。这样「Agent 正在干什么」在缺省视图下即可见（逐行滚动的原始执行信息），又不会让一则长输出淹没时间线。
-
-**标题**：工具动作块的标题 SHALL 为工具的**友好名** + **有界目标摘要**（如 `⏺ Read  src/core/ui/repl.py`）。目标摘要 SHALL ONLY 取自**白名单的**结构性字段（`path` / `url` / `script` / `gate` / `pointer`），SHALL 为**单行**且有**有界长度**（超长以省略号收尾）；SHALL NOT 呈现**完整原始参数** —— 正文类参数（`content` / `old_content` / `new_content` 等）与内部 `tool_id` SHALL NOT 出现在标题中。目标摘要 SHALL 取自**既有**动作事件载荷（SHALL NOT 新建第二数据源）；取不到目标时标题 SHALL 只呈现友好名（不落占位、不谎报）。
-
-**三态与手势**：
-
-- **缩略态**（缺省）：正文 = **末尾有界行数** + 剩余行数提示；
-- **全文态**：正文 = 全量；
-- **收起态**：正文隐藏（仅标题可见）。
-
-点**正文** SHALL 在**缩略 ⇄ 全文**之间切换；点**标题** SHALL 在**收起 ⇄ 展开**之间切换。无剩余行（正文未超有界行数）时 SHALL NOT 渲染展开入口（避免「点了没变化」）。
-
-**折行**：步骤块正文 SHALL 以**确定宽度**呈现，超出面板宽度的行 SHALL **折行**完整可见（SHALL NOT 因宽度自适应而被裁掉）。
-
-本条 SHALL NOT 覆盖**子任务折叠块**与**子 Agent 焦点视图**（后者另有 Requirement）：二者的既有口径逐字不变。缩略窗口 SHALL 恒跟随最新（SHALL NOT 因用户手动上滚而冻结）。
-
-#### Scenario: 缩略窗口与剩余行数提示
-- **GIVEN** 某步骤块正文超过有界行数（如工具输出 20 行）
-- **WHEN** TUI 渲染该步骤块（未经用户展开）
-- **THEN** 正文只呈现**末尾**有界行数，并有一行提示给出**未呈现的行数**与展开入口
-
-#### Scenario: 点正文展开全文并回缩
-- **GIVEN** 某步骤块处于**缩略态**且正文尚有未呈现的行
-- **WHEN** 用户点击该块**正文**
-- **THEN** 正文改为**全文**（未呈现的行一并呈现）；**再次**点击正文 ⇒ 回到**缩略态**（末尾有界行数）
-
-#### Scenario: 点标题收起与展开
-- **GIVEN** 某步骤块已展开（缩略态或全文态）
-- **WHEN** 用户点击其**标题**
-- **THEN** 该块**收起**（正文隐藏、仅标题可见）；**再次**点击标题 ⇒ 回到展开（缺省为缩略态）
-
-#### Scenario: 标题带目标且不含正文参数
-- **GIVEN** 一次工具动作的载荷含参数（如 `file_read` 的 `path`、`code_run` 的 `script`，或 `file_write` 的 `content`）
-- **WHEN** TUI 渲染该动作的步骤块标题
-- **THEN** 标题含**友好名**与该工具的**目标摘要**（白名单结构性字段；单行、有界长度）
-- **AND** 标题**不含**完整原始参数 —— 内部 `tool_id`（`tools.*`）与 `content` / `old_content` / `new_content` 等正文参数均不出现
-
-#### Scenario: 超宽正文折行而非裁切
-- **GIVEN** 步骤块正文含**远超面板宽度**的单行（长路径 / 长命令 / 长 JSON）
-- **WHEN** TUI 渲染该正文
-- **THEN** 该行按面板宽度**折行**完整呈现，SHALL NOT 把超宽部分裁掉
-
-#### Scenario: 思考增量实时追加且同轮归并同一块
-- **GIVEN** 思考回显已开启，同一轮模型逐段返回思考原文
-- **WHEN** TUI 逐条消费 `loop.reasoning` 事件
-- **THEN** 增量**追加**到该轮的**同一个**步骤块（不逐段新建块），且随增量**实时**刷新（缩略态下亦即时反映最新末尾行）
 ### Requirement: TUI 折叠呈现未能解析的模型原始输出
 
 单轮以**推理产出不可解析**收尾（该轮 `LoopResult.failed` 为真且携带非空 `raw_output`）时，TUI
@@ -669,6 +647,7 @@ TUI SHALL NOT 新增任何块 —— 事件面与既有行为逐字一致。
 - **GIVEN** 一轮正常收尾（`LoopResult.raw_output` 为空）
 - **WHEN** TUI 消费该轮事件
 - **THEN** SHALL NOT 呈现该折叠块（时间线与既有行为逐字一致）
+
 ### Requirement: code_run 活动标题按方言命名
 
 系统 SHALL 在 TUI（或等价活动流）呈现 tools.code_run 时，按本次调用的有效 type 选用
@@ -699,3 +678,63 @@ TUI SHALL NOT 新增任何块 —— 事件面与既有行为逐字一致。
 - **WHEN** 注入的平台缺省为 powershell 或 bash
 - **THEN** 标题分别显示 PowerShell 或 Bash；平台事实不可得时显示中性 `Shell`，
   SHALL NOT 显示为 Bash
+
+### Requirement: TUI 步骤块（活动块：收起 / 展开 / 友好标题）
+
+TUI 的**思考块**与**工具动作块**（及编排规划呈现）SHALL 统一为**步骤块（活动块）**，其缺省形态为**收起**（正文隐藏，仅标题可见）。展开后正文 SHALL **灰显**呈现，超出面板宽度的行 SHALL **折行**完整可见（SHALL NOT 因宽度自适应而被裁掉）。
+
+**标题（无装饰符号）**：步骤块标题 SHALL NOT 以 `⏺` / `▸` / `└` 等作为主标识。工具动作标题 SHALL 使用下列**友好名**与有界摘要（摘要取自白名单结构性字段，单行、超长省略；正文类参数与内部 `tool_id` SHALL NOT 出现在标题中）：
+
+| 来源 | 标题形式 |
+|---|---|
+| `tools.file_read` | `Read(<path>)` |
+| `tools.file_write` | `Write(<path>)` |
+| `tools.file_patch` | `Edit(<path>)` |
+| `tools.file_delete`（若工具存在） | `Delete(<path>)` |
+| `tools.code_run` | `Bash(<script 首行摘要>)` |
+| `tools.delegate` | `SubAgent(<task 摘要>)` |
+| 编排规划呈现（如 `plan_ready`） | `Planner(<goal 或波次摘要>)` |
+| `loop.reasoning` | `Thinking`（进行中 MAY 为 `Thinking…`；SHALL NOT 附思考原文） |
+
+取不到摘要时标题 SHALL 分别为 `Read` / `Write` / `Edit` / `Delete` / `Bash()` / `SubAgent()` / `Planner()` / `Thinking`（不落占位路径、不谎报）。完成态 MAY 在标题追加短后缀（如耗时或失败标记），SHALL NOT 因此恢复 `⏺` 前缀。
+
+**动态标题**：工具步骤块（如 Bash）处于收起且进行中时，TUI SHALL 允许以有界合帧刷新**结构性**标题摘要；**Thinking** 标题 SHALL NOT 随思考增量逐字刷新（避免同行原文闪烁），增量只写入块正文缓冲，收起时正文保持隐藏直至用户展开。
+
+**手势**：点**标题** SHALL 在**收起 ⇄ 展开**之间切换。展开后若实现「末尾有界行预览 ⇄ 全文」，点**正文** MAY 切换该预览；无剩余行时 SHALL NOT 渲染无效展开入口。
+
+本条 SHALL NOT 覆盖**子任务折叠块**与**子 Agent 焦点视图**的布局切换语义（后者另有 Requirement）；子任务内里程碑行若呈现工具动作，SHALL 复用本条友好标题口径。本条不要求实现 `tools.file_delete` 工具本体——仅在该工具存在时映射为 `Delete(...)`。
+
+#### Scenario: 缺省收起且标题无圆点符号
+- **GIVEN** 一次工具动作（如 `tools.file_read`）开始
+- **WHEN** TUI 渲染该动作的步骤块
+- **THEN** 该块缺省**收起**；标题匹配 `Read(...)`（或无 path 时为 `Read`），且**不含** `⏺`
+
+#### Scenario: Bash 与 SubAgent 括号摘要
+- **GIVEN** `tools.code_run` 的 script 首行与 `tools.delegate` 的 task 摘要均非空
+- **WHEN** TUI 渲染对应步骤块标题
+- **THEN** 标题分别为 `Bash(<首行摘要>)` 与 `SubAgent(<task 摘要>)`（摘要单行、有界）
+
+#### Scenario: Planner 规划呈现
+- **GIVEN** 编排产生 `plan_ready`（或等价规划事件）
+- **WHEN** TUI 呈现该规划
+- **THEN** 标题为 `Planner(...)` 形式（可含 goal/波次有界摘要），缺省收起或单行活动标题，SHALL NOT 使用 `⏺`
+
+#### Scenario: 展开后灰显折行
+- **GIVEN** 某工具步骤块已展开，正文含远超面板宽度的单行
+- **WHEN** TUI 渲染该正文
+- **THEN** 正文以灰显样式呈现，且该行按面板宽度**折行**完整可见
+
+#### Scenario: 工具收起态标题动态刷新
+- **GIVEN** Bash（或同类工具）步骤块处于收起且仍在接收增量
+- **WHEN** TUI 合帧刷新
+- **THEN** 标题摘要更新为反映最新结构性增量的有界单行，正文保持隐藏直至用户展开
+
+#### Scenario: Thinking 标题不刷原文
+- **GIVEN** Thinking 步骤块处于收起且仍在接收思考增量
+- **WHEN** TUI 逐条消费 `loop.reasoning`
+- **THEN** 标题保持为 `Thinking` 或 `Thinking…`（不含思考原文片段）；增量写入块正文缓冲且收起时不可见；点标题展开后可见全文
+
+#### Scenario: 思考增量同 round 归并
+- **GIVEN** 思考回显已开启，同一 `round` 模型逐段返回思考原文
+- **WHEN** TUI 逐条消费 `loop.reasoning` 事件
+- **THEN** 增量追加到该 round 的**同一个**收起步骤块（不逐段新建块）
