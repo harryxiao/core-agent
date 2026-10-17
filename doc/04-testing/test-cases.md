@@ -3250,3 +3250,35 @@ textual 的竞态**（上游 [#6643](https://github.com/Textualize/textual/issue
 > 遗留、非本 change）；**规格中性**（`skip_specs`，零 spec delta）。**已知局限**：见
 > `coding-plan/known-risk.md` §3 ADR-0222 行（按异常类型收口 / MouseMove·MouseUp 同边覆盖 /
 > 上游修复后自然空转 / 承重锚模拟崩溃形态非真竞态时序）。
+
+## 146. 并行批次五红收口：post-turn 跨 loop 取消传播 ＋ benchmark 桩适配 0236 内容门（TC-PTCL / TC-BENCH，change `0239`／ADR-0223，台账 E170）
+
+**背景**：change `0238` 收口时全量 pytest 余 **5 个行为性红**（`git stash` 于干净 HEAD 原样复现
+⇒ 均为并行批次回归）。**组一 ×3（`CancelledError`，生产真缺陷）**：7357a11（change `0233`）把
+轮末收尾改为实例属性后台 task（`_post_turn_task`），`astream` 消费方在 `loop_finished` 后不等
+收尾 ⇒ task 残留；同一 loop 实例的**下一次**调用在新 event loop（`run()` 同步入口 /
+`TaskScheduler.run` / 测试驱动每次 `asyncio.run`）上 `await` 已被旧 loop 关闭清理 cancel 的
+task ⇒ `CancelledError` 重放、杀死整轮。**组二 ×2（测试桩漂移）**：0236 装配空壳 fail-closed
+门（`require_skill_content=True`）＋ `skill_content_writer_with(_llm_text)`，0212 时代 benchmark
+桩对所有请求回 `"PASS"` ⇒ 蒸馏 `json.loads` 失败 ⇒ writer 回 `None` ⇒ 门 fail-fast ⇒ `eval=None`。
+闭法：`_await_post_turn` 以 `task.cancelled()` 分野（宿主取消旧 task ⇒ 吞、放行新一轮；当前
+协程被取消 ⇒ 传播）；桩按 prompt 头「技能内容蒸馏器」分派合法 `SkillContent` JSON。
+**零新增用例** —— 既有五红即承重锚（红 → 绿即锚定）。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-PTCL-01 | 跨 loop 取消不杀新轮（承重） | 同一 `DefaultLoop` 实例两次 `asyncio.run`（第二次遗留 post-turn task 于旧 loop 被 cancel） | 第二轮**不被 `CancelledError` 杀死**，正常出结果（`tests/test_history_persistence.py::test_second_turn_makes_history_grow`） |
+| TC-PTCL-02 | 长任务端到端跨 `asyncio.run` | `test_longtask_e2e` 全链路（scheduler → 子 loop → 压实产物入下轮） | 端到端绿：压实产物达下轮 system prompt（`tests/test_longtask_e2e.py::test_compaction_product_reaches_next_turn_system_prompt`） |
+| TC-PTCL-03 | 编排 astream 失败可见性 | `test_orchestration` 桩失败轮 | 失败可见（不因收尾 task 取消重放而提前炸）（`tests/test_orchestration.py::test_scheduler_astream_failure_visible`） |
+| TC-BENCH-11 | 桩蒸馏分派（承重） | 桩 `acompletion` 收到含「技能内容蒸馏器」头的 prompt | 回合法 `SkillContent` JSON（`task_types` 非空 + `instructions` 非空 + `param_schema` dict）⇒ 过 0236 空壳门 ⇒ `eval` 非 `None`（`tests/test_benchmark_runner.py::test_gate_off_still_freezes_despite_registered_benchmark`） |
+| TC-BENCH-12 | 门开启产留出分 | 注册基准 + 门开 | 候选带合法 content 走完评测 ⇒ `frozen`/留出分断言成立（`...::test_gate_on_produces_held_out_score`） |
+
+> **反证（实测）**：摘 `_await_post_turn` 的 `task.cancelled()` 分野 ⇒ **3 红**（TC-PTCL-01~03）；
+> 摘桩分派（content 恒 `"PASS"`）⇒ **2 红**（TC-BENCH-11~12）；同时摘 ⇒ **5 红**；复原 ⇒ 两文件
+> `md5sum` 逐字节同（`0bcdb5a7…` / `cd6c4f3d…`）⇒ 63 passed。绿后全量 `.venv/bin/pytest -q` ⇒
+> **2655 passed，0 失败**（2650 → 2655，**零新增用例**；并行批次提交后仓库**首次全绿**）；
+> 四门禁：`ruff check` ✓ / `ruff format --check` ✓ / `pyright`（**无参**，0-0-0）✓ / `pytest` ✓；
+> 归档后 `openspec validate --all` 31 passed（2 failed 为并行 open change `0230`/`0233` 遗留、
+> 非本 change）；**规格中性**（`skip_specs`，零 spec delta）。**已知局限**：见
+> `coding-plan/known-risk.md` §3 ADR-0223 行（极窄窗口误吞打断 / 残留 task 不主动清扫 /
+> 桩分派随 `_PROMPT_HEAD` 措辞漂移 / 0233 归档欠账不在范围）。

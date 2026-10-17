@@ -46,6 +46,10 @@ _LLM_SECTION = (
 )
 _TARGET = "memory.retrieve"
 _REPLY = "PASS"
+# 合法技能内容（0236 门判据：task_types 非空 + instructions 非空 + param_schema 为 dict）
+_SKILL_CONTENT_JSON = json.dumps(
+    {"task_types": ["module_health"], "instructions": "失败先查模块健康。", "param_schema": {}}
+)
 _BASELINE = 0.7
 
 
@@ -68,8 +72,13 @@ class _StubProvider(LLMProvider):
     def __init__(self, **_kwargs: Any) -> None: ...
 
     async def acompletion(self, request: LLMRequest) -> LLMResponse:
+        # 0236 后冷路径多一类模型请求：技能内容蒸馏（prompt 头含「技能内容蒸馏器」）。
+        # 桩按 prompt 分派 —— 该请求回合法 SkillContent JSON，其余照旧回 `_REPLY`
+        # （PASS）。不分派则 writer `json.loads("PASS")` 失败 ⇒ 空壳门拒 ⇒ eval 恒 None。
+        prompt = "".join(getattr(m, "content", "") for m in request.messages)
+        content = _SKILL_CONTENT_JSON if "技能内容蒸馏器" in prompt else _REPLY
         return LLMResponse(
-            content=_REPLY,
+            content=content,
             usage=TokenUsage(prompt_tokens=1, completion_tokens=1),
             finish_reason="stop",
             provider="stub",

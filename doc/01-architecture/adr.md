@@ -7907,6 +7907,48 @@ AttributeError: 'NoneType' object has no attribute 'region'`（`screen.py:1914`�
 ③ 上游修复落地后守卫自然空转（不冲突、不必拆）；④ 承重锚模拟的是**崩溃形态**
 （`parent=None` + offset 非空）而非 compositor 真竞态时序（真竞态无法确定性构造）。
 
+## ADR-0223：post-turn 后台收尾的跨 event-loop 取消传播收口 ＋ benchmark 桩适配 0236 内容门（change 0239 / 台账 E170）
+
+**背景**：change `0238` 收口时全量 pytest 余 **5 个行为性红**（`git stash` 于干净 HEAD 原样
+复现 ⇒ 并行批次回归，非 0238 所致）：组一 ×3 `CancelledError`（`test_history_persistence` /
+`test_longtask_e2e` / `test_orchestration`）；组二 ×2 空壳门拒（`test_benchmark_runner`）。
+
+**根因**：**组一（生产真缺陷）** —— 7357a11（change 0233）把轮末收尾（`_notify_turn`/
+`_maintain`）改为实例属性上的后台 task（`_post_turn_task`，`create_task` 于当轮 loop）；
+`astream` 消费方（scheduler / 事件流）在 `loop_finished` 后**不等**收尾 ⇒ task 残留。下一次
+调用若在**新 event loop**（`run()` 同步入口 / `TaskScheduler.run` / 测试驱动每次 `asyncio.run`
+新建 loop），旧 loop 关闭清理已 cancel 残留 task ⇒ 新轮 `_await_post_turn` 的 `await task`
+在已取消 task 上**重放 `CancelledError`**，杀死整轮。**组二（测试桩漂移）** —— 0236 装配
+`Proposer(writer=skill_content_writer_with(_llm_text))` ＋ `Validator(require_skill_content=True)`
+（空壳 fail-closed），0212 时代的 benchmark 桩对**所有**请求回 `"PASS"` ⇒ 蒸馏 `json.loads`
+失败 ⇒ writer 回 `None` ⇒ 空壳门在 review 前 fail-fast ⇒ `eval=None`。
+
+**决策**：
+
+- **D1 分野判据 = `task.cancelled()`**。`await task` 抛 `CancelledError` 有两种来源：(a) task
+  自身被宿主取消（loop 关闭清理）—— **吞**，放行新一轮（后台收尾尽力而为语义，与
+  ADR-0220/0222「收尾/呈现层瞬时失败不得杀死主流程」同哲学）；(b) 当前协程被取消（用户打断
+  Ctrl+B、上层 gather 级联取消）—— **传播**（取消语义必须保真）。`task.cancelled()` 恰好区分：
+  task 内部取消完成 ⇒ True；外部取消当前协程时 task 仍正常运行 ⇒ False。
+- **D2 不动 `_schedule_post_turn` 挂出时机**。loop 身份比较式的主动清扫引入额外耦合；`await`
+  处分野最小且覆盖实测形态。
+- **D3 组二修桩不修门**。空壳 fail-closed 是 0236 有意规格；桩按 prompt 头「技能内容蒸馏器」
+  分派合法 `SkillContent` JSON。
+- **D4 缺陷修复 ⇒ 无条件生效、不设配置门**（判例 0206/0210/0228/0238）。
+
+**规格**：**规格中性**（`skip_specs`）。loop spec 无「跨 loop 取消传播」面约束（0233 未动 loop
+spec）；组二为测试桩适配 0236 既有规格语义。
+
+**反证（实测）**：摘 D1 分野 ⇒ **3 红**；摘桩分派 ⇒ **2 红**；同时摘 ⇒ **5 红**；复原 ⇒ 两文件
+`md5sum` 逐字节同 ⇒ 63 passed。承重锚 = **既有五测试本身**（红 → 绿即锚定，零新增用例）。
+全量 **2655 passed，0 失败**（2650 → 2655；并行批次提交后仓库**首次全绿**）；四门禁绿。
+
+**局限**：① 「当前协程被取消」与「旧 task 恰好同时被取消」的极窄窗口会把 (b) 误判为 (a)
+（吞掉一次打断；后果限于本轮多推进一步，无数据面影响）；② 跨 loop 残留 task 本体不清扫
+（引用在下次 `_await_post_turn` 的 `finally` 释放）；③ 桩按 prompt 特征子串分派，
+`_PROMPT_HEAD` 措辞变更需同步桩（镜像漂移风险同 ADR-0215 类）；④ 0233 自身的 spec delta
+归档欠账（validate 红）不在本 change 范围。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8124,3 +8166,4 @@ AttributeError: 'NoneType' object has no attribute 'region'`（`screen.py:1914`�
 | ADR-0220 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0221 | 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0222 | 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0223 | 04-testing/test-cases.md, coding-plan/known-risk.md |

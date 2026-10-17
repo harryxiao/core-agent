@@ -648,12 +648,21 @@ class DefaultLoop(Plugin):
         self._post_turn_task = asyncio.get_running_loop().create_task(_run(), name="loop-post-turn")
 
     async def _await_post_turn(self) -> None:
-        """等候上一轮后台收尾收束（无在途 task ⇒ 立即返回）。"""
+        """等候上一轮后台收尾收束（无在途 task ⇒ 立即返回）。
+
+        task 已被宿主取消（承载它的 event loop 关闭清理 —— ``run()`` 同步入口 /
+        测试驱动每次 ``asyncio.run`` 新建 loop，旧轮 task 在旧 loop 上被 cancel）⇒
+        **放行**：后台收尾本是尽力而为语义，取消态不得杀死新一轮。当前协程自身被
+        取消（打断等）仍照常传播 —— 以 ``task.cancelled()`` 区分两者。
+        """
         task = self._post_turn_task
         if task is None:
             return
         try:
             await task
+        except asyncio.CancelledError:
+            if not task.cancelled():
+                raise  # 被取消的是当前协程（本轮被打断/清理）⇒ 照常传播
         finally:
             if self._post_turn_task is task:
                 self._post_turn_task = None
