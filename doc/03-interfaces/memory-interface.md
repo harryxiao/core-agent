@@ -184,14 +184,14 @@ class MemoryEntry:
 检索排序得分 ``rank`` 由**语义/结构**（加性）与**时间/复用/重要度**（乘性）两部分构成：
 
 ```python
-def rank(entry, query, embedder=None) -> float:
+def rank(entry, query, embedder=None, *, stats=None) -> float:
     """rank = relevance(entry, query)          # 语义相似 × 层结构权重（加性）
                 × recency_decay(entry)        # 新鲜度衰减 1/(1 + age/天)
                 × (1 + log(1 + reuse_count))  # 复用频次
                 × (1 + importance)            # 主观重要度
     """
 
-def relevance(entry, query, embedder=None) -> float:
+def relevance(entry, query, embedder=None, *, stats=None) -> float:
     """relevance = w1·sim(entry, query) + w4·layer_priority(entry.layer)
 
     仅含语义与层结构；时间/复用/重要度由 ``rank`` 乘性调制（避免双重计数）。
@@ -200,8 +200,10 @@ def relevance(entry, query, embedder=None) -> float:
 
 默认层优先级：`L0(1.0) > L3(0.8) > L2(0.6) > L1(0.4) > L4(0.2)`。
 
-- ``sim`` 默认**词法相似**（token 重叠，离线可测）；注入 ``embedder`` 则升级为**余弦相似**，
-  embedder 抛错时**降级词法**、检索不中断。
+- ``sim`` 默认**词法相似**（BM25 口径：IDF 加权 + 文档长度归一，离线可测）；注入 ``embedder``
+  则升级为**余弦相似**，embedder 抛错时**降级词法**、检索不中断。``relevance`` / ``rank`` 的
+  ``stats=`` 是内部优化参数：``MemoryStore.read`` 对候选集构建一次 ``LexicalStats``（分词缓存）；
+  缺省 ``None`` ⇒ 原「交集 / 查询词元数」公式，公开调用方零改动。
 - **embedder 契约**：批量可调用 ``(list[str]) -> list[list[float]]``。单条可调用（如 rag
   ``Embedder.embed``）经 ``memory/embedding.py::batch_embed`` 适配；memory **不依赖 rag**。
 - **向量缓存**：``read`` 对 query **至多向量化一次**；条目按 ``content`` 哈希缓存向量，

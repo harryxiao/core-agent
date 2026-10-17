@@ -3712,3 +3712,34 @@ L2 只增不减（`FileBackend` 整份加载 + 线性扫描 ⇒ 内存与检索�
 > 测试净 +13（2783 → **2796**）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0241 行（只在写入后收口 / 仅 L2 /
 > 文件总体量不变 / 非法值静默归一 / 缺省未启用）。
+
+## 164. 缺省词法检索的 IDF 加权与长度归一（TC-MEMLEX，change `0252`／ADR-0242，台账 E188）
+
+**根因**：未配置 `llm.embedding_model` 时（所有缺省部署）记忆检索走词法，原公式
+`|交集| / |查询词元|` 对所有查询词元等权、完全忽略文档长度 ⇒ 常见词稀释罕见词、长文档天然
+占优；且该降级路径无任何启动提示。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-MEMLEX-01 | **IDF 罕见词优先**（承重） | 同层同新鲜度条目，各命中 1 个查询词元 | 罕见词条目得分 > 常见词条目 **2×**（`test_idf_prefers_rare_query_term`） |
+| TC-MEMLEX-02 | 长度归一 | 同词命中，长文档 22 词元 vs 短文档 1 词元 | 短文档得分 > 长文档 **1.2×**（`test_length_normalization_prefers_short_document`） |
+| TC-MEMLEX-03 | CJK 二元组 | 「记忆检索」vs「检索记忆」 | 精确覆盖者 `relevance` 更高（`test_cjk_bigram_exact_overlap_first`） |
+| TC-MEMLEX-04 | **`stats=None` 兼容面**（承重） | 不传 stats 的 `relevance`/`rank` | 与原重叠公式逐字一致（`test_stats_none_keeps_legacy_overlap_formula`） |
+| TC-MEMLEX-05 | **`read` 端到端 IDF**（承重） | 罕见词条目**最后写入** | 结果中罕见词排在常见词前（`test_store_read_uses_idf_stats_end_to_end`） |
+| TC-MEMLEX-06 | embedder 失败降级 | embedder 抛错 | 仍按 IDF 排序，不退回等权重叠（`test_embedder_failure_still_uses_idf_stats`） |
+| TC-MEMLEX-07 | 空查询/空语料 | `""` / 空列表 | `build_lexical_stats` 返回 `None`（`test_stats_default_none_for_empty_query`） |
+| TC-MEMLEX-08 | 原公式无隐式排序 | 同命中数、不同长度 | 不传 stats 时得分相等（`test_relevance_without_stats_ignores_entry_order`） |
+| TC-MEMLEX-09 | 空查询不抛错 | `rank(e, "")` | 沿用原语义（`test_score_importance_path_unchanged`） |
+| TC-MEMLEX-10 | **启动提示**（承重） | 无 `embedding_model` | stderr 含「记忆检索使用词法匹配」（`test_entry.py::test_run_hints_lexical_memory_without_embedding_model`） |
+| TC-MEMLEX-11 | 已配置不提示 | 有 `embedding_model` | stderr 无该提示（`test_run_no_lexical_hint_when_embedding_model_configured`） |
+
+> **反证**：P1 摘 `MemoryStore.read` 的 stats 传递 ⇒ 05/06 红；P2 摘 IDF 乘子 ⇒
+> 01/03/05/06 红；P3 `b=0` ⇒ 02 红；P4 摘 `_build_ui` 提示分支 ⇒ 10 红。初版断言在摘除后
+> 靠 **浮点累加噪声**（~1e-19）仍通过，改为倍数余量后再验红（用例已固化余量）。复原 md5 同：
+> `relevance.py` `d7835f66e5f245a953f54141ae864409`、`store.py`
+> `02c67a06403b0ab2b7db87165a5cd1e0`、`entry.py` `4dc923db798dba552f6bb552d3cd96cb`。
+> 规格：`memory` **MODIFIED** ×1 req / +3 scen（20 req / 144 → 147 scen）。测试净 **+11**
+> （2796 → **2807**）。`entry.py` 插行使 `prompts.md` ⑭ 落点 1681 → 1689，已同步并由
+> `test_prompt_mirror` 守护。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0242 行（二值 tf / 统计随过滤面变化 /
+> 长度按词元数 / 收顶压缩差距 / 提示只覆盖 `llm.embedding_model`）。

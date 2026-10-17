@@ -16,7 +16,8 @@ from __future__ import annotations
 import math
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 
 from .protocol import Layer, MemoryEntry
 
@@ -45,16 +46,58 @@ def tokens(text: str) -> set[str]:
     return out
 
 
+@dataclass(frozen=True)
+class LexicalStats:
+    """一次检索的语料统计（BM25 词法打分用；change 0252 / ADR-0242）。
+
+    ``idf`` 只含查询词元（内存有界于 query 长度）；``doc_tokens`` 缓存候选条目的词元集，
+    让排序阶段不重复分词。``stats`` 只对**构建它的那个 query** 有意义。
+    """
+
+    idf: dict[str, float]
+    avg_len: float
+    doc_tokens: dict[str, frozenset[str]]
+    query_tokens: frozenset[str]
+    k1: float = 1.2
+    b: float = 0.75
+
+
+def build_lexical_stats(entries: Iterable[MemoryEntry], query: str) -> LexicalStats | None:
+    """对候选集做一次分词与文档频率统计；空查询 / 空语料 ⇒ ``None``（走原重叠公式）。"""
+    query_tokens = frozenset(tokens(query))
+    if not query_tokens:
+        return None
+    doc_tokens = {entry.id: frozenset(tokens(entry.content)) for entry in entries}
+    if not doc_tokens:
+        return None
+    total = len(doc_tokens)
+    idf = {
+        token: math.log(1.0 + (total - count + 0.5) / (count + 0.5))
+        for token in query_tokens
+        for count in [sum(1 for doc in doc_tokens.values() if token in doc)]
+    }
+    avg_len = max(1.0, sum(len(doc) for doc in doc_tokens.values()) / total)
+    return LexicalStats(
+        idf=idf,
+        avg_len=avg_len,
+        doc_tokens=doc_tokens,
+        query_tokens=query_tokens,
+    )
+
+
 def relevance(
     entry: MemoryEntry,
     query: str,
     embedder: Callable[[list[str]], list[list[float]]] | None = None,
+    *,
+    stats: LexicalStats | None = None,
 ) -> float:
     """**语义相似 × 层结构权重**（加性项；越高越相关）。
 
     时间 / 复用 / 重要度不在此处——由 :func:`rank` 乘性调制，避免与加性项双重计数。
+    ``stats`` 仅用于 embedder 缺省/失败时的词法打分；``None`` ⇒ 原重叠公式（兼容面）。
     """
-    sim = _similarity(entry, query, embedder)
+    sim = _similarity(entry, query, embedder, stats)
     return _W_SIM * sim + _W_LAYER * _LAYER_PRIORITY[entry.layer]
 
 
@@ -70,10 +113,12 @@ def rank(
     entry: MemoryEntry,
     query: str,
     embedder: Callable[[list[str]], list[list[float]]] | None = None,
+    *,
+    stats: LexicalStats | None = None,
 ) -> float:
     """检索排序得分：``relevance · recency_decay · (1 + log1p(reuse)) · (1 + importance)``。"""
     return (
-        relevance(entry, query, embedder)
+        relevance(entry, query, embedder, stats=stats)
         * recency_decay(entry)
         * (1.0 + math.log1p(entry.reuse_count))
         * (1.0 + entry.importance)
@@ -84,6 +129,7 @@ def _similarity(
     entry: MemoryEntry,
     query: str,
     embedder: Callable[[list[str]], list[list[float]]] | None,
+    stats: LexicalStats | None,
 ) -> float:
     if embedder is not None:
         try:
@@ -91,14 +137,33 @@ def _similarity(
             return _cosine(vectors[0], vectors[1])
         except Exception:  # noqa: BLE001 — embedder 失败降级词法
             pass
-    return _lexical_sim(entry, query)
+    return _lexical_sim(entry, query, stats)
 
 
-def _lexical_sim(entry: MemoryEntry, query: str) -> float:
-    query_tokens = tokens(query)
-    if not query_tokens:
+def _lexical_sim(entry: MemoryEntry, query: str, stats: LexicalStats | None = None) -> float:
+    """词法相似度：``stats`` 缺省为原重叠公式，否则 BM25（二值 tf + IDF + 长度归一）。
+
+    BM25 项为 ``idf · (k1+1) / (1 + k1 · (1 - b + b · dl/avgdl))``，按查询 IDF 总和归一
+    （短文档因子可 >1，故收顶 1.0）。罕见词元权重更高、长文档被长度惩罚。
+    """
+    if stats is None:
+        query_tokens = tokens(query)
+        if not query_tokens:
+            return 0.0
+        return len(tokens(entry.content) & query_tokens) / len(query_tokens)
+    doc_tokens = stats.doc_tokens.get(entry.id)
+    if doc_tokens is None:
+        doc_tokens = frozenset(tokens(entry.content))
+    total = sum(stats.idf.values())
+    if total <= 0:
         return 0.0
-    return len(tokens(entry.content) & query_tokens) / len(query_tokens)
+    length_norm = stats.k1 * (1.0 - stats.b + stats.b * len(doc_tokens) / stats.avg_len)
+    score = sum(
+        stats.idf[token] * (stats.k1 + 1.0) / (1.0 + length_norm)
+        for token in stats.query_tokens
+        if token in doc_tokens and token in stats.idf
+    )
+    return min(1.0, score / total)
 
 
 def _cosine(a: list[float], b: list[float]) -> float:

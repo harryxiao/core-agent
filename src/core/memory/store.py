@@ -38,7 +38,7 @@ from .extract import (
     slug_entity,
 )
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
-from .relevance import rank, recency_decay
+from .relevance import build_lexical_stats, rank, recency_decay
 from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter
 
 # 向量缓存上界（超出按 FIFO 逐出）；进程内易失，不落盘
@@ -344,9 +344,12 @@ class MemoryStore:
                 if entry.session_id in ("", session_id)
             }
         embedder = self._memo_embedder() if self._embedder is not None else None
+        # 词法语料统计（change 0252 / ADR-0242）：候选集只分词一次，排序阶段查缓存；
+        # embedder 失败降级时同样带 IDF/长度归一。
+        stats = build_lexical_stats(candidates.values(), query)
         ranked = sorted(
             candidates.values(),
-            key=lambda e: rank(e, query, embedder),
+            key=lambda e: rank(e, query, embedder, stats=stats),
             reverse=True,
         )
         selected = self._truncate(ranked, budget)

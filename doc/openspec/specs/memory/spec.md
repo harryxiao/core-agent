@@ -29,12 +29,19 @@
 - **THEN** 按热度路由到 L2/L3/L4 取详情，而非全库扫描
 
 ### Requirement: 温度分层检索
+
 系统 SHALL 提供**热/冷两档**检索，热数据常驻内存，冷数据按需加载；检索结果 SHALL 按
 **多因子得分**排序——语义相似 × 层结构权重（加性）再经 新鲜度衰减、复用频次
 （`1 + log1p(reuse_count)`）、主观重要度（`1 + importance`）**乘性调制**；条目 SHALL 携带
 `kind`（episodic / semantic）与 `importance` 元数据，供下沉固化聚合。语义相似 SHALL 经
 **可注入 embedder**（缺省词法、可远端向量化）计算，并对检索 query 与未变条目向量做**缓存**
 （每次检索 query 至多向量化一次）。
+
+**缺省词法相似** SHALL 按**词元 IDF 加权与文档长度归一**（BM25 口径）计算，SHALL NOT 对
+所有查询词元等权、SHALL NOT 忽略文档长度；得分 SHALL 按查询词元的 IDF 总和归一并以 1 为上界
+（与层结构权重同一量纲）。embedder 缺失或调用失败降级词法时 SHALL 使用同一 IDF/长度归一
+口径。组合根在未配置 `llm.embedding_model` 时 SHALL 在进程启动（CLI 入口）向 stderr 输出一次
+「词法匹配、语义检索未启用」的提示，SHALL NOT 每轮检索重复输出。
 
 命中条目的复用强化 SHALL **落盘持久化**：`reuse_count` 的递增 SHALL 写入持久后端
 （SHALL NOT 只存在于进程内）—— 因该计数经 `1 + log1p(reuse_count)` 与
@@ -83,7 +90,22 @@ SHALL 逐条写回（语义不变）。批量写 SHALL 与逐条写回**同一�
 #### Scenario: embedder 不可用降级词法
 - **GIVEN** 未注入 embedder，或 embedder 调用抛错
 - **WHEN** 检索器计算相似度
-- **THEN** 降级为词法相似，检索不中断
+- **THEN** 降级为 IDF/长度归一化的词法相似（罕见词元权重更高），检索不中断
+
+#### Scenario: 罕见词元优先
+- **GIVEN** 两条同层、同新鲜度、同复用与重要度的条目，各命中查询的一个词元
+- **WHEN** 检索器按词法打分
+- **THEN** 命中语料中**文档频率更低**（IDF 更高）词元的条目排在更前
+
+#### Scenario: 长度归一
+- **GIVEN** 两条条目命中同一查询词元，其一内容显著更长
+- **WHEN** 检索器按词法打分
+- **THEN** 较短（词元长度更接近语料平均）的条目排在更前
+
+#### Scenario: 未配置 embedding 模型时启动提示
+- **GIVEN** `llm.embedding_model` 未配置
+- **WHEN** CLI 入口装配运行时
+- **THEN** stderr 输出一次「记忆检索使用词法匹配（语义检索未启用）」提示；已配置时不输出
 
 #### Scenario: 复用强化批量落盘
 - **GIVEN** 一次检索选中多条条目，且后端提供批量写入口

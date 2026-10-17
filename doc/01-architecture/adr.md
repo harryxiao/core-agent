@@ -8792,6 +8792,55 @@ P1 摘组合根实参 ⇒ 接线 + 端到端 2 红；P2 摘 ConfigSpec ⇒ 三�
 4. 非法取值**静默归一为关闭**（`memory` 段非阻断口径），不产生启动期错误。
 5. **缺省未启用** —— 不设默认上限是运维决策，代价是缺省部署仍无界增长。
 
+## ADR-0242：缺省词法检索的 IDF 加权与长度归一（change 0252 / 台账 E188）
+
+**背景**：未配置 `llm.embedding_model` 时（**所有缺省部署**），记忆检索走词法相似，原公式为
+`|交集| / |查询词元|` —— 所有查询词元等权、完全不看文档长度。后果：常见词把罕见词稀释成
+同等权重；长文档只要多命中一个词元就压过短文档；CJK 二元组下尤为明显。这是检索排序的
+**正确性**问题，不是可选增强。
+
+**决策**：
+
+- **D1 BM25 口径**：`idf(t) = ln(1 + (N - df + 0.5) / (df + 0.5))`，二值词频（tf=1），
+  `k1 = 1.2`、`b = 0.75`；词元得分 `idf · (k1+1) / (1 + k1·(1 - b + b·dl/avgdl))`；
+  按查询词元 IDF 总和归一，并收顶 1.0（短文档因子可 >1，与层权重同量纲）。
+- **D2 一次检索建一次统计**：`build_lexical_stats(entries, query)` 对候选集分词并算
+  `df` / `avgdl`，缓存 `doc_tokens`；`LexicalStats` 只对构建它的 query 有效。`MemoryStore.read`
+  在排序前调用一次，排序阶段查缓存（不重复分词）。空查询 / 空语料 ⇒ `None` ⇒ 原公式。
+- **D3 兼容面**：`stats` 是 `relevance` / `rank` 的**关键字参数**，缺省 `None` ⇒ 原重叠公式
+  逐字不变（公开 API 与既有调用方零改动）。`MemoryStore.read` 始终传 stats；embedder 抛错
+  降级时同样使用 stats（降级不丢 IDF/长度归一）。
+- **D4 启动提示**：`entry._build_ui` 在 `llm` 存在且未配置 `embedding_model` 时向 stderr
+  输出一次「词法匹配、语义检索未启用」；用 `getattr(llm, "embedding_model", "")` 读取，兼容
+  无该属性的测试/嵌入式替身。已配置时不输出。
+- **D5 文档落点**：`entry.py` 插行使 `prompts.md` ⑭ 落点由 1681 漂到 1689，随本 change 同步。
+
+**理由**：① 缺省部署全走词法，IDF/长度归一是排序正确性；② 只改**缺省词法**路径，注入
+embedder 时余弦相似路径逐字不变，爆炸半径小；③ 语料统计由 `read` 一次构建，排序复杂度仍为
+O(候选数 × 查询词元数)，无额外 IO；④ 保留 `stats=None` 原公式，避免破坏 `relevance` 的公开契约。
+
+**测试**：新增 `tests/test_memory_lexical_scoring.py`（9 例：IDF 罕见词、长度归一、CJK 二元组
+精确覆盖、`stats=None` 原公式、`read` 端到端 IDF、embedder 失败仍用统计、空查询/空语料、原公式
+忽略顺序、空查询 `rank` 不抛错）；`tests/test_entry.py` +2（提示有/无）。反证（`cp` 备份 +
+md5 复原）：P1 摘 `read` 的 stats 传递 ⇒ 端到端 2 红；P2 摘 IDF 乘子 ⇒ 4 红（含罕见词）；
+P3 `b=0` ⇒ 长度归一 1 红；P4 摘提示分支 ⇒ 1 红。复原 md5 同：`relevance.py`
+`d7835f66e5f245a953f54141ae864409`、`store.py` `02c67a06403b0ab2b7db87165a5cd1e0`、
+`entry.py` `4dc923db798dba552f6bb552d3cd96cb`。四门禁全绿（pytest 2807 passed）。
+
+**局限**：
+
+1. **二值 tf**（不做词频饱和）—— 同词出现多次不加权，省略 BM25 的 tf 饱和项以避免长文档
+   靠重复堆分；若重复词后续被证为有效信号，需重新评估。
+2. **统计范围 = 过滤后的候选集** —— 来源排除 / 会话过滤在统计之前生效，同一 query 在不同
+   `session_id` / 排除面下 IDF 不同；`FileBackend.search` 目前返回全部条目（不截断），若后端
+   未来预过滤或截断候选，IDF 会随之漂移。
+3. **`avgdl` / `dl` 以词元数计**：CJK 二元组使中文文档长度约为字数，不区分词长；标点/数字
+   处理沿用 `tokens()` 既有口径。
+4. **归一后收顶 1.0**：短文档原始 BM25 分 >1 时被压平，多词命中与单词命中的相对差距被压缩
+   （测试余量按收顶后的实际倍率设定）。
+5. **提示只看 `llm.embedding_model`**：自定义 embedder 注入路径不在此提示范围；`entry._rag`
+   另有 RAG 索引提示，二者口径不同（前者记忆检索、后者 RAG）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9028,3 +9077,4 @@ P1 摘组合根实参 ⇒ 接线 + 端到端 2 红；P2 摘 ConfigSpec ⇒ 三�
 | ADR-0239 | 02-modules/evolution.md, coding-plan/known-risk.md |
 | ADR-0240 | 02-modules/pet.md, 03-interfaces/pet-mode-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0241 | 02-modules/memory.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0242 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

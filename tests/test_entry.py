@@ -1149,8 +1149,9 @@ class _FixedLoop:
         yield LoopEvent("loop_finished", {"reply": "pong"})
 
 
-def _patch_fake_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+def _patch_fake_runtime(monkeypatch: pytest.MonkeyPatch, *, embedding_model: str = "") -> None:
     """装配替身 runtime：四入口共用 `_build_ui` 只取 loop/memory/tools/app.llm。"""
+
     runtime = SimpleNamespace(
         loop=_FixedLoop(),
         memory=None,
@@ -1166,7 +1167,11 @@ def _patch_fake_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
         recover_turns=lambda: [],  # change 0214：轮面独立呈现面；空 ⇒ 静默
         app=SimpleNamespace(
             llm=LLMConfig(
-                provider="openai", model="gpt-4o", endpoint="https://x", api_key_ref="${K}"
+                provider="openai",
+                model="gpt-4o",
+                endpoint="https://x",
+                api_key_ref="${K}",
+                embedding_model=embedding_model,
             )
         ),
     )
@@ -1230,6 +1235,30 @@ def test_run_unknown_session_still_rejected(
 
     assert rc == 1
     assert "运行失败" in capsys.readouterr().err
+
+
+def test_run_hints_lexical_memory_without_embedding_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """未配置 embedding 模型 ⇒ 启动时提示词法检索与召回限制（change 0252）。"""
+    _patch_fake_runtime(monkeypatch)
+
+    rc = main(["--config", str(tmp_path / "missing.yaml"), "run", "--prompt", "hi"])
+
+    assert rc == 0
+    assert "记忆检索使用词法匹配" in capsys.readouterr().err
+
+
+def test_run_no_lexical_hint_when_embedding_model_configured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """配置 embedder ⇒ 不输出词法降级提示。"""
+    _patch_fake_runtime(monkeypatch, embedding_model="text-embedding-3-small")
+
+    rc = main(["--config", str(tmp_path / "missing.yaml"), "run", "--prompt", "hi"])
+
+    assert rc == 0
+    assert "记忆检索使用词法匹配" not in capsys.readouterr().err
 
 
 def test_session_show_prints_transcript(capsys: pytest.CaptureFixture[str]) -> None:

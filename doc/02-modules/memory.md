@@ -46,6 +46,10 @@ MemoryStore
 ### 3.2 检索与上下文上界
 
 - 相关性打分：`relevance = f(关键词/向量相似度, 新鲜度, 复用次数, 层权重)`。
+- **词法 IDF/长度归一**（change `0252`／ADR-0242）：未注入 embedder（或调用失败）时，相似度按
+  BM25 口径计算——罕见词元权重更高、长文档被长度惩罚；`read` 对**过滤后的候选集**构建一次
+  语料统计（分词缓存），排序阶段不再重复分词。注入 embedder 的余弦相似路径与 `stats=None` 的
+  原重叠公式均逐字不变；未配置 `llm.embedding_model` 时 CLI 启动向 stderr 提示一次「词法匹配」。
 - **硬性 budget**：`read` 返回的总 token 不超过预算；超限按 `layer_priority × relevance` 截断。
 - 层权重默认：L0 > L3（相关技能）> L2（相关事实）> L1 > L4。
 

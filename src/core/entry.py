@@ -519,6 +519,14 @@ def _build_ui(
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
         print(f"装配失败: {exc}", file=sys.stderr)
         return None
+    # 词法检索提示（change 0252 / ADR-0242）：未配置 embedding 模型时记忆检索只能走词法，
+    # 语义召回不可用。与 `_rag` 的既有权重提示同口径，每次启动只输出一次。
+    llm = getattr(getattr(runtime, "app", None), "llm", None)
+    if llm is not None and not getattr(llm, "embedding_model", ""):
+        print(
+            "未配置 llm.embedding_model：记忆检索使用词法匹配（语义检索未启用，召回质量受限）",
+            file=sys.stderr,
+        )
     if surface_recovery:
         _surface_incomplete(runtime)
     api = UIAPILayer(
