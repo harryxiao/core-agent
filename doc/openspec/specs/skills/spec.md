@@ -17,6 +17,7 @@
 - **GIVEN** 一个技能的前置条件不满足
 - **WHEN** 尝试调用该技能
 - **THEN** 调用被拒绝并返回 `PRECONDITION_FAILED`
+
 ### Requirement: 技能启用（draft → active）
 系统 SHALL 提供把 `draft` 技能迁至 `active` 的**显式启用**路径，使下载 / 注册所得的草稿技能
 **可被**启用（此前的迁移路径缺失 ⇒ `draft` 技能永不被路由，是死胡同）。启用 SHALL NOT 自动
@@ -60,6 +61,7 @@
 - **GIVEN** 一次启用在注入的效应追踪器上登记了效应
 - **WHEN** 按该次登记的 trace 回滚
 - **THEN** 该技能状态恢复为启用前状态（重复回滚不报错）
+
 ### Requirement: 版本管理与灰度/A/B
 系统 SHALL 支持技能世代版本、灰度发布与 A/B 测试，依据指标决定提升或回退。
 
@@ -72,6 +74,7 @@
 - **GIVEN** 技能 A/B 并行测试中 B 指标显著退化
 - **WHEN** A/B 对比完成
 - **THEN** 自动切回 A，B 标记 deprecated
+
 ### Requirement: 技能路由
 系统 SHALL 按任务类型自动匹配最合适技能，无匹配时回退通用流程。
 
@@ -133,6 +136,7 @@
 - **GIVEN** 某技能无任何执行样本
 - **WHEN** 路由器匹配
 - **THEN** 其排序分等于基础分（因子 1.0），与未接反馈时一致
+
 ### Requirement: 语义路由（semantic routing）
 系统 SHALL 在**词法匹配全无命中**时提供语义路由兜底：以注入的语义打分器（缺省不启用）对候选技能
 逐条打分，达阈值者按分排序返回；语义命中 SHALL 视为命中（不记未命中）。
@@ -175,6 +179,7 @@
 - **GIVEN** 词法无命中，语义打分器整体抛出异常
 - **WHEN** 调用 `match`
 - **THEN** 不抛出、返回空列表并记 miss（路由不得因打分器故障而中断）
+
 ### Requirement: SOP 提炼（skill extraction）
 系统 SHALL 提供 SOP 提炼能力：由注入的提炼器（DI 可调用，缺省不启用）把**同一类任务的
 成功轨迹**聚合、提炼为一条 `Skill`（`instructions` 承载 SOP 步骤、`task_types` 承载归组键），
@@ -257,6 +262,7 @@
 - **GIVEN** 已注入提炼器但**未**注入质量门
 - **WHEN** 同组样本达阈值且提炼产出非空文本
 - **THEN** 技能照常以 `active` 入库（发布路径与未引入质量门时**逐字一致**）
+
 ### Requirement: 技能命中注入（skill hint injection）
 系统 SHALL 把**路由命中的技能**以「技能 id + 版本 + `instructions` 节选」注入推理 prompt；
 节选 SHALL 有字符上界（token 有界），`instructions` 为空时 SHALL 只注入 id 与版本。
@@ -274,6 +280,7 @@
 - **GIVEN** 命中技能的 `instructions` 为空
 - **WHEN** 组装推理 system prompt
 - **THEN** 技能块只含 `skill_id`（不产生空占位行）
+
 ### Requirement: 技能执行反馈（skill execution feedback）
 系统 SHALL 记录技能的「命中」与「执行结果」，按 `(skill_id, version)` 累计，作为技能迭代的
 判据；未注入记录器时 SHALL NOT 记录（零行为变化）。
@@ -292,6 +299,7 @@
 - **GIVEN** 一轮任务命中技能 X 但收尾失败（超限终止）
 - **WHEN** 记录结果
 - **THEN** `(X, 该轮版本)` 失败数 +1
+
 ### Requirement: 技能迭代闭环（skill iteration）
 系统 SHALL 在**执行反馈不达标**（样本达下限且失败率达阈值）时触发迭代：由注入的改写器
 （DI 可调用，缺省不启用）重写 `instructions` 为新版本并经**灰度发布**生效；两版本样本齐备后
@@ -325,6 +333,7 @@ SHALL 以 A/B 对比定夺——提升 SHALL 落地新版本，退化 SHALL 丢�
 - **GIVEN** 技能 X 的新版本成功率更低（**单次**退化）
 - **WHEN** A/B 定夺
 - **THEN** 技能保持原版本与 `instructions`（草稿丢弃），且技能 SHALL NOT 被标记 `deprecated`
+
 ### Requirement: 技能态持久化（skill state persistence）
 系统 SHALL 支持把**技能态**——技能库注册表、执行反馈统计、SOP 样本累积、灰度/A-B 状态——
 落盘为 JSON 并在启动时恢复；未注入路径时 SHALL 纯内存运行（零行为变化、不写盘）。
@@ -362,6 +371,7 @@ SHALL 以 A/B 对比定夺——提升 SHALL 落地新版本，退化 SHALL 丢�
 - **GIVEN** 路径指向一个非法 JSON 文件
 - **WHEN** 以该路径新建组件
 - **THEN** 组件以空态启动（不抛异常），后续写入覆盖该文件
+
 ### Requirement: SOP 技能退役（skill retirement）
 系统 SHALL 提供 SOP 技能的**自动退役**路径：在开关 `skills.retirement` 显式开启时，
 `SkillIterator` SHALL 逐技能统计**连续** A/B 退化次数——一次退化定义为 A/B 定夺判新版本败且草稿
@@ -407,3 +417,29 @@ SHALL 以 A/B 对比定夺——提升 SHALL 落地新版本，退化 SHALL 丢�
 - **GIVEN** 一条 SOP 技能已退役（`status="deprecated"`），其归组键对应同一 `skill_id`
 - **WHEN** 同一归组键累积成功轨迹再次触发提炼
 - **THEN** 该技能 SHALL NOT 被复活为 `active`（仍为 `deprecated`），且本次重抽 SHALL NOT 入库
+
+### Requirement: 路由未命中记录的脱敏与有界
+
+技能路由未命中记录（`skills.miss.*`）的正文 SHALL 在落库前脱敏并**有界**：命中密钥形态的子串
+SHALL 替换为 `<redacted>`，正文长度 SHALL 不超过单条字符上界。未命中记录的 **id 派生** SHALL 仍
+基于**原始任务文本**（与会话键一起派生）——同一会话重复未命中同一任务仍幂等刷新同一条，跨进程
+重启不互相覆盖，诊断窗口有界等既有语义 SHALL 逐字不变。脱敏 SHALL NOT 改变路由判据与
+`misses` 诊断窗口内容。
+
+#### Scenario: 未命中正文不含密钥明文且有界
+- **GIVEN** 一次无匹配技能的路由，任务文本含密钥形态或超长
+- **WHEN** 记录未命中
+- **THEN** 落库条目正文**不含**该明文、长度不超过单条上界；工具/任务的可读前缀仍在
+- **AND** 同一会话重复未命中同一任务仍只有一条（id 派生口径不变）
+
+### Requirement: SOP 提炼正文脱敏
+
+SOP 提炼器返回的非空文本 SHALL 在空文本判定、自动质量门与 `SkillLibrary.register()` **之前**
+统一脱敏：命中密钥形态的子串 SHALL 替换为 `<redacted>`。脱敏 SHALL NOT 改变空文本判定、质量门
+判据（门看到的已是脱敏文本）与提炼入库的可逆性。未含密钥形态的提炼文本 SHALL 逐字不变。
+
+#### Scenario: SOP 入库正文不含密钥明文
+- **GIVEN** 提炼器返回的 SOP 文本含密钥形态
+- **WHEN** 样本达阈值触发提炼入库
+- **THEN** 技能 `instructions` **不含**该明文，命中段为 `<redacted>`；技能仍按既有发布语义入库
+- **AND** 未含密钥的提炼文本入库内容**逐字不变**

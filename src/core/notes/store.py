@@ -16,7 +16,7 @@ import warnings
 from collections.abc import Callable
 from pathlib import Path
 
-from core.memory import Layer, MemoryEntry
+from core.memory import Layer, MemoryEntry, redact_secrets
 from core.plugin_registry import Plugin
 
 from .backend import MarkdownBackend
@@ -287,7 +287,9 @@ class NoteStore(Plugin):
         topic = slug_topic(task)
         if not topic:
             return None
-        body = "## 解决过程\n" + "\n".join(f"- {step}" for step in steps)
+        # 脱敏在**有界截断之前**（change 0254）：命中密钥形态的子串替换为 `<redacted>`，
+        # 工具名 / 路径与动作结构保留 —— 「做了什么」仍是可读信息。
+        body = "## 解决过程\n" + "\n".join(f"- {redact_secrets(step)}" for step in steps)
         title = task.strip().splitlines()[0] if task.strip() else topic
 
         existing = self._load(topic)

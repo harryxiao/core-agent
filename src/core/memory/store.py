@@ -168,6 +168,7 @@ def _plan_key_facts(raw: list[KeyFact], *, cap: int) -> tuple[list[KeyFact], lis
     返回（可落库事实, 因密钥丢弃的实体名, 因同批同 slug 被归并的实体名）。
 
     脱敏由 ``scrub_key_fact`` 无条件执行（注入方不构成信任边界）；无实体 slug 者不计入落库。
+    空实体 / 空取值**直接拒收**（change 0254）：不计入「因密钥丢弃」留痕 —— 它不是脱敏结果。
     **同批**内 slug 相同者只留**首条**（change 0172）—— 同批重复是**单次模型响应内的重复枚举**，
     区别于跨压实的「重复抽取」（后者由同实体幂等覆盖处理，`_write_key_fact` 同一 `id`）。
     归并后条数计额 ⇒ 重复项不再挤占名额；名额 ``cap`` 由调用点按本次聚合条数自适应给出
@@ -178,6 +179,8 @@ def _plan_key_facts(raw: list[KeyFact], *, cap: int) -> tuple[list[KeyFact], lis
     deduped: list[str] = []
     seen: set[str] = set()
     for fact in raw:
+        if not fact.entity.strip() or not fact.value.strip():
+            continue
         cleaned = scrub_key_fact(fact)
         if cleaned is None:
             dropped.append(fact.entity.strip() or "<?>")
@@ -508,6 +511,18 @@ class MemoryStore:
         if trace_id is None:
             return entries
         return [e for e in entries if e.trace_id == trace_id]
+
+    def discard(self, entry_id: str) -> bool:
+        """按 id 删除一条条目：存在 ⇒ 删除并记可逆效应（``True``），不存在 ⇒ ``False``。
+
+        走既有 ``_delete_entry``（热区 + 后端 + ``memory.delete`` 效应）——不另开第二删除路径。
+        供上层按轮次清退陈旧派生条目（change 0254：压实产物按会话序号覆盖写回，序号越界即陈旧）。
+        """
+        entry = self._entry_by_id(entry_id)
+        if entry is None:
+            return False
+        self._delete_entry(entry)
+        return True
 
     def summary_for(self, session_id: str) -> MemoryEntry | None:
         """按会话取回既有摘要条目（**只读**；口径同 `_commit_summary`；无则 ``None``）。

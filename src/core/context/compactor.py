@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.memory import MemoryEntry, MemoryStore
+from core.memory import MemoryEntry, MemoryStore, redact_secrets
 
 from .errors import ContextError, ContextErrorCode
 from .models import Compaction
@@ -21,6 +21,14 @@ _STEP_THRESHOLD = 6
 _CONCLUSION_HINTS = ("结论", "完成", "结果")
 _DECISION_HINTS = ("决定", "选择", "采用")
 _OPEN_HINTS = ("待", "TODO", "未决", "下一步")
+
+# 单条压实产物正文上界（change 0254）：整段消息 / 工具输出不得原样膨胀进 L2。
+_MAX_PRODUCT_CHARS = 400
+
+
+def _sanitize(text: str) -> str:
+    """压实产物单条卫生：**先脱敏后截断**（截断不得使明文逃逸）。"""
+    return redact_secrets(text)[:_MAX_PRODUCT_CHARS]
 
 
 class Compactor:
@@ -98,13 +106,14 @@ class Compactor:
         provenance = [f"from:{source_id}" for source_id in c.source_ids]
         key = session_id or "default"
         trace_id = f"compaction.{key}"
-        for i, line in enumerate(c.conclusions + c.decisions):
+        facts = c.conclusions + c.decisions
+        for i, line in enumerate(facts):
             self._memory.write(
                 "L2",
                 MemoryEntry(
                     id=f"compaction.fact.{key}.{i}",
                     layer="L2",
-                    content=line,
+                    content=_sanitize(line),
                     tags=["compaction", "fact", *provenance],
                     source="context",
                     trace_id=trace_id,
@@ -118,7 +127,7 @@ class Compactor:
                 MemoryEntry(
                     id=f"compaction.open.{key}.{i}",
                     layer="L2",
-                    content=item,
+                    content=_sanitize(item),
                     tags=["compaction", "open", *provenance],
                     source="context",
                     trace_id=trace_id,
@@ -126,6 +135,28 @@ class Compactor:
                     kind="semantic",
                 ),
             )
+        # 上一轮序号越界的条目是陈旧事实：本轮该类只有 N 条 ⇒ N 起全部清退（change 0254）。
+        self._prune_stale(f"compaction.fact.{key}", len(facts))
+        self._prune_stale(f"compaction.open.{key}", len(c.open_items))
+
+    def _prune_stale(self, prefix: str, keep: int) -> None:
+        """删除上一轮遗留的越界序号条目（``prefix.<i>``，``i >= keep``）。
+
+        走 ``MemoryStore.discard``（记 ``memory.delete`` 可逆效应）；删除失败**不阻断**本轮
+        其余产物写回 —— 陈旧残留是卫生问题，不是本次压实的正确性前提。
+        """
+        memory = self._memory
+        if memory is None:
+            return
+        index = keep
+        while True:
+            try:
+                removed = memory.discard(f"{prefix}.{index}")
+            except Exception:  # noqa: BLE001 — 清退失败降级，不牵连本轮写回
+                return
+            if not removed:
+                return
+            index += 1
 
     @staticmethod
     def _guard(c: Compaction) -> None:

@@ -148,6 +148,11 @@ class Compactor:
         产物按**本轮会话**归属（缺省空串 = 未归属），条目 id **与 ``trace_id``** 均带会话键
         （缺省 ``default``）⇒ 跨会话不再同名覆盖（见 change 0114 / ADR-0107），
         且回滚按 ``compaction.<key>`` 细化归因、与同会话其他压实产物共组（change 0192 / ADR-0182）。
+
+        **正文卫生**（change 0254 / ADR-0245）：每条产物先 ``redact_secrets`` 再截断至
+        ``_MAX_PRODUCT_CHARS``（400）—— 整段工具输出 / 无界消息不得原样膨胀进 L2。本轮同类产物
+        条数少于上一轮时，序号越界的旧条目经 ``MemoryStore.discard``（记 ``memory.delete`` 可逆
+        效应）清退；清退失败不阻断本轮其余写回。关键词分类仍基于**原始消息**，口径不变。
         """
 
 @dataclass

@@ -49,6 +49,7 @@ Protocol 的 `get/put/search/list_index/delete`，**签名不改**）。note SHA
 - **GIVEN** 两个 note 均含关键词 K：A 的**标题**含 K，B **仅在正文顺带**提及 K
 - **WHEN** 以 K `search`
 - **THEN** A 排在 B 之前（标题权重高于正文），二者**均被命中**（加权只改排序、不改过滤）
+
 ### Requirement: Consult → Build → Update 循环纪律
 
 系统 SHALL 提供内置技能 `skills.notes.consult_build_update`（注册进 `SkillLibrary`），其
@@ -167,6 +168,7 @@ SHALL **不落盘**（返回空），SHALL NOT 为该轮创建或覆写任何笔
 - **THEN** 「命中的笔记」节选**只含普通笔记**的节选；提升产物**不进**命中节选（其正文不注入本轮请求），
   但**仍在**「笔记清单」中以标题 + `note_id` 在场；**AND** 同一 query 下
   `consult()` / `search()` / `list()` 对提升产物的结果**逐字不变**（排除只在 `digest` 注入面）
+
 ### Requirement: 结构化错误码与既有链路不变
 
 读取不存在的 note SHALL 返回 `NOTE_NOT_FOUND`；对已存在主题**显式** `create` SHALL 返回
@@ -187,6 +189,7 @@ SHALL **不落盘**（返回空），SHALL NOT 为该轮创建或覆写任何笔
 - **GIVEN** `notes` 已装配
 - **WHEN** 走 `MemoryStore.read/write` 与 RAG 检索
 - **THEN** 行为与装配前一致（两链路只并列、不交叉改写）
+
 ### Requirement: 常驻（pinned）笔记（任务级硬约束锚）
 
 系统 SHALL 在 `NoteEntry` 提供布尔字段 `pinned`（缺省 `False`）与整数字段 `pin_priority`
@@ -307,6 +310,7 @@ CLI SHALL 提供 `notes pin <note_id> [--priority <n>]`（置常驻并设优先�
 - **WHEN** `pinned_digest()`
 - **THEN** 该篇 SHALL **整篇**在场（块 SHALL NOT 为空 —— 硬约束全灭比超预算更糟），且 SHALL 留痕
   （明示系单篇超限）；**AND** `pinned_overflow()` **不含**该篇（它在场）
+
 ### Requirement: 会话摘要提升（promotion）
 
 系统 SHALL 提供**确定性**「会话摘要 → canonical note」提升路径：由**调用方（CLI / 上层）显式触发**，
@@ -411,6 +415,7 @@ CLI SHALL 暴露 `notes promote <session-id> [--as <note_id>] [--title <title>]`
 - **WHEN** 装配本轮推理上下文
 - **THEN** 「常驻笔记（任务级硬约束…）」块含其**完整正文**，而「相关笔记」块**不含**其节选——
   同一篇提升产物 SHALL NOT 同时在两条通道出现
+
 ### Requirement: 文档摘要笔记（notes.rag）
 系统 SHALL 支持把**一份原始文档的摘要**落成 canonical **结论笔记**：`note_id` 由文档 `doc_id`
 确定性派生（`doc-<slug>`），`source` 标记为 `notes.rag`，并携带 `rag` / `doc:<doc_id>` / `summary`
@@ -456,3 +461,23 @@ SHALL NOT 占常驻预算。
 - **WHEN** 调用 `write_doc_summary(store, doc_id=…, summary=…)`
 - **THEN** 落盘笔记正文中该子串呈 `<redacted>`、**原文形态不出现**，其余结构（工具名 / 标题 / 换行）
   保留；脱敏在**写入侧**完成，与提示词措辞、模型行为均无关
+
+### Requirement: 逐轮写回正文脱敏
+
+任务后写回（`observe_turn`）的正文 SHALL 在落盘前**逐行脱敏**：每条行动行 SHALL 经记忆侧同一份
+密钥启发式（`redact_secrets`）处理，命中密钥形态的子串 SHALL 替换为字面量 `<redacted>`。脱敏
+SHALL NOT 采用整段抹除方式——工具名、路径与动作结构 SHALL 保留（「做了什么」仍是可读信息）。
+脱敏 SHALL 在正文有界截断**之前**执行（截断不得使明文逃逸），SHALL NOT 改变有意义闸门 /
+效应闸门 / 来源守护的判据（判据仍基于未脱敏的行动行）。未含密钥形态的行动行 SHALL 逐字不变。
+脱敏 SHALL NOT 引入模型调用。
+
+#### Scenario: 写回正文不含密钥明文
+- **GIVEN** 一轮成功任务含写效应动作，其行动行参数或结果含密钥形态（如 `sk-…`）
+- **WHEN** 收尾钩子触发任务后写回
+- **THEN** canonical 正文**不含**该明文，命中段为 `<redacted>`；工具名与路径仍在行内
+- **AND** 同轮未含密钥的行动行**逐字不变**
+
+#### Scenario: 无密钥轮次写回逐字不变
+- **GIVEN** 一轮成功任务含写效应动作，行动行不含任何密钥形态
+- **WHEN** 收尾钩子触发任务后写回
+- **THEN** 正文与来源守护 / 闸门行为与变更前**逐字一致**

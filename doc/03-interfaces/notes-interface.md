@@ -131,7 +131,9 @@ class NoteStore(Plugin):
   **有意义闸门 + 可读正文**（change 0171 / ADR-0162）：`steps` **为空**（纯文字回复轮 —— 无工具
   动作）⇒ `None`（不写盘，琐碎轮不成篇）；`steps` 为**人类可读**行（loop 侧 `_action_steps` 交付，
   「工具名（有界参数摘要）→ 有界结果节选」），写入正文**不含** ReAct 消息原文（JSON dump）与整篇
-  工具输出、长度有界。
+  工具输出、长度有界。**正文逐行脱敏**（change 0254 / ADR-0245）：每条行动行先经 memory 侧同一份
+  `redact_secrets`（命中段 → `<redacted>`）再拼接 —— 工具名 / 路径 / 动作结构保留；判据（闸门）
+  仍基于未脱敏行。
   **效应闸门**（change 0176 / ADR-0167）：`steps` 非空但**不含任何成功的写效应工具动作** ⇒ 同样
   `None`（不写盘）—— 纯读型动作（`web_fetch` / `file_read` / `context_read` / `list`）产出的是**素材**
   （归 memory 侧 keyfact 抽取），不进 canonical 知识层。写效应工具集 `_WRITE_EFFECT_TOOLS` =

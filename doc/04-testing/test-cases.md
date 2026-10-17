@@ -3798,3 +3798,28 @@ L2 只增不减（`FileBackend` 整份加载 + 线性扫描 ⇒ 内存与检索�
 > `openspec validate --all` **31 passed / 0 failed**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0244 行（Task 壳 REMOVED 警告 / 未回填旧五场景 /
 > 友好标题依赖 `_args_excerpt` 节选 / 展开状态不持久 / 仅 TUI 面）。
+
+## 167. 记忆写回卫生（TC-MWH，change `0254`／ADR-0245，台账 E191）
+
+**根因**：五条记忆通道的**内容卫生**缺口全部位于缺省开启的写入路径 —— notes 逐轮正文、压实产物、
+压实序号残留、路由未命中、SOP 提炼输出、空值关键事实。结构性门禁（来源白名单 / 可逆效应 / 容量）
+完整，但明文与无界正文可直接落 L2 / canonical，且空白 `value` 会覆盖既有事实。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-MWH-01 | **notes 写回脱敏**（承重） | 行动行含 `sk-…`，且命中写效应工具 | 正文不含明文、含 `<redacted>`；`tools.code_run` 与 `./deploy.sh` 保留（`test_notes_turn_redacts_secret_before_write`） |
+| TC-MWH-02 | **压实产物脱敏 + 有界**（承重） | 结论一条含 `sk-…`、一条 1000 字符 | 落库条目脱敏；超长条目 `len ≤ 400` 且保留关键词前缀（`test_compaction_products_are_redacted_and_bounded`） |
+| TC-MWH-03 | **陈旧序号清退**（承重） | 同会话先 3 条、后 1 条 | 仅 `compaction.fact.s1.0` 存在，`.1`/`.2` 被删除（`test_compaction_prunes_stale_product_slots`） |
+| TC-MWH-04 | **路由 miss 脱敏 + 有界 + 幂等**（承重） | 含密钥且超长的同一任务连续两次 | 仅 1 条 `source="skills"`；正文脱敏、长度 ≤ `"路由未命中: "`+400（`test_router_miss_is_redacted_and_bounded`） |
+| TC-MWH-05 | **SOP 提炼正文脱敏**（承重） | writer 返回含 `sk-…` 的两步 SOP | `instructions` 不含明文、含 `<redacted>`，仍正常入库（`test_sop_instructions_are_redacted_before_register`） |
+| TC-MWH-06 | **空关键事实拒收且不覆盖**（承重） | `value="   "`（含 `coeffect:` ref）；既有正常事实 | `scrub_key_fact` 返回 `None`；既有 `keyfact.service-a` 正文逐字不变（`test_empty_key_fact_value_is_dropped_without_overwrite`） |
+
+> **反证**：P1 摘 notes 的 `redact_secrets(step)` ⇒ 01 红；P2 摘压实 `_sanitize` ⇒ 02 红；
+> P3 摘两处 `_prune_stale` ⇒ 03 红；P4 摘 miss 脱敏/截断 ⇒ 04 红；P5 摘 SOP 入口脱敏 ⇒ 05 红；
+> P6 摘 `scrub_key_fact` 空值守卫 ⇒ 06 红。六次复原后 `md5sum` 均一致。
+> 规格：`notes` ADDED ×1（2 scen）、`context` ADDED ×1（3 scen）、`skills` ADDED ×2（2 scen）、
+> `memory` ADDED ×1（2 scen）；无 MODIFIED / REMOVED。测试净 **+6**（2813 → **2819**）。
+> `memory/extract.py` / `skills/sop.py` 常量行号漂移，`prompts.md` 落点同步
+> （178→181、403→406、48→49）并由 `test_prompt_mirror` 守护。四门禁全绿。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0245 行（启发式天花板 / 不做历史清洗 /
+> P1–P4 后续 / `_record_observation` 未截断 / SOP 提炼输入未脱敏）。

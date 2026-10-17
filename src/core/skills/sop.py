@@ -22,6 +22,7 @@ from collections.abc import Callable, Sequence
 from hashlib import blake2b
 from pathlib import Path
 
+from core.memory import redact_secrets
 from core.persistence import read_state, write_state
 from core.plugin_registry import Effect, EffectTracker
 
@@ -119,7 +120,9 @@ class SopExtractor:
         self._persist()
         if len(group) < self._threshold:
             return None
-        text = self._writer(build_sop_prompt(task, group))
+        # 脱敏在空文本判定 / 质量门 / 入库**之前**（change 0254）：提炼器输出可能复述轨迹中的
+        # 明文密钥；门看到的已是脱敏文本，入库正文不含明文。
+        text = redact_secrets(self._writer(build_sop_prompt(task, group)))
         if not text.strip():
             return None  # 空提炼不入库（不写半成品），样本保留待下轮
         if self._gate is not None and not self._gate_ok(task, text):

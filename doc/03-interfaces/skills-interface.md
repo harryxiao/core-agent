@@ -119,7 +119,9 @@ class SkillMatch:
 摘要 = `blake2b(task, digest_size=8).hexdigest()`）并按会话归属 —— 内容派生 ⇒ 跨进程重启
 **不互相覆盖**、同会话重复未命中**同一任务幂等刷新同一条**（change 0117 / ADR-0110；会话键
 口径见 change 0114 / ADR-0107）。``misses`` 为**有界**诊断窗口（``_MISS_WINDOW = 64``，仅保留
-最近 N 条），无生产消费方。
+最近 N 条），无生产消费方。落库正文在写前**脱敏 + 有界**（`redact_secrets` → `_MAX_MISS_CHARS=400`，
+change 0254 / ADR-0245）；id 仍由**原始任务**派生 ⇒ 幂等 / 跨重启口径不变，`misses` 诊断窗口
+内容不受脱敏影响。
 
 | 维度 | 口径 |
 |---|---|
@@ -246,6 +248,10 @@ class SopExtractor:
 | **质量门**（0198） | 注入 `gate` 时：非空文本先过门，未过 ⇒ 不入库 + 清组 + 留痕（只报组键）；门故障 ⇒ 放行（fail-open）；`gate=None`（缺省）⇒ 发布路径逐字不变 |
 | **降级** | 未注入 writer：不累积、不提炼（零额外模型调用）；提炼文本为空：不入库、样本保留待下轮 |
 | **可逆** | 入库登记 `Effect(op="skills.register", undo=移除)`（`trace_id="skills.extract"`）；回滚即移除，重复回滚幂等 |
+
+**提炼正文脱敏**（change 0254 / ADR-0245）：writer 输出在空文本判定、质量门与 `register()` **之前**
+统一 `redact_secrets` —— 门看到的是脱敏文本，入库 `instructions` 不含明文密钥；未含密钥形态的
+文本逐字不变。
 
 已知缺口（如实记录）：无 judgment 质量门 —— **已闭（change `0198`／ADR-0188，见下）**。技能库与样本
 已可落盘（0050，见 §7），缺省仍纯内存——生产由 `build_runtime` 注入路径。

@@ -34,11 +34,11 @@
 | ② | 控制面 | 任务拆解器 | `orchestration/planner.py:23` `_DECOMPOSE_SYSTEM` | JSON `{success_criteria:[…],subtasks:[…]}` | ✓ `0215`/`0248` |
 | ③ | 控制面 | 验收判定器 | `orchestration/planner.py:38` `_VERIFY_SYSTEM` | JSON `{passed,reason}` | ✓ `0215` |
 | ④ | 数据面 | 记忆压实器 | `memory/summarize.py:37` `_PROMPT_HEAD` | 文本（更新后摘要） | ✓ `0215` |
-| ⑤ | 数据面 | 关键事实抽取器 | `memory/extract.py:178` `_PROMPT_HEAD` | JSON `[{entity,value,ref}]` | ✓ `0215` |
-| ⑥ | 数据面 | 实体关系抽取器 | `memory/extract.py:403` `_RELATION_PROMPT_HEAD` | JSON `[{head,predicate,tail}]` | ✓ `0215` |
+| ⑤ | 数据面 | 关键事实抽取器 | `memory/extract.py:181` `_PROMPT_HEAD` | JSON `[{entity,value,ref}]` | ✓ `0215` |
+| ⑥ | 数据面 | 实体关系抽取器 | `memory/extract.py:406` `_RELATION_PROMPT_HEAD` | JSON `[{head,predicate,tail}]` | ✓ `0215` |
 | ⑦ | 数据面 | 记忆重要度评分器 | `memory/importance.py:27` `_PROMPT_HEAD` | 数值 `0`–`1` | ✓ `0215` |
 | ⑧ | 数据面 | 情景归纳器 | `memory/episodic.py:35` `_PROMPT_HEAD` | 文本（四段结论快照） | ✓ `0219` |
-| ⑨ | 数据面 | SOP 提炼器 | `skills/sop.py:48` `_PROMPT_HEAD` | 文本（编号步骤清单） | ✓ `0215` |
+| ⑨ | 数据面 | SOP 提炼器 | `skills/sop.py:49` `_PROMPT_HEAD` | 文本（编号步骤清单） | ✓ `0215` |
 | ⑩ | 数据面 | 技能迭代器 | `skills/iteration.py:46` `_PROMPT_HEAD` | 文本（编号步骤清单） | ✓ `0215` |
 | ⑪ | 进化面 | 源码修补者 | `evolution/author.py:32` `_PROMPT_HEAD` | 文本（完整文件内容） | ✓ `0219` |
 | ⑫ | 进化面 | 候选审查者 | `evolution/validator.py:44` `_REVIEW_PROMPT_HEAD` | 文本（首行 `PASS`/`REJECT`） | ✓ `0219` |
@@ -121,7 +121,7 @@
 「按三段组织（结论 / 决策 / 未决事项）、总长不超过 2000 字」—— 与事后节选上界**同源**
 （change `0242`；此前为 800 死值，会让模型过早压缩）。
 
-### ⑤ 关键事实抽取器 · `memory/extract.py:178`（`{max}` 注入）
+### ⑤ 关键事实抽取器 · `memory/extract.py:181`（`{max}` 注入）
 ```
 你是关键事实抽取器。从下面的会话事件中抽取「实体 → 取值」的关键事实，最多 {max} 条。只输出一个 JSON 数组，元素形如 {"entity": "实体名", "value": "取值", "ref": ""}。**绝不**输出任何密钥 / 凭据 / 口令的明文：凡属此类，value 一律写 "<redacted>" 并在 ref 写 "coeffect:<名称>"；若给不出引用，就不要输出该条。ref **只允许**形如 "coeffect:<名称>" 的引用；给不出这样的引用时 ref 留**空字符串**，**不要**用出处说明（如「第 N 轮」「某结论」「证据链」）充数。不要输出解释或多余文字。entity 用稳定、可复用的名称：专有名词保持原文，不要用「它」「该文件」「上述」等指代。value 是一个可独立复用的短事实，不要整段复述原句。事件中确有依据时尽量抽满上限，但**不要**推断或补全事件里没有出现的事实；无依据则少抽。
 ```
@@ -130,7 +130,7 @@
 > 条数上限 `{max}` 缺省按本次聚合条数取 `key_fact_cap(n)`（8~16），与落库名额**同源**
 > （change `0242`）；显式传值仍按传值渲染。
 
-### ⑥ 实体关系抽取器 · `memory/extract.py:403`（`{max}` / `{predicates}` 注入）
+### ⑥ 实体关系抽取器 · `memory/extract.py:406`（`{max}` / `{predicates}` 注入）
 ```
 你是实体关系抽取器。从下面的会话事件中抽取「头实体 — 谓词 — 尾实体」三元组，最多 {max} 条。只输出一个 JSON 数组，元素形如 {"head": "头实体", "predicate": "谓词", "tail": "尾实体"}。谓词**必须**归入下表之一（可用中英任一变体，落库会归一化）：{predicates}。归不入下表的关系**不要输出**。各谓词的语义与方向（head 在前、tail 在后，勿颠倒）：depends_on ＝ head 依赖 tail（依赖方 → 被依赖方）；part_of ＝ head 是 tail 的组成部分（部分 → 整体）；uses ＝ head 使用 / 调用 / 采用 tail（使用者 → 被使用者，如工具、库、接口、资源）；causes ＝ head 导致 tail（原因 → 结果）；blocks ＝ head 阻塞 tail（阻塞方 → 被阻塞方）；owns ＝ head 拥有 / 负责 tail（负责方 → 被负责对象）；implements ＝ head 实现 tail（实现者 → 被实现的契约 / 接口 / 规格）；related_to ＝ 以上都不适用、但确实相关的弱关系（仅在无法归入前 7 者时使用）。**绝不**输出任何密钥 / 凭据 / 口令的明文（含作为实体名的情形）。不要输出解释或多余文字。
 ```
@@ -155,7 +155,7 @@
 > （`kind="semantic"`、`session_id=""` 全局层，每会话至多一条覆盖式；store 侧无条件脱敏＋截断
 > `MAX_EPISODIC_CHARS = 2000`）。键 `memory.episodic_extract`（缺省关）。
 
-### ⑨ SOP 提炼器 · `skills/sop.py:48`
+### ⑨ SOP 提炼器 · `skills/sop.py:49`
 ```
 你是 SOP 提炼器。下面是同一类任务的多次成功执行轨迹（任务 + 行动/结果序列）。请提炼为可复用的标准作业步骤：只输出编号步骤清单，不要复述轨迹、不要解释理由。要求：合并多次执行中重复出现的步骤，只保留每次执行都成立的必要步骤，剔除偶发细节；每步以动词开头，写清具体工具、路径、命令或参数，不要写「处理一下」这类空话；步骤数控制在 3-10 步。
 ```

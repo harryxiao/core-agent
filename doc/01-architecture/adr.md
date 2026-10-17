@@ -8929,6 +8929,56 @@ canonical 无对应项，归档仅告警；④ 0233 原始提交无 ADR，本记
 ⑤ 同一 commit 还含 planner 协议加严与轮末收尾后台化，其中跨 event-loop 取消传播缺陷由
 `0239` / ADR-0223 另行收口。
 
+## ADR-0245：记忆写回卫生（脱敏 / 有界 / 空值拒收 / 陈旧清理）（change 0254 / 台账 E191）
+
+**背景**：2026-10-17 对五条记忆通道（会话滑窗压实 / SOP 技能进化 / evolution / 情景经验 /
+任务关键信息）做「信息提取决策是否完善」审计。结构性门禁（来源白名单、可逆效应、容量上限）
+完整，但**内容卫生**存在六处缺口，且全部位于**默认开启**的写入路径上（质量门反而缺省关闭，
+开关方向倒置）：
+
+1. `NoteStore.observe_turn` 的行动行原样拼进 canonical 正文（无 `redact_secrets`）；
+2. `Compactor.persist` 把命中关键词的整段消息原样写 L2（无脱敏、无长度上界）；
+3. 压实产物按 `compaction.*.<i>` 序号覆盖写回 ⇒ 上一轮多、本轮少时**旧序号条目残留**，
+   陈旧事实永不消失；
+4. `SkillRouter._record_miss` 把整句任务原样落 L2（无脱敏、无界）；
+5. `SopExtractor.observe` 把提炼器输出原样 `register`（提炼器可能复述轨迹中的密钥）；
+6. `scrub_key_fact` 允许空白 `value` 通过 ⇒ 空值**覆盖**同实体既有关键事实。
+
+**决策**：
+
+- **D1 写回边界统一脱敏，复用同一份判据**：五处均调用 `core.memory.redact_secrets`（与关键事实 /
+  关系 / episodic 同一启发式，一处定义多处消费），命中段 → `<redacted>`；**先脱敏后截断**，
+  截断不得使明文逃逸。不做整段抹除 —— 工具名 / 路径 / 动作结构保留（「做了什么」仍可读）。
+- **D2 压实产物有界 + 陈旧清退**：单条 `_MAX_PRODUCT_CHARS=400`；关键词分类仍基于**原始消息**
+  （口径不变）。`persist` 写完后对 `compaction.fact.<key>` / `compaction.open.<key>` 从本轮条数
+  起逐号清退，走**新增的公开** `MemoryStore.discard(id)`（内部复用 `_delete_entry` ⇒ 热区 + 后端 +
+  可逆 `memory.delete` 效应，不另开删除路径）；清退失败降级为保留残留、不阻断本轮写回。
+- **D3 空值拒收先于引用式判定**：`entity` 或 `value` 在 `strip()` 后为空 ⇒ 丢弃，即便给出
+  `coeffect:<名称>` 引用；`_plan_key_facts` 对其**静默跳过**（不计入「因密钥丢弃」留痕 ——
+  空值不是脱敏结果，也不覆盖同实体既有条目）。
+- **D4 未命中记录脱敏但有界不动 id**：正文 `redact_secrets(task)[:400]`；id 仍由**原始任务** +
+  会话键派生 ⇒ 同会话幂等、跨进程重启不互相覆盖的既有语义逐字不变；`misses` 诊断窗口保留原文。
+- **D5 缺省行为与可逆性**：全部为缺陷修复、**缺省开启**；不新增配置键、不新增模型调用。
+  脱敏不改变任何闸门判据（闸门看未脱敏行 / 脱敏后的提炼文本按规格）。压实清退记可逆效应，
+  回滚可复原。
+
+**规格**：`notes` ADDED ×1（2 scen）、`context` ADDED ×1（3 scen）、`skills` ADDED ×2（2 scen）、
+`memory` ADDED ×1（2 scen）；无 MODIFIED / REMOVED。归档后 `openspec validate --all` 全绿。
+
+**测试**：`tests/test_memory_write_hygiene.py` 六个用例逐一锚定六处缺口（notes 密钥 + 结构保留 /
+压实脱敏 + 单条 ≤400 / 同会话陈旧序号清退 / 路由 miss 脱敏 + 有界 + 幂等 / SOP instructions 脱敏 /
+空 keyfact 丢弃且不覆盖既有）。反证：逐点摘除实现 ⇒ 对应用例红，复原后 md5 一致（6/6）。四门禁：
+`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **2819 passed**。
+`memory/extract.py` 与 `skills/sop.py` 顶部常量的行号因本次插入而漂移，
+`doc/03-interfaces/prompts.md` §1 落点同步（178→181、403→406、48→49）。
+
+**局限**：① 启发式只覆盖已知令牌形态，方向恒为 over-redact，不构成「绝不泄漏」的密码学保证；
+② 既有条目不做历史清洗（只约束新写入）；③ 本 change 只做 P0（脱敏 / 有界 / 空值 / 陈旧），
+P1 确定性 SOP 发布质量门、P2 抽取拒绝反馈与去重、P3 任务记忆摘要、P4 benchmark 执行候选
+仍为后续批次；④ `DefaultLoop._record_observation` 仍以未截断 `json.dumps` 记观测面（非本次
+写回面，登记待 P3 一并收口）；⑤ **SOP 提炼的输入**（`build_sop_prompt` 的步骤轨迹）仍不经
+本模块脱敏（ADR-0214 局限③ 已有登记）—— 本 change 只约束落库的 `instructions`。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9168,3 +9218,4 @@ canonical 无对应项，归档仅告警；④ 0233 原始提交无 ADR，本记
 | ADR-0242 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0243 | 02-modules/loop.md, 03-interfaces/observability-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0244 | 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0245 | 03-interfaces/notes-interface.md, 03-interfaces/context-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

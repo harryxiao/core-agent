@@ -149,7 +149,8 @@ def scrub_key_fact(fact: KeyFact) -> KeyFact | None:
     """脱敏一条关键事实；返回 ``None`` 表示**整条丢弃**（fail-closed）。
 
     规则（方向恒为 over-redact）：
-    1. 无实体名 ⇒ 丢弃。
+    1. 无实体名或**取值为空**（``strip()`` 后）⇒ 丢弃 —— 空值不构成一次有效更新，且会覆盖
+       同实体既有事实（change 0254）。
     2. ``ref`` **非** ``coeffect:<名称>`` 形态（含像密钥者、含模型自造的出处说明）⇒ 弃用该引用
        —— 引用只认 ``coeffect:`` 形态，自造引述**不能**为明文取值背书（change 0173）。
     3. ``value`` 呈密钥形态**且无可用引用** ⇒ 丢弃（**记不住引用就不记**）。
@@ -159,6 +160,8 @@ def scrub_key_fact(fact: KeyFact) -> KeyFact | None:
     """
     entity = fact.entity.strip()
     if not entity:
+        return None
+    if not fact.value.strip():
         return None
     ref = fact.ref.strip()
     value = fact.value.strip()

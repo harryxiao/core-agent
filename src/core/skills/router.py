@@ -13,7 +13,7 @@ from collections.abc import Callable
 from hashlib import blake2b
 from typing import Any
 
-from core.memory import MemoryEntry, MemoryStore
+from core.memory import MemoryEntry, MemoryStore, redact_secrets
 
 from .feedback import SkillFeedback
 from .library import SkillLibrary
@@ -28,6 +28,9 @@ _SEMANTIC_MIN_SCORE = 0.5
 
 # 命中快照里 instructions 的字符上界（token 有界；与 _MAX_STEP_CHARS 同口径）
 _MAX_HINT_CHARS = 400
+
+# 未命中记录正文上界（change 0254）：任务文本（往往是整句诉求）不得原样无界落进 L2。
+_MAX_MISS_CHARS = 400
 
 # 专属技能 skill_id 的节数（`beast.<域>.<技能>`）——形状即约定（非另建注册表）
 _DEDICATED_SEGMENTS = 3
@@ -163,7 +166,8 @@ class SkillRouter:
             MemoryEntry(
                 id=f"skills.miss.{key}.{digest}",
                 layer="L2",
-                content=f"路由未命中: {task}",
+                # 脱敏 + 有界（change 0254）；id 仍由**原始任务**派生 ⇒ 幂等口径不变。
+                content=f"路由未命中: {redact_secrets(task)[:_MAX_MISS_CHARS]}",
                 tags=["skills", "miss"],
                 source="skills",
                 trace_id="skills",
