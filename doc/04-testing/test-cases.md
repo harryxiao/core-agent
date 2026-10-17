@@ -3743,3 +3743,25 @@ L2 只增不减（`FileBackend` 整份加载 + 线性扫描 ⇒ 内存与检索�
 > `test_prompt_mirror` 守护。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0242 行（二值 tf / 统计随过滤面变化 /
 > 长度按词元数 / 收顶压缩差距 / 提示只覆盖 `llm.embedding_model`）。
+
+## 165. 压实/抽取成本可观测（TC-COST，change `0253`／ADR-0243，台账 E189）
+
+**根因**：维护节拍与轮内压实含同步模型调用（摘要器 / 关键事实抽取器），但成功路径无耗时记录；
+`maintenance_failed` 只带 `error`，多步时分不清哪一步慢或失败。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-COST-01 | **节拍成本事件**（承重） | 注入 tracer，间隔已到，memory 注入 | 一条 `maintenance`，`steps` = session_compact/mid_summary/forget，耗时 ≥0（`test_maintenance_emits_step_cost_event`） |
+| TC-COST-02 | 节拍闸门 | 同刻连调两次 | 仅 1 条 `maintenance`（`test_maintenance_cost_event_only_when_tick_runs`） |
+| TC-COST-03 | **失败步骤归因**（承重） | 会话压实抛错 | `maintenance_failed.step == "session_compact"`，forget 仍执行，成本事件仍产出（`test_failed_step_is_attributed_and_others_still_run`） |
+| TC-COST-04 | **压实成本 + 触发**（承重） | 直接 `_compact(..., trigger="budget_retry")` | 一条 `compaction`，steps = persist/memory_compact/forget，trigger 保留（`test_compaction_emits_cost_event_with_steps_and_trigger`） |
+| TC-COST-05 | persist 失败归因 | 压实器 `compact` 抛错 | `maintenance_failed.step == "persist"`，记忆两步仍执行，成本事件 trigger=`threshold`（`test_compaction_persist_failure_is_attributed`） |
+| TC-COST-06 | **预算降级触发归因**（承重） | `_budget_retry` 未压实 | `compaction.trigger == "budget_retry"`（`test_budget_retry_marks_compaction_trigger`） |
+
+> **反证**：P1 摘 `maintenance` 事件 ⇒ 01/02/03 红；P2 摘 `compaction` 事件 ⇒ 04/05/06 红；
+> P3 硬编码 `trigger="threshold"` ⇒ 04/06 红；P4 摘 `maintenance_failed` 的 `step` ⇒ 03 红。
+> 复原 md5 同：`default.py` `c52205596c513f87489bfe1f95f6aa4f`。规格：`observability`
+> **MODIFIED** ×1 req / +3 scen（6 req / 20 → 23 scen）。测试净 **+6**（2807 → **2813**）。
+> 四门禁全绿。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0243 行（只记时间 / 末尾发出 / 无聚合 /
+> steps 键契约 / 线程内计时）。

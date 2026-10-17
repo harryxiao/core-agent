@@ -8841,6 +8841,48 @@ P3 `b=0` ⇒ 长度归一 1 红；P4 摘提示分支 ⇒ 1 红。复原 md5 同�
 5. **提示只看 `llm.embedding_model`**：自定义 embedder 注入路径不在此提示范围；`entry._rag`
    另有 RAG 索引提示，二者口径不同（前者记忆检索、后者 RAG）。
 
+## ADR-0243：压实/抽取成本的观测面（change 0253 / 台账 E189）
+
+**背景**：维护节拍（会话压实 / 中期摘要 / 遗忘 / 冷路径）与轮内压实都在工作线程执行，含**同步
+模型调用**（摘要器、关键事实抽取器）。但此前成功路径**没有任何耗时观测**；失败只有
+`maintenance_failed` 的 error 字符串，多步并发时无法归因到具体步骤。调维护间隔、评估摘要器 /
+抽取器成本、定位「收尾慢」都缺少数据。
+
+**决策**：
+
+- **D1 两类成本事件**：`_maintain` 每实际节拍产一条 `maintenance`（`elapsed_ms` + `steps`：
+  `session_compact` / `mid_summary` / `forget` / `cold_path`）；`_compact` 每次产一条
+  `compaction`（`trigger`：`threshold` / `budget_retry` + `elapsed_ms` + `steps`：`persist` /
+  `memory_compact` / `forget`）。`steps` 只含**实际执行**的步骤（依赖未注入则不出现）。
+- **D2 计时口径**：`time.perf_counter()` 分步计时（失败步骤经 `finally` 记账），耗时保留 3 位
+  小数。不用 `time.time()`（回拨会产生负耗时）。
+- **D3 失败归因**：两处 `maintenance_failed` payload 增 `step`；步骤失败仍降级不中断，成本事件
+  照常产出。`_compact` 的 `persist` 保留原有 `ContextError` 静默分支。
+- **D4 范围克制**：不接 `MetricsCollector`（需给 `DefaultLoop` 增注入面）、不新增配置键、不记录
+  条目数 / token（`MemoryStore.compact` 不返回计数）、不改任何执行逻辑。
+
+**理由**：① tracer 本身就是观测开关，未注入 ⇒ `_trace` 空转，缺省行为零变化；② 事件面已足够
+导出面聚合与延迟归因，P2-lite 到此为止；③ 分步计时把「哪一步慢/失败」直接写进 payload，
+不需要消费方反推。
+
+**测试**：新增 `tests/test_loop_cost_observability.py`（6 例：节拍成本事件、节拍闸门、失败步骤
+归因且其余继续、压实成本 + trigger、persist 失败归因、budget_retry 触发归因）。反证（`cp` 备份 +
+md5 复原）：P1 摘 `maintenance` 事件 ⇒ 3 红；P2 摘 `compaction` 事件 ⇒ 3 红；P3 硬编码
+`trigger="threshold"` ⇒ 2 红；P4 摘失败 payload 的 `step` ⇒ 1 红。复原 md5 同：`default.py`
+`c52205596c513f87489bfe1f95f6aa4f`。四门禁全绿（pytest 2813 passed）。
+
+**局限**：
+
+1. **只记时间，不记数量** —— 被压实条目数 / 摘要 token 数不可见（`MemoryStore.compact` 不返回
+   计数）；抽取成本只能按 `memory_compact` 总时长近似。
+2. **事件在末尾发出** —— 进程在节拍中途崩溃时该次 `maintenance` 事件不存在（已执行步骤的失败
+   留痕仍在）。
+3. **无聚合 / 分位数** —— 每节拍 / 每压实一条原始事件，聚合依赖导出面；高频维护时事件量随
+   节拍线性增长。
+4. **`steps` 键是契约** —— 新增步骤向后兼容，改名属破坏性变更。
+5. **线程内计时** —— `_compact` 在 `asyncio.to_thread` 工作线程执行，`elapsed_ms` 不含线程
+   排队等待。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9078,3 +9120,4 @@ P3 `b=0` ⇒ 长度归一 1 红；P4 摘提示分支 ⇒ 1 红。复原 md5 同�
 | ADR-0240 | 02-modules/pet.md, 03-interfaces/pet-mode-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0241 | 02-modules/memory.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0242 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0243 | 02-modules/loop.md, 03-interfaces/observability-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

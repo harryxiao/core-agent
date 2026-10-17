@@ -12,7 +12,8 @@ class TraceEvent:
     trace_id: str               # 单任务全链路 id
     span_id: str                # 单步 span id
     ts: float
-    kind: str                   # "model_io" | "tool_call" | "effect" | "metric" | 模块失败留痕
+    kind: str                   # "model_io" | "tool_call" | "effect" | "metric"
+                                # | "maintenance" | "compaction" | 模块失败留痕
     payload: dict               # 脱敏后的结构化内容
     module_id: str | None = None  # 模块归因：产生该事件的架构模块 id（如 "loop.default"），缺省未归因
 ```
@@ -32,6 +33,13 @@ class TraceLogger:
     def log_effect(self, trace_id: str, effect: dict) -> None:
         """关联副作用记录。"""
 ```
+
+**成本事件（change 0253 / ADR-0243）**：执行循环直接 `record` 两类事件 —— `maintenance`
+（每实际维护节拍一条，payload `elapsed_ms` + `steps`：`session_compact` / `mid_summary` /
+`forget` / `cold_path`）与 `compaction`（每压实一条，payload `trigger`（`threshold` /
+`budget_retry`）+ `elapsed_ms` + `steps`：`persist` / `memory_compact` / `forget`）。步骤失败
+另记 `maintenance_failed`（`step` + `error`），其余步骤继续。耗时用单调时钟；payload **不含**
+条目正文、摘要文本或会话标识；未注入 tracer ⇒ 零事件。
 
 **`tool_call` 的生产方（change 0107）**：`log_tool_call` 的**唯一生产调用方**是执行循环
 （`DefaultLoop._log_tool_call`）——`astream` 在**非终止动作**完成后、与 `action_completed` **同点**

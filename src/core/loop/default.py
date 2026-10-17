@@ -718,6 +718,11 @@ class DefaultLoop(Plugin):
         ③记忆遗忘 ④冷路径机会。``session_id`` 为**本轮**会话（缺省空串 ⇒ 跳过会话级两步）。
         间隔 ``<=0`` 关闭节拍；时钟经构造注入（可测）。节拍状态驻留实例（多会话共享一个节拍
         ⇒ 只有「正巧活跃」的会话被刷新）。四件事**各自失败降级、不中断本轮**。
+
+        成本可观测（change 0253 / ADR-0243）：一次实际节拍产出**一条** ``maintenance`` 事件，
+        payload 含 ``elapsed_ms``（总耗时）与 ``steps``（各步骤耗时毫秒）；步骤失败另记
+        ``maintenance_failed`` 并带 ``step`` 归因。耗时用单调时钟，payload **不含**正文/摘要/
+        会话标识。未注入 tracer ⇒ 零事件（``_trace`` 空转），既有行为逐字不变。
         """
         if self._maintenance_interval <= 0:
             return
@@ -725,25 +730,35 @@ class DefaultLoop(Plugin):
         if now - self._last_maintenance < self._maintenance_interval:
             return
         self._last_maintenance = now
-        if self._memory is not None:
+        step_ms: dict[str, float] = {}
+
+        def run(name: str, step: Callable[[], Any]) -> None:
+            """计时执行一步；失败留痕（带 step 归因）不中断其余步骤。"""
+            started = time.perf_counter()
+            try:
+                step()
+            except Exception as err:  # noqa: BLE001 — 各自失败降级，本轮继续
+                self._trace(trace_id, "maintenance_failed", {"step": name, "error": str(err)})
+            finally:
+                step_ms[name] = (time.perf_counter() - started) * 1000.0
+
+        memory = self._memory
+        if memory is not None:
             if session_id:
-                try:
-                    self._memory.compact(session_id=session_id)
-                except Exception as err:  # noqa: BLE001 — 会话压实失败降级，本轮继续
-                    self._trace(trace_id, "maintenance_failed", {"error": str(err)})
-                try:
-                    self._materialize_mid(session_id)
-                except Exception as err:  # noqa: BLE001 — 中层摘要失败降级，本轮继续
-                    self._trace(trace_id, "maintenance_failed", {"error": str(err)})
-            try:
-                self._memory.forget()
-            except Exception as err:  # noqa: BLE001 — 遗忘失败降级，本轮继续
-                self._trace(trace_id, "maintenance_failed", {"error": str(err)})
-        if self._cold_path is not None:
-            try:
-                self._cold_path()
-            except Exception as err:  # noqa: BLE001 — 冷路径失败降级，本轮继续
-                self._trace(trace_id, "cold_path_failed", {"error": str(err)})
+                run("session_compact", lambda: memory.compact(session_id=session_id))
+                run("mid_summary", lambda: self._materialize_mid(session_id))
+            run("forget", memory.forget)
+        cold_path = self._cold_path
+        if cold_path is not None:
+            run("cold_path", cold_path)
+        self._trace(
+            trace_id,
+            "maintenance",
+            {
+                "elapsed_ms": round(sum(step_ms.values()), 3),
+                "steps": {name: round(ms, 3) for name, ms in step_ms.items()},
+            },
+        )
 
     def _materialize_mid(self, session_id: str) -> None:
         """物化会话滑窗「中带」的中期摘要（change 0178 / ADR-0169）。
@@ -794,7 +809,7 @@ class DefaultLoop(Plugin):
             return self._compactor.should_compact(ctx.rounds, 0, 1)
         return self._compactor.should_compact(ctx.rounds, ctx.token_used, self._token_budget)
 
-    def _compact(self, ctx: LoopContext, trace_id: str) -> None:
+    def _compact(self, ctx: LoopContext, trace_id: str, *, trigger: str = "threshold") -> None:
         """压实：**本轮**消息 + 工具 I/O 提炼沉淀（persist）→ 记忆固化（打分 + 摘要）→ 遗忘归档。
 
         输入是 ``ctx.messages``（**仅本轮**，多轮历史由三层滑窗 change 0178 与记忆压实承载 ——
@@ -803,8 +818,15 @@ class DefaultLoop(Plugin):
 
         记忆固化**按本轮会话标识收窄聚合范围**（与维护节拍 ``_maintain`` 同口径，change 0192）：
         仅聚合该会话的 L2 episodic 条目，SHALL NOT 顺手提炼他会话条目；标识为空串时按全量聚合。
+
+        成本可观测（change 0253 / ADR-0243）：一次压实产出**一条** ``compaction`` 事件，payload
+        含 ``trigger``（``threshold`` / ``budget_retry``）、``elapsed_ms`` 与分步 ``steps``
+        （``persist`` / ``memory_compact`` / ``forget``）；失败步骤另记 ``maintenance_failed``
+        并带 ``step``。耗时用单调时钟，payload **不含**正文/摘要/会话标识。
         """
         assert self._compactor is not None  # noqa: S101 — 调用点已判空
+        step_ms: dict[str, float] = {}
+        started = time.perf_counter()
         try:
             self._compactor.persist(
                 self._compactor.compact(ctx.messages), session_id=ctx.session_id
@@ -812,17 +834,34 @@ class DefaultLoop(Plugin):
         except ContextError:
             pass  # 无可沉淀关键信息：非错误，不替换原文
         except Exception as err:  # noqa: BLE001 — 压实失败降级，本轮继续
-            self._trace(trace_id, "maintenance_failed", {"error": str(err)})
-        if self._memory is None:
-            return
-        try:
-            self._memory.compact(session_id=ctx.session_id)
-        except Exception as err:  # noqa: BLE001 — 打分/摘要失败降级，原记忆不丢
-            self._trace(trace_id, "maintenance_failed", {"error": str(err)})
-        try:
-            self._memory.forget()
-        except Exception as err:  # noqa: BLE001 — 遗忘失败降级，本轮继续
-            self._trace(trace_id, "maintenance_failed", {"error": str(err)})
+            self._trace(trace_id, "maintenance_failed", {"step": "persist", "error": str(err)})
+        finally:
+            step_ms["persist"] = (time.perf_counter() - started) * 1000.0
+
+        memory = self._memory
+        if memory is not None:
+
+            def run(name: str, step: Callable[[], Any]) -> None:
+                """计时执行一步；失败留痕（带 step 归因）不中断后续步骤。"""
+                step_started = time.perf_counter()
+                try:
+                    step()
+                except Exception as err:  # noqa: BLE001 — 各自失败降级，本轮继续
+                    self._trace(trace_id, "maintenance_failed", {"step": name, "error": str(err)})
+                finally:
+                    step_ms[name] = (time.perf_counter() - step_started) * 1000.0
+
+            run("memory_compact", lambda: memory.compact(session_id=ctx.session_id))
+            run("forget", memory.forget)
+        self._trace(
+            trace_id,
+            "compaction",
+            {
+                "trigger": trigger,
+                "elapsed_ms": round(sum(step_ms.values()), 3),
+                "steps": {name: round(ms, 3) for name, ms in step_ms.items()},
+            },
+        )
 
     async def _budget_retry(
         self, ctx: LoopContext, trace_id: str, *, budget_retried: bool, compacted: bool
@@ -837,7 +876,7 @@ class DefaultLoop(Plugin):
         if budget_retried or self._compactor is None:
             return False, compacted
         if not compacted:
-            await asyncio.to_thread(self._compact, ctx, trace_id)
+            await asyncio.to_thread(self._compact, ctx, trace_id, trigger="budget_retry")
             compacted = True
         ctx.token_used = max(_context_tokens(ctx), self._reported_prompt_tokens())
         self._trace(
