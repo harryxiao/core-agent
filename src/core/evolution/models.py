@@ -65,7 +65,7 @@ class GenerationCandidate:
     target_plugin: str
     delta: dict[str, Any]
     kind: Literal["skill", "plugin"]
-    # pending | confirmed | rejected | implemented（implemented = 制品已复核落地）
+    # pending | confirmed | rejected | frozen | implemented（implemented = 制品已复核落地）
     status: str = "pending"  # 候选不得自动发布（低风险亦须显式 confirm）
     risk_level: Literal["low", "high"] = "low"  # 风险域：架构级(plugin)=high 必审；技能库级=low
     # 稳定身份：构造即固化、不依赖对象标识 —— 待确认队列跨进程可用（见 pending.py）

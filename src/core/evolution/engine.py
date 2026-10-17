@@ -103,12 +103,16 @@ class EvolutionEngine:
         candidate = self._proposer.propose(diagnosis)
         gate = self._validator.validate(candidate)
         if not gate.passed:
+            candidate.status = "rejected"  # 终态：不得留在待确认快照（change 0243）
             self._pending.record(candidate, gate)
             self._write_rejected_lesson(candidate, gate)
             return EvolutionOutcome(
                 status="rejected", diagnosis=diagnosis, candidate=candidate, gate=gate
             )
         eval_report = self._evaluator.evaluate(candidate)
+        if eval_report.verdict != "publish":
+            # 终态（change 0243）：退化 ⇒ rejected；无法评测 ⇒ frozen。结局 status 仍区分二者
+            candidate.status = "frozen" if eval_report.verdict == "freeze" else "rejected"
         self._pending.record(candidate, gate, eval_report)
         if eval_report.verdict == "freeze":
             # 无法评测（无绑定基准 / 无样本 / 无执行器 / 无基线）⇒ 不下发、不发布；

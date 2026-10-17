@@ -3460,3 +3460,28 @@ PowerShell 输出编码不一致；环境块不列可用 shell、默认壳缺失
 > +3 scen（19 / 98 → 101）。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0230 行
 > （prompt 对齐不保证模型遵守 / 裁剪可能截在句中 / `param_schema` 无大小上界 /
 > 变体表需镜像维护）。
+
+## 154. 候选终态化与观察期滑动窗口（TC-EVTERM，change `0243`／ADR-0231，台账 E178）
+
+**背景**：全量 review 批次 C 发现 evolution 的两处判定语义缺陷 —— 失败结局不置候选终态（已判
+失败的候选仍留在 `evolve pending`），台账恢复对缺失字段 fail-open；观察期对开窗以来全部样本
+求累计均分且样本无上界（早期好样本永久稀释近期回归）。闭法：失败分支落盘前置终态；恢复缺省
+按最危险解释；观察样本改为有界滑动窗口（`max_samples=64`），判定只看最近样本。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-EVTERM-01 | **门禁拒绝终态**（承重） | 门禁 review=False 跑 `run_cycle` | 候选 `status="rejected"`，`pending()` 为空（`tests/test_evolution.py::test_gate_rejected_candidate_is_terminal`） |
+| TC-EVTERM-02 | **留出退化终态** | 基线 1.0、留出分 0.0 | 结局 `rollback`，候选 `status="rejected"`，队列空（`…test_eval_rollback_candidate_is_terminal`） |
+| TC-EVTERM-03 | **无法评测终态** | 空 `BenchmarkRegistry`（无基线） | 结局 `frozen`，候选 `status="frozen"`，队列空（`…test_eval_freeze_candidate_is_terminal`） |
+| TC-EVTERM-04 | 损坏记录 fail-closed | 落盘仅 `candidate_id` | 恢复为 `plugin` / `high` / `rejected`，`caliber=0`，不入队（`tests/test_evolution_pending.py::test_corrupt_record_recovers_fail_closed`） |
+| TC-EVTERM-05 | 未知 status 不恢复 | `status="bogus"` + `caliber=1` | 不按 pending 恢复，`status="rejected"`（`…test_unknown_status_does_not_recover_as_pending`） |
+| TC-EVTERM-06 | **样本上界 + 淘汰最旧** | 上界 4，连续采样 5 条（含 reload） | 仅保留最近 4 条，恢复后同样 ≤4（`tests/test_evolution.py::test_observation_window_is_bounded_and_evicts_oldest`） |
+| TC-EVTERM-07 | 恢复裁剪 | 上界 10 写 6 条，按上界 4 重开 | 恢复为最近 4 条（`…test_observation_reload_trims_to_max_samples`） |
+| TC-EVTERM-08 | **近期回归不稀释** | 基线 1.0、上界 10；先 20×1.0，再 3×0.0 | 前两条 0 不触发、第三条 0 触发（累计均分实现 20/23 永不触发）（`…test_observation_recent_regression_not_diluted_by_early_good_samples`） |
+| TC-EVTERM-09 | 基线不重估 | 基线 0.9，5×0.1 | `window.baseline` 恒 0.9（`…test_observation_baseline_not_reestimated_by_samples`） |
+
+> **反证**：摘 `run_cycle` 终态赋值 ⇒ TC-EVTERM-01/02/03 红；摘滑动裁剪（采样 + 恢复）⇒
+> 06/07/08 红；恢复缺省还原 fail-open ⇒ 04/05 红；复原 ⇒ 三个源文件 `md5sum` 同。规格：
+> `evolution` **MODIFIED** ×2 +6 scen（19 req / 101 → 107 scen）。**已知局限**：见
+> `coding-plan/known-risk.md` §3 ADR-0231 行（进程内单文件无锁 / `frozen` 仍可 find /
+> 基线与在线样本量纲差 / 重复 confirm 覆盖状态 / max 与 min 不校验）。

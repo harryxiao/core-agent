@@ -51,9 +51,17 @@ def _candidate_to_dict(candidate: GenerationCandidate) -> dict[str, Any]:
     }
 
 
+_STATUSES = frozenset({"pending", "confirmed", "rejected", "frozen", "implemented"})
+
+
 def _candidate_from_dict(raw: dict[str, Any]) -> GenerationCandidate:
-    kind: Literal["skill", "plugin"] = "plugin" if raw.get("kind") == "plugin" else "skill"
-    risk: Literal["low", "high"] = "high" if raw.get("risk_level") == "high" else "low"
+    # 恢复 fail-closed（change 0243）：缺失/未知字段按**最危险**解释 —— 损坏或旧格式记录不得
+    # 以低风险、待确认的姿态绕过架构级审批
+    kind: Literal["skill", "plugin"] = "skill" if raw.get("kind") == "skill" else "plugin"
+    risk: Literal["low", "high"] = "low" if raw.get("risk_level") == "low" else "high"
+    status = str(raw.get("status") or "")
+    if status not in _STATUSES:
+        status = "rejected"
     # 口径缺失 ⇒ `0`（**口径字段引入前**的旧行）：不 fail-open 当作现口径 —— 其门禁/评测结论
     # 产自旧口径（可能正是恒通过桩），故投放时按「旧口径候选」拒绝（见 engine.crystallize）
     caliber = int(raw["caliber"]) if isinstance(raw.get("caliber"), int) else 0
@@ -63,7 +71,7 @@ def _candidate_from_dict(raw: dict[str, Any]) -> GenerationCandidate:
         target_plugin=str(raw.get("target_plugin") or ""),
         delta=dict(raw.get("delta") or {}),
         kind=kind,
-        status=str(raw.get("status") or "pending"),
+        status=status,
         risk_level=risk,
         caliber=caliber,
     )

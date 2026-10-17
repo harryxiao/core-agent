@@ -8276,6 +8276,46 @@ python env ⇒ `test_code_run_python_sets_utf8_io_env` 红；摘掉 `default_she
 上界；④ 谓词变体表是闭合白名单的**镜像维护面**（新增变体需改 `_PREDICATE_VARIANTS`）；
 ⑤ 前端 `doctest` 与 Web 侧构建不在四门禁内（既有边界）。
 
+## ADR-0231：候选终态化与观察期滑动窗口（change 0243 / 台账 E178）
+
+**背景**：记忆与 evolution 全量 review 的批次 C 暴露两处**判定语义**缺陷：① `EvolutionEngine.
+run_cycle` 的门禁拒绝 / 留出退化 / 无法评测三个分支只返回 outcome，**不把候选置终态**，而
+`PendingQueue.pending()` 只按 `status == "pending"` 过滤 ⇒ 已判失败的候选仍出现在
+`evolve pending`，人工 `confirm` 后才在 `crystallize` 撞 `GATE_REJECTED` / `EVAL_REGRESSED` /
+`EVAL_FROZEN`；恢复面另有 fail-open：落盘记录缺失 `kind` / `risk_level` 时按 `skill` / `low`
+恢复，损坏/旧格式记录可绕过架构级审批。② `ObservationWindow.mean` 对开窗以来**全部**样本求
+均值且样本列表无上界 ⇒ 早期好样本永久稀释后期回归（退化永不触发），长跑下窗口无界增长。
+
+**决策**：
+
+- **D1 失败结局显式终态**：`run_cycle` 在 `record` **之前**置状态 —— 门禁拒绝 / 留出评测
+  `rollback` ⇒ `status="rejected"`；`freeze` ⇒ `status="frozen"`（独立终态，避免把「无法评测」
+  误记为「已判退化」）。`EvolutionOutcome.status` 保留三值以区分结局；`pending()` 过滤面不变。
+- **D2 恢复 fail-closed**：`_candidate_from_dict` 对未知/缺失 `kind` 取 `plugin`、`risk_level`
+  取 `high`；缺失/未知 `status` ⇒ `rejected`；`caliber` 缺失仍保持 `0`（不可结晶）。正常记录
+  四字段齐全 ⇒ 行为不变。
+- **D3 滑动窗口**：新增 `_OBSERVE_MAX_SAMPLES = 64` 与 `ObservationRegistry(max_samples=64)`；
+  采样追加后超界淘汰最旧，`_load` 恢复时同样裁剪；`mean` 语义变为「最近窗口均分」。不采用
+  EWMA（引入平滑系数这一不可解释的新决策参数；滑动窗口可直接写入规格与教训）。`max_samples <
+  min_samples` 不额外校验（误配侧是「永不触发」，保守方向）。
+- **D4 基线口径写明而非改码**：基线仍是发布时留出评测分；规格明确在线样本是归因 trace 成功率，
+  二者仅**代理可比**、容差吸收量纲差、基线不随样本重估（发布时无在线样本，无法标定在线基线）。
+
+**规格**：`evolution` **MODIFIED**「观察期回归自动溶解（auto-dissolve）」（＋3 Scenario）与
+「人工确认队列的持久化与操作面」（＋3 Scenario）—— 19 req 不变、101 → 107 scen。既有 Scenario
+逐字保留。
+
+**反证（实测）**：摘 `run_cycle` 终态赋值 ⇒ 3 红；摘滑动裁剪（采样 + 恢复）⇒ 3 红；恢复缺省
+还原 fail-open ⇒ 2 红。复原后三个源文件 `md5sum` 同。测试锚点：新增 9 例（`test_evolution.py`
+7：终态 3、窗口上界/恢复裁剪/不稀释/基线不变 4；`test_evolution_pending.py` 2：损坏记录
+fail-closed、未知 status 不恢复为 pending）。全量 2687 → **2696** passed。
+
+**局限**：① 观察窗口仍是进程内 + 单文件状态，多进程并发采样无锁（既有局限，未扩大）；
+② `frozen` 只影响待确认快照 —— `find()` 仍可定位该候选（留痕需要），`crystallize` 的既有
+门禁/评测校验仍会拒绝；③ 基线（留出分）与在线样本（成功率）量纲不同，容差是唯一调节面，
+未做在线基线标定；④ 已确认（`confirmed`）后 `confirm` 再次调用仍会覆盖状态（既有行为，本
+change 未收紧）；⑤ `max_samples` 与 `min_samples` 的关系不校验，误配靠「永不触发」兜底。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8501,3 +8541,4 @@ python env ⇒ `test_code_run_python_sets_utf8_io_env` 红；摘掉 `default_she
 | ADR-0228 | 03-interfaces/prompts.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0229 | 03-interfaces/memory-interface.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0230 | 03-interfaces/prompts.md, 03-interfaces/memory-interface.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0231 | 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

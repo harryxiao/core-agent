@@ -167,6 +167,38 @@ def test_eval_regressed_triggers_rollback() -> None:
     assert exc_info.value.code is EvolutionErrorCode.EVAL_REGRESSED
 
 
+# ---- 失败结局终态化：已判失败不留在待确认队列（change 0243）----
+
+
+def test_gate_rejected_candidate_is_terminal() -> None:
+    """门禁未过 ⇒ 候选 `rejected`，不出现在待确认快照。"""
+    engine = _engine(validator=Validator(review=lambda _: False))
+    outcome = engine.run_cycle([_trace("1", success=False, plugin_id="memory.retrieve")])
+    assert outcome.status == "rejected"
+    assert outcome.candidate is not None and outcome.candidate.status == "rejected"
+    assert engine.pending() == []
+
+
+def test_eval_rollback_candidate_is_terminal() -> None:
+    """留出评测判退化 ⇒ 候选 `rejected`（结局仍是 rollback 以保留区分），不入队。"""
+    registry = BenchmarkRegistry()
+    registry.set_baseline("memory.retrieve", 1.0)
+    engine = _engine(evaluator=Evaluator(registry=registry, score_fn=lambda _c: 0.0))
+    outcome = engine.run_cycle([_trace("1", success=False, plugin_id="memory.retrieve")])
+    assert outcome.status == "rollback"
+    assert outcome.candidate is not None and outcome.candidate.status == "rejected"
+    assert engine.pending() == []
+
+
+def test_eval_freeze_candidate_is_terminal() -> None:
+    """无法评测（无基线）⇒ 候选 `frozen`，不入队（不是人工可确认的候选）。"""
+    engine = _engine(evaluator=Evaluator(registry=BenchmarkRegistry()))
+    outcome = engine.run_cycle([_trace("1", success=False, plugin_id="memory.retrieve")])
+    assert outcome.status == "frozen"
+    assert outcome.candidate is not None and outcome.candidate.status == "frozen"
+    assert engine.pending() == []
+
+
 # ---- 归因：插件级归因 / 无法归因走 manual ----
 
 
@@ -531,6 +563,50 @@ def test_observation_no_regression_keeps_window() -> None:
     registry.open("memory.retrieve", baseline=1.0)
     for _ in range(4):
         assert registry.sample("memory.retrieve", 0.9) is False
+
+
+def test_observation_window_is_bounded_and_evicts_oldest(tmp_path) -> None:
+    """样本有上界：超界淘汰最旧；落盘恢复后同样不超过上界（change 0243）。"""
+    path = tmp_path / "observations.json"
+    registry = ObservationRegistry(path=path, max_samples=4, min_samples=99)
+    registry.open("memory.retrieve", baseline=1.0)
+    for score in (0.1, 0.2, 0.3, 0.4, 0.9):
+        registry.sample("memory.retrieve", score)
+    assert registry.window("memory.retrieve").samples == [0.2, 0.3, 0.4, 0.9]
+
+    revived = ObservationRegistry(path=path, max_samples=4, min_samples=99)
+    assert revived.window("memory.retrieve").samples == [0.2, 0.3, 0.4, 0.9]
+
+
+def test_observation_reload_trims_to_max_samples(tmp_path) -> None:
+    """旧窗口（更大上界）落盘后按新上界裁剪：恢复也不得超过上界。"""
+    path = tmp_path / "observations.json"
+    registry = ObservationRegistry(path=path, max_samples=10, min_samples=99)
+    registry.open("memory.retrieve", baseline=1.0)
+    for score in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6):
+        registry.sample("memory.retrieve", score)
+
+    trimmed = ObservationRegistry(path=path, max_samples=4, min_samples=99)
+    assert trimmed.window("memory.retrieve").samples == [0.3, 0.4, 0.5, 0.6]
+
+
+def test_observation_recent_regression_not_diluted_by_early_good_samples() -> None:
+    """判定只看最近样本：早期好样本不得永久稀释/掩盖近期回归（累计均分会永不触发）。"""
+    registry = ObservationRegistry(max_samples=10)
+    registry.open("memory.retrieve", baseline=1.0)
+    for _ in range(20):
+        assert registry.sample("memory.retrieve", 1.0) is False
+    assert registry.sample("memory.retrieve", 0.0) is False  # 窗口 9×1 + 0，均分 0.9
+    assert registry.sample("memory.retrieve", 0.0) is False  # 8×1 + 2×0，均分 0.8
+    assert registry.sample("memory.retrieve", 0.0) is True  # 7×1 + 3×0，均分 0.7 < 0.8
+
+
+def test_observation_baseline_not_reestimated_by_samples() -> None:
+    registry = ObservationRegistry()
+    registry.open("memory.retrieve", baseline=0.9)
+    for _ in range(5):
+        registry.sample("memory.retrieve", 0.1)
+    assert registry.window("memory.retrieve").baseline == pytest.approx(0.9)
 
 
 def test_observation_freeze_blocks_then_expires() -> None:

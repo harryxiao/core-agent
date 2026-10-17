@@ -216,14 +216,15 @@ class EvolutionEngine(Plugin):
 class ObservationWindow:
     target: str                 # 观察目标（= 候选 target_plugin，与 dissolve() 同键）
     baseline: float             # 结晶发布时的评测基线分
-    samples: list[float]        # 发布后的实测分（冻结时清零）
+    samples: list[float]        # 发布后的实测分（滑动窗口，≤ max_samples；冻结时清零）
     frozen_until: float         # 冻结冷却期截止
     @property
-    def mean(self) -> float     # 观察均分（无样本 → 0.0）
+    def mean(self) -> float     # 窗口内观察均分（无样本 → 0.0）
 
 class ObservationRegistry:
-    def __init__(self, *, path: Path | None = None, ...) -> None:
-        """``path`` 注入则落盘（基线 / 样本 / 冻结截止），启动恢复；缺省纯内存。"""
+    def __init__(self, *, path: Path | None = None, max_samples: int = 64, ...) -> None:
+        """``path`` 注入则落盘（基线 / 样本 / 冻结截止），启动恢复；缺省纯内存。
+        ``max_samples``：样本上界，超界淘汰最旧（恢复时同样裁剪；change 0243）。"""
     def open(self, target: str, *, baseline: float) -> ObservationWindow: ...
     def sample(self, target: str, score: float, *, now: float | None = None) -> bool:
         """记样本，返回是否触发回归（未开窗 / 冻结期内 → 忽略并返回 False）。"""
@@ -239,7 +240,8 @@ def observe(self, target: str, score: float, *, now: float | None = None) -> Evo
 | 维度 | 口径 |
 |---|---|
 | **开窗** | `crystallize` **发布成功后**开窗（基线 = 该候选 `eval.held_out_score`）；未开窗目标的采样被忽略（不建窗、不抛异常） |
-| **回归判据** | 样本数 ≥ `_OBSERVE_MIN_SAMPLES`(3) **且** 均分 < 基线 − `_REGRESSION_TOLERANCE`(0.2，绝对分差，与 `Evaluator.margin` 同形状) |
+| **回归判据** | 样本数 ≥ `_OBSERVE_MIN_SAMPLES`(3) **且** **最近**均分 < 基线 − `_REGRESSION_TOLERANCE`(0.2，绝对分差，与 `Evaluator.margin` 同形状)；均分只在保留的最近 `max_samples`(64) 条上计算（滑动窗口，早期样本不得永久稀释近期回归） |
+| **基线口径** | 基线 = 发布时**留出评测分**（0–1），在线样本 = 归因 trace **成功率**（0–1）——代理可比的不同量纲，容差吸收差异；基线不随在线样本重估（change 0243） |
 | **冻结** | 溶解即冻结该目标 `_FREEZE_COOLDOWN_S`(300s) 并**清零样本**；冷却期内不累积、不触发，到期自动恢复采样 |
 | **留痕** | 回归证据（基线 / 观察均分 / 样本数）拼进 `dissolve` 的教训条目（L2，`tags` 含 `dissolve`） |
 | **采样来源** | 生产侧由 `EvolutionWorker._sample_observations` 供数：每轮 `run_cycle` 后对本批 trace 中**已开窗**目标按 `plugin_id` 归因算批次成功率并各上报一次；无归因 trace 的目标不采样（线上代理指标，与留出评测分近似可比） |
@@ -286,6 +288,8 @@ def reject(self, candidate: GenerationCandidate, *, reason: str | None = None) -
 | **稳定身份** | `GenerationCandidate.candidate_id`（UUID 前 12 位，**构造即固化**）——`Proposer._generation` 是进程内自增，跨进程不唯一，**不可作键**；门禁/评测检索一律按它 |
 | **结论随候选** | 门禁与评测报告、以及（可选）**原生实施制品**都与候选**同一条记录**落盘：不留「候选在而结论缺」的半状态（否则重启后 `crystallize` 误判 `GATE_REJECTED` / `EVAL_REGRESSED`） |
 | **待确认子集** | `pending()` 只列 `status == "pending"`；`confirm`/`reject` 后即出队，记录留在台账充当最小审计痕迹 |
+| **终态化** | `run_cycle` 的失败结局落盘前即置终态：门禁拒绝 / 留出退化 ⇒ `rejected`；无法评测（`freeze`）⇒ `frozen`。终态候选**不进入**待确认快照（change 0243） |
+| **恢复 fail-closed** | 未知/缺失 `kind` ⇒ `plugin`、未知/缺失 `risk_level` ⇒ `high`（不得绕过架构级审批）；缺失/未知 `status` ⇒ `rejected`；`caliber` 缺失保持 `0`（change 0243） |
 | **拒绝语义** | `reject` 置 `rejected` 并落盘；被拒候选 `crystallize` 抛 `CANDIDATE_PENDING` |
 | **写回脱敏** | `dissolve` / `reject` 的教训正文、`_crystallize_skill` 的 `description` / `preconditions` / `task_types`、`_crystallize_plugin` 的 `issue` 写前**无条件** `redact_secrets`（注入内容不构成信任边界；`param_schema` 不改写；change `0241`） |
 | **持久化** | 组合根注入 `$CORE_STATE_DIR/evolution-pending.json`；缺省纯内存（零行为变化）；落盘缺失/损坏降级为**空台账**（不抛、不阻断启动） |

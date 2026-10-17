@@ -19,13 +19,16 @@ from core.persistence import read_state, write_state
 _OBSERVE_MIN_SAMPLES = 3
 _REGRESSION_TOLERANCE = 0.2
 
+# 观察样本上界（滑动窗口）：超界淘汰最旧 —— 早期样本不得永久稀释/掩盖近期回归（change 0243）
+_OBSERVE_MAX_SAMPLES = 64
+
 # 溶解后该方向的冻结冷却期（秒）
 _FREEZE_COOLDOWN_S = 300.0
 
 
 @dataclass
 class ObservationWindow:
-    """一个产物的观察期窗口：基线 + 实测样本 + 冻结截止。"""
+    """一个产物的观察期窗口：基线 + 窗口内实测样本 + 冻结截止。"""
 
     target: str
     baseline: float
@@ -34,7 +37,7 @@ class ObservationWindow:
 
     @property
     def mean(self) -> float:
-        """观察均分（无样本 → 0.0）。"""
+        """窗口内观察均分（无样本 → 0.0）；样本受 ``max_samples`` 约束，只反映最近样本。"""
         return sum(self.samples) / len(self.samples) if self.samples else 0.0
 
 
@@ -47,11 +50,13 @@ class ObservationRegistry:
         min_samples: int = _OBSERVE_MIN_SAMPLES,
         tolerance: float = _REGRESSION_TOLERANCE,
         cooldown_s: float = _FREEZE_COOLDOWN_S,
+        max_samples: int = _OBSERVE_MAX_SAMPLES,
         path: Path | None = None,
     ) -> None:
         self._min_samples = min_samples
         self._tolerance = tolerance
         self._cooldown_s = cooldown_s
+        self._max_samples = max_samples
         self._path = path
         self._windows: dict[str, ObservationWindow] = {}
         self._load()
@@ -79,6 +84,7 @@ class ObservationRegistry:
         if (now if now is not None else time.time()) < window.frozen_until:
             return False
         window.samples.append(score)
+        self._trim(window)
         self._persist()
         return self._regressed(window)
 
@@ -97,17 +103,25 @@ class ObservationRegistry:
         """恢复落盘窗口（含冻结截止）；缺失 / 损坏 / 结构不符 → 无窗口（不抛）。"""
         raw = read_state(self._path)
         try:
-            self._windows = {
-                str(target): ObservationWindow(
+            windows: dict[str, ObservationWindow] = {}
+            for target, item in raw.items():
+                window = ObservationWindow(
                     target=str(target),
                     baseline=float(item["baseline"]),
                     samples=[float(score) for score in item.get("samples", [])],
                     frozen_until=float(item.get("frozen_until", 0.0)),
                 )
-                for target, item in raw.items()
-            }
+                self._trim(window)  # 旧窗口（更大上界）恢复时同样裁剪
+                windows[str(target)] = window
+            self._windows = windows
         except (AttributeError, KeyError, TypeError, ValueError):
             self._windows = {}
+
+    def _trim(self, window: ObservationWindow) -> None:
+        """把样本裁到最近 ``max_samples`` 条（淘汰最旧）。"""
+        overflow = len(window.samples) - self._max_samples
+        if overflow > 0:
+            del window.samples[:overflow]
 
     def _persist(self) -> None:
         write_state(

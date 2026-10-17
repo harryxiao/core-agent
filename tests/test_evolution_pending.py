@@ -297,6 +297,40 @@ def test_evolve_reject_unknown_id_fails(cli_env, capsys: pytest.CaptureFixture[s
     assert "不在待确认队列" in capsys.readouterr().err
 
 
+# ---- 恢复 fail-closed：损坏/旧格式记录不得 fail-open（change 0243）----
+
+
+def test_corrupt_record_recovers_fail_closed(tmp_path) -> None:
+    """缺失 kind/risk_level/status ⇒ plugin / high / 非 pending（绕过架构级审批被阻断）。"""
+    path = tmp_path / "pending.json"
+    path.write_text(json.dumps({"records": [{"candidate_id": "c1"}]}), encoding="utf-8")
+    queue = PendingQueue(path=path)
+    candidate = queue.find("c1")
+    assert candidate is not None
+    assert candidate.kind == "plugin"
+    assert candidate.risk_level == "high"
+    assert candidate.status == "rejected"
+    assert candidate.caliber == 0
+    assert queue.pending() == []
+
+
+def test_unknown_status_does_not_recover_as_pending(tmp_path) -> None:
+    """无法识别的 status 不得按 pending 恢复（只有显式 `pending` 才入待确认队列）。"""
+    path = tmp_path / "pending.json"
+    record = {
+        "candidate_id": "c2",
+        "kind": "skill",
+        "risk_level": "low",
+        "status": "bogus",
+        "caliber": 1,
+    }
+    path.write_text(json.dumps({"records": [record]}), encoding="utf-8")
+    queue = PendingQueue(path=path)
+    assert queue.pending() == []
+    restored = queue.find("c2")
+    assert restored is not None and restored.status == "rejected"
+
+
 # ---- 生产装配 ----
 
 
