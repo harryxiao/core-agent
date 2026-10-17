@@ -7864,6 +7864,49 @@ fallback_models 仍按实现类既有行为，本 change 只让**次数与单次
 `embed_provider` / `JEVProvider` 接线**（D6）；④ **不提供「重试进度可见」**（D5）；
 ⑤ **`constraints.retry_attempts` 未动**（不同轴：容错中间件重试「动作」而非「模型调用」）。
 
+## ADR-0222：TUI 点击与流式 Markdown 换段竞态崩溃兜底（change 0238 / 台账 E169）
+
+**背景**：用户实跑（Windows）报 Textual 崩溃 —— `App.on_event → Screen._forward_event →
+AttributeError: 'NoneType' object has no attribute 'region'`（`screen.py:1914`），locals 里
+`content_widget` 是 `MarkdownParagraph`、`container=None`。
+
+**根因**：**三方库 textual 的竞态**（上游 [Textualize/textual#6643](https://github.com/Textualize/textual/issues/6643)，OPEN）。
+本仓 TUI 流式回复以 `_tail_widget.update(text)` 合帧热更新 Markdown；`Markdown.update()` 换段瞬间，
+旧 `MarkdownParagraph` 已从 DOM 摘除（`parent=None`）但 compositor 命中测试仍返回它 ⇒
+选择初始化里 `container = content_widget.parent` 得 `None` 后直接解引用 `container.region` ⇒
+整应用崩溃。**升级不可修复**：上游最新 release v8.2.8 即本仓安装版（用户 traceback 行号与
+本仓副本逐字吻合）。
+
+**决策**：
+
+- **D1 守卫落 `ReplApp.on_event` 边界**（用户三选一裁决）。`App.on_event` 是崩溃 traceback 的
+  确切帧且是我们拥有的唯一层：对 `await super().on_event(event)` 包
+  `contextlib.suppress(AttributeError)`，拦住整类竞态，零框架补丁。
+- **D2 只收 `AttributeError`**（该竞态的确切异常类型；宽捕会吞真缺陷）。守护锚用例钉死
+  「`RuntimeError` 照常冒泡」—— 与 ADR-0220「不吞 turn body 异常」同口径。
+- **D3 丢弃语义 = 丢该单个事件**：竞态命中时本次 `MouseDown` 不形成选择（再点即可）；
+  非竞态路径逐字透传（守护锚钉「恰转发一次」）。`_mouse_down_offset` 虽在崩溃点前已赋值，
+  但后续 `MouseUp` 分支只走 `clear_selection`（无 `.parent` 解引用）⇒ 无残留态风险。
+- **D4 不 monkeypatch、不关选择**：`Screen.get_widget_and_offset_at` 过滤（上游建议修法①）需
+  类级补丁三方库（上游改名即静默失效）；`ALLOW_SELECT = False` 牺牲应用内文本选择。均被否决。
+- **D5 缺陷修复 ⇒ 无条件生效、不设配置门**（判例 0206/0210/0228）。
+
+**规格**：**规格中性**（`skip_specs`）。`ui` spec 无任何 Requirement 约束事件转发 / 鼠标选择；
+本 change 只把「三方库竞态不得杀死整个应用」收为呈现层不变式（判例 `0228`/`0229`/`0231`）。
+
+**反证（实测）**：摘除 `on_event` 覆写 ⇒ **1 红**（`test_click_hit_detached_widget_survives`，
+在**真实 textual 代码路径**上抛出与用户崩溃**逐字相同**的 `screen.py:1914 AttributeError` ——
+承重锚以「从未挂载的 `Static` + 假命中返回非空 offset」构造 #6643 的崩溃形态）；
+两守护锚（恰转发一次 / `RuntimeError` 冒泡）恒绿。复原 ⇒ `md5sum` 逐字节同（`4db7529d…`）。
+测试 **+3**（`tests/test_ui_event_guard.py`，2647 → **2650** passed；5 红为并行批次遗留，
+干净 HEAD 上原样复现，与本 change 无关）。
+
+**局限**：① 守卫按异常类型收口 —— 未来其他 textual 内部 bug 产生的 `AttributeError` 也会被吞
+（今日该路径上任何 `AttributeError` 都是整应用崩溃，吞事件严格优于崩溃；不进任何日志面）；
+② MouseMove/MouseUp 分支的同形解引用不另设守卫（同一 `on_event` 边界已覆盖）；
+③ 上游修复落地后守卫自然空转（不冲突、不必拆）；④ 承重锚模拟的是**崩溃形态**
+（`parent=None` + offset 非空）而非 compositor 真竞态时序（真竞态无法确定性构造）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8080,3 +8123,4 @@ fallback_models 仍按实现类既有行为，本 change 只让**次数与单次
 | ADR-0219 | 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0220 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0221 | 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0222 | 04-testing/test-cases.md, coding-plan/known-risk.md |

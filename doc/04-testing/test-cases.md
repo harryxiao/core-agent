@@ -3219,3 +3219,34 @@ CLI/env/yaml 三面），校验期阻断非法值，组合根注入主 provider�
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0221 行（dataclass 缺省在配置路径不可观测 /
 > 不改 provider 重试语义 / 不给 `embed_provider`·`JEVProvider` 接线 / 不做「重试进度可见」/
 > `constraints.retry_attempts` 未动（不同轴））。
+
+## 145. TUI 点击与流式 Markdown 换段竞态崩溃兜底（TC-EVGD，change `0238`／ADR-0222，台账 E169）
+
+**背景**：用户实跑（Windows）报 Textual 崩溃 —— `App.on_event → Screen._forward_event →
+AttributeError: 'NoneType' object has no attribute 'region'`（`screen.py:1914`，locals
+`content_widget=MarkdownParagraph`、`container=None`、`event=MouseDown`）。根因是**三方库
+textual 的竞态**（上游 [#6643](https://github.com/Textualize/textual/issues/6643)，OPEN）：
+流式 `Markdown.update()` 换段瞬间，compositor 命中测试仍返回已摘除段落（`parent=None`）⇒
+选择初始化解引用 `container.region` ⇒ 整应用崩溃。本仓触发面 = `_tail_widget.update(text)`
+合帧热更新；上游最新 release（8.2.8）即安装版 ⇒ **升级不可修复**。修法（用户三选一裁决）：
+`ReplApp.on_event` 边界守卫 —— `contextlib.suppress(AttributeError)` 包
+`await super().on_event(event)`，丢弃**该单个事件**；**只收 `AttributeError`**，真缺陷照常冒泡。
+
+| 用例 | 面 | 输入 | 断言（`tests/test_ui_event_guard.py::…`） |
+|---|---|---|---|
+| TC-EVGD-01 | **竞态崩溃兜底**（承重） | monkeypatch `screen.get_widget_and_offset_at` 返回**从未挂载**的 `Static`（`parent=None`）＋ 非空 offset，`await app.on_event(MouseDown)` | 应用**不崩**（无守卫 ⇒ 与用户崩溃**逐字相同**的 `screen.py:1914` `AttributeError` 冒泡 —— 承重锚走**真实 textual 代码路径**复现 #6643 崩溃形态）（`…::test_click_hit_detached_widget_survives`） |
+| TC-EVGD-02 | 守卫透明 | 正常 `MouseDown`（真 screen，桩 `_forward_event` 计数） | 恰转发**一次**（无吞、无重派）（`…::test_events_still_forwarded_once`） |
+| TC-EVGD-03 | 不吞真缺陷 | 桩 `_forward_event` 抛 `RuntimeError` | `RuntimeError` 照常冒泡（守卫只收 `AttributeError`，与 ADR-0220「不吞 turn body 异常」同口径）（`…::test_real_errors_still_propagate`） |
+
+> **反证（实测）**：摘除 `ReplApp.on_event` 覆写 ⇒ **恰 1 红**（TC-EVGD-01，异常从真实 textual
+> 路径冒泡）⇒ 守卫被锚定；TC-EVGD-02 / 03 为守护锚（语义为「无吞 / 无重派」，不依赖守卫存在，
+> 恒绿）。`cp` 备份后摘、复原后 `md5sum` **逐字节相同**（`4db7529d…`）⇒ 3 passed。绿后全量
+> `.venv/bin/pytest -q` ⇒ **2650 passed**（**+3**；另有 5 红为**并行批次遗留** ——
+> `test_benchmark_runner` ×2（0236 新门拒 0212 桩）/ `test_history_persistence` ×1 /
+> `test_longtask_e2e` ×1 / `test_orchestration` ×1（`asyncio.to_thread` 冒 `CancelledError`），
+> `git stash` 于干净 HEAD 原样复现 ⇒ 与本 change 无关，待裁决）；四门禁：`ruff check` ✓ /
+> `ruff format --check` ✓ / `pyright`（**无参**，0-0-0）✓ / `pytest`（除上述并行遗留 5 红）✓；
+> `openspec validate --all` 归档后 **31 passed**（2 failed 为并行 open change `0230`/`0233`
+> 遗留、非本 change）；**规格中性**（`skip_specs`，零 spec delta）。**已知局限**：见
+> `coding-plan/known-risk.md` §3 ADR-0222 行（按异常类型收口 / MouseMove·MouseUp 同边覆盖 /
+> 上游修复后自然空转 / 承重锚模拟崩溃形态非真竞态时序）。

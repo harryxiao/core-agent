@@ -248,7 +248,7 @@ def _code_run_name(args: object) -> str:
     """``tools.code_run`` 按有效 ``type`` 命名（缺省按 bash 心智兼容旧调用）。"""
     type_name = "bash"
     if isinstance(args, Mapping):
-        raw = args.get("type")
+        raw = cast("Mapping[str, Any]", args).get("type")
         if isinstance(raw, str) and raw.strip():
             type_name = raw.strip().lower()
     return _CODE_RUN_NAMES.get(type_name, "Bash")
@@ -462,9 +462,13 @@ def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — �
         行缓冲 append-only（末元素是未完成行）⇒ 消原全文重拼的 O(n²)。
         """
 
-        def __init__(
-            self, title: str, *, collapsed: bool = True, symbol: str = "·"
-        ) -> None:
+        _started_at: float | None = None  # Thinking 块计时锚点（未启动为 None）
+
+        def start_clock(self) -> None:
+            """记块开始时刻（Thinking 落静时计算耗时后缀用）。"""
+            self._started_at = time.monotonic()
+
+        def __init__(self, title: str, *, collapsed: bool = True, symbol: str = "·") -> None:
             self._lines: list[str] = [""]
             self._body = Static("", classes="step-body", markup=False)
             super().__init__(
@@ -670,6 +674,14 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                         suggester=_PaletteSuggester(self._candidates),  # 幽灵补全（与浮层同源）
                     )
                 yield Static(self._HINTS_SHORT, id="hints")
+
+        async def on_event(self, event: events.Event) -> None:
+            """事件入口兜底（textual#6643，上游 8.2.8 未修）：流式 `Markdown.update()`
+            换段瞬间，命中测试可能返回已摘除段落（`parent=None`）⇒ Screen 选择初始化
+            对 `container.region` 解引用 ⇒ `AttributeError` 整应用崩溃。丢弃该单个
+            事件（本次点击不形成选择）；**只收 AttributeError**，真缺陷仍照常冒泡。"""
+            with contextlib.suppress(AttributeError):
+                await super().on_event(event)
 
         def on_mount(self) -> None:
             self.register_theme(core_theme)
@@ -1227,7 +1239,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                     collapsed=True,
                     symbol=_step_symbol("Thinking"),
                 )
-                box._started_at = time.monotonic()  # noqa: SLF001 — 块内计时锚点
+                box.start_clock()  # 块内计时锚点
                 return box
 
             def _feed_thinking(box: _StepBlock, chunk: str) -> None:
