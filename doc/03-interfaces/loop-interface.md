@@ -271,6 +271,10 @@ def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "
   压实触发口径（change 0182 / ADR-0173）：
   第一维度是**本轮工具步数**（`ctx.rounds`，每用户轮自 `0` 起算，**非**对话轮数）达
   `loop.compact_steps`（缺省 `6`），第二维度是 token 达预算；**每轮至多压实一次**（本轮标记）。
+  进度与上限（change 0256 / ADR-0247）：阈值压实前后各产出 `loop.compacting`（`round`）与
+  `loop.compacted`（`round` / `elapsed_ms` / `timeout`）两条 LoopEvent（未注入压实器 ⇒ 不产出）；
+  等待上限 `compact_timeout`（构造注入，缺省 `120` 秒，`None` 关闭）超时 ⇒ 记
+  `maintenance_failed.step="compaction_timeout"` 并**放行本轮**（fail-open，不中断、不重复压实）。
 - **预算降级续跑**（change 0230 / ADR-0237）：token 达 `token_budget` 且本轮未降级过、已注入
   压实器 ⇒ 先强制压实一次，再给模型**一轮收尾机会**；收尾轮完成 ⇒ 正常收口，仍未完成才以
   `TOKEN_BUDGET_EXCEEDED` 终止（trace 记 `budget_retry`）。压实**不降低**本轮消息记账
@@ -311,6 +315,11 @@ def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "
   `end_trace(trace_id)` **封口**（交付导出器 + 释放内存）。收尾顺序 SHALL 为
   「记录本轮全部遥测 → trace 完成回调 → `end_trace` 封口」，**反序**会让回调回放空链路（静默失效）。
   见 ADR-0096。
+- **中断留痕**（change 0256 / ADR-0247）：`astream` 是薄包装（执行体 `_astream_events`）。消费方
+  提前关闭（`GeneratorExit`）/ 取消（`CancelledError`）/ 执行体未收尾异常 ⇒ SHALL 先记录
+  `loop_aborted`（`reason` 仅异常**类型名**，不含用户文本 / 异常消息 / 密钥）再 `end_trace` 封口，
+  使已记录事件经导出器落盘；SHALL NOT 追加助手转录、SHALL NOT 写轮末完成记忆。正常收尾路径
+  事件序、`trace_observer` 回调时机与封口时机 SHALL 逐字不变（仍由执行体自己封口）。
 - 模块归因：循环**自身失败**（轮数/token 预算耗尽）时其 `loop_finished` 遥测事件带
   `module_id="loop.default"`；正常收尾缺省为空（不产虚假缺陷证据）。见 ADR-0094。
 - 会话历史回灌与转录（change 0115 / ADR-0108，`session_id` 非空时）：`perceive` 先按**双重上界**

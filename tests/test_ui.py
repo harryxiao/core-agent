@@ -165,6 +165,14 @@ def test_loop_reasoning_maps_to_identity_type() -> None:
     assert streamed[1].payload == {"text": "想"}
 
 
+def test_compaction_progress_events_are_explicitly_mapped() -> None:
+    """压实进度事件显式登记到契约表（change 0256）。"""
+    from core.ui.api import _EVENT_MAP  # noqa: PLC0415, PLC2701 — 契约表断言锚点
+
+    assert _EVENT_MAP["loop.compacting"] == "loop.compacting"
+    assert _EVENT_MAP["loop.compacted"] == "loop.compacted"
+
+
 # ---- 四错误码 ----
 
 

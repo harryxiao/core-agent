@@ -42,6 +42,9 @@ _EVENT_MAP = {
     # （`{"text": …}`）而类型相异，三端据此分落折叠块与正文。显式登记而非依赖 `_map_event`
     # 的 identity 兜底，使本表始终是「LoopEvent → SSE 类型」的完整契约面。
     "loop.reasoning": "loop.reasoning",
+    # 轮内压实进度（change 0256）：前后各一条，三端据此显示「压缩中 / 已压缩」。
+    "loop.compacting": "loop.compacting",
+    "loop.compacted": "loop.compacted",
     "loop_finished": "loop.result",
     "loop_failed": "loop.error",
 }

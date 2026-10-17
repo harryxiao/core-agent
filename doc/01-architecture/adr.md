@@ -9029,6 +9029,57 @@ P1 确定性 SOP 发布质量门、P2 抽取拒绝反馈与去重、P3 任务记
 ⑤ `param_schema` 仍无大小上界（结构化对象，截断会破坏 schema，与 ADR-0230 局限③同）；
 ⑥ P2（抽取拒绝反馈 / 去重）、P3（任务记忆摘要）、P4（benchmark 执行候选）仍为后续批次。
 
+## ADR-0247：运行稳定性三项（流式超时 / 中断留痕 / 压实有界）（change 0256 / 台账 E193）
+
+**背景**：对实跑会话 `cb37aba3ddf54bcc9336be2464c95c07` 的复盘确认三条**同时发生**的稳定性缺陷：
+
+1. **流式挂起无上限**：`StdlibLLMProvider.astream` 的消费端对 `queue.get()` **无超时**；生产者线程
+   只在拿到 `data:` 帧时入队，而 SSE 注释 / keep-alive 行被 `_iter_sse_payloads` 跳过。socket 读
+   超时管不到「连接活着但持续只发心跳」的端点 ⇒ 事件循环无限等待。
+2. **中断无痕**：`Tracer` 事件在内存缓冲、仅在 `end_trace` 时经导出器落盘；`DefaultLoop.astream`
+   无 `try/finally`。消费方断流 / 取消 / 未收尾异常时本轮事件**静默丢失**，事后无法归因。
+3. **压实静默阻塞**：轮内压实把同步模型调用卸载到工作线程，但等待**无上限**；实测单次 38–54s。
+   期间事件面没有任何进度信号，表现为「无响应」，也无法区分「慢」与「挂死」。
+
+**决策**：
+
+- **D1 队列级空闲超时**：`astream` 每块等待包进
+  `asyncio.wait_for(queue.get(), timeout=self._timeout)`（复用既有 `llm.timeout`，不新增配置键）；
+  超时 ⇒ 尽力关闭响应、抛 `LLMTimeoutError`。按**相邻增量间隔**而非总时长设限：合法长生成不被
+  误杀，心跳型挂起必被截断。**流式不重试**：已交付增量不可回滚，重试会造成重复文本；上层既有
+  `LLMError` 分支落失败终止动作并正常收尾。
+- **D2 中断留痕薄包装**：公开 `astream` 变为包装器，执行体改名 `_astream_events` 并以
+  `contextlib.aclosing` 关闭；`state["finished"]` 标记执行体是否已正常封口。未收尾时补记
+  `loop_aborted`（`reason` 只取异常**类型名**，不含消息 / 用户文本 / 密钥）后再 `end_trace`。
+  正常路径的封口时机与 `trace_observer` 回调顺序**逐字不变**（执行体自己封口）；中断路径
+  **不**追加转录、**不**写轮末记忆、不改变既有回滚语义。
+- **D3 压实进度与上限**：阈值压实前后各产出一条 LoopEvent：`loop.compacting`（`round`）与
+  `loop.compacted`（`round` / `elapsed_ms` / `timeout`）；载荷不含正文或摘要。等待上限
+  `compact_timeout`（构造注入，缺省 **120s**，`None` 关闭）经 `asyncio.wait_for` 生效；超时记
+  `maintenance_failed.step="compaction_timeout"` 并返回 `timeout=True`，本轮**放行**
+  （fail-open：与 `_compact` 内「单步失败不中断本轮」同语义）。预算降级压实复用同一上限。
+- **D4 UI 契约**：`_EVENT_MAP` 显式登记两条事件（该表是 LoopEvent → SSE 的唯一契约面）；TUI
+  `_format_event` 渲染 `上下文压缩中…` / `上下文已压缩（<ms>ms）`（超时追加「（超时放行）」）。
+  Web / APP 对未知类型忽略，零改动。
+
+**规格**：`llm-provider` **ADDED**「流式增量等待超时」（2 scen）；`loop` **ADDED**「流式中断留痕」
+（3 scen）与「轮内压实进度与上限」（2 scen）。选用 ADDED 而非 MODIFIED 巨型 R1/R4：delta 聚焦、
+不改写既有需求正文。`openspec validate --all` 32/0。
+
+**测试**：新增 9 个用例 —— `test_llm_provider.py` 2（空闲超时 + 持续增量不误杀）、
+`test_loop.py` 3（消费方关闭 / 执行异常留痕、正常轮无 `loop_aborted`）、
+`test_loop_cost_observability.py` 2（进度事件 / 超时 fail-open）、`test_repl.py` 1（渲染文本）、
+`test_ui.py` 1（契约表登记）。反证 4/4：摘队列超时 / 摘 `loop_aborted` / 摘两条事件 / 摘
+`wait_for` 上限 ⇒ 对应用例红；复原 `md5sum` 一致。四门禁：`ruff check` / `ruff format --check`
+绿、`pyright` 0 errors、`pytest -q` **2843 passed**。架构门 `test_control_flow_nesting_max_three`
+促使把等待封装为 `_await_chunk`（`astream` 嵌套回到 3 层内）。
+
+**局限**：① `wait_for` 只取消**等待**，工作线程无法强杀，超时后压实仍可能在后台写完
+（记忆写回为追加型，与既有维护节拍并发假设一致）；② 流式超时**不重试**，长网断会直接本轮失败；
+③ trace 仍为**轮末批量导出**，仅中断路径补封口，未做逐事件持久化；④ provider 线程中已入队的
+增量在超时后可能继续产生（消费端已停止读取，队列随调用结束回收）；⑤ 会话复盘暴露的
+「并行 tool_calls 只执行首个 / 重复 file_write / 非原子写入」属 P1，另 change 处理。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9270,3 +9321,4 @@ P1 确定性 SOP 发布质量门、P2 抽取拒绝反馈与去重、P3 任务记
 | ADR-0244 | 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0245 | 03-interfaces/notes-interface.md, 03-interfaces/context-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0246 | 02-modules/skills.md, 03-interfaces/skills-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0247 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 03-interfaces/llm-provider-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

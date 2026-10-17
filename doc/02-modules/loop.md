@@ -151,7 +151,7 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
 - 新可选构造参 `turn_checkpoint: Callable[[str, str, str, bool], None] | None`（`(trace_id, session_id,
   goal, done)`，**闭包注入** —— loop **不** import durability，沿 `turn_observer`／`cold_path` 先例）。
 - **两写点**：轮首（`_load_pinned_notes` 后）写 `done=False`、轮末（`remember` 后）写 `done=True`，
-  经私有 `_mark_turn`；`astream` 无 `try/finally` ⇒ 轮内异常 / 被杀**天然**留 `done=False`（镜像波次语义）。
+  经私有 `_mark_turn`；中断路径**不**写 `done=True` ⇒ 轮内异常 / 被杀**天然**留 `done=False`（镜像波次语义）。
 - **缺省 `None`** ⇒ `_mark_turn` 首行短路 ⇒ **零写入**、既有路径逐字不变；`goal` 由 `_task_text(ctx)` 取。
 
 ### 3.6.1 既往失败教训注入块（change `0217` / ADR-0207 / 台账 E154）
@@ -172,6 +172,17 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
   （总耗时 + 分步耗时），每次轮内压实产一条 `compaction` 事件（`trigger` + 总耗时 + 分步耗时）；
   步骤失败记 `maintenance_failed` 并带 `step` 归因，不中断其余步骤。未注入 tracer ⇒ 零事件；
   payload 不含正文、摘要文本或会话标识。
+- **压实进度与上限**（change `0256`／ADR-0247）：阈值压实前后各产一条 **LoopEvent** ——
+  `loop.compacting`（`round`）与 `loop.compacted`（`round` / `elapsed_ms` / `timeout`），
+  消费方据此显示「压缩中 / 已压缩」；未注入压实器 ⇒ **零事件**。等待上限由构造参
+  `compact_timeout`（缺省 `120` 秒，`None` 关闭）控制，超时记
+  `maintenance_failed.step="compaction_timeout"` 并 **fail-open** 放行本轮；预算降级压实复用同一上限。
+  工作线程**不可强杀**（`wait_for` 只取消等待），超时后压实仍可能在后台完成（登记为局限）。
+- **流式中断留痕**（change `0256`／ADR-0247）：公开 `astream` 是薄包装，执行体为
+  `_astream_events`；消费方提前关闭 / 取消 / 执行体未收尾异常 ⇒ 先记 `loop_aborted`
+  （`reason` 仅异常**类型名**，不含消息 / 用户文本 / 密钥）再 `end_trace` 封口，使在途事件经
+  导出器落盘。正常路径的封口时机与 `trace_observer` 回调顺序**逐字不变**（执行体自己封口）；
+  中断路径**不**追加转录、**不**写轮末记忆。
 
 ---
 

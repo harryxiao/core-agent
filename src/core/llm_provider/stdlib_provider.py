@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import http.client
 import json
 import urllib.error
@@ -168,6 +169,8 @@ class StdlibLLMProvider(LLMProvider):
     async def astream(self, request: LLMRequest) -> AsyncIterator[LLMChunk]:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[Any] = asyncio.Queue()
+        # 生产者线程持有的响应（超时时由消费端尽力关闭，避免读线程继续挂在长连接上）
+        response: list[Any] = []
 
         def _put(item: Any) -> None:
             # asyncio.Queue 非线程安全，跨线程入队须经 call_soon_threadsafe
@@ -178,6 +181,7 @@ class StdlibLLMProvider(LLMProvider):
                 body = self._build_body(request, request.model, stream=True)
                 req = self._make_request(body, "chat/completions")
                 with self._transport.send(req, timeout=self._timeout) as resp:
+                    response.append(resp)
                     for payload in _iter_sse_payloads(resp):
                         _put(self._map_chunk(json.loads(payload)))
             except Exception as exc:  # noqa: BLE001 — 断流 / 底层异常统一归一
@@ -187,12 +191,28 @@ class StdlibLLMProvider(LLMProvider):
 
         loop.run_in_executor(None, _produce)
         while True:
-            item = await queue.get()
+            item = await self._await_chunk(queue, response)
             if item is _END:
                 return
             if isinstance(item, LLMError):
                 raise item
             yield item
+
+    async def _await_chunk(self, queue: asyncio.Queue[Any], response: list[Any]) -> Any:
+        """等待下一个增量，**相邻增量间隔**超过 ``timeout`` ⇒ 释放响应并抛超时。
+
+        socket 读超时管不到「连接活着但只发注释 / keep-alive」的端点——它们不入队
+        ``data`` 帧，消费端会无限等待（change 0256）。已交付的增量不回滚，故不重试。
+        """
+        try:
+            return await asyncio.wait_for(queue.get(), timeout=self._timeout)
+        except TimeoutError as exc:
+            for resp in response:
+                with contextlib.suppress(Exception):
+                    resp.close()
+            raise LLMTimeoutError(  # noqa: TRY003 — 文案含动态上限，非可静态归类的异常类
+                f"流式响应超时（>{self._timeout}s 无增量）"
+            ) from exc
 
     async def aembedding(self, texts: list[str]) -> list[Embedding]:
         if self._model is None:

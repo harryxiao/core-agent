@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import http.client
 import json
+import threading
 import time
 import urllib.error
 from collections.abc import Generator
@@ -231,6 +232,61 @@ def test_astream_parses_sse() -> None:
     assert chunks == ["he", "llo"]
     body = json.loads(transport.last.data.decode("utf-8"))
     assert body["stream"] is True
+
+
+def test_astream_idle_timeout_raises_llm_timeout() -> None:
+    """连接存活但无增量 ⇒ 等待上限归一为 LLMTimeoutError，已收增量保留（change 0256）。"""
+    release = threading.Event()
+    received: list[str] = []
+
+    def _lines() -> Any:
+        yield b'data: {"choices":[{"delta":{"content":"a"}}]}\n'
+        release.wait(1)  # 模拟 SSE 注释 / keep-alive：连接活着但永不产出 data 帧
+
+    provider = StdlibLLMProvider(
+        api_key="k",
+        base_url="https://example.com/v1",
+        model="m",
+        timeout=0.05,
+        transport=_FakeTransport(_stream_response(_lines())),
+    )
+
+    async def _run() -> None:
+        try:
+            async for chunk in provider.astream(
+                LLMRequest(messages=[Message("user", "hi")], model="m")
+            ):
+                received.append(chunk.content)  # noqa: PERF401 — 保序收集，便于断言
+        finally:
+            release.set()  # 放行生产者线程，避免 asyncio.run 关停执行器时等待
+
+    started = time.monotonic()
+    with pytest.raises(LLMTimeoutError):
+        asyncio.run(_run())
+
+    assert time.monotonic() - started < 2.0, "无增量等待必须有上限"  # noqa: PLR2004 — 断言阈值
+    assert received == ["a"], "超时前已外发的增量保持已交付"
+
+
+def test_astream_continuous_deltas_do_not_timeout() -> None:
+    """增量持续到达（间隔远小于 timeout）⇒ 不误杀（change 0256）。"""
+
+    def _lines() -> Any:
+        for text in ("a", "b", "c"):
+            yield f'data: {{"choices":[{{"delta":{{"content":"{text}"}}}}]}}\n'.encode()
+            time.sleep(0.01)
+
+    provider = StdlibLLMProvider(
+        api_key="k",
+        base_url="https://example.com/v1",
+        model="m",
+        timeout=2.0,
+        transport=_FakeTransport(_stream_response(_lines())),
+    )
+    chunks = asyncio.run(
+        _collect_stream(provider, LLMRequest(messages=[Message("user", "hi")], model="m"))
+    )
+    assert chunks == ["a", "b", "c"]
 
 
 # ---- 推理原文归一（change 0145 / 账本 E56）----

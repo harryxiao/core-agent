@@ -11,12 +11,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import time
 import uuid
 import warnings
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence, Sized
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence, Sized
 from typing import Any, cast
 
 from core.context import Compactor, ContextError, WindowPlan, estimate_tokens, plan_window
@@ -86,6 +87,9 @@ TurnCheckpoint = Callable[[str, str, str, bool], None]
 
 
 _MAINTENANCE_INTERVAL_S = 900.0  # 记忆维护节拍（秒）：默认 15 分钟
+# 单次压实耗时上限（秒，change 0256）：正常压实实测约 38s；超限即放行本轮，
+# 避免同步模型调用把事件循环上的其余任务无限期挂起。`None` ⇒ 不设限。
+_COMPACT_TIMEOUT_SECONDS = 120.0
 _MAX_ACTION_EXCERPT = 400  # 动作事件 args/output 节选上界（事件面有界）
 _MAX_STEP_VALUE = 80  # 行动序列单参数值摘要上界（change 0171 / ADR-0162）
 _MAX_STEP_LINE = 300  # 行动序列整行上界（change 0171 / ADR-0162）
@@ -319,6 +323,9 @@ class DefaultLoop(Plugin):
         transcript: TranscriptStore | None = None,
         history_turns: int = 20,
         maintenance_interval: float = _MAINTENANCE_INTERVAL_S,
+        # 单次压实耗时上限（秒，change 0256）：超时 ⇒ 留痕 `maintenance_failed`
+        # （step=`compaction_timeout`）并放行本轮；`None` ⇒ 不设限（既有行为）。
+        compact_timeout: float | None = _COMPACT_TIMEOUT_SECONDS,
         clock: Callable[[], float] | None = None,
         # 情景链的**时序相邻标注**开关（change 0202 / ADR-0192，缺省**关**）。开启 ⇒ 轮级失败
         # 条目的 `tags` 增 `after:<同会话上一已记忆轮>`；关闭 ⇒ 失败条目**逐字不变**。
@@ -357,6 +364,7 @@ class DefaultLoop(Plugin):
         self._transcript = transcript
         self._history_turns = history_turns
         self._maintenance_interval = maintenance_interval
+        self._compact_timeout = compact_timeout
         self._clock = clock if clock is not None else time.monotonic
         self._last_maintenance = self._clock()
         self._causal_links = causal_links
@@ -437,10 +445,39 @@ class DefaultLoop(Plugin):
             else:
                 yield item
 
-    async def astream(  # noqa: C901, PLR0912, PLR0915 — 主管线多分支长管道（事件面七类 + 工具调用遥测）
-        self, user_input: str, *, session_id: str = ""
-    ) -> AsyncIterator[LoopEvent]:
+    async def astream(self, user_input: str, *, session_id: str = "") -> AsyncIterator[LoopEvent]:
+        """流式执行入口（薄包装）：中断轮留痕并封口（change 0256）。
+
+        正常收尾由执行体自己调 `end_trace`（保持「trace 回调之后才封口」的既有顺序）；
+        消费方提前关闭 / 取消 / 未收尾异常时，本包装补记 `loop_aborted` 并封口，
+        使在途事件经导出器落盘，不再静默丢失。`collect_result` 在 `loop_finished`
+        提前返回时，执行体已完成封口（`state["finished"]`），不会误留中断痕。
+        """
         trace_id = self._start_trace(user_input)
+        state: dict[str, bool] = {"finished": False}
+        reason = "interrupted"
+        try:
+            async with contextlib.aclosing(
+                self._astream_events(user_input, trace_id, state=state, session_id=session_id)
+            ) as events:
+                async for event in events:
+                    yield event
+        except BaseException as exc:  # noqa: BLE001 — 留痕后原样重抛（含取消 / GeneratorExit）
+            reason = type(exc).__name__
+            raise
+        finally:
+            if not state["finished"]:
+                self._trace(trace_id, "loop_aborted", {"reason": reason})
+                self._end_trace(trace_id)
+
+    async def _astream_events(  # noqa: C901, PLR0912, PLR0915 — 主管线多分支长管道（事件面七类 + 工具调用遥测）
+        self,
+        user_input: str,
+        trace_id: str,
+        *,
+        state: dict[str, bool],
+        session_id: str = "",
+    ) -> AsyncGenerator[LoopEvent, None]:
         yield LoopEvent("loop_started", {"trace_id": trace_id})
         self._trace(trace_id, "loop_started", {"trace_id": trace_id})
         # 与上一轮后台收尾串行：避免新一轮感知/记忆与旧轮技能迭代、维护节拍并发踩踏。
@@ -450,8 +487,8 @@ class DefaultLoop(Plugin):
         self._load_pinned_notes(ctx, trace_id)
         self._load_failure_lessons(ctx, trace_id)
         # 轮首写点（change 0214 / ADR-0204）：用户消息**已进**转录（`perceive` 内追加）、
-        # 前置读（Consult / 常驻注入）**已完成** ⇒ 此处标记「本轮在途」。`astream` 无
-        # `try/finally` ⇒ 中途异常 / 被杀天然留未完结态（与编排波次回调同语义）。
+        # 前置读（Consult / 常驻注入）**已完成** ⇒ 此处标记「本轮在途」。中断路径只补记
+        # 遥测（change 0256），不写检查点 ⇒ 中途异常 / 被杀天然留未完结态（与编排波次回调同语义）。
         self._mark_turn(trace_id, session_id, ctx, done=False)
         limit_reason = ""
         # 推理产出不可用（解析失败 / 模型调用失败）的失败态终止动作 ⇒ 本轮失败（0166 / ADR-0156）。
@@ -532,8 +569,18 @@ class DefaultLoop(Plugin):
                 # 卸载到工作线程：压实含**同步**模型调用（摘要 / 关键事实抽取）——`completion()`
                 # 是 `asyncio.run` 薄壳，在事件循环线程上必抛；且其耗时为模型网络往返，
                 # 在循环线程上执行会阻塞其余任务（change 0167 / ADR-0157）。
-                await asyncio.to_thread(self._compact, ctx, trace_id)
+                # 前后各一条进度事件（change 0256）：消费方据此显示「压缩中」而非无响应。
+                yield LoopEvent("loop.compacting", {"round": ctx.rounds})
+                elapsed_ms, timed_out = await self._compact_bounded(ctx, trace_id)
                 compacted = True
+                yield LoopEvent(
+                    "loop.compacted",
+                    {
+                        "round": ctx.rounds,
+                        "elapsed_ms": round(elapsed_ms, 3),
+                        "timeout": timed_out,
+                    },
+                )
             if self._token_budget > 0 and ctx.token_used >= self._token_budget:
                 # 预算降级续跑（change 0230 / G2），语义见 `_budget_retry`。
                 retry, compacted = await self._budget_retry(
@@ -580,6 +627,8 @@ class DefaultLoop(Plugin):
         self._notify_trace_complete(trace_id)
         # 顺序约束：回调之后才封口（回调须能完整回放本轮事件；封口交付导出器 + 释放内存）
         self._end_trace(trace_id)
+        # 正常收尾已完成封口 ⇒ 包装器不再补记 loop_aborted（change 0256）
+        state["finished"] = True
         # 收尾钩子 + 维护节拍**后台**执行：二者均可含同步模型调用（0167），若 await 在
         # `loop_finished` 之前，TUI 终态已上屏却仍显示「思考中」。`collect_result` 在
         # `loop_finished` 提前返回 ⇒ 不可把 await 写在 yield 之后（会被 aclose 吞掉）。
@@ -863,6 +912,32 @@ class DefaultLoop(Plugin):
             },
         )
 
+    async def _compact_bounded(
+        self, ctx: LoopContext, trace_id: str, *, trigger: str = "threshold"
+    ) -> tuple[float, bool]:
+        """工作线程压实加耗时上限（change 0256），返回 ``(elapsed_ms, timed_out)``。
+
+        压实含**同步**模型调用，正常实测约 38s；端点挂起时会把事件循环上的其余任务
+        一并拖住。超限只取消「等待」，工作线程无法强杀（已登记为局限），但本轮立即
+        放行，并经 ``maintenance_failed``（step=``compaction_timeout``）留痕。
+        """
+        started = time.perf_counter()
+        timeout = self._compact_timeout
+        call = asyncio.to_thread(self._compact, ctx, trace_id, trigger=trigger)
+        try:
+            if timeout is None:
+                await call
+            else:
+                await asyncio.wait_for(call, timeout=timeout)
+        except TimeoutError:
+            self._trace(
+                trace_id,
+                "maintenance_failed",
+                {"step": "compaction_timeout", "timeout_s": timeout},
+            )
+            return (time.perf_counter() - started) * 1000.0, True
+        return (time.perf_counter() - started) * 1000.0, False
+
     async def _budget_retry(
         self, ctx: LoopContext, trace_id: str, *, budget_retried: bool, compacted: bool
     ) -> tuple[bool, bool]:
@@ -876,7 +951,8 @@ class DefaultLoop(Plugin):
         if budget_retried or self._compactor is None:
             return False, compacted
         if not compacted:
-            await asyncio.to_thread(self._compact, ctx, trace_id, trigger="budget_retry")
+            # 与阈值压实共用同一耗时上限（change 0256）：预算降级路径同样阻塞本轮。
+            await self._compact_bounded(ctx, trace_id, trigger="budget_retry")
             compacted = True
         ctx.token_used = max(_context_tokens(ctx), self._reported_prompt_tokens())
         self._trace(

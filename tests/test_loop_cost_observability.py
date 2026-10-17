@@ -8,12 +8,14 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from core.context import Compactor
-from core.loop import DefaultLoop, LoopContext
+from core.loop import Action, DefaultLoop, LoopContext
 from core.memory import MemoryStore
-from core.observability import Tracer
+from core.observability import TraceEvent, Tracer
+from core.tools import Tool, ToolDef, ToolProvider
 
 
 def _maintenance(tracer: Tracer, trace_id: str = "t") -> list[Any]:
@@ -140,3 +142,89 @@ def test_budget_retry_marks_compaction_trigger() -> None:
 
     triggers = [event.payload["trigger"] for event in _compaction(tracer)]
     assert triggers == ["budget_retry"]
+
+
+# ---- 轮内压实进度与上限（change 0256） ----
+
+
+class _CapturingExporter:
+    def __init__(self) -> None:
+        self.events: list[TraceEvent] = []
+
+    def emit(self, events: list[TraceEvent]) -> None:
+        self.events.extend(events)
+
+
+def _echo_provider() -> ToolProvider:
+    provider = ToolProvider()
+    provider.register(
+        Tool(
+            definition=ToolDef(
+                tool_id="tools.echo",
+                description="echo",
+                schema={"type": "object", "properties": {"text": {"type": "string"}}},
+                coeffects=[],
+                reversible=True,
+            ),
+            handler=lambda text: f"echo:{text}",
+        )
+    )
+    return provider
+
+
+def _stream(loop: DefaultLoop, prompt: str = "任务") -> list[Any]:
+    async def _run() -> list[Any]:
+        return [event async for event in loop.astream(prompt)]
+
+    return asyncio.run(_run())
+
+
+def _one_tool_planner(ctx: LoopContext) -> Action:
+    if ctx.rounds == 0:
+        return Action(tool_id="tools.echo", args={"text": "x"})
+    return Action(args={"reply": "ok"})
+
+
+def test_compaction_emits_progress_events() -> None:
+    """阈值压实前后各一条事件，后含耗时且 timeout=False（change 0256）。"""
+    loop = DefaultLoop(
+        planner=_one_tool_planner,
+        tools=_echo_provider(),
+        compactor=Compactor(step_threshold=1),
+        tracer=Tracer(),
+    )
+
+    events = _stream(loop)
+    types = [event.type for event in events]
+    assert types.index("loop.compacting") < types.index("loop.compacted")
+    compacted = next(event for event in events if event.type == "loop.compacted")
+    assert compacted.payload["round"] == 1
+    assert compacted.payload["elapsed_ms"] >= 0.0
+    assert compacted.payload["timeout"] is False
+    assert events[-1].type == "loop_finished"
+
+
+class _SlowCompactor(Compactor):
+    def compact(self, history: list[dict[str, Any]]) -> Any:
+        time.sleep(0.2)
+        return super().compact(history)
+
+
+def test_compaction_timeout_is_fail_open() -> None:
+    """压实超过上限 ⇒ timeout=True + 留痕 compaction_timeout，本轮正常收尾（change 0256）。"""
+    exporter = _CapturingExporter()
+    loop = DefaultLoop(
+        planner=_one_tool_planner,
+        tools=_echo_provider(),
+        compactor=_SlowCompactor(step_threshold=1),
+        tracer=Tracer(exporter=exporter),
+        compact_timeout=0.05,
+    )
+
+    events = _stream(loop)
+
+    compacted = next(event for event in events if event.type == "loop.compacted")
+    assert compacted.payload["timeout"] is True
+    assert events[-1].type == "loop_finished", "压实超时不得阻断本轮"
+    failed = [e for e in exporter.events if e.kind == "maintenance_failed"]
+    assert [e.payload["step"] for e in failed] == ["compaction_timeout"]

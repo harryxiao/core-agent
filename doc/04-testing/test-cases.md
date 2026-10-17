@@ -3849,3 +3849,32 @@ L2 只增不减（`FileBackend` 整份加载 + 线性扫描 ⇒ 内存与检索�
 > 四门禁全绿（`ruff check` / `ruff format --check` / `pyright` 0 / `pytest -q`）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0246 行（只拦逐字重复 / 误杀散文式 SOP /
 > 字符计长 / 无关闭开关 / `param_schema` 无上界 / P2–P4 后续）。
+
+## 169. 运行稳定性三项（TC-RTS，change `0256`／ADR-0247，台账 E193）
+
+**根因**：会话 `cb37aba3…` 复盘确认三条并发缺陷 —— ① `astream` 消费端对 `queue.get()` 无超时，
+SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等待；② `Tracer` 轮末批量导出且
+`DefaultLoop.astream` 无 `try/finally` ⇒ 消费方断流 / 取消时遥测静默丢失；③ 轮内压实等待无上限
+（实测 38–54s）、事件面无进度 ⇒ 表现为「无响应」。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-RTS-01 | **流式空闲超时**（承重） | 生产者先发 `a` 后静默 > `timeout=0.05` | 抛 `LLMTimeoutError`，耗时 < 2s；已收增量保留 `["a"]`（`test_astream_idle_timeout_raises_llm_timeout`） |
+| TC-RTS-02 | 持续增量不误杀（对照锚） | 三块 `a/b/c`，间隔 0.01s，`timeout=2.0` | 正常收齐、不超时（`test_astream_continuous_deltas_do_not_timeout`） |
+| TC-RTS-03 | **消费方断流留痕**（承重） | 收到 `loop_started` / `reply_delta` 后 `aclose()` | 导出器含 `loop_aborted`；trace 已封口（`tracer.replay()==[]`）（`test_interrupted_stream_records_loop_aborted_and_flushes`） |
+| TC-RTS-04 | **执行体异常留痕**（承重） | planner 产出 `a` 后抛 `RuntimeError` | 先记 `loop_aborted` 并封口，再原样抛出（`test_raising_stream_records_loop_aborted_and_flushes`） |
+| TC-RTS-05 | 正常轮无中断事件 | 正常流式完成 | trace **不含** `loop_aborted`（`test_normal_stream_has_no_abort_event`） |
+| TC-RTS-06 | **压实进度事件**（承重） | `Compactor(step_threshold=1)` + 一次工具动作 | `loop.compacting` 先于 `loop.compacted`；后者 `round=1`、`elapsed_ms≥0`、`timeout=False`；末事件 `loop_finished`（`test_compaction_emits_progress_events`） |
+| TC-RTS-07 | **压实超时放行**（承重） | 慢压实（0.2s）+ `compact_timeout=0.05` | `loop.compacted.timeout=True`；本轮仍到 `loop_finished`；遥测含 `maintenance_failed.step="compaction_timeout"`（`test_compaction_timeout_is_fail_open`） |
+| TC-RTS-08 | TUI 单行渲染 | 两条进度事件（含超时态） | `上下文压缩中…` / `上下文已压缩（38153ms）` / `上下文已压缩（120000ms）（超时放行）`（`test_format_event_renders_compaction_progress`） |
+| TC-RTS-09 | SSE 契约表登记 | — | `_EVENT_MAP` 显式登记两条事件（`test_compaction_progress_events_are_explicitly_mapped`） |
+
+> **反证**：P1 摘 `_await_chunk` 的 `wait_for` ⇒ TC-RTS-01 红；P2 摘 `loop_aborted` 记录 ⇒
+> TC-RTS-03/04 红；P3 摘两条进度事件 ⇒ TC-RTS-06 红；P4 摘 `_compact_bounded` 的 `wait_for` ⇒
+> TC-RTS-07 红。四次复原后 `md5sum` 均一致。
+> 规格：`llm-provider` **ADDED**「流式增量等待超时」（2 scen）；`loop` **ADDED**「流式中断留痕」
+> （3 scen）与「轮内压实进度与上限」（2 scen）。`openspec validate --all` 32/0。
+> 测试净 **+9**（2834 → **2843**）。四门禁全绿（`ruff check` / `ruff format --check` /
+> `pyright` 0 / `pytest -q`）。架构门（控制流嵌套 ≤3）促使等待封装为 `_await_chunk`。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0247 行（线程不可强杀 / 流式不重试 /
+> trace 非逐事件持久化 / P1 并行工具调用与原子写另批）。

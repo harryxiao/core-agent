@@ -160,6 +160,10 @@ class StdlibLLMProvider(LLMProvider):
         ...
 ```
 
+- **流式空闲超时**（change 0256 / ADR-0247）：`astream` 对**相邻增量**的等待上限为 `timeout`
+  （与构造参同一口径，缺省 `60` 秒）。超过上限未收到任何 `data:` 帧 ⇒ 尽力关闭响应并抛
+  `LLMTimeoutError`；已交付的增量**不回滚、不重试**。该上限覆盖「连接活着但只发 SSE 注释 /
+  keep-alive」的端点（socket 读超时管不到），按相邻间隔而非总时长设限，合法长生成不被误杀。
 - 配置归一化：任意 OpenAI 兼容 API Key + Base URL（含 /v1）配置即路由到对应端点。
 - **审计标签构造注入**（change `0184`／ADR-0175）：
   `StdlibLLMProvider(..., provider: str = "stdlib")` —— 组合根按 `llm.provider` 注入，`_map_response`

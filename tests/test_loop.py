@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
 from core.context import Compactor
 from core.loop import Action, DefaultLoop, Thinking, current_session_id
 from core.memory import MemoryEntry, MemoryStore
@@ -1194,3 +1196,72 @@ def test_loop_does_not_accumulate_events_across_runs() -> None:
         loop.run("任务")
 
     assert tracer._events == {}, "已封口 trace 不驻留"  # noqa: SLF001 — 内存有界断言
+
+
+# ---- 流式中断留痕（change 0256） ----
+
+
+class _HangingPlanner:
+    """先外发一段增量，然后永不结束（模拟流式调用挂起）。"""
+
+    async def astream(self, ctx):  # noqa: ANN001, ANN201 — 测试替身
+        yield "a"
+        await asyncio.Event().wait()
+
+
+class _BoomPlanner:
+    """外发一段增量后抛未收尾异常。"""
+
+    async def astream(self, ctx):  # noqa: ANN001, ANN201 — 测试替身
+        yield "a"
+        raise RuntimeError("planner boom")  # noqa: TRY003 — 测试用哨兵异常
+
+
+def test_interrupted_stream_records_loop_aborted_and_flushes() -> None:
+    """消费方提前关闭 ⇒ 留痕 loop_aborted 并封口落盘（change 0256）。"""
+    exporter = _CapturingExporter()
+    tracer = Tracer(exporter=exporter)
+    loop = DefaultLoop(planner=_HangingPlanner(), tracer=tracer)
+
+    async def _run() -> str:
+        trace_id = ""
+        stream = loop.astream("任务")
+        async for event in stream:
+            if event.type == "loop_started":
+                trace_id = event.payload["trace_id"]
+            elif event.type == "reply_delta":
+                await stream.aclose()
+                break
+        return trace_id
+
+    trace_id = asyncio.run(_run())
+
+    kinds = [event.kind for event in exporter.events]
+    assert "loop_aborted" in kinds, "中断轮必须有可落盘的留痕"
+    assert tracer.replay(trace_id) == [], "留痕后封口释放"
+
+
+def test_raising_stream_records_loop_aborted_and_flushes() -> None:
+    """执行体未收尾异常 ⇒ 先留痕封口，再原样抛出（change 0256）。"""
+    exporter = _CapturingExporter()
+    tracer = Tracer(exporter=exporter)
+    loop = DefaultLoop(planner=_BoomPlanner(), tracer=tracer)
+
+    with pytest.raises(RuntimeError, match="planner boom"):
+        loop.run("任务")
+
+    kinds = [event.kind for event in exporter.events]
+    assert "loop_aborted" in kinds
+
+
+def test_normal_stream_has_no_abort_event() -> None:
+    """正常收尾不产 loop_aborted（既有事件面不变，change 0256）。"""
+    exporter = _CapturingExporter()
+    loop = DefaultLoop(
+        planner=lambda ctx: Action(args={"reply": "ok"}),
+        tracer=Tracer(exporter=exporter),
+    )
+
+    loop.run("任务")
+
+    assert "loop_aborted" not in [event.kind for event in exporter.events]

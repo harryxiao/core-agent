@@ -297,7 +297,7 @@ def format_action_event(
     return None
 
 
-def _format_event(event: Event) -> str | None:
+def _format_event(event: Event) -> str | None:  # noqa: PLR0911 — 逐事件型分派，清单式早返
     """Event → 单行文本；None 表示内部脚手架事件（会话/回合/结果对象），不显示。
 
     只回显交互内容：错误（error/loop.error）与增量文本（loop.delta 的 text），
@@ -312,6 +312,14 @@ def _format_event(event: Event) -> str | None:
     if event.type == "loop.error":
         data = cast(dict[str, object], payload) if isinstance(payload, dict) else {}
         return f"[loop.error] {data.get('reason', '')}"
+    if event.type == "loop.compacting":
+        return "上下文压缩中…"
+    if event.type == "loop.compacted" and isinstance(payload, dict):
+        data = cast(dict[str, object], payload)
+        raw = data.get("elapsed_ms")
+        elapsed = int(float(raw)) if isinstance(raw, (int, float)) else 0
+        suffix = "（超时放行）" if data.get("timeout") else ""
+        return f"上下文已压缩（{elapsed}ms）{suffix}"
     if event.type == "loop.delta" and isinstance(payload, dict):
         data = cast(dict[str, object], payload)
         text = data.get("text")

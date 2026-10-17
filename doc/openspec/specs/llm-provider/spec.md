@@ -13,6 +13,7 @@ LLM Provider（三方大模型归一化接入）让 core-agent 通过统一 LLMP
 - **GIVEN** 内核 loop 需要调用大模型
 - **WHEN** 经 LLMProvider 接口发起请求
 - **THEN** 内核无需关心底层供应商协议，仅面向统一请求 / 响应模型
+
 ### Requirement: 默认实现与配置归一化
 系统 SHALL 提供 OpenAI 兼容 stdlib 默认实现，任意 OpenAI 兼容 API Key + URL 配置即路由到对应端点，无需逐家编写适配代码。
 响应归一化 SHALL **保留推理原文（thinking）**：统一响应模型 `LLMResponse` 与流式增量 `LLMChunk` SHALL 各携带 `thinking` 字段（provider 归一化后的推理文本；端点未返回该字段时为空串，SHALL NOT 以缺省值报错）。归一化 SHALL 覆盖**两家既有口径** —— 智谱 GLM 系与 OpenAI 兼容端点在非流式 `message` 与流式 `delta` 上的推理字段（`reasoning_content` / `reasoning`），流式 SHALL 逐 delta 同口径归一。
@@ -37,6 +38,7 @@ LLM Provider（三方大模型归一化接入）让 core-agent 通过统一 LLMP
 - **GIVEN** 端点响应不含任何推理字段（既有行为）
 - **WHEN** 归一化该响应或增量
 - **THEN** `thinking` 为空串，`content` / `tool_calls` / `usage` / `finish_reason` 的解析与既有实现**逐字一致**（零回归）
+
 ### Requirement: 依赖注入可替换
 系统 SHALL 通过依赖注入隔离 LLMProvider 实现，替换默认实现或接入自研后端时，内核 loop 及所有调用方无需改动即可切换。
 
@@ -44,6 +46,7 @@ LLM Provider（三方大模型归一化接入）让 core-agent 通过统一 LLMP
 - **GIVEN** 需要替换默认实现为自研或其他后端
 - **WHEN** 注册新的 Provider 实现
 - **THEN** 内核 loop 及所有调用方无需改动即可切换
+
 ### Requirement: 错误归一化
 系统 SHALL 将超时 / 限流 / 鉴权 / 网络异常统一为领域异常，上层只处理一类错误语义。
 
@@ -51,6 +54,7 @@ LLM Provider（三方大模型归一化接入）让 core-agent 通过统一 LLMP
 - **GIVEN** 底层供应商返回超时 / 限流 / 鉴权等不同错误
 - **WHEN** 调用失败
 - **THEN** 统一映射为对应领域异常，不泄漏供应商原始错误结构
+
 ### Requirement: 模型调用审计
 系统 SHALL 对模型调用做可观测审计，标注 provider / model 与调用结果，复用既有 observability 链路。
 `LLMResponse.provider` SHALL 反映**实际使用的 provider 标识**：实现 SHALL 接受构造期注入的
@@ -68,6 +72,7 @@ SHALL 回落实现自身的身份标识（`"stdlib"`）。这样「审计标签�
 - **WHEN** 该实现完成一次补全
 - **THEN** `LLMResponse.provider` 为 `"litellm"`（配置面所见即响应面所见）；未注入 provider 时
   仍为 `"stdlib"`（与既有行为**逐字一致**）
+
 ### Requirement: 模型调用可靠性
 系统 SHALL 保障模型调用的可靠性：调用失败自动重试（retry，指数退避）、超时（timeout）控制、服务降级（degrade 切换备用 provider/model）、底层连接复用（connection reuse / keep-alive）、流式（stream）响应断流可恢复。
 超时阈值与最大重试次数 SHALL 有**明确的实现缺省**（单次调用 `60.0` 秒、最多重试 `3` 次），
@@ -104,6 +109,7 @@ SHALL 回落实现自身的身份标识（`"stdlib"`）。这样「审计标签�
 - **WHEN** 构造 LLM 实现并发出调用
 - **THEN** 未注入时取缺省单次超时 `60.0` 秒、最多重试 `3` 次（与既有实现**逐字一致**）；
   注入后以注入值生效（单次等待上限与重试次数随之改变）
+
 ### Requirement: 异步调用接口
 系统 SHALL 提供异步调用入口 acompletion / astream / aembedding，与同步入口（completion / stream / embedding）共用统一请求 / 响应模型；异步入口支持事件循环内非阻塞调用与真并发，同步入口保留为薄壳（thin wrapper），内部经事件循环桥接调用对应异步实现，调用方无需感知事件循环、零改动。
 
@@ -121,6 +127,7 @@ SHALL 回落实现自身的身份标识（`"stdlib"`）。这样「审计标签�
 - **GIVEN** 多个相互独立的模型调用
 - **WHEN** 经异步入口并发发起
 - **THEN** 各调用真并发执行（非串行阻塞），总耗时约等于最慢单个调用而非各调用耗时之和
+
 ### Requirement: 流式增量携带终止原因
 
 流式增量模型 `LLMChunk` SHALL 携带 `finish_reason` 字段（字符串；该增量块未携带该信息时为空串，
@@ -143,6 +150,7 @@ SHALL NOT 以缺省值报错）。provider 归一化 SHALL 从流式增量块的
 - **GIVEN** 某增量块不含 `finish_reason`（既有行为）
 - **WHEN** 归一化该增量块
 - **THEN** `LLMChunk.finish_reason` 为空串，不报错，其余字段解析与既有实现逐字一致
+
 ### Requirement: 流式增量携带令牌用量
 
 流式增量模型 `LLMChunk` SHALL 携带 `usage` 字段（类型 `TokenUsage | None`；该增量块未携带用量时
@@ -188,6 +196,7 @@ SHALL NOT 参与任何判定（终止语义 / 预算闸门均不改）。
 - **WHEN** 流式推理结束
 - **THEN** 提示词观测为 `max(E, P)`（实报为**下界**、只抬升）；`completion_tokens` 可经观测探针读取，
   但不改变终止语义与预算闸门
+
 ### Requirement: 请求侧输出上限按预留注入
 
 统一补全请求 `LLMRequest.max_tokens` SHALL 由组合根按**输出预留**（`loop.output_reserve`）注入：
@@ -209,3 +218,24 @@ SHALL NOT 参与任何判定（终止语义 / 预算闸门均不改）。
 - **GIVEN** `LLMPlanner` 未注入 `max_tokens`（缺省），或注入值 `≤ 0`
 - **WHEN** 构建补全请求
 - **THEN** 请求 `max_tokens` 为 `None`，provider 请求体**不含** `max_tokens` 键（与既有实现逐字一致）
+
+### Requirement: 流式增量等待超时
+
+流式调用 SHALL 对**相邻增量之间的等待**（含首块）施加上限：等待超过构造注入的 `timeout`
+（缺省 `60.0` 秒，与「模型调用可靠性」同源）且队列无新增量时，系统 SHALL 判定为流式超时，
+归一为 `LLMTimeoutError` 并尽力释放底层响应，SHALL NOT 让调用方无限挂起。该上限 SHALL
+覆盖「连接仍存活但只发 SSE 注释 / keep-alive、不产出任何增量」的情形。
+
+超时前已外发的增量 SHALL 保持已交付（与「流式断流处理」的部分返回语义一致）；流式调用
+SHALL NOT 因超时自动重试（已外发内容不可撤销，重试会重复 / 乱序正文）。增量持续到达时
+SHALL NOT 触发该超时（不设总时长上限）。
+
+#### Scenario: 连接存活但无增量时超时
+- **GIVEN** 流式响应已建立，端点在 `timeout` 内不产出任何增量（仅注释 / keep-alive）
+- **WHEN** 调用方等待下一增量
+- **THEN** 等待超过 `timeout` 后抛出 `LLMTimeoutError`，调用方不再无限挂起
+
+#### Scenario: 增量持续到达不误杀
+- **GIVEN** 流式响应按次序返回多个增量，相邻间隔均小于 `timeout`
+- **WHEN** 调用方逐块消费
+- **THEN** 全部增量正常返回，不触发超时

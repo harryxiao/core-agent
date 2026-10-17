@@ -128,6 +128,23 @@ def test_format_event_strips_scaffolding() -> None:
     assert _format_event(Event("error", {"code": "X", "message": "m"})) == "[X] m"
 
 
+def test_format_event_renders_compaction_progress() -> None:
+    """压实进度事件渲染为单行提示（change 0256）。"""
+    assert _format_event(Event("loop.compacting", {"round": 1})) == "上下文压缩中…"
+    assert (
+        _format_event(
+            Event("loop.compacted", {"round": 1, "elapsed_ms": 38153.2, "timeout": False})
+        )
+        == "上下文已压缩（38153ms）"
+    )
+    assert (
+        _format_event(
+            Event("loop.compacted", {"round": 1, "elapsed_ms": 120000.0, "timeout": True})
+        )
+        == "上下文已压缩（120000ms）（超时放行）"
+    )
+
+
 def test_event_delta_only_accepts_dedicated_type() -> None:
     """增量分流**只认类型**（change `0132` / ADR-0125 / 账本 E65）。
 
