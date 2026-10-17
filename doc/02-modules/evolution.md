@@ -144,6 +144,8 @@ L4 让 CORE **会进化**。它只读地观测 L3 循环的运行轨迹，通过
   异常**冒泡**（精确匹配 scorer 语义）。
 - **门控极性 = OPT_IN（缺省关，`features.evolution_benchmark_runner`）**：判据「**注册基准 ≠ 同意执行**」
   —— 跑基准烧模型 token ⇒ 执行面须**单独**显式开。旗关 ⇒ `runners=None` ⇒ 今日 `freeze` 判定逐字不变。
+- **全链路 opt-in（ADR-0239）**：三步缺一不可 —— 旗开 + `evolve benchmark register --plugin-id`
+  + `set-baseline`；缺省部署下候选恒 `frozen` 是**有意**安全姿态（不是缺陷），不自动引导基线。
 - **注册操作面**：CLI `core-agent evolve benchmark {register|set-baseline|list}` —— **数据面免 runtime**
   （`BenchmarkRegistry(path=...)`）。`register <id> --plugin-id <id> --task-type {module_health,tool_use}
   --samples <path.json>`（`--plugin-id` **必填**：绑定目标才激活评测）；`expected` 须与期望回复**逐字相等**。

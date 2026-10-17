@@ -24,7 +24,7 @@
 | **E55** | 主 loop | 主 loop **丢弃多余 `tool_call`**（单工具协议只取**首个**，其余静默丢） | `src/core/loop/planner.py:222-225`。与 `E62`（L3 前置，已销账）**同源不同层** ⇒ **保持待议**（是否支持多工具同轮需再裁决）。来源：`phase-34.md:65` |
 | **C7** | UI / 语音 | **TTS 后端未接** —— `barge_in` 为**抽象能力**，语音输出无实现 | `doc/03-interfaces/ui-interface.md:19`（`barge_in` docstring：「语音输出为抽象能力（TTS 后端未接）」）。来源：`phase-34.md:66` |
 | **—** | composition / distributed | **整包零生产接线** —— distributed 的 oauth2/mTLS/oidc 仅**字段声明**、多设备拓扑**无代码**；composition 于运行时**无生产消费方** | 来源：`phase-34.md:67`、`coding-plan/README.md` §2（标 ✅ 与事实不符，属**已知**）。**注**：composition 的**真内容哈希**口径已由 change `0143` 接通 CLI（见 §3），但**整包**接线仍未落 |
-| **—** | evolution | **留出评测生产 runners 未接** ⇒ 候选**恒 `frozen`** | ADR-0112。来源：`phase-34.md:68` |
+| **—** | evolution | **留出评测生产 runners 已接**（change `0212` / ADR-0202），但**全链路 opt-in**：`features.evolution_benchmark_runner`（缺省关）+ `evolve benchmark register --plugin-id` + `set-baseline` 三步缺一不可，否则候选恒 `frozen` | **已裁决（ADR-0239）**：保持缺省关，`frozen` 为**有意安全姿态**（注册基准 ≠ 同意执行）；不自动引导基线。旧口径「runners 未接」已过时。来源：`phase-34.md:68` |
 | **—** | ci-cd | `publisher` **发布通道 `CHANNEL_UNREACHABLE`**（无真实发布通道） | 来源：`phase-20.md`（C 类）、`phase-34.md:69` |
 | **—** | deployment | **真实制品仓库未接** | 来源：`phase-34.md:69` |
 | **—** | git | `GitClient` **零生产消费者**（phase-20 C2 偏离） | 来源：`phase-34.md:69`。**注**：高危原语（删远程分支 / 历史改写）已由 change `0138` 补齐，但**消费接线**仍未落 |

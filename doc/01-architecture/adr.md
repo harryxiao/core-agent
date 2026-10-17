@@ -8681,6 +8681,26 @@ change 绿（`0233` 为**既有**归档欠账，与本 change 无关）。
 **不**调用 `aclose()` 时，异步生成器延迟终结 ⇒ 在途波次可能持续到下一次 GC / 事件循环关闭
 （调用方应显式 `aclose()`；`astream` 的 `finally` 只在生成器终结时运行）。
 
+## ADR-0239：进化留出评测缺省策略 —— 全链路 opt-in，`frozen` 为安全姿态（台账旧行收口）
+
+**背景**：`known-risk.md` §1 旧行「留出评测生产 runners 未接 ⇒ 候选恒 `frozen`」（来源
+`phase-34.md:68` / ADR-0112）已过时 —— change `0212` / ADR-0202 已把真实执行器接到组合根
+（`module_health` / `tool_use`），但执行面缺省关，且评测还需**已注册基准**与**已注册基线**。
+
+**决策**：保持**全链路 opt-in**（三步缺一不可）：① `features.evolution_benchmark_runner: true`；
+② `core-agent evolve benchmark register <id> --plugin-id <target> --task-type …`；
+③ `core-agent evolve benchmark set-baseline <target> <score>`。**不**翻转缺省、**不**自动引导基线。
+判据「注册基准 ≠ 同意执行」（`evolution` spec「执行面门控（缺省关）」逐字要求）。
+
+**理由**：① 执行面真实调用模型、产生费用，属「关得住、且是关着的」执行面（与
+`evolution_executor` 同极性）；② 翻转开关**并不消除** `frozen` —— 无注册基准 / 基线仍 `freeze`，
+只减少一步却扩大意外开销面；③ 自动基线会把「当前实现分」当阈值，改变评测语义（自证循环），
+须另立 change 与反证，不在本决策面。
+
+**影响**：缺省部署下进化候选终态为 `frozen` 属**预期**安全姿态，不是缺陷；开启路径写入
+`doc/02-modules/evolution.md` §3.8 与台账 §1 行。**放弃的替代项**：缺省开 runner / 自动引导
+基线（理由同上）。无代码与规格变更（规格本就要求缺省关）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8914,3 +8934,4 @@ change 绿（`0233` 为**既有**归档欠账，与本 change 无关）。
 | ADR-0236 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0237 | 03-interfaces/context-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0238 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0239 | 02-modules/evolution.md, coding-plan/known-risk.md |
