@@ -8751,6 +8751,47 @@ P1 摘 `snapshot` 的 persona 字段 ⇒ 人格往返用例红（KeyError）；P
 文本直通）；④ 控制面仍只作用本进程 live 会话（规格明文「有意不做跨进程」）；⑤ `restore` 对
 快照中**形状非法**的 persona（非 dict）静默按无人格处理（不 fail-fast）。
 
+## ADR-0241：L2 活跃层软上限的组合根接线（change 0251 / 台账 E187）
+
+**背景**：记忆框架对比审查（P0）发现「规格已实现、生产不可达」：change `0230` 按规格
+「L2 活跃层软上限」实现了 `MemoryStore(l2_soft_max_entries=...)` 与 `_enforce_l2_cap()`，
+但组合根 `build_runtime` **没有传该形参**，`memory` 段也**没有对应 ConfigSpec** ⇒ 该能力在
+任何生产配置下都关闭。代价是真实的：`FileBackend._load()` 整份加载 JSONL、`search()` 线性
+扫描 ⇒ L2 只增不减时，常驻内存与每轮检索成本随运行时长单调上升。同时 `memory.md` 把 L1
+描述为「指向 L2/L3 的最小索引（what→where）」，实现却是后端 `id → layer` 映射（不参与检索）。
+
+**决策**：
+
+- **D1 新键 `memory.l2_soft_max_entries`**：`ConfigSpec` 单一真源，`exposure=ADVANCED`，
+  `default=None`。缺省 `None` = 能力关闭 —— 与 `MemoryStore` 形参语义一一对应，避免升级后
+  一个缺省数字**静默归档**用户数据。是否设默认上限是运维决策，不由代码代替。
+- **D2 访问器 `l2_soft_max_entries() -> int | None`**：读 `extra["memory"]`，经 `_parse_int`
+  归一；`bool` / 小数 / 非数值 / `0` / 负数一律 → `None`。`0` 特意不收：直通会**清空 L2**
+  （每次写入都迁走可遗忘条目），属危险笔误方向；归一为关闭不丢数据。返回原始值而非能力层
+  类型（`configuration` 是底座模块，不得 import `memory`）。
+- **D3 组合根接线**：`build_runtime` 的 `MemoryStore(...)` 增
+  `l2_soft_max_entries=config.l2_soft_max_entries()`。收口逻辑本身不动（写入后先 `forget`、
+  再按 `ts` 最旧迁 L4，`l2_cap.<id>` trace 可撤销）。
+- **D4 文档订正**：`memory.md` 增 §3.14（装配、未启用即无界、只在写入后收口）；L1 行与
+  「索引与事实不一致」行改为实现事实（后端同步维护 `id → layer`，无异步同步窗口）。
+
+**理由**：① 能力已存在且有测试，唯一缺口是**接线**；补接线比重新设计爆炸半径小。② 缺省
+关闭保证升级行为零变化 —— 软上限会改变「写入后条目还在不在 L2」，不能替运维决定。
+③ 非法值归一为关闭是**同段既有口径**（`memory` 非结构化段），且方向安全（不设上限 ≠ 丢数据）。
+
+**测试**：新增 `tests/test_memory_soft_cap_config.py`（13 例）。反证（`cp` 备份 + md5 复原）：
+P1 摘组合根实参 ⇒ 接线 + 端到端 2 红；P2 摘 ConfigSpec ⇒ 三面元组 + env 覆盖 2 红；P3 摘
+`>= 1` 归一 ⇒ `0` / 负数 2 红。复原 md5 同：`manager.py`
+`5c64a712ee9b1f72470a8424d94ef8cc`、`runtime.py` `0897bbc3d7b60cde66aab78476ba5c56`。
+
+**局限**：
+
+1. **只在写入后收口** —— 存量超限库要等下一次写入才收敛（不在 `load()` 里跑，避免启动即迁移）。
+2. **仅收口 L2**；L4 归档只增不减（「不物理删除」规格的必然结果）。
+3. `FileBackend` 仍**整份加载 JSONL** —— 上限降低活跃条目数与检索扫描面，不改变文件总体量。
+4. 非法取值**静默归一为关闭**（`memory` 段非阻断口径），不产生启动期错误。
+5. **缺省未启用** —— 不设默认上限是运维决策，代价是缺省部署仍无界增长。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8986,3 +9027,4 @@ P1 摘 `snapshot` 的 persona 字段 ⇒ 人格往返用例红（KeyError）；P
 | ADR-0238 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0239 | 02-modules/evolution.md, coding-plan/known-risk.md |
 | ADR-0240 | 02-modules/pet.md, 03-interfaces/pet-mode-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0241 | 02-modules/memory.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

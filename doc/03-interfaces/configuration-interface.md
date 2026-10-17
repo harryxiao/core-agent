@@ -399,3 +399,21 @@ known_window(llm.model)  ──►  表命中 ⇒ 该族真实窗口（本 chang
 - 已知局限（dataclass 缺省在配置路径不可观测 / 不改 provider 重试语义 / 不做「重试进度可见」）见 ADR-0221。
 - 口径来源：`doc/openspec/specs/configuration/spec.md`「LLM 提供商配置（必选）」、
   `doc/openspec/specs/llm-provider/spec.md`「模型调用可靠性」（均 **MODIFIED**）。
+
+### 2.12 记忆容量配置（change `0251` / ADR-0241，账本 E187）
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `memory.l2_soft_max_entries` | **未设置**（`None`） | **≥1 的整数** | L2 活跃层软上限条目数；未设置 = 不设上限 |
+
+- **单一真源**：`ConfigSpec` 声明（`map_to="memory.l2_soft_max_entries"`，`exposure=ADVANCED`）
+  ⇒ CLI flag `--memory-l2-soft-max-entries`、env `CORE_MEMORY_L2_SOFT_MAX_ENTRIES`、
+  yaml `memory:` 段三面一一对应；优先级链 CLI > env > config.yaml > 缺省。
+- **访问器** `ConfigManager.l2_soft_max_entries() -> int | None`：`memory` 为非结构化段 ⇒
+  `bool` / 小数 / 非数值 / `0` / 负数一律归一为 `None`（不阻断启动）。`0` 特意不收：
+  直通会清空 L2，属危险笔误方向。
+- **消费方**：组合根 `build_runtime` 以 `l2_soft_max_entries=` 注入 `MemoryStore`
+  （此前形参存在但无生产调用方 ⇒ 能力不可达）。未配置 ⇒ 写入路径逐字不变。
+- **只在写入后收口**：存量超限库下一次写入才收敛（不在启动时迁移）。
+- 口径来源：`doc/openspec/specs/configuration/spec.md`「记忆容量配置」（ADDED）、
+  `doc/openspec/specs/memory/spec.md`「L2 活跃层软上限」（MODIFIED）。

@@ -364,6 +364,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "memory.l2_soft_max_entries",
+        "--memory-l2-soft-max-entries",
+        "CORE_MEMORY_L2_SOFT_MAX_ENTRIES",
+        default=None,
+        map_to="memory.l2_soft_max_entries",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "skills.retirement",
         "--skills-retirement",
         "CORE_SKILLS_RETIREMENT",
@@ -893,6 +901,21 @@ class ConfigManager:
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in _FEATURE_TRUE
+
+    def l2_soft_max_entries(self) -> int | None:
+        """L2 活跃层软上限条目数（缺省 ``None`` = 不启用；change 0251 / ADR-0241）。
+
+        **独立访问器**（同 `retention_limits()` 先例）：与布尔门开关无关，返回 ``int | None``。
+        `memory` 为**非结构化段** ⇒ 非法取值不阻断启动；``bool`` / 小数 / 非数值 / `0` / 负数
+        一律归一为 ``None``（方向恒为「不设上限」，不会把配置笔误静默变成「清空 L2」）。
+        """
+        if self._config is None:
+            return None
+        raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
+        if "l2_soft_max_entries" not in raw:
+            return None
+        value = _parse_int(raw.get("l2_soft_max_entries"))
+        return value if value is not None and value >= 1 else None
 
     def skill_retirement(self) -> bool:
         """SOP 技能退役开关（缺省 ``False`` = 连续退化不退役；change 0205 / ADR-0195）。

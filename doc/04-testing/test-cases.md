@@ -3686,3 +3686,29 @@ keyfact 跨批覆盖重置首见时间戳；编排检查点无缺省文件实现
 > 测试净 +12（2771 → **2783**）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0240 行（整表写竞争 / 计数不重置 / 失败任务
 > 不回队 / 人格文本不校验 / 控制面进程内 / 非法形状静默降级）。
+
+## 163. L2 活跃层软上限的组合根接线（TC-MEMCAP，change `0251`／ADR-0241，台账 E187）
+
+**根因**：change `0230` 实现了 `MemoryStore(l2_soft_max_entries=...)` 与 `_enforce_l2_cap()`，
+但 `build_runtime` 未传该形参、`memory` 段无对应 ConfigSpec ⇒ 软上限在任何生产配置下都不可达，
+L2 只增不减（`FileBackend` 整份加载 + 线性扫描 ⇒ 内存与检索成本随时长上升）。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-MEMCAP-01 | **配置三面齐备**（承重） | `config_specs()` | `memory.l2_soft_max_entries` 的 CLI flag / env / `default=None` / `map_to` 四元组逐字相等（`test_spec_declares_l2_soft_cap`） |
+| TC-MEMCAP-02 | 缺省未启用 | 无 `memory:` 段 | `l2_soft_max_entries() is None`（`test_default_is_disabled`） |
+| TC-MEMCAP-03 | yaml 启用 | `memory.l2_soft_max_entries: 64` | 访问器返回 `64`（`test_yaml_enables_cap`） |
+| TC-MEMCAP-04 | **env 覆盖 yaml**（承重） | yaml `64` + env `"7"` | 访问器返回 `7`（`test_env_overrides_yaml`） |
+| TC-MEMCAP-05 | 非法取值归一为关闭 | `0` / `-3` / `true` / `1.5` / `abc` | 一律 `None`，启动不阻断（`test_invalid_values_normalize_to_disabled`） |
+| TC-MEMCAP-06 | `memory:` 段不告警 | 配置该键 | 无「未知配置段」告警（`test_memory_section_is_not_reported_unknown`） |
+| TC-MEMCAP-07 | **缺省不接线**（承重） | `build_runtime` 无配置 | `MemoryStore._l2_soft_max_entries is None`（`test_build_runtime_default_wires_no_cap`） |
+| TC-MEMCAP-08 | **配置值注入组合根**（承重） | `build_runtime` + yaml `2` | `MemoryStore._l2_soft_max_entries == 2`（`test_build_runtime_wires_configured_cap`） |
+| TC-MEMCAP-09 | **配置后写入即收口**（承重） | 上限 `2`，写 3 条旧 episodic | L2 活跃 ≤2，且有条目迁 L4（`test_configured_cap_collects_l2_on_write`） |
+
+> **反证**：摘组合根实参 ⇒ 08/09 红；摘 ConfigSpec ⇒ 01/04 红；摘 `>= 1` 归一 ⇒ 05 的
+> `0` / 负数 2 例红。复原 ⇒ `manager.py` `5c64a712ee9b1f72470a8424d94ef8cc`、`runtime.py`
+> `0897bbc3d7b60cde66aab78476ba5c56` `md5sum` 同。规格：`configuration` **ADDED** 1 req / 4 scen
+> （10 req / 62 → 66 scen）、`memory` **MODIFIED** 1 req / +1 scen（20 req / 143 → 144 scen）。
+> 测试净 +13（2783 → **2796**）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0241 行（只在写入后收口 / 仅 L2 /
+> 文件总体量不变 / 非法值静默归一 / 缺省未启用）。

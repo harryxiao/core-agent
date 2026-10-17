@@ -633,6 +633,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         # 语义遗忘面（0204 / ADR-0194）：缺省关 ⇒ 派生事实（extraction/relation）不参与遗忘
         # （与摘要类同不受影响，逐字不变）；显式开启才放行其参与同一衰减归档。
         semantic_forgetting=config.semantic_forgetting(),
+        # L2 活跃层软上限（0230 实现 / 0251 接线 + ADR-0241）：缺省未配置 ⇒ None ⇒ 写入路径
+        # 逐字不变；配置后写入即收口（先忘记、再按 ts 最旧迁 L4，全部可撤销）。
+        l2_soft_max_entries=config.l2_soft_max_entries(),
     )
     # 上下文压实接线（0041）：多轮历史 → persist 落 L2；此前 context.Compactor 与
     # memory.compact 都无生产调用方（死路径），现由 loop 的**工具步数**/预算阈值触发。
