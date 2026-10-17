@@ -297,6 +297,22 @@ def test_key_fact_cap_never_tightens_below_legacy_value() -> None:
     assert all(b >= a for a, b in zip(caps, caps[1:], strict=False)), "单调不减"
 
 
+def test_default_extractor_prompt_uses_adaptive_cap() -> None:
+    """缺省抽取器的 prompt 名额随本次聚合条数自适应（change 0242：不得固定为 8）。"""
+    prompts: list[str] = []
+
+    def _llm(prompt: str) -> str:
+        prompts.append(prompt)
+        return "[]"
+
+    extractor = extract_with(_llm)
+    extractor([_episodic(f"long{i}", "s-long") for i in range(200)])
+    extractor([_episodic(f"short{i}", "s-short") for i in range(20)])
+
+    assert f"最多 {KEY_FACTS_MAX} 条" in prompts[0], "长会话 prompt 名额应放宽到上限"
+    assert f"最多 {KEY_FACTS_MIN} 条" in prompts[1], "短会话 prompt 名额应落在下限"
+
+
 def test_fact_count_cap_adapts_to_aggregated_episodic_count() -> None:
     """落库上界随本次压实聚合的 episodic 条数放宽（36 条 ⇒ cap 9，而非死值 8）。"""
     many = [KeyFact(entity=f"实体{i}", value=f"值{i}") for i in range(50)]

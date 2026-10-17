@@ -3436,3 +3436,27 @@ PowerShell 输出编码不一致；环境块不列可用 shell、默认壳缺失
 > `evolution` **ADDED** 1 req/3 scen（18 → 19 / 95 → 98）。**已知局限**：见
 > `coding-plan/known-risk.md` §3 ADR-0229 行（只捕 `Exception` / 行内替换不识别跨行拼接 /
 > `episodic` 遗忘策略不变 / 摘要越界判据按脱敏前长度）。
+
+## 153. prompt 对齐与技能内容容错/有界（TC-PRALIGN，change `0242`／ADR-0230，台账 E177）
+
+**背景**：全量 review 批次 B 发现提示词与执行口径不一致 —— 摘要 prompt 要求 800 字而落库上界
+2000；抽取 prompt 固定 8 条而落库名额自适应 8~16；关系 prompt 只列英文谓词；技能内容 writer
+不容忍代码围栏，且 `SkillContent` 文本字段无上界。闭法：提示词数字全部与执行上界**同源**；
+谓词表由闭合白名单派生；writer 容忍围栏/杂文并裁剪超长字段；校验拒绝未经裁剪的超界内容。
+
+| 用例 | 面 | 输入 | 断言 |
+|---|---|---|---|
+| TC-PRALIGN-01 | **摘要上界同源**（承重） | 构建摘要 prompt | 含「总长不超过 2000 字」，不含 800（`tests/test_memory.py::test_summary_prompt_requests_the_same_bound_as_storage`） |
+| TC-PRALIGN-02 | **抽取名额自适应** | 缺省 `extract_with`，200 / 20 条材料 | prompt 分别为「最多 16 条」/「最多 8 条」（`tests/test_memory_key_facts.py::test_default_extractor_prompt_uses_adaptive_cap`） |
+| TC-PRALIGN-03 | 关系名额自适应 | 缺省 `extract_relations_with`，200 / 20 条材料 | 同 TC-PRALIGN-02（`tests/test_memory_relations.py::test_default_relation_extractor_prompt_uses_adaptive_cap`） |
+| TC-PRALIGN-04 | **谓词变体展示** | 构建关系 prompt | 每个规范谓词的全部中英变体均出现；含「依赖」「使用」（`…test_relation_prompt_shows_all_predicate_variants`） |
+| TC-PRALIGN-05 | 围栏容错 | 合法 JSON 包在代码围栏 / 前后杂文 | writer 返回有效 `SkillContent`（`tests/test_evolution_skill_content.py::test_skill_content_writer_tolerates_fences_and_surrounding_text`） |
+| TC-PRALIGN-06 | 超长裁剪 | 各文本字段超界 10× | instructions ≤4000、description ≤400、task_types ≤16×80、preconditions ≤8×200，且仍通过校验（`…test_skill_content_writer_clips_overlong_fields`） |
+| TC-PRALIGN-07 | 校验拒绝超界 | `SkillContent` / dict 的 instructions 4001 字 | `validate_skill_content` 返回 `False`（`…test_validate_skill_content_rejects_overlong_fields`） |
+
+> **反证**：摘要还原 800 ⇒ TC-PRALIGN-01 红；抽取/关系名额还原 `KEY_FACTS_MIN` ⇒ 02/03 红；
+> 谓词表还原纯英文 ⇒ 04 红；去掉围栏容错 ⇒ 05 红；去掉裁剪 ⇒ 06 红；复原 ⇒ 三个源文件
+> `md5sum` 同。规格：`memory` **MODIFIED** +4 scen（17 / 130 → 134）、`evolution` **MODIFIED**
+> +3 scen（19 / 98 → 101）。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0230 行
+> （prompt 对齐不保证模型遵守 / 裁剪可能截在句中 / `param_schema` 无大小上界 /
+> 变体表需镜像维护）。

@@ -35,7 +35,7 @@
 | ③ | 控制面 | 验收判定器 | `orchestration/planner.py:32` `_VERIFY_SYSTEM` | JSON `{passed,reason}` | ✓ `0215` |
 | ④ | 数据面 | 记忆压实器 | `memory/summarize.py:37` `_PROMPT_HEAD` | 文本（更新后摘要） | ✓ `0215` |
 | ⑤ | 数据面 | 关键事实抽取器 | `memory/extract.py:178` `_PROMPT_HEAD` | JSON `[{entity,value,ref}]` | ✓ `0215` |
-| ⑥ | 数据面 | 实体关系抽取器 | `memory/extract.py:398` `_RELATION_PROMPT_HEAD` | JSON `[{head,predicate,tail}]` | ✓ `0215` |
+| ⑥ | 数据面 | 实体关系抽取器 | `memory/extract.py:403` `_RELATION_PROMPT_HEAD` | JSON `[{head,predicate,tail}]` | ✓ `0215` |
 | ⑦ | 数据面 | 记忆重要度评分器 | `memory/importance.py:27` `_PROMPT_HEAD` | 数值 `0`–`1` | ✓ `0215` |
 | ⑧ | 数据面 | 情景归纳器 | `memory/episodic.py:35` `_PROMPT_HEAD` | 文本（四段结论快照） | ✓ `0219` |
 | ⑨ | 数据面 | SOP 提炼器 | `skills/sop.py:48` `_PROMPT_HEAD` | 文本（编号步骤清单） | ✓ `0215` |
@@ -113,13 +113,13 @@
 
 ### ④ 记忆压实器 · `memory/summarize.py:37`
 ```
-你是记忆压实器。把新的会话事件合并进既有摘要，保留结论、决策与未决事项；既有摘要为空则据事件首次提炼。只输出更新后的摘要，不要复述过程。摘要按三段组织：结论（已确定的事实）、决策（做过的取舍与理由）、未决事项（尚未决定的）；总长不超过 800 字；保留具体标识符（文件路径、命令、ID、数值、报错原文），它们比叙述更重要；既有摘要中仍然有效的内容必须保留，不要因为后续轮次而丢弃。
+你是记忆压实器。把新的会话事件合并进既有摘要，保留结论、决策与未决事项；既有摘要为空则据事件首次提炼。只输出更新后的摘要，不要复述过程。摘要按三段组织：结论（已确定的事实）、决策（做过的取舍与理由）、未决事项（尚未决定的）；总长不超过 2000 字；保留具体标识符（文件路径、命令、ID、数值、报错原文），它们比叙述更重要；既有摘要中仍然有效的内容必须保留，不要因为后续轮次而丢弃。
 ```
 **动态内置内容**：`build_prompt(entries)` = 头 ＋（既有摘要节选）＋ `会话事件：` 段 ＋ 逐条
 `- {content[:400]}`。既有摘要投喂经 `_elide_summary`（越界时**首尾保留**，三段相加恰为
 `MAX_SUMMARY_CHARS = 2000`，change `0193`）。产物落 `compaction.summary.<key>`。提示侧另要求
-「按三段组织（结论 / 决策 / 未决事项）、总长不超过 800 字」—— 事前约束落在事后节选上界之下，
-留出合并余量。
+「按三段组织（结论 / 决策 / 未决事项）、总长不超过 2000 字」—— 与事后节选上界**同源**
+（change `0242`；此前为 800 死值，会让模型过早压缩）。
 
 ### ⑤ 关键事实抽取器 · `memory/extract.py:178`（`{max}` 注入）
 ```
@@ -127,14 +127,17 @@
 ```
 > ⚠ **安全承重**：「**绝不**输出明文 ＋ value 写 `<redacted>` ＋ ref 写 `coeffect:`」是密钥不落
 > 记忆的**第一道**（模型侧）约束；第二道是 store 侧无条件 `redact_secrets`。改动此措辞前须重评安全面。
-> 条数上限 `{max}` 取 `KEY_FACTS_MIN = 8`（抽取出厂值，`KEY_FACTS_MAX = 16` 为自适应上限）。
+> 条数上限 `{max}` 缺省按本次聚合条数取 `key_fact_cap(n)`（8~16），与落库名额**同源**
+> （change `0242`）；显式传值仍按传值渲染。
 
-### ⑥ 实体关系抽取器 · `memory/extract.py:398`（`{max}` / `{predicates}` 注入）
+### ⑥ 实体关系抽取器 · `memory/extract.py:403`（`{max}` / `{predicates}` 注入）
 ```
 你是实体关系抽取器。从下面的会话事件中抽取「头实体 — 谓词 — 尾实体」三元组，最多 {max} 条。只输出一个 JSON 数组，元素形如 {"head": "头实体", "predicate": "谓词", "tail": "尾实体"}。谓词**必须**归入下表之一（可用中英任一变体，落库会归一化）：{predicates}。归不入下表的关系**不要输出**。各谓词的语义与方向（head 在前、tail 在后，勿颠倒）：depends_on ＝ head 依赖 tail（依赖方 → 被依赖方）；part_of ＝ head 是 tail 的组成部分（部分 → 整体）；uses ＝ head 使用 / 调用 / 采用 tail（使用者 → 被使用者，如工具、库、接口、资源）；causes ＝ head 导致 tail（原因 → 结果）；blocks ＝ head 阻塞 tail（阻塞方 → 被阻塞方）；owns ＝ head 拥有 / 负责 tail（负责方 → 被负责对象）；implements ＝ head 实现 tail（实现者 → 被实现的契约 / 接口 / 规格）；related_to ＝ 以上都不适用、但确实相关的弱关系（仅在无法归入前 7 者时使用）。**绝不**输出任何密钥 / 凭据 / 口令的明文（含作为实体名的情形）。不要输出解释或多余文字。
 ```
-> `{predicates}` 由 `_CANONICAL_PREDICATES` 以「、」连接注入，**闭合白名单 8 谓词**：
+> `{predicates}` 由 `render_predicate_table()` 从 `RELATION_PREDICATES` **派生**（每个规范谓词
+> 后跟全部中英变体，change `0242`；此前只列英文，纯中文会话只能猜变体）。**闭合白名单 8 谓词**：
 > `depends_on` / `part_of` / `uses` / `causes` / `blocks` / `owns` / `implements` / `related_to`。
+> `{max}` 缺省同 ⑤：按本次聚合条数取 `relation_cap(n)`。
 > 表外谓词由解析侧丢弃（`0203`/ADR-0193）。**安全承重**同 ⑤。
 > 本次另补「谓词语义与方向」表（head 在前、tail 在后）—— 谓词边界模糊是解析侧 drop 的主因。
 

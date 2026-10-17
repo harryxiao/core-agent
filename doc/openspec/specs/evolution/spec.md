@@ -760,6 +760,14 @@ cycle 由 `EvolutionTrigger` 阈值门决定**（显式入口以 `force` 跳过�
 - **未注入逐字不变**：未注入 writer 时，技能级 delta SHALL 仍仅 `{"issue": ...}`，与既有
   实现逐字一致。
 - **plugin 不受影响**：架构级候选 SHALL NOT 经本接缝生成 content。
+- **解析容错**：writer SHALL 容忍模型输出包裹在代码围栏或前后杂文中 —— 直接 `json.loads`
+  失败时 SHALL 截取**首个 `{` 至末个 `}`** 的片段再解析；仍不可解析 / 非对象 ⇒ 空结果。
+- **内容有界**：`instructions` SHALL 不超过 `_MAX_INSTRUCTIONS_CHARS`（4000）、`description`
+  不超过 `_MAX_DESCRIPTION_CHARS`（400）、`task_types` 不超过 `_MAX_TASK_TYPES`（16）项且每项
+  不超过 `_MAX_TASK_TYPE_CHARS`（80）、`preconditions` 不超过 `_MAX_PRECONDITIONS`（8）项且
+  每项不超过 `_MAX_PRECONDITION_CHARS`（200）。writer SHALL 对超界字段**裁剪**（保留可用内容，
+  不整条丢弃）；`validate_skill_content` SHALL **拒绝**超界内容（持久化 delta / 外部注入的
+  内容不经 writer，不构成信任边界）；`param_schema` 为结构化对象，不做文本截断。
 - **有界 prompt**：注入 `failure_notes` 时 SHALL 有界（条数与单条字符上限由实现常量钉死，
   与诊断失败摘要同口径量级）。
 
@@ -780,6 +788,22 @@ cycle 由 `EvolutionTrigger` 阈值门决定**（显式入口以 `force` 跳过�
 - **GIVEN** Proposer 未注入 writer
 - **WHEN** 对技能级诊断 `propose`
 - **THEN** 候选 `delta` 仍仅 `{"issue": ...}`，与既有实现逐字一致
+
+#### Scenario: 代码围栏包裹的 JSON 仍被解析
+- **GIVEN** writer 的模型输出为代码围栏包裹的合法对象（或对象前后带解释文字）
+- **WHEN** writer 解析
+- **THEN** SHALL 返回有效 `SkillContent`，字段与对象内容一致
+
+#### Scenario: 超长字段被裁剪到上界
+- **GIVEN** writer 的模型输出各文本字段均超过上界
+- **WHEN** writer 解析
+- **THEN** 返回内容的 `instructions` / `description` / `task_types` / `preconditions`
+  SHALL 分别不超过对应上界，且内容仍通过 `validate_skill_content`
+
+#### Scenario: 校验拒绝超界内容
+- **GIVEN** 一个 `SkillContent`（或 dict）其 `instructions` 超过上界
+- **WHEN** 调用 `validate_skill_content`
+- **THEN** SHALL 返回 `False`（不信任未经 writer 的内容）
 ### Requirement: 进化写回与技能内容的密钥形态脱敏
 
 系统 SHALL 在进化侧把任何**自由文本**写入记忆后端或技能库之前，无条件执行 `redact_secrets`

@@ -24,6 +24,12 @@ from core.memory import (
     scrub_relation,
 )
 from core.memory.backend import FileBackend
+from core.memory.extract import (
+    KEY_FACTS_MAX,
+    KEY_FACTS_MIN,
+    RELATION_PREDICATES,
+    build_relation_prompt,
+)
 from core.plugin_registry import EffectTracker
 
 # 密钥样例（**测试哨兵**，非真实凭据）：形态命中 `_SECRET_PATTERNS`
@@ -202,6 +208,48 @@ def test_cap_bounds_batch_matching_key_fact_cap() -> None:
 
     assert len(_relations(store)) == relation_cap(1), "1 条材料 ⇒ cap(1)"
     assert relation_cap is key_fact_cap, "同一把调参旋钮（别名、非副本）"
+
+
+def test_default_relation_extractor_prompt_uses_adaptive_cap() -> None:
+    """缺省关系抽取器的 prompt 名额随本次聚合条数自适应（change 0242）。"""
+    prompts: list[str] = []
+
+    def _llm(prompt: str) -> str:
+        prompts.append(prompt)
+        return "[]"
+
+    extractor = extract_relations_with(_llm)
+    extractor([_episodic(f"long{i}", "s-long") for i in range(200)])
+    extractor([_episodic(f"short{i}", "s-short") for i in range(20)])
+
+    assert f"最多 {KEY_FACTS_MAX} 条" in prompts[0]
+    assert f"最多 {KEY_FACTS_MIN} 条" in prompts[1]
+
+
+def test_relation_prompt_shows_all_predicate_variants() -> None:
+    """关系 prompt 的谓词表展示每个规范谓词的全部中英变体（change 0242）。"""
+    canonical_predicates = (
+        "depends_on",
+        "part_of",
+        "uses",
+        "causes",
+        "blocks",
+        "owns",
+        "implements",
+        "related_to",
+    )
+    prompt = build_relation_prompt([_episodic("e1", "s1")])
+
+    for canonical in canonical_predicates:
+        variants = [
+            variant
+            for variant, target in RELATION_PREDICATES.items()
+            if target == canonical and variant != canonical
+        ]
+        assert variants, f"{canonical} 应至少有一个变体（白名单不变量）"
+        for variant in variants:
+            assert variant in prompt, f"变体「{variant}」应出现在 prompt 谓词表中"
+    assert "依赖" in prompt and "使用" in prompt, "纯中文会话须能直接选词"
 
 
 # ---- 不遮蔽 / 回滚 / 注入面 ----

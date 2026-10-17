@@ -190,9 +190,14 @@ _PROMPT_HEAD = (
 )
 
 
-def build_extract_prompt(entries: Sequence[MemoryEntry], *, max_facts: int = KEY_FACTS_MIN) -> str:
-    """把会话事件条目渲染为抽取 prompt（逐条节选，token 有界）。"""
-    heads = [_PROMPT_HEAD.format(max=max_facts), "", "会话事件："]
+def build_extract_prompt(entries: Sequence[MemoryEntry], *, max_facts: int | None = None) -> str:
+    """把会话事件条目渲染为抽取 prompt（逐条节选，token 有界）。
+
+    ``max_facts`` 缺省 ⇒ 按本次聚合条数计算 ``cap(n)``，使 prompt 名额与落库名额同源
+    （change 0242）；显式传值仍按传值渲染。
+    """
+    cap = key_fact_cap(len(entries)) if max_facts is None else max_facts
+    heads = [_PROMPT_HEAD.format(max=cap), "", "会话事件："]
     lines = [f"- {entry.content[:_MAX_ENTRY_CHARS]}" for entry in entries]
     return "\n".join([*heads, *lines])
 
@@ -232,7 +237,7 @@ def parse_key_facts(text: str) -> list[KeyFact]:
     return facts
 
 
-def extract_with(llm: Callable[[str], str], *, max_facts: int = KEY_FACTS_MIN) -> KeyFactExtractor:
+def extract_with(llm: Callable[[str], str], *, max_facts: int | None = None) -> KeyFactExtractor:
     """把「prompt → 文本」的模型调用适配为 ``MemoryStore`` 的抽取契约。
 
     **解析失败可观测**（change 0172）：模型**有输出但无可解析 JSON 数组** ⇒ 经 ``warnings.warn``
@@ -413,13 +418,30 @@ _RELATION_PROMPT_HEAD = (
 )
 
 
+def render_predicate_table() -> str:
+    """规范谓词 → 中英变体表（由闭合白名单派生，声明顺序确定性；change 0242）。
+
+    每个规范谓词后跟其全部变体（``_PREDICATE_VARIANTS`` 中映射到该谓词的键）。
+    不另写词表 ⇒ 变体集合与归一化白名单**同源**，纯中文会话可直接选词。
+    """
+    groups: list[str] = []
+    for canonical in _CANONICAL_PREDICATES:
+        variants = [
+            variant for variant, target in _PREDICATE_VARIANTS.items() if target == canonical
+        ]
+        groups.append(f"{canonical}（{'/'.join(variants)}）")
+    return "；".join(groups)
+
+
 def build_relation_prompt(
-    entries: Sequence[MemoryEntry], *, max_relations: int = KEY_FACTS_MIN
+    entries: Sequence[MemoryEntry], *, max_relations: int | None = None
 ) -> str:
-    """把会话事件条目渲染为关系抽取 prompt（逐条节选，token 有界）。"""
-    head = _RELATION_PROMPT_HEAD.format(
-        max=max_relations, predicates="、".join(_CANONICAL_PREDICATES)
-    )
+    """把会话事件条目渲染为关系抽取 prompt（逐条节选，token 有界）。
+
+    ``max_relations`` 缺省 ⇒ 按本次聚合条数计算 ``relation_cap(n)``（与落库同源，change 0242）。
+    """
+    cap = relation_cap(len(entries)) if max_relations is None else max_relations
+    head = _RELATION_PROMPT_HEAD.format(max=cap, predicates=render_predicate_table())
     lines = [f"- {entry.content[:_MAX_ENTRY_CHARS]}" for entry in entries]
     return "\n".join([head, "", "会话事件：", *lines])
 
@@ -446,7 +468,7 @@ def parse_relations(text: str) -> list[Relation]:
 
 
 def extract_relations_with(
-    llm: Callable[[str], str], *, max_relations: int = KEY_FACTS_MIN
+    llm: Callable[[str], str], *, max_relations: int | None = None
 ) -> RelationExtractor:
     """把「prompt → 文本」的模型调用适配为 ``MemoryStore`` 的关系抽取契约。
 

@@ -449,6 +449,14 @@ def test_build_prompt_slot_stays_bounded_for_huge_summary() -> None:
     assert len(_summary_slot(prompt)) <= MAX_SUMMARY_CHARS
 
 
+def test_summary_prompt_requests_the_same_bound_as_storage() -> None:
+    """摘要 prompt 的字数要求与 `MAX_SUMMARY_CHARS` 同源（change 0242：不得另设 800 死值）。"""
+    prompt = build_prompt([_session_entry("e1", "新增事件", "s1")])
+
+    assert f"总长不超过 {MAX_SUMMARY_CHARS} 字" in prompt
+    assert "800 字" not in prompt, "提示词上界不得小于落库上界（否则模型被过早压缩）"
+
+
 def test_compaction_warns_when_skipping_low_value_session() -> None:
     """价值闸跳过 ⇒ `warnings.warn` 留痕**只报会话键**（不回显正文，change 0193）。"""
     store = MemoryStore(compactor=_ValueScorer({"lo0": 0.1}), summarizer=lambda entries: "摘要")

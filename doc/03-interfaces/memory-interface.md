@@ -253,7 +253,8 @@ def relevance(entry, query, embedder=None) -> float:
 
 **上界可见性与提升钩子**（change `0153` / ADR-0145 / 路线图 G3）：滚动合并上界
 ``MAX_SUMMARY_CHARS``（公开常量，缺省 2000）是既有摘要**投喂时的节选上限** ⇒ **越界即下一轮滚合并
-开始截断既有内容**。注入 ``summary_promoter``（契约 ``SummaryPromoter = Callable[[str, MemoryEntry],
+开始截断既有内容**。摘要 prompt 的字数要求与同一常量**同源**：``summarize_with`` 渲染时直接取
+``MAX_SUMMARY_CHARS``，不另写死数字（change `0242` ⇒ prompt 与存储上界不再漂移）。注入 ``summary_promoter``（契约 ``SummaryPromoter = Callable[[str, MemoryEntry],
 object]``）时，某会话摘要**首次越过**上界（既有摘要长度 ≤ 上界「或尚无摘要」而本次产出 > 上界）
 即把**本次产出的**摘要条目交付钩子**一次**；**已越界**的会话 SHALL NOT 重复交付；``session_id``
 空串 ⇒ 不交付。钩子 UNWIRED（缺省）⇒ 不交付、行为逐字不变；钩子抛错 ⇒ 降级（``warnings.warn``
@@ -291,7 +292,10 @@ loop 侧把行动序列写入 L2 **前**复用同一份判据 ⇒ **一处定义
 方向恒为 **over-redact**。**先脱敏后截断**（``_MAX_FACT_CHARS``=200；条数上界**自适应**
 ``key_fact_cap(n) = clamp(ceil(n × 0.25), 8, 16)``，``n`` = 本次压实聚合的 episodic 条数 ——
 change `0177`／ADR-0168；下限取既有死值 8 ⇒ **只放宽不收紧**，``MAX_KEY_FACTS_PER_COMPACT`` 保留为
-兼容别名）：``entity`` / ``ref`` 头部截断，``value`` 超长时**首尾保留**
+兼容别名）。**缺省抽取 prompt 的条数要求与同一旋钮同源**（change `0242`）：``build_extract_prompt``
+未显式覆盖时按 ``key_fact_cap(n)``、``build_relation_prompt`` 按 ``relation_cap(n)``（同一函数别名）；
+关系 prompt 的谓词白名单由公开的 ``RELATION_PREDICATES`` **渲染**（含全部中英文变体），不另写死清单。
+截断面：``entity`` / ``ref`` 头部截断，``value`` 超长时**首尾保留**
 （头 / 尾各半、中以 ``…`` 连接，总长仍 ≤ 上限 —— 取值常「头定名、尾定值」；change `0172`）。
 **同批同 slug 归并**：同一批内 ``slug_entity(entity)`` 相同者归并为一条、**只留首条**落库（后至者
 **不**挤占额度；归并后条数计额 = 本次 ``cap(n)`` 名额、**不重复占用**），被归并者经 ``warnings.warn``

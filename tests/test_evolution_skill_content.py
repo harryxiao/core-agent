@@ -100,6 +100,52 @@ def test_skill_content_writer_parses_valid_json() -> None:
 
 
 @pytest.mark.parametrize(
+    "raw",
+    [
+        "```json\n{}\n```",
+        "好的，结果如下：\n{}\n希望有帮助。",
+    ],
+)
+def test_skill_content_writer_tolerates_fences_and_surrounding_text(raw: str) -> None:
+    """模型把 JSON 包进代码围栏 / 前后杂文时仍应解析（change 0242）。"""
+    payload = json.dumps(asdict(_valid_content()), ensure_ascii=False)
+    writer = skill_content_writer_with(lambda _p: raw.format(payload))
+    result = writer("prompt")
+    assert result is not None
+    assert result.task_types == ["retrieve"]
+    assert result.instructions == "先查记忆再回答"
+
+
+def test_skill_content_writer_clips_overlong_fields() -> None:
+    """超长字段被裁剪到上界，内容仍有效（不整条丢弃；change 0242）。"""
+    payload = asdict(
+        _valid_content(
+            task_types=["t" * 500] * 50,
+            instructions="指" * 5000,
+            preconditions=["p" * 500] * 50,
+            description="描" * 5000,
+        )
+    )
+    writer = skill_content_writer_with(lambda _p: json.dumps(payload))
+    result = writer("prompt")
+
+    assert result is not None
+    assert len(result.instructions) <= 4000  # noqa: PLR2004 — 规格上界
+    assert len(result.description) <= 400  # noqa: PLR2004 — 规格上界
+    assert len(result.task_types) <= 16  # noqa: PLR2004 — 规格上界
+    assert all(len(t) <= 80 for t in result.task_types)  # noqa: PLR2004 — 规格上界
+    assert len(result.preconditions) <= 8  # noqa: PLR2004 — 规格上界
+    assert all(len(p) <= 200 for p in result.preconditions)  # noqa: PLR2004 — 规格上界
+    assert validate_skill_content(result) is True
+
+
+def test_validate_skill_content_rejects_overlong_fields() -> None:
+    """校验拒绝未经 writer 裁剪的超界内容（不构成信任边界；change 0242）。"""
+    assert validate_skill_content(_valid_content(instructions="指" * 4001)) is False
+    assert validate_skill_content(asdict(_valid_content(instructions="指" * 4001))) is False
+
+
+@pytest.mark.parametrize(
     "llm",
     [
         lambda _p: "not-json",

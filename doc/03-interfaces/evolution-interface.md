@@ -70,6 +70,19 @@ CRYSTALLIZATION_GATE_MARKS: dict[str, str]  # {"lint": …, "test": …}（门�
 def crystallization_gates() -> tuple[str, ...]:
     """派生结晶面门禁子集（顺序随单一真源）；标记命中未注册门名 ⇒ CiCdError(GATE_FAILED)。"""
 
+# 技能内容的生产者（evolution 域内、**不 import LLM 抽象**；change 0236／0242）
+def build_skill_content_prompt(issue: str, failure_notes: Sequence[str] | None = None) -> str:
+    """渲染内容蒸馏 prompt；失败摘要**有界**：条数 ≤ 3、单条 ≤ 400 字符。"""
+def skill_content_writer_with(llm: Callable[[str], str]) -> Callable[[str], SkillContent | None]:
+    """把「prompt → 文本」适配为内容生产者。解析**容忍代码围栏与前后杂文**（直接解析失败时
+    截取首 `{` 至末 `}` 再解析）；解析出的内容先**裁剪到上界**（instructions 4000 /
+    description 400 / task_types 16 条×80 字符 / preconditions 8 条×200 字符；`param_schema`
+    不裁剪），再过 ``validate_skill_content``；非法 / 异常 ⇒ ``None``（fail-closed，不外抛）。
+    change `0242`。"""
+def validate_skill_content(content: SkillContent | Mapping[str, Any] | None) -> bool:
+    """``task_types`` 非空、``instructions`` 非空、``param_schema`` 为 dict，且各字段均在上界内；
+    接受 dataclass 或 delta 内 asdict 形态。"""
+
 class Evaluator(Plugin):
     plugin_id = "evolution.evaluator"
     def __init__(

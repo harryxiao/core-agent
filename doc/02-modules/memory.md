@@ -76,6 +76,9 @@ MemoryStore
   `reuse_count` / `importance` / `updated_at`。供上层（CLI `notes promote`）取数做提升。
 - **摘要越界的提升钩子**（change `0153`／ADR-0145／路线图 G3）：滚动合并上界 `MAX_SUMMARY_CHARS`
   是既有摘要**投喂时的节选上限** ⇒ **越界即下一轮滚合并开始截断既有内容**（信息不可逆销毁）。
+  摘要 prompt 的字数要求与同一常量**同源**（change `0242`）：`summarize_with` 渲染时直接取
+  `MAX_SUMMARY_CHARS`（缺省 2000），不再写死 800 —— 此前 prompt 只要 800 字，模型被提示产出
+  约四成于存储上界的长度，与「越界才节选」的设计意图漂移。
   `MemoryStore` 支持注入 `summary_promoter`（契约 `(session_id, MemoryEntry) -> object`，缺省 UNWIRED）；
   某会话摘要**首次越过**上界时把**本次产出的**摘要条目交付钩子**一次**（供上层落 canonical），
   **已越界**不再交付（免以已稀释的后继摘要覆写）。memory **只报边界**、**不** import notes（钩子注入，
@@ -144,7 +147,10 @@ MemoryStore
 - **有界**：单次条数 **自适应** `key_fact_cap(n)`（`n` = 本次压实聚合的 episodic 条数；
   `= clamp(ceil(n × KEY_FACTS_RATIO=0.25), KEY_FACTS_MIN=8, KEY_FACTS_MAX=16)` —— change `0177`／ADR-0168）；
   下限取**既有死值 8** ⇒ **任何会话长度下名额都不收紧、只放宽**；`MAX_KEY_FACTS_PER_COMPACT` 保留为
-  兼容别名（= 下限）。`entity` / `ref` 长度 `_MAX_FACT_CHARS`(200) 头部截断，`value` 超长时**首尾保留**
+  兼容别名（= 下限）。**缺省抽取 prompt 的条数要求与同一旋钮同源**（change `0242`）：
+  `build_extract_prompt` 未显式覆盖时按 `key_fact_cap(n)`、`build_relation_prompt` 按
+  `relation_cap(n)`，prompt 不再写死独立数字（此前固定 8，聚合条数多时 prompt 与落库名额漂移）。
+  `entity` / `ref` 长度 `_MAX_FACT_CHARS`(200) 头部截断，`value` 超长时**首尾保留**
   （头 / 尾各半、中以 `…` 连接，总长仍 ≤ 上限；取值常「头定名、尾定值」—— change `0172`）。
   **同批同 slug 归并**：一批内 `slug_entity` 相同者归并为一条、**只留首条**（后至者不挤占额度；
   归并后条数计额 = 本次 `cap(n)` 名额，**不重复占用**），被归并者经 `warnings.warn` 留痕（含实体名、
@@ -300,7 +306,10 @@ MemoryStore
   `kind="semantic"` 是**承重**的：`_episodic_groups` 只收 `kind=="episodic" and layer=="L2"`
   ⇒ 关系**不回喂**压实材料。
 - **有界**：`relation_cap` **别名到** `key_fact_cap`（`0.25/8/16`）⇒ 全仓**一把调参旋钮**；批内按
-  完整三元组去重、keep-first。
+  完整三元组去重、keep-first。**prompt 与同一旋钮同源**（change `0242`）：`build_relation_prompt`
+  未显式覆盖时要求的名额即 `relation_cap(n)`；谓词表由公开的 `RELATION_PREDICATES` **渲染**
+  （每个规范谓词列出全部中英文变体），既有 prompt 只写英文规范名 ⇒ 中文变体虽可归一化落库、
+  模型却从未被提示可用。
 - **注入面复用既有「相关事实」块**：`_gather_facts` 以 `exclude_fact_sources=("compaction",)` 读 L2，
   关系是 `source="relation"` ⇒ **自动**被检索并经 `planner.py` 既有的「相关事实：」块渲染 ——
   **不加第 11 个提示词块**、零管线改动。代价：关系与关键事实**争同一份额度**，提示词中除 `-->`

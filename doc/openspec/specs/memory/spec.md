@@ -159,6 +159,10 @@ SHALL NOT 交付，压实行为**逐字不变**。钩子抛错 SHALL **降级**�
 
 会话**因价值门控被跳过**时（条目取得的最高分低于阈值），系统 SHALL 经 `warnings.warn` **留痕**（只报**会话键**，SHALL NOT 回显摘要 / 事件正文 —— 承密钥红线），SHALL NOT 静默跳过。
 
+摘要 prompt SHALL 以**同一** `MAX_SUMMARY_CHARS` 作为产出长度要求（提示词中的字数上界由该常量
+派生，SHALL NOT 另设更小的固定死值）—— 提示词上界与落库上界不一致会使模型过早压缩、长任务的
+最新结论更易丢失。
+
 #### Scenario: 摘要落库前脱敏
 - **GIVEN** 摘要器返回的摘要含密钥形态子串
 - **WHEN** 压实写回摘要条目
@@ -308,6 +312,12 @@ SHALL NOT 被摘要提炼或关键事实抽取吸收，SHALL NOT 被迁至 L4（
 - **GIVEN** 某会话既有摘要长度**超过** `MAX_SUMMARY_CHARS`
 - **WHEN** 该会话再次压实、构造投喂摘要器的 prompt
 - **THEN** 既有摘要槽 SHALL 含**首部**、**省略标记**与**尾部**（尾部与原文末段逐字一致），总节选长度 ≤ `MAX_SUMMARY_CHARS`；且**未越界**时 SHALL 逐字投喂全文（与变更前一致）
+
+#### Scenario: 摘要 prompt 与上界同源
+- **GIVEN** 构建摘要 prompt
+- **WHEN** 检查其产出长度要求
+- **THEN** 提示词中的字数上界 SHALL 等于 `MAX_SUMMARY_CHARS`（由同一常量派生），
+  SHALL NOT 出现与 `MAX_SUMMARY_CHARS` 不一致的固定字数
 
 #### Scenario: 价值门控跳过留痕（只报会话键）
 - **GIVEN** 某会话条目取得的最高分低于阈值（`_below_gate` 判低价值）
@@ -630,6 +640,9 @@ slug 相同者 SHALL **归并**为一条、**只留首条**落库，归并后条
 （`_MAX_FACT_CHARS`），且 SHALL **先脱敏后截断**（截断不得使明文逃逸）；其中 `value` 超长时截断
 SHALL **首尾保留**（头尾各半、中以 `…` 连接，总长 SHALL NOT 超过 `_MAX_FACT_CHARS`）。
 
+抽取 prompt 的条数要求 SHALL 与本次落库名额**同源**：注入的抽取器在未显式覆盖名额时，SHALL 按
+**本次调用**聚合的 episodic 条数计算 `cap(n)` 并写入 prompt；SHALL NOT 固定为下限死值。
+
 #### Scenario: 上限随会话长度自适应
 - **GIVEN** 两次压实分别聚合 20 条与 200 条 episodic 条目
 - **WHEN** keyfact 抽取落库
@@ -645,6 +658,12 @@ SHALL **首尾保留**（头尾各半、中以 `…` 连接，总长 SHALL NOT �
 （摘要写回、条目迁移、评分）**逐字不变**。配置键 `memory.key_fact_extract` SHALL 为**组合根接线闸**——
 缺省 **true**（保留既有行为，不得静默停用在用能力）；显式关闭时组合根 SHALL **不**注入
 `key_fact_extractor`。该键 SHALL 只决定**是否接线**，SHALL NOT 改变本条其余任何落库/脱敏/有界判据。
+
+#### Scenario: 抽取 prompt 名额随聚合条数自适应
+- **GIVEN** 注入缺省抽取器（未显式覆盖名额）
+- **WHEN** 分别对 20 条与 200 条 episodic 条目构建抽取 prompt
+- **THEN** 前者要求的名额 SHALL 等于 `cap(20)`（= `KEY_FACTS_MIN`），后者 SHALL 等于
+  `cap(200)`（= `KEY_FACTS_MAX`）—— prompt 名额与落库名额同源
 
 #### Scenario: 未注入抽取器 ⇒ 零抽取、逐字不变
 - **GIVEN** `MemoryStore` **未**注入 `key_fact_extractor`（缺省）
@@ -951,6 +970,10 @@ SHALL **等于** `key_fact_cap`，SHALL NOT 另起第二组常量）；**同一�
 归并为一条、**只留首条**；`head` / `tail` 长度 SHALL 有界（`_MAX_FACT_CHARS`）、`content`
 SHALL 有界（`_MAX_MEMORY_ENTRY`），且 SHALL **先脱敏后截断**。
 
+关系抽取 prompt 的条数要求 SHALL 与 `relation_cap(n)` **同源**（同上：未显式覆盖时按本次聚合
+条数计算）；谓词表 SHALL 由闭合白名单**派生**并展示每个规范谓词的中英变体（至少全部中文变体），
+SHALL NOT 另写第二份词表 —— 纯中文会话须能直接选词。
+
 关系条目 SHALL NOT 回喂压实材料（`kind="semantic"` 使其不入选只收 `kind="episodic"` 的材料面）。
 关系条目 SHALL **到达**「相关事实」注入面（其 `source="relation"` 不在该面的排除前缀内）。
 
@@ -1002,6 +1025,17 @@ SHALL 有界（`_MAX_MEMORY_ENTRY`），且 SHALL **先脱敏后截断**。
 - **GIVEN** 一次压实聚合 n 条 episodic 条目，抽取器返回**超过** `relation_cap(n)` 条的合法三元组
 - **WHEN** 落库
 - **THEN** 落库条数恰为 `relation_cap(n)`，且 `relation_cap` 与 `key_fact_cap` **同值**（同一把旋钮）
+
+#### Scenario: 关系 prompt 名额随聚合条数自适应
+- **GIVEN** 注入缺省关系抽取器（未显式覆盖名额）
+- **WHEN** 分别对 20 条与 200 条 episodic 条目构建关系抽取 prompt
+- **THEN** 前者要求的名额 SHALL 等于 `relation_cap(20)`，后者 SHALL 等于 `relation_cap(200)`
+
+#### Scenario: 关系 prompt 展示中英变体
+- **GIVEN** 构建关系抽取 prompt
+- **WHEN** 检查谓词表
+- **THEN** 每个规范谓词及其**全部中文变体** SHALL 出现；谓词表 SHALL 由归一化白名单派生
+  （变体集合恒等）
 
 #### Scenario: 关系不入压实材料
 

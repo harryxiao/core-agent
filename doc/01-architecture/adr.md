@@ -8230,6 +8230,52 @@ python env ⇒ `test_code_run_python_sets_utf8_io_env` 红；摘掉 `default_she
 衰减，本 change 只修注释与评分豁免，不改遗忘策略；④ 摘要脱敏发生在 `_commit_summary`，
 `_deliver_promotion` 的长度判据仍按**脱敏前**摘要计算（越界判定不变，属既定口径）。
 
+## ADR-0230：prompt 对齐与技能内容容错/有界（change 0242 / 台账 E177）
+
+**背景**：记忆与 evolution 全量 review 的批次 B 暴露两类「提示词与执行口径不一致」：
+① 摘要 prompt 要求「总长不超过 800 字」，而滚动合并上界 `MAX_SUMMARY_CHARS = 2000` ——
+模型被要求产出远小于可承载上限的摘要；② 关键事实 / 关系的落库名额已随会话长度自适应
+（`key_fact_cap(n)`，8~16），但抽取器工厂的 prompt 名额固定为 `KEY_FACTS_MIN = 8`；关系 prompt
+只列规范英文谓词，而正文声称「可用中英任一变体」；③ `skill_content_writer_with` 只接受纯 JSON
+文本，模型把合法对象包进代码围栏或前后杂文即整条丢弃，且 `SkillContent` 文本字段**无长度上界**。
+
+**决策**：
+
+- **D1 摘要 prompt 与上界同源**：`summarize._PROMPT_HEAD` 的字数要求由 `MAX_SUMMARY_CHARS`
+  插值生成（模块导入时一次性渲染）—— 不新增第二份数字，也不改滚动合并/提升钩子语义。
+- **D2 抽取 prompt 名额与落库同源**：`build_extract_prompt` / `build_relation_prompt` 的
+  `max_facts` / `max_relations` 缺省改为 `None` ⇒ 按**本次调用**条目数计算
+  `key_fact_cap(len(entries))` / `relation_cap(len(entries))`；显式传值语义不变。抽取器契约与
+  store 落库名额均不变，只消除「prompt 要求 8、落库允许 16」的内耗。
+- **D3 关系谓词表由白名单派生**：新增 `render_predicate_table()`，遍历 `_CANONICAL_PREDICATES`
+  并从 `_PREDICATE_VARIANTS` 取出映射到该谓词的全部变体（中英），渲染为
+  `depends_on（依赖/依赖于/取决于/depend on/…）`。不另写词表 ⇒ 变体集合与归一化白名单同源。
+- **D4 writer 容忍围栏与杂文**：`_json_object` 先直接 `json.loads`；失败时截取**首个 `{` 至
+  末个 `}`** 再解析（与 `extract._json_array` 同型容错，但对象形状独立实现 —— evolution 不
+  import memory）。仍不可解析 / 非对象 ⇒ `None`（fail-closed 语义不变）。
+- **D5 `SkillContent` 有界**：常量 `_MAX_INSTRUCTIONS_CHARS=4000`、`_MAX_DESCRIPTION_CHARS=400`、
+  `_MAX_TASK_TYPES=16`、`_MAX_TASK_TYPE_CHARS=80`、`_MAX_PRECONDITIONS=8`、
+  `_MAX_PRECONDITION_CHARS=200`。writer 解析后**裁剪**（保留可用内容，不整条丢弃）；
+  `validate_skill_content` **拒绝**超界内容 —— 持久化 delta / 外部注入内容不经 writer，
+  不构成信任边界；`param_schema` 为结构化对象，不做文本截断（截断会破坏 schema）。
+
+**规格**：`memory` **MODIFIED**「记忆压实」（＋1 Scenario）、「结构化实体抽取（关键事实）」
+（＋1 Scenario）、「实体关系抽取（relations）」（＋2 Scenario）（17 req 不变、130 → 134 scen）；
+`evolution` **MODIFIED**「技能候选内容生成」（＋3 Scenario）（19 req / 98 → 101 scen）。
+既有 Scenario 逐字保留。
+
+**反证（实测）**：摘要 prompt 还原 800 ⇒ 1 红；抽取 / 关系名额还原 `KEY_FACTS_MIN` ⇒ 2 红；
+谓词表还原纯英文 ⇒ 1 红；去掉围栏容错 ⇒ 2 红；去掉裁剪 ⇒ 1 红。复原后三个源文件
+`md5sum` 同。测试锚点：新增 8 例（`test_memory.py` 1 / `test_memory_key_facts.py` 1 /
+`test_memory_relations.py` 2 / `test_evolution_skill_content.py` 4，含 2 个参数化围栏用例）；
+`test_prompt_pinning.py` 摘要头与谓词表渲染同步；`doc/03-interfaces/prompts.md` 镜像同步
+（含 ⑥ 行号 398→403）。全量 2679 → **2687** passed。
+
+**局限**：① prompt 字数/名额对齐**不保证模型遵守**，落库仍按上界截断/计额；② 内容裁剪是
+**就近截断**，可能截在句子中间（结构不破坏，可读性受影响）；③ `param_schema` 大小仍未设
+上界；④ 谓词变体表是闭合白名单的**镜像维护面**（新增变体需改 `_PREDICATE_VARIANTS`）；
+⑤ 前端 `doctest` 与 Web 侧构建不在四门禁内（既有边界）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -8454,3 +8500,4 @@ python env ⇒ `test_code_run_python_sets_utf8_io_env` 红；摘掉 `default_she
 | ADR-0227 | 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0228 | 03-interfaces/prompts.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0229 | 03-interfaces/memory-interface.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0230 | 03-interfaces/prompts.md, 03-interfaces/memory-interface.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
