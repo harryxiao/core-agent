@@ -20,7 +20,7 @@ import time
 import uuid
 import warnings
 from collections import deque
-from collections.abc import Callable, Generator
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -28,9 +28,12 @@ from typing import Any, cast
 from core.loop import LoopPlugin
 from core.memory.extract import redact_secrets
 from core.tools import Tool, ToolDef
+from core.tools.workspace import use_workspace
 
 from .errors import OrchestrationError, OrchestrationErrorCode
 from .models import AgentProfile
+from .state_files import atomic_write_json, exclusive_file_lock
+from .worktrees import WORKTREE_ID_RE, WorkspaceLease, WorktreeManager, changed_files
 
 DEFAULT_MAX_RUNNING = 8
 DEFAULT_NOTICE_CAP = 32
@@ -43,6 +46,7 @@ _REPLY_STORE_CHARS = 4000
 
 # 跨重启登记（change 0279 / ADR-0269）：条目有界、错误文本有界。
 _MAX_PERSISTED = 64
+_MAX_WORKTREE_FILES = 20
 _PERSIST_VERSION = 1
 _ERROR_CHARS = 200
 _INTERRUPTED_ERROR = "进程重启导致中断"
@@ -60,6 +64,7 @@ _RECORD_FIELDS = (
     "error",
     "owner_pid",
     "owner_start",
+    "worktree",
 )
 
 TASKS_SCHEMA: dict[str, Any] = {
@@ -103,10 +108,12 @@ class BackgroundTaskInfo:
     # 跨进程归属（change 0283）：只入状态文件，不进 info()。
     owner_pid: int = field(default=0, repr=False)
     owner_start: str = field(default="", repr=False)
+    # 工作树元数据（change 0284）：空 dict ⇒ 未隔离（info/通知/落盘均不出现）。
+    worktree: dict[str, Any] = field(default_factory=dict[str, Any], repr=False)
 
     def info(self) -> dict[str, Any]:
         """对模型暴露的只读快照（不含会话标识；文本均有界）。"""
-        return {
+        payload: dict[str, Any] = {
             "task_id": self.task_id,
             "agent": self.agent_id,
             "task": self.task[:_TASK_TEXT_CHARS],
@@ -116,6 +123,9 @@ class BackgroundTaskInfo:
             "reply": self.reply[:_REPLY_STORE_CHARS],
             "error": self.error,
         }
+        if self.worktree:
+            payload["worktree"] = dict(self.worktree)
+        return payload
 
 
 def render_notice_lines(tasks: list[BackgroundTaskInfo]) -> str:
@@ -123,9 +133,10 @@ def render_notice_lines(tasks: list[BackgroundTaskInfo]) -> str:
     lines: list[str] = []
     for info in tasks[-_NOTICE_LINES:]:
         outcome = info.reply[:_REPLY_PREVIEW_CHARS] or info.error or "（无）"
+        marker = f"；工作树：{info.worktree['id']}" if info.worktree.get("id") else ""
         line = (
             f"- [{info.status}] {info.task_id}（{info.agent_id}）"
-            f"任务：{info.task[:_TASK_TEXT_CHARS]}；结果：{outcome}"
+            f"任务：{info.task[:_TASK_TEXT_CHARS]}；结果：{outcome}{marker}"
         )
         lines.append(line[:_NOTICE_LINE_CHARS])
     return "\n".join(lines)
@@ -133,7 +144,7 @@ def render_notice_lines(tasks: list[BackgroundTaskInfo]) -> str:
 
 def _info_record(info: BackgroundTaskInfo) -> dict[str, Any]:
     """可持久化元数据：任务正文与错误经脱敏并有界；**不**落回复正文（change 0279）。"""
-    return {
+    record: dict[str, Any] = {
         "task_id": info.task_id,
         "agent_id": info.agent_id,
         "task": redact_secrets(info.task)[:_TASK_TEXT_CHARS],
@@ -145,6 +156,9 @@ def _info_record(info: BackgroundTaskInfo) -> dict[str, Any]:
         "owner_pid": info.owner_pid,
         "owner_start": info.owner_start,
     }
+    if info.worktree:
+        record["worktree"] = dict(info.worktree)
+    return record
 
 
 def _process_start_token(pid: int) -> str:
@@ -209,54 +223,26 @@ def _owner_alive(pid: int, start: str) -> bool:
     return True
 
 
-def _lock_fd(fd: int) -> bool:
-    """对已打开的锁文件取独占锁；失败返回 `False`（调用方降级为无锁写）。"""
-    try:
-        if sys.platform == "win32":
-            import msvcrt  # noqa: PLC0415 — 平台专属模块
-
-            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl  # noqa: PLC0415 — 平台专属模块
-
-            fcntl.flock(fd, fcntl.LOCK_EX)
-    except OSError:
-        return False
-    return True
-
-
-def _unlock_fd(fd: int) -> None:
-    """释放独占锁（失败忽略：进程退出时 OS 也会释放）。"""
-    if sys.platform == "win32":
-        import msvcrt  # noqa: PLC0415 — 平台专属模块
-
-        with contextlib.suppress(OSError):
-            os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl  # noqa: PLC0415 — 平台专属模块
-
-        with contextlib.suppress(OSError):
-            fcntl.flock(fd, fcntl.LOCK_UN)
-
-
-@contextlib.contextmanager
-def _exclusive_file_lock(path: Path) -> Generator[None, None, None]:
-    """短独占建议锁（change 0283）：取锁失败降级为无锁写入，绝不阻断任务。"""
-    lock_path = path.with_name(f".{path.name}.lock")
-    try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-    except OSError:
-        yield
-        return
-    locked = _lock_fd(fd)
-    try:
-        yield
-    finally:
-        if locked:
-            _unlock_fd(fd)
-        os.close(fd)
+def _sanitize_worktree(value: Any) -> dict[str, Any]:
+    """工作树元数据白名单清洗：id 须合法，文本有界，坏值降级为空 dict。"""
+    if not isinstance(value, dict):
+        return {}
+    record = cast(dict[str, Any], value)
+    worktree_id = record.get("id")
+    if not isinstance(worktree_id, str) or not WORKTREE_ID_RE.match(worktree_id):
+        return {}
+    clean: dict[str, Any] = {"id": worktree_id}
+    for key in ("path", "branch", "repo_root"):
+        item = record.get(key)
+        if isinstance(item, str):
+            clean[key] = item[:400]
+    files = record.get("changed_files")
+    if isinstance(files, list):
+        raw = cast(list[Any], files)
+        clean["changed_files"] = [
+            item[:200] for item in raw[:_MAX_WORKTREE_FILES] if isinstance(item, str)
+        ]
+    return clean
 
 
 def _sanitize_record(record: dict[str, Any]) -> dict[str, Any] | None:
@@ -269,6 +255,12 @@ def _sanitize_record(record: dict[str, Any]) -> dict[str, Any] | None:
         clean["task"] = redact_secrets(clean["task"])[:_TASK_TEXT_CHARS]
     if isinstance(clean.get("error"), str):
         clean["error"] = redact_secrets(clean["error"])[:_ERROR_CHARS]
+    if "worktree" in clean:
+        worktree = _sanitize_worktree(clean["worktree"])
+        if worktree:
+            clean["worktree"] = worktree
+        else:
+            clean.pop("worktree")
     return clean
 
 
@@ -281,23 +273,6 @@ def _record_started_at(record: dict[str, Any]) -> float:
     ):
         return float(started)
     return 0.0
-
-
-def _write_payload(path: Path, payload: dict[str, Any]) -> None:
-    """同目录临时文件 + fsync + 原子替换（OSError 由调用方统一告警）。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
-        raise
 
 
 def _owner_fields(record: dict[str, Any]) -> tuple[int, str] | None:
@@ -326,6 +301,7 @@ def _restore_info(item: object) -> BackgroundTaskInfo | None:  # noqa: PLR0911 �
     finished_at = record.get("finished_at")
     session_id = record.get("session_id", "")
     error = record.get("error", "")
+    worktree = _sanitize_worktree(record.get("worktree", {}))
     owner = _owner_fields(record)
     if owner is None:
         return None
@@ -368,6 +344,7 @@ def _restore_info(item: object) -> BackgroundTaskInfo | None:  # noqa: PLR0911 �
         session_id=session_id,
         owner_pid=owner_pid,
         owner_start=owner_start,
+        worktree=worktree,
     )
 
 
@@ -427,6 +404,14 @@ class BackgroundAgentRegistry:
     def running_count(self) -> int:
         return sum(1 for info in self._infos.values() if info.status == "running")
 
+    def ensure_capacity(self) -> None:
+        """运行中上限守卫：超限抛 `BACKGROUND_TASKS_FULL`（消息逐字保持）。"""
+        if self.running_count() >= self._max_running:
+            raise OrchestrationError(
+                OrchestrationErrorCode.BACKGROUND_TASKS_FULL,
+                f"后台任务已达上限 {self._max_running}",
+            )
+
     def spawn(
         self,
         loop: LoopPlugin,
@@ -434,13 +419,10 @@ class BackgroundAgentRegistry:
         *,
         agent_id: str,
         session_id: str = "",
+        workspace: WorkspaceLease | None = None,
     ) -> str:
         """起一个后台委托并**立即**返回 task_id；超限抛 `BACKGROUND_TASKS_FULL`。"""
-        if self.running_count() >= self._max_running:
-            raise OrchestrationError(
-                OrchestrationErrorCode.BACKGROUND_TASKS_FULL,
-                f"后台任务已达上限 {self._max_running}",
-            )
+        self.ensure_capacity()
         task_id = f"bg-{uuid.uuid4().hex[:12]}"
         info = BackgroundTaskInfo(
             task_id=task_id,
@@ -450,10 +432,13 @@ class BackgroundAgentRegistry:
             session_id=session_id,
             owner_pid=os.getpid(),
             owner_start=_process_start_token(os.getpid()),
+            worktree=workspace.as_metadata() if workspace is not None else {},
         )
         self._infos[task_id] = info
         self._dirty.add(task_id)
-        running = asyncio.create_task(self._run(loop, task, session_id))
+        running = asyncio.create_task(
+            self._run(loop, task, session_id, workspace=workspace, task_id=task_id)
+        )
         self._tasks[task_id] = running
         running.add_done_callback(lambda done: self._finalize(task_id, done))
         self._save()
@@ -505,8 +490,28 @@ class BackgroundAgentRegistry:
 
     # ---- 内部 ----
 
-    async def _run(self, loop: LoopPlugin, task: str, session_id: str) -> Any:
-        return await loop.arun(task, session_id=session_id)
+    async def _run(
+        self,
+        loop: LoopPlugin,
+        task: str,
+        session_id: str,
+        *,
+        workspace: WorkspaceLease | None = None,
+        task_id: str = "",
+    ) -> Any:
+        with use_workspace(workspace.path if workspace is not None else None):
+            result = await loop.arun(task, session_id=session_id)
+        if workspace is not None and task_id:
+            await self._record_changed_files(task_id, workspace)
+        return result
+
+    async def _record_changed_files(self, task_id: str, workspace: WorkspaceLease) -> None:
+        """best-effort 回填改动清单；随后的终态写盘一并落盘。"""
+        info = self._infos.get(task_id)
+        if info is None:
+            return
+        info.worktree["changed_files"] = await asyncio.to_thread(changed_files, workspace)
+        self._dirty.add(task_id)
 
     def _finalize(self, task_id: str, task: asyncio.Task[Any]) -> None:
         """落终态 + 记通知（幂等；取消也留痕）。"""
@@ -588,12 +593,12 @@ class BackgroundAgentRegistry:
         if path is None:
             return
         try:
-            with _exclusive_file_lock(path):
+            with exclusive_file_lock(path):
                 payload = {
                     "version": _PERSIST_VERSION,
                     "tasks": self._merged_records(),
                 }
-                _write_payload(path, payload)
+                atomic_write_json(path, payload)
                 self._dirty.clear()
         except OSError:
             self._warn_persist()
@@ -673,12 +678,21 @@ def background_tasks_tool(*, registry: BackgroundAgentRegistry) -> Tool:
     )
 
 
-def task_retry_tool(
-    *, registry: BackgroundAgentRegistry, match: Callable[[str], AgentProfile]
+def task_retry_tool(  # noqa: C901 — 内嵌 handler 的拒绝分支计入本函数
+    *,
+    registry: BackgroundAgentRegistry,
+    match: Callable[[str], AgentProfile],
+    worktrees: WorktreeManager | None = None,
 ) -> Tool:
-    """重入队工具：按登记的任务正文重新路由并启动新后台任务（需审批）。"""
+    """重入队工具：按登记的任务正文重新路由并启动新后台任务（需审批）。
 
-    def handler(task_id: str) -> dict[str, Any]:  # noqa: PLR0911 — 逐种拒绝原因早退
+    handler 为 ``async def``：``spawn`` 必须在事件循环内 ``create_task``；
+    工作树创建等阻塞 IO 走 ``asyncio.to_thread``（change 0284 / D8 修复）。
+    """
+
+    async def handler(  # noqa: C901, PLR0911 — 逐种拒绝原因早退
+        task_id: str,
+    ) -> dict[str, Any]:
         info = registry.get(task_id)
         if info is None:
             return {"ok": False, "error": f"未登记的后台任务: {task_id}"}
@@ -693,21 +707,38 @@ def task_retry_tool(
         if profile.loop is None:
             return {"ok": False, "error": f"子 Agent {profile.agent_id} 无可用 loop"}
         try:
+            registry.ensure_capacity()
+        except OrchestrationError as exc:
+            return {"ok": False, "error": str(exc)}
+        manager = worktrees
+        lease: WorkspaceLease | None = None
+        if manager is not None:
+            try:
+                lease = await asyncio.to_thread(manager.create, agent_id=profile.agent_id)
+            except OrchestrationError as exc:
+                return {"ok": False, "error": str(exc)}
+        try:
             new_id = registry.spawn(
                 profile.loop,
                 info.task,
                 agent_id=profile.agent_id,
                 session_id=info.session_id,
+                workspace=lease,
             )
         except OrchestrationError as exc:
+            if manager is not None and lease is not None:
+                await asyncio.to_thread(manager.remove_quiet, lease)
             return {"ok": False, "error": str(exc)}
-        return {
+        payload: dict[str, Any] = {
             "ok": True,
             "task_id": new_id,
             "status": "running",
             "agent": profile.agent_id,
             "retried": task_id,
         }
+        if lease is not None:
+            payload["worktree"] = lease.as_metadata()
+        return payload
 
     return Tool(
         definition=ToolDef(

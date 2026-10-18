@@ -109,6 +109,21 @@ class ToolDef:
 - **不是访问控制**：本工具只提供参数信息；即使未加载 schema，文本 JSON 动作路径仍可调用任何
   注册工具。
 
+### 3.6 工作区相对路径（change `0284`／ADR-0274）
+
+- **作用域**：`core/tools/workspace.py` 用 ContextVar 保存当前工作区根；子 Agent 任务由
+  `use_workspace()` 设置，任务结束自动复位。`file_read` / `file_write` / `file_patch` 等文件工具
+  与 `code_run` 的路径解析统一走 `resolve_path(path)`：
+  - 有工作区且为**相对路径** ⇒ `工作区根 / path`；
+  - 绝对路径 / 带 drive 的非绝对路径 / `~` 展开结果 ⇒ **原样返回**（不 join、不 `resolve`）；
+  - 无工作区 ⇒ 原样返回（进程 cwd 语义，逐字不变）。
+- **`code_run` cwd**：省略 `cwd` 时有工作区 ⇒ 工作区根，否则继承进程 cwd；显式相对 `cwd`
+  相对工作区根解析。
+- **不是沙箱**：绝对路径、`~`、符号链接目标都不受工作区约束；隔离只避免**默认相对路径**落到
+  主仓库。真正的访问控制仍由 permission / coeffect 负责。
+- **关闭开关时零变化**：`orchestration.worktree_isolation=false` ⇒ 不设置工作区，
+  `workspace_root()` 为 `None`，上述解析全部走「无工作区」分支。
+
 ---
 
 ## 4. 工具聚合（ToolProvider）

@@ -4697,3 +4697,51 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3141 passed**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0273 行（加载后 owner 死亡需下次加载 /
 > msvcrt 有界重试 / 网络文件系统 / 非 Linux 无启动标识 / 64 条淘汰 / 共享容量）。
+
+## 196. 子 Agent 工作树隔离（TC-WORKTREE，change `0284`／ADR-0274，台账 E220）
+
+> 覆盖 `orchestration` / `configuration` / `git` / `permission` 四个 **ADDED** 需求
+> （10 + 3 + 4 + 4 scen）。测试文件 `tests/test_worktree_backend.py`（新，7 例）与
+> `tests/test_worktree_isolation.py`（新，29 例）；`tests/test_background_persistence.py`
+> 的重入队调用改为 `await`（handler 变 async，D8）。缺省 OFF 时形状逐字不变。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-WORKTREE-01 | git 原语 | 子目录调用 `repo_root` | 返回仓库根（`test_repo_root_resolves_from_subdirectory`） |
+| TC-WORKTREE-02 | git 原语 | `add` → `list` → `remove` 往返 | 工作树出现 / 分支被追踪 / 删除后消失（`test_worktree_add_list_remove_roundtrip`） |
+| TC-WORKTREE-03 | git 原语 | 无提交仓库 `worktree add` | `GitError`（`test_worktree_add_without_commit_fails`） |
+| TC-WORKTREE-04 | git 原语 | 脏工作树无 `force` 删除 | `GIT_WORKTREE_DIRTY`（`test_worktree_remove_dirty_requires_force`） |
+| TC-WORKTREE-05 | porcelain 解析 | detached HEAD + 主工作树 | `branch=None` / `branch` 去 `refs/heads/`（`test_worktree_list_parses_detached_and_main`） |
+| TC-WORKTREE-06 | 选项注入 | 路径以 `-` 开头 | `GitError`，消息不回显取值（`test_worktree_rejects_option_like_path`） |
+| TC-WORKTREE-07 | 配置三面 | 缺省 / YAML `worktree_isolation: true` / 非法值 | 缺省 false；开启生效；非法值阻断加载（`...[spec_and_default_off]` / `...[invalid_blocks_load]`） |
+| TC-WORKTREE-08 | 关闭态逐字不变 | 未开启开关 | `runtime.worktrees is None`；无工作树工具；前台结果 `{"ok","reply"}`、后台 `{ok,task_id,status,agent}`（`test_isolation_off_keeps_existing_delegate_shape_and_tools`） |
+| TC-WORKTREE-09 | Scenario「前台文件隔离」 | 前台委托相对路径写文件 | 文件只在工作树；主仓库 `git status` 干净（`test_foreground_file_writes_land_in_worktree`） |
+| TC-WORKTREE-10 | Scenario「code_run 工作区相对」 | 省略 `cwd` / 显式相对 `cwd` | 均落在工作树（`test_code_run_defaults_to_worktree` / `...[explicit_relative_cwd]`） |
+| TC-WORKTREE-11 | Scenario「绝对路径不重映射」 | 前台委托写绝对路径 | 目标为绝对路径，主区可见（`test_absolute_path_is_not_remapped`） |
+| TC-WORKTREE-12 | Scenario「工作树从 HEAD 起」 | 主区存在未提交文件 | 工作树看不到该文件（`test_worktree_starts_from_head_ignoring_dirty_main`） |
+| TC-WORKTREE-13 | Scenario「后台隔离 + 登记 + 通知 + 重启」 | 后台委托写文件 → 落盘 → 新注册表 | `info()["worktree"]`、通知含 id、重启后仍可见（`test_background_isolated_persisted_and_notified`） |
+| TC-WORKTREE-14 | Scenario「终态保留 + retry」 | 后台任务终态后 `task_retry` | 旧工作树保留、新任务新工作树（`test_terminal_retention_and_retry_creates_new_worktree`） |
+| TC-WORKTREE-15 | Scenario「并发委托互不覆盖」 | 同 profile 两后台任务写同名文件 | 各自工作树内看到自己的内容（`test_concurrent_background_delegates_do_not_share_files`） |
+| TC-WORKTREE-16 | Scenario「fail-closed」 | 非 git 仓库 / 无提交 / 状态根在仓库内 | `ok=false` + `WORKTREE_UNAVAILABLE`，不回退主区、不调子 Agent（`test_non_git_fail_closed_without_fallback` / manager 三例） |
+| TC-WORKTREE-17 | Scenario「list / discard 生命周期」 | list → discard → 重复 discard | 工作树 / 分支 / sidecar 消失；重复调用幂等成功（`test_worktree_tools_list_and_discard_lifecycle`） |
+| TC-WORKTREE-18 | Scenario「拒绝运行中任务 / 脏工作树 / 篡改登记」 | 运行中任务的 id / 脏树无 `force` / sidecar A 指向 B | 均拒绝；B 与 A 均保留（`test_discard_refuses_running_task_worktree` / `...[dirty_requires_force]` / `test_manager_discard_rejects_tampered_sidecar_path`） |
+| TC-WORKTREE-19 | sidecar 卫生 | 创建后检查模式与内容 | sidecar `0600`、根 `0700`；不含任务正文 / session（`test_manager_creates_worktree_branch_and_sidecar`） |
+| TC-WORKTREE-20 | Scenario「工具面」 | 开启后检查各 profile | 仅主工具面有 list / discard（`test_worktree_tools_only_on_main_surface`） |
+| TC-WORKTREE-21 | Scenario「权限分级」 | `PolicyEngine.classify` | list ⇒ READ；discard ⇒ HIGH_RISK（`test_worktree_tools_classification_uses_tokens`） |
+| TC-WORKTREE-22 | Scenario「模式门 / 允许面」 | read-only 档 / auto-approve 白名单 | read-only 拒 discard、允 list；允许面仅含 `worktree:read` 时 discard 仍拒绝（`test_read_only_mode_denies_discard_but_allows_list` / `test_auto_approve_allowlist_governs_worktree_coeffects`） |
+
+> **口径**：工作树布局 `<CORE_STATE_DIR>/worktrees/<repo_key>/<worktree_id>/`（根 `0700`）+
+> sidecar `<worktree_id>.json`（`0600` 原子写）；`worktree_id = wt-<12hex>`、分支
+> `core-agent/wt-<12hex>`。隔离经 ContextVar（`use_workspace`）按任务传播，**只影响相对路径与
+> 省略 cwd 的 `code_run`**；绝对路径 / `~` / 符号链接目标保持原语义 —— **不是安全沙箱**。
+> 创建失败 fail-closed（不回退主工作区）；终态保留工作树与分支，`discard` 需审批且拒绝
+> 运行中任务 / 篡改登记 / 未 `force` 的脏树。旁证 `tests/test_background_persistence.py`
+> 四例 `await handler(...)` 同时是 D8（异步 handler）回归锚。
+> **反证 3/3**：① `_expand` 退回 `Path(path).expanduser()` ⇒ TC-09 红；② 后台 `_run` 去掉
+> `use_workspace` ⇒ TC-13 红而 TC-09 仍绿；③ `discard` 去掉 `_record_valid` ⇒ TC-18 的篡改
+> 用例红（B 被误删）；复原 `md5sum` 一致。
+> 规格：`orchestration` / `configuration` / `git` / `permission` **ADDED**（10 + 3 + 4 + 4 scen）。
+> `validate --all` 31/0（归档后）。测试净 **+36**（3141 → **3177**）。
+> 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3177 passed**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0274 行（非沙箱 / 共享 `.git` /
+> TaskScheduler 未隔离 / 无自动清理 / 快照不刷新 / Windows 未手工验证 / 撤销快照共享）。

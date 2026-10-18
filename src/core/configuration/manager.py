@@ -67,6 +67,9 @@ _DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT = 600
 # 自动续跑开关（change 0278 / ADR-0268）：缺省 **关** —— 既有入口「只呈现不重执行」逐字不变；
 # 开启仅影响 `task` 入口，`serve` 等启动扫描仍纯呈现（`durability`「崩溃恢复」）。
 _DEFAULT_ORCHESTRATION_AUTO_RESUME = False
+# 子 Agent 工作树隔离（change 0284 / ADR-0274）：缺省 **关** —— 委托路径、工具面、
+# 结果形状、通知与登记字段逐字不变；开启仅对 `tools.delegate`（前台 + 后台）生效。
+_DEFAULT_ORCHESTRATION_WORKTREE_ISOLATION = False
 # 无人值守护栏（change 0280 / ADR-0270）：整任务墙钟时限 / token 预算缺省 0 = 关闭
 # （不改变既有任务执行）；失败通知文件缺省空 = 不落盘；auto-approve 的 coeffect 允许面
 # 缺省空 = 全放行（与引入前逐字一致）。四项旋钮本身即 kill-switch，不设额外总开关。
@@ -336,6 +339,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_ORCHESTRATION_AUTO_RESUME",
         default=_DEFAULT_ORCHESTRATION_AUTO_RESUME,
         map_to="orchestration.auto_resume",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "orchestration.worktree_isolation",
+        "--orchestration.worktree-isolation",
+        "CORE_ORCHESTRATION_WORKTREE_ISOLATION",
+        default=_DEFAULT_ORCHESTRATION_WORKTREE_ISOLATION,
+        map_to="orchestration.worktree_isolation",
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
@@ -1220,6 +1231,19 @@ class ConfigManager:
             return value
         return str(value).strip().lower() in _FEATURE_TRUE
 
+    def orchestration_worktree_isolation(self) -> bool:
+        """子 Agent 工作树隔离开关（缺省 ``False``；change 0284 / ADR-0274）。
+
+        只在 `tools.delegate` 前台/后台路径消费；非法值已在校验期阻断启动。
+        """
+        if self._config is None:
+            return _DEFAULT_ORCHESTRATION_WORKTREE_ISOLATION
+        raw = cast("dict[str, Any]", self._config.extra.get("orchestration") or {})
+        value = raw.get("worktree_isolation", _DEFAULT_ORCHESTRATION_WORKTREE_ISOLATION)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in _FEATURE_TRUE
+
     def orchestration_task_timeout(self) -> int:
         """整任务墙钟时限秒数（缺省 ``0`` = 不设限；change 0280 / ADR-0270）。"""
         if self._config is None:
@@ -1687,6 +1711,14 @@ def _orchestration_errors(raw: dict[str, Any]) -> list[str]:
     ):
         errors.append(
             f"非法自动续跑开关: orchestration.auto_resume={auto_resume!r}（须为 true/false 之一）"
+        )
+    worktree_isolation = raw.get("worktree_isolation", _DEFAULT_ORCHESTRATION_WORKTREE_ISOLATION)
+    if not isinstance(worktree_isolation, bool) and str(worktree_isolation).strip().lower() not in (
+        _FEATURE_TRUE | _FEATURE_FALSE
+    ):
+        errors.append(
+            "非法工作树隔离开关: orchestration.worktree_isolation="
+            f"{worktree_isolation!r}（须为 true/false 之一）"
         )
     task_timeout = _parse_int(raw.get("task_timeout", _DEFAULT_ORCHESTRATION_TASK_TIMEOUT))
     if task_timeout is None or task_timeout < 0:

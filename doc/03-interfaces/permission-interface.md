@@ -40,6 +40,17 @@ class Decision:
 （`secret:` / `network:` / `external`）→ **字面量委托豁免** `agent:delegate`（list 元素**等值**匹配，判 READ）
 → 写词元 → 只读词元 → 兜底 HIGH_RISK。该豁免 SHALL NOT 放宽为 `agent:` 前缀（其余 `agent:*` 仍按高危及后续规则处理）。
 
+**工作树工具分级（change `0284` / ADR-0274）**：不自带字面量豁免，按词元规则自然落级：
+
+| 工具 id | 词元 | 分级 | coeffect | 说明 |
+|---|---|---|---|---|
+| `tools.worktree.list` | `{tools, worktree, list}` | `READ` | `worktree:read` | 只读清单 |
+| `tools.worktree.discard` | `{tools, worktree, discard}` | `HIGH_RISK` | `worktree:write` | deny-by-default，需审批；`reversible=False` |
+
+`read-only` 档拒 discard、允 list；`interactive` 档 discard 走人工审批；
+`auto-approve` 的 `permission.auto_approve_coeffects` 允许面同时约束二者（全含判定）。
+两工具只在 `orchestration.worktree_isolation=true` 时注册且只挂主工具面 —— 子 Agent 结构上不可见。
+
 ---
 
 ## 3. ApprovalWorkflow 接口

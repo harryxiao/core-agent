@@ -200,6 +200,29 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
   只 stderr 告警）。非空 URL 只接受 `http(s)` + 非空 host；**URL 可能内嵌令牌 ⇒ 校验错误与
   推送失败告警均不回显 URL**。
 
+### 3.11 子 Agent 工作树隔离（change `0284`／ADR-0274）
+
+- **开关**：`orchestration.worktree_isolation`（缺省 **false**）。关闭 ⇒ 不构造 manager、不注册
+  coeffect、不挂工具，委托结果 / 通知 / 持久化字段**逐字不变**。开启后每次 `tools.delegate`
+  （前台与后台）在宿主仓库的独立 git worktree 中运行。
+- **布局**：`$CORE_STATE_DIR/worktrees/<repo_key>/<worktree_id>/`（根 `0700`）+
+  sidecar `<worktree_id>.json`（`0600` 原子写）。`repo_key = sha256(realpath(repo_root))[:12]`、
+  `worktree_id = wt-<12hex>`、分支 `core-agent/wt-<12hex>`。sidecar 只存
+  `version/id/repo_root/path/branch/agent_id/created_at`，**不含任务正文 / session**。
+- **工作区传播**：`core/tools/workspace.py` 以 ContextVar 承载当前工作区；
+  `asyncio.create_task` 与 `asyncio.to_thread` 都会复制 context ⇒ 隔离按任务生效，loop / provider
+  仍只构造一次。受影响面**仅**相对路径的文件工具与省略 `cwd` 的 `code_run`；绝对路径、`~`
+  展开结果、符号链接目标保持原语义 —— **这是路径作用域，不是安全沙箱**。
+- **生命周期**：终态**保留**工作树与分支；不自动合并 / 提交 / 删除 / prune。显式
+  `tools.worktree.list`（只读）与 `tools.worktree.discard`（`HIGH_RISK`，需审批）是唯二清理面；
+  丢弃拒绝运行中后台任务占用的工作树、拒绝被篡改 / 越界的 sidecar、脏工作树须 `force=true`。
+- **失败语义**：非 git 仓库 / 无提交 / 状态根位于仓库内 / 目录已存在 ⇒ `WORKTREE_UNAVAILABLE`，
+  **不回退主工作区**。创建后续步骤失败（容量上限、spawn 异常）best-effort 回滚该工作树。
+- **后台可见性**：`info()["worktree"]`、完成通知（仅 id）、跨重启登记均带工作树元数据
+  （白名单字段、`changed_files` 终态快照 ≤20）；`tools.task_retry` 为新任务创建新工作树。
+- **无 EffectTracker 撤销**：保留是产品决策；挂 undo 会让全局回滚删除用户期望保留的产物。
+  可逆面是显式 `discard`。
+
 ---
 
 ## 4. 与 loop 的关系

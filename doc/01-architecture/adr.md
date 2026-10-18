@@ -10320,6 +10320,66 @@ ruff check / format 绿、`pyright` 0 errors、`pytest -q` **3141 passed**。
 （NFS/SMB）锁语义不保证；`owner_start` 在非 Linux 平台为空，只剩 pid 判活、存在复用误判
 的残余风险；合并写仍按 `started_at` 保留最新 64 条。
 
+## ADR-0274：子 Agent 工作树隔离（change 0284 / 台账 E220）
+
+**背景**：`tools.delegate` 的前台 / 后台子 Agent 与主 Agent 共用同一进程 cwd（对齐报告
+`doc/01-architecture/claude-code-alignment.md` §3.9 的 P0 缺口）。并行委托写同名文件只能靠
+纪律与重复调用抑制；子 Agent 的失败改动直接落在主工作区，无法隔离、复核或回滚。
+
+**决策**：
+
+- **D1 工作区用 ContextVar，不重构 loop / provider**：新 `core/tools/workspace.py`（仅 stdlib）
+  提供 `workspace_root()` / `use_workspace(root)` / `resolve_path(path)`。`asyncio.create_task`
+  与 `asyncio.to_thread` 都会复制当前 context ⇒ 隔离按任务生效；三个 profile 的 loop 仍只构造
+  一次。`DefaultLoop._normalize_action_args` **不改**：它是单次 run 内的去重键，而工作区在一次
+  run 内恒定，改它只会引入 loop → workspace 的反向耦合。
+- **D2 创建点在前台 `_dispatch` / 后台 `_delegate`，不在注册表**：注册表不依赖 git / 配置；
+  `spawn(..., workspace=lease)` 接收租约，`_run` 在 `use_workspace(lease.path)` 内 `arun`。
+  `changed_files` 为 best-effort 统计（失败返回空列表），不影响任务结果。
+- **D3 不把工作树创建记为 `EffectTracker` 效应**：终态**保留**是产品决策；若挂 undo，全局
+  回滚会删除用户期望保留的产物。创建的可逆面是显式 `tools.worktree.discard`，不是会话副作用。
+- **D4 工具面拆两个、用点号 id、靠既有词元分级**：`tools.worktree.list` 命中只读词元 `list`
+  ⇒ `READ`；`tools.worktree.discard` 无只读 / 写词元 ⇒ deny-by-default `HIGH_RISK`。
+  **不改** `PolicyEngine` 代码；coeffect 为 `worktree:read` / `worktree:write`，仅开关开启时
+  注册、仅主工具面。子 Agent 的 provider 结构上不含两者。
+- **D5 git 原语加在 `GitBackend` / `SubprocessGitBackend`，不加在 `GitClient`**：工作树生命周期
+  是本地操作，不属远程 / 审批面。新增 `repo_root` / `worktree_add` / `worktree_list` /
+  `worktree_remove` / `branch_exists` / `delete_branch`；以 `-` 开头的参数一律拒绝（防选项注入），
+  stderr 永不回显，clean-check 失败映射 `GIT_WORKTREE_DIRTY`。
+- **D6 配置三面、缺省 OFF**：`orchestration.worktree_isolation` /
+  `--orchestration.worktree-isolation` / `CORE_ORCHESTRATION_WORKTREE_ISOLATION`。非法值阻断启动
+  （与 `auto_resume` 同口径），不静默降级；关闭时不构造 manager、不注册 coeffect、不挂工具。
+- **D7 布局与安全**：`$CORE_STATE_DIR/worktrees/<repo_key>/<worktree_id>/`，sidecar
+  `<worktree_id>.json`（0600、原子写），根 0700；`repo_key = sha256(realpath(repo_root))[:12]`，
+  `worktree_id = wt-<12hex>`，分支 `core-agent/wt-<12hex>`。sidecar 只存
+  `version/id/repo_root/path/branch/agent_id/created_at`。`discard` 校验 id 正则、精确布局、
+  `realpath` 包含与分支名，越界即拒绝；拒绝运行中后台任务占用的工作树。
+- **D8 顺带修复既有 bug**：`tools.task_retry` 的同步 handler 经 `asyncio.to_thread` 调用
+  `registry.spawn`，后者在**工作线程**里 `asyncio.create_task` ⇒ 必然 `RuntimeError: no running
+  event loop`。handler 改为 `async def`：`spawn` 回事件循环，工作树创建等阻塞 IO 走
+  `asyncio.to_thread`。既有四个重入队测试同步改为 `await handler(...)`。
+- **兼容**：`_PERSIST_VERSION` 保持 1；后台登记的 `worktree` 字段仅在非空时写，旧记录照常加载；
+  读侧按白名单清洗（id 正则、文本有界、`changed_files ≤ 20`）。
+
+**反证 3/3（均实测转红后复原，`md5sum` 一致）**：① `builtin._expand` 退回
+`Path(path).expanduser()` ⇒ 前台文件隔离用例红；② `background._run` 去掉 `use_workspace`
+包裹 ⇒ 后台隔离用例红，而前台用例仍绿（两支独立）；③ `discard` 去掉 `_record_valid` 改为直接
+信任 sidecar 路径 ⇒ 篡改登记用例红（另一个合法工作树被误删）。
+
+**规格**：`orchestration` / `configuration` / `git` / `permission` **ADDED**（10 + 3 + 4 + 4
+场景）。`validate --all` **31/0**（归档后）。
+
+**测试**：新增 `tests/test_worktree_backend.py` **7 例**、`tests/test_worktree_isolation.py`
+**29 例**；既有 `test_background_persistence.py` 四例改为 await。净 **+36**（3141 → **3177**）。
+四门禁：ruff check / format 绿、`pyright` 0 errors、`pytest -q` **3177 passed**。
+
+**局限**：隔离是**路径作用域，不是安全沙箱** —— 绝对路径、`~` 展开结果与符号链接目标保持原
+语义；git 工作树共享同一 `.git`（对象库与 refs 仍可被显式命令写入）。`TaskScheduler` 扇出未
+隔离（顺序子任务依赖彼此未提交文件，合并语义另定）。工作树只增不减：无自动合并 / GC / 配额，
+需显式 `discard`。后台登记中的 `changed_files` 是终态快照，不随之后的人工改动刷新。
+Windows 只覆盖路径与锁的单元行为，未做手工端到端验证。`file_write` / `file_patch` 的撤销快照
+列表在同一进程的并发任务间共享，工作树隔离不修复该既有问题（ADR 记录，不在本 change 范围）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10588,3 +10648,4 @@ ruff check / format 绿、`pyright` 0 errors、`pytest -q` **3141 passed**。
 | ADR-0271 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0272 | 02-modules/permission.md, 03-interfaces/permission-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0273 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0274 | 02-modules/orchestration.md, 02-modules/tool-use.md, 02-modules/configuration.md, 02-modules/permission.md, 03-interfaces/orchestration-interface.md, 03-interfaces/git-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/permission-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

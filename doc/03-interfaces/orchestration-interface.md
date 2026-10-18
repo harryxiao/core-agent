@@ -392,6 +392,53 @@ session_id, error, owner_pid, owner_start}]}`；`task`/`error` 写读两侧经 `
 （POSIX `flock` / Windows `msvcrt.locking`，`0600`；取锁失败降级为无锁写），锁内按
 「磁盘视图 + 本实例 dirty 条目」合并后原子替换。
 
+### 3.2 工作树租约与工具（change `0284` / ADR-0274）
+
+```python
+@dataclass(frozen=True)
+class WorkspaceLease:
+    worktree_id: str            # wt-<12hex>
+    repo_root: str
+    path: str
+    branch: str                 # core-agent/wt-<12hex>
+    agent_id: str
+    created_at: float
+
+    def as_metadata(self, changed: list[str] | None = None) -> dict[str, Any]
+        # {id, path, branch, repo_root, changed_files}；不含任务正文 / session
+
+class WorktreeManager:
+    def __init__(self, root: Path | str, *,
+                 backend_factory: Callable[..., GitBackend] = build_backend,
+                 max_list: int = 50)
+    def create(self, *, agent_id: str, start: Path | str | None = None) -> WorkspaceLease
+        # 非 git / 无提交 / 状态根在仓库内 / 目录已存在 ⇒
+        # OrchestrationError(WORKTREE_UNAVAILABLE)；sidecar 最后写，失败 best-effort 回滚
+    def list(self) -> dict[str, Any]         # {"worktrees": [...], "truncated": bool}
+    def discard(self, worktree_id: str, *, force: bool = False) -> dict[str, Any]
+        # 不存在 ⇒ {"ok": True, "removed": False}（幂等）；
+        # 篡改/越界登记 ⇒ {"ok": False}；脏树无 force ⇒ GIT_WORKTREE_DIRTY 语义
+    def remove_quiet(self, lease: WorkspaceLease) -> None   # 创建后续失败时清理
+
+def changed_files(lease: WorkspaceLease, *, cap: int = 20) -> list[str]
+    # changed + untracked + conflicted 去重排序截断；GitError/OSError ⇒ []
+
+def worktree_tools(*, manager: WorktreeManager,
+                   is_running: Callable[[str], str | None]) -> tuple[Tool, Tool]
+    # tools.worktree.list（worktree:read, READ）
+    # tools.worktree.discard（worktree:write, HIGH_RISK, reversible=False）
+```
+
+**后台注册表扩展**：`spawn(..., workspace: WorkspaceLease | None = None)` 把租约传给 `_run`，
+后者在 `use_workspace(lease.path)` 内 `arun`；终态后写入 `changed_files` 快照。
+`BackgroundTaskInfo.worktree: dict`（缺省 `{}`）仅在非空时出现在 `info()`、通知（仅 id）与
+登记文件（白名单字段：`id/path/branch/repo_root/changed_files`）。`task_retry_tool(...,
+worktrees=manager)` 为新任务创建新工作树。`_PERSIST_VERSION` 保持 1，旧记录照常加载。
+
+**布局**：`<root>/<repo_key>/<worktree_id>/` + `<worktree_id>.json`（`0600` 原子写）；
+`repo_key = sha256(realpath(repo_root))[:12]`；根目录 `0700`。`root` 由组合根取
+`$CORE_STATE_DIR/worktrees`。
+
 ---
 
 ## 4. 错误码

@@ -9,14 +9,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Protocol
 
-from .models import CommitLog, GitStatus, MergeResult
+from .models import CommitLog, GitStatus, MergeResult, WorktreeEntry
 from .subprocess_backend import SubprocessGitBackend
 
 
 class GitBackend(Protocol):
-    """底层 git 适配器：15 项版本控制原语。"""
+    """底层 git 适配器：21 项版本控制原语（含 6 项工作树/分支原语）。"""
 
     def init(self, path: str) -> str: ...
 
@@ -50,11 +51,25 @@ class GitBackend(Protocol):
 
     def rewrite_history(self, message: str) -> str: ...
 
+    # ---- 工作树 / 分支原语（本地操作；change 0284）----
 
-def build_backend() -> GitBackend:
+    def repo_root(self) -> str: ...
+
+    def worktree_add(self, path: str, *, branch: str, base: str = "HEAD") -> None: ...
+
+    def worktree_list(self) -> list[WorktreeEntry]: ...
+
+    def worktree_remove(self, path: str, *, force: bool = False) -> None: ...
+
+    def branch_exists(self, name: str) -> bool: ...
+
+    def delete_branch(self, name: str, *, force: bool = False) -> None: ...
+
+
+def build_backend(cwd: str | Path | None = None) -> GitBackend:
     """生产 git 后端工厂：stdlib ``subprocess`` 直调 git CLI（零第三方依赖，change 0090）。
 
     真实后端实现见 :class:`core.git.subprocess_backend.SubprocessGitBackend`；如将来改用
-    gitpython / dulwich，仅替换本工厂，调用方零改动。
+    gitpython / dulwich，仅替换本工厂，调用方零改动。`cwd` 为空时沿用进程当前目录。
     """
-    return SubprocessGitBackend()
+    return SubprocessGitBackend(cwd)

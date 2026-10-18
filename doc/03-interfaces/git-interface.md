@@ -75,6 +75,14 @@ class GitClient:
 
 ```python
 @dataclass
+class WorktreeEntry:                 # change 0284
+    path: str
+    head: str                        # detached 时为 commit id
+    branch: str | None               # 去 refs/heads/ 前缀；detached / bare 为 None
+    bare: bool
+    prunable: bool
+
+@dataclass
 class GitStatus:
     branch: str                     # 当前分支
     changed: list[str]              # 已改动文件
@@ -102,6 +110,28 @@ class MergeResult:
 - 经依赖注入装配（构造 / registry），内核 loop 与调用方只依赖 `GitClient` 抽象；替换底层实现仅改装配点，调用方零改动。
 - **生产缺省后端 = `SubprocessGitBackend`**（`src/core/git/subprocess_backend.py`）：stdlib `subprocess` 直调 `git` CLI，**零第三方依赖**。构造 `SubprocessGitBackend(cwd=None, *, timeout=60.0, attempts=3, backoff=0.5, sleep=None)`；`cwd` 为**仓库根**（缺省 `Path.cwd()`），`init(path)` / `clone(url, path)` 完成后后端把 `cwd` 指向新仓库（等同「一次会话绑定一个仓库」）。`attempts` / `backoff` 控制远程重试上限与退避基数；`sleep` 可注入（缺省 `time.sleep`）⇒ 测试零真实等待。
 - `build_backend()` 恒返回该适配器（构造注入者优先）；`GitClient` 因此**开箱可用**，不再有「离线未接」错误。
+
+### 3.1 工作树与分支原语（change `0284` / ADR-0274）
+
+本地操作原语加在 `GitBackend` / `SubprocessGitBackend`，**不加在 `GitClient`**（工作树生命周期
+不属远程 / 审批面，由 `WorktreeManager` 直接消费 backend）：
+
+```python
+class GitBackend:                    # 新增（Protocol）
+    def repo_root(self) -> str: ...                  # rev-parse --show-toplevel，realpath
+    def worktree_add(self, path: str, *, branch: str, base: str = "HEAD") -> None: ...
+    def worktree_list(self) -> list[WorktreeEntry]: ...
+    def worktree_remove(self, path: str, *, force: bool = False) -> None: ...
+    def branch_exists(self, name: str) -> bool: ...
+    def delete_branch(self, name: str, *, force: bool = False) -> None: ...
+```
+
+- **选项注入防护**：`path` / `branch` / `base` / `name` 以 `-` 开头 ⇒ `GitError(GIT_COMMAND_FAILED)`，
+  消息**不回显取值**。
+- **错误归一**：`worktree remove` 命中 dirty 特征 ⇒ `GIT_WORKTREE_DIRTY`；其余走 `_classify`，
+  **永不回显 stderr**。
+- **`GitClient` 不变**：既有远程 / 审批面零变化；`build_backend(cwd=None)` 的构造兼容扩展。
+- **平台**：`git worktree` 由主机 git CLI 提供；Windows 只覆盖路径与命令面的单元行为。
 
 ---
 

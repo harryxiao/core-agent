@@ -107,6 +107,12 @@ Configuration（横切）
   从**有据可查的端点表**推导默认模型（`llm.embedding_auto` 缺省 `true`，非法值阻断启动）。
   显式值永远优先；推导**不回写字段**（热更新换端点自动跟随）；未知端点 / 开关关闭 ⇒ 空，
   与引入前逐字一致。表纯常量、无配置键，不是第二真源。
+- **工作树隔离开关**（change `0284`／ADR-0274）：`orchestration.worktree_isolation`，缺省
+  **false**。三面：`--orchestration.worktree-isolation` /
+  `CORE_ORCHESTRATION_WORKTREE_ISOLATION` / yaml `orchestration.worktree_isolation`；访问器
+  `orchestration_worktree_isolation()` 归一 `bool` 与 `true|false`（大小写不敏感、去空白），
+  非法值**阻断启动**（与 `auto_resume` 同口径，不静默降级）。仅在 true 时组合根构造
+  `WorktreeManager` 并注册 `worktree:*` coeffect / 工作树工具；false ⇒ 行为逐字不变。
 - 变更即生效；写入失败时回滚到变更前完整配置，不留半写状态，并记录告警。
 - **写回是可逆效应（change `0130` / ADR-0123）**：变更作用于**内存 + yaml 文件**两处，`apply_change`
   与 `write_patch` 记在**同一 trace**（`"config"`）⇒ 按该 trace 回滚时磁盘态与内存态**一并回退**；

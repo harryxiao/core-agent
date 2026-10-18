@@ -3,7 +3,7 @@
 from .backend import GitBackend, build_backend
 from .client import GitClient
 from .errors import GitError, GitErrorCode
-from .models import CommitLog, GitStatus, MergeResult
+from .models import CommitLog, GitStatus, MergeResult, WorktreeEntry
 from .subprocess_backend import SubprocessGitBackend
 
 __all__ = [
@@ -15,5 +15,6 @@ __all__ = [
     "GitStatus",
     "MergeResult",
     "SubprocessGitBackend",
+    "WorktreeEntry",
     "build_backend",
 ]

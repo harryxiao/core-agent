@@ -535,3 +535,20 @@ known_window(llm.model)  ──►  表命中 ⇒ 该族真实窗口（本 chang
 - **消费方**：只由 CLI `task` 入口（含自动续跑）读取并传给 `entry._notify_failure`；与
   `failure_notify_file` 相互独立。
 - 口径来源：`doc/openspec/specs/configuration/spec.md`「失败通知 webhook 配置」（**ADDED**）。
+
+### 2.18 工作树隔离配置（change `0284` / ADR-0274，台账 E220）
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `orchestration.worktree_isolation` | `false` | `bool` 或 `true` / `false`（大小写不敏感、去空白） | 每次 `tools.delegate` 在独立 git worktree 中运行；false = 关闭 |
+
+- **三面**：CLI `--orchestration.worktree-isolation`；env
+  `CORE_ORCHESTRATION_WORKTREE_ISOLATION`；yaml 同名点路径。优先链 CLI > env > config.yaml > 缺省。
+- **访问器**：`ConfigManager.orchestration_worktree_isolation() -> bool`，归一规则与
+  `orchestration_auto_resume()` 相同。
+- **校验期拒绝（不静默兜底）**：非 `bool` 且非 `true|false` 字符串 ⇒
+  「非法工作树隔离开关: orchestration.worktree_isolation=…」（阻断启动）。
+- **消费方**：`build_runtime` 仅在 true 时构造 `WorktreeManager`
+  （`$CORE_STATE_DIR/worktrees`）并注册 `worktree:read` / `worktree:write` coeffect 与两个
+  `tools.worktree.*` 工具；false ⇒ 工具面 / 结果形状 / 持久化字段逐字不变。
+- 口径来源：`doc/openspec/specs/configuration/spec.md`「工作树隔离配置」（**ADDED**）。

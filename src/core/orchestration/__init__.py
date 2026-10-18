@@ -38,6 +38,7 @@ from .scheduler import (
     TaskScheduler,
 )
 from .state_machine import StateMachine
+from .worktrees import WorkspaceLease, WorktreeManager, changed_files, worktree_tools
 
 __all__ = [
     "AgentProfile",
@@ -65,9 +66,13 @@ __all__ = [
     "TaskState",
     "Verifier",
     "VerifyResult",
+    "WorkspaceLease",
+    "WorktreeManager",
     "background_tasks_tool",
+    "changed_files",
     "plan_from_dict",
     "plan_to_dict",
     "render_notice_lines",
     "task_retry_tool",
+    "worktree_tools",
 ]

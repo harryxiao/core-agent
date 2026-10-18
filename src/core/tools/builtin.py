@@ -39,6 +39,7 @@ from .env_shell import (
 from .execution import ProcessRegistry
 from .models import ToolDef
 from .tool import Tool
+from .workspace import resolve_path, workspace_root
 
 _READ_SCHEMA = {
     "type": "object",
@@ -158,14 +159,21 @@ def _truncate_output(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
 
 
 def _expand(path: str) -> Path:
-    """把用户侧路径归一为 ``Path``：**展开 ``~``**（家目录，change 0228 / ADR-0218）。
+    """把用户侧路径归一为 ``Path``：**展开 ``~``** 并按当前工作区解析相对路径。
 
     ``Path`` 不做 ``~`` 展开 ⇒ 模型写 ``~/.core/…`` 会被当作**当前工作目录下字面名为 ``~``
     的目录**下的文件（父目录不存在 ⇒ ``FileNotFoundError``）。与 ``core_profile.loader`` 的
     ``Path(path).expanduser()`` 同口径；只展开 ``~``（``~user`` 一并处理），不 ``resolve`` /
-    不 ``abspath`` / 不展开环境变量。对无 ``~`` 的路径是**恒等变换**。
+    不 ``abspath`` / 不展开环境变量。无工作区时对无 ``~`` 的路径是**恒等变换**；子 Agent
+    工作树隔离开启时，相对路径解析到工作区根（change 0284 / ADR-0274，非安全沙箱）。
     """
-    return Path(path).expanduser()
+    return resolve_path(path)
+
+
+def _default_run_cwd() -> str | None:
+    """省略 `cwd` 时的缺省目录：有工作区用工作区根，否则 None（继承进程 cwd）。"""
+    root = workspace_root()
+    return str(root) if root is not None else None
 
 
 def file_read() -> Tool:
@@ -355,7 +363,7 @@ def code_run(
             if run_type == "powershell":
                 script = f"{_PS_UTF8_PREAMBLE}\n{script}"
             cmd = shell_argv(run_type, script, snap)
-        run_cwd = str(Path(cwd).expanduser()) if cwd else cwd
+        run_cwd = str(resolve_path(cwd)) if cwd else _default_run_cwd()
         if background:
             return _start_background(jobs, cmd, run_cwd, child_env, run_type)
         result = await execution.run_foreground(cmd, timeout=timeout, cwd=run_cwd, env=child_env)
@@ -374,7 +382,8 @@ def code_run(
             description=(
                 "执行代码片段（python / bash / powershell），返回返回码与输出；"
                 "显式 type 优先；未指定时 Windows 缺省 powershell、Darwin/Linux 缺省 bash；"
-                "每次调用为全新进程（cd/环境变量不保留），目录用 cwd（支持 ~）；"
+                "每次调用为全新进程（cd/环境变量不保留），目录用 cwd（支持 ~；"
+                "子 Agent 隔离时相对工作树根，缺省即工作树根）；"
                 "background=true 时立即返回 pid 与输出文件路径；"
                 "不可逆高风险，需审批"
             ),

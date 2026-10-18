@@ -36,3 +36,14 @@ class MergeResult:
 
     merged: bool
     conflict_files: list[str] = field(default_factory=list[str])
+
+
+@dataclass(frozen=True)
+class WorktreeEntry:
+    """`git worktree list --porcelain` 的一条记录（detached 时 branch 为 None）。"""
+
+    path: str
+    head: str
+    branch: str | None = None
+    bare: bool = False
+    prunable: bool = False

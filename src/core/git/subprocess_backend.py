@@ -14,9 +14,10 @@ import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from .errors import GitError, GitErrorCode
-from .models import CommitLog, GitStatus, MergeResult
+from .models import CommitLog, GitStatus, MergeResult, WorktreeEntry
 
 # 认证失败的可识别特征（大小写不敏感；仅用于归类，不回显原文）
 _AUTH_MARKERS = (
@@ -47,6 +48,25 @@ _PORCELAIN_PREFIX = 3
 # log 解析用不可打印分隔符，避免提交信息里的空格 / 竖线污染字段切分
 _FIELD_SEP = "\x1f"
 _LOG_FORMAT = f"%H{_FIELD_SEP}%an{_FIELD_SEP}%s{_FIELD_SEP}%aI"
+
+# `git worktree remove` 拒绝脏工作区的可识别特征（仅用于归类，不回显原文）
+_DIRTY_WORKTREE_MARKERS = (
+    "contains modified or untracked files",
+    "contains uncommitted changes",
+    "is dirty",
+)
+
+
+def _apply_worktree_field(fields: dict[str, Any], key: str, value: str) -> None:
+    """把 porcelain 的非首行字段并入当前块（未知键忽略）。"""
+    if key == "HEAD":
+        fields["head"] = value
+    if key == "branch":
+        fields["branch"] = value.removeprefix("refs/heads/")
+    if key == "bare":
+        fields["bare"] = True
+    if key == "prunable":
+        fields["prunable"] = True
 
 
 def _is_conflict(code: str) -> bool:
@@ -200,7 +220,83 @@ class SubprocessGitBackend:
         self._run("commit", "--amend", "-m", message)
         return self._run("rev-parse", "HEAD").strip()
 
+    # ---- 工作树 / 分支原语（本地操作，change 0284）----
+
+    def repo_root(self) -> str:
+        root = self._run("rev-parse", "--show-toplevel").strip()
+        if not root:
+            raise GitError(GitErrorCode.GIT_COMMAND_FAILED, "无法解析 git 仓库根")
+        return str(Path(root).resolve())
+
+    def worktree_add(self, path: str, *, branch: str, base: str = "HEAD") -> None:
+        self._reject_option_like(path, branch, base)
+        self._run("worktree", "add", "-b", branch, path, base)
+
+    def worktree_list(self) -> list[WorktreeEntry]:
+        return self._parse_worktree_list(self._run("worktree", "list", "--porcelain"))
+
+    def worktree_remove(self, path: str, *, force: bool = False) -> None:
+        self._reject_option_like(path)
+        args = ["worktree", "remove"]
+        if force:
+            args.append("--force")
+        args.append(path)
+        result = self._invoke(tuple(args))
+        if result.returncode == 0:
+            return
+        lowered = result.stderr.lower()
+        if any(marker in lowered for marker in _DIRTY_WORKTREE_MARKERS):
+            raise GitError(GitErrorCode.GIT_WORKTREE_DIRTY, "工作树含未提交改动")
+        raise self._classify(result.stderr)
+
+    def branch_exists(self, name: str) -> bool:
+        self._reject_option_like(name)
+        result = self._invoke(("show-ref", "--verify", "--quiet", f"refs/heads/{name}"))
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
+            return False
+        raise self._classify(result.stderr)
+
+    def delete_branch(self, name: str, *, force: bool = False) -> None:
+        self._reject_option_like(name)
+        self._run("branch", "-D" if force else "-d", name)
+
     # ---- 内部辅助 ----
+
+    @staticmethod
+    def _reject_option_like(*values: str) -> None:
+        """拒绝以 `-` 开头的路径/分支/base，防 git 选项注入（消息不回显取值）。"""
+        if any(value.startswith("-") for value in values):
+            raise GitError(GitErrorCode.GIT_COMMAND_FAILED, "非法 git 参数（不允许以 - 开头）")
+
+    @staticmethod
+    def _parse_worktree_list(out: str) -> list[WorktreeEntry]:
+        """解析 `git worktree list --porcelain` 的块结构（空行分隔）。"""
+        entries: list[WorktreeEntry] = []
+        current: dict[str, Any] = {}
+        for line in [*out.splitlines(), ""]:
+            if not line or line.startswith("worktree "):
+                if current:
+                    entries.append(SubprocessGitBackend._worktree_entry(current))
+                    current = {}
+                if line:
+                    current = {"path": line.removeprefix("worktree ")}
+                continue
+            key, _, value = line.partition(" ")
+            _apply_worktree_field(current, key, value)
+        return entries
+
+    @staticmethod
+    def _worktree_entry(fields: dict[str, Any]) -> WorktreeEntry:
+        branch = fields.get("branch")
+        return WorktreeEntry(
+            path=str(fields.get("path", "")),
+            head=str(fields.get("head", "")),
+            branch=branch if isinstance(branch, str) else None,
+            bare=bool(fields.get("bare", False)),
+            prunable=bool(fields.get("prunable", False)),
+        )
 
     def _run(self, *args: str, cwd: Path | None = None) -> str:
         """执行 git 子命令，非零退出 ⇒ 抛归一后的结构化 `GitError`，返回 stdout。"""

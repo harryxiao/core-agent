@@ -126,10 +126,14 @@ from core.orchestration import (
     SubtaskOutcome,
     TaskResume,
     TaskScheduler,
+    WorkspaceLease,
+    WorktreeManager,
     background_tasks_tool,
+    changed_files,
     plan_from_dict,
     plan_to_dict,
     task_retry_tool,
+    worktree_tools,
 )
 from core.permission import PermissionGuard, SandboxManager, SandboxPolicy
 from core.pet.core import PetActivator, PetManager, PetSession
@@ -172,6 +176,7 @@ from core.tools import (
     uninstall_tool,
 )
 from core.tools.env_shell import EnvironmentSnapshot, probe_environment
+from core.tools.workspace import use_workspace
 
 # 门控名单（change 0067 / 账本 E10）：组合根装配的**可选**模块 —— 本元组是单一真源，
 # configuration 层不认识模块名。名单内模块缺省装配（未声明即开，兼容既有行为），仅显式
@@ -222,6 +227,8 @@ class Runtime:
     orchestrator: TaskScheduler
     # 后台子 Agent 注册表（change 0270 / ADR-0260）：完成通知按会话堆积，主 loop 轮首取用。
     background_tasks: BackgroundAgentRegistry
+    # 子 Agent 工作树管理器（change 0284 / ADR-0274）：空 = 开关关闭（未装配）。
+    worktrees: WorktreeManager | None
     checkpoints: CheckpointManager
     time_travel: TimeTravel
     crash_recovery: CrashRecovery
@@ -267,6 +274,12 @@ def _background_state_path() -> Path:
     """后台子 Agent 登记路径：$CORE_STATE_DIR（缺省 ~/.core/state）/background-tasks.json。"""
     base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
     return base / "background-tasks.json"
+
+
+def _worktree_root() -> Path:
+    """工作树状态根：$CORE_STATE_DIR（缺省 ~/.core/state）/worktrees（change 0284）。"""
+    base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
+    return base / "worktrees"
 
 
 def _memory_path() -> Path:
@@ -761,6 +774,14 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     resolver.register("task:read", True)  # 后台任务清单（只读；change 0270 / ADR-0260）
     resolver.register("task:write", True)  # 后台任务重入队（需审批；change 0279 / ADR-0269）
     resolver.register("schema:read", True)  # 工具参数查询（只读；change 0272 / ADR-0262）
+    # 子 Agent 工作树隔离（change 0284 / ADR-0274）：缺省关 ⇒ 不构造 manager、不注册 coeffect、
+    # 不挂工具面；开启时工作树工具**只**上主工具面（子 Agent provider 用 `_agent_tools()` 另建）。
+    worktrees = (
+        WorktreeManager(_worktree_root()) if config.orchestration_worktree_isolation() else None
+    )
+    if worktrees is not None:
+        resolver.register("worktree:read", True)
+        resolver.register("worktree:write", True)
     tools = ToolProvider(
         coeffect_resolver=resolver, effect_tracker=effect_tracker, gate=guard, approver=approver
     )
@@ -1347,12 +1368,25 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             return {"ok": False, "error": f"无匹配子 Agent: {exc}"}
         if profile.loop is None:
             return {"ok": False, "error": f"子 Agent {profile.agent_id} 无可用 loop"}
+        lease: WorkspaceLease | None = None
+        if worktrees is not None:
+            try:
+                lease = await asyncio.to_thread(worktrees.create, agent_id=profile.agent_id)
+            except OrchestrationError as exc:  # fail-closed：绝不回退主工作区
+                return {"ok": False, "error": str(exc)}
         # 委托轨迹归入发起会话（change 0247 / ADR-0235）：`DefaultLoop` 在动作期设置；
         # 缺省空串 = 未归属，与 delegate 引入前的归属语义一致。
-        result = await profile.loop.arun(task, session_id=current_session_id.get())
-        return {"ok": not result.failed, "reply": result.reply}
+        # 工作区（change 0284）：仅相对路径与省略 cwd 的 code_run 受影响（不是安全沙箱）。
+        with use_workspace(lease.path if lease is not None else None):
+            result = await profile.loop.arun(task, session_id=current_session_id.get())
+        payload: dict[str, object] = {"ok": not result.failed, "reply": result.reply}
+        if lease is not None:
+            payload["worktree"] = lease.as_metadata(await asyncio.to_thread(changed_files, lease))
+        return payload
 
-    async def _delegate(task: str, background: bool = False) -> dict[str, object]:
+    async def _delegate(  # noqa: C901, PLR0911 — 逐种拒绝原因早退
+        task: str, background: bool = False
+    ) -> dict[str, object]:
         """委托工具：按能力标签匹配子 Agent。
 
         缺省（``background=False``）阻塞等待 LoopResult 并回传 reply —— 与引入后台能力前
@@ -1373,21 +1407,37 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 return {"ok": False, "error": f"无匹配子 Agent: {exc}"}
             if profile.loop is None:
                 return {"ok": False, "error": f"子 Agent {profile.agent_id} 无可用 loop"}
+            try:  # 先查上限：满额时不得先创建出无人持有的工作树
+                background_tasks.ensure_capacity()
+            except OrchestrationError as exc:
+                return {"ok": False, "error": str(exc)}
+            lease: WorkspaceLease | None = None
+            if worktrees is not None:
+                try:
+                    lease = await asyncio.to_thread(worktrees.create, agent_id=profile.agent_id)
+                except OrchestrationError as exc:
+                    return {"ok": False, "error": str(exc)}
             try:
                 task_id = background_tasks.spawn(
                     profile.loop,
                     task,
                     agent_id=profile.agent_id,
                     session_id=current_session_id.get(),
+                    workspace=lease,
                 )
             except OrchestrationError as exc:  # 运行中上限 ⇒ 不排队，结构化拒绝
+                if worktrees is not None and lease is not None:
+                    await asyncio.to_thread(worktrees.remove_quiet, lease)
                 return {"ok": False, "error": str(exc)}
-            return {
+            payload: dict[str, object] = {
                 "ok": True,
                 "task_id": task_id,
                 "status": "running",
                 "agent": profile.agent_id,
             }
+            if lease is not None:
+                payload["worktree"] = lease.as_metadata()
+            return payload
         finally:
             _DELEGATE_DEPTH.reset(token)
 
@@ -1421,7 +1471,20 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     # 由 `_agent_tools()` 各自构造，结构上既不能起后台任务也查不到清单。
     tools.register(background_tasks_tool(registry=background_tasks))
     # 重入队（change 0279 / ADR-0269）：按原任务正文重新路由；只挂主工具面，需审批。
-    tools.register(task_retry_tool(registry=background_tasks, match=agent_router.match))
+    tools.register(
+        task_retry_tool(registry=background_tasks, match=agent_router.match, worktrees=worktrees)
+    )
+    # 工作树清单 / 显式丢弃（change 0284 / ADR-0274）：**只挂主工具面**；开关关闭时零注册。
+    if worktrees is not None:
+
+        def _worktree_busy(worktree_id: str) -> str | None:
+            for info in background_tasks.list():
+                if info.status == "running" and info.worktree.get("id") == worktree_id:
+                    return info.task_id
+            return None
+
+        for worktree_tool in worktree_tools(manager=worktrees, is_running=_worktree_busy):
+            tools.register(worktree_tool)
 
     store = CheckpointStore(_checkpoint_path())  # 落盘：跨进程续跑/崩溃恢复可读
     checkpoints = CheckpointManager(store)
@@ -1653,6 +1716,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         evolution_executor=evolution_executor,
         orchestrator=orchestrator,
         background_tasks=background_tasks,
+        worktrees=worktrees,
         checkpoints=checkpoints,
         time_travel=time_travel,
         crash_recovery=crash_recovery,

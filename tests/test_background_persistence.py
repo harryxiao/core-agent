@@ -205,7 +205,7 @@ def test_retry_failed_task_spawns_new_task(tmp_path: Path) -> None:
         assert registry.get(failed_id).status == "failed"  # type: ignore[union-attr]
 
         ok = _OkLoop()
-        result = _tool(registry, ok).handler(task_id=failed_id)
+        result = await _tool(registry, ok).handler(task_id=failed_id)
         assert result["ok"] is True
         assert result["status"] == "running"
         assert result["task_id"] != failed_id
@@ -228,11 +228,11 @@ def test_retry_rejects_running_done_and_unknown(tmp_path: Path) -> None:
         await registry.wait(done_id)
         tool = _tool(registry, _OkLoop())
 
-        running = tool.handler(task_id=running_id)
+        running = await tool.handler(task_id=running_id)
         assert running["ok"] is False and "仍在运行" in running["error"]
-        done = tool.handler(task_id=done_id)
+        done = await tool.handler(task_id=done_id)
         assert done["ok"] is False and "已完成" in done["error"]
-        unknown = tool.handler(task_id="bg-nope")
+        unknown = await tool.handler(task_id="bg-nope")
         assert unknown["ok"] is False and "未登记" in unknown["error"]
 
         blocking.gate.set()
@@ -251,7 +251,7 @@ def test_retry_respects_running_capacity(tmp_path: Path) -> None:
         blocking = _BlockingLoop()
         running_id = registry.spawn(blocking, "占位", agent_id="coding")
 
-        result = _tool(registry, _OkLoop()).handler(task_id=failed_id)
+        result = await _tool(registry, _OkLoop()).handler(task_id=failed_id)
         assert result["ok"] is False
         assert "上限" in result["error"]
 
@@ -286,7 +286,7 @@ def test_retry_uses_redacted_text_after_restart(tmp_path: Path) -> None:
     )
 
     async def scenario() -> None:
-        result = tool.handler(task_id="bg-old")
+        result = await tool.handler(task_id="bg-old")
         assert result["ok"] is True
         assert seen == ["调 API <redacted> 后报告"]
         await registry.wait(result["task_id"])

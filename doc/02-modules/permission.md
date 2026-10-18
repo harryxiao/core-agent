@@ -69,6 +69,13 @@ PermissionGate（横切）
 非 auto-approve 档完全忽略该项。**前缀匹配不是沙箱**：它不解析命令语义、不支持通配/正则、
 不隔离进程，只降低「执行任意命令」的概率。
 
+**工作树工具分级**（change 0284 / ADR-0274）：两个工具 id 不自带字面量豁免，完全复用词元判据 ——
+`tools.worktree.list` 的词元含 `list` ⇒ `READ`（只读放行）；`tools.worktree.discard` 的词元
+`{worktree, discard}` 无只读 / 写词元 ⇒ deny-by-default `HIGH_RISK`（`data-edit` 档仍需审批）。
+coeffect 分别为 `worktree:read` / `worktree:write`，仅在 `orchestration.worktree_isolation=true`
+时注册、仅主工具面；`auto-approve` 的 `permission.auto_approve_coeffects` 允许面同样约束二者。
+`PolicyEngine` 代码无改动，测试钉住分级。
+
 ### 3.2 人工审批流
 
 ```

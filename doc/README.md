@@ -40,6 +40,7 @@ doc/
 ├── 01-architecture/               【架构设计层】
 │   ├── architecture-overview.md   总体架构（L0–L5 分层 + 组件图 + 数据流）
 │   ├── data-model.md              统一数据模型（跨层实体索引 + 命名冲突裁决）
+│   ├── claude-code-alignment.md   与 Claude Code 的能力面对齐度评估（评估快照，非规格）
 │   └── adr.md                     架构决策记录（ADR，关键取舍与理由）
 │
 ├── 02-modules/                    【模块设计层】
@@ -208,6 +209,8 @@ openspec archive <change-id>   # 合并 delta 进 specs/ 并归档到 archive/
 | 开发者 | 01-architecture → 02-modules → 03-interfaces → 05-development |
 | 测试 | openspec/specs（场景）→ 04-testing |
 | 全流程 | 按编号 00→05 顺序通读，最后对照 openspec/ |
+
+> 关注「与同类智能体产品的差距、先补什么」时，追加 `01-architecture/claude-code-alignment.md`（评估快照，不进入规格）。
 
 ---
 
