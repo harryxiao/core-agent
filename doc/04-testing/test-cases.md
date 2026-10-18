@@ -4773,3 +4773,36 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3184 passed**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0275 行（建议锁 / 仅本地盘 /
 > 批次挂死占锁 / 无锁超时与诊断 / 强制续跑无限重试 / 单写者假设 / Windows 未手工验证）。
+
+## 198. 检查点运维入口（TC-CKPTMAINT，change `0286`／ADR-0276，台账 E222）
+
+> 覆盖 `orchestration` **ADDED**「检查点运维入口」（6 scen）。新增
+> `tests/test_checkpoint_maintenance.py`（10 例）；`tests/test_durability.py` 补批量删除与
+> `RetentionManager.prune` 2 例。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-CKPTMAINT-01 | Scenario「显式遗忘只删除目标任务」 | `t1`×2（含 pinned）+ `t2`×1，`auto-resume` 有 `t1`/`t2` 退避；`task --forget t1` | 仅 `t1` 检查点消失；`t1` 退避清零、`t2` 保留；退出 0；输出 `deleted=2`（`test_forget_removes_only_target_task_and_clears_backoff`） |
+| TC-CKPTMAINT-02 | Scenario「遗忘包含 pinned 且未知任务非零退出」 | 种子含 `t1`；`--forget ghost` | 无改动；退出 1；stderr「未找到任务 ghost 的检查点」（`test_forget_unknown_task_exits_nonzero_without_changes`） |
+| TC-CKPTMAINT-03 | Scenario「遗忘包含 pinned」 | `t1` 含 pinned 与 `turn.*` 检查点；`--forget t1` | pinned 一并删除；`turn.*` 保留（`test_forget_clears_pinned_and_keeps_turn_namespace`） |
+| TC-CKPTMAINT-04 | Scenario「显式遗忘只删除目标任务」 | `t10` 与 `t1`；`--forget t1` | `t10` 保留（精确匹配，不做前缀）（`test_forget_only_removes_exact_task_id`） |
+| TC-CKPTMAINT-05 | Scenario「续跑批次运行中拒绝维护」 | 外层持 `.auto-resume.json.lock` + `--forget` | 退出 1；检查点不变；stderr `[checkpoints_locked]`（`test_forget_refuses_while_resume_batch_lock_held`） |
+| TC-CKPTMAINT-06 | Scenario「一次性清理保护 pinned」 | 3 未 pinned + 1 pinned；`--prune-checkpoints --max-count 1` | 只留最新未 pinned + pinned；输出 `deleted=2 kept=2 pinned=1`（`test_prune_max_count_keeps_newest_unpinned_and_all_pinned`） |
+| TC-CKPTMAINT-07 | Scenario「时间窗口清理」 | 陈旧未 pinned + 新鲜 + 陈旧 pinned；`--older-than-s 60` | 只删陈旧未 pinned；pinned 保留（`test_prune_time_window_keeps_pinned`） |
+| TC-CKPTMAINT-08 | Scenario「缺少清理边界」 | 无边界 / `--max-count 0` / `--older-than-s -1` | 均退出 1、无改动、stderr 含「用法」（`test_prune_requires_a_bound_and_rejects_invalid`） |
+| TC-CKPTMAINT-09 | 模式互斥 | `--forget` + `--resume-all`；`<目标>` + `--prune-checkpoints` | 均退出 1、无改动（`test_maintenance_modes_are_mutually_exclusive`） |
+| TC-CKPTMAINT-10 | Scenario「续跑批次运行中拒绝维护」 | 持锁 + `--prune-checkpoints` | 退出 1；检查点不变；stderr `[checkpoints_locked]`（`test_prune_refuses_while_resume_batch_lock_held`） |
+| TC-CKPTMAINT-11 | 批量删除 | `delete_many([first, "missing"])` | 返回 1；重新加载后只余 `second`/`keep`（`test_delete_many_persists_once_and_ignores_missing`） |
+| TC-CKPTMAINT-12 | 保留语义复用 | 3 检查点（最旧 pinned）+ `prune(max_count=1)` | 只删中间一个；pinned 与最新保留（`test_retention_prune_is_batched_and_protects_pinned`） |
+
+> **口径**：两个入口与 `<目标>` / `--resume` / `--resume-all` / `--task-id` 互斥；
+> 执行前取续跑批次锁，busy / unavailable 均 fail-closed；`--forget` 删除含 pinned 并以
+> 0 条退出 1；`--prune-checkpoints` 只删未 pinned、至少一个边界、一次原子落盘；输出只含
+> 任务 id 与计数。不暴露为模型工具。
+> **反证 3/3**：① 维护入口去掉取锁 ⇒ TC-05/10 红；② `--forget` 不按 `task_id` 过滤 ⇒ TC-01/04 红；
+> ③ `--prune-checkpoints` 连 pinned 一起删 ⇒ TC-06/07 红；复原 `md5sum` 一致。
+> 规格：`orchestration` **ADDED**（6 scen）。`validate --all` 31/0（归档后）。
+> 测试净 **+12**（3184 → **3196**）。
+> 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3196 passed**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0276 行（不可逆 / max_count 不含 pinned /
+> 仅与续跑批次互斥 / 建议锁 / 清退避失败仅告警 / 不碰其他状态 / 不暴露为工具）。

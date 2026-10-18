@@ -187,6 +187,12 @@ class TaskScheduler:
   （自动模式跳过续跑、继续本次新任务）；锁不可用时显式入口退出 1。锁只串行化续跑批次，
   不改变 `checkpoints.jsonl` 的单写者假设。运维手册见
   `doc/05-development/unattended-ops.md`。
+- **检查点运维入口**（change 0286 / ADR-0276）：`task --forget <task-id>` 删除该任务的
+  全部检查点（含 pinned）并清除其自动续跑退避记录；`task --prune-checkpoints
+  --max-count N` / `--older-than-s S` 一次性清理未 pinned 检查点（至少给一个边界）。
+  两个模式与 `<目标>` / `--resume` / `--resume-all` / `--task-id` 互斥，执行前获取续跑
+  批次锁：锁忙或不可用时打印 `[checkpoints_locked]` 并以退出码 1 结束。删除经
+  `CheckpointStore.delete_many` 一次原子落盘；输出只含任务 id 与计数。不暴露为模型工具。
 - **文件型检查点**（change 0230 / ADR-0237）：`FileCheckpoint(path=".core/scheduler-checkpoint.json")`
   满足 `CheckpointFn` 四参契约，JSON 落盘 `task_id / session_id / plan / completed / results`，
   同目录 `.tmp` + `os.replace` **原子写**；`load(task_id=None)` 读回（损坏/缺失返回 `None`，

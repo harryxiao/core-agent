@@ -43,7 +43,7 @@
 | ⑪ | 进化面 | 源码修补者 | `evolution/author.py:32` `_PROMPT_HEAD` | 文本（完整文件内容） | ✓ `0219` |
 | ⑫ | 进化面 | 候选审查者 | `evolution/validator.py:44` `_REVIEW_PROMPT_HEAD` | 文本（首行 `PASS`/`REJECT`） | ✓ `0219` |
 | ⑬ | 人格面 | 宠物人格 | `pet/library/persona.py:25` `render_prompt()` | 文本（人格设定） | ✗ 动态拼接 |
-| ⑭ | 数据面 | 文档摘要器 | `entry.py:1845` `_DOC_SUMMARY_PROMPT` | 文本（文档摘要） | ✗ 内联注入 |
+| ⑭ | 数据面 | 文档摘要器 | `entry.py:1878` `_DOC_SUMMARY_PROMPT` | 文本（文档摘要） | ✗ 内联注入 |
 | ⑮ | 控制面 | 解析失败回喂重试 | `loop/planner.py:108` `_RETRY_NUDGE` | 文本（重试指令） | ✓ `0227` |
 
 ---
@@ -172,7 +172,7 @@
 
 ---
 
-### ⑭ 文档摘要器 · `entry.py:1843`（本次补录；未纳入逐字 pin）
+### ⑭ 文档摘要器 · `entry.py:1876`（本次补录；未纳入逐字 pin）
 ```
 请用简洁的中文总结下面这份文档的核心结论与关键要点，直接输出摘要正文，不要前言与客套。不要输出任何密钥、口令、令牌等敏感值（如遇敏感信息，略过或写成「已省略」）：
 

@@ -22,17 +22,29 @@ class RetentionManager:
     def __init__(self, store: CheckpointStore) -> None:
         self._store = store
 
-    def apply(self, policy: RetentionPolicy) -> None:
-        if policy.max_count is not None:
-            unpinned = [cp for cp in self._sorted() if not cp.pinned]
-            while len(unpinned) > policy.max_count:
-                oldest = unpinned.pop(0)
-                self._store.delete(oldest.checkpoint_id)
+    def prune(self, policy: RetentionPolicy) -> int:
+        """按数量上限 / 时间窗口批量清理未 pinned 检查点，返回删除数（change 0286）。
 
+        两个通道同时给出时取并集；pinned 检查点永不删除（其不计入 ``max_count``）。
+        待删集合一次 ``CheckpointStore.delete_many`` 落盘，供一次性运维清理避免
+        O(n²) 次全文件重写。
+        """
+        checkpoints = self._sorted()
+        doomed: dict[str, None] = {}
+        if policy.max_count is not None:
+            unpinned = [cp for cp in checkpoints if not cp.pinned]
+            excess = max(0, len(unpinned) - policy.max_count)
+            for checkpoint in unpinned[:excess]:
+                doomed[checkpoint.checkpoint_id] = None
         if policy.time_window is not None:
             cutoff = time.time() - policy.time_window.total_seconds()
-            for checkpoint in [cp for cp in self._sorted() if not cp.pinned and cp.ts < cutoff]:
-                self._store.delete(checkpoint.checkpoint_id)
+            for checkpoint in checkpoints:
+                if not checkpoint.pinned and checkpoint.ts < cutoff:
+                    doomed[checkpoint.checkpoint_id] = None
+        return self._store.delete_many(doomed)
+
+    def apply(self, policy: RetentionPolicy) -> None:
+        self.prune(policy)
 
         if policy.storage_quota is not None:
             all_checkpoints = self._sorted()

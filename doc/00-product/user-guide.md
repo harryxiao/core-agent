@@ -132,6 +132,8 @@ core-agent session create     # 返回 32 位 session_id
 
 ```bash
 core-agent task --resume-all
+core-agent task --forget task-xxxxxxxx          # 止血：遗忘永久失败任务的检查点
+core-agent task --prune-checkpoints --max-count 500   # 一次性清理未 pinned 检查点
 ```
 
 部署形态、退出码、日志与止血步骤见

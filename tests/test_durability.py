@@ -211,3 +211,40 @@ def test_clean_load_emits_no_warning(tmp_path: Path) -> None:
         CheckpointStore(path)
 
     assert not [w for w in caught if issubclass(w.category, UserWarning)]
+
+
+# ---- 批量删除与一次性清理（change 0286）----
+
+
+def test_delete_many_persists_once_and_ignores_missing(tmp_path: Path) -> None:
+    path = tmp_path / "checkpoints.jsonl"
+    manager = CheckpointManager(CheckpointStore(path))
+    first = manager.create_checkpoint("task1", "sess1", {"step": 1})
+    second = manager.create_checkpoint("task1", "sess1", {"step": 2})
+    keep = manager.create_checkpoint("task2", "sess1", {"step": 3})
+
+    assert CheckpointStore(path).delete_many([first.checkpoint_id, "missing"]) == 1
+
+    reloaded = CheckpointStore(path)
+    assert {cp.checkpoint_id for cp in reloaded.list_checkpoints()} == {
+        second.checkpoint_id,
+        keep.checkpoint_id,
+    }
+
+
+def test_retention_prune_is_batched_and_protects_pinned(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "checkpoints.jsonl")
+    manager = CheckpointManager(store)
+    oldest = manager.create_checkpoint("task1", "sess1", {"step": 1})
+    middle = manager.create_checkpoint("task1", "sess1", {"step": 2})
+    newest = manager.create_checkpoint("task1", "sess1", {"step": 3})
+    store.set_pinned(oldest.checkpoint_id, True)
+
+    pruned = RetentionManager(store).prune(RetentionPolicy(max_count=1))
+
+    assert pruned == 1  # 只删未 pinned 的最旧一个；pinned 不计入上限
+    assert {cp.checkpoint_id for cp in store.list_checkpoints()} == {
+        oldest.checkpoint_id,
+        newest.checkpoint_id,
+    }
+    assert middle.checkpoint_id not in {cp.checkpoint_id for cp in store.list_checkpoints()}

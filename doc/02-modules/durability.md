@@ -65,6 +65,9 @@ Durability（横切层）
   `durability.retention.max_count`（≥1 的整数）、时间窗口 `durability.retention.time_window_s`
   （≥0 的数值）；**存储配额通道留库能力未接**（超配额抛 `RETENTION_QUOTA_EXCEEDED` ⇒ 不接落盘热路径）。
   **两键皆缺省 ⇒ 零清理、既有路径逐字不变**；非法值阻断启动。
+- **批量清理（change `0286`／ADR-0276）**：`RetentionManager.prune(policy) -> int` 收集数量上限与
+  时间窗口的待删集合后一次 `CheckpointStore.delete_many` 落盘，避免逐条全文件重写；
+  `apply` 先调 `prune`，再走既有存储配额分支。CLI 一次性清理见 `task --prune-checkpoints`。
 
 ### 3.5 会话轮级检查点（主循环，change `0214`／ADR-0204）
 

@@ -238,6 +238,20 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
   `checkpoints.jsonl` 仍是最后写者胜（共享 `.tmp`）。运维见
   `doc/05-development/unattended-ops.md`。
 
+### 3.13 检查点运维入口（change `0286`／ADR-0276）
+
+- **`task --forget <task-id>`**：精确删除该任务的**全部**检查点（含 pinned），并清除
+  `auto-resume.json` 中该任务的退避/尝试记录；删除 0 条时退出 1。用于止血被
+  `--resume-all` 强制重试的永久失败任务。
+- **`task --prune-checkpoints`**：`--max-count N`（未 pinned 最多保留 N）与/或
+  `--older-than-s S`（删除早于窗口的未 pinned）；至少给一个边界，pinned 永不删除。
+  复用 `RetentionManager.prune`，待删集合一次 `CheckpointStore.delete_many` 落盘。
+- **互斥**：两个模式在打开 store 前获取 `.auto-resume.json.lock`；忙/不可用 fail-closed
+  （`[checkpoints_locked]`，退出 1）。只与续跑批次互斥，fresh `task` / REPL / `serve`
+  的单写者约定不变。
+- **输出**：`[checkpoints_forgotten] task=... deleted=N` /
+  `[checkpoints_pruned] deleted=N kept=M pinned=P`；不含任务正文与密钥。不暴露为模型工具。
+
 ---
 
 ## 4. 与 loop 的关系

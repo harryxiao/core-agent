@@ -53,6 +53,10 @@ class CheckpointManager:
         """按检查点标识取回执行态快照。"""
 ```
 
+- **批量删除**（change `0286` / ADR-0276）：`CheckpointStore.delete_many(checkpoint_ids) -> int`
+  删除多个检查点并**只落盘一次**，返回实际删除数；缺失 id 忽略。供 `task --forget` 与
+  `task --prune-checkpoints` 使用（避免逐条全文件重写）。
+
 ---
 
 ## 3. CrashRecovery 接口
@@ -113,6 +117,12 @@ class RetentionPolicy:
 class RetentionManager:
     def apply(self, policy: RetentionPolicy) -> None:
         """按保留策略清理过期检查点并释放存储，保留窗口内检查点。"""
+
+    def prune(self, policy: RetentionPolicy) -> int:
+        """按数量上限/时间窗口批量清理未 pinned 检查点，返回删除数（change 0286）。
+
+        待删集合一次 `CheckpointStore.delete_many` 落盘，避免 O(n²) 次全文件重写；
+        `apply` 先调用本方法，再执行既有存储配额分支。"""
 
     def pin(self, checkpoint_id: str) -> None:
         """标记关键检查点（pinned），自动清理跳过。"""

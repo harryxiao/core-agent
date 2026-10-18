@@ -12,6 +12,7 @@ import json
 import os
 import threading
 import warnings
+from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
 
@@ -75,6 +76,28 @@ class CheckpointStore:
             self._snapshots.pop(checkpoint_id, None)
             self._corrupt.discard(checkpoint_id)
             self._persist()
+
+    def delete_many(self, checkpoint_ids: Iterable[str]) -> int:
+        """批量删除并**只落盘一次**；返回实际删除的检查点数（change 0286）。
+
+        批量入口（显式遗忘 / 一次性清理）可能一次删除上千条（会话轮检查点），
+        逐条 ``delete`` 会触发同次数的全文件重写（O(n²)）。
+        """
+        with self._lock:
+            removed = 0
+            changed = False
+            for checkpoint_id in checkpoint_ids:
+                if self._checkpoints.pop(checkpoint_id, None) is not None:
+                    removed += 1
+                    changed = True
+                if self._snapshots.pop(checkpoint_id, None) is not None:
+                    changed = True
+                if checkpoint_id in self._corrupt:
+                    self._corrupt.discard(checkpoint_id)
+                    changed = True
+            if changed:
+                self._persist()
+            return removed
 
     def _persist(self) -> None:
         """原子提交：写同目录临时文件后 ``os.replace`` 替换。

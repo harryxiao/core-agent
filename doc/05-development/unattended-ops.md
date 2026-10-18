@@ -59,33 +59,36 @@
 ## 5. 停止一个「病态」任务
 
 `--resume-all` 使用强制模式，绕过自动续跑的退避与尝试上限：一个永久失败的任务会被**每个
-tick 重试**并重复通知。当前没有 `task --forget` / 检查点删除 CLI，止血步骤为：
+tick 重试**并重复通知。用 `task --forget <task-id>` 止血（change `0286` / ADR-0276）：
 
 1. 注释掉 crontab 中的续跑行（或 `crontab -e` 暂时移除），确认没有正在运行的
    `core-agent task` 进程。
 2. 备份：`cp "$CORE_STATE_DIR/checkpoints.jsonl" "$CORE_STATE_DIR/checkpoints.jsonl.bak"`。
-3. 删除该任务的所有检查点行（每行一个 JSON 对象，任务 id 在 `snapshot.task_id`）：
+3. 显式遗忘该任务：
 
    ```bash
-   python - <<'PY'
-   import json
-   import pathlib
-
-   path = pathlib.Path("/path/to/state/project/checkpoints.jsonl")
-   task_id = "task-xxxxxxxx"
-   kept = [
-       line
-       for line in path.read_text(encoding="utf-8").splitlines()
-       if not line.strip()
-       or json.loads(line).get("snapshot", {}).get("task_id") != task_id
-   ]
-   path.write_text("\n".join(kept), encoding="utf-8")
-   PY
+   cd /path/to/project
+   CORE_STATE_DIR=/path/to/state/project core-agent task --forget task-xxxxxxxx
    ```
 
+   输出 `[checkpoints_forgotten] task=... deleted=N`。该命令删除该任务的**全部**检查点
+   （含 pinned）并清除 `auto-resume.json` 中的退避记录；任务 id 不存在时以退出码 1 结束。
 4. 恢复 crontab，手工跑一次 `task --resume-all` 确认不再出现该任务。
 
-> 这是运维止血，不是正式删除面；`task --forget` / 保留期与配额已登记为后续缺口。
+> 删除不可逆；先用 `time-travel` / 备份确认不需要回滚。维护入口与续跑批次共用
+> `.auto-resume.json.lock`，批次运行中会以 `[checkpoints_locked]` 拒绝执行。
+
+### 一次性清理检查点
+
+保留策略（`durability.retention.max_count` / `time_window_s`）之外，可手工执行一次：
+
+```bash
+core-agent task --prune-checkpoints --max-count 500          # 未 pinned 最多保留 500
+core-agent task --prune-checkpoints --older-than-s 604800    # 删除 7 天前的未 pinned
+```
+
+两个边界可同时给出；至少给一个。pinned 检查点永不删除；输出
+`[checkpoints_pruned] deleted=N kept=M pinned=P`。清理一次原子落盘，不会留下半截文件。
 
 ## 6. 已知局限
 
@@ -93,5 +96,8 @@ tick 重试**并重复通知。当前没有 `task --forget` / 检查点删除 CL
 - `task_token_budget` 按**单次尝试**累计，不是跨续跑的全局预算。
 - 续跑依赖已有检查点：尚未完成首个波次的任务没有检查点，不会被 `--resume-all` 拉起。
 - 锁是建议锁，不能防止绕过入口直接改写状态文件。
+- `--forget` / `--prune-checkpoints` 只与续跑批次互斥；并发 fresh `task` 写入时仍是
+  最后写者胜（同一状态目录的单写者约定不变）。
+- `--prune-checkpoints --max-count N` 只约束未 pinned 集，最终保留总数可能为 `N + pinned`。
 - Windows 未做手工端到端验证（单元行为已覆盖）。
 - 不提供队列视图、健康检查端点、平滑升级；这些属于后续「常驻调度」评估。

@@ -10427,6 +10427,52 @@ busy 用例红（第二个实例扫描并执行）；② 打开失败改为 `acq
 `--resume-all` 每 tick 重试永久失败任务并重复通知（需手工止血）。锁只覆盖续跑批次，
 同一 `$CORE_STATE_DIR` 仍按单写者假设使用。Windows 只做单元行为覆盖，未做手工端到端验证。
 
+## ADR-0276：检查点运维入口（change 0286 / 台账 E222）
+
+**背景**：ADR-0275（0285）把「永久失败任务」的止血留成文档步骤：停 cron、备份、
+手工删除 `checkpoints.jsonl` 中对应行。该步骤绕过 `CheckpointStore` 的原子写，且
+`--resume-all` 的 `force=True` 会让病态任务每 tick 重试并重复通知；保留策略虽有配置通道，
+却没有一次性清理入口。ADR-0275 D8 明确把 `task --forget` / 配额清理登记为后续缺口，本 ADR 关闭它。
+
+**决策**：
+
+- **D1 两个动词挂在 `task` 下**：`--forget <task-id>` 与
+  `--prune-checkpoints [--max-count N] [--older-than-s S]`。检查点是编排任务的状态载体，
+  新增 `checkpoint` 顶层命令组只为两个动词引入新命名空间，不划算。
+- **D2 `--forget` 精确、含 pinned、清退避**：按 `task_id` 精确匹配；pinned 只豁免**自动**
+  清理，显式遗忘必须删掉，否则最新快照仍会被 `_task_resumes` 选中，止血失败。
+  同时 `AutoResumeState.clear(task_id)`，避免残留账本与状态文件观感不一致。
+- **D3 删除 0 条非零退出**：人工/脚本点杀时，拼错 id 静默成功比失败更危险。
+- **D4 一次性清理复用保留语义**：max_count 约束未 pinned 集，time_window 删除陈旧未 pinned；
+  两通道取并集；pinned 永不删除；至少给一个边界。不新增配置键。
+- **D5 批量删除**：`CheckpointStore.delete_many` 单次落盘；`RetentionManager.prune` 收集待删
+  集合并一次删除，`apply` 先调 `prune` 再走既有 quota 分支（该分支行为与抛出时机不变）。
+  否则一次清理上千条会话轮检查点会触发 O(n²) 次全文件重写。
+- **D6 与续跑批次共用锁**：两个入口在打开 store 前取 `.auto-resume.json.lock`，
+  `busy` / `unavailable` 一律 fail-closed（`[checkpoints_locked]` + 退出 1）。
+  不扩展到 fresh `task` / REPL / `serve`，单写者假设不变。
+- **D7 不做模型工具**：删除面只给显式 CLI；暴露为工具需要审批与 schema，且是提示注入的
+  高风险目标。CLI 调用即授权。
+
+**被拒方案**：手工编辑 `checkpoints.jsonl`（半截文件会让 store 整体降级）；`checkpoint` 顶层
+命令组（两个动词撑不起命名空间）；`--forget` 0 条退出 0（拼错 id 无声失败）；跳过 pinned
+（留下最新快照，止血失败）；阻塞等待续跑锁（cron 批次长，维护会被挂住）。
+
+**反证 3/3（均实测转红后复原，`md5sum` 一致）**：① 维护入口去掉取锁 ⇒ 锁占用用例红；
+② `--forget` 不按 `task_id` 过滤 ⇒ 只删目标任务用例红；③ `--prune-checkpoints` 连 pinned
+一起删 ⇒ pinned 保护用例红。
+
+**规格**：`orchestration` **ADDED**「检查点运维入口」（6 场景）。`validate --all`
+**31/0**（归档后）。
+
+**测试**：新增 `tests/test_checkpoint_maintenance.py`（10 例）＋ `tests/test_durability.py`
+补 2 例；净 **+12**（3184 → **3196**）。四门禁：ruff check / format 绿、`pyright` 0 errors、
+`pytest -q` 全绿。
+
+**局限**：删除不可逆，无回收站；`--max-count` 只约束未 pinned 集（保留总数可为 `N + pinned`）；
+维护入口只与续跑批次互斥，fresh `task` 并发时仍是最后写者胜；NFS/网络盘不保证锁互斥；
+清 `auto-resume.json` 失败只告警、不影响退出码。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10697,3 +10743,4 @@ busy 用例红（第二个实例扫描并执行）；② 打开失败改为 `acq
 | ADR-0273 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0274 | 02-modules/orchestration.md, 02-modules/tool-use.md, 02-modules/configuration.md, 02-modules/permission.md, 03-interfaces/orchestration-interface.md, 03-interfaces/git-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/permission-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0275 | 05-development/unattended-ops.md, 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0276 | 05-development/unattended-ops.md, 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/durability-interface.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

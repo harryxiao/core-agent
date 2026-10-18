@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import difflib
 import json
+import math
 import os
 import sys
 import time
@@ -23,6 +24,7 @@ import uuid
 import warnings
 from collections.abc import Callable
 from dataclasses import asdict
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -51,7 +53,12 @@ from core.diagnostics import (
     collect_status,
     render,
 )
-from core.durability import DurabilityError
+from core.durability import (
+    CheckpointStore,
+    DurabilityError,
+    RetentionManager,
+    RetentionPolicy,
+)
 from core.evolution import Benchmark, BenchmarkRegistry, EvolutionError, GenerationCandidate
 from core.evolution.executor import COMMIT_TRACE, IMPLEMENT_OP
 from core.llm_provider import LLMRequest, Message
@@ -415,6 +422,32 @@ def _add_task_parser(sub: Any) -> None:
         action="store_true",
         dest="resume_all",
         help="续跑全部未完成任务（不受自动续跑退避/次数上限约束）",
+    )
+    task.add_argument(
+        "--forget",
+        metavar="ID",
+        dest="forget_id",
+        help="删除该任务的全部检查点并清除续跑退避记录（不可逆）",
+    )
+    task.add_argument(
+        "--prune-checkpoints",
+        action="store_true",
+        dest="prune_checkpoints",
+        help="一次性清理检查点（需配合 --max-count 或 --older-than-s）",
+    )
+    task.add_argument(
+        "--max-count",
+        type=int,
+        metavar="N",
+        dest="prune_max_count",
+        help="与 --prune-checkpoints 连用：未 pinned 检查点最多保留 N 个",
+    )
+    task.add_argument(
+        "--older-than-s",
+        type=float,
+        metavar="SECONDS",
+        dest="prune_older_than_s",
+        help="与 --prune-checkpoints 连用：删除早于该秒数的未 pinned 检查点",
     )
 
 
@@ -2312,12 +2345,111 @@ def _run_auto_resume_locked(runtime: Runtime, *, force: bool) -> bool:
     return failed
 
 
+def _report_checkpoint_lock_busy() -> None:
+    """检查点维护锁（复用续跑批次锁）：取不到即 fail-closed。"""
+    print(
+        "[checkpoints_locked] 续跑批次正在运行或锁不可用，未修改任何检查点",
+        file=sys.stderr,
+    )
+
+
+def _forget_task(task_id: str) -> int:
+    """删除某任务的全部检查点并清除其续跑退避记录（change 0286 / ADR-0276）。
+
+    与续跑批次共用 `.auto-resume.json.lock`：锁忙或不可用一律不删。输出只含任务 id
+    与计数，不回显任务目标 / 子任务回复 / 快照内容。
+    """
+    with try_exclusive_file_lock(_state_path("auto-resume.json")) as outcome:
+        if outcome != "acquired":
+            _report_checkpoint_lock_busy()
+            return 1
+        store = CheckpointStore(_state_path("checkpoints.jsonl"))
+        removed = store.delete_many(
+            cp.checkpoint_id for cp in store.list_checkpoints() if cp.task_id == task_id
+        )
+        AutoResumeState(_state_path("auto-resume.json")).clear(task_id)
+    print(f"[checkpoints_forgotten] task={task_id} deleted={removed}")
+    if removed == 0:
+        print(f"未找到任务 {task_id} 的检查点", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _prune_checkpoints(*, max_count: int | None, older_than_s: float | None) -> int:
+    """一次性按保留语义清理未 pinned 检查点（change 0286 / ADR-0276）。
+
+    锁与 `--forget` 同源；pinned 永不删除；待删集合一次原子落盘。输出只含计数。
+    """
+    with try_exclusive_file_lock(_state_path("auto-resume.json")) as outcome:
+        if outcome != "acquired":
+            _report_checkpoint_lock_busy()
+            return 1
+        store = CheckpointStore(_state_path("checkpoints.jsonl"))
+        policy = RetentionPolicy(
+            max_count=max_count,
+            time_window=timedelta(seconds=older_than_s) if older_than_s is not None else None,
+        )
+        try:
+            removed = RetentionManager(store).prune(policy)
+        except DurabilityError as exc:
+            print(f"检查点清理失败: {exc}", file=sys.stderr)
+            return 1
+        remaining = store.list_checkpoints()
+    pinned = sum(1 for cp in remaining if cp.pinned)
+    print(f"[checkpoints_pruned] deleted={removed} kept={len(remaining)} pinned={pinned}")
+    return 0
+
+
 def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR0915, C901 — 入口校验天然多早退/多分支
     """多任务编排入口：拆解 → 波次执行 → 验收，流式打印进度事件。
 
     非交互入口：无审批通道，高风险工具动作 fail-closed（与 run/serve 一致）。
-    `--resume-all` 为独立模式（不与 `<目标>` / `--resume` 组合）。
+    `--resume-all` / `--forget` / `--prune-checkpoints` 均为独立模式。
     """
+    # 直接构造 Namespace 的调用方（测试 / 内部）未必带新参数，按缺省值读取。
+    forget_id = getattr(args, "forget_id", None)
+    prune_mode = bool(getattr(args, "prune_checkpoints", False))
+    prune_max_count = getattr(args, "prune_max_count", None)
+    prune_older_than_s = getattr(args, "prune_older_than_s", None)
+    prune_args = prune_max_count is not None or prune_older_than_s is not None
+    if forget_id is not None or prune_mode:
+        if (
+            args.goal
+            or args.resume_id
+            or args.resume_all
+            or args.task_id
+            or (forget_id is not None and (prune_mode or prune_args))
+        ):
+            print(
+                "用法: core-agent task {--forget ID | --prune-checkpoints "
+                "[--max-count N] [--older-than-s S]}（不可与其他模式组合）",
+                file=sys.stderr,
+            )
+            return 1
+        if forget_id is not None:
+            return _forget_task(forget_id)
+        if not prune_args:
+            print(
+                "用法: core-agent task --prune-checkpoints "
+                "[--max-count N] [--older-than-s S]（至少给出一个边界）",
+                file=sys.stderr,
+            )
+            return 1
+        if prune_max_count is not None and prune_max_count < 1:
+            print("用法: --max-count 须为 ≥1 的整数", file=sys.stderr)
+            return 1
+        if prune_older_than_s is not None and (
+            not math.isfinite(prune_older_than_s) or prune_older_than_s < 0
+        ):
+            print("用法: --older-than-s 须为 ≥0 的数值", file=sys.stderr)
+            return 1
+        return _prune_checkpoints(max_count=prune_max_count, older_than_s=prune_older_than_s)
+    if prune_args:
+        print(
+            "用法: --max-count / --older-than-s 只能与 --prune-checkpoints 连用",
+            file=sys.stderr,
+        )
+        return 1
     if args.resume_all:
         if args.goal or args.resume_id:
             print(
