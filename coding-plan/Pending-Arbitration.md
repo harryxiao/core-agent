@@ -632,6 +632,7 @@ README 索引找，会**漏掉 `phase-36`（长任务硬化）与 `phase-38`（�
 | PA-05 C | 镜像**反向生成**（人不再手改；须先解决旁注另存的结构重排） | 本簿 PA-05 闭项正文 ＋ `known-risk.md` §3 ADR-0210 局限② |
 | PA-06 B′ | ⑦ 重要度提词收紧（牵动 `W_IMPORTANCE` 乘性权重与写入闸门，**待真实分布证据**） | `known-risk.md` §3 ADR-0210 局限③ |
 | change `0225` | 镜像旁注的**新增加固点**须手工登记锚（`_NOTE_ANCHORS`）—— 旁注无真源可核 | `known-risk.md` §3 ADR-0215 局限② |
+| 可选 P1 | **常驻调度器/任务队列**：2026-10-18 裁决**维持 cron，不立项**（无真实队列压力；守护进程需全局 per-task 租约与生命周期管理）。触发条件与最小形态见 `claude-code-alignment.md` §3.8 | `doc/01-architecture/claude-code-alignment.md` §3.8 ＋ §4 P1 行 |
 
 ---
 
