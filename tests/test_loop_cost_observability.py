@@ -11,7 +11,7 @@ import asyncio
 import time
 from typing import Any
 
-from core.context import Compactor
+from core.context import Compaction, Compactor
 from core.loop import Action, DefaultLoop, LoopContext
 from core.memory import MemoryStore
 from core.observability import TraceEvent, Tracer
@@ -106,6 +106,76 @@ def test_compaction_emits_cost_event_with_steps_and_trigger() -> None:
     assert payload["trigger"] == "budget_retry"
     assert set(payload["steps"]) == {"persist", "memory_compact", "forget"}
     assert payload["elapsed_ms"] >= 0.0
+
+
+_COUNTING_INPUT = 4
+_ERROR_INPUT = 2
+_COUNTING_OUTPUT = {"conclusions": 2, "decisions": 1, "open_items": 3, "dropped": 1}
+_COMPACTION_KEYS = {
+    "trigger",
+    "elapsed_ms",
+    "steps",
+    "messages",
+    "conclusions",
+    "decisions",
+    "open_items",
+    "dropped",
+}
+
+
+class _CountingCompactor(Compactor):
+    def compact(self, history: list[dict[str, Any]]) -> Compaction:
+        return Compaction(
+            conclusions=["c1", "c2"],
+            decisions=["d1"],
+            open_items=["o1", "o2", "o3"],
+            dropped=["x1"],
+        )
+
+
+class _PersistBrokenCompactor(_CountingCompactor):
+    def persist(self, c: Compaction, *, session_id: str = "") -> None:
+        raise RuntimeError("persist boom")  # noqa: TRY003 — 测试用哨兵异常
+
+
+def test_compaction_records_output_and_drop_counts() -> None:
+    """`compaction` payload 含五项计数与固定顶层 key 集（change 0263）。"""
+    tracer = Tracer()
+    loop = DefaultLoop(memory=MemoryStore(), compactor=_CountingCompactor(), tracer=tracer)
+    ctx = LoopContext(messages=[{"role": "user", "content": "x"}] * _COUNTING_INPUT)
+
+    loop._compact(ctx, "t")  # noqa: SLF001
+
+    payload = _compaction(tracer)[0].payload
+    assert set(payload) == _COMPACTION_KEYS
+    assert payload["messages"] == _COUNTING_INPUT
+    for key, expected in _COUNTING_OUTPUT.items():
+        assert payload[key] == expected
+
+
+def test_compaction_counts_are_zero_when_compact_raises() -> None:
+    """`compact` 抛错 ⇒ 产物四项记 0，`messages` 仍为输入数，事件照常产出。"""
+    tracer = Tracer()
+    loop = DefaultLoop(memory=MemoryStore(), compactor=_BrokenCompactor(), tracer=tracer)
+
+    loop._compact(LoopContext(messages=[{}] * _ERROR_INPUT), "t")  # noqa: SLF001
+
+    payload = _compaction(tracer)[0].payload
+    assert payload["messages"] == _ERROR_INPUT
+    for key in ("conclusions", "decisions", "open_items", "dropped"):
+        assert payload[key] == 0
+
+
+def test_compaction_persist_failure_keeps_real_counts() -> None:
+    """`persist` 失败不影响已取得的产物计数（失败只影响落盘）。"""
+    tracer = Tracer()
+    loop = DefaultLoop(memory=MemoryStore(), compactor=_PersistBrokenCompactor(), tracer=tracer)
+
+    loop._compact(LoopContext(messages=[{}]), "t")  # noqa: SLF001
+
+    payload = _compaction(tracer)[0].payload
+    assert payload["conclusions"] == _COUNTING_OUTPUT["conclusions"]
+    assert payload["dropped"] == _COUNTING_OUTPUT["dropped"]
 
 
 class _BrokenCompactor(Compactor):

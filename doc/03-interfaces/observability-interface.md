@@ -37,7 +37,8 @@ class TraceLogger:
 **成本事件（change 0253 / ADR-0243）**：执行循环直接 `record` 两类事件 —— `maintenance`
 （每实际维护节拍一条，payload `elapsed_ms` + `steps`：`session_compact` / `mid_summary` /
 `forget` / `cold_path`）与 `compaction`（每压实一条，payload `trigger`（`threshold` /
-`budget_retry`）+ `elapsed_ms` + `steps`：`persist` / `memory_compact` / `forget`）。步骤失败
+`budget_retry`）+ `elapsed_ms` + `steps`：`persist` / `memory_compact` / `forget` + 五项计数
+`messages` / `conclusions` / `decisions` / `open_items` / `dropped`（change 0263 / ADR-0253）。步骤失败
 另记 `maintenance_failed`（`step` + `error`），其余步骤继续。耗时用单调时钟；payload **不含**
 条目正文、摘要文本或会话标识；未注入 tracer ⇒ 零事件。
 

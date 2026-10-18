@@ -978,14 +978,28 @@ class DefaultLoop(Plugin):
         含 ``trigger``（``threshold`` / ``budget_retry``）、``elapsed_ms`` 与分步 ``steps``
         （``persist`` / ``memory_compact`` / ``forget``）；失败步骤另记 ``maintenance_failed``
         并带 ``step``。耗时用单调时钟，payload **不含**正文/摘要/会话标识。
+
+        产出/丢弃计数（change 0263 / ADR-0253）：payload 另含 ``messages``（输入消息数）与压实
+        产物的 ``conclusions`` / ``decisions`` / ``open_items`` / ``dropped`` 列表长度；
+        ``compact`` 抛错时后四项记 0（``persist`` 失败不影响已取得的计数）。
         """
         assert self._compactor is not None  # noqa: S101 — 调用点已判空
         step_ms: dict[str, float] = {}
+        counts = {
+            "messages": len(ctx.messages),
+            "conclusions": 0,
+            "decisions": 0,
+            "open_items": 0,
+            "dropped": 0,
+        }
         started = time.perf_counter()
         try:
-            self._compactor.persist(
-                self._compactor.compact(ctx.messages), session_id=ctx.session_id
-            )
+            compaction = self._compactor.compact(ctx.messages)
+            counts["conclusions"] = len(compaction.conclusions)
+            counts["decisions"] = len(compaction.decisions)
+            counts["open_items"] = len(compaction.open_items)
+            counts["dropped"] = len(compaction.dropped)
+            self._compactor.persist(compaction, session_id=ctx.session_id)
         except ContextError:
             pass  # 无可沉淀关键信息：非错误，不替换原文
         except Exception as err:  # noqa: BLE001 — 压实失败降级，本轮继续
@@ -1015,6 +1029,7 @@ class DefaultLoop(Plugin):
                 "trigger": trigger,
                 "elapsed_ms": round(sum(step_ms.values()), 3),
                 "steps": {name: round(ms, 3) for name, ms in step_ms.items()},
+                **counts,
             },
         )
 

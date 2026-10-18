@@ -4003,3 +4003,20 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > `pyright` 0 / `pytest -q`）。附带：`entry.py` 增行使 `prompts.md` §1 ⑭ 落点漂移，已同步 1810。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0252 行（无 restore / 全量加载 / 运行实例
 > 不感知 / `--limit 0` 语义 / 无批量删除）。
+
+## 175. 压实产出与丢弃计数（TC-CMPCNT，change `0263`／ADR-0253，台账 E199）
+| TC-CMPCNT | 场景 | 输入 | 预期 |
+|---|---|---|---|
+| TC-CMPCNT-01 | **五项计数**（承重） | 计数替身压实器（2 结论 / 1 决策 / 3 待办 / 1 丢弃），输入 4 条消息 | payload 含 `messages=4`、`conclusions=2`、`decisions=1`、`open_items=3`、`dropped=1`（`tests/test_loop_cost_observability.py::test_compaction_records_output_and_drop_counts`） |
+| TC-CMPCNT-02 | **顶层 key 契约**（承重） | 同上事件 payload | key 集合恰为 `{trigger, elapsed_ms, steps, messages, conclusions, decisions, open_items, dropped}`（同 TC-CMPCNT-01） |
+| TC-CMPCNT-03 | compact 抛错全 0 | 压实器 `compact` 抛错，输入 2 条消息 | `messages=2`；产物四项均为 0；事件照常产出（`…::test_compaction_counts_are_zero_when_compact_raises`） |
+| TC-CMPCNT-04 | persist 失败保留计数 | `compact` 正常、`persist` 抛错 | `conclusions=2`、`dropped=1`（失败只影响落盘）（`…::test_compaction_persist_failure_keeps_real_counts`） |
+
+> **口径**：计数从 `Compaction` 产物直接取；`messages` 在 `try` 前取、恒为输入数。
+> payload **不含**条目 id / 正文 / 摘要 / 会话标识。不发 `kept`（`messages - dropped` 不是保留口径）。
+> **反证**：P1 `dropped` 恒 0 ⇒ TC-CMPCNT-01 红；P2 异常路径填非零默认 ⇒ TC-CMPCNT-03 红；
+> P3 摘 `messages` 键 ⇒ TC-CMPCNT-02 红。复原后 `md5sum` 一致。
+> 规格：`observability` **MODIFIED**「全链路日志」（+1 scen）。`openspec validate --all` 32/0
+> （归档前）/ 31/0（归档后）。测试净 **+3**（2885 → **2888**）。四门禁全绿。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0253 行（dropped 口径 / 无 token 前后量 /
+> 部分产出即抛错记 0）。

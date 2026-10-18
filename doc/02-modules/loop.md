@@ -178,7 +178,9 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
 
 - 每轮生成 `trace_id`，贯穿日志/效应/记忆写入，单轮可复现（NFR-OBS2）。
 - **压实/抽取成本留痕**（change `0253`／ADR-0243）：每实际维护节拍产一条 `maintenance` 事件
-  （总耗时 + 分步耗时），每次轮内压实产一条 `compaction` 事件（`trigger` + 总耗时 + 分步耗时）；
+  （总耗时 + 分步耗时），每次轮内压实产一条 `compaction` 事件（`trigger` + 总耗时 + 分步耗时 +
+  **产出/丢弃计数** `messages` / `conclusions` / `decisions` / `open_items` / `dropped`，change `0263`／ADR-0253；
+  `compact` 抛错时后四项记 0）；
   步骤失败记 `maintenance_failed` 并带 `step` 归因，不中断其余步骤。未注入 tracer ⇒ 零事件；
   payload 不含正文、摘要文本或会话标识。
 - **压实进度与上限**（change `0256`／ADR-0247）：阈值压实前后各产一条 **LoopEvent** ——

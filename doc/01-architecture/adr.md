@@ -9313,6 +9313,42 @@ precision@5（单 gold 下上限仅 0.2）；④ recall 阈值留 1 条查询余
 一致；④ `--limit 0` = 全部，与「0 条」直觉相反（写入帮助文本）；⑤ 不做批量 / 按条件删除，避免
 一次误删大面积记忆。
 
+## ADR-0253：压实产出与丢弃的可观测计数（change 0263 / 台账 E199）
+
+**背景**：`compaction` 成本事件（change 0253）只有 `trigger` / `elapsed_ms` / `steps`：能回答
+「压实花了多久」，回答不了「这次消化了多少、产出了什么、丢了什么」。上下文压实后模型表现变差
+或用户质疑「为什么这条信息没了」时，运维面缺少可比数字。对比审查（2026-10-18）把「压实丢弃
+不可观测」列为 P1 短板。
+
+**决策**：
+
+- **D1 五项计数**：``compaction`` payload 增 `messages`（`len(ctx.messages)`）与压实产物的
+  `conclusions` / `decisions` / `open_items` / `dropped` 列表长度。`_compact` 改为先取
+  `compaction = compactor.compact(...)` 再 `persist(compaction, ...)` —— 原先内联在实参里，
+  拿不到产物。
+- **D2 失败语义**：`compact` 抛错 ⇒ 产物四项记 `0`（`messages` 仍为输入数）；`persist` 失败
+  ⇒ 已取得的计数保留（失败只影响落盘，不影响「压出/丢了什么」）。事件次数、`trigger` /
+  `elapsed_ms` / `steps` 与写回/终止语义逐字不变。
+- **D3 不发 `kept`**：`messages - dropped` 不是「保留」口径 —— `dropped` 只统计**有 id 且
+  `redundant=True`** 的冗余条目（生产中通常为空），消息是被摘要/结论**替换**而非逐条保留。
+  发 `kept` 会让消费方误读「保留了多少条消息」。
+- **D4 payload 红线不变**：只发计数，不发条目 id 或正文；不含摘要文本与会话标识。
+- **D5 顶层 key 契约钉住**：测试断言 payload 顶层 key 集合恰为八个键（`trigger` /
+  `elapsed_ms` / `steps` + 五项计数），防止未来误删既有键或漏发新键。
+
+**规格**：`observability` **MODIFIED**「全链路日志」（payload + 五项计数、+1 scenario
+「压实产出与丢弃计数」）。`openspec validate --all` 32/0（归档前）、31/0（归档后）。
+
+**测试**：`tests/test_loop_cost_observability.py` 新增 3 例（计数与顶层 key 集、`compact` 抛错
+全 0、`persist` 失败保留真实计数）。全量基线 2885 → **2888 passed**。反证 3/3：`dropped` 恒 0
+⇒ 计数用例红；异常路径填非零默认 ⇒ 全 0 用例红；摘 `messages` 键 ⇒ key 集用例红；复原
+`md5sum` 一致（`150cef8a…`）。四门禁：`ruff check` / `ruff format --check` 绿、`pyright`
+0 errors、`pytest -q` 全绿。
+
+**局限**：① `dropped` 仅统计 `Compaction.dropped`（有 id 的冗余条目），生产中通常为空；
+② 不记录 token 前后量（需额外估算口径，且压实是替换而非删除）；③ `compact` 部分产出后抛错时
+计数记 0（不反映部分产物，与「失败即无产物」的既有降级语义一致）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9560,3 +9596,4 @@ precision@5（单 gold 下上限仅 0.2）；④ recall 阈值留 1 条查询余
 | ADR-0250 | 02-modules/configuration.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0251 | 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0252 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0253 | 02-modules/loop.md, 03-interfaces/observability-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
