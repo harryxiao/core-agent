@@ -1,4 +1,4 @@
-"""粗略 token 估计（中性，change 0245 / ADR-0233）。
+"""粗略 token 估计（中性，change 0245 / ADR-0233；提速 change 0276 / ADR-0266）。
 
 **CJK 字符按 ≈1 token/字符计，其余按 4 字符 ≈1 token**；空串/极短文本至少 1 token。
 上下文预算（``context.budget``）与记忆读预算（``memory.store`` / ``memory.transcript``）共用
@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Protocol
 
 _DIVISOR = 4
@@ -28,14 +29,16 @@ _CJK_RANGES = (
 )
 
 
-def _is_cjk(char: str) -> bool:
-    code = ord(char)
-    return any(low <= code <= high for low, high in _CJK_RANGES)
+# 同一组区间编译为一个字符类：C 层 `sub` 计数替代逐字符 Python `any()` 判定。
+# `0276` 只换计数方式，口径（哪些字符算 CJK）由 `_CJK_RANGES` 单处定义、逐位不变。
+_CJK_PATTERN = re.compile(
+    "[" + "".join(f"\\u{low:04x}-\\u{high:04x}" for low, high in _CJK_RANGES) + "]"
+)
 
 
 def estimate_tokens(text: str) -> int:
     """CJK 感知的粗略 token 估算（见模块 docstring）。"""
-    cjk = sum(1 for char in text if _is_cjk(char))
+    cjk = len(text) - len(_CJK_PATTERN.sub("", text))
     return max(1, cjk + (len(text) - cjk) // _DIVISOR)
 
 

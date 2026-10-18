@@ -4411,3 +4411,36 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > `pyright` 0 / `pytest -q 3022 passed`）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0265 行（近唯一锚点 / 单机 wall-clock /
 > 不覆盖并发与 embedder / 增加约 20s / **延迟缺口已知未修**）。
+
+## 188. 记忆检索延迟修复（TC-MEMLAT，change `0276`／ADR-0266，台账 E212）
+
+> 覆盖 `memory/spec.md`「检索规模离线基准（1 万条）」（MODIFIED：回归上限收紧）与
+> 「检索词元缓存（有界、按内容失效）」（ADDED）：`estimate_tokens` 口径不变、只换计数方式；
+> 词元缓存按内容校验、有界 FIFO；1 万条检索中位回到 100ms 以内。
+> 测试文件 `tests/test_token_estimate.py`（+1）、`tests/test_memory_token_cache.py`（新，3 例）、
+> `tests/test_memory_scale_benchmark.py`（上限收紧）。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-MEMLAT-01 | `estimate_tokens` 口径（ADDR `0245` 契约不变） | 每个 CJK 区间的下界/上界/界外 ±1 ＋ ASCII/空串/混合串，与逐字符参考实现对比 | 逐位相等（`test_cjk_range_boundaries_match_reference`） |
+| TC-MEMLAT-02 | Scenario「重复检索复用」 | 50 条冻结时间戳语料，同一 store 连续两次 `read`；monkeypatch `relevance.tokens` 计数 | 第二次只对查询分词（未变条目零调用，≤2 次查询分词）；结果与首次逐条一致（`test_token_cache_reuses_unchanged_entries`） |
+| TC-MEMLAT-03 | Scenario「内容变更失效」 | 同一条目先 `旧内容 苹果` 再覆写 `新内容 香蕉`，复用同一缓存 dict | 新统计含「香蕉」词元、不含「苹果」（`test_token_cache_invalidates_on_content_change`） |
+| TC-MEMLAT-04 | Scenario「有界淘汰」 | `_TOKEN_CACHE_MAX=5`、20 条语料读一次 | 缓存长度 ≤ 5 且检索正常返回（`test_token_cache_is_bounded`） |
+| TC-MEMLAT-05 | Scenario「延迟可度量」（MODIFIED） | 1 万条基准（`0275` 语料/查询不变） | 输出中位/p95/max；回归上限 `p95 < 1000ms`（原 5000ms）；**实测中位 85.8ms / p95 125.5ms / max 138.2ms**，产品目标 100ms 中位达标但仍不作硬门禁（`test_memory_scale_benchmark_at_10k`） |
+| TC-MEMLAT-06 | Scenario「规模与准确率」不回退 | 同上 | recall@5 = 1.000、MRR@5 = 1.000（与 `0275` 逐项一致） |
+
+> **口径**：`estimate_tokens` 的 CJK 计数改由**预编译正则 `sub`** 完成（`_CJK_RANGES` 同源生成
+> 字符类），语义与 `0245` 的逐字符 `any(range)` **逐位一致**；10k 条估算 ≈546→39ms（≈14×）。
+> 词元缓存以 `id → (content, frozenset)` 存储，**只以 `content` 校验有效性**（同 id 覆写即失效），
+> 不缓存 `reuse_count` 等时变字段；`build_lexical_stats` 缺省 `token_cache=None` ⇒ 行为逐字不变。
+> `MemoryStore` 上界 `_TOKEN_CACHE_MAX=20_000`（1 万目标 2×），插入序 FIFO。
+> **反证 2/2**：① `read` 不传缓存 ⇒ TC-MEMLAT-02 红；② 去掉 `content` 校验（只按 id 命中）⇒
+> TC-MEMLAT-03 红。复原后 `md5sum` 一致（`store.py` / `relevance.py`）。
+> 反证边界：`estimate_tokens` 的速度**不由单测挂钟反证**（不稳定），由基准报告值见证；
+> 口径由 TC-MEMLAT-01 钉住。
+> 规格：`memory` **MODIFIED**「检索规模离线基准」+ **ADDED**「检索词元缓存」（3 scen）。
+> `validate --all` 31/0（归档后）。测试净 **+4**（3022 → **3026**）。
+> 四门禁全绿（`ruff check` / `ruff format --check` / `pyright` 0 / `pytest -q 3026 passed`）。
+> 附带：基准自身耗时由 ≈20s 降至 ≈8s（全量 ≈202s）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0266 行（冷启动首读仍 ≈220ms / 进程内缓存 /
+> 未做候选预裁剪 / 20k 上界 / 挂钟波动 / 共享热路径）。

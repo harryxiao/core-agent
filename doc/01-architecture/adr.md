@@ -9911,6 +9911,61 @@ slow，仓内无 slow 标记约定）；⑤ 延迟缺口已知但未修：本基
 建议优先于 PA-09 C；② PA-09 **C 分区加权**（`tags` / 来源三档）；③ D 图 / E 真语义须各自
 独立裁决（E 与零三方依赖红线对账）。
 
+## ADR-0266：记忆检索延迟修复（1 万条中位 <100ms）（change 0276 / 台账 E212）
+
+**背景**：`0275` 的 1 万条基准首次把 CORE-NFR-PERF2（「<100ms / 1 万条」）变成数字：
+本机中位 **657.4ms**，**未达标**。实测分解（10k 条、单次 `read`）：`estimate_tokens`
+≈323–546ms（逐字符 Python `any()` 遍历 7 个 CJK 区间）> `tokens` 全量重分词 ≈89ms >
+BM25 统计 ≈104ms（含分词）> 排序 ≈21ms。两处热点都**不承载检索语义**，属纯实现开销。
+
+**决策**：
+
+- **D1 `estimate_tokens` 换计数方式、不换口径**：把 `_CJK_RANGES` 同源编译为一个正则字符类，
+  `cjk = len(text) - len(_CJK_PATTERN.sub("", text))`（C 层执行）；删除逐字符 `_is_cjk`。
+  输出与 `0245` 的逐字符判定**逐位一致**（区间边界等价测试守护）；所有调用方（memory 读预算、
+  context 预算、orchestration handoff）只获得速度。10k 条估算 ≈546ms → **39ms**（≈14×）。
+- **D2 词元缓存：按内容校验、有界 FIFO**：`MemoryStore` 持 `_token_cache`
+  （`id → (content, frozenset[token])`），`build_lexical_stats` 增可选 `token_cache`
+  （缺省 `None` ⇒ 与 `0252` 逐字一致）。内容未变复用词元集；同 id 覆写内容 ⇒ 校验失败重新
+  分词；不缓存 `reuse_count` 等时变字段。上界 `_TOKEN_CACHE_MAX = 20_000`（1 万目标的 2×），
+  溢出按插入序 FIFO 淘汰。
+- **D3 语义零变化**：不改 BM25 公式、分词规则、层权重、排序与 `_truncate` 的「跳过放不下者」
+  语义；缓存只改变**分词频次**。结果由既有 3022 用例 + 基准 recall/MRR 1.000 逐条守护。
+- **D4 门禁口径**：产品目标仍**只报告**（跨机/负载波动），基准回归上限由 `p95 < 5000ms`
+  收紧为 **`p95 < 1000ms`**（参考机修后 ≈125ms，约 8× 余量）。`estimate_tokens` 的速度不由
+  单测挂钟反证，口径由区间边界等价钉住；缓存行为由确定性用例反证。
+
+**实测（本机 WSL2，同一 10k 语料 / 20 查询）**：
+
+| 版本 | 中位 | p95 | recall@5 / MRR@5 |
+|---|---|---|---|
+| `0275` 基线 | 586.6ms | 695.9ms | 1.000 / 1.000 |
+| + 快速 `estimate_tokens` | 221.9ms | 289.4ms | 1.000 / 1.000 |
+| + 词元缓存（第二次起） | **83.3ms** | 109.3ms | 1.000 / 1.000 |
+| 最终基准单跑 | **85.8ms** | 125.5ms | 1.000 / 1.000 |
+
+⇒ 参考机**中位已满足 <100ms**；p95 略高于目标（首查/系统噪声），故不作跨机硬门禁。
+首次检索（缓存冷）仍约 220ms —— 缓存收益自第二次检索起，这是有意取舍（不持久化缓存）。
+
+**规格**：`memory` **MODIFIED**「检索规模离线基准（1 万条）」（延迟口径 + p95 上限）＋
+**ADDED**「检索词元缓存（有界、按内容失效）」（3 scen）。`validate --all` **31/0**（归档后）。
+
+**测试**：`tests/test_token_estimate.py` +1（区间边界等价）；新增
+`tests/test_memory_token_cache.py` **3 例**（复用 / 内容变更失效 / 有界）；基准上限收紧。
+净 **+4**（3022 → **3026**）。反证 2/2：① `read` 不传缓存 ⇒ 复用用例红；② 去掉内容校验
+（只按 id 命中）⇒ 失效用例红；复原后 `md5sum` 一致（`store.py` / `relevance.py`）。
+四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、
+`pytest -q` **3026 passed**（约 202s；基准自身由 ≈20s 降至 ≈8s）。
+
+**局限**：① 缓存收益依赖重复检索，冷启动首读仍约 220ms；② 缓存为进程内存、按 store 实例
+归属，跨进程/重启不共享；③ 排序阶段仍对全部候选 `rank`（≈21ms）与 BM25 idf 统计（≈15ms），
+未做候选预裁剪以免改变召回面；④ 20k 上界对 1 万目标足够，语料远超 2× 时 FIFO 会抖动；
+⑤ 挂钟数字受负载影响，跨机不可直接比较；⑥ `estimate_tokens` 提速覆盖所有调用方，行为不变
+但属共享热路径改动，今后改 CJK 区间须同步测试侧区间表。
+
+**后续**：PA-09 **C 分区加权**可在本基线上直接评估收益；D 图 / E 真语义仍须各自独立裁决
+（E 与零三方依赖红线对账）。更远的候选预裁剪 / 持久化索引不在本 change。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10171,3 +10226,4 @@ slow，仓内无 slow 标记约定）；⑤ 延迟缺口已知但未修：本基
 | ADR-0263 | 02-modules/notes.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0264 | 04-testing/test-cases.md, 00-product/product-definition.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0265 | 02-modules/memory.md, 04-testing/test-cases.md, 00-product/requirements.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
+| ADR-0266 | 02-modules/memory.md, 04-testing/test-cases.md, 00-product/requirements.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |

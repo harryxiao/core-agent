@@ -43,6 +43,8 @@ from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter
 
 # 向量缓存上界（超出按 FIFO 逐出）；进程内易失，不落盘
 _VEC_CACHE_MAX = 4096
+# 词元缓存上界（change 0276 / ADR-0266）：1 万条目标的 2×，FIFO 淘汰；仅进程内存。
+_TOKEN_CACHE_MAX = 20_000
 
 # 写入侧热字典上界（超出按写入序逐出；change 0244）：后端 `_entries` 才是真源，读面不受影响
 _HOT_MAX = 512
@@ -298,6 +300,7 @@ class MemoryStore:
         self._ephemeral_sessions = frozenset(sid for sid in ephemeral_sessions if sid)
         self._hot: dict[str, MemoryEntry] = {}
         self._vectors: dict[str, list[float]] = {}
+        self._token_cache: dict[str, tuple[str, frozenset[str]]] = {}
         self._embed_failed = False
 
     def load(self) -> None:
@@ -353,7 +356,8 @@ class MemoryStore:
         embedder = self._memo_embedder() if self._embedder is not None else None
         # 词法语料统计（change 0252 / ADR-0242）：候选集只分词一次，排序阶段查缓存；
         # embedder 失败降级时同样带 IDF/长度归一。
-        stats = build_lexical_stats(candidates.values(), query)
+        stats = build_lexical_stats(candidates.values(), query, token_cache=self._token_cache)
+        self._trim_token_cache()
         ranked = sorted(
             candidates.values(),
             key=lambda e: rank(e, query, embedder, stats=stats),
@@ -805,6 +809,11 @@ class MemoryStore:
     def _trim_vectors(self) -> None:
         while len(self._vectors) > _VEC_CACHE_MAX:
             self._vectors.pop(next(iter(self._vectors)))
+
+    def _trim_token_cache(self) -> None:
+        """词元缓存有界（change 0276）：FIFO 淘汰最旧插入项（dict 保序）。"""
+        while len(self._token_cache) > _TOKEN_CACHE_MAX:
+            self._token_cache.pop(next(iter(self._token_cache)))
 
     def _truncate(self, entries: list[MemoryEntry], budget: int) -> list[MemoryEntry]:
         """按相关度降序保留可容纳条目，**跳过**放不下的（不掐断后续）。

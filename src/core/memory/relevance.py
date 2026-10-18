@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 import re
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, MutableMapping
 from dataclasses import dataclass
 
 from .protocol import Layer, MemoryEntry
@@ -62,12 +62,30 @@ class LexicalStats:
     b: float = 0.75
 
 
-def build_lexical_stats(entries: Iterable[MemoryEntry], query: str) -> LexicalStats | None:
-    """对候选集做一次分词与文档频率统计；空查询 / 空语料 ⇒ ``None``（走原重叠公式）。"""
+def build_lexical_stats(
+    entries: Iterable[MemoryEntry],
+    query: str,
+    *,
+    token_cache: MutableMapping[str, tuple[str, frozenset[str]]] | None = None,
+) -> LexicalStats | None:
+    """对候选集做一次分词与文档频率统计；空查询 / 空语料 ⇒ ``None``（走原重叠公式）。
+
+    ``token_cache``（change 0276 / ADR-0266）：``id → (content, 词元集)``。内容未变则复用
+    词元集，同 id 覆写不同内容时自动失效并重新分词；缺省 ``None`` ⇒ 行为与既有逐字一致。
+    """
     query_tokens = frozenset(tokens(query))
     if not query_tokens:
         return None
-    doc_tokens = {entry.id: frozenset(tokens(entry.content)) for entry in entries}
+    doc_tokens: dict[str, frozenset[str]] = {}
+    for entry in entries:
+        cached = token_cache.get(entry.id) if token_cache is not None else None
+        if cached is not None and cached[0] == entry.content:
+            doc_tokens[entry.id] = cached[1]
+            continue
+        token_set = frozenset(tokens(entry.content))
+        doc_tokens[entry.id] = token_set
+        if token_cache is not None:
+            token_cache[entry.id] = (entry.content, token_set)
     if not doc_tokens:
         return None
     total = len(doc_tokens)
