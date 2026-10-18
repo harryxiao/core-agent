@@ -9349,6 +9349,52 @@ precision@5（单 gold 下上限仅 0.2）；④ recall 阈值留 1 条查询余
 ② 不记录 token 前后量（需额外估算口径，且压实是替换而非删除）；③ `compact` 部分产出后抛错时
 计数记 0（不反映部分产物，与「失败即无产物」的既有降级语义一致）。
 
+## ADR-0254：工具面打磨（change 0264 / 台账 E200）
+
+**背景**：对比审查（2026-10-18）把三处「静默降级 / 近似重复 / 有损截断」列为 P2 打磨项：
+① `CheckpointStore._load` 只捕 `JSONDecodeError`，结构不符行（缺键 / 缺必需字段）会让
+`Checkpoint(**record["checkpoint"])` 抛 `TypeError` / `KeyError`，**中断整份加载**；坏 JSON 行跳过
+却无任何提示，用户不知道检查点丢了。② 重复调用抑制只按**逐字参数**判重：同一文件写成
+`~/x` 与展开后的绝对路径、CRLF 与 LF 正文、省略 `mode` 与显式 `"w"`，都会被当作不同调用重复
+写盘。③ `code_run` 输出截断只保留头部，而错误结论通常在**尾部**（traceback 末行、测试摘要），
+模型看到的是「执行了但没说结论」的半截输出。
+
+**决策**：
+
+- **D1 损坏行告警一次、不阻断**：`_load` 逐行 `try` 覆盖 `json.loads` + `Checkpoint(...)` +
+  `Snapshot(...)`，捕 `(ValueError, TypeError, KeyError)`（`JSONDecodeError` ⊂ `ValueError`），
+  跳过并累计；加载结束后若有跳过项，发**一次** `UserWarning`（`stacklevel=2`），消息只含
+  **跳过条数与文件名**，与 `FileBackend._load` 同口径。**不回显行内容**（可能含任务正文 /
+  记忆 / 密钥）。合法行照常加载。不做损坏行落盘隔离 / 去重告警（见局限）。
+- **D2 去重参数规范化只对文件写/补丁**：`_action_key` 先经 `_normalize_action_args` 得到参数
+  **视图**再序列化；执行仍用原始 `action.args`。`path` = `expanduser → abspath → normpath →
+  normcase`（Windows 折大小写 / 统一分隔符）；`content` / `old_content` / `new_content` 仅把
+  `\r\n` 归一为 `\n`（纯 CR 不动）；`file_write` 省略 `mode` 视同 `"w"`，`"a"` / `"append"` 归一
+  为 `"a"`（仍与覆盖写不同）。`code_run` / `web_fetch` **保持精确匹配** —— shell 字符串与 URL 的
+  语义等价性不可靠，归一的风险高于收益（重定向、host 大小写、查询参数顺序、转义）。
+- **D3 输出首尾保留**：新增 `_truncate_output(text, limit=8192)`；超限时头部 `budget // 3`、
+  尾部其余，中间插 `\n…[truncated N chars]…\n`（N = 省略字符数，含标记自身预算）。总长
+  **≤ 上限**（标记按最大位数预估，只会多留余量）。`stdout_truncated` / `stderr_truncated`
+  判据不变（原始长度 > 上限）。仅 `code_run` **前景**结果；后台日志文件不截断
+  （`tools.process output` 读尾部）。尾部权重 2/3 因为错误结论在尾部。
+
+**规格**：`durability` **ADDED**「检查点加载损坏行告警且不阻断」（3 scen）；`loop` **MODIFIED**
+「单次推理多工具动作」（+1 scen「文件写参数规范化去重」）；`tool-use` **MODIFIED**「内置原子工具
+（代码执行 / 网页读取）」（+1 scen「长输出首尾保留」）。`openspec validate --all` 全绿（归档前/后）。
+
+**测试**：`tests/test_durability.py` +2、`tests/test_parallel_tool_calls.py` +5、
+`tests/test_tool_use.py` +2，净 **+9**（2888 → **2897**）。反证 4/4：P1 摘 `_load` 告警 ⇒
+TC-THARD-01 红；P2 只捕 `ValueError` ⇒ 结构行冒泡 ⇒ TC-THARD-01 红；P3 摘规范化 ⇒
+TC-THARD-03/04/05 红；P4 退化纯头截断 ⇒ TC-THARD-08 红；复原后 `md5sum` 一致
+（`store.py 7c31f0d5…` / `default.py 3bf6864b…` / `builtin.py 0a1e47bf…`）。四门禁：
+`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` 全绿。
+
+**局限**：① 路径归一用 `abspath`（依赖当前工作目录）：同一文件在不同 cwd 下的相对路径可能
+判为不同；不做 inode / 符号链接 / 大小写不敏感文件系统的完整等价判定。② 不做 shell / URL
+语义归一（有意）：`code_run` 的等价脚本、`web_fetch` 的等价 URL 仍可能重复调用。③ 截断标记的
+N 是「省略字符数（含标记占用的预算）」，非精确尾部缺口；极端小 `limit` 下标记可能超上限
+（生产常量 8192 不受影响）。④ 检查点损坏行只告警不隔离，重复启动会重复告警；不归档损坏行。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9597,3 +9643,4 @@ precision@5（单 gold 下上限仅 0.2）；④ recall 阈值留 1 条查询余
 | ADR-0251 | 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0252 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0253 | 02-modules/loop.md, 03-interfaces/observability-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0254 | 02-modules/durability.md, 02-modules/loop.md, 02-modules/tool-use.md, 03-interfaces/durability-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

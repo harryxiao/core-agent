@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import warnings
 from dataclasses import asdict
 from pathlib import Path
 
@@ -99,18 +100,30 @@ class CheckpointStore:
         os.replace(tmp, self._path)
 
     def _load(self) -> None:
+        """逐行加载；坏 JSON / 结构不符行跳过并计数，加载后一次告警。
+
+        告警只含条数与文件名，不回显行内容（可能含任务正文 / 密钥）。
+        """
         if self._path is None:
             return
+        corrupt = 0
         for line in self._path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             try:
                 record = json.loads(line)
-            except json.JSONDecodeError:
-                continue  # 损坏行跳过（崩溃后重启容忍局部损坏）
-            checkpoint = Checkpoint(**record["checkpoint"])
-            snapshot = Snapshot(**record["snapshot"])
+                checkpoint = Checkpoint(**record["checkpoint"])
+                snapshot = Snapshot(**record["snapshot"])
+            except (ValueError, TypeError, KeyError):
+                corrupt += 1  # 崩溃后重启容忍局部损坏：跳过、不中断其余行
+                continue
             self._checkpoints[checkpoint.checkpoint_id] = checkpoint
             self._snapshots[checkpoint.checkpoint_id] = snapshot
             if record.get("corrupt"):
                 self._corrupt.add(checkpoint.checkpoint_id)
+        if corrupt:
+            warnings.warn(
+                f"checkpoint store skipped {corrupt} corrupt line(s) in {self._path.name}",
+                UserWarning,
+                stacklevel=2,
+            )

@@ -100,6 +100,11 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
   轮内**紧邻重复**的覆盖写 / 补丁（上次成功）跳过执行并复用结果，任何其他动作执行后重置记忆。
   被抑制调用仍产正常动作事件（`duration_ms=0`）、观测回灌与 `step_completed`，trace 记
   `action_deduplicated`（`scope` / `tool_id` / `round`；不含参数正文）。
+- **去重参数规范化**（change `0264` / ADR-0254）：去重键只对 `file_write` / `file_patch`
+  归一参数视图 —— `path` 做 `~` 展开 → 绝对化 → `normpath` → `normcase`（Windows 折大小写）；
+  `content` / `old_content` / `new_content` 的 CRLF 归一为 LF；`file_write` 省略 `mode` 与显式
+  `"w"` 等价，`"a"` / `"append"` 归并为追加（仍不与覆盖写合并）。`code_run` / `web_fetch`
+  保持**精确参数**匹配。归一**只影响去重键**，执行仍用原始参数。
 
 ### 3.3 无行动不记忆（Remember 阶段）
 

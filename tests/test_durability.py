@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import time
+import warnings
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
@@ -172,3 +174,40 @@ def test_retention_quota_exceeded() -> None:
     with pytest.raises(DurabilityError) as exc_info:
         retention.apply(RetentionPolicy(storage_quota=10))
     assert exc_info.value.code is DurabilityErrorCode.RETENTION_QUOTA_EXCEEDED
+
+
+# ---- 加载损坏行（change 0264）----
+
+_CANARY = "SECRET-CANARY-DO-NOT-ECHO"
+
+
+def test_corrupt_lines_warn_once_and_keep_valid_checkpoints(tmp_path: Path) -> None:
+    """坏 JSON + 结构不符行 ⇒ 一次告警（仅条数 + 文件名），合法行仍可读。"""
+    path = tmp_path / "checkpoints.jsonl"
+    manager = CheckpointManager(CheckpointStore(path))
+    good = manager.create_checkpoint("task1", "sess1", {"step": 1})
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(f'\n{{"broken": {_CANARY}\n')  # 坏 JSON（前置换行：_persist 不留尾换行）
+        fh.write('{"checkpoint": {}, "snapshot": {}}\n')  # 合法 JSON、缺必需字段
+
+    with pytest.warns(UserWarning) as caught:
+        reloaded = CheckpointStore(path)
+
+    assert [c.checkpoint_id for c in reloaded.list_checkpoints()] == [good.checkpoint_id]
+    assert len(caught) == 1
+    message = str(caught[0].message)
+    assert "2" in message
+    assert path.name in message
+    assert _CANARY not in message
+
+
+def test_clean_load_emits_no_warning(tmp_path: Path) -> None:
+    path = tmp_path / "checkpoints.jsonl"
+    manager = CheckpointManager(CheckpointStore(path))
+    manager.create_checkpoint("task1", "sess1", {"step": 1})
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        CheckpointStore(path)
+
+    assert not [w for w in caught if issubclass(w.category, UserWarning)]

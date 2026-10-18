@@ -164,7 +164,10 @@
 - **工具面陈述**：工具 description / schema SHALL 明示「显式 `type` 优先于平台缺省」与
   `cwd` 的 `~` 语义。
 - **超时与截断 / 确认门**：返回码与 stdout/stderr 截断、不可逆高风险确认门语义 SHALL 与既有
-  一致（本 change 不放宽、不收紧确认门策略）。
+  一致（本 change 不放宽、不收紧确认门策略）。**输出截断 SHALL 首尾保留**：超出上限时保留头部
+  约 1/3 与尾部其余，中间以省略标记（含省略字符数）分隔，总长 SHALL NOT 超过既有上限；
+  `stdout_truncated` / `stderr_truncated` 判据不变。该口径 SHALL 仅作用于 `code_run` 前景结果；
+  后台日志文件 SHALL NOT 被截断。
 
 #### Scenario: 代码执行（python）
 
@@ -216,6 +219,13 @@
 - **GIVEN** 调用 `tools.code_run` 且 `cwd` 为 `~/work`
 - **WHEN** 工具解析参数
 - **THEN** 子进程工作目录为当前用户家目录下的 `work`，SHALL NOT 在当前目录下创建字面 `~` 目录
+
+#### Scenario: 长输出首尾保留
+
+- **GIVEN** `code_run` 的前景 `stdout`（或 `stderr`）长度超过既有上限
+- **WHEN** 工具返回结果
+- **THEN** 返回文本含**头部**与**尾部**内容，中间有省略标记；总长不超过既有上限；
+  `stdout_truncated` / `stderr_truncated` 仍为 `true`
 
 #### Scenario: 网页读取
 

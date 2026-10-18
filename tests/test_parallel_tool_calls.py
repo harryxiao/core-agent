@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 from core.llm_provider import LLMChunk, LLMResponse, TokenUsage, ToolCall
@@ -261,3 +262,103 @@ def test_identical_write_after_other_action_is_not_deduplicated() -> None:
     _run(loop)
 
     assert calls == [{"path": "p", "content": "x"}, {"path": "p", "content": "x"}]
+
+
+# ---- 去重参数规范化（change 0264）----
+
+
+def _run_adjacent_writes(
+    calls: list[dict[str, Any]], first: Action, second: Action, tool_id: str = "tools.file_write"
+) -> list[TraceEvent]:
+    provider = _provider()
+    provider.register(_recording_tool(tool_id, calls))
+    exporter = _CapturingExporter()
+
+    def planner(ctx: LoopContext) -> Action:
+        if ctx.rounds == 0:
+            return first
+        if ctx.rounds == 1:
+            return second
+        return Action(args={"reply": "done"})
+
+    loop = DefaultLoop(
+        planner=planner, tools=provider, tracer=Tracer(exporter=exporter), max_rounds=5
+    )
+    _run(loop)
+    return exporter.events
+
+
+def test_write_with_equivalent_path_spellings_is_deduplicated() -> None:
+    """`~/x` 与展开后的绝对路径指向同一文件 ⇒ 判重。"""
+    calls: list[dict[str, Any]] = []
+    first = Action(tool_id="tools.file_write", args={"path": "~/dedupe-path.txt", "content": "x"})
+    expanded = str(Path("~/dedupe-path.txt").expanduser())
+    second = Action(tool_id="tools.file_write", args={"path": expanded, "content": "x"})
+
+    events = _run_adjacent_writes(calls, first, second)
+
+    assert calls == [{"path": "~/dedupe-path.txt", "content": "x"}]
+    deduped = [e for e in events if e.kind == "action_deduplicated"]
+    assert len(deduped) == 1 and deduped[0].payload["scope"] == "turn"
+
+
+def test_write_with_crlf_and_lf_content_is_deduplicated() -> None:
+    calls: list[dict[str, Any]] = []
+    first = Action(tool_id="tools.file_write", args={"path": "p", "content": "a\r\nb"})
+    second = Action(tool_id="tools.file_write", args={"path": "p", "content": "a\nb"})
+
+    events = _run_adjacent_writes(calls, first, second)
+
+    assert calls == [{"path": "p", "content": "a\r\nb"}]
+    assert len([e for e in events if e.kind == "action_deduplicated"]) == 1
+
+
+def test_write_default_mode_equals_explicit_w() -> None:
+    calls: list[dict[str, Any]] = []
+    first = Action(tool_id="tools.file_write", args={"path": "p", "content": "x"})
+    second = Action(tool_id="tools.file_write", args={"path": "p", "content": "x", "mode": "w"})
+
+    events = _run_adjacent_writes(calls, first, second)
+
+    assert calls == [{"path": "p", "content": "x"}]
+    assert len([e for e in events if e.kind == "action_deduplicated"]) == 1
+
+
+def test_append_write_is_not_deduplicated_against_overwrite() -> None:
+    """追加与覆盖写语义不同 ⇒ 不参与紧邻重复抑制。"""
+    calls: list[dict[str, Any]] = []
+    first = Action(tool_id="tools.file_write", args={"path": "p", "content": "x"})
+    second = Action(tool_id="tools.file_write", args={"path": "p", "content": "x", "mode": "a"})
+
+    events = _run_adjacent_writes(calls, first, second)
+
+    assert calls == [
+        {"path": "p", "content": "x"},
+        {"path": "p", "content": "x", "mode": "a"},
+    ]
+    assert not [e for e in events if e.kind == "action_deduplicated"]
+
+
+def test_code_run_dedupe_stays_exact_match() -> None:
+    """`code_run` 不做 CRLF 归一：批内脚本仅换行符不同 ⇒ 两个都执行。"""
+    calls: list[dict[str, Any]] = []
+    provider = _provider()
+    provider.register(_recording_tool("tools.code_run", calls))
+
+    def planner(ctx: LoopContext) -> Action | ActionGroup:
+        if ctx.rounds == 0:
+            return ActionGroup(
+                [
+                    Action(tool_id="tools.code_run", args={"script": "echo a\r\necho b"}),
+                    Action(tool_id="tools.code_run", args={"script": "echo a\necho b"}),
+                ]
+            )
+        return Action(args={"reply": "done"})
+
+    loop = DefaultLoop(planner=planner, tools=provider, max_rounds=5)
+    _run(loop)
+
+    assert calls == [
+        {"script": "echo a\r\necho b"},
+        {"script": "echo a\necho b"},
+    ]

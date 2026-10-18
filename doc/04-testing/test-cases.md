@@ -4020,3 +4020,30 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > （归档前）/ 31/0（归档后）。测试净 **+3**（2885 → **2888**）。四门禁全绿。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0253 行（dropped 口径 / 无 token 前后量 /
 > 部分产出即抛错记 0）。
+
+## 176. 工具面打磨（TC-THARD，change `0264`／ADR-0254，台账 E200）
+| TC-THARD | 场景 | 输入 | 预期 |
+|---|---|---|---|
+| TC-THARD-01 | **损坏行告警**（承重） | JSONL：1 条合法检查点 + 1 行坏 JSON（含 canary）+ 1 行结构不符（`{"checkpoint": {}, "snapshot": {}}`） | 合法检查点可读；恰发 1 条 `UserWarning`，含跳过条数 `2` 与文件名；canary 不回显（`tests/test_durability.py::test_corrupt_lines_warn_once_and_keep_valid_checkpoints`） |
+| TC-THARD-02 | 无损坏不告警 | 全部合法行 | 无 `UserWarning`（`…::test_clean_load_emits_no_warning`） |
+| TC-THARD-03 | **路径写法归一**（承重） | 同轮两次覆盖写：`~/dedupe-path.txt` vs 展开后绝对路径 | 只执行第一次；记 `action_deduplicated(scope=turn)`（`tests/test_parallel_tool_calls.py::test_write_with_equivalent_path_spellings_is_deduplicated`） |
+| TC-THARD-04 | **换行归一**（承重） | 同轮两次覆盖写：`content="a\r\nb"` vs `content="a\nb"` | 判重、只执行一次（`…::test_write_with_crlf_and_lf_content_is_deduplicated`） |
+| TC-THARD-05 | 缺省 mode = 显式 `w` | 同轮两次覆盖写：省略 `mode` vs `mode="w"` | 判重、只执行一次（`…::test_write_default_mode_equals_explicit_w`） |
+| TC-THARD-06 | 追加不误合并 | 覆盖写后紧跟 `mode="a"` 同内容写 | 两次都执行、无 `action_deduplicated`（`…::test_append_write_is_not_deduplicated_against_overwrite`） |
+| TC-THARD-07 | `code_run` 精确匹配 | 同批次两脚本仅 CRLF / LF 不同 | 两个都执行（不做换行归一）（`…::test_code_run_dedupe_stays_exact_match`） |
+| TC-THARD-08 | **输出首尾保留**（承重） | 前景 stdout `"HEAD-" + 5000a + 5000b + "-TAIL"` | `startswith("HEAD-")`、`endswith("-TAIL")`、含 `[truncated`；长度 ≤ 8192；`stdout_truncated=True`（`tests/test_tool_use.py::test_code_run_long_output_keeps_head_and_tail`） |
+| TC-THARD-09 | 短输出不变 | 前景 stdout `"short output\n"` | 原文逐字返回；`stdout_truncated=False`（`…::test_code_run_short_output_is_unchanged`） |
+
+> **口径**：去重归一**只作用于去重键**（执行仍用原始参数），作用域仅 `file_write` / `file_patch`；
+> `path` = `expanduser → abspath → normpath → normcase`，文本仅 `\r\n → \n`。截断只作用于
+> `code_run` **前景**结果，头部约 1/3、尾部其余，标记含省略字符数；后台日志不截断。
+> 告警只报条数 + 文件名，不回显行内容。
+> **反证**：P1 摘 `_load` 告警 ⇒ TC-THARD-01 红；P2 `_load` 只捕 `ValueError`（结构行 `TypeError`
+> 冒泡）⇒ TC-THARD-01 红；P3 `_normalize_action_args` 直返原参数 ⇒ TC-THARD-03/04/05 红；
+> P4 `_truncate_output` 退化纯头截断 ⇒ TC-THARD-08 红。复原后 `md5sum` 一致
+> （`store.py 7c31f0d5…` / `default.py 3bf6864b…` / `builtin.py 0a1e47bf…`）。
+> 规格：`durability` **ADDED** 1 req（3 scen）；`loop` / `tool-use` **MODIFIED**（各 +1 scen）。
+> `openspec validate --all`（归档前/后）见 ADR-0254。测试净 **+9**（2888 → **2897**）。
+> 四门禁全绿（`ruff check` / `ruff format --check` / `pyright` 0 / `pytest -q`）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0254 行（abspath 依赖 cwd / 不做 inode 与
+> 符号链接去重 / 不归一 shell·URL / 截断计数为近似 / 损坏行不隔离只告警）。

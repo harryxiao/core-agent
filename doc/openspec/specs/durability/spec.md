@@ -17,6 +17,7 @@
 - **GIVEN** 已创建多个检查点
 - **WHEN** 按标识或元数据（任务/会话/时间）查询检查点
 - **THEN** 返回匹配的检查点列表，含创建时间与父检查点关系
+
 ### Requirement: 崩溃恢复
 系统 SHALL 支持崩溃恢复（crash recovery）：执行进程意外中断后，从最近有效检查点恢复（restore）执行态，未完成步骤幂等续跑，已持久化结果不丢失。检查点持久化的写入 SHALL 为**原子提交**：写入中途被中断（半写）SHALL NOT 损坏或清空既有检查点集合。
 
@@ -63,6 +64,7 @@
 - **GIVEN** 存在未完成任务且其检查点有效
 - **WHEN** 经任一交互入口（REPL / `run` / `serve` / `app` / `mcp serve`）启动
 - **THEN** 该入口在启动路径上执行恢复扫描并呈现未完成任务（告警 + 续跑命令提示），仅报 task id、走 stderr，且不自动重执行
+
 ### Requirement: 时间旅行
 系统 SHALL 支持执行态级时间旅行（time-travel）：将执行态回滚（rollback）到任意历史检查点，沿快照差异逆序撤销副作用，实现状态级回滚；与 tool-use 副作用级 EffectId undo 栈协同，不新建撤销机制。
 
@@ -75,6 +77,7 @@
 - **GIVEN** 回滚区间内存在写类工具副作用
 - **WHEN** 执行态回滚到历史检查点
 - **THEN** 沿历史逆序调用各写类工具的撤销函数（复用 tool-use 可逆效应），状态与副作用一致回滚
+
 ### Requirement: 生命周期与保留策略
 系统 SHALL 支持检查点生命周期管理：按保留策略（retention policy，数量上限/时间窗口/存储配额）自动清理过期检查点，避免无限增长；被标记的关键检查点（pinned）不受自动清理影响。
 
@@ -104,6 +107,7 @@
 - **GIVEN** 数量上限与时间窗口均未配置
 - **WHEN** 检查点反复持久化
 - **THEN** 不清理任何检查点（缺省关 ⇒ 既有行为逐字不变）
+
 ### Requirement: 会话轮级检查点
 系统 SHALL 支持**会话轮级检查点**（turn checkpoint）：主循环（main loop）在**轮首**（感知完成、
 进入推理之前）与**轮末**（收尾记忆写回之后）各写一次检查点，两次 SHALL 以**同一** task id
@@ -152,3 +156,28 @@ SHALL NOT 提示续跑命令，且 SHALL NOT 与编排任务的续跑句柄混�
 - **GIVEN** 未启用 `loop.turn_checkpoint`（缺省）
 - **WHEN** 主循环执行若干轮
 - **THEN** 不产生任何 `turn.` 命名空间的检查点（既有路径逐字不变、零 I/O）
+
+### Requirement: 检查点加载损坏行告警且不阻断
+
+检查点存储从 JSONL 加载时 SHALL 容忍**局部损坏**：无法解析的行（坏 JSON）与**结构不符**的行
+（缺 `checkpoint` / `snapshot` 键或必需字段，导致构造失败）SHALL 被跳过并累计，SHALL NOT 中断
+其余合法行的加载。加载结束后若有跳过项，系统 SHALL 发出**一次**告警（`UserWarning`），
+内容 SHALL 只含**跳过条数与文件名**，SHALL NOT 回显行内容（可能含任务正文 / 记忆 / 密钥）。
+
+#### Scenario: 坏 JSON 行告警且不阻断
+
+- **GIVEN** 检查点 JSONL 文件含一行坏 JSON 与若干合法行
+- **WHEN** 构造 `CheckpointStore` 加载该文件
+- **THEN** 合法行全部可读，并发出一次 `UserWarning`，消息含跳过条数与文件名、不含坏行内容
+
+#### Scenario: 结构不符行不中断加载
+
+- **GIVEN** 检查点 JSONL 文件含一行合法 JSON 但缺少 `checkpoint` / `snapshot` 结构
+- **WHEN** 加载该文件
+- **THEN** 该行被跳过并计入告警，其余检查点照常加载（不抛异常）
+
+#### Scenario: 无损坏行不告警
+
+- **GIVEN** 检查点 JSONL 文件全部为合法结构
+- **WHEN** 加载该文件
+- **THEN** 不发出任何告警

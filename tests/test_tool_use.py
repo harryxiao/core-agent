@@ -32,7 +32,7 @@ from core.tools import (
     file_write,
     web_fetch,
 )
-from core.tools.builtin import _MAX_FETCH_BYTES  # noqa: PLC2701 — 截断上界断言
+from core.tools.builtin import _MAX_FETCH_BYTES, _MAX_OUTPUT_CHARS  # noqa: PLC2701 — 截断上界断言
 from core.tools.env_shell import EnvironmentSnapshot
 
 _DELAY = 0.1
@@ -588,6 +588,45 @@ def test_code_run_timeout_structured(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert result.ok is False
     assert result.error is not None and result.error.code == ToolErrorCode.TIMEOUT
+
+
+def test_code_run_long_output_keeps_head_and_tail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """超限输出首尾保留：总长仍 ≤ 上限，标记可见，截断标志不变。"""
+    long_stdout = "HEAD-" + "a" * 5000 + "b" * 5000 + "-TAIL"
+
+    async def fake_exec(*_a: object, **_kw: object) -> _FakeProc:
+        return _FakeProc(stdout=long_stdout.encode("utf-8"))
+
+    monkeypatch.setattr("core.tools.execution._create_subprocess_exec", fake_exec)
+    provider = _provider()
+    provider.register(code_run())
+    result = provider.invoke(
+        "tools.code_run", {"script": "print(1)", "type": "python"}, trace_id="t", approved=True
+    )
+
+    assert result.ok
+    stdout = result.data["stdout"]
+    assert result.data["stdout_truncated"] is True
+    assert len(stdout) <= _MAX_OUTPUT_CHARS
+    assert stdout.startswith("HEAD-")
+    assert stdout.endswith("-TAIL")
+    assert "[truncated" in stdout
+
+
+def test_code_run_short_output_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_exec(*_a: object, **_kw: object) -> _FakeProc:
+        return _FakeProc(stdout=b"short output\n")
+
+    monkeypatch.setattr("core.tools.execution._create_subprocess_exec", fake_exec)
+    provider = _provider()
+    provider.register(code_run())
+    result = provider.invoke(
+        "tools.code_run", {"script": "print(1)", "type": "python"}, trace_id="t", approved=True
+    )
+
+    assert result.ok
+    assert result.data["stdout"] == "short output\n"
+    assert result.data["stdout_truncated"] is False
 
 
 def test_code_run_blocked_without_approval() -> None:

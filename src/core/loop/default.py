@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import inspect
 import json
+import os
 import time
 import uuid
 import warnings
@@ -130,10 +131,42 @@ def _args_excerpt(args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+_FILE_WRITE_TOOLS = frozenset({"tools.file_write", "tools.file_patch"})
+_TEXT_ARG_KEYS = ("content", "old_content", "new_content")
+
+
+def _normalize_action_args(action: Action) -> dict[str, Any]:
+    """去重键的参数视图：仅文件写/补丁归一，执行仍用原始参数。
+
+    ``code_run`` / ``web_fetch`` 保持精确匹配（shell / URL 语义等价性不可靠）。
+    """
+    if action.tool_id not in _FILE_WRITE_TOOLS:
+        return action.args
+    normalized = dict(action.args)
+    path = normalized.get("path")
+    if isinstance(path, str):
+        normalized["path"] = os.path.normcase(
+            os.path.normpath(os.path.abspath(os.path.expanduser(path)))
+        )
+    for key in _TEXT_ARG_KEYS:
+        value = normalized.get(key)
+        if isinstance(value, str):
+            normalized[key] = value.replace("\r\n", "\n")
+    if action.tool_id == "tools.file_write":
+        mode = normalized.get("mode")
+        if mode is None:
+            normalized["mode"] = "w"
+        elif isinstance(mode, str) and mode in {"a", "append"}:
+            normalized["mode"] = "a"
+    return normalized
+
+
 def _action_key(action: Action) -> str:
     """动作去重键：``tool_id`` + 规范化参数（键序无关、中文不转义）。"""
     try:
-        args = json.dumps(action.args, sort_keys=True, ensure_ascii=False, default=str)
+        args = json.dumps(
+            _normalize_action_args(action), sort_keys=True, ensure_ascii=False, default=str
+        )
     except (TypeError, ValueError):  # 自引用等不可序列化 ⇒ 退化 repr（仅用于等值比较）
         args = repr(action.args)
     return f"{action.tool_id}\x00{args}"

@@ -73,6 +73,9 @@ class ToolDef:
 ### 3.4 资源与超时
 
 - 每个工具声明 `timeout` / `max_output` 上界；超限截断或中止，不拖垮 loop。
+- **`code_run` 输出首尾保留**（change `0264` / ADR-0254）：前景 `stdout` / `stderr` 超过
+  `_MAX_OUTPUT_CHARS`（8192）时保留头部约 1/3 与尾部其余，中间以 `…[truncated N chars]…`
+  分隔，总长仍 ≤ 上限；`*_truncated` 判据不变。仅前景结果，后台日志文件不截断。
 - 工具执行异常被捕获为结构化结果，回传给模型而不是崩溃。
 - **子进程治理（change `0259` / ADR-0249）**：`code_run` 前景以独立进程组启动（POSIX
   `start_new_session` / Windows `CREATE_NEW_PROCESS_GROUP`）；超时 / 取消终止**整棵进程树**并归一

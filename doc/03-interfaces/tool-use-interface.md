@@ -140,6 +140,12 @@ class ToolError:
 > （目录 0700、文件 0600），立即返回 `pid` / `output_path` / `started_at`；**不接受**模型指定输出路径。
 > 后台任务不随 loop 结束强杀，由 `tools.process_kill` 显式终止；注册表有界（32，仅进程内）。
 > `tools.process` / `tools.process_kill` 只能看到 / 终止**同一份注册表**内由本进程启动的任务。
+>
+> **输出首尾保留（change `0264` / ADR-0254）**：前景 `stdout` / `stderr` 超过
+> `_MAX_OUTPUT_CHARS = 8192` 时按「头部约 1/3 + `\n…[truncated N chars]…\n` + 尾部其余」
+> 返回，总长 **≤ 8192**（错误结论多在尾部）；`stdout_truncated` / `stderr_truncated` 仍按
+> 原始长度是否超限判定。该口径只作用于 `code_run` 前景结果；后台日志文件不截断，
+> `tools.process output` 只读尾部（默认 8K、上限 64K）。
 
 ---
 

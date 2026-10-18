@@ -141,6 +141,22 @@ _MAX_PROCESS_OUTPUT_CHARS = 65536  # tools.process output 尾部上限
 _USER_AGENT = "core-agent/0.1"
 
 
+def _truncate_output(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
+    """超出上限时首尾保留：头部约 1/3、尾部其余，中间省略标记含省略字符数。
+
+    错误结论通常在尾部，故尾部权重更高；总长不超过 ``limit``。
+    """
+    if len(text) <= limit:
+        return text
+    marker_guess = len(f"\n…[truncated {len(text)} chars]…\n")
+    budget = max(0, limit - marker_guess)
+    head = budget // 3
+    tail = budget - head
+    removed = len(text) - budget
+    marker = f"\n…[truncated {removed} chars]…\n"
+    return text[:head] + marker + (text[-tail:] if tail else "")
+
+
 def _expand(path: str) -> Path:
     """把用户侧路径归一为 ``Path``：**展开 ``~``**（家目录，change 0228 / ADR-0218）。
 
@@ -346,8 +362,8 @@ def code_run(
         return {
             "type": run_type,
             "returncode": result.returncode,
-            "stdout": result.stdout[:_MAX_OUTPUT_CHARS],
-            "stderr": result.stderr[:_MAX_OUTPUT_CHARS],
+            "stdout": _truncate_output(result.stdout),
+            "stderr": _truncate_output(result.stderr),
             "stdout_truncated": len(result.stdout) > _MAX_OUTPUT_CHARS,
             "stderr_truncated": len(result.stderr) > _MAX_OUTPUT_CHARS,
         }

@@ -70,6 +70,10 @@ class CrashRecovery:
   （仅把句柄记入幂等集）⇒ `Runtime.recover()` 可作为启动扫描**只呈现不重执行**。
 - **降级不炸全扫**：`Runtime.recover()` 对「检查点全无有效快照」的任务**跳过 + 告警**，
   不因单任务不可恢复中断整轮扫描（与 `restore` 内 corrupt 回退同口径）。
+- **加载局部损坏告警**（change `0264` / ADR-0254）：`CheckpointStore` 从 JSONL 加载时，坏 JSON
+  行与结构不符行（缺 `checkpoint` / `snapshot` 或必需字段）**跳过并累计**，不中断其余行；加载
+  结束后发**一次** `UserWarning`，消息只含跳过条数与文件名（`_load` 的 `stacklevel=2`），
+  **不回显行内容**。无损坏行 ⇒ 不告警。
 - **会话轮面（change `0214` / ADR-0204）**：主循环轮级检查点用**独立命名空间**
   `task_id = "turn.<trace_id>"` ＋ `state["kind"] = "turn"`（**双判据**）。`Runtime.recover()` 对
   轮面**跳过**（不产生续跑句柄 —— 轮面**不可重放**，无撤销账本）；轮面由 `Runtime.recover_turns()`
