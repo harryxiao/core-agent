@@ -108,6 +108,18 @@ class AgentProfile:
     loop: LoopPlugin | None = None
 
 
+@dataclass
+class TaskResume:
+    """未完成任务的续跑重建包（change 0278）：检查点 → 调度器入参的只读快照。"""
+
+    task_id: str
+    goal: str
+    plan: Plan
+    completed: frozenset[str] = frozenset()
+    results: dict[str, str] = field(default_factory=dict[str, str])
+    session_id: str = ""
+
+
 def plan_to_dict(plan: Plan) -> dict[str, Any]:
     """Plan → 可检查点持久化 dict（断点续跑重建用）。"""
     return {

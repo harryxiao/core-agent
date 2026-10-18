@@ -36,6 +36,7 @@ from core.context import Compactor as ContextCompactor
 from core.context import DynamicAssembler, InfoMap
 from core.core_profile import CoreProfileEngine
 from core.durability import (
+    Checkpoint,
     CheckpointManager,
     CheckpointStore,
     CrashRecovery,
@@ -123,8 +124,10 @@ from core.orchestration import (
     StateMachine,
     SubtaskDecomposer,
     SubtaskOutcome,
+    TaskResume,
     TaskScheduler,
     background_tasks_tool,
+    plan_from_dict,
     plan_to_dict,
 )
 from core.permission import PermissionGuard, SandboxManager, SandboxPolicy
@@ -240,6 +243,14 @@ class Runtime:
         （change 0214 / ADR-0204）。
         """
         return _turn_incomplete(self.checkpoints)
+
+    def pending_resumes(self) -> list[TaskResume]:
+        """扫描未完成编排任务并重建续跑入参（**只读**、零副作用；change 0278）。
+
+        仅当 `task` 入口显式 `--resume-all` 或开启 `orchestration.auto_resume` 时消费；
+        `recover()` 的呈现语义不变（只呈现不重执行）。
+        """
+        return _task_resumes(self.checkpoints)
 
 
 def _checkpoint_path() -> Path:
@@ -1669,6 +1680,82 @@ def _turn_incomplete(checkpoints: CheckpointManager) -> list[tuple[str, str]]:
         (ts, task_id, session_id) for task_id, (ts, session_id, done) in latest.items() if not done
     ]
     return [(task_id, session_id) for _, task_id, session_id in sorted(open_turns)]
+
+
+def _warn_corrupt_tasks(corrupt_tasks: set[str], readable: set[str]) -> None:
+    """只对**全部**快照都不可读的任务告警（仍有可读快照者静默回退；只报 task id）。"""
+    for task_id in sorted(corrupt_tasks - readable):
+        if not _is_turn_task(task_id):
+            warnings.warn(f"任务 {task_id} 无可恢复检查点，跳过续跑", stacklevel=2)
+
+
+def _completed_outcomes(state: dict[str, Any]) -> tuple[set[str], dict[str, str]]:
+    """检查点 `outcomes` → （已完成子任务 id，依赖交接回复）；只收 `ok=true`。"""
+    completed: set[str] = set()
+    results: dict[str, str] = {}
+    raw = state.get("outcomes")
+    if not isinstance(raw, list):
+        return completed, results
+    for item in cast(list[Any], raw):
+        if not isinstance(item, dict):
+            continue
+        outcome = cast(dict[str, Any], item)
+        if not outcome.get("ok"):
+            continue
+        subtask_id = str(outcome.get("subtask_id", ""))
+        if not subtask_id:
+            continue
+        completed.add(subtask_id)
+        results[subtask_id] = str(outcome.get("reply", ""))
+    return completed, results
+
+
+def _task_resumes(checkpoints: CheckpointManager) -> list[TaskResume]:
+    """未完成编排任务的重建包（`task --resume-all` / `orchestration.auto_resume`）。
+
+    取每个任务**时间戳最新**的可读快照（与 `--resume` 同口径；`>=` 使同 ts 后者胜）；
+    `done=true`、会话轮（`turn.` 前缀或 `kind="turn"`）、损坏快照跳过；计划缺失/非 dict
+    告警后跳过（只报 task id，不回显任务正文）。**只读**、零副作用。
+    """
+    latest: dict[str, tuple[float, Checkpoint, dict[str, Any]]] = {}
+    corrupt_tasks: set[str] = set()
+    for cp in checkpoints.list_checkpoints():
+        try:
+            state = checkpoints.get_snapshot(cp.checkpoint_id).state
+        except DurabilityError:
+            corrupt_tasks.add(cp.task_id)
+            continue
+        if _is_turn_task(cp.task_id, state):
+            continue
+        current = latest.get(cp.task_id)
+        if current is None or cp.ts >= current[0]:
+            latest[cp.task_id] = (cp.ts, cp, state)
+    _warn_corrupt_tasks(corrupt_tasks, set(latest))
+
+    resumes: list[TaskResume] = []
+    for task_id, (_, cp, state) in sorted(latest.items()):
+        if state.get("done"):
+            continue
+        plan_raw = state.get("plan")
+        if not isinstance(plan_raw, dict):
+            warnings.warn(f"任务 {task_id} 的检查点缺少计划，跳过续跑", stacklevel=2)
+            continue
+        plan = plan_from_dict(cast(dict[str, Any], plan_raw))
+        completed, results = _completed_outcomes(state)
+        session_id = cp.session_id or ""
+        if session_id == "default":  # 旧占位值视作未归属（与 `--resume` 同口径）
+            session_id = ""
+        resumes.append(
+            TaskResume(
+                task_id=task_id,
+                goal=plan.goal,
+                plan=plan,
+                completed=frozenset(completed),
+                results=results,
+                session_id=session_id,
+            )
+        )
+    return resumes
 
 
 def _recover_incomplete(

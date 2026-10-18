@@ -77,6 +77,7 @@ from core.notes import (
     slug_topic,
 )
 from core.orchestration import Plan, TaskScheduler, plan_from_dict
+from core.orchestration.auto_resume import AutoResumeState
 from core.permission import (
     ApprovalChannel,
     ApprovalRequest,
@@ -407,6 +408,12 @@ def _add_task_parser(sub: Any) -> None:
     task.add_argument("goal", nargs="?", metavar="GOAL", help="任务目标")
     task.add_argument("--task-id", metavar="ID", dest="task_id", help="任务 id（审计/续跑定位）")
     task.add_argument("--resume", metavar="ID", dest="resume_id", help="从该任务最新检查点续跑")
+    task.add_argument(
+        "--resume-all",
+        action="store_true",
+        dest="resume_all",
+        help="续跑全部未完成任务（不受自动续跑退避/次数上限约束）",
+    )
 
 
 def _add_release_parser(sub: Any) -> None:
@@ -2123,19 +2130,76 @@ async def _stream(api: UIAPILayer, session_id: str, prompt: str) -> None:
         print(f"[{event.type}] {payload}")
 
 
-def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911 — 入口校验天然多早退
+def _run_auto_resume(runtime: Runtime, *, force: bool) -> bool:
+    """续跑未完成编排任务；返回是否有任务续跑失败（change 0278 / ADR-0268）。
+
+    ``force``（`task --resume-all`）不受退避与尝试上限约束；自动模式在失败后退避。
+    尝试次数**执行前**落盘（进程中途崩溃也已计入上限）；成功清零，失败保留检查点。
+    """
+    resumes = runtime.pending_resumes()
+    if not resumes:
+        print("无未完成任务（续跑扫描为空）", file=sys.stderr)
+        return False
+    state = AutoResumeState(_state_path("auto-resume.json"))
+    state.retain({resume.task_id for resume in resumes})
+    failed = False
+    for resume in resumes:
+        if not force and not state.due(resume.task_id):
+            print(
+                f"⚠ 跳过 {resume.task_id}：自动续跑仍在退避窗口或已达尝试上限"
+                "（可用 task --resume-all 强制）",
+                file=sys.stderr,
+            )
+            continue
+        state.record_attempt(resume.task_id)
+        task_failed = asyncio.run(
+            _stream_task(
+                runtime.orchestrator,
+                resume.task_id,
+                resume.goal,
+                resume.plan,
+                set(resume.completed),
+                dict(resume.results),
+                resume.session_id,
+            )
+        )
+        if task_failed:
+            failed = True
+            print(
+                f"⚠ 续跑失败 {resume.task_id}：检查点保留，退避后自动重试",
+                file=sys.stderr,
+            )
+        else:
+            state.clear(resume.task_id)
+    return failed
+
+
+def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, C901 — 入口校验天然多早退/多分支
     """多任务编排入口：拆解 → 波次执行 → 验收，流式打印进度事件。
 
     非交互入口：无审批通道，高风险工具动作 fail-closed（与 run/serve 一致）。
+    `--resume-all` 为独立模式（不与 `<目标>` / `--resume` 组合）。
     """
-    if not args.goal and not args.resume_id:
-        print("用法: core-agent task <目标> [--task-id ID | --resume ID]", file=sys.stderr)
+    if args.resume_all:
+        if args.goal or args.resume_id:
+            print(
+                "用法: core-agent task --resume-all（不可与 <目标> / --resume 组合）",
+                file=sys.stderr,
+            )
+            return 1
+    elif not args.goal and not args.resume_id:
+        print(
+            "用法: core-agent task <目标> [--task-id ID | --resume ID | --resume-all]",
+            file=sys.stderr,
+        )
         return 1
     try:
         runtime = build_runtime(_config_manager(args))
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
         print(f"装配失败: {exc}", file=sys.stderr)
         return 1
+    if args.resume_all:
+        return 1 if _run_auto_resume(runtime, force=True) else 0
     goal = args.goal or ""
     task_id = args.task_id or f"task-{uuid.uuid4().hex[:8]}"
     plan: Plan | None = None
@@ -2172,6 +2236,9 @@ def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911 — 入口校验天
         else:
             print("检查点未携带会话标识（旧版检查点），子任务轨迹归全局层", file=sys.stderr)
     else:
+        # 自动续跑（change 0278）：缺省关；开启后先续跑未完成任务，再起新任务。
+        if runtime.config.orchestration_auto_resume():
+            _run_auto_resume(runtime, force=False)
         # fresh：与 run CLI 同注册表同 mode 铸会话（session list 可见；不建 UI 装配）
         session_id = SessionRegistry(path=_state_path("conversations.json")).create("cli")
         _surface_incomplete(runtime)  # 起新任务时呈现未完成任务（只呈现不重执行；change 0191）

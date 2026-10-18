@@ -63,6 +63,9 @@ _DEFAULT_ORCHESTRATION_MAX_CONCURRENCY = 4
 # 显式 `0` 仍表示不设限。`TaskScheduler` 构造缺省保持 `0`（不注入即不改变行为），
 # 生产缺省由组合根显式注入本常量值。
 _DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT = 600
+# 自动续跑开关（change 0278 / ADR-0268）：缺省 **关** —— 既有入口「只呈现不重执行」逐字不变；
+# 开启仅影响 `task` 入口，`serve` 等启动扫描仍纯呈现（`durability`「崩溃恢复」）。
+_DEFAULT_ORCHESTRATION_AUTO_RESUME = False
 # 策略词表（规格 `orchestration`「难易度感知的调度策略」；配置层不 import 能力层，故此处复述）
 _ORCHESTRATION_POLICIES = ("off", "difficulty")
 
@@ -295,6 +298,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_ORCHESTRATION_SUBTASK_TIMEOUT",
         default=_DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT,
         map_to="orchestration.subtask_timeout",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "orchestration.auto_resume",
+        "--orchestration.auto-resume",
+        "CORE_ORCHESTRATION_AUTO_RESUME",
+        default=_DEFAULT_ORCHESTRATION_AUTO_RESUME,
+        map_to="orchestration.auto_resume",
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
@@ -1110,6 +1121,19 @@ class ConfigManager:
         timeout = _parse_int(raw.get("subtask_timeout", _DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT))
         return _DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT if timeout is None else timeout
 
+    def orchestration_auto_resume(self) -> bool:
+        """未完成任务自动续跑开关（缺省 ``False``；change 0278 / ADR-0268）。
+
+        只在 `task` 入口消费；取值归一与 feature flag 同集（非法值已在校验期阻断启动）。
+        """
+        if self._config is None:
+            return _DEFAULT_ORCHESTRATION_AUTO_RESUME
+        raw = cast("dict[str, Any]", self._config.extra.get("orchestration") or {})
+        value = raw.get("auto_resume", _DEFAULT_ORCHESTRATION_AUTO_RESUME)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in _FEATURE_TRUE
+
     def sandbox_host_allowlist(self) -> list[str]:
         """出站网络白名单（缺省空 = fail-closed 全拒，安全默认）。
 
@@ -1536,6 +1560,13 @@ def _orchestration_errors(raw: dict[str, Any]) -> list[str]:
         errors.append(
             f"非法子任务超时: orchestration.subtask_timeout={raw.get('subtask_timeout')}"
             "（须为 ≥0 的整数，0=不设限）"
+        )
+    auto_resume = raw.get("auto_resume", _DEFAULT_ORCHESTRATION_AUTO_RESUME)
+    if not isinstance(auto_resume, bool) and str(auto_resume).strip().lower() not in (
+        _FEATURE_TRUE | _FEATURE_FALSE
+    ):
+        errors.append(
+            f"非法自动续跑开关: orchestration.auto_resume={auto_resume!r}（须为 true/false 之一）"
         )
     return errors
 

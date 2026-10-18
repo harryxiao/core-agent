@@ -704,6 +704,9 @@ def _patch_runtime(  # noqa: PLR0913 — 测试桩装配参数组（checkpoints/
         time_travel=time_travel,
         recover=lambda: handles or [],  # 启动扫描：未完成任务句柄（change 0191）
         recover_turns=lambda: [],  # 启动扫描：中止的会话轮（change 0214）；空 ⇒ 无轮面呈现
+        # 自动续跑（change 0278）：缺省关 ⇒ 既有路径不触发续跑；扫描为空
+        config=SimpleNamespace(orchestration_auto_resume=lambda: False),
+        pending_resumes=lambda: [],
     )
     monkeypatch.setattr("core.entry.build_runtime", lambda config: runtime)
     if registry is not None:

@@ -21,7 +21,8 @@ Orchestrator（L3.5）
 ├── SubtaskDecomposer 子任务拆解器：大目标 → 分步 Todo，逐步校验
 ├── MultiAgentRouter  多 Agent 协同：能力匹配 + 消息协议交接
 ├── ProgressTracker   进度与校验：每步完成校验后再推进
-└── BackgroundAgentRegistry 后台子 Agent：非阻塞派发 + 按会话完成通知（change 0270）
+├── BackgroundAgentRegistry 后台子 Agent：非阻塞派发 + 按会话完成通知（change 0270）
+└── AutoResumeState 自动续跑退避账本：跨进程有界尝试（change 0278）
 ```
 
 ---
@@ -134,6 +135,23 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
   与通知钩子**只挂主工具面 / 主 loop**，子 Agent 结构上不可见（不可再委托、不可窥视清单）。
 - **权限**：`tools.tasks` 由 `PolicyEngine` 按**字面量工具 id** 判 `read`；`tasks` 词元/前缀
   不放宽（deny-by-default 纪律）。
+
+### 3.8 未完成任务自动续跑（change `0278`／ADR-0268）
+
+- **显式 opt-in**：`orchestration.auto_resume` 缺省 `false`；关闭时启动面仍「纯扫描 + 呈现」。
+  开启后仅 `core-agent task` 入口在起新任务前消费 `Runtime.pending_resumes()`，逐条
+  `asyncio.run(astream)` 串行续跑（与人工 `--resume` 同一流式管线）；`serve` / TUI / `mcp serve`
+  仍只呈现（不跨事件循环共享调度器）。
+- **重建口径与 `--resume` 同源**：每任务取**时间戳最新**的可读快照，重建 `TaskResume`
+  （plan / 已完成子任务 / 交接回复 / 发起会话）；跳过 `done=true`、`turn.` 前缀与 `kind=turn`、
+  无计划或快照全损坏者（只告警 task id，不中断其余任务）。
+- **跨进程有界**：`AutoResumeState` 把 `task_id → {attempts, last_ts}` 原子写入
+  `$CORE_STATE_DIR/auto-resume.json`（`0600`，仅计数与时间戳，不含正文/密钥）。首次即到期；
+  第 n 次尝试后等 `min(60·2^(n-1), 3600)` 秒；**最多 3 次**自动尝试。尝试**执行前**记账
+  （崩溃也消耗次数），成功清零，失败保留检查点等待下次退避重试。
+- **显式入口不受限**：`core-agent task --resume-all` 续跑全部未完成任务，忽略配置开关、退避与
+  次数上限（运营商显式重试），仍记录尝试并在成功时清零。
+- **默认关闭测试锚**：关闭时不读取/不执行 `pending_resumes()`，启动呈现逐字不变。
 
 ---
 

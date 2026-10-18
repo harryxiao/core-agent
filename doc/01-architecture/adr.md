@@ -10019,6 +10019,60 @@ BM25 统计 ≈104ms（含分词）> 排序 ≈21ms。两处热点都**不承载
 ⑤ 低档条目 `relevance` 可为负（`0.5·0 + 0.12 − 0.15 = −0.03` 起步），排序语义正常但分值不再
 全为非负；⑥ 标签纪律缺失时不会退化 —— 默认档零偏移保证了这一点。
 
+## ADR-0268：未完成任务自动续跑（change 0278 / 台账 E214）
+
+**背景**：长任务无人值守的最后一处编排运维缝。启动扫描（`entry._surface_incomplete`）自
+change `0191` 起按 durability「崩溃恢复」只**呈现**未完成任务（`task --resume <id>`），不自动
+重执行 —— 进程崩溃/重启后需要人或外部 watchdog 手动续跑。对比 Claude Code 的长任务运维面，
+「重启后自动接着跑」是缺的一环；而 `FAILED` 在调度器内是终态，同一进程无法原地重试，所以
+自动续跑必须跨进程有界。
+
+**决策**：
+
+- **D1 显式 opt-in，默认零变化**：新配置 `orchestration.auto_resume`（缺省 `false`）。关闭时
+  启动面维持「纯扫描 + 呈现」逐字不变；开启只影响 `core-agent task` 入口，`serve` / TUI /
+  `mcp serve` 仍只呈现（不跨事件循环共享调度器）。配置开关即显式授权，不违反 durability
+  「续跑由调用方显式触发」的既有裁决。
+- **D2 跨进程有界**：同一任务最多 **3** 次自动尝试；第 n 次尝试后等
+  `min(60·2^(n-1), 3600)` 秒（首次 60s，随后翻倍，封顶 1h）。尝试**执行前**记账（进程中途崩溃
+  也消耗次数，保守），成功清零，失败保留检查点等待下次启动退避重试。状态落
+  `$CORE_STATE_DIR/auto-resume.json`：仅 `task_id → {attempts, last_ts}`，原子写 + `0600`，
+  不含任务正文 / 记忆 / 密钥；损坏 ⇒ 告警后按空状态处理；已消失任务在扫描时清退。
+- **D3 重建与人工 `--resume` 同源**：`Runtime.pending_resumes()` 只读检查点，每任务取**时间戳
+  最新**的可读快照，重建 `TaskResume`（plan / 已完成子集 / 交接回复 / 会话标识）；跳过
+  `done=true`、`turn.` 前缀或 `kind=turn`、计划缺失（告警）与快照全损坏（告警）者。告警只报
+  task id。
+- **D4 执行位置**：仅 `task` 入口，串行 `asyncio.run(astream)`，与 `task --resume` 同一流式管线；
+  进度事件照常打印。自动续跑在起新任务**之前**执行。
+- **D5 显式入口不受限**：`task --resume-all` 续跑全部未完成任务，忽略配置开关、退避与次数上限
+  （运营商显式重试）；仍记录尝试并在成功时清零。`--resume-all` 为独立模式，不与 `<目标>` /
+  `--resume` 组合。
+- **D6 人工入口不受状态影响**：`task --resume <id>` 不读取 `auto-resume.json`，达上限后仍可用。
+
+**反证 3/3（均实测转红后复原，`md5sum` 一致）**：① 摘掉 `_task_resumes` 的 `done` 过滤 ⇒
+已完成任务被列入续跑，重建用例红；② `AutoResumeState.due` 恒 `True`（摘退避/上限）⇒
+指数退避与耗尽用例红；③ 入口改为无条件 `_run_auto_resume`（摘默认关判断）⇒「默认关闭仍续跑」
+用例红。
+
+**规格**：`orchestration` **ADDED**「未完成任务自动续跑」（4 scen）；`configuration` **MODIFIED**
+「编排调度配置」（新键 + 校验）；`durability` **MODIFIED**「崩溃恢复」（显式 opt-in 例外）。
+`validate --all` **31/0**（归档后）。
+
+**测试**：新增 `tests/test_auto_resume.py` **13 例**（配置三面/默认关/非法值阻断；退避-耗尽-
+清零-`retain`-损坏容忍；`_task_resumes` 最新快照/跳过 done·turn·坏计划/会话占位值/全损坏告警；
+`--resume-all` 执行与空扫描；新任务前自动续跑；默认关不执行；上限后自动跳过但 `--resume-all`
+强制；失败保留尝试）。`tests/test_entry.py` 桩补 `config` / `pending_resumes`（默认关）。
+净 **+13**（3030 → **3043**）。四门禁：`ruff check` / `ruff format --check` 绿、`pyright`
+0 errors、`pytest -q` **3043 passed**。
+
+**局限**：① **无跨进程运行锁** —— 两个进程同时 `task` 可能同时续跑同一任务（与既有
+`task --resume` 同）；② 上限（3 次 / 退避曲线）为**常量非配置**，永久性配置错误会在 3 次内
+反复失败后静默（告警仍可见），需人工介入或删状态文件；③ 状态文件按文件系统权限保护，不加密；
+④ 只在 `task` 入口自动执行，`serve` / TUI / `mcp serve` 仍需人工 `task --resume`；⑤ 重建取
+最新快照的 `done` 判定与 `_recover_incomplete` 的「任一快照 done 即完成」历史口径不同 ——
+自动续跑与人工 `--resume` 一致（最新态即真态），故两处扫描口径**有意分叉**；⑥ 不做守护
+进程 / cron / systemd 集成。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10281,3 +10335,4 @@ BM25 统计 ≈104ms（含分词）> 排序 ≈21ms。两处热点都**不承载
 | ADR-0265 | 02-modules/memory.md, 04-testing/test-cases.md, 00-product/requirements.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0266 | 02-modules/memory.md, 04-testing/test-cases.md, 00-product/requirements.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0267 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
+| ADR-0268 | 02-modules/orchestration.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

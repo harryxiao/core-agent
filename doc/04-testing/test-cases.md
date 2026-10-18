@@ -4470,3 +4470,35 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > （`test_ui_turn_cleanup` 全量并发下偶发既有时序抖动，单跑 6/6 通过，与本 change 无关）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0267 行（依赖显式打标 / 标签写死 / 收益不被
 > 既有基准体现 / 低档分值可为负）。
+
+## 190. 未完成任务自动续跑（TC-AUTORESUME，change `0278`／ADR-0268，台账 E214）
+
+> 覆盖 `orchestration/spec.md`「未完成任务自动续跑」（ADDED，4 scen）、`configuration`「编排调度配置」
+> （新键 `orchestration.auto_resume`，缺省 `false`）与 `durability`「崩溃恢复」（显式 opt-in 例外）。
+> 测试文件 `tests/test_auto_resume.py`（新，13 例）＋ `tests/test_entry.py` 桩扩展（默认关不改既有断言）。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-AUTORESUME-01 | 编排配置三面 | `ConfigSpec` / 缺省 config / `orchestration.auto_resume: true` | flag `--orchestration.auto-resume`、env、`map_to` 齐备；缺省 `false`；显式 true 读到 `True`（`test_auto_resume_spec_and_default_off`） |
+| TC-AUTORESUME-02 | Scenario「非法 auto_resume 阻断启动」 | `auto_resume: maybe` | `ConfigurationError` 含键名（`test_auto_resume_invalid_blocks_load`） |
+| TC-AUTORESUME-03 | Scenario「自动尝试有界」 | 固定时钟逐次 `record_attempt` | 首次即到期；1 次后 60s、2 次后 120s；3 次后恒不到期（`test_state_exponential_backoff_and_exhaustion`） |
+| TC-AUTORESUME-04 | 成功清零 / 清退 | `clear("t1")`、`retain({"t2"})` | t1 立即到期；t2 仍受退避；清退项 attempts 归零（`test_state_clear_and_retain`） |
+| TC-AUTORESUME-05 | 状态损坏容忍 | `auto-resume.json` 写入 `{not json` | `UserWarning` 后按空状态处理、首次即到期（`test_state_corrupt_file_is_tolerated`） |
+| TC-AUTORESUME-06 | Scenario「跳过不可续跑项」 | 检查点：同任务旧/新快照、done、turn、坏计划、旧会话占位 | 取最新快照；done/turn/坏计划跳过；`done=false` 重建 plan/completed/results；`default` 会话归一空串（`test_task_resumes_rebuilds_latest_and_skips`） |
+| TC-AUTORESUME-07 | 全损坏告警 | 唯一快照标记 corrupt | `UserWarning`（只含 task id）且不返回续跑项（`test_task_resumes_warns_on_unreadable_snapshot`） |
+| TC-AUTORESUME-08 | 显式入口 | `core-agent task --resume-all`（两个未完成任务） | 逐条按重建参数续跑；成功后状态文件清除（`test_resume_all_runs_pending_and_skips_none`） |
+| TC-AUTORESUME-09 | 空扫描 | `task --resume-all` 且无未完成任务 | 退出 0、不调用编排器、stderr「无未完成任务」（`test_resume_all_no_pending_is_ok`） |
+| TC-AUTORESUME-10 | Scenario「开启后自动续跑」 | `auto_resume=true` + 一个未完成任务 + 新目标 | 调用序 `t1 → new`；t1 带重建计划，new 正常拆解（`test_auto_resume_runs_before_new_task`） |
+| TC-AUTORESUME-11 | Scenario「默认关闭只呈现」 | `auto_resume=false` + 未完成任务 + 新目标 | 只跑新目标，未完成任务不续跑（`test_auto_resume_off_does_not_run_pending`） |
+| TC-AUTORESUME-12 | 上限 vs 显式强制 | 预置 3 次尝试；先自动后 `--resume-all` | 自动跳过并告警；`--resume-all` 仍执行（`test_auto_resume_respects_exhausted_but_resume_all_forces`） |
+| TC-AUTORESUME-13 | 失败保留检查点 | 未完成任务续跑返回 `task_failed` + 新任务成功 | 新任务退出 0；t1 attempts=1；stderr「续跑失败」保留重试（`test_auto_resume_failure_keeps_attempt`） |
+
+> **口径**：自动续跑与人工 `--resume` 同源重建（最新时间戳快照）；默认关时入口路径逐字不变。
+> 状态文件仅 `task_id → {attempts, last_ts}`（0600 原子写），不含正文/记忆/密钥。
+> **反证 3/3**：① 摘 `_task_resumes` 的 done 过滤 ⇒ 已完成任务续跑红；② `due` 恒 True ⇒ 有界红；
+> ③ 入口无条件续跑 ⇒ 默认关闭用例红；复原 `md5sum` 一致（runtime / auto_resume / entry）。
+> 规格：`orchestration` ADDED（4 scen）、`configuration` / `durability` MODIFIED。
+> `validate --all` 31/0（归档后）。测试净 **+13**（3030 → **3043**）。
+> 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3043 passed**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0268 行（无跨进程锁 / 上限常量 / 不加密 /
+> 仅 task 入口 / done 口径有意分叉 / 无守护进程）。

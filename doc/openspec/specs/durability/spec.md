@@ -21,9 +21,9 @@
 ### Requirement: 崩溃恢复
 系统 SHALL 支持崩溃恢复（crash recovery）：执行进程意外中断后，从最近有效检查点恢复（restore）执行态，未完成步骤幂等续跑，已持久化结果不丢失。检查点持久化的写入 SHALL 为**原子提交**：写入中途被中断（半写）SHALL NOT 损坏或清空既有检查点集合。
 
-启动恢复扫描 SHALL 为**纯扫描**：返回未完成任务的续跑句柄，SHALL NOT 自动重执行（无 replay 回调时 SHALL NOT 产生任何副作用）——续跑 SHALL 由调用方**显式**触发。恢复句柄 SHALL 标识其所属任务（task id），使「哪些任务未完成」的呈现无需旁路扫描。扫描 SHALL **部分可用**：对**无任何有效检查点**的任务 SHALL 降级跳过并记录告警，SHALL NOT 因单任务不可恢复而**中断整体扫描**（其余任务的续跑句柄照常返回）——与「检查点损坏降级」同为「不因单点损坏阻塞恢复」的口径。
+启动恢复扫描 SHALL 为**纯扫描**：返回未完成任务的续跑句柄，SHALL NOT 自动重执行（无 replay 回调时 SHALL NOT 产生任何副作用）——续跑 SHALL 由调用方**显式**触发。**显式 opt-in 例外**：当 `orchestration.auto_resume=true` 时，`core-agent task` 启动路径 SHALL 作为调用方自动触发未完成编排任务的续跑（有界退避，见 orchestration「未完成任务自动续跑」）；缺省 `false` 时维持纯扫描语义。恢复句柄 SHALL 标识其所属任务（task id），使「哪些任务未完成」的呈现无需旁路扫描。扫描 SHALL **部分可用**：对**无任何有效检查点**的任务 SHALL 降级跳过并记录告警，SHALL NOT 因单任务不可恢复而**中断整体扫描**（其余任务的续跑句柄照常返回）——与「检查点损坏降级」同为「不因单点损坏阻塞恢复」的口径。
 
-启动恢复扫描 SHALL 在**全部交互入口**（REPL / `run` / `serve` / `app` / `mcp serve`）的启动路径上执行并呈现未完成任务（存在未完成任务时告警并提示续跑命令）—— SHALL NOT 仅覆盖部分入口。呈现 SHALL 走 stderr（机读入口 `mcp serve` 的 stdout 是协议流，SHALL NOT 被呈现污染），且 SHALL 只报 task id（不回显任务正文 / 记忆 / 密钥）。呈现 SHALL NOT 改变「纯扫描」语义：仍 SHALL NOT 自动重执行。
+启动恢复扫描 SHALL 在**全部交互入口**（REPL / `run` / `serve` / `app` / `mcp serve`）的启动路径上执行并呈现未完成任务（存在未完成任务时告警并提示续跑命令）—— SHALL NOT 仅覆盖部分入口。呈现 SHALL 走 stderr（机读入口 `mcp serve` 的 stdout 是协议流，SHALL NOT 被呈现污染），且 SHALL 只报 task id（不回显任务正文 / 记忆 / 密钥）。呈现 SHALL NOT 改变「纯扫描」语义：仍 SHALL NOT 自动重执行（`auto_resume` 的自动续跑只发生在 `task` 入口，不改变其余入口的呈现语义）。
 
 #### Scenario: 崩溃后自动恢复
 - **GIVEN** 执行因崩溃意外中断，且存在有效检查点
@@ -64,6 +64,11 @@
 - **GIVEN** 存在未完成任务且其检查点有效
 - **WHEN** 经任一交互入口（REPL / `run` / `serve` / `app` / `mcp serve`）启动
 - **THEN** 该入口在启动路径上执行恢复扫描并呈现未完成任务（告警 + 续跑命令提示），仅报 task id、走 stderr，且不自动重执行
+
+#### Scenario: 显式 opt-in 的自动续跑
+- **GIVEN** `orchestration.auto_resume=true` 且存在未完成编排任务
+- **WHEN** 启动 `core-agent task`
+- **THEN** 启动路径自动触发该任务续跑（不是纯呈现）；其余入口仍只呈现
 
 ### Requirement: 时间旅行
 系统 SHALL 支持执行态级时间旅行（time-travel）：将执行态回滚（rollback）到任意历史检查点，沿快照差异逆序撤销副作用，实现状态级回滚；与 tool-use 副作用级 EffectId undo 栈协同，不新建撤销机制。
