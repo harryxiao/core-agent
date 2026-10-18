@@ -131,8 +131,14 @@ def render_sessions / render_config / render_mcp / render_skills / render_notes(
 - **零副作用**：全部诊断项**只读** —— 「状态目录可写」走**既有祖先目录**的 `os.access` 探测，**不建目录**。
 - **不引组合根**：包内**不** `import core.runtime`（`test_runtime_is_sole_composition_root` 硬红线）、
   **不** `import core.ui`（后者反向引用诊断源）⇒ 句柄全经 `Deps` 注入，`_diag_deps` 在 `entry.py` 装配。
-- **未注册动词**（`kill` / `logs` / `version` / `help` / `install` / `uninstall` / `list` / `info` / `auth` /
-  `permission-mode` / `gateway`）仍**不在** argparse 子命令面 —— 台账 `coding-plan/known-risk.md` §1 **E100** 挂账。
+- **未注册动词（守卫）**：`kill` / `logs` / `version` / `help` / `install` / `uninstall` / `list` / `info` / `auth` / `permission-mode` / `gateway` 共 **11** 个 —— 仍不在 argparse 子命令面；由 `tests/test_cli_verb_inventory.py` 锁定差集（change `0288` / ADR-0278）。
+- **盘点口径**（change `0288` / ADR-0278；台账 `coding-plan/known-risk.md` §1 **E100**）：
+  - **已有真实承载（不新增子命令，6 个）**：`version` → 全局 `--version`；`help` → `-h/--help`；
+    `install` / `uninstall` / `list` → `plugin install|uninstall|list`（`skill` / `mcp` 另有域内变体）；
+    `permission-mode` → `config get|set permission.mode`。
+  - **无真实后端（保持未注册，5 个）**：`kill`（`lifecycle` 全组即 MVP 桩，注册只扩大空操作面）、
+    `logs`（无日志读取源）、`info`（无资产详情面）、`auth`（无认证子系统）、
+    `gateway`（`serve` 才是真实 Web 入口，`dispatcher.gateway()` 是桩）。
 
 ---
 

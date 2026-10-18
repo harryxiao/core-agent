@@ -4823,3 +4823,19 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > 规格中性（`skip_specs`，零 `src/` 改动）。测试净 **+3**（3196 → **3199**）。
 > 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3199 passed**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0277 行。
+
+## 200. CLI 动词盘点守卫（TC-CLI-VERB-INV，change `0288`／ADR-0278，台账 E224）
+
+| 编号 | 覆盖 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-CLI-VERB-INV-01 | 未注册动词差集 | `cli-ops-interface.md` §5 守卫行 vs `dispatcher` 六组顶层动词 − argparse 顶层子命令 | 集合相等；新增/注册动词未同步文档 ⇒ 红（`test_documented_unregistered_verbs_match_code`） |
+| TC-CLI-VERB-INV-02 | 声明计数 | 守卫行「共 **N** 个」 vs 实际差集大小 | `N` 与实际一致（`test_documented_count_matches_code`） |
+
+> **口径**：`mcp` 按 `_group_of` 计入顶层，其子动作 `add/remove/list` 不计；`version` / `help`
+> 是全局 flag 而非子命令，仍计入差集。**盘点结论**：6 个动词已有真实承载（不新增子命令），
+> 5 个无真实后端（`kill`/`logs`/`info`/`auth`/`gateway`，保持未注册）。
+> **反证 3/3**：① 从守卫行删 `gateway` ⇒ TC-01 红；② 声明计数 11 → 10 ⇒ TC-02 红；
+> ③ 临时在 `entry` 注册 `kill` 子命令 ⇒ TC-01 红；复原 `md5sum` 一致。
+> 规格中性（`skip_specs`，零 `src/` 行为改动）。测试净 **+2**（3199 → **3201**）。
+> 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3201 passed**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0278 行。

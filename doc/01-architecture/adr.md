@@ -10508,6 +10508,41 @@ busy 用例红（第二个实例扫描并执行）；② 打开失败改为 `acq
 集合；`phase-32.md` / `phase-3-prompt.md` 按约定不提交，守卫硬编码排除（若将来入库须同步）；
 `B38-*` 只消除 §0 批内歧义；其余文档无同类守卫；不全局重编号。
 
+## ADR-0278：台账销账与 CLI 动词盘点（change 0288 / 台账 E224）
+
+**背景**：`known-risk.md` §1 有两条与代码现状不符的挂账。E55 仍称主 loop「单工具协议只取
+首个 `tool_call`」，而 change `0257` 已把全部原生 `tool_calls` 映射为 `ActionGroup` 并逐个
+执行；E100 的 11 个未注册动词一直沿用「逐动词补 argparse 注册面」的口径，未区分「已有真实
+承载」与「无真实后端」。
+
+**决策**：
+
+- **D1 E55 直接销账**：三层证据 —— `planner._from_tool_calls` 全量映射（`planner.py:855-871`）、
+  `DefaultLoop` 展开执行（`default.py:601`）、`tests/test_parallel_tool_calls.py` 锁定
+  planner 非流式/流式、执行顺序与重复调用抑制。无剩余实现面。
+- **D2 E100 按真实承载分类，不一律补注册**：6 个动词已有真实承载（`version` → `--version`；
+  `help` → `-h`；`install`/`uninstall`/`list` → `plugin ...`；`permission-mode` →
+  `config get|set permission.mode`），不新增子命令；5 个无真实后端（`kill`/`logs`/`info`/
+  `auth`/`gateway`）保持未注册，避免暴露永远成功但什么也不做的命令。
+- **D3 守卫钉住差集**：`dispatcher` 六组顶层动词 − argparse 顶层子命令 = 未注册集合；
+  与 `cli-ops-interface.md` 唯一「未注册动词（守卫）」行逐项比对，并核对声明计数。
+- **D4 不删除不可达分支**：`CLICommandDispatcher.status()` 自 change `0162` 起不可从 CLI
+  触达，但仍属六组模型；销毁性清理另立 change。
+
+**被拒方案**：把 11 个动词全部注册（暴露 MVP 桩/空操作面，比不注册更误导）；删除
+`cli_ops/dispatcher.py`（影响接口模型与测试，超出盘点范围）；把 E100 直接标已闭（5 个动词
+仍无后端，属未闭实现面）。
+
+**验证**：`tests/test_cli_verb_inventory.py` 2 例；反证 3/3（删文档动词 / 改声明计数 /
+临时注册 `kill` ⇒ 各红；`cp` 复原后 `md5sum` 一致）。四门禁全绿；
+`openspec validate --all` **31/0**（归档后）。
+
+**测试**：新增 2 例（3199 → **3201**）；无 `src/` 行为改动。
+
+**局限**：守卫只锁动词集合与计数，不锁映射说明是否过时；`version`/`help` 是 flag 不是子命令；
+5 个无后端动词的判断基于 2026-10-18 代码快照；argparse 顶层命令经私有 `_subparsers` 读取；
+不删除不可达 `status()` 分支。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10780,3 +10815,4 @@ busy 用例红（第二个实例扫描并执行）；② 打开失败改为 `acq
 | ADR-0275 | 05-development/unattended-ops.md, 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0276 | 05-development/unattended-ops.md, 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/durability-interface.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0277 | 04-testing/test-cases.md, coding-plan/README.md, coding-plan/phase-38.md, coding-plan/Pending-Arbitration.md, coding-plan/known-risk.md |
+| ADR-0278 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
