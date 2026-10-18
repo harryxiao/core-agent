@@ -82,6 +82,10 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
 
 - 每个 action 经 `EffectTracker.record` 落 undo 栈。
 - 一轮内某 action 失败 → 自动执行该轮 undo 回滚，并把失败原因写入记忆（供 L4 诊断）。
+- **回滚可见**（change `0268` / ADR-0258）：回滚仍按 trace 整轮执行；`rollback` 返回
+  `RollbackReport`，非空时记 `trace_rolled_back` 遥测（`reverted` / `undo_failed` 计数），
+  并把同计数附加到失败动作回灌给模型的 tool observation。空回滚不加键、不发事件。撤销失败
+  留在 QUARANTINE，不自动重试。
 - 不可逆/高风险操作（rm、写系统、杀进程、支付）→ 触发 `ask_user` 确认门。
 - **执行接缝可包裹**（change `0209` / ADR-0199）：`DefaultLoop` 新可选参
   `act_wrapper: Callable[[ActFn], ActFn] | None`（缺省 `None`）——`__init__` 里

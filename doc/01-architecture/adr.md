@@ -9510,6 +9510,39 @@ loop 的屏障保证，且子 Agent 写入不进入父 `EffectTracker`，无法�
 未沿用既有词元，仍可能误判；须在新增工具时同步维护 deny 词元表。③ 仅约束同一
 `ActionGroup` 内的批次；不同会话 / 不同 loop 实例之间的并发不受此判定管辖。
 
+## ADR-0258：失败回滚可见性（change 0268 / 台账 E204）
+
+**背景**：`DefaultLoop` 在动作失败时按 trace 整轮回滚，但 `ToolProvider.rollback` 返回的
+`RollbackReport` 被丢弃：模型只看到失败动作的 `error`，不知道先前成功写入已被撤销；规格
+「单轮回滚」已写明「并写遥测」，实现却没有任何回滚事件。模型可能基于「文件已写入」的错误
+世界状态继续规划。
+
+**决策**：
+
+- **D1 保留 trace 整轮回滚**：规格承诺「回到该轮开始前状态」；缩窄为只撤销失败动作会留下
+  半完成写入。本 change 只增加可见性，不改回滚范围。
+- **D2 返回报告**：`DefaultLoop.rollback(trace_id) -> RollbackReport | None`，提交循环捕获。
+- **D3 遥测**：非空报告（`reverted` 或 `undo_failed`）记 `kind="trace_rolled_back"`，
+  载荷键恰为 `reverted` / `undo_failed` 计数；不含 EffectId、路径、参数、错误正文。
+  走 `Tracer` 而非新增 `LoopEvent`，`astream` 七类事件契约不变。
+- **D4 观察回灌**：失败动作的 tool observation 在非空回滚时附加
+  `rollback: {reverted, undo_failed}`；空回滚不出现该键。回滚先于观测回灌，模型看到失败
+  结果时世界状态已回退。
+- **D5 撤销失败**：留在既有 QUARANTINE 账目，不自动重试 / 删除；计数告知模型与遥测。
+
+**规格**：`loop` **ADDED**「失败回滚可见性」（3 scen）。`openspec validate --all` 32/0
+（归档前）/ 31/0（归档后）。
+
+**测试**：新增 `tests/test_rollback_visibility.py` 3 例，净 **+3**（2915 → **2918**）。
+反证 3/3：P1 `rollback` 丢弃报告 ⇒ 2 例红；P2 观测不注入回滚 ⇒ 2 例红；P3 不产事件 ⇒
+2 例红；复原后 `md5sum` 一致（`default.py eb910c0f…`）。四门禁：`ruff check` /
+`ruff format --check` 绿、`pyright` 0 errors、`pytest -q` 2918 passed。
+
+**局限**：① 模型只看到**计数**，不知道具体哪些路径被撤销（避免把路径/参数写进遥测）；
+② 整轮回滚可能撤销模型本想保留的成功写入 —— 这是既有原子轮语义，本 change 只让它可见；
+③ 终止动作失败没有 observation（无可续轮次），只有遥测；④ 撤销失败不自动重试，需人工
+按账目介入；⑤ `trace_rolled_back` 只经 `Tracer`，消费方未订阅导出器时不可见。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9762,3 +9795,4 @@ loop 的屏障保证，且子 Agent 写入不进入父 `EffectTracker`，无法�
 | ADR-0255 | 02-modules/loop.md, 02-modules/tool-use.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0256 | 02-modules/tool-use.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0257 | 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0258 | 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -4133,3 +4133,28 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > （`ruff check` / `ruff format --check` / `pyright` 0 / `pytest -q`）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0257 行（子 Agent 写入不进父
 > `EffectTracker` / 词元匹配为启发式 / 仅约束同批 `ActionGroup`）。
+
+---
+
+## 180. 失败回滚可见性（TC-ROLLBACK-VIS，change `0268`／ADR-0258，台账 E204）
+
+> **背景**：动作失败时 `DefaultLoop` 按 trace 整轮回滚，但 `RollbackReport` 被丢弃 —— 模型
+> 只看到失败动作的 `error`，不知道先前成功写入已撤销；规格「单轮回滚」承诺的遥测缺失。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-RBVIS-01 | loop/spec.md「失败回滚可见性」Scenario（先前写入被撤销且模型可见） | 第 0 轮成功可逆写、第 1 轮失败；第 2 轮读取上下文 | undo 被调用；失败动作 tool observation 含 `rollback={reverted:1,undo_failed:0}`；trace 记 `trace_rolled_back` 同计数（`tests/test_rollback_visibility.py::test_prior_write_rollback_is_visible`） |
+| TC-RBVIS-02 | 同 Requirement Scenario（无效应可撤销时保持逐字一致） | 首轮动作直接失败，此前无效应 | observation 不含 `rollback` 键；无 `trace_rolled_back`（`...::test_no_rollback_key_when_no_effects`） |
+| TC-RBVIS-03 | 同 Requirement Scenario（撤销失败被如实上报） | 成功写入的 undo 抛错，随后动作失败 | observation 与遥测均报 `undo_failed=1`；再次回滚仍报 `undo_failed=1`（留隔离）（`...::test_undo_failure_is_reported_and_quarantined`） |
+
+> **口径**：回滚范围保持**按 trace 整轮**（失败轮回到轮开始前状态），不缩窄为失败动作自身；
+> 只有非空报告（`reverted` / `undo_failed`）才发遥测与 observation 键。遥测载荷只有计数，
+> 不含 EffectId / 路径 / 参数 / 错误正文。事件走 `Tracer`，`astream` 七类 `LoopEvent` 不变；
+> 回滚先于观测回灌，模型看到失败时世界状态已回退。
+> **反证**：P1 `rollback` 丢弃报告 ⇒ TC-RBVIS-01/03 红；P2 观测不注入回滚 ⇒ 01/03 红；
+> P3 不产事件 ⇒ 01/03 红。复原后 `md5sum` 一致（`default.py eb910c0f…`）。
+> 规格：`loop` **ADDED**「失败回滚可见性」（3 scen）。`openspec validate --all` 32/0
+> （归档前）/ 31/0（归档后）。测试净 **+3**（2915 → **2918**）。四门禁全绿
+> （`ruff check` / `ruff format --check` / `pyright` 0 / `pytest -q`）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0258 行（只有计数无路径 / 整轮回滚
+> 可能撤销想保留的写入 / 终止动作只有遥测 / 撤销失败不重试 / 依赖导出器订阅）。

@@ -34,7 +34,7 @@ from core.context import Compactor, ContextError, WindowPlan, estimate_tokens, p
 from core.judgment import DecisionResult, DecisionRouter
 from core.memory import MemoryEntry, MemoryStore, TranscriptStore, redact_secrets
 from core.observability import TraceEvent, TraceLogger, Tracer
-from core.plugin_registry import Plugin
+from core.plugin_registry import Plugin, RollbackReport
 from core.tools import SafetyGate, ToolProvider
 
 from .protocol import (
@@ -719,9 +719,17 @@ class DefaultLoop(Plugin):
                         },
                     )
                 self._notify_action_result(ctx, action, result, trace_id)
-                self._record_observation(ctx, action, result)
-                if result.failed:
-                    self.rollback(trace_id)
+                report = self.rollback(trace_id) if result.failed else None
+                if report is not None and (report.reverted or report.undo_failed):
+                    self._trace(
+                        trace_id,
+                        "trace_rolled_back",
+                        {
+                            "reverted": len(report.reverted),
+                            "undo_failed": len(report.undo_failed),
+                        },
+                    )
+                self._record_observation(ctx, action, result, rollback=report)
                 ctx = self.observe(ctx, result)
                 yield LoopEvent("step_completed", {"round": ctx.rounds, "failed": result.failed})
                 self._trace(
@@ -1197,8 +1205,18 @@ class DefaultLoop(Plugin):
         return ActionResult(failed=True, error=code)
 
     @staticmethod
-    def _record_observation(ctx: LoopContext, action: Action, result: ActionResult) -> None:
-        """观察回灌：工具调用与执行结果写入上下文消息（ReAct 多轮推进的前提）。"""
+    def _record_observation(
+        ctx: LoopContext,
+        action: Action,
+        result: ActionResult,
+        *,
+        rollback: RollbackReport | None = None,
+    ) -> None:
+        """观察回灌：工具调用与执行结果写入上下文消息（ReAct 多轮推进的前提）。
+
+        失败动作附带非空 ``rollback`` 计数（change 0268）：模型据此知道先前成功写入已被
+        撤销、或撤销失败遗留；空回滚不出现该键（既有 observation 逐字不变）。
+        """
         if action.is_terminal:
             return
         ctx.messages.append(
@@ -1209,7 +1227,14 @@ class DefaultLoop(Plugin):
                 ),
             }
         )
-        observation = {"error": result.error} if result.failed else {"data": result.data}
+        observation: dict[str, Any] = (
+            {"error": result.error} if result.failed else {"data": result.data}
+        )
+        if rollback is not None and (rollback.reverted or rollback.undo_failed):
+            observation["rollback"] = {
+                "reverted": len(rollback.reverted),
+                "undo_failed": len(rollback.undo_failed),
+            }
         ctx.messages.append(
             {"role": "tool", "content": json.dumps(observation, ensure_ascii=False)}
         )
@@ -1328,9 +1353,11 @@ class DefaultLoop(Plugin):
         # 零 I/O 零效应，故不受 `causal_links` 门控（只有标签的**写入**受门控）。
         self._last_trace[session_id] = trace_id
 
-    def rollback(self, trace_id: str) -> None:
+    def rollback(self, trace_id: str) -> RollbackReport | None:
+        """按 trace 整轮逆序撤销；返回报告供调用方外发遥测 / 回灌模型（change 0268）。"""
         if self._tools is not None:
-            self._tools.rollback(trace_id)
+            return self._tools.rollback(trace_id)
+        return None
 
     def decline(self, action: Action) -> Action:
         return Action(args={"reply": "已拒绝：动作需人工审批或校验未通过，本轮终止。"})
