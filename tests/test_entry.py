@@ -1771,6 +1771,74 @@ def test_notes_promote_refuses_foreign_source_note(
     assert len(list(notes_dir.glob("session-*.md"))) == 1, "不产生第二条"
 
 
+def test_notes_milestone_writes_pinned_note(capsys: pytest.CaptureFixture[str]) -> None:
+    """里程碑收口 ⇒ canonical 落盘（结构化 + 置常驻 + 高优先级），show 可读回。"""
+    assert (
+        main(
+            [
+                "notes",
+                "milestone",
+                "M1 上线",
+                "--conclusion",
+                "接口联调通过",
+                "--decision",
+                "存储用 SQLite",
+                "--constraint",
+                "对外接口必须 HTTPS",
+            ]
+        )
+        == 0
+    )
+    assert "已锚定" in capsys.readouterr().out
+
+    assert main(["notes", "show", "milestone-m1-上线"]) == 0
+    out = capsys.readouterr().out
+    assert "- pinned: true" in out
+    assert "- pin_priority: 100" in out
+    assert "notes.milestone" in out
+    assert "## 结论" in out and "## 硬约束" in out
+    assert "对外接口必须 HTTPS" in out
+
+
+def test_notes_milestone_from_session_assembles_summary_and_keyfacts(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--session` ⇒ 压实摘要并入结论节、该会话 keyfact 进关键事实节。"""
+    _seed_summary("s-9", "阶段结论：接口联调通过")
+    MemoryStore(backend=FileBackend(_state_path("memory.jsonl"))).write(
+        "L2",
+        MemoryEntry(
+            id="keyfact.deploy",
+            layer="L2",
+            content="deploy: 灰度先 5%",
+            tags=["key_fact", "session:s-9"],
+            source="memory",
+            trace_id="t",
+            session_id="",
+            kind="semantic",
+        ),
+    )
+
+    assert main(["notes", "milestone", "m2", "--session", "s-9"]) == 0
+    capsys.readouterr()
+
+    assert main(["notes", "show", "milestone-m2"]) == 0
+    out = capsys.readouterr().out
+    assert "阶段结论：接口联调通过" in out
+    assert "deploy: 灰度先 5%" in out
+
+
+def test_notes_milestone_empty_returns_nonzero(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["notes", "milestone", "m1"]) == 1
+    assert capsys.readouterr().err.strip(), "无内容须有明确报错"
+    assert list(_state_path("notes").glob("*.md")) == [], "不写任何文件"
+
+
+def test_notes_usage_lists_milestone_verb(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["notes"]) == 1
+    assert "milestone <name>" in capsys.readouterr().err
+
+
 # ---- 只读诊断面（change 0162：doctor / status 真诊断） ----
 
 

@@ -11,16 +11,26 @@
 
 from .backend import MarkdownBackend
 from .errors import NoteError, NoteErrorCode
+from .milestone import (
+    MAX_MILESTONE_CHARS,
+    MILESTONE_PIN_PRIORITY,
+    MILESTONE_SOURCE,
+    close_milestone,
+)
 from .models import NoteEntry, parse_note, render_note, slug_topic
 from .promote import promote_session_summary
 from .store import NoteStore
 
 __all__ = [
+    "MAX_MILESTONE_CHARS",
+    "MILESTONE_PIN_PRIORITY",
+    "MILESTONE_SOURCE",
     "MarkdownBackend",
     "NoteEntry",
     "NoteError",
     "NoteErrorCode",
     "NoteStore",
+    "close_milestone",
     "parse_note",
     "promote_session_summary",
     "render_note",

@@ -9767,6 +9767,58 @@ P3 摘吸收 ⇒ 1 例红；P4 忽略 scope ⇒ 2 例红（all / 构造缺省）
 按回合重置 ⇒ 多轮长任务每回合重新加载；⑤ 系统提示目录不收窄 ⇒ 工具数极多时目录本身仍有成本；
 ⑥ `schema_read` 输出不设条目上限（模型可一次请求全部 schema，属自伤性入参）。
 
+## ADR-0263：里程碑报告锚定（change 0273 / 台账 E209）
+
+**背景**：长任务的早期硬约束会丢 —— 会话摘要在后续压实中被稀释（ADR-0208③）、零复用记忆约
+19 天被归档 L4（ADR-0170③）。仓内已有「常驻（pinned）笔记」通道（整篇纳入 / 逐轮无条件 /
+紧随宪法块 / 优先级决定在场 / 超预算整篇排除且可见），但**置位靠人**：人工 `notes pin`，或
+`notes promote`（只搬运会话摘要，不装配决策与硬约束，且显式触发才常驻）。结果就是 PA-08 的
+现象：**忘了 pin** 等于硬约束没锚住，而 `promote` 的产物也不含结构化的「关键决策 / 硬约束 /
+关键事实」。
+
+**决策**：
+
+- **D1 复用 pinned 通道，不造第二个注入块**：里程碑产出只是一篇普通 canonical note
+  （`pinned=True` + 高优先级），注入路径零改动。第二条注入通道会造成两套预算、两处 prompt
+  位置、两套在场判定 —— 风险大于收益。「永久置顶」由此落地为「常驻块内最靠前」。
+- **D2 确定性装配、零 LLM**：固定节次序「结论 → 关键决策 → 硬约束 → 关键事实」，空节省略。
+  来源可组合：显式条目（保持调用方次序）、该会话压实摘要（并入结论节）、该会话 keyfact
+  （`key_fact` 标签 + `session:<id>`，按 `id` 升序 ⇒ 确定性）。不做模型归纳。
+- **D3 身份与来源守护**：`note_id = "milestone-" + slug_topic(<name>)`，`--as` 显式覆盖；
+  同 id 重复收口走 `NoteStore.update()`（唯一写路径）幂等覆盖。目标撞上来源非
+  `notes.milestone` 的既有笔记且未给 `--as` ⇒ 返回空、不写盘、非零退出（与 promotion 同构）；
+  显式 `--as` 视为授权。既有 tags 并入产出、标题缺省沿用既有。
+- **D4 有界与脱敏**：所有装配内容经 `redact_secrets`（承 ADR-0141① 密钥红线）；正文上限
+  `MAX_MILESTONE_CHARS = 3000`（< 常驻总预算 4000），**保留头部**并留含被截字符数的标记。
+  上限作用于装配后的正文，单条超长输入无法绕过。
+- **D5 缺省优先级 100**：高于人工 `notes pin` 的缺省 0，表达「阶段硬约束优先于一般常驻笔记」；
+  `--priority` 可覆盖（含 0）。`unpin` 语义逐字不变（清常驻并归零）。
+- **D6 CLI 面**：`notes milestone <name> [--session SID] [--as ID] [--title T] [--priority N]
+  [--conclusion T]... [--decision T]... [--constraint T]...`。成功回执退出 0；无可写内容 /
+  派生 id 为空 / 来源冲突 ⇒ stderr 报明确原因、退出 1、**不写任何文件**。`--session` 无摘要
+  不报错（keyfact 与显式条目仍可成文）。
+- **D7 显式触发裁决（C 维持否决）**：阶段结束判定不可靠（loop 无阶段实体；编排进度事件是执行面
+  状态），自动写入未 review 的内容并逐轮注入与 ADR-0142①（notes 是刻意知识）和 ADR-0141①
+  （常驻内容密钥红线）冲突。本 change **仅**提供显式动词；自动置常驻仍须显式翻案。
+
+**规格**：`notes` **ADDED**「里程碑报告锚定（milestone anchoring）」（9 scen）。
+`openspec validate <change>` 通过（归档前）；`validate --all` **31/0**（归档后）。
+
+**测试**：新增 `tests/test_notes_milestone.py` **8 例**（结构 / 幂等 / 摘要与 keyfact 装配且
+确定性 / 空内容 / 空 slug / 来源守护与 `--as` / 脱敏与有界 / 优先级次序）；
+`tests/test_entry.py` **4 例**（CLI 落盘与 show 读回 / `--session` 装配 / 空内容非零 /
+usage 列出动词）。净 **+12**（3006 → **3018**）。反证 5/5：摘来源守护 / 摘脱敏 / 摘截断 /
+忽略优先级 / 摘空内容守卫 ⇒ 对应用例均红；复原后 `md5sum` 一致
+（`milestone.py 2c355d86…`）。四门禁：`ruff check` / `ruff format --check` 绿、
+`pyright` 0 errors、`pytest -q` **3018 passed**。另：`entry.py` 行号漂移更新
+`doc/03-interfaces/prompts.md` ⑭ 落点（1820 → 1836）。
+
+**局限**：① 阶段划分仍靠人/上层**显式**调用，系统不推断「里程碑已结束」；② 无模型归纳 ——
+报告质量取决于输入与既有 keyfact（确定性是有意取舍）；③ 3000 字符上限保留头部 ⇒ 超长里程碑
+**尾部**被截，详细内容应另行成篇；④ 常驻总预算 4000 不变 ⇒ 本篇在场可能使其它常驻笔记被
+整篇排除（`notes pinned` 可查）；⑤ `--session` keyfact 只取带 `session:<id>` 标签者，跨会话 /
+全局 keyfact 不入报告；⑥ 报告只经 pinned 通道 —— `unpin` 后不再每轮注入（显式语义，非缺陷）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10024,3 +10076,4 @@ P3 摘吸收 ⇒ 1 例红；P4 忽略 scope ⇒ 2 例红（all / 构造缺省）
 | ADR-0260 | 02-modules/orchestration.md, 02-modules/loop.md, 02-modules/permission.md, 03-interfaces/orchestration-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0261 | 02-modules/configuration.md, 02-modules/memory.md, 02-modules/rag.md, 03-interfaces/configuration-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0262 | 02-modules/loop.md, 02-modules/tool-use.md, 02-modules/configuration.md, 03-interfaces/loop-interface.md, 03-interfaces/tool-use-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0263 | 02-modules/notes.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |

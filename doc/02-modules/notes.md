@@ -183,6 +183,25 @@ canonical 目录缺省 `$CORE_STATE_DIR/notes`（未设则 `~/.core/state/notes`
   （§3.5.1），属全局文档层，定位＝**归档留档物**：**正文不进** Consult 命中面（§3.4 归档来源排除面 /
   change 0180／ADR-0171），仅以**清单标题**在场；`consult`/`search`/`list` 检索面**不变**。
 
+### 3.5.3 里程碑报告锚定（milestone anchoring，change `0273`／ADR-0263／台账 E209）
+
+**第四条写路径**（`source="notes.milestone"`），由 CLI `notes milestone <name>` 或上层显式调用
+`core.notes.close_milestone(...)` 触发。定位：长任务**阶段收口**时把结论 / 关键决策 / 硬约束 /
+关键事实装配成**一篇常驻笔记**，复用 §3.4.1 的既有注入通道 —— **不新增注入块**、不改 loop。
+
+- **确定性、零 LLM**：固定节次序「结论 → 关键决策 → 硬约束 → 关键事实」，空节整节省略；来源
+  可组合 = 显式条目（保持调用方次序）＋ 该会话压实摘要（并入结论节）＋ 该会话 keyfact
+  （`key_fact` 标签 + `session:<id>`，按 `id` 升序 ⇒ 重复收口正文逐字稳定）。
+- **身份与幂等**：`note_id = --as 或 "milestone-" + slug_topic(<name>)`；同 id 重复收口经
+  `NoteStore.update()`（唯一写路径）覆盖、不增长。既有 tags 并入产出、标题缺省沿用既有。
+- **来源守护**（同 §3.5.1）：撞非 `notes.milestone` 且未给 `--as` ⇒ `None`、不写盘、CLI 非零退出；
+  `--as` 视为显式授权。
+- **有界与脱敏**：装配内容统一 `redact_secrets`；正文上限 `MAX_MILESTONE_CHARS = 3000`
+  （< 常驻总预算 4000），**保留头部**并留含被截字符数的标记。上限作用于装配后的正文。
+- **缺省优先级 100**：高于人工 `notes pin` 的缺省 0；`--priority` 可覆盖（含 0）。`unpin` 语义不变。
+- **显式触发**（ADR-0263 D7）：阶段结束判定不可靠，自动置常驻与 ADR-0142①（刻意知识）/
+  ADR-0141①（常驻密钥红线）冲突 ⇒ 不做自动锚定（PA-08 方案 C 维持否决）。
+
 ### 3.6 循环技能由组合根构造
 
 内置技能 `skills.notes.consult_build_update`（`instructions` 含 Consult / Build / Update 三段纪律）

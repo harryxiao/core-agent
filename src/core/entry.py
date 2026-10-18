@@ -71,6 +71,7 @@ from core.notes import (
     NoteEntry,
     NoteError,
     NoteStore,
+    close_milestone,
     promote_session_summary,
     render_note,
     slug_topic,
@@ -326,6 +327,21 @@ def _add_notes_parser(sub: Any) -> None:
     promote.add_argument("session_id", metavar="<session-id>", help="会话 id（派生 note_id）")
     promote.add_argument("--as", dest="as_note_id", metavar="NOTE_ID", help="显式覆盖 note_id")
     promote.add_argument("--title", default="", metavar="TITLE", help="笔记标题")
+    milestone = notes_sub.add_parser(
+        "milestone", help="里程碑收口：结构化报告并置常驻（结论/决策/硬约束/关键事实）"
+    )
+    milestone.add_argument("milestone", metavar="<name>", help="里程碑名（派生 note_id）")
+    milestone.add_argument(
+        "--session", dest="session_id", metavar="SID", help="装配该会话的摘要与关键事实"
+    )
+    milestone.add_argument("--as", dest="as_note_id", metavar="NOTE_ID", help="显式覆盖 note_id")
+    milestone.add_argument("--title", default="", metavar="TITLE", help="笔记标题")
+    milestone.add_argument(
+        "--priority", type=int, default=100, metavar="N", help="常驻优先级（缺省 100）"
+    )
+    milestone.add_argument("--conclusion", action="append", default=[], metavar="TEXT")
+    milestone.add_argument("--decision", action="append", default=[], metavar="TEXT")
+    milestone.add_argument("--constraint", action="append", default=[], metavar="TEXT")
 
 
 def _add_evolve_parser(sub: Any) -> None:
@@ -1904,7 +1920,9 @@ def _rag_ask(runtime: Any, args: argparse.Namespace) -> int:
 _NOTES_USAGE = (
     "用法: core-agent notes {list|show <note_id>|search <query>|"
     "pin <note_id> [--priority N]|unpin <note_id>|pinned|"
-    "promote <session-id> [--as ID] [--title T]}"
+    "promote <session-id> [--as ID] [--title T]|"
+    "milestone <name> [--session SID] [--as ID] [--title T] [--priority N]"
+    " [--conclusion TEXT] [--decision TEXT] [--constraint TEXT]}"
 )
 
 
@@ -1923,6 +1941,7 @@ def _notes(args: argparse.Namespace) -> int:
         "unpin": _notes_unpin,
         "pinned": _notes_pinned,
         "promote": _notes_promote,
+        "milestone": _notes_milestone,
     }
     handler = handlers.get(args.notes_cmd or "")
     if handler is None:
@@ -2011,6 +2030,43 @@ def _notes_promote(store: NoteStore, args: argparse.Namespace) -> int:
         )
         return 1
     print(f"已提升: {note.note_id}\t[pinned]")
+    return 0
+
+
+def _session_key_facts(session_id: str) -> list[MemoryEntry]:
+    """按会话取 keyfact 条目（**只读**裸实例：`audit` 走全量，不触发压实/强化）。"""
+    marker = f"session:{session_id}"
+    store = MemoryStore(backend=FileBackend(_state_path("memory.jsonl")))
+    return [
+        entry for entry in store.audit(None) if "key_fact" in entry.tags and marker in entry.tags
+    ]
+
+
+def _notes_milestone(store: NoteStore, args: argparse.Namespace) -> int:
+    """`notes milestone <name>`：里程碑收口 → 结构化报告并置常驻（显式触发，change 0273）。"""
+    summary = _memory_summary(args.session_id) if args.session_id else None
+    key_facts = _session_key_facts(args.session_id) if args.session_id else []
+    note = close_milestone(
+        store,
+        milestone=args.milestone,
+        session_id=args.session_id or "",
+        summary=summary,
+        key_facts=key_facts,
+        conclusions=args.conclusion,
+        decisions=args.decision,
+        constraints=args.constraint,
+        as_note_id=args.as_note_id,
+        title=args.title,
+        priority=args.priority,
+    )
+    if note is None:
+        print(
+            "notes 错误: 无法锚定（无内容、派生 id 为空，或目标主题来源冲突；"
+            f"如系有意覆写请用 --as）: {args.milestone}",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"已锚定: {note.note_id}\t[pinned 优先级 {note.pin_priority}]")
     return 0
 
 

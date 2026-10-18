@@ -186,6 +186,42 @@ def promote_session_summary(
   显式 `as_note_id` ⇒ 返回 `None`、**不写盘**、CLI 非零退出；显式 `as_note_id` ⇒ 视为**显式授权**、照常覆写。
 - 写入**不接** `EffectTracker`（承 canonical 文档层既有取舍，与 `pin/unpin`/`observe_turn` 一致）。
 
+### 3.2 里程碑报告锚定（`core.notes.milestone`，change 0273 / ADR-0263 / 台账 E209）
+
+**独立工作流函数**（非 `NoteStore` 方法；`NoteStore` 仍是唯一写路径入口）：
+
+```python
+from core.notes import close_milestone
+
+def close_milestone(
+    store: NoteStore,
+    *, milestone: str,                  # 里程碑名（派生 note_id）
+    session_id: str = "",
+    summary: MemoryEntry | None = None, # 调用方用 MemoryStore.summary_for(session_id) 取回
+    key_facts: Iterable[MemoryEntry] = (),  # 该会话 keyfact（按 id 升序装配）
+    conclusions: Sequence[str] = (),
+    decisions: Sequence[str] = (),
+    constraints: Sequence[str] = (),
+    as_note_id: str | None = None,
+    title: str = "",
+    priority: int = 100,                # MILESTONE_PIN_PRIORITY
+) -> NoteEntry | None: ...              # None ⇒ 无内容 / 派生 id 为空 / 来源冲突（不写盘）
+```
+
+- 正文固定节次序：**结论 → 关键决策 → 硬约束 → 关键事实**（空节省略）；摘要正文并入结论节，
+  keyfact 按条目 `id` 升序 ⇒ 确定性、零 LLM。
+- `note_id = as_note_id or "milestone-" + slug_topic(milestone)`；**幂等覆盖**（同一里程碑重复收口
+  命中同一 note、不增长），复用唯一写路径 `NoteStore.update()`。
+- 产出 `source == "notes.milestone"`、`pinned=True`、`pin_priority=priority`（缺省 **100**，
+  高于人工 `notes pin` 的缺省 0）⇒ 经既有「常驻笔记」块注入（**不新增注入块**）。
+- **来源守护**（与 promotion 同构）：撞来源非 `notes.milestone` 的既有笔记且未给 `as_note_id`
+  ⇒ 返回 `None`、不写盘；显式 `as_note_id` 视为授权。既有 tags 并入、标题缺省沿用既有。
+- **有界与脱敏**：装配内容统一 `redact_secrets`；正文 ≤ `MAX_MILESTONE_CHARS`（3000）——
+  **保留头部** + 含被截字符数的标记（`…[truncated N chars]…`）。
+- 写入**不接** `EffectTracker`（承文档层既有取舍）；属全局文档层，`session_id` 只是内容来源与
+  派生输入，不是隔离维度。
+- **显式触发**：不自动置常驻（ADR-0263 D7；方案 C 维持否决）。
+
 ---
 
 ## 4. 错误码（`core.notes.errors`）
@@ -238,6 +274,7 @@ PinnedNotesConsult = Callable[[], str]   # **零参** → 常驻注入块（签�
 | `notes unpin <note_id>` | 清常驻标记（优先级一并归零） |
 | `notes pinned` | 列出常驻笔记：`note_id` / 标题 / 优先级 / **是否进场**（超预算篇目报为未进场，change 0154） |
 | `notes promote <session-id> [--as NOTE_ID] [--title TITLE]` | 会话摘要 → canonical 常驻笔记（显式提升；幂等覆盖；会话无摘要 / 派生 id 为空 / 撞非 promotion 来源且未给 `--as` ⇒ 非零退出、不写盘） |
+| `notes milestone <name> [--session SID] [--as NOTE_ID] [--title TITLE] [--priority N] [--conclusion T]... [--decision T]... [--constraint T]...` | 里程碑收口 → 结构化报告并置常驻（确定性装配；缺省优先级 100；幂等覆盖；无内容 / 派生 id 为空 / 撞非 milestone 来源且未给 `--as` ⇒ 非零退出、不写盘） |
 
 **入口侧写路径（非 `notes` 命令）**：`rag ingest <path> --doc-id ID --summarize`（change `0213`／
 ADR-0203）⇒ 文档摘要落 `doc-<slug(doc_id)>`、`source="notes.rag"`、**恒非 pinned**（幂等覆盖；

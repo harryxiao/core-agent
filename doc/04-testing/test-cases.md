@@ -4321,3 +4321,38 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > `test_phase13` 生产工具面断言补 `tools.schema_read`。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0262 行（原生 tool_calls 加载前不可直达 /
 > 多一轮往返 / 核心集静态 / 按回合重置 / 目录不收窄 / schema_read 无条目上限）。
+
+## 185. 里程碑报告锚定（TC-MILESTONE，change `0273`／ADR-0263，台账 E209）
+
+> 覆盖 `notes/spec.md`「里程碑报告锚定（milestone anchoring）」：确定性零 LLM 装配 +
+> 复用常驻通道（**零新注入块**）。测试文件 `tests/test_notes_milestone.py`（8 例）＋
+> `tests/test_entry.py`（4 例）。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-MILESTONE-01 | Scenario「一键生成结构化报告并置常驻」 | `close_milestone(store, milestone="M1 上线", conclusions/decisions/constraints)` | 单篇 note；`note_id == "milestone-m1-上线"`、`source == notes.milestone`、`pinned=True`、`pin_priority == 100`；正文节次序 结论 → 关键决策 → 硬约束（`test_milestone_writes_structured_pinned_note`） |
+| TC-MILESTONE-02 | Scenario「幂等覆盖」 | 同一里程碑收口两次（内容不同） | 仍单条 `milestone-m1`；正文为第二次、不含第一次（`test_milestone_idempotent_overwrite`） |
+| TC-MILESTONE-03 | Scenario「从会话摘要与关键事实装配」 | 传 `summary` + 两个 keyfact（入参逆序） | 摘要正文在结论节；关键事实按 `id` 升序（`alpha` 先于 `zeta`）；二次收口正文**逐字相同**（`test_milestone_assembles_summary_and_keyfacts_deterministically`） |
+| TC-MILESTONE-04 | Scenario「无内容 ⇒ 不写盘 + 非零退出」 | 无显式条目、无 session、无 keyfact | 返回 `None`；`store.list() == []`（`test_milestone_empty_content_writes_nothing`） |
+| TC-MILESTONE-05 | Scenario「派生 id 为空 ⇒ 不写盘 + 非零退出」 | `milestone="!!!"` + 有结论、未给 `--as` | 返回 `None`；不写盘（`test_milestone_empty_slug_writes_nothing`） |
+| TC-MILESTONE-06 | Scenario「来源守护与显式授权」 | 既有 `source="notes"` 的同 id 笔记；先不给 `--as`、再给 `--as` | 先 ⇒ `None` 且标题/正文/`updated_at` 逐字不变；后 ⇒ 覆写为里程碑、标题沿用既有（`test_milestone_source_guard_and_explicit_override`） |
+| TC-MILESTONE-07 | Scenario「有界与脱敏」 | 结论含 `sk-…`；硬约束超长（`MAX_MILESTONE_CHARS + 500`） | 正文不含密钥原文、含 `<redacted>`；头部结论保留；总长 ≤ 3000；含 `[truncated` 标记（`test_milestone_redacts_and_bounds`） |
+| TC-MILESTONE-08 | Scenario「优先级高于普通常驻」 | 人工常驻 `a-manual`（优先级 0）+ 里程碑（先缺省、后 `priority=0`） | 缺省 ⇒ 里程碑在 `a-manual` 之前；`priority=0` ⇒ 按 `note_id` 升序（`a-manual` 在前）（`test_milestone_priority_outranks_manual_pinned`） |
+| TC-MILESTONE-09 | 同 Requirement CLI 面 | 跨进程 `notes milestone M1 上线 --conclusion/--decision/--constraint` → `notes show` | 退出 0 + 回执含「已锚定」；`show` 含 `- pinned: true` / `- pin_priority: 100` / `notes.milestone` / 三节与条目（`test_entry.py::test_notes_milestone_writes_pinned_note`） |
+| TC-MILESTONE-10 | 同 Requirement（`--session` 装配） | 播种摘要 + `key_fact`/`session:s-9` 条目 → `notes milestone m2 --session s-9` → `show` | 摘要正文与 keyfact 内容均出现（`test_entry.py::test_notes_milestone_from_session_assembles_summary_and_keyfacts`） |
+| TC-MILESTONE-11 | 同 Requirement（无内容非零退出） | `notes milestone m1`（无任何内容） | 退出 1 + stderr 非空；`notes` 目录无 `.md`（`test_entry.py::test_notes_milestone_empty_returns_nonzero`） |
+| TC-MILESTONE-12 | 同 Requirement CLI 面 | `notes`（无子命令） | usage 含 `milestone <name>`（`test_entry.py::test_notes_usage_lists_milestone_verb`） |
+
+> **口径**：`MAX_MILESTONE_CHARS = 3000` < 常驻总预算 `_MAX_PINNED_CHARS = 4000`；截断**保留头部**
+> （结论/决策在前）且标记含被截字符数。缺省 `pin_priority = 100`（人工 `notes pin` 缺省 0）；
+> 可 `--priority` 覆盖。来源守护与 promotion 同构：外来源 + 无 `--as` ⇒ 不写盘；
+> `--as` 视为显式授权。写入复用 `NoteStore.update()`、不接 `EffectTracker`。
+> **反证 5/5**：摘来源守护 ⇒ TC-MILESTONE-06 红；摘脱敏 ⇒ 07 红；摘截断 ⇒ 07 红；
+> 忽略优先级 ⇒ 08 红；摘空内容守卫 ⇒ 04 红。复原后 `md5sum` 一致（`milestone.py 2c355d86…`）。
+> 规格：`notes` **ADDED**「里程碑报告锚定」（9 scen）。`validate --all` 31/0（归档后）。
+> 测试净 **+12**（3006 → **3018**）。四门禁全绿（`ruff check` / `ruff format --check` /
+> `pyright` 0 / `pytest -q 3018 passed`）。
+> 附带：`entry.py` 新增 CLI 面使 `_DOC_SUMMARY_PROMPT` 行号漂移，`prompts.md` §1 ⑭ 落点已同步
+> （1820 → 1836）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0263 行（显式触发 / 无模型归纳 /
+> 头部保留截断 / 常驻总预算共享 / keyfact 仅按会话标签 / unpin 后不注入）。
