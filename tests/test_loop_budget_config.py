@@ -4,7 +4,7 @@
 **由模型上下文窗口派生**（`llm.context_window - loop.output_reserve`）；规格「LLM 提供商配置」
 与「循环预算配置」要求新增三键经 ConfigSpec 单一真源三面齐备、非法取值**校验期阻断**。
 
-本文件证明：三键三面一致、缺省回落代码缺省（10 / 65536，与变更前逐位一致）、派生边界正确、
+本文件证明：三键三面一致、缺省回落代码缺省（20 / 65536，change 0260 放宽轮数）、派生边界正确、
 非法取值与**窗口不敷预留**阻断启动（**不静默兜底** —— `token_budget <= 0` 的语义是「关闭
 token 维度」，静默兜底会把配置错误变成「预算维度失效」），且组合根**真的**把派生值注入
 生产 loop（端到端：`max_rounds` 派生为 3 ⇒ 第 3 轮即 `LOOP_LIMIT_EXCEEDED`）。
@@ -80,7 +80,7 @@ def test_specs_declare_loop_and_context_window_keys() -> None:
     assert (rounds.cli_flag, rounds.env_var, rounds.default) == (
         "--loop.max-rounds",
         "CORE_LOOP_MAX_ROUNDS",
-        10,
+        20,
     )
 
 
@@ -88,9 +88,14 @@ def test_specs_declare_loop_and_context_window_keys() -> None:
 
 
 def test_defaults_match_code_defaults(tmp_path: Path) -> None:
-    """未配置 loop 段与 context_window ⇒ 回落代码缺省（10 / 65536），与变更前逐位一致。"""
+    """未配置 loop 段与 context_window ⇒ 回落代码缺省（20 / 65536；change 0260）。"""
     manager = _manager(tmp_path)
-    assert manager.loop_limits() == (10, 65536)
+    assert manager.loop_limits() == (20, 65536)
+
+
+def test_default_loop_constructor_matches_config_default() -> None:
+    """无配置源直接构造的缺省轮数与配置缺省同值（change 0260）—— 防两处缺省分叉。"""
+    assert DefaultLoop()._max_rounds == 20  # noqa: SLF001, PLR2004 — 构造缺省契约
 
 
 def test_budget_derived_from_context_window(tmp_path: Path) -> None:
@@ -100,19 +105,19 @@ def test_budget_derived_from_context_window(tmp_path: Path) -> None:
         "loop:\n  output_reserve: 8192\n",
         environ={"CORE_LLM_CONTEXT_WINDOW": "131072"},
     )
-    assert manager.loop_limits() == (10, 131072 - 8192)
+    assert manager.loop_limits() == (20, 131072 - 8192)
 
 
 def test_no_window_means_no_derivation(tmp_path: Path) -> None:
     """未配窗口 ⇒ 不派生，即便配了预留也回落代码缺省 65536。"""
     manager = _manager(tmp_path, "loop:\n  output_reserve: 8192\n")
-    assert manager.loop_limits() == (10, 65536)
+    assert manager.loop_limits() == (20, 65536)
 
 
 def test_window_without_reserve_uses_default_reserve(tmp_path: Path) -> None:
     """只配窗口 ⇒ 预留取缺省 8192。"""
     manager = _manager(tmp_path, environ={"CORE_LLM_CONTEXT_WINDOW": "65536"})
-    assert manager.loop_limits() == (10, 65536 - 8192)
+    assert manager.loop_limits() == (20, 65536 - 8192)
 
 
 def test_max_rounds_from_yaml(tmp_path: Path) -> None:
@@ -129,7 +134,7 @@ def test_env_overrides_yaml(tmp_path: Path) -> None:
         "loop:\n  output_reserve: 1024\n",
         environ={"CORE_LOOP_OUTPUT_RESERVE": "2048", "CORE_LLM_CONTEXT_WINDOW": "65536"},
     )
-    assert manager.loop_limits() == (10, 65536 - 2048)
+    assert manager.loop_limits() == (20, 65536 - 2048)
 
 
 def test_cli_overrides_env_and_yaml(tmp_path: Path) -> None:
@@ -204,11 +209,11 @@ def test_loop_section_is_not_reported_unknown(tmp_path: Path) -> None:
 def test_config_set_loop_key_applies_and_persists(tmp_path: Path) -> None:
     """`config set loop.output_reserve` 真的生效并落盘（extra 段浅合并，不得静默丢弃）。"""
     manager = _manager(tmp_path, environ={"CORE_LLM_CONTEXT_WINDOW": "65536"})
-    assert manager.loop_limits() == (10, 65536 - 8192)
+    assert manager.loop_limits() == (20, 65536 - 8192)
 
     patch = _key_to_patch("loop.output_reserve", "4096")
     manager.apply_change(patch)
-    assert manager.loop_limits() == (10, 65536 - 4096)
+    assert manager.loop_limits() == (20, 65536 - 4096)
 
     manager.write_patch(patch)
     reloaded = ConfigManager(
@@ -216,7 +221,7 @@ def test_config_set_loop_key_applies_and_persists(tmp_path: Path) -> None:
         environ={"OPENAI_API_KEY": "sk-test", "CORE_LLM_CONTEXT_WINDOW": "65536"},
     )
     reloaded.load()
-    assert reloaded.loop_limits() == (10, 65536 - 4096)
+    assert reloaded.loop_limits() == (20, 65536 - 4096)
 
 
 def test_config_set_context_window_applies(tmp_path: Path) -> None:
@@ -224,7 +229,7 @@ def test_config_set_context_window_applies(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
     patch = _key_to_patch("llm.context_window", "65536")
     manager.apply_change(patch)
-    assert manager.loop_limits() == (10, 65536 - 8192)
+    assert manager.loop_limits() == (20, 65536 - 8192)
 
 
 # ---- 组合根注入 + 端到端 ----
@@ -255,10 +260,10 @@ def test_build_runtime_injects_derived_limits(tmp_path: Path, state_dir: Path) -
 
 
 def test_build_runtime_defaults_unchanged(tmp_path: Path, state_dir: Path) -> None:
-    """未配置 ⇒ 组合根注入代码缺省（变更前后行为逐位一致）。"""
+    """未配置 ⇒ 组合根注入代码缺省（change 0260：轮数 20，token 预算 65536）。"""
     runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path)))
     loop = _main_loop(runtime)
-    assert (loop._max_rounds, loop._token_budget) == (10, 65536)  # noqa: SLF001 — 接线断言
+    assert (loop._max_rounds, loop._token_budget) == (20, 65536)  # noqa: SLF001 — 接线断言
 
 
 def test_configured_max_rounds_drives_production_loop(tmp_path: Path) -> None:
@@ -333,7 +338,7 @@ def test_invalid_history_turns_blocks_startup(tmp_path: Path, value: str) -> Non
 
 def test_history_turns_keeps_loop_limits_arity(tmp_path: Path) -> None:
     """新键走**独立访问器** ⇒ `loop_limits()` 仍是 (max_rounds, token_budget) 二元组。"""
-    assert _manager(tmp_path, "loop:\n  history_turns: 5\n").loop_limits() == (10, 65536)
+    assert _manager(tmp_path, "loop:\n  history_turns: 5\n").loop_limits() == (20, 65536)
 
 
 # ---- 压实步数阈值（change 0182 / ADR-0173）----
@@ -392,7 +397,7 @@ def test_invalid_compact_steps_blocks_startup(tmp_path: Path, value: str) -> Non
 
 def test_compact_steps_keeps_loop_limits_arity(tmp_path: Path) -> None:
     """新键走**独立访问器** ⇒ `loop_limits()` 仍是 (max_rounds, token_budget) 二元组。"""
-    assert _manager(tmp_path, "loop:\n  compact_steps: 3\n").loop_limits() == (10, 65536)
+    assert _manager(tmp_path, "loop:\n  compact_steps: 3\n").loop_limits() == (20, 65536)
 
 
 def test_build_runtime_injects_configured_compact_steps(tmp_path: Path, state_dir: Path) -> None:
@@ -419,7 +424,7 @@ def test_output_reserve_accessor_defaults(tmp_path: Path) -> None:
     """既有键走**独立访问器**：未配置 ⇒ 缺省 8192，`loop_limits()` 二元组逐字不变。"""
     manager = _manager(tmp_path)
     assert manager.output_reserve() == _DEFAULT_OUTPUT_RESERVE
-    assert manager.loop_limits() == (10, 65536)
+    assert manager.loop_limits() == (20, 65536)
 
 
 def test_output_reserve_accessor_from_yaml(tmp_path: Path) -> None:
@@ -427,7 +432,7 @@ def test_output_reserve_accessor_from_yaml(tmp_path: Path) -> None:
     reserve = 4096
     manager = _manager(tmp_path, f"loop:\n  output_reserve: {reserve}\n")
     assert manager.output_reserve() == reserve
-    assert manager.loop_limits() == (10, 65536)
+    assert manager.loop_limits() == (20, 65536)
 
 
 def test_build_runtime_injects_output_reserve_as_max_tokens(
@@ -493,19 +498,19 @@ def test_known_window_unknown_model_is_zero() -> None:
 def test_loop_limits_derives_window_from_model(tmp_path: Path) -> None:
     """未配置 `context_window` 且模型在表内 ⇒ 预算按**推导窗口**派生（不再恒 65536）。"""
     manager = _manager_for_model(tmp_path, "gpt-4o")
-    assert manager.loop_limits() == (10, _GPT4O_WINDOW - _DEFAULT_OUTPUT_RESERVE)
+    assert manager.loop_limits() == (20, _GPT4O_WINDOW - _DEFAULT_OUTPUT_RESERVE)
 
 
 def test_loop_limits_explicit_window_wins(tmp_path: Path) -> None:
     """显式 `context_window` **优先于**表推导（用户显式声明永远胜出）。"""
     manager = _manager_for_model(tmp_path, "gpt-4o", "  context_window: 32768\n")
-    assert manager.loop_limits() == (10, 32768 - _DEFAULT_OUTPUT_RESERVE)
+    assert manager.loop_limits() == (20, 32768 - _DEFAULT_OUTPUT_RESERVE)
 
 
 def test_loop_limits_unknown_model_falls_back(tmp_path: Path) -> None:
     """表未命中 ⇒ 预算回落内置缺省，与变更前**逐字一致**（回归锚）。"""
     manager = _manager_for_model(tmp_path, "my-local-model")
-    assert manager.loop_limits() == (10, _DEFAULT_WINDOW)
+    assert manager.loop_limits() == (20, _DEFAULT_WINDOW)
 
 
 def test_build_runtime_labels_provider_from_config(tmp_path: Path, state_dir: Path) -> None:

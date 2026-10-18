@@ -3937,3 +3937,28 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > `pyright` 0 / `pytest -q`）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0249 行（注册表仅进程内 / taskkill 依赖 /
 > 超时不带部分输出 / 日志可能回灌敏感文本 / 上限 32）。
+
+## 172. 长任务默认值（TC-LTDEF，change `0260`／ADR-0250，台账 E196）
+| TC-LTDEF | 场景 | 输入 | 预期 |
+|---|---|---|---|
+| TC-LTDEF-01 | ConfigSpec 轮数缺省 | 读取 `config_specs()` 的 `loop.max_rounds` | `default == 20`（`tests/test_loop_budget_config.py::test_specs_declare_loop_and_context_window_keys`） |
+| TC-LTDEF-02 | **配置缺省轮数**（承重） | loop 段未配置 | `loop_limits() == (20, 65536)`（`…::test_defaults_match_code_defaults`） |
+| TC-LTDEF-03 | **构造缺省同值**（承重） | `DefaultLoop()` 直接构造（无配置源） | `_max_rounds == 20`，与配置缺省不分叉（`…::test_default_loop_constructor_matches_config_default`） |
+| TC-LTDEF-04 | 组合根注入缺省轮数 | 未配置 `build_runtime` | 主 loop `_max_rounds == 20`（`…::test_build_runtime_defaults_unchanged`） |
+| TC-LTDEF-05 | 热更新缺省值 | 未配置 UI API 初始状态 / 写失败回滚 | `(20, 65536)` 保持；失败后内存亦回滚（`tests/test_llm_config_hot_update.py::test_apply_hot_updates_running_loop` / `…::test_write_failure_leaves_file_untouched`） |
+| TC-LTDEF-06 | ConfigSpec 超时缺省 | 读取 `config_specs()` 的 `orchestration.subtask_timeout` | `default == 600`（`tests/test_orchestration_config.py::test_specs_declare_orchestration_keys`） |
+| TC-LTDEF-07 | **配置缺省超时**（承重） | orchestration 段未配置 | `orchestration_subtask_timeout() == 600`；组合根注入 `_subtask_timeout == 600`（`…::test_defaults_match_code_defaults` / `…::test_build_runtime_injects_default_subtask_timeout`） |
+| TC-LTDEF-08 | **显式 0 仍不设限**（承重） | yaml `subtask_timeout: 0` | 访问器返回 `0`；组合根注入 `0`，不回退 600（`…::test_explicit_zero_subtask_timeout_remains_unlimited` / `…::test_build_runtime_respects_explicit_zero`） |
+| TC-LTDEF-09 | 构造缺省保持 0 | `inspect.signature(TaskScheduler)` | `subtask_timeout` 构造缺省 `== 0`（两处缺省口径有意不同）（`…::test_scheduler_constructor_default_stays_zero`） |
+
+> **口径**：`loop.max_rounds` 配置缺省与 `DefaultLoop` 构造缺省**同值**（20，防两路径分叉）；
+> `orchestration.subtask_timeout` 配置缺省 600，而 `TaskScheduler` 构造缺省保持 0（不注入即不改变
+> 行为），生产值由组合根显式注入。显式 `0` 在两处都表示「不设限」。
+> **反证**：P1 还原 `_DEFAULT_MAX_ROUNDS=10` ⇒ TC-LTDEF-02 红；P2 还原
+> `_DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT=0` ⇒ TC-LTDEF-07 红；P3 还原
+> `DefaultLoop(max_rounds=10)` ⇒ TC-LTDEF-03 红。三次复原后 `md5sum` 一致。
+> 规格：`loop` **MODIFIED**「错误与预算控制」（+1 scen 缺省轮数放宽）；`configuration`
+> **MODIFIED**「循环预算配置」与「编排调度配置」（编排 +1 scen 显式 0）。
+> `openspec validate --all` 32/0（归档前）。测试净 **+4**（2872 → **2876**）。四门禁全绿。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0250 行（启发式缺省 / 最坏耗时无硬上限 /
+> 直连调度器无 600s 保护）。

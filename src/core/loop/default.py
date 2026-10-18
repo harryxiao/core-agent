@@ -371,7 +371,7 @@ class DefaultLoop(Plugin):
         cold_path: ColdPath | None = None,
         trace_observer: TraceObserver | None = None,
         source: str = "loop",
-        max_rounds: int = 10,
+        max_rounds: int = 20,
         token_budget: int = 65536,
         transcript: TranscriptStore | None = None,
         history_turns: int = 20,

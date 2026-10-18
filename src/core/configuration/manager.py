@@ -38,7 +38,7 @@ _DEFAULT_FAILURE_THRESHOLD = 5
 _DEFAULT_COOLDOWN_S = 30.0
 
 # 循环预算缺省口径来源：doc/openspec/specs/loop/spec.md「错误与预算控制」（同上，配置层复述）
-_DEFAULT_MAX_ROUNDS = 10
+_DEFAULT_MAX_ROUNDS = 20
 _DEFAULT_OUTPUT_RESERVE = 8192
 _DEFAULT_TOKEN_BUDGET = 65536
 # 回灌轮数缺省口径来源：doc/openspec/specs/configuration/spec.md「循环预算配置」
@@ -46,7 +46,7 @@ _DEFAULT_HISTORY_TURNS = 20
 # 压实步数阈值缺省口径来源：同规格「循环预算配置」（change 0182 / ADR-0173）。
 # 与 `context.compactor._STEP_THRESHOLD` **同值两地**（configuration 不 import context —— 分层
 # 方向；先例 `_DEFAULT_PERMISSION_MODE`）。一致性由 `test_config_default_matches_compactor_default`
-# 钉住；缺省 **6 < `max_rounds` 缺省 10** ⇒ 步数维度可真正提前触发。
+# 钉住；缺省 **6 < `max_rounds` 缺省 20** ⇒ 步数维度可真正提前触发。
 _DEFAULT_COMPACT_STEPS = 6
 
 # 编排调度缺省口径来源：doc/openspec/specs/configuration/spec.md「编排调度配置」
@@ -54,8 +54,10 @@ _DEFAULT_COMPACT_STEPS = 6
 # 同波次仍按依赖拓扑并发（与引入前逐字一致）；并发上限默认与 `TaskScheduler` 构造缺省同值。
 _DEFAULT_ORCHESTRATION_POLICY = "off"
 _DEFAULT_ORCHESTRATION_MAX_CONCURRENCY = 4
-# 子任务交接超时（change 0247 / ADR-0235）：`0` = 不设限（缺省行为与引入前一致）。
-_DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT = 0
+# 子任务交接超时（change 0247 / ADR-0235；缺省 600s —— change 0260 / ADR-0250）：
+# 显式 `0` 仍表示不设限。`TaskScheduler` 构造缺省保持 `0`（不注入即不改变行为），
+# 生产缺省由组合根显式注入本常量值。
+_DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT = 600
 # 策略词表（规格 `orchestration`「难易度感知的调度策略」；配置层不 import 能力层，故此处复述）
 _ORCHESTRATION_POLICIES = ("off", "difficulty")
 
@@ -653,7 +655,7 @@ class ConfigManager:
     def loop_limits(self) -> tuple[int, int]:
         """循环预算上限查询 → ``(max_rounds, token_budget)``。
 
-        对齐 loop「错误与预算控制」：`max_rounds` 缺省 ``10``；`token_budget` 由模型上下文窗口
+        对齐 loop「错误与预算控制」：`max_rounds` 缺省 ``20``；`token_budget` 由模型上下文窗口
         **派生** —— 窗口取 ``llm.context_window``（显式配置，``> 0``）；未配置时按 ``llm.model``
         从内置已知模型窗口表**推导**（change 0184 / ADR-0175，见 `model_windows.known_window`）；
         两者皆无 ⇒ 回落内置缺省 ``65536``（与变更前逐位一致）。窗口既得后取

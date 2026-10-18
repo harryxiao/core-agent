@@ -75,6 +75,10 @@ Configuration（横切）
   **≥1 的整数**、`loop.output_reserve` 与 `loop.history_turns` 须为 **≥0 的整数**（`bool` 一律非法），
   非法即阻断启动；`loop.compact_steps` **不做**「≤ max_rounds」跨键校验 —— 阈值达上限是**合法退化配置**
   （语义仍是「至少压实一次」，只不再提前触发）。
+- **长任务缺省放宽**（change `0260`／ADR-0250）：`loop.max_rounds` 缺省 `20`（`DefaultLoop`
+  构造缺省同步，避免有/无配置源两条路径分叉）；`orchestration.subtask_timeout` 配置缺省 `600s`，
+  显式 `0` 仍表示不设限；`TaskScheduler` 构造缺省保持 `0`（不注入即保持既有行为），生产值由组合根
+  注入。
 - **loop 段独立访问器**（change `0182`／ADR-0173、change `0183`／ADR-0174）：`compact_steps()` 与
   `output_reserve()` 各读一个既有/新增键，**不**并入 `loop_limits()` 二元组（其 arity 被多处解包断言
   钉死）；`output_reserve()` 与预算派生**同源**（预算 = 窗口 − 预留），组合根据此注入 planner 的

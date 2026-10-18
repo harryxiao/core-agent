@@ -307,7 +307,7 @@ L2 条目 `loop.failure.<trace_id>`（`tags=["loop","failure"]`、`kind="episodi
 ### Requirement: 错误与预算控制
 系统 SHALL 限制单任务最大循环次数与 token 预算，超出即终止或转人工。两项上限 SHALL 可经配置链
 （CLI flag > env > config.yaml > 默认值）设定并经 ConfigSpec 单一真源声明：`loop.max_rounds`
-（默认 `10`）与 `loop.output_reserve`（输出预留，默认 `8192`）。token 预算 SHALL 由模型上下文窗口
+（默认 `20`）与 `loop.output_reserve`（输出预留，默认 `8192`）。token 预算 SHALL 由模型上下文窗口
 **派生** —— `llm.context_window` 大于 `0` 时 `token_budget = llm.context_window - loop.output_reserve`；
 未配置（`0`）时回落内置缺省 `65536`。非法取值（非整数、`loop.max_rounds` < 1、
 `loop.output_reserve` < 0、或 `llm.context_window` 不大于 `loop.output_reserve`）SHALL 在校验期拒绝并
@@ -336,6 +336,11 @@ SHALL NOT 低于它；不可用（如流式响应不携带用量、或 planner �
 - **GIVEN** 配置链将 `loop.max_rounds` 设为 3（CLI flag / env / config.yaml 任一面）
 - **WHEN** 非终止动作连续执行至第 3 轮
 - **THEN** loop 终止并返回 `LOOP_LIMIT_EXCEEDED`
+
+#### Scenario: 缺省轮数放宽至 20
+- **GIVEN** 配置链未设置 `loop.max_rounds`
+- **WHEN** 组合根装配执行循环
+- **THEN** 单任务最大循环次数取 `20`；显式配置值仍逐字生效
 
 #### Scenario: 预算由上下文窗口派生
 - **GIVEN** `llm.context_window` = 131072 且 `loop.output_reserve` 取缺省 8192

@@ -84,7 +84,7 @@ def test_apply_persists_and_survives_reload(tmp_path: Path) -> None:
 def test_apply_hot_updates_running_loop(tmp_path: Path) -> None:
     """运行中的 loop 立即取用新上限（无需重建循环）。"""
     api, loop, _ = _api(tmp_path)
-    assert (loop._max_rounds, loop._token_budget) == (10, 65536)  # noqa: SLF001 — 接线断言
+    assert (loop._max_rounds, loop._token_budget) == (20, 65536)  # noqa: SLF001 — 接线断言
 
     api.apply_llm_config(_new_llm(131072), output_reserve=4096, max_rounds=3)
 
@@ -112,8 +112,8 @@ def test_invalid_value_rejected_and_original_intact(tmp_path: Path) -> None:
     assert exc.value.code is UiErrorCode.UI_LLM_CONFIG_INVALID
     assert (tmp_path / "config.yaml").read_text(encoding="utf-8") == before
     assert mgr is not None
-    assert mgr.loop_limits() == (10, 65536)
-    assert (loop._max_rounds, loop._token_budget) == (10, 65536)  # noqa: SLF001 — 未动
+    assert mgr.loop_limits() == (20, 65536)
+    assert (loop._max_rounds, loop._token_budget) == (20, 65536)  # noqa: SLF001 — 未动
 
 
 def test_plaintext_api_key_rejected(tmp_path: Path) -> None:
@@ -147,7 +147,7 @@ def test_write_failure_leaves_file_untouched(
     monkeypatch.undo()
     assert (tmp_path / "config.yaml").read_text(encoding="utf-8") == before
     assert mgr is not None
-    assert mgr.loop_limits() == (10, 65536)  # 内存亦回滚
+    assert mgr.loop_limits() == (20, 65536)  # 内存亦回滚
 
 
 def test_set_llm_config_does_not_touch_disk(tmp_path: Path) -> None:
@@ -174,7 +174,7 @@ def test_without_config_manager_keeps_memory_only(tmp_path: Path) -> None:
 def test_get_loop_limits_reports_effective_values(tmp_path: Path) -> None:
     """回显**生效值**（派生后的 token 预算），非旋钮原文。"""
     api, _, _ = _api(tmp_path)
-    assert api.get_loop_limits() == (10, 65536)
+    assert api.get_loop_limits() == (20, 65536)
 
     api.apply_llm_config(_new_llm(131072), output_reserve=4096, max_rounds=3)
     assert api.get_loop_limits() == (3, 131072 - 4096)

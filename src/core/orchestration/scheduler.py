@@ -244,7 +244,8 @@ class TaskScheduler:
         tracker: ProgressTracker | None = None,
         max_concurrency: int = 4,
         difficulty_policy: str = "off",
-        # 子任务交接超时（秒；`0` = 不设限，与配置缺省同值；change 0247）。
+        # 子任务交接超时（秒；`0` = 不设限）。构造缺省保持 `0`（不注入即不改变行为）；
+        # 配置缺省 `600` 由组合根显式注入（change 0247 / 0260）。
         subtask_timeout: float = 0,
         success_checker: SuccessChecker | None = None,
         checkpoint: CheckpointFn | None = None,

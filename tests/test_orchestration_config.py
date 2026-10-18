@@ -5,12 +5,13 @@
 规格「难易度感知的调度策略」要求两项由**组合根**注入 `TaskScheduler`（`max_concurrency`
 **不得**依赖构造缺省 —— 否则上限判据空转，与账本 E15 同型）。
 
-本文件证明：三面一致与优先级链 / 缺省回落代码缺省（`off` / `4`）/ 非法取值阻断启动（不静默兜底）/
-组合根**真的**把两值注入生产编排器。
+本文件证明：三面一致与优先级链 / 缺省回落代码缺省（`off` / `4` / `600s`，change 0260）/
+非法取值阻断启动（不静默兜底）/ 组合根**真的**把配置值注入生产编排器（含显式 `0`）。
 """
 
 from __future__ import annotations
 
+import inspect
 import warnings
 from pathlib import Path
 
@@ -18,7 +19,7 @@ import pytest
 
 from core.configuration import ConfigManager, ConfigurationError, config_specs
 from core.entry import _key_to_patch
-from core.orchestration import LLMTaskVerifier
+from core.orchestration import LLMTaskVerifier, TaskScheduler
 from core.runtime import build_runtime
 
 _LLM_SECTION = (
@@ -74,7 +75,7 @@ def test_specs_declare_orchestration_keys() -> None:
         "--orchestration.subtask-timeout",
         "CORE_ORCHESTRATION_SUBTASK_TIMEOUT",
         "orchestration.subtask_timeout",
-        0,
+        600,
     )
 
 
@@ -82,11 +83,23 @@ def test_specs_declare_orchestration_keys() -> None:
 
 
 def test_defaults_match_code_defaults(tmp_path: Path) -> None:
-    """未配置 orchestration 段 ⇒ 回落代码缺省（`off` / 4），与引入前逐位一致。"""
+    """未配置 orchestration 段 ⇒ 回落代码缺省（`off` / 4 / 600s；change 0260）。"""
     manager = _manager(tmp_path)
     assert manager.orchestration_difficulty_policy() == "off"
     assert manager.orchestration_max_concurrency() == 4  # noqa: PLR2004 — 即代码缺省
+    assert manager.orchestration_subtask_timeout() == 600  # noqa: PLR2004 — 即代码缺省
+
+
+def test_explicit_zero_subtask_timeout_remains_unlimited(tmp_path: Path) -> None:
+    """显式 `0` 仍是「不设限」，不被缺省 `600` 吞掉（change 0260）。"""
+    manager = _manager(tmp_path, "orchestration:\n  subtask_timeout: 0\n")
     assert manager.orchestration_subtask_timeout() == 0
+
+
+def test_scheduler_constructor_default_stays_zero() -> None:
+    """构造缺省保持 `0`（不设限）；生产缺省 `600` 只由组合根注入（change 0260）。"""
+    default = inspect.signature(TaskScheduler).parameters["subtask_timeout"].default
+    assert default == 0
 
 
 def test_values_from_yaml(tmp_path: Path) -> None:
@@ -192,7 +205,7 @@ def test_build_runtime_injects_policy_and_limit(
 def test_config_set_subtask_timeout_applies_and_persists(tmp_path: Path) -> None:
     """`config set orchestration.subtask_timeout` 真的生效并落盘（change 0247）。"""
     manager = _manager(tmp_path)
-    assert manager.orchestration_subtask_timeout() == 0
+    assert manager.orchestration_subtask_timeout() == 600  # noqa: PLR2004 — 缺省（change 0260）
 
     patch = _key_to_patch("orchestration.subtask_timeout", "30")
     manager.apply_change(patch)
@@ -204,11 +217,23 @@ def test_config_set_subtask_timeout_applies_and_persists(tmp_path: Path) -> None
     assert reloaded.orchestration_subtask_timeout() == 30  # noqa: PLR2004 — 即落盘取值
 
 
-def test_build_runtime_defaults_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """未配置 ⇒ 组合根注入代码缺省（`off` / 4）；仍走组合根，不落回构造缺省。"""
+def test_build_runtime_injects_default_subtask_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """未配置 ⇒ 组合根注入代码缺省（`off` / 4 / 600s）；不落回构造缺省 0。"""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path / "state"))
     runtime = build_runtime(_manager(tmp_path))
     assert runtime.orchestrator._difficulty_policy == "off"  # noqa: SLF001
     assert runtime.orchestrator._max_concurrency == 4  # noqa: SLF001, PLR2004
+    assert runtime.orchestrator._subtask_timeout == 600  # noqa: SLF001, PLR2004
+
+
+def test_build_runtime_respects_explicit_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """显式 `0` 由组合根原样注入（不设限），不被缺省 `600` 覆盖。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path / "state"))
+    runtime = build_runtime(_manager(tmp_path, "orchestration:\n  subtask_timeout: 0\n"))
     assert runtime.orchestrator._subtask_timeout == 0  # noqa: SLF001

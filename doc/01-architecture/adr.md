@@ -9190,6 +9190,47 @@ change 范围；⑥ 去重键基于 planner 原始参数，中间件改写后的
 （需要完整输出请用后台日志）；④ `tools.process output` 与前景 stdout 同口径，日志中的敏感文本可能
 回灌模型（写记忆前仍经 `redact_secrets`）；⑤ 后台任务上限 32、无优先级 / 排队语义。
 
+## ADR-0250：长任务默认值（change 0260 / 台账 E196）
+
+**背景**：对比审查（2026-10-18）确认长任务的两个缺省值偏保守：`loop.max_rounds` 缺省 10 步，
+真实编码闭环（读 → 改 → 测 → 看 → 修）稍有回环即撞上限；`orchestration.subtask_timeout`
+缺省 0（不设限），卡死的子任务可无限占用调度槽。
+
+**决策**：
+
+- **D1 `loop.max_rounds` 缺省 10 → 20**：`configuration/manager.py::_DEFAULT_MAX_ROUNDS` 与
+  `loop/default.py::DefaultLoop.__init__(max_rounds=...)` **同值**。后者是直接构造
+  （beast / pet / UI 的 `DefaultLoop()`）的缺省；不同步会让「有配置源」与「无配置源」两条路径
+  缺省分叉。token 预算派生、token 阀与校验上界（≥1 整数）逐字不变；`loop.compact_steps`
+  缺省 6 仍 **< 20** ⇒ 压实步数维度仍可提前触发。
+- **D2 `orchestration.subtask_timeout` 配置缺省 0 → 600 秒**：600s 覆盖多数编译 / 测试子任务，
+  又给卡死任务一个上界。校验范围不变（≥0 的整数，`bool` 非法）；显式 `0` 仍合法，语义仍为
+  「不设限」（`TaskScheduler` 侧 `> 0` 转 `deadline`，`0` 保留 `None`）。
+- **D3 两处缺省口径有意不同**：`TaskScheduler(subtask_timeout: float = 0)` **保持 0** ——
+  构造缺省表示「不注入即不改变既有行为」；生产由组合根 `build_runtime` 显式注入配置值
+  （缺省配置下为 600）。缺省值变更只作用于配置面，不靠构造缺省扩散；直连调度器的调用方仍为
+  不设限，该差异写入接口文档。
+- **D4 规格同步、校验不变**：`loop`「错误与预算控制」与 `configuration`「循环预算配置」的缺省
+  句与 Scenario 改 20；「编排调度配置」缺省句与 Scenario 改 600，并新增「显式 0 仍表示不设限」
+  Scenario。ConfigSpec 三面 / 优先级链 / 校验上下界均不变。
+
+**规格**：`loop` **MODIFIED** 1 req（+1 scen 缺省轮数放宽）；`configuration` **MODIFIED** 2 req
+（循环预算 / 编排调度缺省值，编排 +1 scen 显式 0）。`openspec validate --all` 32/0（归档前）。
+
+**测试**：缺省断言随迁移（`test_loop_budget_config.py` 16 处、`test_llm_config_hot_update.py`
+5 处、`test_orchestration_config.py` 4 处）；新增 4 例：`DefaultLoop` 构造缺省与配置缺省同值、
+配置层显式 `0` 仍不设限、组合根对显式 `0` 原样注入、`TaskScheduler` 构造缺省仍为 `0`。
+全量基线 2872 → **2876 passed**。反证 3/3：还原 `_DEFAULT_MAX_ROUNDS=10` ⇒ 缺省用例红；还原
+`_DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT=0` ⇒ 缺省与组合根注入用例红；还原
+`DefaultLoop(max_rounds=10)` ⇒ 构造缺省用例红；复原 `md5sum` 一致（注：同秒内 `cp` 复原可能
+命中陈旧 `.pyc`，反证后清 `__pycache__` 复核）。四门禁：`ruff check` / `ruff format --check`
+绿、`pyright` 0 errors、`pytest -q` 全绿。
+
+**局限**：① 20 / 600 是启发式缺省，未做真实任务成功率调优；② 轮数提高会放大单任务的最坏
+token 消耗，token 预算仍独立生效，但「最坏耗时」没有同等硬上限；③ `TaskScheduler` 构造缺省
+与配置缺省不同值，直连调度器的调用方不会获得 600s 保护（仅生产组合根注入）；④ 显式 `0`
+关闭 deadline 的能力保留，用户可主动回到无界语义（有意）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9434,3 +9475,4 @@ change 范围；⑥ 去重键基于 planner 原始参数，中间件改写后的
 | ADR-0247 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 03-interfaces/llm-provider-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0248 | 02-modules/loop.md, 02-modules/tool-use.md, 03-interfaces/loop-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0249 | 02-modules/tool-use.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0250 | 02-modules/configuration.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

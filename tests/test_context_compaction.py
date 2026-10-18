@@ -27,7 +27,7 @@ _DEFAULT_BUDGET = 65536
 
 
 def test_step_threshold_constant_is_six() -> None:
-    """默认工具步数阈值 = 6（< `loop.max_rounds` 缺省 10 ⇒ 该维度能提前触发）。"""
+    """默认工具步数阈值 = 6（< `loop.max_rounds` 缺省 20 ⇒ 该维度能提前触发）。"""
     assert _STEP_THRESHOLD == _DEFAULT_STEPS
 
 

@@ -258,7 +258,7 @@ CLI 面 `--feature <模块>[=<布尔>]` 由 `entry._cli_overrides` 收进覆盖�
 |---|---|---|---|
 | `llm.context_window` | `0`（= 未配置） | `0` 或 **≥1 的整数** | 模型上下文窗口；`> 0` 时参与派生 token 预算 |
 | `loop.output_reserve` | `8192` | **≥0 的整数** | 固定保留的输出头寸（推理/回答用），从窗口中扣除 |
-| `loop.max_rounds` | `10` | **≥1 的整数** | 单任务最大循环次数上限 |
+| `loop.max_rounds` | `20` | **≥1 的整数** | 单任务最大循环次数上限（change `0260`：10 → 20） |
 | `loop.history_turns` | `20` | **≥0 的整数**（`0` = 关闭回灌） | 会话历史回灌轮数（change `0115`）：注入转录存储时 `perceive` 载入本会话最近 N 轮进 `LoopContext.history`；与 token 切片 `token_budget // 2` 取**双重上界**（ADR-0108） |
 
 - **单一真源**：四键由 `ConfigSpec` 声明（`map_to="llm.context_window"` / `"loop.output_reserve"` /
@@ -300,7 +300,7 @@ CLI 面 `--feature <模块>[=<布尔>]` 由 `entry._cli_overrides` 收进覆盖�
 |---|---|---|---|
 | `orchestration.difficulty_policy` | `off` | `off` / `difficulty` | 同波次调度策略：`off` 沿用依赖拓扑并发（**逐字一致**）；`difficulty` 时含 `hard` 的波次串行 |
 | `orchestration.max_concurrency` | `4` | **≥1 的整数** | 同波次并发上限（`_fan_out` 的 `Semaphore` 上限） |
-| `orchestration.subtask_timeout` | `0` | **≥0 的整数**（秒） | 子任务交接（`TaskHandoff.deadline`）超时；`0` = 不设限（缺省关闭，行为与引入前一致） |
+| `orchestration.subtask_timeout` | `600` | **≥0 的整数**（秒） | 子任务交接（`TaskHandoff.deadline`）超时；`0` = 显式不设限（change `0260`：0 → 600） |
 
 - **单一真源**：三键由 `ConfigSpec` 声明（`map_to="orchestration.*"`，`exposure=ADVANCED`），
   自动获得 CLI flag（`--orchestration.difficulty-policy` / `--orchestration.max-concurrency` /
@@ -318,7 +318,10 @@ CLI 面 `--feature <模块>[=<布尔>]` 由 `entry._cli_overrides` 收进覆盖�
   写错必须暴露（ADR-0116 决策④）。
 - **组合根注入（不得依赖构造缺省）**：`build_runtime` 装配 `TaskScheduler` 时**显式**传三值 ——
   `TaskScheduler` 的构造缺省 `max_concurrency=4` 与既有行为**同值**，不接线**不会暴露**
-  （上限判据空转，与账本 E15 同型）；`subtask_timeout` 构造缺省 `0`（关闭）同样由组合根显式注入。
+  （上限判据空转，与账本 E15 同型）；`subtask_timeout` 配置缺省 `600` 同样由组合根显式注入。
+  **两处缺省口径不同**（change `0260`）：`TaskScheduler` 构造缺省仍为 `0`（不设限；不注入即保持既有
+  行为），配置面缺省为 `600`；生产路径必须经组合根注入，直连构造不获得 600s 保护。显式配置 `0`
+  原样注入为「不设限」，不被缺省值覆盖。
   已有用例断言接入的是**配置值**而非构造缺省。
 - **`config set` 可达**：`_key_to_patch` 白名单含 `orchestration`；`_merge_patch` 对 `extra` 寄居段
   （`loop` / `orchestration`）**浅合并** ⇒ patch 不会「报成功却不生效」。
