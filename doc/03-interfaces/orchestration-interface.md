@@ -180,6 +180,13 @@ class TaskScheduler:
   `orchestration.failure_notify_webhook` 非空时向该 URL 单次 `POST` 通用 JSON
   （`text` + 同上字段；stdlib、5s、不重试）。两 sink 相互独立、失败只告警；三个配置缺省
   `0` / `""` / `""` ⇒ 不设限、不通知、不发请求。
+- **续跑批次单实例锁**（change 0285 / ADR-0275）：`task --resume-all` 与
+  `orchestration.auto_resume` 的续跑批次在扫描检查点**之前**获取
+  `$CORE_STATE_DIR/.auto-resume.json.lock`（非阻塞、fail-closed、`0600`），持有到批次结束
+  （含任务执行与续跑状态写回）。锁忙时打印 `[resume_skipped]` 并以退出码 0 结束
+  （自动模式跳过续跑、继续本次新任务）；锁不可用时显式入口退出 1。锁只串行化续跑批次，
+  不改变 `checkpoints.jsonl` 的单写者假设。运维手册见
+  `doc/05-development/unattended-ops.md`。
 - **文件型检查点**（change 0230 / ADR-0237）：`FileCheckpoint(path=".core/scheduler-checkpoint.json")`
   满足 `CheckpointFn` 四参契约，JSON 落盘 `task_id / session_id / plan / completed / results`，
   同目录 `.tmp` + `os.replace` **原子写**；`load(task_id=None)` 读回（损坏/缺失返回 `None`，

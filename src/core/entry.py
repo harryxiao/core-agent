@@ -79,6 +79,7 @@ from core.notes import (
 from core.orchestration import OrchestrationErrorCode, Plan, TaskScheduler, plan_from_dict
 from core.orchestration.auto_resume import AutoResumeState
 from core.orchestration.notify import post_failure_webhook
+from core.orchestration.state_files import try_exclusive_file_lock
 from core.permission import (
     ApprovalChannel,
     ApprovalRequest,
@@ -2227,11 +2228,28 @@ async def _run_task_stream(  # noqa: PLR0913, PLR0917 — 与 _stream_task 同�
 
 
 def _run_auto_resume(runtime: Runtime, *, force: bool) -> bool:
-    """续跑未完成编排任务；返回是否有任务续跑失败（change 0278 / ADR-0268）。
+    """续跑批次入口：先取跨进程单实例锁，再执行扫描与续跑（change 0285 / ADR-0275）。
 
-    ``force``（`task --resume-all`）不受退避与尝试上限约束；自动模式在失败后退避。
-    尝试次数**执行前**落盘（进程中途崩溃也已计入上限）；成功清零，失败保留检查点。
-    每个任务独立施加整任务时限与失败通知（change 0280）。
+    锁覆盖整个批次（扫描、逐任务执行、自动续跑状态读写）。``busy`` 是 cron 重叠常态：
+    跳过并返回 ``False``（`--resume-all` 退出 0，自动模式继续本次新任务）。``unavailable``
+    是锁文件不可创建的运维故障：fail-closed 跳过，返回 ``True``（显式入口退出 1）。
+    """
+    with try_exclusive_file_lock(_state_path("auto-resume.json")) as outcome:
+        if outcome == "busy":
+            print("[resume_skipped] 另一个续跑实例正在运行", file=sys.stderr)
+            return False
+        if outcome == "unavailable":
+            print("[resume_skipped] 续跑锁不可用（无法创建锁文件）", file=sys.stderr)
+            return True
+        return _run_auto_resume_locked(runtime, force=force)
+
+
+def _run_auto_resume_locked(runtime: Runtime, *, force: bool) -> bool:
+    """锁内批次（调用方必须已持有续跑批次锁）。
+
+    返回是否有任务续跑失败。``force``（`task --resume-all`）不受退避与尝试上限约束；
+    自动模式在失败后退避。尝试次数**执行前**落盘（进程中途崩溃也已计入上限）；
+    成功清零，失败保留检查点。每个任务独立施加整任务时限与失败通知（change 0280）。
     """
     resumes = runtime.pending_resumes()
     if not resumes:

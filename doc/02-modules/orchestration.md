@@ -223,6 +223,21 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
 - **无 EffectTracker 撤销**：保留是产品决策；挂 undo 会让全局回滚删除用户期望保留的产物。
   可逆面是显式 `discard`。
 
+### 3.12 续跑批次单实例互斥（change `0285`／ADR-0275）
+
+- **锁位置**：`$CORE_STATE_DIR/.auto-resume.json.lock`（`0600`，非阻塞建议锁，
+  POSIX `flock LOCK_EX|LOCK_NB` / Windows `msvcrt.LK_NBLCK`）。在 `pending_resumes()` **之前**
+  获取，持有到整个批次结束（扫描、逐任务执行、`AutoResumeState` 读改写）；释放时**不删除**
+  锁文件，进程退出由 OS 释放。
+- **三态**：`acquired` 执行批次；`busy` 打印 `[resume_skipped]` 并跳过（显式入口退出 0，
+  自动模式继续新任务）；`unavailable` fail-closed 跳过（显式入口退出 1，自动模式继续新任务）。
+  不排队、不等待、不降级为无锁续跑。
+- **与既有锁的分工**：`state_files.exclusive_file_lock` 是 fail-open 的短建议锁（后台登记 /
+  工作树 sidecar）；本锁是 fail-closed 的互斥锁，二者语义不可互换。
+- **边界**：只串行化续跑批次；fresh `task`、`--resume`、REPL、`serve` 不受约束，
+  `checkpoints.jsonl` 仍是最后写者胜（共享 `.tmp`）。运维见
+  `doc/05-development/unattended-ops.md`。
+
 ---
 
 ## 4. 与 loop 的关系

@@ -481,6 +481,7 @@ def test_task_timeout_returns_nonzero_and_notifies(
 def test_auto_resume_timeout_keeps_checkpoint_and_notifies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path))  # 续跑批次锁不落到真实状态目录
     path = tmp_path / "notify.jsonl"
     resume = TaskResume(
         task_id="task-1",

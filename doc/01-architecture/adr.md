@@ -10380,6 +10380,53 @@ ruff check / format 绿、`pyright` 0 errors、`pytest -q` **3141 passed**。
 Windows 只覆盖路径与锁的单元行为，未做手工端到端验证。`file_write` / `file_patch` 的撤销快照
 列表在同一进程的并发任务间共享，工作树隔离不修复该既有问题（ADR 记录，不在本 change 范围）。
 
+## ADR-0275：续跑批次单实例互斥（change 0285 / 台账 E221）
+
+**背景**：对齐报告把「常驻调度形态」列为 P1，当前推荐形态是外部 cron 周期执行
+`core-agent task --resume-all`。该路径没有互斥：cron 周期短于批次时长时，两个实例会同时扫描
+同一批未完成任务并各跑一遍；`CheckpointStore` 跨进程是最后写者胜，`AutoResumeState` 的
+临时文件写也会互相覆盖。同时缺少运维文档（cwd、状态目录、退出码、止血）。
+
+**决策**：
+
+- **D1 只做单实例锁，不做队列 / 守护进程**：cron 重叠是常态；跳过并等下一次 tick 重试足够。
+  排队会让 cron 进程堆积，守护进程会引入生命周期 / 升级 / 日志新面。
+- **D2 新增 fail-closed 的 `try_exclusive_file_lock`，不改既有 fail-open 的
+  `exclusive_file_lock`**：后者用于后台登记 / 工作树 sidecar，取锁失败**无锁写**是刻意的
+  尽力而为；互斥场景必须 fail-closed。新助手同文件、同平台分支（POSIX
+  `flock LOCK_EX|LOCK_NB` / Windows `msvcrt.LK_NBLCK`）、锁文件 `0600`。
+- **D3 三态 `acquired / busy / unavailable`，不压成 bool**：`busy` 是正常重叠（退出 0），
+  `unavailable` 是权限 / 磁盘故障（显式入口退出 1），运维含义不同。创建或加锁失败一律
+  `unavailable`，绝不降级为无锁续跑。
+- **D4 锁在 `pending_resumes()` 之前获取，持有到批次结束**：扫描、逐任务执行、
+  `AutoResumeState` 读改写都是批次的一部分；只罩扫描仍会双跑。锁文件
+  `$CORE_STATE_DIR/.auto-resume.json.lock`，释放时**不删除**（避免两个进程锁到不同 inode）。
+- **D5 函数体拆为 `_run_auto_resume_locked`**：架构门禁统计 `with/if/for/try` 嵌套 ≤3；
+  不拆会把既有深度 3 推到 4。锁在 `with` 内交给 locked body，不得提前退出上下文。
+- **D6 退出码与自动模式**：`busy` 返回 `False` ⇒ `--resume-all` 退出 0；`unavailable` 返回
+  `True` ⇒ 退出 1。自动模式返回值本就被丢弃：两种跳过都不阻止本次新任务。
+- **D7 锁范围只到续跑批次**：`CheckpointStore` 仍是共享 `.tmp` + 最后写者胜；fresh `task`、
+  `task --resume <id>`、REPL、`serve` 不受约束。系统不声称检查点文件获得跨进程单写者一致性。
+- **D8 止血靠文档，不新增删除 CLI**：`--resume-all` 的 `force=True` 绕过退避与尝试上限，
+  永久失败任务会每 tick 重试。手册给出「停 cron → 备份 → 删除 `snapshot.task_id` 行」步骤；
+  `task --forget` / 保留期与配额登记为后续缺口。
+
+**反证 3/3（均实测转红后复原，`md5sum` 一致）**：① `_run_auto_resume` 去掉取锁包裹 ⇒ 并发
+busy 用例红（第二个实例扫描并执行）；② 打开失败改为 `acquired`（fail-open）⇒ unavailable
+用例红（不执行续跑 / 退出码预期被破坏）；③ 锁只包住扫描、循环前释放 ⇒ 「执行期仍持锁」断言红。
+
+**规格**：`orchestration` **ADDED**「续跑批次单实例互斥」（6 场景）。`validate --all`
+**31/0**（归档后）。
+
+**测试**：`tests/test_auto_resume.py` 净 **+7 例**；`tests/test_unattended.py` 的直接调用点补
+`CORE_STATE_DIR` 隔离。净 **+7**（3177 → **3184**）。四门禁：ruff check / format 绿、
+`pyright` 0 errors、`pytest -q` **3184 passed**。
+
+**局限**：锁是平台原生**建议锁**，只在单机本地盘保证；NFS / 网络盘 / 部分 WSL 挂载不保证互斥。
+批次挂死会占锁到进程退出，期间 tick 全部跳过并退出 0；无锁超时、PID 诊断或过期回收。
+`--resume-all` 每 tick 重试永久失败任务并重复通知（需手工止血）。锁只覆盖续跑批次，
+同一 `$CORE_STATE_DIR` 仍按单写者假设使用。Windows 只做单元行为覆盖，未做手工端到端验证。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10649,3 +10696,4 @@ Windows 只覆盖路径与锁的单元行为，未做手工端到端验证。`fi
 | ADR-0272 | 02-modules/permission.md, 03-interfaces/permission-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0273 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0274 | 02-modules/orchestration.md, 02-modules/tool-use.md, 02-modules/configuration.md, 02-modules/permission.md, 03-interfaces/orchestration-interface.md, 03-interfaces/git-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/permission-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0275 | 05-development/unattended-ops.md, 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

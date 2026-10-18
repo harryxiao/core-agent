@@ -128,6 +128,15 @@ core-agent run --prompt "总结当前目录"
 core-agent session create     # 返回 32 位 session_id
 ```
 
+无人值守续跑（外部 cron 周期拉起；同状态目录的续跑批次由单实例锁互斥）：
+
+```bash
+core-agent task --resume-all
+```
+
+部署形态、退出码、日志与止血步骤见
+[`05-development/unattended-ops.md`](../05-development/unattended-ops.md)。
+
 Pet 激活（三入口之一）：
 
 ```bash

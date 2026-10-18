@@ -107,5 +107,6 @@ core-agent app --port 8000
 ## 6. 关联
 
 - SDD 工作流详解：`doc/05-development/sdd-workflow.md`
+- 无人值守运维（cron + `task --resume-all`）：`doc/05-development/unattended-ops.md`
 - 规格：`doc/openspec/specs/*`
 - 变更示例：`doc/openspec/changes/0001-bootstrap-core/*`

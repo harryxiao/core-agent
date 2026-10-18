@@ -4745,3 +4745,31 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3177 passed**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0274 行（非沙箱 / 共享 `.git` /
 > TaskScheduler 未隔离 / 无自动清理 / 快照不刷新 / Windows 未手工验证 / 撤销快照共享）。
+
+## 197. 续跑批次单实例锁（TC-RESUMELOCK，change `0285`／ADR-0275，台账 E221）
+
+> 覆盖 `orchestration` **ADDED**「续跑批次单实例互斥」（6 scen）。测试全部位于
+> `tests/test_auto_resume.py`（净 +7 例）；`tests/test_unattended.py` 的直接调用点补
+> `CORE_STATE_DIR` 隔离，避免批次锁落到真实状态目录。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-RESUMELOCK-01 | Scenario「锁作用域与权限」/「释放后可继续」 | 同进程取锁 → 再取 → 释放 → 再取 | `acquired` → `busy` → `acquired`；锁文件 `0600`（`test_try_exclusive_lock_states_and_release`） |
+| TC-RESUMELOCK-02 | Scenario「取锁失败 fail-closed」 | 锁文件父路径是普通文件 | `unavailable`，不伪装成已加锁（`test_try_exclusive_lock_fails_closed_when_parent_unusable`） |
+| TC-RESUMELOCK-03 | Scenario「重叠续跑被跳过」 | 外层持锁 + `task --resume-all` | 退出 0；`pending_resumes` 未被调用；stderr `[resume_skipped]`；无任务执行（`test_resume_all_busy_skips_scan_and_exits_zero`） |
+| TC-RESUMELOCK-04 | Scenario「锁覆盖任务执行阶段」 | 调度器 `astream` 内再取同一锁 | 观察到 `busy`（锁不是只罩扫描）（`test_resume_lock_held_during_task_execution`） |
+| TC-RESUMELOCK-05 | Scenario「释放后可继续」 | 批次正常结束后再取锁 | `acquired`（`test_resume_lock_held_during_task_execution` 尾段） |
+| TC-RESUMELOCK-06 | Scenario「自动续跑锁忙不阻塞新任务」 | 持锁 + `auto_resume=true` + 新目标 | 只执行 `new`，退出 0，stderr 有跳过提示（`test_auto_resume_busy_lock_still_runs_new_task`） |
+| TC-RESUMELOCK-07 | Scenario「取锁失败 fail-closed」 | 入口收到 `unavailable` + `--resume-all` | 退出 1；不扫描；stderr 含「续跑锁不可用」（`test_resume_all_lock_unavailable_fails_closed`） |
+| TC-RESUMELOCK-08 | Scenario「自动续跑锁忙不阻塞新任务」 | 入口收到 `unavailable` + `auto_resume=true` | 仅跳过续跑，新任务照常执行且退出 0（`test_auto_resume_lock_unavailable_still_runs_new_task`） |
+
+> **口径**：锁文件 `$CORE_STATE_DIR/.auto-resume.json.lock`，`0600`，非阻塞建议锁，
+> 扫描前获取、批次结束释放、不删除；`busy` 与 `unavailable` 分离（前者 cron 常态退出 0，
+> 后者显式入口退出 1）。锁只串行化续跑批次，`checkpoints.jsonl` 的单写者假设不变。
+> **反证 3/3**：① 去掉取锁包裹 ⇒ TC-03 红；② 打开失败改 `acquired`（fail-open）⇒ TC-07 红；
+> ③ 锁只罩扫描、循环前释放 ⇒ TC-04 红；复原 `md5sum` 一致。
+> 规格：`orchestration` **ADDED**（6 scen）。`validate --all` 31/0（归档后）。
+> 测试净 **+7**（3177 → **3184**）。
+> 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3184 passed**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0275 行（建议锁 / 仅本地盘 /
+> 批次挂死占锁 / 无锁超时与诊断 / 强制续跑无限重试 / 单写者假设 / Windows 未手工验证）。

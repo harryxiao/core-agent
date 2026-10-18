@@ -92,6 +92,7 @@ doc/
 ├── 05-development/                【开发层】
 │   ├── development-standards.md   工程开发规范（12 主题：编码/命名/并发/嵌套/耦合/异常/状态机/性能 + 门禁映射）
 │   ├── development-guide.md       工程规范/目录布局/插件开发流程/Git 工作流
+│   ├── unattended-ops.md          无人值守运维（cron + `task --resume-all`、单实例锁、退出码、止血）
 │   └── sdd-workflow.md            SDD 工作流（spec → change → delta → archive）
 │
 ├── 06-ui-frontend/                【UI 界面与启动模式】

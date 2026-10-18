@@ -13,7 +13,10 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import contextlib
+import stat
+import sys
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -29,6 +32,7 @@ from core.orchestration.auto_resume import (
     AUTO_RESUME_MAX_ATTEMPTS,
     AutoResumeState,
 )
+from core.orchestration.state_files import try_exclusive_file_lock
 from core.runtime import _task_resumes
 
 _LLM_SECTION = (
@@ -193,9 +197,11 @@ def test_task_resumes_rebuilds_latest_and_skips(tmp_path: Path) -> None:
 
 
 class _Orch:
-    def __init__(self, *, fail_ids: set[str] | None = None) -> None:
+    def __init__(self, *, fail_ids: set[str] | None = None, lock_path: Path | None = None) -> None:
         self.fail_ids = set(fail_ids or set())
         self.calls: list[dict[str, Any]] = []
+        self.lock_path = lock_path
+        self.lock_seen: list[str] = []
 
     async def astream(  # noqa: PLR0913, PLR0917 — 对齐调度器签名
         self,
@@ -206,6 +212,9 @@ class _Orch:
         results: dict[str, str] | None = None,
         session_id: str = "",
     ) -> AsyncIterator[LoopEvent]:
+        if self.lock_path is not None:
+            with try_exclusive_file_lock(self.lock_path) as outcome:
+                self.lock_seen.append(outcome)  # 批内应始终是 busy（外层已持锁）
         self.calls.append(
             {
                 "task_id": task_id,
@@ -356,3 +365,129 @@ def test_auto_resume_failure_keeps_attempt(
     state = AutoResumeState(tmp_path / "auto-resume.json")
     assert state.attempts("t1") == 1  # 失败保留：退避后下次重试
     assert "续跑失败" in capsys.readouterr().err
+
+
+# ---- 续跑批次单实例锁（change 0285 / ADR-0275 / 台账 E221） ----
+
+_LOCK_MODE = 0o600
+
+
+def test_try_exclusive_lock_states_and_release(tmp_path: Path) -> None:
+    path = tmp_path / "auto-resume.json"
+    with try_exclusive_file_lock(path) as first:
+        assert first == "acquired"
+        with try_exclusive_file_lock(path) as second:
+            assert second == "busy"
+    lock_path = tmp_path / ".auto-resume.json.lock"
+    assert lock_path.exists()
+    if sys.platform != "win32":
+        assert stat.S_IMODE(lock_path.stat().st_mode) == _LOCK_MODE
+    with try_exclusive_file_lock(path) as again:
+        assert again == "acquired"
+
+
+def test_try_exclusive_lock_fails_closed_when_parent_unusable(tmp_path: Path) -> None:
+    blocked = tmp_path / "blocked"
+    blocked.write_text("x", encoding="utf-8")
+    with try_exclusive_file_lock(blocked / "auto-resume.json") as outcome:
+        assert outcome == "unavailable"
+
+
+def test_resume_all_busy_skips_scan_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path))
+    orch = _Orch()
+    scans: list[int] = []
+    runtime = _runtime(orch, [], auto=False)
+    runtime.pending_resumes = lambda: scans.append(1) or []
+    monkeypatch.setattr("core.entry.build_runtime", lambda config: runtime)
+
+    with try_exclusive_file_lock(tmp_path / "auto-resume.json") as acquired:
+        assert acquired == "acquired"
+        rc = main(["task", "--resume-all"])
+
+    assert rc == 0
+    assert scans == []  # 锁忙时连扫描都不做
+    assert orch.calls == []
+    err = capsys.readouterr().err
+    assert "[resume_skipped]" in err
+    assert "另一个续跑实例正在运行" in err
+
+
+def test_resume_lock_held_during_task_execution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path))
+    lock_path = tmp_path / "auto-resume.json"
+    orch = _Orch(lock_path=lock_path)
+    monkeypatch.setattr(
+        "core.entry.build_runtime", lambda config: _runtime(orch, [_resume()], auto=False)
+    )
+
+    assert main(["task", "--resume-all"]) == 0
+    assert [call["task_id"] for call in orch.calls] == ["t1"]
+    assert orch.lock_seen == ["busy"]  # 执行期仍持锁
+    with try_exclusive_file_lock(lock_path) as outcome:
+        assert outcome == "acquired"  # 批次结束释放
+
+
+def test_auto_resume_busy_lock_still_runs_new_task(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path))
+    orch = _Orch()
+    monkeypatch.setattr(
+        "core.entry.build_runtime", lambda config: _runtime(orch, [_resume()], auto=True)
+    )
+    monkeypatch.setattr("core.entry.SessionRegistry", _registry_stub())
+
+    with try_exclusive_file_lock(tmp_path / "auto-resume.json"):
+        assert main(["task", "新目标", "--task-id", "new"]) == 0
+
+    assert [call["task_id"] for call in orch.calls] == ["new"]
+    assert "[resume_skipped]" in capsys.readouterr().err
+
+
+def test_resume_all_lock_unavailable_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path))
+    orch = _Orch()
+    scans: list[int] = []
+    runtime = _runtime(orch, [], auto=False)
+    runtime.pending_resumes = lambda: scans.append(1) or []
+    monkeypatch.setattr("core.entry.build_runtime", lambda config: runtime)
+
+    @contextlib.contextmanager
+    def _unavailable(_path: Path) -> Iterator[str]:
+        yield "unavailable"
+
+    monkeypatch.setattr("core.entry.try_exclusive_file_lock", _unavailable)
+
+    assert main(["task", "--resume-all"]) == 1
+    assert scans == []
+    err = capsys.readouterr().err
+    assert "[resume_skipped]" in err
+    assert "续跑锁不可用" in err
+
+
+def test_auto_resume_lock_unavailable_still_runs_new_task(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path))
+    orch = _Orch()
+    monkeypatch.setattr(
+        "core.entry.build_runtime", lambda config: _runtime(orch, [_resume()], auto=True)
+    )
+    monkeypatch.setattr("core.entry.SessionRegistry", _registry_stub())
+
+    @contextlib.contextmanager
+    def _unavailable(_path: Path) -> Iterator[str]:
+        yield "unavailable"
+
+    monkeypatch.setattr("core.entry.try_exclusive_file_lock", _unavailable)
+
+    assert main(["task", "新目标", "--task-id", "new"]) == 0
+    assert [call["task_id"] for call in orch.calls] == ["new"]
+    assert "续跑锁不可用" in capsys.readouterr().err
