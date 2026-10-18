@@ -10473,6 +10473,41 @@ busy 用例红（第二个实例扫描并执行）；② 打开失败改为 `acq
 维护入口只与续跑批次互斥，fresh `task` 并发时仍是最后写者胜；NFS/网络盘不保证锁互斥；
 清 `auto-resume.json` 失败只告警、不影响退出码。
 
+## ADR-0277：coding-plan 索引守卫与 G1/G2 消歧（change 0287 / 台账 E223）
+
+**背景**：`Pending-Arbitration.md` 在 `0226` 登记了 PA-11（README 阶段索引漂移）与 PA-12
+（`phase-38` 批内缺口与记忆三面路线图共用 `G1`/`G2`）。PA-11 已造成实证返工：走查按 README 的
+`phase-0~34` 范围找账，漏掉 `phase-36`（长任务硬化）与 `phase-38`（四维记忆蓝图查漏补缺），
+把已裁决事项重报为缺口。两条都只动文档，但需要一条门禁防止再次漂移。
+
+**决策**：
+
+- **D1 PA-11 取「补索引 ＋ 守卫」（方案 C）**：只补一次仍会再漂；一条断言把「新增 Phase 忘补
+  索引」从静默漂移变成测试转红。
+- **D2 计数口径对齐仓库内文件，不沿用旧自述**：`phase-*.md` 共 **46** 份（主文档 43 ＋ 配套记录
+  3），最大 `phase-41.md`。本地未跟踪、按约定不提交的 `phase-32.md` / `phase-3-prompt.md`
+  不计入。旧句「36 份（README + `phase-0`~`phase-34`）」本身就算不平。
+- **D3 守卫解析唯一「索引计数（守卫）」行**：机读份数、主文档数、配套数、最大编号，与实际 glob
+  逐项比对；改文案格式时测试失败信息直接指出缺失句式。
+- **D4 §1 覆盖按主文档集合判定**：解析 §1 表行的反引号文件名，要求与 `phase-N[.N].md` 集合
+  **相等** —— 「正文提过、索引没列」的半漂移也会红（`phase-32.md` 正是这种）。
+- **D5 PA-12 取局部改前缀（方案 B）**：§0 批内缺口改 `B38-1/2/3`，加「与路线图 G1~G5 非同组」
+  注记；§118 路线图收官声明逐字保留。全局重编号（方案 C）历史成本过高，明确不做。
+- **D6 登记与台账同步**：PA-11/PA-12 标已闭并带 change 号；`known-risk.md` 把「README §2 标 ✅
+  与事实不符，属已知」订正为「✅ 表示 Phase 计划完成，不代表整包生产接线」。
+
+**被拒方案**：只补索引不加守卫（会再漂）；保留旧「36 份」口径并手写解释（算不平，仍歧义）；
+守卫只查 README 全文包含（漏「正文有、索引无」）；全局重编号 G1/G2（波及历史 ADR/台账）。
+
+**验证**：`tests/test_coding_plan_index.py` 3 例；反证 3/3（改计数 / 删 §1 行 / 恢复裸 G1G2
+⇒ 各红；`cp` 复原后 `md5sum` 一致）。四门禁全绿；`openspec validate --all` **31/0**（归档后）。
+
+**测试**：新增 3 例（3196 → **3199**）；`tests/test_arbitration_ledger.py` 仅订正注释措辞。
+
+**局限**：守卫依赖固定句式；只覆盖计数/最大编号/§1 覆盖，不判描述过时；配套记录不计入主文档
+集合；`phase-32.md` / `phase-3-prompt.md` 按约定不提交，守卫硬编码排除（若将来入库须同步）；
+`B38-*` 只消除 §0 批内歧义；其余文档无同类守卫；不全局重编号。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10744,3 +10779,4 @@ busy 用例红（第二个实例扫描并执行）；② 打开失败改为 `acq
 | ADR-0274 | 02-modules/orchestration.md, 02-modules/tool-use.md, 02-modules/configuration.md, 02-modules/permission.md, 03-interfaces/orchestration-interface.md, 03-interfaces/git-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/permission-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0275 | 05-development/unattended-ops.md, 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0276 | 05-development/unattended-ops.md, 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/durability-interface.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0277 | 04-testing/test-cases.md, coding-plan/README.md, coding-plan/phase-38.md, coding-plan/Pending-Arbitration.md, coding-plan/known-risk.md |

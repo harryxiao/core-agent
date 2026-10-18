@@ -20,7 +20,8 @@ _LEDGER = Path(__file__).resolve().parents[1] / "coding-plan" / "Pending-Arbitra
 _TABLE_ROW = re.compile(r"^\|\s*\*\*(PA-\d{2})\*\*\s*\|")
 _DETAIL_HEAD = re.compile(r"^###\s+(PA-\d{2})\b", re.MULTILINE)
 
-#: 第二轮（长任务 × 记忆）的开放项 —— 新增开放项时**手工**加进来（已知局限，见 ADR-0216②）。
+#: 第二轮（长任务 × 记忆）项（含已闭；已闭项仍须保留五要素）—— 新增项时**手工**加进来
+#: （已知局限，见 ADR-0216②）。
 _ROUND2 = ("PA-08", "PA-09", "PA-10", "PA-11", "PA-12")
 _CLOSED_MARK = "已闭"
 _CHANGE_NO = re.compile(r"`0\d{3}`")

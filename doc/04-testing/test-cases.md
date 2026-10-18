@@ -4806,3 +4806,20 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3196 passed**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0276 行（不可逆 / max_count 不含 pinned /
 > 仅与续跑批次互斥 / 建议锁 / 清退避失败仅告警 / 不碰其他状态 / 不暴露为工具）。
+
+## 199. coding-plan 索引守卫（TC-CODEPLAN-IDX，change `0287`／ADR-0277，台账 E223）
+
+| 编号 | 覆盖 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-CODEPLAN-IDX-01 | PA-11 计数与最大编号 | README「索引计数（守卫）」行 vs 实际 `phase-*.md` | 总数、主文档数、配套数、最大 `phase-41.md` 逐项一致（`test_readme_declared_count_and_max_match_files`） |
+| TC-CODEPLAN-IDX-02 | PA-11 §1 覆盖 | README §1 表行的 `phase-N[.N].md` vs 实际主文档 | 集合相等；缺行/多行均转红（`test_section1_index_covers_every_main_phase_doc`） |
+| TC-CODEPLAN-IDX-03 | PA-12 消歧 | `phase-38.md` §0 | 含 `B38-1/2/3` 与「非同组」注记；无裸 `**G1`/`**G2`（`test_phase38_batch_gaps_do_not_reuse_roadmap_labels`） |
+
+> **口径**：只判结构，不判每行描述是否过时。仓库内 `phase-*.md` 46 份（主文档 43 ＋ 配套记录 3）；
+> 配套记录（`phase-1-contracts-baseline.md` / `phase-17-impl-notes.md` / `phase-21-findings.md`）
+> 计入总数、不计入主文档集合；本地未跟踪 `phase-32.md` / `phase-3-prompt.md` 不计入。
+> **反证 3/3**：① README 计数改错 ⇒ TC-01 红；② 删 §1 任一主文档行 ⇒ TC-02 红；
+> ③ `phase-38.md` §0 恢复裸 `G1`/`G2` ⇒ TC-03 红；复原 `md5sum` 一致。
+> 规格中性（`skip_specs`，零 `src/` 改动）。测试净 **+3**（3196 → **3199**）。
+> 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3199 passed**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0277 行。
