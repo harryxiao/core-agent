@@ -9231,6 +9231,49 @@ token 消耗，token 预算仍独立生效，但「最坏耗时」没有同等�
 与配置缺省不同值，直连调度器的调用方不会获得 600s 保护（仅生产组合根注入）；④ 显式 `0`
 关闭 deadline 的能力保留，用户可主动回到无界语义（有意）。
 
+## ADR-0251：记忆检索质量离线基准（change 0261 / 台账 E197）
+
+**背景**：对比审查（2026-10-18）确认记忆检索缺**质量回归门**。BM25 词法排序（change 0252）
+此前只有零散「相关性顺序」单元测试，没有固定语料覆盖「当前事实 vs 陈旧事实」「跨会话」
+「L2/L3/L4 混合」；排序公式或分词口径的任何改动都可能悄悄降低召回、让陈旧事实压过当前事实，
+而现有测试不会红。引入真实 LLM / embedder 评测又带不确定性、成本与网络依赖，不能作常规门禁。
+
+**决策**：
+
+- **D1 固定合成语料 + 阈值门禁**：`tests/test_memory_quality.py` 内置 26 条条目（L2 当前事实 /
+  L3 技能 / L4 归档 / 跨会话 / `source="bench.stale"` 陈旧冲突 / 诱饵）与 12 条带 gold 的查询。
+  度量 **recall@5 ≥ 0.9**、**MRR@5 ≥ 0.7**、**stale_hits = 0**。阈值留 1 条查询的召回余量，
+  不做分数逐位相等断言；变更语料或阈值视为**显式重定基线**，须记录原因，不得为变绿静默放宽。
+- **D2 stale 口径按危害而非出现**：只在「陈旧条目排名**高于**对应当前 gold」时计一次
+  `stale_hits`；陈旧事实未压过当前事实时出现在相关结果里是无害的。这比「stale 是否进 top5」
+  更贴近真实风险。
+- **D3 每条查询新建 store 重放**：`read()` 的 `_reinforce` 会改写 `reuse_count`，复用同一 store
+  会让查询顺序影响后续排名。`FileBackend()` 无 path ⇒ 纯内存、不落盘。所有条目
+  `ts=4_000_000_000`（未来时间戳）⇒ `recency_decay` 恒 `1.0`，消除时钟噪声；另以「两次独立
+  重放 top-5 id 序列一致」钉住确定性。基准不依赖 embedder / 真实 LLM / 网络。
+- **D4 不只靠词法排序验证陈旧隔离**：另加 `exclude_source_prefixes=("bench.stale",)` 用例，
+  断言排除发生在排名与预算之前（change 0131 的既有机制），防止基准退化为「排序碰巧赢」。
+- **D5 只建门、不改生产代码**：本 change 不新增生产路径、不改排序公式。若基准揭示缺陷，
+  另立 change 修复；基准本身是后续记忆改动的回归门。
+
+**规格**：`memory` **ADDED** 1 req「检索质量离线基准」（3 scenarios：基线达标 / 陈旧来源可排除 /
+重放确定性）。`openspec validate --all` 32/0（归档前）。
+
+**测试**：新增 `tests/test_memory_quality.py`（3 例）。基线 `recall@5=1.000 mrr@5=1.000
+stale_hits=0`。全量基线 2876 → **2879 passed**。反证 4/4：① 摘除 `read()` 的
+`exclude_source_prefixes` 过滤（`if exclude_source_prefixes:` → `if False:`）⇒ 排除用例红；
+② 改坏 2 条 gold 内容 ⇒ recall `0.917`（仍在阈值内）但 `stale_hits=2` ⇒ 质量门红 —— 说明 gold
+丢失会先以陈旧压过当前的形式暴露；③ 改坏 3 条 gold ⇒ recall `0.833 < 0.9` ⇒ 召回阈值红，
+证明阈值本身可被触发；④ 互换 `c-pytest` / `st-pytest` 内容 ⇒ `stale_hits=1` ⇒ 红。复原后
+`md5sum` 一致（store.py `ceb150fb…`、test 文件 `7f9d57ae…`）。四门禁：`ruff check` /
+`ruff format --check` 绿、`pyright` 0 errors、`pytest -q` 全绿。
+
+**局限**：① 合成语料只覆盖词法可分的英文 token，不度量中文长句、语义改写与 embedder 质量；
+② 语料固定且基线满分（recall/MRR = 1.0），这是**回归门**而非质量上限，存在对固定语料过拟合的
+风险（现实噪声查询可能更低）；③ 单 gold 查询无法度量多相关条目的排序质量，故不设
+precision@5（单 gold 下上限仅 0.2）；④ recall 阈值留 1 条查询余量 ⇒ 单条 gold 丢失不会触发
+召回红（但通常触发 stale_hits 红）；⑤ 未覆盖长任务端到端成功率（需真实模型与预算，另立评测）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9476,3 +9519,4 @@ token 消耗，token 预算仍独立生效，但「最坏耗时」没有同等�
 | ADR-0248 | 02-modules/loop.md, 02-modules/tool-use.md, 03-interfaces/loop-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0249 | 02-modules/tool-use.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0250 | 02-modules/configuration.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0251 | 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

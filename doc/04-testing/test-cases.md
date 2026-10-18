@@ -3962,3 +3962,23 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > `openspec validate --all` 32/0（归档前）。测试净 **+4**（2872 → **2876**）。四门禁全绿。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0250 行（启发式缺省 / 最坏耗时无硬上限 /
 > 直连调度器无 600s 保护）。
+
+## 173. 记忆检索质量离线基准（TC-MQB，change `0261`／ADR-0251，台账 E197）
+| TC-MQB | 场景 | 输入 | 预期 |
+|---|---|---|---|
+| TC-MQB-01 | **合成语料基线**（承重） | 26 条固定语料 + 12 条带 gold 查询 | recall@5 ≥ 0.9、MRR@5 ≥ 0.7、stale_hits = 0；基线打印 `recall@5=1.000 mrr@5=1.000 stale_hits=0`（`tests/test_memory_quality.py::test_synthetic_corpus_meets_quality_thresholds`） |
+| TC-MQB-02 | **陈旧来源可排除**（承重） | 全查询传 `exclude_source_prefixes=("bench.stale",)` | 返回结果无 `bench.stale` 来源；首个查询的 gold 仍可召回（`…::test_stale_source_prefix_excluded`） |
+| TC-MQB-03 | 重放确定性 | 同一语料两个独立新 store 重放同一查询 | top-5 id 序列一致（无时钟 / 随机 / 强化耦合）（`…::test_replay_is_deterministic`） |
+| TC-MQB-04 | 隔离语义 | 每条查询新建 store | `read()` 的 `_reinforce` 不跨查询污染 `reuse_count`（由用例结构保证） |
+
+> **口径**：`stale_hits` 只计「`bench.stale` 条目排名**高于**对应对当前 gold」（或 gold 未进 top5），
+> 不把「stale 进 top5」本身计为危害。`ts=4_000_000_000.0`（未来）⇒ `recency_decay` 恒 1.0；
+> `FileBackend()` 无 path ⇒ 纯内存。阈值或语料变更视为**显式重定基线**，须记录原因。
+> **反证**：P1 摘 `read()` 的 `exclude_source_prefixes` 过滤 ⇒ TC-MQB-02 红；P2 改坏 2 条 gold
+> ⇒ recall `0.917`（阈内）但 `stale_hits=2` ⇒ 红；P3 改坏 3 条 gold ⇒ recall `0.833 < 0.9` ⇒ 红；
+> P4 互换 `c-pytest` / `st-pytest` 内容 ⇒ `stale_hits=1` ⇒ 红。复原后 `md5sum` 一致。
+> 规格：`memory` **ADDED** 1 req（3 scen）。`openspec validate --all` 32/0（归档前）。
+> 测试净 **+3**（2876 → **2879**）。四门禁全绿（`ruff check` / `ruff format --check` /
+> `pyright` 0 / `pytest -q`）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0251 行（英文词法语料 / 过拟合 / 单 gold /
+> 阈值余量 / 未覆盖端到端）。

@@ -52,6 +52,14 @@ MemoryStore
   原重叠公式均逐字不变；未配置 `llm.embedding_model` 时 CLI 启动向 stderr 提示一次「词法匹配」。
 - **硬性 budget**：`read` 返回的总 token 不超过预算；超限按 `layer_priority × relevance` 截断。
 - 层权重默认：L0 > L3（相关技能）> L2（相关事实）> L1 > L4。
+- **检索质量离线回归门**（change `0261`／ADR-0251／台账 E197）：`tests/test_memory_quality.py`
+  以 26 条固定合成语料（L2 当前事实 / L3 技能 / L4 归档 / 跨会话 / `bench.stale` 陈旧冲突 /
+  诱饵）＋ 12 条带 gold 查询做**纯离线、确定性**基准：**recall@5 ≥ 0.9**、**MRR@5 ≥ 0.7**、
+  **stale_hits = 0**（陈旧条目排名高于对应当前事实的查询数）。每条查询**新建 store 重放**，
+  规避 `_reinforce` 改写 `reuse_count` 的顺序耦合；`ts` 固定未来值使 `recency_decay` 恒 1.0。
+  另验 `exclude_source_prefixes=("bench.stale",)` 的真实排除面与两次重放的 top-5 一致性。
+  阈值 / 语料变更视为**显式重定基线**（须记录原因），不得为变绿静默放宽 —— BM25 公式、分词或
+  层权重的改动须先过此门。
 
 ### 3.2.1 按会话隔离的检索（change `0114`／ADR-0107）
 
