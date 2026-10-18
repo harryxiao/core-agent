@@ -21,7 +21,7 @@ Orchestrator（L3.5）
 ├── SubtaskDecomposer 子任务拆解器：大目标 → 分步 Todo，逐步校验
 ├── MultiAgentRouter  多 Agent 协同：能力匹配 + 消息协议交接
 ├── ProgressTracker   进度与校验：每步完成校验后再推进
-├── BackgroundAgentRegistry 后台子 Agent：非阻塞派发 + 按会话完成通知 + 跨重启登记（change 0270/0279）
+├── BackgroundAgentRegistry 后台子 Agent：非阻塞派发 + 按会话完成通知 + 跨重启登记与跨进程归属（change 0270/0279/0283）
 ├── task_retry_tool   后台任务重入队：interrupted/failed/cancelled → 新任务（change 0279）
 └── AutoResumeState 自动续跑退避账本：跨进程有界尝试（change 0278）
 ```
@@ -154,15 +154,21 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
   次数上限（运营商显式重试），仍记录尝试并在成功时清零。
 - **默认关闭测试锚**：关闭时不读取/不执行 `pending_resumes()`，启动呈现逐字不变。
 
-### 3.9 后台任务跨重启登记与重入队（change `0279`／ADR-0269）
+### 3.9 后台任务跨重启登记与重入队（change `0279`／`0283`／ADR-0269／0273）
 
 - **落盘**：注册表接受 `state_path`（runtime 注入 `$CORE_STATE_DIR/background-tasks.json`；
-  缺省 `None` ⇒ 纯内存，既有构造零变化）。`spawn` 与每次落终态整体重写：同目录临时文件 +
-  `fsync` + `os.replace`，`0600`；最多保留最新 **64** 条；写失败告警一次。
-- **字段**：`task_id / agent_id / task / status / started_at / finished_at / session_id / error`。
-  `task`/`error` **写读两侧**经 `redact_secrets` 并有界（120 / 200 字符）；**不落 `reply`**；
-  `session_id` 只在文件中（`info()` 对模型仍不可见）。
-- **重启映射**：加载时 `running → interrupted`（`finished_at=None`，`error="进程重启导致中断"`）。
+  缺省 `None` ⇒ 纯内存，既有构造零变化）。写盘为锁内「读-合并-写」：取同目录
+  `.{name}.lock` 的短独占建议锁（POSIX `flock` / Windows `msvcrt.locking`，取锁失败降级为
+  无锁写），锁内重读磁盘、只用本实例**变更过的条目**覆盖，其余条目保留磁盘版本 —— 并发
+  进程不会互相覆盖登记或回滚对方的更新。随后同目录临时文件 + `fsync` + `os.replace`，
+  `0600`；最多保留最新 **64** 条；写失败告警一次、不阻断任务。
+- **字段**：`task_id / agent_id / task / status / started_at / finished_at / session_id / error /
+  owner_pid / owner_start`。`task`/`error` **写读两侧**经 `redact_secrets` 并有界（120 / 200
+  字符）；**不落 `reply`**；`session_id` 与归属字段只在文件中（`info()` 对模型不可见）。
+- **跨进程归属**：加载时 `running` 按 owner 判定 —— owner 存活（pid 存在且启动标识一致）⇒
+  **保持 `running`**，本进程只观察、不取消/不接管、不重放通知（`task_retry` 按 running 拒绝）；
+  owner 已退出、owner 信息缺失（旧格式）或 pid 存活但启动标识不符（pid 复用）⇒
+  `running → interrupted`（`finished_at=None`，`error="进程重启导致中断"`）。
   `interrupted` 是终态：不占运行名额、不可取消、不重放完成通知；`tools.tasks` 可查。
 - **重入队**：`tools.task_retry(task_id)` 只接受 `interrupted / failed / cancelled`；按登记正文
   重新 `MultiAgentRouter.match` 后 `spawn` 新任务（恢复原会话，原 `task_id` 终态不变）；

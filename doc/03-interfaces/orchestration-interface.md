@@ -334,16 +334,20 @@ class BackgroundTaskInfo:
     finished_at: float | None = None
     reply: str = ""                 # 子 Agent 回复（保留上界 4000 字符）
     error: str = ""                 # 失败原因（异常只留类型名 / 「子 Agent 报告失败」）
+    owner_pid: int = 0              # change 0283：启动进程 pid（只入文件）
+    owner_start: str = ""           # change 0283：进程启动标识（防 pid 复用；只入文件）
 
     def info(self) -> dict[str, Any]
-        # 对模型暴露的只读快照：不含 session_id；task / reply 有界截断
+        # 对模型暴露的只读快照：不含 session_id / owner_*；task / reply 有界截断
 
 class BackgroundAgentRegistry:
     def __init__(self, state_path: Path | str | None = None, *,
                  max_running: int = 8, notice_cap: int = 32,
                  max_records: int = 64)
         # state_path 非空 ⇒ 元数据跨重启登记（0600 原子写、最多 max_records 条、
-        # 损坏容忍）；加载时 running → interrupted。缺省 None ⇒ 纯内存。
+        # 损坏容忍）。加载时：owner 存活 ⇒ 保持 running（只观察不接管）；
+        # 死 owner / 旧格式 / pid 复用 ⇒ running → interrupted。缺省 None ⇒ 纯内存。
+        # 写盘为短独占锁内「读-合并-写」：只覆盖本实例变更过的条目。
 
     def spawn(self, loop: LoopPlugin, task: str, *,
               agent_id: str, session_id: str = "") -> str
@@ -383,7 +387,10 @@ done / 容量上限均 `{ok: false, error}`。词元判 `HIGH_RISK`（审批门�
 
 **登记文件**：`$CORE_STATE_DIR/background-tasks.json`，
 `{version: 1, tasks: [{task_id, agent_id, task, status, started_at, finished_at,
-session_id, error}]}`；`task`/`error` 写读两侧经 `redact_secrets` 且有界；不落 `reply`。
+session_id, error, owner_pid, owner_start}]}`；`task`/`error` 写读两侧经 `redact_secrets`
+且有界；不落 `reply`；归属字段只入文件。并发写用同目录 `.{name}.lock` 短独占建议锁
+（POSIX `flock` / Windows `msvcrt.locking`，`0600`；取锁失败降级为无锁写），锁内按
+「磁盘视图 + 本实例 dirty 条目」合并后原子替换。
 
 ---
 

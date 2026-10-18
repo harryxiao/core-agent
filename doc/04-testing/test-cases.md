@@ -4516,7 +4516,7 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 | TC-BGPERSIST-03 | Scenario「登记损坏容忍」 | 文件写入 `{not json` | `UserWarning` 含文件名；登记为空（`test_corrupt_file_warns_once_and_starts_empty`） |
 | TC-BGPERSIST-04 | Scenario「登记有界」 | 文件含 5 条、`max_records=3` | 只保留最新 3 条（`test_entries_bounded_to_newest`） |
 | TC-BGPERSIST-05 | Scenario「登记不含密钥明文」 | 任务正文含 `sk-…` canary | 文件不含 canary、含 `<redacted>`（`test_secret_redacted_before_persist`） |
-| TC-BGPERSIST-06 | Scenario「重启把运行中任务标记为被中断」 | 落盘 `running` → 新注册表 | `interrupted`、`finished_at=None`、`error` 含「进程重启」；不占运行名额、不可取消、不重放通知（`test_running_task_becomes_interrupted_on_restart`） |
+| TC-BGPERSIST-06 | Scenario「重启把运行中任务标记为被中断」 | 落盘 `running` + **死 owner pid**（change 0283 起；旧格式无 owner 同样按死 owner 处理）→ 新注册表 | `interrupted`、`finished_at=None`、`error` 含「进程重启」；不占运行名额、不可取消、不重放通知（`test_running_task_becomes_interrupted_on_restart`） |
 | TC-BGPERSIST-07 | Scenario「重入队被中断的任务」 | failed 任务 + 可匹配子 Agent | 返回新 `task_id`/`running`；新任务收到原文与**原会话**；原任务终态不变（`test_retry_failed_task_spawns_new_task`） |
 | TC-BGPERSIST-08 | Scenario「运行中或已完成的任务拒绝重入队」 | running / done / 未知 id | 均 `ok=false`，不启动新任务（`test_retry_rejects_running_done_and_unknown`） |
 | TC-BGPERSIST-09 | 容量上限 | `max_running=1` 已被占 + 重入队 | `ok=false` 含「上限」（`test_retry_respects_running_capacity`） |
@@ -4525,7 +4525,8 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 | TC-BGPERSIST-12 | 权限 | `PolicyEngine.classify` | `tools.task_retry` + `task:write` 判 `HIGH_RISK`（`test_task_retry_classified_high_risk`） |
 
 > **口径**：落盘只含元数据（无 `reply`）；`task`/`error` 写读两侧脱敏；重启 `running → interrupted`
-> 是终态、不自动重执行；重入队按任务正文重新路由（不按持久化 `agent_id` 取 loop）。
+> 是终态、不自动重执行（change `0283` 起仅对死 owner / 旧格式记录生效，存活 owner 保持
+> running —— 见 §195）；重入队按任务正文重新路由（不按持久化 `agent_id` 取 loop）。
 > **反证 3/3**：① 加载映射保留 `running` ⇒ TC-06 红；② 摘 `redact_secrets` ⇒ TC-05 红；
 > ③ 摘 `done` 守卫 ⇒ TC-08 红；复原 `md5sum` 一致（background.py）。
 > 规格：`orchestration` ADDED（6 scen）。`validate --all` 31/0（归档后）。
@@ -4663,3 +4664,36 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3131 passed**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0272 行（非沙箱 / 元字符保守 / 无通配 /
 > 仅 code_run / 收窄非放宽）。
+
+## 195. 后台登记跨进程归属与写锁（TC-BGOWN，change `0283`／ADR-0273，台账 E219）
+
+> 覆盖 `orchestration`「后台任务跨重启登记与重入队」（MODIFIED，7 → 10 scen：原
+> 「重启把运行中任务标记为被中断」收窄为死 owner / 旧格式，新增「存活 owner 不被误标」
+> 「pid 复用」「并发写不丢登记且不回滚」）。测试文件 `tests/test_background_ownership.py`
+> （新，10 例）；`tests/test_background_persistence.py` 的重启用例改用已退出子进程 pid。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-BGOWN-01 | 归属字段持久化 | spawn → 落终态 | 状态文件含 `owner_pid == os.getpid()` 与 `owner_start`；`info()` 不含两者（`test_owner_fields_persisted_but_not_exposed`） |
+| TC-BGOWN-02 | 存活判定原语 | 当前 pid / 已退出子进程 pid / 0 | `True` / `False` / `False`（`test_pid_liveness_helpers`） |
+| TC-BGOWN-03 | Scenario「存活 owner 的在途任务不被误标」 | 同进程第二注册表加载 running | 保持 `running`、`finished_at=None`、无中断错误；`cancel` 返回 False；无通知（`test_live_owner_running_task_stays_running`） |
+| TC-BGOWN-04 | Scenario「重启把运行中任务标记为被中断」 | 死 owner pid 的 running 记录 | `interrupted`、`finished_at=None`、错误含「进程重启」、不占运行名额（`test_dead_owner_running_task_becomes_interrupted`） |
+| TC-BGOWN-05 | 旧格式兼容 | 无 owner 字段的 running 记录 | `interrupted`（`test_legacy_record_without_owner_becomes_interrupted`） |
+| TC-BGOWN-06 | Scenario「pid 复用不被误判为存活」 | 记录 owner pid = 当前 pid、`owner_start` 不符 | `interrupted`（`test_pid_reuse_not_treated_as_live`） |
+| TC-BGOWN-07 | Scenario「并发写不丢登记」 | B 加载后 C/A 新增，B 再写自己的任务 | 三个实例的登记全部保留（`test_save_preserves_entries_added_by_other_registry`） |
+| TC-BGOWN-08 | Scenario「不回滚新状态」 | B 快照 running，A 已落 done，B 再写 | 磁盘保持 `done`（`test_save_does_not_rollback_newer_disk_status`） |
+| TC-BGOWN-09 | 合并写脱敏 | 磁盘记录正文含密钥 canary，另一实例写盘 | 合并回写后 canary 不在文件、`<redacted>` 在（`test_merge_resanitizes_foreign_disk_record`） |
+| TC-BGOWN-10 | 锁文件 | 任一写盘 | `.{name}.lock` 存在且模式 `0600`（`test_lock_file_created_with_private_mode`） |
+
+> **口径**：owner 存活 = pid 存在且启动标识一致（Linux `/proc/<pid>/stat` 第 22 字段）；
+> Windows 用 `OpenProcess` + `GetExitCodeProcess` 判活（`os.kill(pid,0)` 在 Windows 会终止
+> 进程）。写盘在 `.{name}.lock` 短独占建议锁内重读磁盘、仅用 dirty 条目覆盖，其余保留磁盘
+> 版本；取锁失败降级为无锁写。合并前再次脱敏并只保留白名单字段。
+> **反证 3/3**：① 摘 `_owner_alive` 判定 ⇒ TC-03、08 红；② `_save` 关闭磁盘合并 ⇒ TC-07~09
+> 红；③ 不看 `_dirty`（内存全量覆盖）⇒ TC-08 红；复原 `md5sum` 一致
+> （background.py `788b23ea…`）。
+> 规格：`orchestration` MODIFIED（7 → 10 scen）。`validate --all` 31/0（归档后）。
+> 测试净 **+10**（3131 → **3141**）。
+> 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3141 passed**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0273 行（加载后 owner 死亡需下次加载 /
+> msvcrt 有界重试 / 网络文件系统 / 非 Linux 无启动标识 / 64 条淘汰 / 共享容量）。

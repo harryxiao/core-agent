@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import json
 import stat
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -158,26 +160,31 @@ def test_secret_redacted_before_persist(tmp_path: Path) -> None:
 
 def test_running_task_becomes_interrupted_on_restart(tmp_path: Path) -> None:
     path = tmp_path / "background-tasks.json"
+    # 重启 = 新进程：用已退出子进程的 pid 模拟死 owner（同进程双实例属“存活 owner”，
+    # 见 tests/test_background_ownership.py）。
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait(timeout=30)
+    _write_state(
+        path,
+        [
+            {
+                **_record("bg-restart", 1.0, status="running"),
+                "finished_at": None,
+                "owner_pid": proc.pid,
+                "owner_start": "",
+            }
+        ],
+    )
 
-    async def scenario() -> None:
-        registry = BackgroundAgentRegistry(state_path=path)
-        loop = _BlockingLoop()
-        task_id = registry.spawn(loop, "长任务", agent_id="coding", session_id="s1")
-
-        restored = BackgroundAgentRegistry(state_path=path)
-        info = restored.get(task_id)
-        assert info is not None
-        assert info.status == "interrupted"
-        assert info.finished_at is None
-        assert "进程重启" in info.error
-        assert restored.running_count() == 0
-        assert restored.cancel(task_id) is False, "被中断任务没有在途 asyncio.Task"
-        assert restored.drain_notices("s1") == [], "重启不重放完成通知"
-
-        loop.gate.set()
-        await registry.wait(task_id)
-
-    asyncio.run(scenario())
+    restored = BackgroundAgentRegistry(state_path=path)
+    info = restored.get("bg-restart")
+    assert info is not None
+    assert info.status == "interrupted"
+    assert info.finished_at is None
+    assert "进程重启" in info.error
+    assert restored.running_count() == 0
+    assert restored.cancel("bg-restart") is False, "被中断任务没有在途 asyncio.Task"
+    assert restored.drain_notices("s1") == [], "重启不重放完成通知"
 
 
 # ── 3. 重入队 ──────────────────────────────────────────────────────────────

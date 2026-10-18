@@ -10275,6 +10275,51 @@ auto 档不受影响；组合根接线）。净 **+26**（3105 → **3131**）�
 概率。Python `type` 脚本通常含括号/分号，在命令面开启时会被元字符规则拒绝（保守取舍）。
 不支持子命令级/参数级约束与通配；新增执行命令的工具须先改规格。
 
+## ADR-0273：后台登记跨进程归属与写锁（change 0283 / 台账 E219）
+
+**背景**：change `0279` 的 `background-tasks.json` 假定同一状态目录只有一个进程在用：
+加载时无条件把 `running` 映射为 `interrupted`（ADR-0269 局限①），写盘为整体重写。CLI
+`task`、`serve`、TUI 可能共用 `CORE_STATE_DIR`：后启动的进程会把**仍在运行**的后台任务
+误标为中断（模型可随即 `tools.task_retry` 双跑），并发写则互相覆盖、丢失登记。
+
+**决策**：
+
+- **D1 按条目记录 owner**：持久化新增 `owner_pid` 与 `owner_start`（Linux 取
+  `/proc/<pid>/stat` 第 22 字段 `starttime`；其他平台取不到时为空串）。只入状态文件，
+  `info()` 不暴露。
+- **D2 存活判定**：`_pid_alive` —— POSIX `os.kill(pid, 0)`（`PermissionError` 视为存活），
+  Windows 用 `ctypes` 的 `OpenProcess` + `GetExitCodeProcess`（**不能**在 Windows 调
+  `os.kill(pid, 0)`，它会终止进程）。`_owner_alive` 在双方都有启动标识时要求一致，识别 pid 复用。
+- **D3 加载映射**：`running` 且 owner 存活 ⇒ **保持 `running`**，本进程没有句柄：不取消、
+  不接管、不重放通知，`tools.task_retry` 按 running 拒绝；owner 已退出 / 旧格式无 owner /
+  启动标识不符 ⇒ 维持 `interrupted`（升级前的在途记录不会被永久挂起）。存活 owner 的条目
+  计入 `running_count()`（共享容量，避免多进程合计无界）。同进程第二个注册表同样按存活处理。
+- **D4 锁内「读-合并-写」**：维护 `_dirty`（`spawn` / 终态 / 加载时被判中断）。写盘取
+  `.{name}.lock` 的短独占锁（POSIX `fcntl.flock` / Windows `msvcrt.locking`；锁内重读磁盘，
+  仅用 dirty 条目覆盖，非 dirty 条目保留磁盘版本），随后临时文件 + fsync + `os.replace`。
+  这样 B 的陈旧 `running` 快照不会回滚 A 刚写入的 `done`，A 的新登记也不会被 B 覆盖。
+  取锁失败（OSError）降级为无锁写；锁文件 `0600`。
+- **D5 合并时再次脱敏**：磁盘记录合入前只保留白名单字段，`task`/`error` 重新
+  `redact_secrets` 并有界 —— 手工编辑进文件的密钥形态正文不会经合并写回扩散。
+- **D6 兼容**：`state_path=None` 纯内存路径零变化；不新增配置项、不新增三方依赖。
+
+**反证 3/3（均实测转红后复原，`md5sum` 一致 `788b23ea…`）**：① 摘掉 `_owner_alive` 判定
+（running 一律映射中断）⇒ 存活 owner / 不回滚两例红；② `_save` 不做磁盘合并（整体覆盖）⇒
+保留他人登记 / 不回滚 / 合并脱敏三例红；③ 不看 `_dirty`（内存全部覆盖）⇒ 陈旧 running
+回滚磁盘 done 一例红。
+
+**规格**：`orchestration`「后台任务跨重启登记与重入队」**MODIFIED**（复制全部旧场景，修订
+running 映射，新增存活 owner / pid 复用 / 并发写三场景）。`validate --all` **31/0**（归档后）。
+
+**测试**：新增 `tests/test_background_ownership.py` **10 例**；`test_background_persistence.py`
+的重启用例改为「已退出子进程 pid」模拟新进程。净 **+10**（3131 → **3141**）。四门禁：
+ruff check / format 绿、`pyright` 0 errors、`pytest -q` **3141 passed**。
+
+**局限**：存活 owner 的条目只观察不接管；owner 在本进程加载**之后**死亡，需下次加载才转
+`interrupted`；`msvcrt.locking` 重试上限约 10s，极端争用时降级直写；网络文件系统
+（NFS/SMB）锁语义不保证；`owner_start` 在非 Linux 平台为空，只剩 pid 判活、存在复用误判
+的残余风险；合并写仍按 `started_at` 保留最新 64 条。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10542,3 +10587,4 @@ auto 档不受影响；组合根接线）。净 **+26**（3105 → **3131**）�
 | ADR-0270 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0271 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0272 | 02-modules/permission.md, 03-interfaces/permission-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0273 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -15,11 +15,12 @@ import contextlib
 import json
 import math
 import os
+import sys
 import time
 import uuid
 import warnings
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -46,6 +47,20 @@ _PERSIST_VERSION = 1
 _ERROR_CHARS = 200
 _INTERRUPTED_ERROR = "进程重启导致中断"
 _STATUSES = frozenset({"running", "done", "failed", "cancelled", "interrupted"})
+# 跨进程归属（change 0283 / ADR-0273）：落盘字段白名单。
+_STAT_START_OFFSET = 19  # /proc/<pid>/stat 第 22 字段在 ")" 之后的下标
+_RECORD_FIELDS = (
+    "task_id",
+    "agent_id",
+    "task",
+    "status",
+    "started_at",
+    "finished_at",
+    "session_id",
+    "error",
+    "owner_pid",
+    "owner_start",
+)
 
 TASKS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -85,6 +100,9 @@ class BackgroundTaskInfo:
     reply: str = ""
     error: str = ""
     session_id: str = field(default="", repr=False)
+    # 跨进程归属（change 0283）：只入状态文件，不进 info()。
+    owner_pid: int = field(default=0, repr=False)
+    owner_start: str = field(default="", repr=False)
 
     def info(self) -> dict[str, Any]:
         """对模型暴露的只读快照（不含会话标识；文本均有界）。"""
@@ -124,11 +142,179 @@ def _info_record(info: BackgroundTaskInfo) -> dict[str, Any]:
         "finished_at": info.finished_at,
         "session_id": info.session_id,
         "error": redact_secrets(info.error)[:_ERROR_CHARS],
+        "owner_pid": info.owner_pid,
+        "owner_start": info.owner_start,
     }
 
 
+def _process_start_token(pid: int) -> str:
+    """进程启动标识：Linux `/proc/<pid>/stat` 第 22 字段（starttime）。
+
+    取不到（非 Linux / 进程不存在 / 权限）⇒ `""`（此时只按 pid 判存活）。
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    # comm 字段可含空格与括号 ⇒ 以最后一个 ')' 为界；其后首个字段是 state（整体第 3 字段）。
+    tail = stat.rsplit(")", 1)[-1].split()
+    return tail[_STAT_START_OFFSET] if len(tail) > _STAT_START_OFFSET else ""
+
+
+def _pid_alive(pid: int) -> bool:
+    """进程是否存活（POSIX `kill(pid, 0)`；Windows `OpenProcess` + 退出码）。"""
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        return _pid_alive_windows(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _pid_alive_windows(pid: int) -> bool:
+    """Windows 存活判定（`os.kill(pid, 0)` 在 Windows 会终止进程，绝不可用）。"""
+    import ctypes  # noqa: PLC0415 — 仅 Windows 分支需要
+
+    # Linux 的类型桩没有 windll，不能写静态属性访问。
+    kernel32 = getattr(ctypes, "windll").kernel32  # noqa: B009
+    process_query_limited_information = 0x1000
+    still_active = 259
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return bool(code.value == still_active)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _owner_alive(pid: int, start: str) -> bool:
+    """owner 存活判定：pid 存在；若双方都有启动标识则须一致（防 pid 复用）。"""
+    if not _pid_alive(pid):
+        return False
+    if start:
+        current = _process_start_token(pid)
+        if current and current != start:
+            return False
+    return True
+
+
+def _lock_fd(fd: int) -> bool:
+    """对已打开的锁文件取独占锁；失败返回 `False`（调用方降级为无锁写）。"""
+    try:
+        if sys.platform == "win32":
+            import msvcrt  # noqa: PLC0415 — 平台专属模块
+
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl  # noqa: PLC0415 — 平台专属模块
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError:
+        return False
+    return True
+
+
+def _unlock_fd(fd: int) -> None:
+    """释放独占锁（失败忽略：进程退出时 OS 也会释放）。"""
+    if sys.platform == "win32":
+        import msvcrt  # noqa: PLC0415 — 平台专属模块
+
+        with contextlib.suppress(OSError):
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl  # noqa: PLC0415 — 平台专属模块
+
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def _exclusive_file_lock(path: Path) -> Generator[None, None, None]:
+    """短独占建议锁（change 0283）：取锁失败降级为无锁写入，绝不阻断任务。"""
+    lock_path = path.with_name(f".{path.name}.lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        yield
+        return
+    locked = _lock_fd(fd)
+    try:
+        yield
+    finally:
+        if locked:
+            _unlock_fd(fd)
+        os.close(fd)
+
+
+def _sanitize_record(record: dict[str, Any]) -> dict[str, Any] | None:
+    """合并写盘的磁盘记录：只保留白名单字段，正文/错误再次脱敏并有界。"""
+    task_id = record.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        return None
+    clean = {key: record[key] for key in _RECORD_FIELDS if key in record}
+    if isinstance(clean.get("task"), str):
+        clean["task"] = redact_secrets(clean["task"])[:_TASK_TEXT_CHARS]
+    if isinstance(clean.get("error"), str):
+        clean["error"] = redact_secrets(clean["error"])[:_ERROR_CHARS]
+    return clean
+
+
+def _record_started_at(record: dict[str, Any]) -> float:
+    started = record.get("started_at")
+    if (
+        isinstance(started, (int, float))
+        and not isinstance(started, bool)
+        and math.isfinite(started)
+    ):
+        return float(started)
+    return 0.0
+
+
+def _write_payload(path: Path, payload: dict[str, Any]) -> None:
+    """同目录临时文件 + fsync + 原子替换（OSError 由调用方统一告警）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise
+
+
+def _owner_fields(record: dict[str, Any]) -> tuple[int, str] | None:
+    """归属字段校验：`(owner_pid, owner_start)`；非法 ⇒ `None`（整条跳过）。"""
+    owner_pid = record.get("owner_pid")
+    owner_start = record.get("owner_start", "")
+    if owner_pid is not None and (
+        not isinstance(owner_pid, int) or isinstance(owner_pid, bool) or owner_pid < 0
+    ):
+        return None
+    if not isinstance(owner_start, str):
+        return None
+    return (owner_pid if owner_pid is not None else 0), owner_start
+
+
 def _restore_info(item: object) -> BackgroundTaskInfo | None:  # noqa: PLR0911 — 逐字段校验多早退
-    """校验并恢复一条登记；非法条目跳过（不抛错）；``running`` 映射为 ``interrupted``。"""
+    """校验并恢复一条登记；非法条目跳过；死 owner 的 ``running`` 映射 ``interrupted``。"""
     if not isinstance(item, dict):
         return None
     record = cast(dict[str, Any], item)
@@ -140,6 +326,10 @@ def _restore_info(item: object) -> BackgroundTaskInfo | None:  # noqa: PLR0911 �
     finished_at = record.get("finished_at")
     session_id = record.get("session_id", "")
     error = record.get("error", "")
+    owner = _owner_fields(record)
+    if owner is None:
+        return None
+    owner_pid, owner_start = owner
     if not isinstance(task_id, str) or not task_id:
         return None
     if not isinstance(agent_id, str) or not agent_id:
@@ -160,7 +350,9 @@ def _restore_info(item: object) -> BackgroundTaskInfo | None:  # noqa: PLR0911 �
         return None
     if not isinstance(session_id, str) or not isinstance(error, str):
         return None
-    if status == "running":  # 进程已不在此处 ⇒ 在途任务按被中断处理（不重放通知）
+    if status == "running" and not _owner_alive(owner_pid, owner_start):
+        # 死 owner / 旧格式 / pid 复用 ⇒ 在途任务按被中断处理（不重放通知）；
+        # owner 仍存活 ⇒ 保持 running（change 0283 / ADR-0273）。
         status = "interrupted"
         finished_at = None
         error = _INTERRUPTED_ERROR
@@ -174,14 +366,36 @@ def _restore_info(item: object) -> BackgroundTaskInfo | None:  # noqa: PLR0911 �
         finished_at=float(finished_at) if finished_at is not None else None,
         error=redact_secrets(error)[:_ERROR_CHARS],
         session_id=session_id,
+        owner_pid=owner_pid,
+        owner_start=owner_start,
     )
+
+
+def _restore_items(items: list[Any]) -> tuple[list[BackgroundTaskInfo], set[str]]:
+    """恢复全部合法登记；返回被重分类（running → interrupted）的 task_id。"""
+    restored: list[BackgroundTaskInfo] = []
+    reclassified: set[str] = set()
+    for item in items:
+        info = _restore_info(item)
+        if info is None:
+            continue
+        restored.append(info)
+        if (
+            isinstance(item, dict)
+            and cast(dict[str, Any], item).get("status") == "running"
+            and info.status == "interrupted"
+        ):
+            reclassified.add(info.task_id)
+    return restored, reclassified
 
 
 class BackgroundAgentRegistry:
     """有界的后台委托注册表：spawn 立即返回，终态不可变，通知按会话堆积。
 
     ``state_path`` 非空时元数据跨重启登记（change 0279 / ADR-0269）：写入 0600 原子替换，
-    最多保留最新 ``max_records`` 条；加载时把落盘的 ``running`` 映射为 ``interrupted``。
+    最多保留最新 ``max_records`` 条；加载时把 ``running`` 映射为 ``interrupted``。
+    跨进程归属（change 0283 / ADR-0273）：owner 仍存活的 ``running`` 保持原状；写盘在
+    短独占锁内「读-合并-写」，只覆盖本实例变更过的条目。
     缺省 ``None`` ⇒ 纯内存（既有构造零变化）。
     """
 
@@ -201,6 +415,8 @@ class BackgroundAgentRegistry:
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._notices: dict[str, deque[BackgroundTaskInfo]] = {}
         self._warned_persist = False
+        # 本实例自上次成功写盘以来变更过的条目（合并写只覆盖这些）。
+        self._dirty: set[str] = set()
         if self._path is not None:
             self._load()
 
@@ -232,8 +448,11 @@ class BackgroundAgentRegistry:
             task=task,
             started_at=time.time(),
             session_id=session_id,
+            owner_pid=os.getpid(),
+            owner_start=_process_start_token(os.getpid()),
         )
         self._infos[task_id] = info
+        self._dirty.add(task_id)
         running = asyncio.create_task(self._run(loop, task, session_id))
         self._tasks[task_id] = running
         running.add_done_callback(lambda done: self._finalize(task_id, done))
@@ -332,6 +551,7 @@ class BackgroundAgentRegistry:
             self._notices[info.session_id] = found
         queue: deque[BackgroundTaskInfo] = found
         queue.append(info)
+        self._dirty.add(info.task_id)
         self._save()
 
     # ---- 跨重启登记（change 0279 / ADR-0269） ----
@@ -355,39 +575,60 @@ class BackgroundAgentRegistry:
         if not isinstance(items, list):
             self._warn_corrupt()
             return
-        restored = [
-            info for item in cast(list[Any], items) if (info := _restore_info(item)) is not None
-        ]
+        restored, reclassified = _restore_items(cast(list[Any], items))
         restored.sort(key=lambda info: info.started_at)
         for info in restored[-self._max_records :]:
             self._infos[info.task_id] = info
+            if info.task_id in reclassified:
+                self._dirty.add(info.task_id)  # 把「已判中断」落盘
 
     def _save(self) -> None:
-        """整体重写登记文件：同目录临时文件 + fsync + 原子替换（失败告警一次）。"""
+        """锁内「读-合并-写」：dirty 条目覆盖磁盘视图，其余保留磁盘版本（失败告警一次）。"""
         path = self._path
         if path is None:
             return
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            newest = sorted(self._infos.values(), key=lambda info: info.started_at)
-            payload = {
-                "version": _PERSIST_VERSION,
-                "tasks": [_info_record(info) for info in newest[-self._max_records :]],
-            }
-            tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    json.dump(payload, handle, ensure_ascii=False)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.replace(tmp, path)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    tmp.unlink(missing_ok=True)
-                raise
+            with _exclusive_file_lock(path):
+                payload = {
+                    "version": _PERSIST_VERSION,
+                    "tasks": self._merged_records(),
+                }
+                _write_payload(path, payload)
+                self._dirty.clear()
         except OSError:
             self._warn_persist()
+
+    def _merged_records(self) -> list[dict[str, Any]]:
+        """磁盘登记 ∪ 本实例 dirty 条目；非 dirty 条目以磁盘版本为准（不回滚他人更新）。"""
+        records: dict[str, dict[str, Any]] = {}
+        for item in self._read_disk_records():
+            clean = _sanitize_record(item)
+            if clean is not None:
+                records[cast("str", clean["task_id"])] = clean
+        for task_id in self._dirty:
+            info = self._infos.get(task_id)
+            if info is not None:
+                records[task_id] = _info_record(info)
+        ordered = sorted(records.values(), key=_record_started_at)
+        return ordered[-self._max_records :]
+
+    def _read_disk_records(self) -> list[dict[str, Any]]:
+        """读磁盘原始条目（缺失 / 损坏 / 结构不符 ⇒ 空，不重复告警）。"""
+        path = self._path
+        if path is None:
+            return []
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(raw, dict):
+            return []
+        items = cast(dict[str, Any], raw).get("tasks")
+        if not isinstance(items, list):
+            return []
+        return [
+            cast(dict[str, Any], item) for item in cast(list[Any], items) if isinstance(item, dict)
+        ]
 
     def _warn_corrupt(self) -> None:
         assert self._path is not None
