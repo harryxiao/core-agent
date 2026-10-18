@@ -10637,6 +10637,67 @@ required 不保证端点可达；「真实关系为 0」基于 2026-10-18 的本
 外推远端 embedding 路径达标；⑥ `stream` 仍为缓冲式，桥接不使其增量；⑦ 冒烟只证明
 「告警消失、语义排序生效」，不证明远端模型质量。
 
+## ADR-0281：任务级验收反馈回流与重拆退化守卫（change 0291 / 台账 E227）
+
+**背景**：2026-10-18 的真实 `task` 冒烟暴露两处反馈断裂。其一，子任务两次通过，任务级判定因
+「缺少 CLAUDE.md 原文引用」失败（`PROGRESS_NOT_MET`），但 `_replan_input` 只在
+`failure.failed` 非空时输出原因，而任务级失败的 `_Failure.failed` 恒为空 ⇒ 重拆输入只有
+目标、已完成列表与通用尾句「请重新拆解尚未完成的部分」，planner 完全不知道差距是什么，
+把整理说明本身当子任务又跑一遍；唯一一次重拆预算耗尽。其二，执行者只看到
+`subtask.acceptance`，看不到 `plan.success_criteria`，首轮即不可能主动满足整体验收。
+另有放大器：LLM 拆解失败时 decomposer 回落为「goal = 输入原文」的单子任务，如果重拆输入
+是一个长 prompt，该退化回执会被当作正常子任务**执行**并再消耗一次预算。
+
+**决策**：
+
+- **D1 重拆输入按失败类型分支，失败信息前置且有界**。仅当
+  `failure.code == PROGRESS_NOT_MET and not failure.failed`（任务级未达标）走新布局：
+  `任务级验收未通过：{reason[:_MAX_EVENT_EXCERPT]}` → 可选的任务级标准块 →
+  「全部子任务已完成但整体未达标；请只补充能补齐上述差距的子任务…」→
+  `原始目标：{goal[:_MAX_REPLAN_GOAL_CHARS=600]}` → 已完成列表。失败段与标准
+  （`_MAX_REPLAN_CRITERIA_CHARS=600`）各自有界且位于已完成列表之前，因此
+  **总截断（`MAX_HANDOFF_CHARS=2000`）后失败段仍存活** —— 只调换顺序不够，6000 字目标
+  会占满预算把失败段挤掉。子任务失败 / 死循环分支的文案与顺序**逐字不变**。
+- **D2 任务级标准随交接进入执行输入**。私有 `_task_criteria_text(plan)` 生成
+  `任务级成功标准（整体必须满足）：` + 每条标准（去空白、有界 600）。`_build_handoff`
+  把它追加到 `TaskHandoff.acceptance`：子任务验收让出预算
+  `MAX_HANDOFF_CHARS - len(criteria) - 2`，组合总长 ≤ `MAX_HANDOFF_CHARS`；
+  无子任务验收时只放标准；**标准为空时 `acceptance` 与既往逐字节相同**（保护 beast / pet
+  空上下文路径）。不新增 `TaskHandoff` 字段、**不修改** `subtask.acceptance` ⇒
+  `SubtaskDecomposer.verify` 仍只看子任务自身标准，任务级标准只影响执行者可见信息，
+  不改变子任务验收判定。
+- **D3 退化回执 fail-fast，而不是过滤**。`decompose` 成功后、接管 `new_plan` 前，若任一
+  子任务的 `goal.strip()` **精确等于**重拆输入 `.strip()`，直接转 `FAILED`
+  （`SUBTASK_VERIFY_FAILED`，理由「重新拆解回执退化为拆解输入本身，未生成可执行子任务」，
+  `extra={"replans": ...}`），**不执行**回执中的任何子任务（含其中的正常子任务）。
+  只做去空白后的精确相等，不做子串匹配。守卫**只作用于重新拆解**；初次拆解的离线回落
+  （单子任务、目标即输入）保持现状。
+- **为何不「过滤退化项后交给空计划守卫」**：部分过滤会让新计划的 `order` / `waves`
+  残留已删 id，`_fan_out` 静默跳过 ⇒ 空波次、脏依赖，最终以死循环或无进展收场，
+  而不是预期的空计划失败。整份回执 fail-fast 更简单，语义也一致（回执没有可用计划）。
+
+**被拒方案**：放松 `LLMTaskVerifier` 判定口径 / 在 prompt 里强调判定器要求（把缺陷从
+反馈通路偷换成提示词调参，判定仍不可满足时无法定位）；只调换 `_replan_input` 的段落顺序
+（6000 字目标仍会挤掉失败段）；增加重拆预算（在信息为零的输入上重复同一失败，成本更高）；
+过滤式退化守卫（见 D3）；给 `TaskHandoff` 新增 `criteria` 字段（扩大六字段契约与三条执行
+路径的消费面，`acceptance` 已有渲染位）。
+
+**验证**：新增 11 例（重拆输入 4 / 退化守卫 2 / 交接组合 5）；全量 3241 → **3252**；
+反证 3/3（`_replan_input` 恢复只认 `failure.failed`、`_build_handoff` 去掉标准追加、
+去掉退化守卫）；四门禁全绿；真实模型 + 真实调度器的注入式 e2e（固定任务级判定失败以
+触发重拆）确认重拆输入含原因与标准，真实 planner 第二次调用回落 echo 时由退化守卫以
+`SUBTASK_VERIFY_FAILED` 收口（回执未执行）；真实 `task` CLI 冒烟通过、零告警；归档后
+`openspec validate --all` 31/0。
+
+**局限**：① 新布局只覆盖**任务级**未达标（`failure.failed` 为空）；子任务失败 / 死循环
+分支不携带任务级标准，仍只有目标与已完成列表；② 退化守卫是去空白后的**精确相等** ——
+模型把重拆输入改写一句（加前缀、换行重排、摘要）即可绕过，它是下限护栏而非语义判重；
+③ 任务级标准只是执行者可见的**建议性上下文**，运行时不对子任务输出做任务级校验
+（有意保持子任务验收语义不变）；④ 原因与标准各截断 600 字符，超长标准/原因会丢尾部，
+极端情况下关键差距可能落在截断之外；⑤ 重拆预算仍为 1，本 change 提高的是这一次重拆的
+信息质量，不增加恢复次数；⑥ 真实冒烟只证明输入内容与失败码，不证明模型第二次拆解一定
+满足任务级标准。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10912,3 +10973,4 @@ required 不保证端点可达；「真实关系为 0」基于 2026-10-18 的本
 | ADR-0278 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0279 | 03-interfaces/configuration-interface.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0280 | 03-interfaces/llm-provider-interface.md, 02-modules/llm-provider.md, 03-interfaces/memory-interface.md, 02-modules/memory.md, 03-interfaces/rag-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0281 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

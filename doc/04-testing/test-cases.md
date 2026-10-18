@@ -4891,3 +4891,27 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **实测**：真实 `task` 冒烟告警消失；真实 embedding 端点在 `asyncio.run` 内检索、
 > 语义排序生效且 `_embed_failed is False`。**已知局限**：见 `coding-plan/known-risk.md`
 > §3 ADR-0280 行（桥接仍阻塞、连接不复用、缓存抖动、粘性失败、PERF2 仍为词法基准）。
+
+## 204. 任务级验收反馈回流与重拆退化守卫（TC-REPLAN-FEEDBACK，change `0291`／ADR-0281，台账 E227）
+
+| 编号 | 覆盖 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-REPLAN-FEEDBACK-01 | 原因与标准回流 | 全部子任务通过、任务级判定 `PROGRESS_NOT_MET`（reason「缺少 CLAUDE.md 原文引用」）+ 两条成功标准 | 重拆输入含原因与两条标准；planner 收到的输入即该文本（`tests/test_orchestration.py::test_replan_input_carries_task_level_reason_and_criteria`） |
+| TC-REPLAN-FEEDBACK-02 | 失败段前置 | 任务级未达标、存在已完成子任务 | `任务级验收未通过` 与标准块的位置**在**「已完成子任务」之前（`...::test_replan_input_puts_failure_before_completed_list`） |
+| TC-REPLAN-FEEDBACK-03 | 长目标不挤掉失败段 | 原始目标 6000 字、任务级未达标 | 总输入受 `MAX_HANDOFF_CHARS` 约束，失败原因与标准仍完整出现（原目标被 `_MAX_REPLAN_GOAL_CHARS` 截断）（`...::test_replan_input_keeps_failure_section_with_long_goal`） |
+| TC-REPLAN-FEEDBACK-04 | 既有分支不变 | 子任务失败（`failure.failed` 非空）触发重拆 | 输入仍以「原始目标」开头，含失败子任务段与既有尾句，顺序逐字不变（`...::test_replan_input_subtask_failure_branch_unchanged`） |
+| TC-REPLAN-FEEDBACK-05 | 整份回执退化 | 重拆 planner 返回单子任务、`goal` 去空白等于重拆输入 | 任务 `FAILED`（`SUBTASK_VERIFY_FAILED`，`replans` 计数）；执行器只被调用 **1** 次（首计划，无新执行）（`...::test_replan_degenerate_echo_fails_fast`） |
+| TC-REPLAN-FEEDBACK-06 | 部分退化 | 重拆回执含多个子任务、其中一个 `goal` 等于输入 | 同样整份 fail-fast；正常子任务也不执行（`...::test_replan_partial_echo_fails_fast`） |
+| TC-REPLAN-FEEDBACK-07 | 标准追加进交接 | 子任务 acceptance「must pass」+ 两条任务级标准 | `acceptance` 以原文开头并含 `任务级成功标准（整体必须满足）：` 与两条标准（`tests/test_orchestration_handoff.py::test_handoff_acceptance_appends_task_criteria`） |
+| TC-REPLAN-FEEDBACK-08 | 无标准逐字节不变 | 无任务级标准（acceptance 非空 / 空） | `acceptance` 分别等于 `must pass` / `""`，与既往逐字节一致（`...::test_handoff_acceptance_byte_identical_without_criteria`） |
+| TC-REPLAN-FEEDBACK-09 | 组合有界 | 1900 字 acceptance + 5 条 300 字标准 | 组合结果 ≤ `MAX_HANDOFF_CHARS`，标准块仍在，原文前缀保留（`...::test_handoff_acceptance_bounded_with_long_criteria`） |
+| TC-REPLAN-FEEDBACK-10 | 首轮即可见标准 | 计划带任务级标准、执行者首轮 | 首轮 prompt 含标准块与标准内容（`...::test_first_attempt_prompt_contains_task_criteria`） |
+| TC-REPLAN-FEEDBACK-11 | 子任务验收语义不变 | 计划带任务级标准、子任务 acceptance「must pass」 | `SubtaskDecomposer` 验证器收到的仍是原 acceptance（`...::test_subtask_verifier_receives_original_acceptance`） |
+
+> **反证 3/3**：`_replan_input` 恢复为只认 `failure.failed` ⇒ 01~03 红；`_build_handoff`
+> 去掉标准追加 ⇒ 07/09/10 红；去掉退化守卫 ⇒ 05/06 红（回执被当正常子任务执行）。
+> **实测**：真实模型 + 真实调度器的注入式 e2e（固定任务级判定失败以触发重拆）确认
+> 重拆输入含任务级原因与标准；真实 planner 第二次调用回落 echo 时，退化守卫以
+> `SUBTASK_VERIFY_FAILED` 收口且回执未执行；真实 `task` CLI 冒烟（简单任务）通过、
+> 零告警。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0281 行（仅任务级分支、
+> 精确相等守卫、标准为建议性上下文、600 字截断、重拆预算仍为 1）。

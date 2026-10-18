@@ -96,6 +96,10 @@ _MAX_EVENT_EXCERPT = 600  # 进度事件携带的回复节选（UI 折叠详情�
 # 仍失败 ⇒ 重新拆解 1 次；预算耗尽 ⇒ FAILED。固定策略，不做配置旋钮。
 _MAX_SUBTASK_RETRIES = 1
 _MAX_REPLANS = 1
+# 重拆输入 / 交接中的任务级失败上下文上界（change 0291）：失败段与标准各自有界，
+# 且置于已完成列表之前 ⇒ 总截断（MAX_HANDOFF_CHARS）后仍存活。
+_MAX_REPLAN_GOAL_CHARS = 600
+_MAX_REPLAN_CRITERIA_CHARS = 600
 
 # 同波次调度策略取值（change 0123；词表来源：doc/openspec/specs/orchestration/spec.md）：
 #   off（缺省）  —— 同波次按依赖拓扑并发（上限 max_concurrency），与引入策略前逐字一致；
@@ -529,6 +533,18 @@ class TaskScheduler:
                     task_id,
                     exc.code,
                     f"重新拆解失败：{exc}",
+                    extra={"replans": plan.replans},
+                )
+                return
+            replan_key = replan_input.strip()
+            if any(s.goal.strip() == replan_key for s in new_plan.subtasks):
+                # 退化回执（LLM 失败回落会把输入原样作为 goal）：不过滤、不执行（change 0291）。
+                # 过滤会让 order/waves 残留已删 id ⇒ 空波次与脏依赖；fail-fast 语义更一致。
+                self._state_machine.transition(task_id, TaskState.FAILED)
+                yield self._failed(
+                    task_id,
+                    OrchestrationErrorCode.SUBTASK_VERIFY_FAILED,
+                    "重新拆解回执退化为拆解输入本身，未生成可执行子任务",
                     extra={"replans": plan.replans},
                 )
                 return
@@ -1076,8 +1092,28 @@ class TaskScheduler:
             )
 
     def _replan_input(self, task_id: str, goal: str, plan: Plan, failure: _Failure) -> str:
-        """重新拆解输入：原目标 + 已完成摘要 + 失败项与原因（有界）。"""
+        """重新拆解输入：失败上下文 / 原目标 / 已完成摘要（有界，change 0291）。
+
+        任务级未达标（``PROGRESS_NOT_MET`` 且无失败子任务）时**失败段与标准前置**：
+        各段有界且位于已完成列表之前，保证总截断后仍存活。子任务失败 / 死循环分支
+        保持既有文案与顺序逐字不变。
+        """
         completed = [s for s in plan.subtasks if s.id in self._tracker.completed(task_id)]
+        if failure.code == OrchestrationErrorCode.PROGRESS_NOT_MET and not failure.failed:
+            lines = [
+                f"任务级验收未通过：{failure.reason[:_MAX_EVENT_EXCERPT]}",
+            ]
+            criteria = self._task_criteria_text(plan)
+            if criteria:
+                lines.append(criteria)
+            lines.append(
+                "全部子任务已完成但整体未达标；请只补充能补齐上述差距的子任务，不要重复已完成的工作。"
+            )
+            lines.append(f"原始目标：{goal[:_MAX_REPLAN_GOAL_CHARS]}")
+            if completed:
+                lines.append("已完成子任务（不要重复安排）：")
+                lines.extend(f"- {s.id}: {s.goal}" for s in completed)
+            return "\n".join(lines)[:MAX_HANDOFF_CHARS]
         lines = [f"原始目标：{goal}"]
         if completed:
             lines.append("已完成子任务（不要重复安排）：")
@@ -1089,6 +1125,15 @@ class TaskScheduler:
             lines.append("上一轮未取得进展（疑似死循环），请换一种拆解策略。")
         lines.append("请重新拆解尚未完成的部分；已完成的部分不要重复。")
         return "\n".join(lines)[:MAX_HANDOFF_CHARS]
+
+    def _task_criteria_text(self, plan: Plan) -> str:
+        """任务级成功标准文本块（有界；无标准返回空串；change 0291）。"""
+        criteria = [c.strip() for c in plan.success_criteria if c.strip()]
+        if not criteria:
+            return ""
+        lines = ["任务级成功标准（整体必须满足）："]
+        lines.extend(f"- {c}" for c in criteria)
+        return "\n".join(lines)[:_MAX_REPLAN_CRITERIA_CHARS]
 
     def _emit_progress(self, task_id: str, subtask_id: str, event: LoopEvent, emit: Emit) -> None:
         """里程碑事件按白名单转译为 `subtask_progress`；表外类型与非字典载荷**静默丢弃**。"""
@@ -1140,12 +1185,21 @@ class TaskScheduler:
                 f"{previous_reason[:_MAX_EVENT_EXCERPT]}"
                 f"（第 {attempt} 次执行，请针对该原因修正）"
             )
+        criteria = self._task_criteria_text(plan)
+        acceptance = subtask.acceptance
+        if criteria:
+            budget = MAX_HANDOFF_CHARS - len(criteria) - 2
+            acceptance = (
+                f"{subtask.acceptance[:budget]}\n\n{criteria}"
+                if subtask.acceptance and budget > 0
+                else criteria[:MAX_HANDOFF_CHARS]
+            )
         return TaskHandoff(
             task=task,
             context_pack=build_context_pack(
                 plan.goal, dependencies, max_tokens=DEFAULT_CONTEXT_TOKENS
             ),
-            acceptance=subtask.acceptance,
+            acceptance=acceptance,
             deadline=float(self._subtask_timeout) if self._subtask_timeout > 0 else None,
             priority=subtask.priority,
             session_id=session_id,

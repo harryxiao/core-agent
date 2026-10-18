@@ -42,6 +42,7 @@ from core.orchestration import (
     plan_from_dict,
     plan_to_dict,
 )
+from core.orchestration.handoff import MAX_HANDOFF_CHARS
 
 # ---- 状态机 ----
 
@@ -485,6 +486,133 @@ def test_run_success_criteria_unmet_recovers_then_fails() -> None:
     assert exc.value.code == OrchestrationErrorCode.PROGRESS_NOT_MET
     assert sm.state("task") == TaskState.FAILED
     assert len(planner.calls) == 2  # noqa: PLR2004 — 未达标触发一次重拆
+
+
+# ---- 任务级验收反馈回流（change 0291） ----
+
+
+class _EchoPlanner:
+    """首拆正常；重拆回执把拆解输入原样作为单个子任务（退化回执）。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def __call__(self, goal: str) -> list[Subtask]:
+        self.calls.append(goal)
+        if len(self.calls) == 1:
+            return [Subtask(id="1", goal="t-one", acceptance="")]
+        return [Subtask(id="2", goal=goal, acceptance="")]
+
+
+class _PartialEchoPlanner:
+    """重拆回执含一个正常子任务 + 一个退化子任务（部分退化）。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def __call__(self, goal: str) -> list[Subtask]:
+        self.calls.append(goal)
+        if len(self.calls) == 1:
+            return [Subtask(id="1", goal="t-one", acceptance="")]
+        return [
+            Subtask(id="2", goal="normal work", acceptance=""),
+            Subtask(id="3", goal=goal, acceptance=""),
+        ]
+
+
+def _task_level_scheduler(planner: Any) -> tuple[TaskScheduler, _ScriptedLoop]:
+    """任务级判定恒未达标 + 记录型 loop/planner（重拆输入断言用）。"""
+    loop = _ScriptedLoop(["ok"])
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(planner=planner),
+        router=MultiAgentRouter(agents=[AgentProfile(agent_id="a", capabilities=["t"], loop=loop)]),
+        state_machine=StateMachine(),
+        success_checker=lambda *_: VerifyResult(passed=False, reason="缺少 CLAUDE.md 原文引用"),
+    )
+    return scheduler, loop
+
+
+def test_replan_input_carries_task_level_reason_and_criteria() -> None:
+    """任务级未达标：判定原因与成功标准进入重拆输入（change 0291）。"""
+    planner = _ScriptedPlanner([[Subtask(id="1", goal="t-one", acceptance="")]])
+    scheduler, _ = _task_level_scheduler(planner)
+    with pytest.raises(OrchestrationError):
+        asyncio.run(
+            scheduler.run("task", "goal", success_criteria=["引用 CLAUDE.md 原文", "覆盖三条原则"])
+        )
+    replan_input = planner.calls[1]
+    assert "任务级验收未通过：缺少 CLAUDE.md 原文引用" in replan_input
+    assert "任务级成功标准（整体必须满足）：" in replan_input
+    assert "- 引用 CLAUDE.md 原文" in replan_input
+    assert "- 覆盖三条原则" in replan_input
+    assert "全部子任务已完成但整体未达标" in replan_input
+
+
+def test_replan_input_puts_failure_before_completed_list() -> None:
+    """失败段与标准优先于已完成列表（总截断后仍存活）。"""
+    planner = _ScriptedPlanner([[Subtask(id="1", goal="t-one", acceptance="")]])
+    scheduler, _ = _task_level_scheduler(planner)
+    with pytest.raises(OrchestrationError):
+        asyncio.run(scheduler.run("task", "goal", success_criteria=["引用 CLAUDE.md 原文"]))
+    replan_input = planner.calls[1]
+    assert replan_input.index("缺少 CLAUDE.md 原文引用") < replan_input.index("已完成子任务")
+    assert replan_input.index("任务级成功标准") < replan_input.index("已完成子任务")
+
+
+def test_replan_input_keeps_failure_section_with_long_goal() -> None:
+    """6000 字原始目标不得挤掉失败段与标准（各自有界 + 失败段前置）。"""
+    long_goal = "目标" * 3000
+    planner = _ScriptedPlanner([[Subtask(id="1", goal="t-one", acceptance="")]])
+    scheduler, _ = _task_level_scheduler(planner)
+    with pytest.raises(OrchestrationError):
+        asyncio.run(scheduler.run("task", long_goal, success_criteria=["引用 CLAUDE.md 原文"]))
+    replan_input = planner.calls[1]
+    assert replan_input.startswith("任务级验收未通过：")
+    assert "缺少 CLAUDE.md 原文引用" in replan_input
+    assert "引用 CLAUDE.md 原文" in replan_input
+    assert len(replan_input) <= MAX_HANDOFF_CHARS
+
+
+def test_replan_input_subtask_failure_branch_unchanged() -> None:
+    """子任务失败分支的文案与顺序保持原样（change 0291 不改既有路径）。"""
+    planner = _ScriptedPlanner([[Subtask(id="1", goal="t-one", acceptance="")]])
+    loop = _ScriptedLoop([""])  # 空回复 ⇒ 子任务验收失败
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(planner=planner),
+        router=MultiAgentRouter(agents=[AgentProfile(agent_id="a", capabilities=["t"], loop=loop)]),
+        state_machine=StateMachine(),
+    )
+    with pytest.raises(OrchestrationError) as exc:
+        asyncio.run(scheduler.run("task", "goal"))
+    assert exc.value.code == OrchestrationErrorCode.SUBTASK_VERIFY_FAILED
+    replan_input = planner.calls[1]
+    assert replan_input.startswith("原始目标：goal")
+    assert "失败子任务（需重新安排）：" in replan_input
+    assert "任务级成功标准" not in replan_input
+    assert replan_input.endswith("请重新拆解尚未完成的部分；已完成的部分不要重复。")
+
+
+def test_replan_degenerate_echo_fails_fast() -> None:
+    """重拆回执 goal == 重拆输入 ⇒ FAILED，且回执子任务不被执行。"""
+    planner = _EchoPlanner()
+    scheduler, loop = _task_level_scheduler(planner)
+    with pytest.raises(OrchestrationError) as exc:
+        asyncio.run(scheduler.run("task", "goal", success_criteria=["c1"]))
+    assert exc.value.code == OrchestrationErrorCode.SUBTASK_VERIFY_FAILED
+    assert "退化" in exc.value.message
+    assert len(planner.calls) == 2  # noqa: PLR2004 — 首拆 + 重拆
+    assert loop.calls == 1  # 仅首计划执行一次；退化回执的子任务未执行
+
+
+def test_replan_partial_echo_fails_fast() -> None:
+    """回执中任一子任务退化为输入 ⇒ 同样 fail-fast（不过滤、不执行）。"""
+    planner = _PartialEchoPlanner()
+    scheduler, loop = _task_level_scheduler(planner)
+    with pytest.raises(OrchestrationError) as exc:
+        asyncio.run(scheduler.run("task", "goal", success_criteria=["c1"]))
+    assert exc.value.code == OrchestrationErrorCode.SUBTASK_VERIFY_FAILED
+    assert "退化" in exc.value.message
+    assert loop.calls == 1  # 正常子任务同样不执行（整份回执 fail-fast）
 
 
 def test_run_empty_success_criteria_done() -> None:

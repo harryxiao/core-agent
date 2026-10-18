@@ -54,6 +54,14 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
   `FAILED`（沿用最后错误码，载荷带 `attempts`/`replans`）。重拆清空该任务旧完成集/结果
   （新 DAG 可能复用 id），`Plan.replans` 随检查点持久化。子 Agent 执行异常归一为子任务失败
   （结构化错误保留原码，其余 → `SUBTASK_EXECUTION_FAILED`，取消透传）；空计划直接 `FAILED`。
+- **重拆输入携带任务级反馈**（change `0291`／ADR-0281）：任务级未达标（`PROGRESS_NOT_MET`
+  且无失败子任务）时，重拆输入以判定器原因与**全部任务级成功标准**开头，再接未达标尾句、
+  有界原目标（600 字符）与已完成列表；原因/标准各截断 600 字符且前置，保证 2000 字总截断后
+  仍存活。子任务失败 / 死循环分支逐字不变。
+- **退化回执 fail-fast**（change `0291`／ADR-0281）：重拆回执中任一子任务
+  `goal.strip()` 精确等于重拆输入 `.strip()`（LLM 失败回落会把输入原样作为 goal）⇒ 整份
+  回执判 `FAILED`（`SUBTASK_VERIFY_FAILED`），**不执行任何子任务**；不过滤后放行 —— 过滤会
+  让 `order`/`waves` 残留已删 id，产生空波次与脏依赖。仅作用于重拆，初次拆解回落不变。
 - **运行中取消与断流**（change `0249`／ADR-0238）：`cancel` 置 per-task 协作信号并**立即取消
   在途波次**，执行流在拆解后 / 波次前后 / 任务级判定后观察信号并以 `TASK_CANCELLED` 终止
   （终态重复取消幂等）；`astream` 的 `finally` 覆盖任意退出路径 —— 取消在途扇出、清
@@ -70,6 +78,10 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
   （超时归一 `SUBTASK_TIMEOUT`），`session_id` 透传子 loop。
 - 交接上下文由 `handoff.build_context_pack` 打包并**有界**（总预算 `DEFAULT_CONTEXT_TOKENS`，
   单字段 `MAX_HANDOFF_CHARS`），避免全量塞入。
+- **任务级标准随交接可见**（change `0291`／ADR-0281）：计划带非空成功标准时，调度器把
+  `任务级成功标准（整体必须满足）：` 清单追加进 `TaskHandoff.acceptance`（整体
+  ≤ `MAX_HANDOFF_CHARS`；无标准时逐字节不变）⇒ 执行者首轮即可见整体验收要求；
+  标准**不**写入 `subtask.acceptance`，子任务验收仍只按自身标准判定。
 - **统一执行器**：beast / pet / 主任务复用 `orchestration/handoff.py`（`build_context_pack` /
   `render_handoff` / `stream_handoff` / `run_handoff`），上下文隔离仍由各自 `session_id` 保证；
   beast/pet 传空上下文 ⇒ `render_handoff` 逐字返回任务文本（行为不变）。

@@ -123,6 +123,19 @@ class LLMTaskVerifier:
   口径**有意不同**，见 §4）。
 - 验收 prompt 输出 `{"passed": bool, "reason": str}`；解析失败按不通过处理（fail-closed）。
 
+**重新拆解输入（change `0291` / ADR-0281）**：恢复回路触发重拆时，调度器传给
+`decompose` 的输入按失败类型分支，整体截断到 `MAX_HANDOFF_CHARS=2000`：
+
+- **任务级未达标**（`PROGRESS_NOT_MET` 且无失败子任务）：`任务级验收未通过：{原因}`
+  → `任务级成功标准（整体必须满足）：` 清单 → 「全部子任务已完成但整体未达标…」→
+  `原始目标：{goal}` → 已完成子任务列表。原因与标准各截断 600 字符，且位于已完成列表
+  **之前**，总截断后仍存活。
+- **子任务失败 / 死循环**：保持既有输入（原始目标 → 已完成列表 → 失败段/死循环提示 →
+  既有尾句），文案与顺序逐字不变。
+- **退化回执**：回执中任一子任务的 `goal.strip()` 精确等于重拆输入 `.strip()` ⇒
+  整份回执判 `FAILED`（`SUBTASK_VERIFY_FAILED`），不执行任何子任务；仅作用于重拆，
+  初次拆解的离线回落不变。
+
 ### 2.2 编排执行与进度事件
 
 ```python
@@ -328,6 +341,11 @@ async def run_handoff(loop, handoff, *, deadline=None) -> LoopResult
 - **全字段消费**：调度器 `_build_handoff` 填充 `task` / `context_pack`（原目标 + 依赖结果）/
   `acceptance` / `deadline`（配置 `orchestration.subtask_timeout`）/ `priority` / `session_id`；
   `priority` 用于就绪队列排序，其余字段进入 prompt 或执行包装。
+- **`acceptance` 组合（change `0291` / ADR-0281）**：计划带非空任务级成功标准时，调度器把
+  `任务级成功标准（整体必须满足）：` 清单追加到子任务 `acceptance` 之后，组合总长 ≤
+  `MAX_HANDOFF_CHARS`（子任务原文让出预算）；无子任务 acceptance 时只放标准；标准为空时
+  `acceptance` 与既往**逐字节相同**。任务级标准只进入执行者可见输入，**不修改**
+  `subtask.acceptance` ⇒ `SubtaskDecomposer.verify` 仍只按子任务自身标准判定。
 - **会话隔离**：执行器只转发 `session_id`，不解释其语义 —— 主任务 = 发起会话
   （`runtime._dispatch` 经 `current_session_id` ContextVar 透传给子 Agent）、beast = `beast.agent_id`、
   pet = 自身 UUID；`runtime.py` 的 `exclude_source_prefixes=("beast.","pet")` **不变**。

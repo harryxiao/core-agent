@@ -14,15 +14,18 @@ import pytest
 from core.loop import LoopEvent, LoopResult
 from core.orchestration import (
     AgentProfile,
+    DecomposeResult,
     MultiAgentRouter,
     OrchestrationError,
     OrchestrationErrorCode,
+    Plan,
     StateMachine,
     Subtask,
     SubtaskDecomposer,
     TaskHandoff,
     TaskScheduler,
     TaskState,
+    VerifyResult,
 )
 from core.orchestration.handoff import (
     MAX_HANDOFF_CHARS,
@@ -222,6 +225,84 @@ def test_scheduler_build_handoff_carries_deadline_and_priority() -> None:
     assert handoff.priority == 2  # noqa: PLR2004 — 即子任务优先级
     assert handoff.acceptance == "must pass"
     assert handoff.session_id == "s"
+
+
+# ---- 任务级成功标准进入交接（change 0291） ----
+
+
+def _handoff_for(acceptance: str, criteria: list[str]) -> TaskHandoff:
+    scheduler = _scheduler(RecordingLoop())
+    plan = Plan(
+        subtasks=[Subtask(id="b", goal="second 任务", acceptance=acceptance)],
+        goal="top",
+        success_criteria=criteria,
+    )
+    return scheduler._build_handoff(  # noqa: SLF001 — 接线断言
+        "task", plan, plan.subtasks[0], session_id="s", attempt=1, previous_reason=""
+    )
+
+
+def test_handoff_acceptance_appends_task_criteria() -> None:
+    handoff = _handoff_for("must pass", ["整体标准 A", "整体标准 B"])
+    assert handoff.acceptance.startswith("must pass")
+    assert "任务级成功标准（整体必须满足）：" in handoff.acceptance
+    assert "- 整体标准 A" in handoff.acceptance
+    assert "- 整体标准 B" in handoff.acceptance
+
+
+def test_handoff_acceptance_byte_identical_without_criteria() -> None:
+    assert _handoff_for("must pass", []).acceptance == "must pass"
+    assert _handoff_for("", []).acceptance == ""
+
+
+def test_handoff_acceptance_bounded_with_long_criteria() -> None:
+    acceptance = "A" * 1900
+    criteria = ["标准 " + "B" * 300 for _ in range(5)]
+    handoff = _handoff_for(acceptance, criteria)
+    assert len(handoff.acceptance) <= MAX_HANDOFF_CHARS
+    assert "任务级成功标准（整体必须满足）：" in handoff.acceptance
+    assert handoff.acceptance.startswith("A")
+
+
+def test_first_attempt_prompt_contains_task_criteria() -> None:
+    """执行者首轮即可见任务级标准（不必等重拆）。"""
+    loop = RecordingLoop(reply="done")
+    planner = lambda goal: DecomposeResult(  # noqa: E731 — 测试桩
+        subtasks=[Subtask(id="a", goal="first 任务", acceptance="")],
+        success_criteria=["整体标准 A"],
+    )
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(planner=planner),
+        router=MultiAgentRouter([_agent(loop)]),
+        state_machine=StateMachine(),
+        success_checker=lambda *_: VerifyResult(passed=True, reason="ok"),
+    )
+    asyncio.run(scheduler.run("task", "top goal"))
+    assert "任务级成功标准（整体必须满足）：" in loop.prompts[0]
+    assert "整体标准 A" in loop.prompts[0]
+
+
+def test_subtask_verifier_receives_original_acceptance() -> None:
+    """任务级标准只进执行输入，子任务验收仍按子任务自身 acceptance。"""
+    seen: list[str] = []
+
+    def verifier(subtask: Subtask, result: object) -> VerifyResult:
+        seen.append(subtask.acceptance)
+        return VerifyResult(passed=True, reason="ok")
+
+    loop = RecordingLoop(reply="done")
+    planner = lambda goal: DecomposeResult(  # noqa: E731 — 测试桩
+        subtasks=[Subtask(id="a", goal="first 任务", acceptance="must pass")],
+        success_criteria=["整体标准 A"],
+    )
+    scheduler = TaskScheduler(
+        decomposer=SubtaskDecomposer(planner=planner, verifier=verifier),
+        router=MultiAgentRouter([_agent(loop)]),
+        state_machine=StateMachine(),
+        success_checker=lambda *_: VerifyResult(passed=True, reason="ok"),
+    )
+    asyncio.run(scheduler.run("task", "top goal"))
+    assert seen == ["must pass"]
 
 
 def test_scheduler_timeout_fails_after_recovery_budget() -> None:
