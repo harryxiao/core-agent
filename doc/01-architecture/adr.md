@@ -9133,6 +9133,63 @@ P1 确定性 SOP 发布质量门、P2 抽取拒绝反馈与去重、P3 任务记
 ⑤ 每次覆盖多一次 `fsync`，小文件写的相对开销上升；未 `fsync` 目录，跨崩溃目录项持久化不在本
 change 范围；⑥ 去重键基于 planner 原始参数，中间件改写后的参数不参与比较。
 
+## ADR-0249：命令执行进程治理与后台任务（change 0259 / 台账 E195）
+
+**背景**：对比审查（2026-10-18）确认 `tools.code_run` 的超时语义与长命令能力存在两层缺陷：
+
+1. **超时只取消等待，不终止进程**：handler 用 `asyncio.to_thread(subprocess.run, timeout=…)`；
+   `ToolProvider.ainvoke` 外层 `asyncio.wait_for(timeout_s=60)` 只取消协程，工作线程与子进程继续运行；
+   `subprocess.run` 的内层超时只杀直接子进程，**孙进程可逃逸**。上层收到 `TIMEOUT` 时命令仍可能
+   在写文件。脚本层超时还被归为 `EXECUTION_FAILED`，与规格「超时 ⇒ 终止并返回超时错误」不一致。
+2. **长命令不可用**：脚本超时缺省 10s、工具外层 60s，编译 / 测试 / 构建常被截断；没有后台执行，
+   模型只能反复轮询短命令。接口文档长期列有 `tools.process`，但代码中**不存在**该工具。
+
+**决策**：
+
+- **D1 执行 seam `tools/execution.py`**（L1、仅 stdlib）：前景改用 `asyncio.create_subprocess_exec`；
+  POSIX `start_new_session=True`（独立会话 / 进程组），Windows `CREATE_NEW_PROCESS_GROUP`。超时 /
+  `CancelledError` 先终止进程树并回收直接子进程，再抛 `TimeoutError` ⇒ Provider 归一为 `TIMEOUT`。
+  模块级 seam（`_create_subprocess_exec` / `_POPEN` / `_IS_WINDOWS`）供测试替换，不 patch 全局
+  `asyncio`（既有 9+ 处 `subprocess.run` 替身随迁）。
+- **D2 进程树终止**：POSIX `os.killpg(os.getpgid(pid), SIGKILL)`（`ProcessLookupError` /
+  `PermissionError` 回退 `proc.kill()`）；Windows `taskkill /PID <pid> /T /F`，不可用则回退直接 kill。
+  不引入三方依赖。
+- **D3 超时口径**：`timeout` 缺省 **120s**、允许 `(0, 600]` 且须为有限数（`Validator` 只校验类型，
+  区间在 handler 校验）；非法值结构化拒绝且**不启动子进程**。工具外层 `timeout_s=660` > 内层硬上限，
+  外层只作兜底。
+- **D4 后台执行**：`background=true` 立即返回 `pid` + 输出文件路径；stdout / stderr 合并写入
+  `$CORE_STATE_DIR/run/<type>-<uuid>.log`（目录 0700、文件 0600），**不接受**模型指定输出路径。
+  后台任务不随 loop 结束强杀，由 `tools.process_kill` 显式管理。注册表 `ProcessRegistry` 有界（32），
+  插入前淘汰已退出项；全在运行 ⇒ 拒绝新任务（不杀活进程腾位）。**不存脚本正文**。
+- **D5 进程工具拆两个**：`tools.process`（`list` / `status` / `output`；`process:read`、可逆 ⇒ 自动
+  放行；`output` 只读注册表内 pid 的日志尾部，缺省 8K、上限 64K）与 `tools.process_kill`
+  （`process:write`、不可逆 ⇒ 确认门）。拆两个是因为 `ToolDef` 只有**工具级** `reversible`：单工具
+  `action=kill` 会让只读 status 也每次要求审批，或让 kill 绕过确认门。未知 pid 返回 `found=false`，
+  不触达任意系统进程。
+- **D6 权限分级**：把 `process` 加入 `PolicyEngine._READ_TOKENS`（否则 `tools.process` 落
+  deny-by-default `HIGH_RISK`）；`process_kill` 先命中 `_HIGH_RISK_TOKENS` 的 `kill`，仍判
+  `high-risk` —— 权限门与 SafetyGate 双层保护。
+- **D7 组合根**：`builtin_tools()` 创建**一份**注册表并注入 `code_run` 与两个进程工具；不同
+  `builtin_tools()` 调用（主子 Agent / 神兽 / 宠物）各自独立注册表，只能管理自己启动的任务。
+  `runtime` 注册 `process:read` / `process:write` coeffect。
+
+**规格**：`tool-use` **MODIFIED**「超时与资源上限」（+4 scen）、**ADDED**「后台命令执行与进程管理」
+（6 scen）；`permission` **MODIFIED**「分级权限体系」（+2 scen）。`openspec validate --all` 31/0
+（归档前）。
+
+**测试**：新增 `tests/test_process_execution.py` 13 例（超时杀孙进程、取消杀树、TIMEOUT 归一、
+非法 UTF-8 替换、timeout 越界 / NaN / inf 拒绝、POSIX 进程组、Windows creationflags / taskkill、
+后台 pid + 0600 日志 + 巡检 + 尾部输出、kill 审批、未知 pid、注册表上界、工具声明）；适配
+`test_tool_use.py` / `test_os_aware_shell.py` / `test_windows_run_completeness.py` 的执行 seam、
+`test_permission.py` 分级、`test_phase13.py` 工具面集合。反证 3/3：摘进程树终止 / 摘
+`start_new_session` / 摘 `process` 只读词元 ⇒ 各 1 红；复原 `md5sum` 一致。四门禁：`ruff check` /
+`ruff format --check` 绿、`pyright` 0 errors、`pytest -q` 全绿。
+
+**局限**：① 后台注册表仅进程内，重启后无法接管旧任务，日志文件不自动清理；② Windows 终止依赖系统
+`taskkill`，不可用时回退 `proc.kill()`（仅直接子进程）；③ 超时返回不携带部分 stdout / stderr
+（需要完整输出请用后台日志）；④ `tools.process output` 与前景 stdout 同口径，日志中的敏感文本可能
+回灌模型（写记忆前仍经 `redact_secrets`）；⑤ 后台任务上限 32、无优先级 / 排队语义。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9376,3 +9433,4 @@ change 范围；⑥ 去重键基于 planner 原始参数，中间件改写后的
 | ADR-0246 | 02-modules/skills.md, 03-interfaces/skills-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0247 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 03-interfaces/llm-provider-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0248 | 02-modules/loop.md, 02-modules/tool-use.md, 03-interfaces/loop-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0249 | 02-modules/tool-use.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

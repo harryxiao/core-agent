@@ -23,7 +23,7 @@ L1 提供**最小可逆能力单元（原子工具）**。原子工具是 LLM �
 | `web_scan` | 读 | 无 | —— | 是（纯读） |
 | `web_execute_js` | 执行 | 执行页面 JS（可点击/提交） | 视操作而定，标注 irreversible | 部分 |
 | `ask_user` | 交互 | 中断问询 | —— | 是（无破坏） |
-| `process_tool` | 进程 | 启/停进程 | 记录 PID，可精确终止 | 是 |
+| `process` / `process_kill` | 进程 | 巡检 / 终止本进程启动的后台任务 | 巡检只读；终止不可逆（确认门） | 部分 |
 | `memory_tool` | 记忆 | 写记忆 | 删除/回滚记忆条目 | 是 |
 
 > `file_read`/`file_write`/`file_patch` 对应现有 `file_read`/`file_write`/`file_patch` 能力；
@@ -74,6 +74,11 @@ class ToolDef:
 
 - 每个工具声明 `timeout` / `max_output` 上界；超限截断或中止，不拖垮 loop。
 - 工具执行异常被捕获为结构化结果，回传给模型而不是崩溃。
+- **子进程治理（change `0259` / ADR-0249）**：`code_run` 前景以独立进程组启动（POSIX
+  `start_new_session` / Windows `CREATE_NEW_PROCESS_GROUP`）；超时 / 取消终止**整棵进程树**并归一
+  `TIMEOUT`，不遗留仍可写文件的子进程。`timeout` 缺省 120s、上限 600s（有限数校验）。
+  后台任务（`background=true`）写 0600 日志并登记到有界注册表，经 `tools.process` 巡检、
+  `tools.process_kill` 终止；注册表仅进程内、不存脚本正文。
 
 ---
 

@@ -653,6 +653,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     resolver.register("filesystem:read", True)
     resolver.register("filesystem:write", True)
     resolver.register("process:spawn", True)
+    resolver.register("process:read", True)  # 后台任务巡检（change 0259 / ADR-0249）
+    resolver.register("process:write", True)  # 后台任务终止（不可逆，确认门约束）
     resolver.register("network:outbound", True)
     resolver.register("agent:delegate", True)  # 委托能力：显式声明供默认暴露面识别（B7）
     tools = ToolProvider(

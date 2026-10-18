@@ -84,6 +84,13 @@ def test_classify_whole_token_still_matches() -> None:
     assert engine.classify("tools.file_read", "x", []) == RiskLevel.READ
 
 
+def test_classify_process_tools() -> None:
+    """后台巡检判只读；终止进程仍判高危（change 0259 / ADR-0249）。"""
+    engine = _engine()
+    assert engine.classify("tools.process", "x", ["process:read"]) == RiskLevel.READ
+    assert engine.classify("tools.process_kill", "x", ["process:write"]) == RiskLevel.HIGH_RISK
+
+
 def test_classify_delegate_coeffect_is_read() -> None:
     """字面量 `agent:delegate` 豁免为只读（保持 change 0076 后的委托放行行为）。"""
     assert _engine().classify("tools.delegate", "x", ["agent:delegate"]) == RiskLevel.READ

@@ -3905,3 +3905,35 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > `_convert_reason_item`（`elif` 链 + 内层循环曾达 4 层）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0248 行（串行 / 无依赖分析 / 仅完全相同键 /
 > `file_patch` 非原子 / fsync 成本）。
+
+## 171. 命令执行进程治理与后台任务（TC-PROC，change `0259`／ADR-0249，台账 E195）
+| TC-PROC | 场景 | 输入 | 预期 |
+|---|---|---|---|
+| TC-PROC-01 | **超时杀整棵树**（承重） | python 脚本派生孙进程（0.4s 后写标记）并 sleep 5；`timeout=0.3` | 返回 `TIMEOUT`；0.8s 后标记文件**不存在**（孙进程未逃逸）（`tests/test_process_execution.py::test_foreground_timeout_kills_process_tree`；Windows skip） |
+| TC-PROC-02 | **取消也杀树** | 同上脚本，`ainvoke` 启动后 0.2s `task.cancel()` | 抛 `CancelledError`；0.8s 后标记不存在（`…::test_cancel_kills_process_tree`） |
+| TC-PROC-03 | 非法 UTF-8 替换 | python 向 stdout 写 `b"\xff"` | `stdout` 含替换符，返回码 0（`…::test_foreground_decodes_invalid_utf8_with_replacement`） |
+| TC-PROC-04 | **timeout 越界拒绝**（承重） | `timeout` ∈ {0, -1, 601, NaN, inf} | `EXECUTION_FAILED`、消息含 timeout、**不启动子进程**（`…::test_timeout_out_of_range_rejected`，5 例） |
+| TC-PROC-05 | POSIX 进程组 | 捕获 `create_subprocess_exec` kwargs | `start_new_session=True`，无 `creationflags`（`…::test_foreground_uses_new_process_group`） |
+| TC-PROC-06 | Windows 进程组 | mock `_IS_WINDOWS` + exec | `creationflags == CREATE_NEW_PROCESS_GROUP`，无 `start_new_session`（`…::test_windows_foreground_uses_creationflags`） |
+| TC-PROC-07 | Windows 杀树 | mock `_IS_WINDOWS` + `taskkill` | argv 为 `["taskkill","/PID","4242","/T","/F"]`（`…::test_windows_kill_uses_taskkill_tree`） |
+| TC-PROC-08 | **后台 pid + 0600 日志**（承重） | `background=true`，python 打印后 sleep 30 | 立即返回 pid / `output_path`；日志文件 0600；`tools.process status` 显示 running；`list` 含该 pid；`output` 可读到标记；`process_kill`（已批准）后进程退出（`…::test_background_returns_pid_and_log`） |
+| TC-PROC-09 | 尾部输出有界 | 后台打印 5000 字符，`output max_chars=10` | 返回长度 ≤10（`…::test_background_output_tail_is_bounded`） |
+| TC-PROC-10 | kill 需审批 | 后台 sleep 30，未批准调 `process_kill` | `IRREVERSIBLE_BLOCKED`；批准后进程退出（`…::test_process_kill_requires_approval`） |
+| TC-PROC-11 | 未知 pid | pid=999999 调 status / kill | `found=false`，不触达进程（`…::test_unknown_pid_found_false`） |
+| TC-PROC-12 | 注册表上界 | `max_jobs=1` 连开两个后台任务 | 第二个 `EXECUTION_FAILED` 且消息含「上限」；首个仍在运行（`…::test_registry_bounded`） |
+| TC-PROC-13 | 工具声明 | 读取 `ToolDef` | `tools.process` 只读可逆（`process:read`）；`tools.process_kill` 不可逆写（`process:write`）（`…::test_process_tool_declarations`） |
+| TC-PROC-14 | **权限分级**（承重） | `PolicyEngine.classify` | `tools.process` ⇒ READ；`tools.process_kill` ⇒ HIGH_RISK（`tests/test_permission.py::test_classify_process_tools`） |
+| TC-PROC-15 | 生产工具面 | `build_runtime` | 工具集合含 `tools.process` / `tools.process_kill`（`tests/test_phase13.py::test_build_runtime_assembles_all_deps`） |
+
+> **适配**：`test_tool_use.py` / `test_os_aware_shell.py` / `test_windows_run_completeness.py` 的
+> `subprocess.run` 替身改为 `core.tools.execution._create_subprocess_exec`；`code_run` 的脚本超时
+> 断言由 `EXECUTION_FAILED` 改为 `TIMEOUT`。
+> **反证**：P1 摘 `_terminate_and_reap` 的 `kill_process_tree` ⇒ TC-PROC-01 红；P2 摘
+> `start_new_session` ⇒ TC-PROC-05 红；P3 摘 `_READ_TOKENS` 的 `process` ⇒ TC-PROC-14 红。三次复原后
+> `md5sum` 均一致。
+> 规格：`tool-use` **MODIFIED**「超时与资源上限」（+4 scen）、**ADDED**「后台命令执行与进程管理」
+> （6 scen）；`permission` **MODIFIED**「分级权限体系」（+2 scen）。`openspec validate --all` 31/0（归档前）。
+> 测试净 **+18**（2854 → **2872**）。四门禁全绿（`ruff check` / `ruff format --check` /
+> `pyright` 0 / `pytest -q`）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0249 行（注册表仅进程内 / taskkill 依赖 /
+> 超时不带部分输出 / 日志可能回灌敏感文本 / 上限 32）。

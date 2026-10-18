@@ -6,7 +6,6 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -40,15 +39,34 @@ def _provider(tool: Any = None) -> ToolProvider:
     return provider
 
 
+class _FakeProc:
+    """异步子进程替身（change 0259 执行 seam）。"""
+
+    returncode = 0
+    pid = 999999
+
+    def __init__(self, stdout: bytes) -> None:
+        self._stdout = stdout
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return self._stdout, b""
+
+    async def wait(self) -> int:
+        return 0
+
+    def kill(self) -> None:
+        pass
+
+
 def _capture_run(monkeypatch: pytest.MonkeyPatch, *, stdout: str = "") -> dict[str, Any]:
     captured: dict[str, Any] = {}
 
-    def fake_run(cmd: list[str], **kwargs: Any) -> Any:
-        captured["cmd"] = cmd
+    async def fake_exec(*cmd: str, **kwargs: Any) -> _FakeProc:
+        captured["cmd"] = list(cmd)
         captured["kwargs"] = kwargs
-        return MagicMock(returncode=0, stdout=stdout, stderr="")
+        return _FakeProc(stdout.encode("utf-8"))
 
-    monkeypatch.setattr("core.tools.builtin.subprocess.run", fake_run)
+    monkeypatch.setattr("core.tools.execution._create_subprocess_exec", fake_exec)
     return captured
 
 
@@ -111,12 +129,10 @@ def test_env_block_unknown_os_does_not_claim_bash() -> None:
 
 
 def test_code_run_decodes_utf8_deterministically(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = _capture_run(monkeypatch, stdout="中文")
+    _capture_run(monkeypatch, stdout="中文")
     provider = _provider(code_run(env_snapshot=_snap()))
     result = provider.invoke("tools.code_run", {"script": "echo hi"}, trace_id="t", approved=True)
     assert result.ok
-    assert captured["kwargs"]["encoding"] == "utf-8"
-    assert captured["kwargs"]["errors"] == "replace"
     assert result.data["stdout"] == "中文"
 
 

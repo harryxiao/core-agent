@@ -130,6 +130,9 @@ def test_build_runtime_assembles_all_deps(monkeypatch, tmp_path) -> None:
         "tools.gate_run",
         # 信息地图取详情工具（change 0140 / 账本 E77）：生产工具面可达
         "tools.context_read",
+        # 后台任务巡检 / 终止（change 0259 / ADR-0249）：生产工具面可达
+        "tools.process",
+        "tools.process_kill",
     }
     delegate = next(t for t in runtime.tools.active_tools() if t.tool_id == "tools.delegate")
     min_delegate_timeout = 120.0  # 委托跑完整子循环，远超 ToolDef 默认 30s

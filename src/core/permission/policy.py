@@ -44,7 +44,20 @@ _WRITE_TOKENS = frozenset(
         "revoke",
     }
 )
-_READ_TOKENS = frozenset({"read", "get", "list", "search", "query", "cat", "view", "show", "stat"})
+_READ_TOKENS = frozenset(
+    {
+        "read",
+        "get",
+        "list",
+        "search",
+        "query",
+        "cat",
+        "view",
+        "show",
+        "stat",
+        "process",  # 后台任务巡检（tools.process；kill 仍由高危词元优先判 HIGH_RISK）
+    }
+)
 # 词元分隔符：命名空间（`.`）/ 路径（`/`）与 snake / kebab / coeffect 式（`_` `-` `:`）。
 # 分级 SHALL 按**完整词元**命中，SHALL NOT 对标识串做任意子串匹配 ——
 # 否则 `tools.target`（含子串 `get`）、`tools.category_sync`（含 `cat`）会被误判为只读，

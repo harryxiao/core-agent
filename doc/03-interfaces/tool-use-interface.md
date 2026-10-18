@@ -82,7 +82,7 @@ class ToolError:
 
 | tool_id | 主要参数 | 说明 |
 |---|---|---|
-| `tools.code_run` | `script`, `type`, `timeout`, `cwd` | 执行代码 |
+| `tools.code_run` | `script`, `type`, `timeout`, `cwd`, `background` | 执行代码（缺省 timeout 120s、上限 600s；`background=true` 立即返回 pid + 日志路径） |
 | `tools.file_read` | `path`, `start`, `count` | 读文件 |
 | `tools.file_write` | `path`, `content`, `mode` | 写文件 |
 | `tools.file_patch` | `path`, `old_content`, `new_content` | 精确替换 |
@@ -90,7 +90,8 @@ class ToolError:
 | `tools.web_execute_js` | `script`, `switch_tab_id` | 执行页面 JS |
 | `tools.web_fetch` | `url`, `timeout` | GET 抓取网页（仅 http/https，出站经确认门） |
 | `tools.ask_user` | `question`, `candidates` | 人机确认 |
-| `tools.process` | `action`, `pid` | 进程管理（精确 PID） |
+| `tools.process` | `action`, `pid`, `max_chars` | 后台任务巡检（`list` / `status` / `output`；只读可逆，`process:read`；仅本进程注册表内任务；`output` 读日志尾部，缺省 8K、上限 64K） |
+| `tools.process_kill` | `pid` | 终止本进程启动的后台任务及其后代（`process:write` + 不可逆 ⇒ 确认门；未知 pid `found=false`） |
 | `tools.memory` | `layer`, `action`, `entry` | 记忆读写 |
 | `tools.install` | `source`, `kind`, `name` | 安装插件（discover→verify→install→register→activate；写 + 不可逆 ⇒ 走确认门） |
 | `tools.uninstall` | `plugin_id` | 卸载插件（deactivate→uninstall 对称回退；写 + 不可逆 ⇒ 走确认门） |
@@ -107,7 +108,8 @@ class ToolError:
 > 权限分级按**完整词元**判只读放行（不落 deny-by-default）。
 >
 > **零注入内置集有单一真源**：`core.tools.builtin_tools() -> tuple[Tool, ...]`（change `0162` / ADR-0153）
-> 给出**不需注入执行器**的五件（`file_read` / `file_write` / `file_patch` / `code_run` / `web_fetch`）；
+> 给出**不需注入执行器**的七件（`file_read` / `file_write` / `file_patch` / `code_run` /
+> `web_fetch` / `process` / `process_kill`）；`code_run` 与两个进程工具共享**同一份**后台任务注册表；
 > 组合根 `build_runtime` 的注册与只读诊断面（`doctor` / `status` 的「内置工具数」）**共用同一份** ——
 > 计数面不另抄一张表（`gate_run` / `context_read` 的执行器由组合根注入，故不在其中，另装配）。
 >
@@ -128,6 +130,16 @@ class ToolError:
 > `[Console]::OutputEncoding`，Python 子进程带 `PYTHONIOENCODING=utf-8`。`cwd` 在入口做
 > **`~` 展开**（`Path(cwd).expanduser()`，其余不 `resolve`）；每次调用为**全新进程**，
 > `cd` / 环境变量不跨调用保留。显式 `type` 优先于平台缺省。
+>
+> **进程治理与后台任务（change `0259` / ADR-0249）**：前景执行经
+> `core.tools.execution.run_foreground`，以**独立进程组**启动（POSIX `start_new_session` /
+> Windows `CREATE_NEW_PROCESS_GROUP`）；超时 / 取消先终止**整棵进程树**（POSIX `killpg(SIGKILL)` /
+> Windows `taskkill /T /F`）并回收，再归一为 `TIMEOUT`。`timeout` 缺省 **120s**、允许 `(0, 600]`
+> 内的有限秒数（越界 / NaN / inf ⇒ `EXECUTION_FAILED` 且不启动子进程）；工具外层 `timeout_s=660`。
+> `background=true` 时 stdout / stderr 合并写入 `$CORE_STATE_DIR/run/<type>-<uuid>.log`
+> （目录 0700、文件 0600），立即返回 `pid` / `output_path` / `started_at`；**不接受**模型指定输出路径。
+> 后台任务不随 loop 结束强杀，由 `tools.process_kill` 显式终止；注册表有界（32，仅进程内）。
+> `tools.process` / `tools.process_kill` 只能看到 / 终止**同一份注册表**内由本进程启动的任务。
 
 ---
 

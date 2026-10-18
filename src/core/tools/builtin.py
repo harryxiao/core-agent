@@ -17,6 +17,8 @@ web_fetch 出站抓取，均经确认门（高风险需人工审批）。
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import math
 import os
 import stat
 import subprocess
@@ -27,12 +29,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
+from . import execution
 from .env_shell import (
     EnvironmentSnapshot,
     probe_environment,
     resolve_run_type,
     shell_argv,
 )
+from .execution import ProcessRegistry
 from .models import ToolDef
 from .tool import Tool
 
@@ -84,13 +88,39 @@ _RUN_SCHEMA = {
                 "显式 type 优先于平台缺省；省略时：Windows→powershell，Darwin/Linux→bash。"
             ),
         },
-        "timeout": {"type": "number", "description": "超时秒数（缺省 10）"},
+        "timeout": {
+            "type": "number",
+            "description": "超时秒数（缺省 120；允许 (0, 600]；后台任务不适用）",
+        },
         "cwd": {
             "type": "string",
             "description": "工作目录（绝对路径；支持 ~ 展开；每次调用独立）",
         },
+        "background": {
+            "type": "boolean",
+            "description": "true=后台执行，立即返回 pid 与输出文件路径（缺省 false）",
+        },
     },
     "required": ["script"],
+}
+
+_PROCESS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["list", "status", "output"]},
+        "pid": {"type": "integer"},
+        "max_chars": {
+            "type": "integer",
+            "description": "output 动作的尾部长（缺省 8192，上限 65536）",
+        },
+    },
+    "required": ["action"],
+}
+
+_PROCESS_KILL_SCHEMA = {
+    "type": "object",
+    "properties": {"pid": {"type": "integer"}},
+    "required": ["pid"],
 }
 
 _FETCH_SCHEMA = {
@@ -104,6 +134,10 @@ _FETCH_SCHEMA = {
 
 _MAX_OUTPUT_CHARS = 8192  # code_run stdout/stderr 截断
 _MAX_FETCH_BYTES = 65536  # web_fetch 正文截断（64 KiB）
+_DEFAULT_RUN_TIMEOUT = 120.0  # 前景脚本缺省超时
+_MAX_RUN_TIMEOUT = 600.0  # 前景脚本硬上限（工具外层 660s 兜底不先触发）
+_DEFAULT_PROCESS_OUTPUT_CHARS = 8192  # tools.process output 尾部缺省长
+_MAX_PROCESS_OUTPUT_CHARS = 65536  # tools.process output 尾部上限
 _USER_AGENT = "core-agent/0.1"
 
 
@@ -231,14 +265,54 @@ def file_patch() -> Tool:
     )
 
 
+def _validate_timeout(timeout: float, background: bool) -> None:
+    """前景 timeout 须为 (0, 硬上限] 内的有限秒数；后台不适用。"""
+    if background:
+        return
+    if not math.isfinite(timeout) or not 0 < timeout <= _MAX_RUN_TIMEOUT:
+        raise ValueError(  # noqa: TRY003 — 结构化错误消息由 Provider 归一
+            f"timeout 须为 (0, {_MAX_RUN_TIMEOUT:g}] 内的秒数，收到: {timeout!r}"
+        )
+
+
+def _start_background(
+    jobs: ProcessRegistry,
+    cmd: list[str],
+    cwd: str | None,
+    env: dict[str, str] | None,
+    run_type: str,
+) -> dict[str, Any]:
+    """后台启动并登记；注册表满 ⇒ 终止刚启动的任务、清理日志后拒绝。"""
+    job = execution.spawn_background(cmd, cwd=cwd, env=env, run_type=run_type)
+    try:
+        jobs.add(job)
+    except RuntimeError:
+        execution.kill_process_tree(job.proc)
+        with contextlib.suppress(OSError):
+            job.output_path.unlink(missing_ok=True)
+        raise
+    return {
+        "type": run_type,
+        "background": True,
+        "pid": job.pid,
+        "output_path": str(job.output_path),
+        "started_at": job.started_at,
+    }
+
+
 def code_run(
     *,
     env_snapshot: EnvironmentSnapshot | Callable[[], EnvironmentSnapshot] | None = None,
+    registry: ProcessRegistry | None = None,
 ) -> Tool:
     """执行代码片段（python / bash / powershell；超时与输出截断；高风险经确认门）。
 
     ``env_snapshot``：缺省方言与壳可得性；``None`` ⇒ 每次调用时 ``probe_environment()``。
+    ``registry``：后台任务注册表；``builtin_tools`` 注入**同一份**给进程管理工具，
+    独立构造时自建（该实例的后台任务对别的工具面不可见）。
     """
+
+    jobs = registry if registry is not None else ProcessRegistry()
 
     def _snap() -> EnvironmentSnapshot:
         if env_snapshot is None:
@@ -250,9 +324,11 @@ def code_run(
     async def handler(
         script: str,
         type: str | None = None,
-        timeout: float = 10.0,
+        timeout: float = _DEFAULT_RUN_TIMEOUT,
         cwd: str | None = None,
+        background: bool = False,
     ) -> dict[str, Any]:
+        _validate_timeout(timeout, background)
         snap = _snap()
         run_type = resolve_run_type(type, snap)
         child_env: dict[str, str] | None = None
@@ -264,27 +340,16 @@ def code_run(
                 script = f"{_PS_UTF8_PREAMBLE}\n{script}"
             cmd = shell_argv(run_type, script, snap)
         run_cwd = str(Path(cwd).expanduser()) if cwd else cwd
-        proc = await asyncio.to_thread(
-            subprocess.run,
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            cwd=run_cwd,
-            check=False,
-            env=child_env,
-        )
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
+        if background:
+            return _start_background(jobs, cmd, run_cwd, child_env, run_type)
+        result = await execution.run_foreground(cmd, timeout=timeout, cwd=run_cwd, env=child_env)
         return {
             "type": run_type,
-            "returncode": proc.returncode,
-            "stdout": stdout[:_MAX_OUTPUT_CHARS],
-            "stderr": stderr[:_MAX_OUTPUT_CHARS],
-            "stdout_truncated": len(stdout) > _MAX_OUTPUT_CHARS,
-            "stderr_truncated": len(stderr) > _MAX_OUTPUT_CHARS,
+            "returncode": result.returncode,
+            "stdout": result.stdout[:_MAX_OUTPUT_CHARS],
+            "stderr": result.stderr[:_MAX_OUTPUT_CHARS],
+            "stdout_truncated": len(result.stdout) > _MAX_OUTPUT_CHARS,
+            "stderr_truncated": len(result.stderr) > _MAX_OUTPUT_CHARS,
         }
 
     return Tool(
@@ -294,12 +359,97 @@ def code_run(
                 "执行代码片段（python / bash / powershell），返回返回码与输出；"
                 "显式 type 优先；未指定时 Windows 缺省 powershell、Darwin/Linux 缺省 bash；"
                 "每次调用为全新进程（cd/环境变量不保留），目录用 cwd（支持 ~）；"
+                "background=true 时立即返回 pid 与输出文件路径；"
                 "不可逆高风险，需审批"
             ),
             schema=_RUN_SCHEMA,
             coeffects=["process:spawn", "filesystem:write"],
             reversible=False,
-            timeout_s=60.0,
+            timeout_s=660.0,  # > 脚本内层硬上限 600s；外层只作兜底
+        ),
+        handler=handler,
+    )
+
+
+def _tail_text(path: Path, limit: int) -> str:
+    """读文件尾部（UTF-8 按最坏 4 字节/字符有界读取，非法字节替换）。"""
+    with path.open("rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        fh.seek(max(0, size - limit * 4))
+        raw = fh.read()
+    return raw.decode("utf-8", errors="replace")[-limit:]
+
+
+def process_manage(*, registry: ProcessRegistry) -> Tool:
+    """后台任务巡检（list / status / output，只读，自动放行）。"""
+
+    def handler(
+        action: str,
+        pid: int | None = None,
+        max_chars: int = _DEFAULT_PROCESS_OUTPUT_CHARS,
+    ) -> dict[str, Any]:
+        if action == "list":
+            return {"jobs": [job.info() for job in registry.list()]}
+        if action not in ("status", "output"):
+            raise ValueError(f"未知动作: {action}（可选: list/status/output）")  # noqa: TRY003
+        if pid is None:
+            raise ValueError(f"action={action} 需要 pid")  # noqa: TRY003
+        job = registry.get(pid)
+        if job is None:
+            return {"pid": pid, "found": False}
+        if action == "status":
+            return {"found": True, **job.info()}
+        if not 0 < max_chars <= _MAX_PROCESS_OUTPUT_CHARS:
+            raise ValueError(  # noqa: TRY003 — 结构化错误消息由 Provider 归一
+                f"max_chars 须为 (0, {_MAX_PROCESS_OUTPUT_CHARS}]，收到: {max_chars}"
+            )
+        return {"found": True, **job.info(), "output": _tail_text(job.output_path, max_chars)}
+
+    return Tool(
+        definition=ToolDef(
+            tool_id="tools.process",
+            description="后台任务巡检：list / status / output（只读，自动放行）",
+            schema=_PROCESS_SCHEMA,
+            coeffects=["process:read"],
+            reversible=True,
+            timeout_s=10.0,
+        ),
+        handler=handler,
+    )
+
+
+def _kill_job(registry: ProcessRegistry, pid: int) -> dict[str, Any]:
+    job = registry.get(pid)
+    if job is None:
+        return {"pid": pid, "found": False, "killed": False}
+    already_exited = job.proc.poll() is not None
+    if not already_exited:
+        execution.kill_process_tree(job.proc)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        job.proc.wait(timeout=5)
+    return {
+        "pid": pid,
+        "found": True,
+        "killed": not already_exited,
+        "returncode": job.proc.poll(),
+    }
+
+
+def process_kill(*, registry: ProcessRegistry) -> Tool:
+    """终止注册表内的后台任务（不可逆写，经确认门；不接受任意 pid）。"""
+
+    async def handler(pid: int) -> dict[str, Any]:
+        return await asyncio.to_thread(_kill_job, registry, pid)
+
+    return Tool(
+        definition=ToolDef(
+            tool_id="tools.process_kill",
+            description="终止本进程启动的后台任务及其后代（仅注册表内 pid；不可逆，需审批）",
+            schema=_PROCESS_KILL_SCHEMA,
+            coeffects=["process:write"],
+            reversible=False,
+            timeout_s=30.0,
         ),
         handler=handler,
     )
@@ -415,10 +565,20 @@ def gate_run(*, gates: tuple[str, ...], run_gate: Callable[[str], GateOutcome]) 
 def builtin_tools() -> tuple[Tool, ...]:
     """零注入的内置原子工具集（**单一真源**）：组合根注册与只读诊断面计数共用一份。
 
-    只含**无需注入**的五件（`file_read` / `file_write` / `file_patch` / `code_run` / `web_fetch`）；
-    `gate_run` / `context_read` 的执行器由组合根注入，故由 `runtime` 另行装配。
+    只含**无需注入**的七件（`file_read` / `file_write` / `file_patch` / `code_run` /
+    `web_fetch` / `process` / `process_kill`）；`code_run` 与两个进程工具共享**同一份**
+    后台任务注册表。`gate_run` / `context_read` 的执行器由组合根注入，故由 `runtime` 另行装配。
     """
-    return (file_read(), file_write(), file_patch(), code_run(), web_fetch())
+    registry = ProcessRegistry()
+    return (
+        file_read(),
+        file_write(),
+        file_patch(),
+        code_run(registry=registry),
+        web_fetch(),
+        process_manage(registry=registry),
+        process_kill(registry=registry),
+    )
 
 
 def _restore(snap: dict[str, str | None]) -> None:

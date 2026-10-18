@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import os
 import stat
-import subprocess as sp
 import time
 from unittest.mock import patch
 
@@ -507,6 +506,25 @@ def test_async_true_concurrency() -> None:
 # ---- code_run / web_fetch 内置原子工具 ----
 
 
+class _FakeProc:
+    """异步子进程替身（change 0259 执行 seam）。"""
+
+    def __init__(self, stdout: bytes = b"", stderr: bytes = b"", returncode: int = 0) -> None:
+        self._stdout = stdout
+        self._stderr = stderr
+        self.returncode = returncode
+        self.pid = 999999  # 不存在的 pid：kill 分支走 ProcessLookupError 兜底
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return self._stdout, self._stderr
+
+    async def wait(self) -> int:
+        return self.returncode
+
+    def kill(self) -> None:
+        pass
+
+
 def test_code_run_python_and_bash(monkeypatch: pytest.MonkeyPatch) -> None:
     """code_run 执行 python/bash 片段，返回码与 stdout 正确映射。"""
     provider = _provider()
@@ -516,12 +534,12 @@ def test_code_run_python_and_bash(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert py.ok and py.data["returncode"] == 0 and py.data["stdout"].strip() == "42"
 
-    # bash：注入「有 bash」快照 + 替身 run（宿主未必装 Git Bash，change 0237 fail-closed）
-    def fake_run(cmd: list, **_kw: object) -> object:
-        assert cmd[:2] == ["bash", "-c"]
-        return type("R", (), {"returncode": 0, "stdout": "bash-ok\n", "stderr": ""})()
+    # bash：注入「有 bash」快照 + 替身 exec（宿主未必装 Git Bash，change 0237 fail-closed）
+    async def fake_exec(*cmd: object, **_kw: object) -> _FakeProc:
+        assert cmd[:2] == ("bash", "-c")
+        return _FakeProc(stdout=b"bash-ok\n")
 
-    monkeypatch.setattr("core.tools.builtin.subprocess.run", fake_run)
+    monkeypatch.setattr("core.tools.execution._create_subprocess_exec", fake_exec)
     snap = EnvironmentSnapshot(
         os="Linux",
         default_shell="bash",
@@ -540,12 +558,17 @@ def test_code_run_python_and_bash(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_code_run_timeout_structured(monkeypatch: pytest.MonkeyPatch) -> None:
-    """脚本超时：子进程被杀并归一 EXECUTION_FAILED，不向调用方抛裸异常。"""
+    """脚本超时：进程树被终止并归一 TIMEOUT，不向调用方抛裸异常。"""
 
-    def fake_run(*_a: object, **_kw: object) -> object:
-        raise sp.TimeoutExpired(cmd="bash", timeout=0.05)
+    class _HangingProc(_FakeProc):
+        async def communicate(self) -> tuple[bytes, bytes]:
+            await asyncio.sleep(5)
+            return b"", b""
 
-    monkeypatch.setattr("core.tools.builtin.subprocess.run", fake_run)
+    async def fake_exec(*_a: object, **_kw: object) -> _HangingProc:
+        return _HangingProc()
+
+    monkeypatch.setattr("core.tools.execution._create_subprocess_exec", fake_exec)
     snap = EnvironmentSnapshot(
         os="Linux",
         default_shell="bash",
@@ -564,8 +587,7 @@ def test_code_run_timeout_structured(monkeypatch: pytest.MonkeyPatch) -> None:
         approved=True,
     )
     assert result.ok is False
-    assert result.error is not None and result.error.code == ToolErrorCode.EXECUTION_FAILED
-    assert "timed out" in result.error.message.lower() or "Timeout" in result.error.message
+    assert result.error is not None and result.error.code == ToolErrorCode.TIMEOUT
 
 
 def test_code_run_blocked_without_approval() -> None:

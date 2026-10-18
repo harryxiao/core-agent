@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -142,14 +141,39 @@ def test_shell_argv_missing_bash_raises() -> None:
         shell_argv("bash", "echo hi", _snap(has_bash=False))
 
 
-def test_code_run_powershell_argv(monkeypatch: pytest.MonkeyPatch) -> None:
+class _FakeProc:
+    """异步子进程替身（change 0259 执行 seam）。"""
+
+    returncode = 0
+    pid = 999999
+
+    def __init__(self, stdout: bytes = b"ok") -> None:
+        self._stdout = stdout
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return self._stdout, b""
+
+    async def wait(self) -> int:
+        return 0
+
+    def kill(self) -> None:
+        pass
+
+
+def _capture_exec(monkeypatch: pytest.MonkeyPatch, stdout: bytes = b"ok") -> dict[str, Any]:
     captured: dict[str, Any] = {}
 
-    def fake_run(cmd: list[str], **_kw: Any) -> Any:
-        captured["cmd"] = cmd
-        return MagicMock(returncode=0, stdout="ok", stderr="")
+    async def fake_exec(*cmd: str, **kwargs: Any) -> _FakeProc:
+        captured["cmd"] = list(cmd)
+        captured["kwargs"] = kwargs
+        return _FakeProc(stdout)
 
-    monkeypatch.setattr("core.tools.builtin.subprocess.run", fake_run)
+    monkeypatch.setattr("core.tools.execution._create_subprocess_exec", fake_exec)
+    return captured
+
+
+def test_code_run_powershell_argv(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _capture_exec(monkeypatch)
     provider = _provider(code_run(env_snapshot=_snap(has_pwsh=True)))
     result = provider.invoke(
         "tools.code_run",
@@ -178,13 +202,7 @@ def test_code_run_powershell_unavailable_structured() -> None:
 
 
 def test_code_run_default_type_windows(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, Any] = {}
-
-    def fake_run(cmd: list[str], **_kw: Any) -> Any:
-        captured["cmd"] = cmd
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr("core.tools.builtin.subprocess.run", fake_run)
+    captured = _capture_exec(monkeypatch, stdout=b"")
     provider = _provider(code_run(env_snapshot=_snap()))
     result = provider.invoke("tools.code_run", {"script": "Get-Date"}, trace_id="t", approved=True)
     assert result.ok
@@ -193,13 +211,7 @@ def test_code_run_default_type_windows(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_code_run_default_type_linux(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, Any] = {}
-
-    def fake_run(cmd: list[str], **_kw: Any) -> Any:
-        captured["cmd"] = cmd
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr("core.tools.builtin.subprocess.run", fake_run)
+    captured = _capture_exec(monkeypatch, stdout=b"")
     linux = _snap(
         os="Linux",
         default_shell="bash",
@@ -229,13 +241,7 @@ def test_code_run_bash_unavailable_no_fallback() -> None:
 
 
 def test_code_run_python_regression(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, Any] = {}
-
-    def fake_run(cmd: list[str], **_kw: Any) -> Any:
-        captured["cmd"] = cmd
-        return MagicMock(returncode=0, stdout="42\n", stderr="")
-
-    monkeypatch.setattr("core.tools.builtin.subprocess.run", fake_run)
+    captured = _capture_exec(monkeypatch, stdout=b"42\n")
     provider = _provider(code_run(env_snapshot=_snap()))
     result = provider.invoke(
         "tools.code_run",
