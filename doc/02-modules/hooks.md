@@ -3,7 +3,7 @@
 > 对应规格：`doc/openspec/specs/hooks/spec.md` ｜ 决策：`doc/01-architecture/adr.md` ADR-0155
 > 设计稿：`doc/openspec/changes/archive/2026-10-07-0164-hooks-architecture/design.md`
 > 定位：**横切扩展点**，让操作者在**不改内核代码**的前提下，对内核生命周期事件挂载「观察」或「否决」。
-> **状态：契约先行，尚未实现**（台账 `coding-plan/known-risk.md` §1 **E101**；实现另立 change）。
+> **状态：已实现**（change `0269` / ADR-0259 / 台账 E205；契约来源 ADR-0155）。
 
 ---
 
@@ -45,12 +45,12 @@
 
 | 事件 | 接缝 | 现状 |
 |---|---|---|
-| `tool.before` | `middlewares`（`loop/default.py:723`） | **既有**（`loop` 规格已收口） |
-| `tool.after` | `action_observers`（`:735`） | **既有** |
-| `turn.after` | `turn_observer`（`:380`） | **既有**（代码注入，规格未收） |
-| `turn.before` | —— | **待新增**：loop 增与 `turn_observer` 对称的注入形参（**不挪 `middlewares`**） |
-| `session.start` / `session.end` | —— | **待新增**：落**组合根**（UI 层不持钩子） |
-| `memory.write` | —— | **待新增**：`MemoryStore` 增观察者 DI 形参（与 `summarizer` / `key_fact_extractor` 同构） |
+| `tool.before` | `middlewares`（`loop/default.py`） | **既有**（`loop` 规格已收口） |
+| `tool.after` | `action_observers` | **既有** |
+| `turn.after` | `turn_after` 注入形参（轮尾、**封 trace 前**） | **已实现**（change 0269） |
+| `turn.before` | `turn_before` 注入形参 | **已实现**（change 0269；返回 `False` ⇒ 本轮拒绝） |
+| `session.start` / `session.end` | 组合根适配器 + `atexit` | **已实现**（change 0269；首轮幂等） |
+| `memory.write` | `MemoryStore(write_observer=...)` | **已实现**（change 0269；同步、异常吞掉） |
 
 ---
 
@@ -115,8 +115,23 @@ hooks:
 
 ---
 
-## 8. 实现待办（下一个 change）
+## 8. 实现落点（change 0269）
 
-新包 `src/core/hooks/`（事件模型 + 脱敏 + 执行器 + 注册表 + 配置接线）；`loop` 的 `turn.before` 形参；
-`MemoryStore` 的写入观察者；组合根多播与 `session.*`；`_CONFIG_SPECS` 三个标量 + `hooks.entries` 解析；
-测试面（脱敏红线 / 阻断 / 只留痕 / 超时 / 环境白名单 / 三层优先级）—— 详见设计稿 §9。
+| 文件 | 职责 |
+|---|---|
+| `src/core/hooks/model.py` | 事件词表 / `HookEvent` / `HookEntry`（`match` 收窄）/ `digest` / `redact_payload` |
+| `src/core/hooks/executor.py` | argv 子进程（白名单 env、超时、输出丢弃）+ 内置回调 → `HookOutcome` |
+| `src/core/hooks/manager.py` | 按事件 + `match` 派发、`on_error` 处置、`kind="hook"` trace、`entries_from_config`、`session.*` 幂等与 `atexit` |
+| `src/core/loop/default.py` | `turn_before` / `turn_after` 注入点；中间件与观察者可等待（同步实现逐字等价）；`current_trace_id`；`ActionResult.duration_ms` |
+| `src/core/memory/store.py` | `write_observer`：落库后同步通知，异常吞掉 |
+| `src/core/runtime.py` | `hooks.enabled` 才构造 `HookManager`；四个 loop（主 / `_agent_loop` / `_beast_loop` / pet）接同一组适配器；登记密钥明文 |
+| `src/core/configuration/manager.py` | 三个标量 `ConfigSpec`；`hooks_entries()`；YAML 块序列 / flow 列表支持（round-trip） |
+
+**装配顺序**：`constraints_chain.middleware` 在钩子中间件**之前** —— 约束先判（预算/熔断），
+钩子只对**已通过约束**的动作再作否决；钩子返回 `False` 走既有「已拒绝」终止语义，
+trace 载荷带 `blocked_by=<entry label>`。
+
+**已知局限**（ADR-0259）：① 钩子是**同步阻塞**调用（`asyncio.to_thread` 仅把子进程搬离事件
+循环，`timeout_s` 仍串行累加）；② `session.end` 依赖 `atexit`，被 `SIGKILL` 时不投递；
+③ `memory.write` 观察者同步执行在写入路径上，慢钩子会拖慢落盘；④ 钩子副作用不可逆（契约
+显式例外），不纳入 `EffectTracker`；⑤ 每事件按声明序**串行**执行，无并行 / 优先级。

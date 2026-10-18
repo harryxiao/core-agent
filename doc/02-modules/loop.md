@@ -210,6 +210,20 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
   导出器落盘。正常路径的封口时机与 `trace_observer` 回调顺序**逐字不变**（执行体自己封口）；
   中断路径**不**追加转录、**不**写轮末记忆。
 
+### 3.8 钩子接缝（change `0269`／ADR-0259）
+
+- **可等待中间件**：`middlewares` / `action_observers` 的返回值 MAY 为 coroutine，loop 逐个
+  `await`；同步实现（不返回可等待对象）与引入前**逐字等价**。这是钩子消费既有接缝的前置条件。
+- **轮首 / 轮尾注入点**：新可选构造参 `turn_before(session_id, trace_id, turn_index, text) -> bool`
+  与 `turn_after(session_id, trace_id, ok, steps)`（均可等待）。`turn_before` 返回 `False` ⇒
+  **不调推理**、本轮以已拒绝回复终止；`turn_after` 在 `end_trace` **之前**执行、仅留痕、
+  等价于既有 `turn_observer`。缺省 `None` ⇒ 零调用，既有路径逐字不变。
+- **trace 归因**：`astream` 期间设 `current_trace_id` ContextVar，钩子 trace 落在当前会话轮上；
+  无活跃 trace（如 `session.*`）⇒ 临时 `hook.<event>` trace 后立即封口。
+  生成器在**另一上下文**关闭时 `Token.reset` 抛 `ValueError`，降级为原地清空（该上下文随即结束）。
+- **动作时长**：`ActionResult.duration_ms` 供 `tool.after` 载荷（缺省 0，既有构造不变）。
+- `turn_before` 拒绝时轮尾注入点**仍照常投递**（`ok=False`），消费方可据此记账。
+
 ---
 
 ## 4. 伪代码（默认实现骨架，~100 行）

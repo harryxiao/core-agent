@@ -65,6 +65,7 @@ from core.evolution.author import patch_author_with
 from core.evolution.content import skill_content_writer_with
 from core.evolution.executor import EvolutionExecutor, source_reader
 from core.evolution.validator import review_with, run_gate_tests
+from core.hooks import HookManager, entries_from_config
 from core.judgment import (
     Compactor,
     DecisionRouter,
@@ -74,7 +75,21 @@ from core.judgment import (
     sop_gate_with,
 )
 from core.llm_provider import LLMProvider, LLMRequest, Message, StdlibLLMProvider
-from core.loop import Approver, DefaultLoop, LoopPlugin, TurnObserver, current_session_id
+from core.loop import (
+    Action,
+    ActionObserver,
+    ActionResult,
+    Approver,
+    DefaultLoop,
+    LoopContext,
+    LoopPlugin,
+    Middleware,
+    TurnAfter,
+    TurnBefore,
+    TurnObserver,
+    current_session_id,
+    current_trace_id,
+)
 from core.loop.constraints_adapter import build_constraints_chain
 from core.loop.fault_adapter import build_fault_chain
 from core.loop.planner import LLMPlanner, SkillHint
@@ -547,6 +562,61 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     )
     tracer.register_secret(api_key)
 
+    # 生命周期钩子（change 0269 / ADR-0259）：缺省关闭 ⇒ 不构造管理器、不注入任何接缝，
+    # 既有路径逐字不变。开启 ⇒ 条目由 `hooks.entries` 校验（非法逐条告警跳过、超时截断），
+    # 明文密钥登记进同一脱敏链；`session.end` 由管理器在进程退出时投递。
+    hooks: HookManager | None = None
+    if config.hooks_enabled():
+        hook_timeout = config.hooks_timeout_s()
+        hook_on_error = config.hooks_on_error()
+        hooks = HookManager(
+            entries=entries_from_config(
+                config.hooks_entries(),
+                default_timeout_s=hook_timeout,
+                default_on_error=hook_on_error,
+            ),
+            tracer=tracer,
+            mode="runtime",
+            default_timeout_s=hook_timeout,
+            default_on_error=hook_on_error,
+        )
+        hooks.register_secret(api_key)
+
+    # 接缝适配器（同一管理器跨四个 loop 复用）：tool 类经中间件/观察者，turn / session 经
+    # 轮首轮尾注入点；无管理器 ⇒ 空列表 / `None`（各 loop 构造参数逐字不变）。
+    hook_middlewares: list[Middleware] = []
+    hook_observers: list[ActionObserver] = []
+    hook_turn_before: TurnBefore | None = None
+    hook_turn_after: TurnAfter | None = None
+    if hooks is not None:
+
+        async def _hook_before_action(ctx: LoopContext, action: Action) -> Action | None:
+            if action.is_terminal:
+                return action
+            allowed = await hooks.before_tool(
+                action.tool_id, action.args, ctx.session_id, current_trace_id.get()
+            )
+            return action if allowed else None
+
+        async def _hook_after_action(
+            ctx: LoopContext, action: Action, result: ActionResult
+        ) -> None:
+            await hooks.after_tool(action.tool_id, result, ctx.session_id, current_trace_id.get())
+
+        async def _hook_turn_before(
+            session_id: str, trace_id: str, turn_index: int, text: str
+        ) -> bool:
+            await hooks.start_session(session_id)
+            return await hooks.before_turn(session_id, trace_id, turn_index, text)
+
+        async def _hook_turn_after(session_id: str, trace_id: str, ok: bool, steps: int) -> None:
+            await hooks.after_turn(session_id, trace_id, ok, steps)
+
+        hook_middlewares = [_hook_before_action]
+        hook_observers = [_hook_after_action]
+        hook_turn_before = _hook_turn_before
+        hook_turn_after = _hook_turn_after
+
     jev: JEVProvider | None = None
     threshold = 0.7
     judgment = app.judgment
@@ -636,6 +706,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         # L2 活跃层软上限（0230 实现 / 0251 接线 + ADR-0241）：缺省未配置 ⇒ None ⇒ 写入路径
         # 逐字不变；配置后写入即收口（先忘记、再按 ts 最旧迁 L4，全部可撤销）。
         l2_soft_max_entries=config.l2_soft_max_entries(),
+        # 记忆写入观察者（change 0269）：钩子开启时接线；不可否决、异常吞掉（store 侧隔离）。
+        write_observer=hooks.memory_write if hooks is not None else None,
     )
     # 上下文压实接线（0041）：多轮历史 → persist 落 L2；此前 context.Compactor 与
     # memory.compact 都无生产调用方（死路径），现由 loop 的**工具步数**/预算阈值触发。
@@ -1088,8 +1160,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         failure_lessons_consult=_failure_lessons if config.failure_lessons() else None,
         cold_path=cold_path,
         trace_observer=trace_observer,
-        middlewares=[constraints_chain.middleware],
-        action_observers=[constraints_chain.observe_result],
+        middlewares=[constraints_chain.middleware, *hook_middlewares],
+        action_observers=[constraints_chain.observe_result, *hook_observers],
+        turn_before=hook_turn_before,
+        turn_after=hook_turn_after,
         max_rounds=max_rounds,
         token_budget=token_budget,
         transcript=transcript,
@@ -1139,8 +1213,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 turn_observer=agent_turn,
                 notes_consult=_consult_notes,
                 pinned_notes_consult=_pinned_notes,
-                middlewares=[constraints_chain.middleware],
-                action_observers=[constraints_chain.observe_result],
+                middlewares=[constraints_chain.middleware, *hook_middlewares],
+                action_observers=[constraints_chain.observe_result, *hook_observers],
+                turn_before=hook_turn_before,
+                turn_after=hook_turn_after,
                 max_rounds=max_rounds,
                 token_budget=token_budget,
                 act_wrapper=_fault_wrapper(provider),
@@ -1185,8 +1261,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 turn_observer=beast_turn,
                 notes_consult=_consult_notes,
                 pinned_notes_consult=_pinned_notes,
-                middlewares=[constraints_chain.middleware],
-                action_observers=[constraints_chain.observe_result],
+                middlewares=[constraints_chain.middleware, *hook_middlewares],
+                action_observers=[constraints_chain.observe_result, *hook_observers],
+                turn_before=hook_turn_before,
+                turn_after=hook_turn_after,
                 source=beast.agent_id,
                 max_rounds=max_rounds,
                 token_budget=token_budget,
@@ -1418,7 +1496,13 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                     tracer=tracer,
                     approver=approver,
                     compactor=context_compactor,
-                    middlewares=[build_safety_middleware(pet_safety, notify=_pet_notify)],
+                    middlewares=[
+                        build_safety_middleware(pet_safety, notify=_pet_notify),
+                        *hook_middlewares,
+                    ],
+                    action_observers=[*hook_observers],
+                    turn_before=hook_turn_before,
+                    turn_after=hook_turn_after,
                     max_rounds=max_rounds,
                     token_budget=token_budget,
                     source="pet",

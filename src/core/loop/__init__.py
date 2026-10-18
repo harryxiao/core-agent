@@ -8,7 +8,15 @@ astream）+ 五阶段方法，DefaultLoop 为默认实现，可被 ReAct / Plan-
 模块设计：doc/02-modules/loop.md
 """
 
-from .default import ActionObserver, Approver, DefaultLoop, TurnObserver
+from .default import (
+    ActionObserver,
+    Approver,
+    DefaultLoop,
+    Middleware,
+    TurnAfter,
+    TurnBefore,
+    TurnObserver,
+)
 from .planner import LLMPlanner
 from .protocol import (
     Action,
@@ -22,6 +30,7 @@ from .protocol import (
     Thinking,
     collect_result,
     current_session_id,
+    current_trace_id,
 )
 
 __all__ = [
@@ -37,8 +46,12 @@ __all__ = [
     "LoopEvent",
     "LoopPlugin",
     "LoopResult",
+    "Middleware",
     "Thinking",
+    "TurnAfter",
+    "TurnBefore",
     "TurnObserver",
     "collect_result",
     "current_session_id",
+    "current_trace_id",
 ]

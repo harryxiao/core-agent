@@ -420,3 +420,24 @@ known_window(llm.model)  ──►  表命中 ⇒ 该族真实窗口（本 chang
 - **只在写入后收口**：存量超限库下一次写入才收敛（不在启动时迁移）。
 - 口径来源：`doc/openspec/specs/configuration/spec.md`「记忆容量配置」（ADDED）、
   `doc/openspec/specs/memory/spec.md`「L2 活跃层软上限」（MODIFIED）。
+
+### 2.13 钩子配置（change `0269` / ADR-0259，台账 E205）
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `hooks.enabled` | **`false`** | 布尔 | 未显式开启 ⇒ 不加载、不执行任何钩子 |
+| `hooks.timeout_s` | `5` | `(0, 60]` | 超上限截断为 60 并告警；非数值 / `<=0` 回落 5 |
+| `hooks.on_error` | `block` | `block` / `allow` / `warn` | 非法值回落 `block`（fail-closed） |
+| `hooks.entries` | 空 | 映射列表 | **只**从 `config.yaml` 结构化段读；无 CLI flag / env 形态 |
+
+- **单一真源**：前三个标量走 `ConfigSpec`（`map_to="hooks.<key>"`；`enabled` 常规曝光，
+  另两项 `ADVANCED`）⇒ CLI flag `--hooks-enabled` / `--hooks-timeout-s` / `--hooks-on-error`、
+  env `CORE_HOOKS_*`、yaml `hooks:` 段三面一一对应；优先级链 CLI > env > config.yaml > 缺省。
+- **访问器**：`hooks_enabled() -> bool` / `hooks_timeout_s() -> float` /
+  `hooks_on_error() -> str` / `hooks_entries() -> list[Any]`（`hooks` 为非结构化段，
+  非法形态告警后按缺省处置，不阻断启动）。
+- **YAML 面**：解析器/转储器支持**块序列**与**行内 flow** 列表/映射 —— `hooks.entries`
+  经 `write_patch` 重写后 round-trip 保真（此前只支持映射，序列会被丢弃）。
+- **消费方**：组合根仅在 `hooks_enabled()` 为真时构造 `HookManager` 并接入四个 loop 与
+  `MemoryStore(write_observer=...)`；关闭时注入面为 `None` / 空列表 ⇒ 既有路径逐字不变。
+- 口径来源：`doc/openspec/specs/hooks/spec.md`「钩子声明面」（change `0269` 实现）。

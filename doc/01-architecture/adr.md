@@ -4567,7 +4567,8 @@
   **只从 `config.yaml` 结构化段读** —— `ConfigSpec` 是**键 → 标量**的映射、**列表不入**
   （与 `permission.sandbox.host_allowlist` 用逗号串、mcp 端点另存 `mcp.json` **同源**的既有取舍）。
   `hooks.enabled` 缺省**关闭**（未显式开启不加载、不执行）。
-- **已知局限**：① **未实现** —— 本 change 只出契约（台账 **E101** 挂账，实现另立 change）；
+- **已知局限**：① **未实现** —— 本 change 只出契约（台账 **E101** 挂账，实现另立 change；
+  **已由 ADR-0259 / change 0269 闭合** —— 实现局限转记该 ADR）；
   ② **清单不入三面**（ConfigSpec 是标量映射的既有取舍）；③ **无优先级 / 无多播语义** —— 同事件多钩子
   按**声明序**执行、**任一** before 钩子阻断即终局（不设权重、不做「否决覆盖」）；
   ④ **载荷脱敏 ⇒ 钩子看不到密钥原始值**（需检查密钥本体的策略属 permission 面，不是钩子面）；
@@ -9543,6 +9544,65 @@ loop 的屏障保证，且子 Agent 写入不进入父 `EffectTracker`，无法�
 ③ 终止动作失败没有 observation（无可续轮次），只有遥测；④ 撤销失败不自动重试，需人工
 按账目介入；⑤ `trace_rolled_back` 只经 `Tracer`，消费方未订阅导出器时不可见。
 
+## ADR-0259：钩子实现（change 0269 / 台账 E205）
+
+**背景**：ADR-0155 只交付钩子**契约**（change `0164`：规格 + 模块文档 + 设计稿，零 `src/` 改动）。
+实现在台账 **E101** 挂了近一年：没有 `src/core/hooks/`；loop 缺 `turn.before` 注入点；`middlewares` /
+`action_observers` 只接受同步返回值，异步钩子无法消费；`MemoryStore` 无写入观察者；配置面无
+`hooks.*`；YAML 解析器不支持块序列 ⇒ `hooks.entries` 连声明都不成立。操作者要挂一条策略仍须改
+Python 代码并重打包。
+
+**决策**：
+
+- **D1 复用既有接缝，不建总线**（承 ADR-0155 ①）：`tool.before` → `middlewares`；
+  `tool.after` → `action_observers`；`turn.after` → 新增 `turn_after` **同步**注入点
+  （trace 封口**前**，钩子遥测随本轮导出；后台 `turn_observer` 保持「封口后异步收尾」）；
+  `turn.before` / `session.*` / `memory.write` → 新增注入形参（loop 构造参 / 组合根适配器 /
+  `MemoryStore(write_observer=)`）。loop 与 memory **不 import** hooks。
+- **D2 可等待中间件**：`Middleware` / `ActionObserver` 的返回值 MAY 为 coroutine，loop 逐个
+  `await`；同步实现（不返回可等待对象）与引入前**逐字等价**。这是钩子能消费既有接缝的前置条件，
+  也是唯一改动既有接缝语义的点 —— 由「返回值类型放宽」而非新分支实现。
+- **D3 before / after 分治**：`before` 类（`turn.before` / `tool.before`）退出码非 0 或回调返回
+  `False` ⇒ 阻断（`tool.before` 走既有「已拒绝」终止语义）；异常 / 超时 / `OSError` 按 `on_error`
+  处置，缺省 `block`（fail-closed）。`after` 类一律只留痕，不改本轮结局。
+- **D4 安全边界**：子进程 argv 启动（不经 shell）、**白名单环境**（不继承父进程密钥）；
+  载荷出进程前逐条 `redact_payload`（正则密钥形态 + `register_secret` 登记明文 → `<redacted>`），
+  单串截断 4096；`tool.*` 只给长度 + 哈希前缀；子进程 stdout / stderr **丢弃**（不进日志 / 记忆 /
+  对话）；trace 只记事件名、命令 basename、退出码、时长、`blocked_by`。
+- **D5 不可逆（显式例外）**：钩子副作用不进 `EffectTracker` —— 这是系统「一切副作用可逆」的
+  **唯一显式例外**，规格明示。
+- **D6 声明面**：三个标量（`hooks.enabled` / `timeout_s` / `on_error`）走 `ConfigSpec` 三面；
+  `hooks.entries` 只从 `config.yaml` 结构化段读；`enabled` 缺省 **false**；`timeout_s` 硬上限 60s
+  （超限截断 + 告警）。
+- **D7 YAML 子集扩展**：解析器 / 转储器补**块序列**与**行内 flow** 列表 / 映射，使 `hooks.entries`
+  可声明且 `write_patch` 重写后 **round-trip 保真**；锚点 / 多文档 / 块标量仍不支持（见局限⑦）。
+- **D8 会话生命周期**：`session.start` 由 `turn.before` 适配器**首轮幂等**触发；`session.end`
+  由 `HookManager.close()`（`atexit` 注册）对每个活跃会话投递一次。
+- **D9 trace 归因**：`astream` 期间设 `current_trace_id` ContextVar，钩子 trace 落在当前轮；
+  无活跃 trace（`session.*`）⇒ 临时 `hook.<event>` trace 后立即封口。生成器在**另一上下文**
+  关闭时 `Token.reset` 抛 `ValueError`，降级为原地清空（该上下文随即结束，不丢本轮遥测）。
+
+**规格**：`hooks` **MODIFIED**「钩子形态与接缝」（`turn.after` 改挂同步注入点）、`loop` **MODIFIED**
+「横切中间件插入」（+可等待语义、+轮首注入点可否决、+终止动作不触发观察者）。`openspec validate --all`
+32/0（归档前）/ 31/0（归档后）。
+
+**测试**：新增 `tests/test_hooks.py` **20 例**（事件面 / 摘要 / 脱敏 / 阻断 / 只留痕 / 超时
+`on_error` / 环境白名单 / 输出不回灌 / 三层优先级与超时截断 / YAML 块序列与 round-trip /
+非法条目跳过 / 会话幂等 / 记忆不可否决 / 组合根开关 / 四个 loop 接缝）。净 **+20**
+（2918 → **2938**）。反证 3/3：P1 摘 `_dispatch_before` 阻断分支（`continue`）⇒
+`test_tool_before_hook_blocks_execution_and_traces_blocked_by` 红；P2 `_hook_env` 返回完整父环境 ⇒
+`test_subprocess_does_not_inherit_secret_env` 红；P3 `redact_payload` 直通 ⇒
+`test_turn_payload_redacts_registered_and_shaped_secrets` 红。复原后 `md5sum` 一致
+（`manager.py 1ac7541d…` / `executor.py 75e3d106…` / `model.py 679d36c8…`）。四门禁：
+`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **2938 passed**。
+
+**局限**：① **同步阻塞语义** —— `asyncio.to_thread` 只把子进程搬离事件循环，同一事件的多个钩子
+按声明序**串行**，`timeout_s` 累加，慢钩子拖慢每一轮；② `session.end` 依赖 `atexit`，`SIGKILL`
+/ 崩溃时不投递；③ `memory.write` 观察者**同步**执行在写入路径上；④ 钩子副作用不可逆（契约例外）；
+⑤ 无并行 / 权重 / 否决覆盖；⑥ `hooks.entries` 只走 `config.yaml`；⑦ YAML 解析仍是子集实现
+（块序列 / 行内 flow / 标量；锚点、多文档、块标量 `|` / `>` 不支持）；⑧ `turn_after` 在 trace
+封口前执行 ⇒ 慢钩子延迟本轮遥测导出。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9796,3 +9856,4 @@ loop 的屏障保证，且子 Agent 写入不进入父 `EffectTracker`，无法�
 | ADR-0256 | 02-modules/tool-use.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0257 | 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0258 | 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0259 | 02-modules/hooks.md, 02-modules/loop.md, 02-modules/memory.md, 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

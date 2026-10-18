@@ -274,6 +274,9 @@ class MemoryStore:
         token_estimator: TokenEstimator | None = None,
         # L2 活跃层软上限（change 0230 / G5）：缺省 None = 不启用（行为逐字不变）。
         l2_soft_max_entries: int | None = None,
+        # 写入观察者（change 0269）：公开 `write` 落库后回调 `(layer, entry)`；仅观察、
+        # 不可否决。缺省 None ⇒ 零调用（行为逐字不变）；异常由本侧吞掉。
+        write_observer: Callable[[Layer, MemoryEntry], None] | None = None,
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
         self._tracker = effect_tracker if effect_tracker is not None else EffectTracker()
@@ -288,6 +291,7 @@ class MemoryStore:
         self._semantic_forgetting = semantic_forgetting
         self._estimator = token_estimator if token_estimator is not None else DEFAULT_ESTIMATOR
         self._l2_soft_max_entries = l2_soft_max_entries
+        self._write_observer = write_observer
         # 临时会话（change 0245 / ADR-0233）：基准/合成执行会话 —— 压实只做会话级摘要与
         # 归档，SHALL NOT 产出全局层派生（关键事实/关系/episodic）或 canonical 摘要提升。
         # 缺省空 ⇒ 压实逐字不变。
@@ -427,7 +431,17 @@ class MemoryStore:
             else:
                 self._write_importance(entry, score, trace_id=entry.trace_id)
         self._enforce_l2_cap()
+        self._notify_write(entry)
         return entry.id
+
+    def _notify_write(self, entry: MemoryEntry) -> None:
+        """写入观察者通知（change 0269）：仅观察、不可否决；异常吞掉（不牵连写入）。"""
+        if self._write_observer is None:
+            return
+        try:
+            self._write_observer(entry.layer, entry)
+        except Exception:  # noqa: BLE001,S110 — 观察失败不得改变写入结局
+            return
 
     def _persist(self, layer: Layer, entry: MemoryEntry) -> None:
         """落库 + 记可撤销写入效应（``write`` 的**无闸门主体**）。"""

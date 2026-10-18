@@ -50,6 +50,10 @@ class Tracer:
         if events:
             self._exporter.emit(events)
 
+    def is_active(self, trace_id: str) -> bool:
+        """该 trace 是否仍在途（未封口）。钩子据此决定是否另开短命 trace（change 0269）。"""
+        return trace_id in self._events
+
     def replay(self, trace_id: str) -> list[TraceEvent]:
         """按时间序重放**在途**（未封口）链路的全部事件，支持执行中定位失败环节。
 

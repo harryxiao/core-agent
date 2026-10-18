@@ -48,10 +48,12 @@ from .protocol import (
     Thinking,
     collect_result,
     current_session_id,
+    current_trace_id,
 )
 
-# 中间件契约：返回 Action 放行/改写，返回 None 表示拒绝（短路）。
-Middleware = Callable[[LoopContext, Action], Action | None]
+# 中间件契约：返回 Action 放行/改写，返回 None 表示拒绝（短路）。可返回可等待对象
+# （change 0269：钩子外部命令经 `asyncio.to_thread` 执行，不得阻塞事件循环）。
+Middleware = Callable[[LoopContext, Action], Action | None | Awaitable[Action | None]]
 
 # 审批回调：不可逆动作经确认门判 confirm 时询问人工（tool_id, args, reason）→ 是否放行。
 Approver = Callable[[str, dict[str, Any], str], Awaitable[bool]]
@@ -86,9 +88,18 @@ FailureLessonsConsult = Callable[[str], str]
 TraceObserver = Callable[[str], None]
 
 # 结果侧观察者：每个非终止动作完成后回调（上下文, 动作, 执行结果）→ 无返回值；仅通知，
-# 单个观察者异常降级留痕、不改本轮结局。loop 不 import constraints（架构红线），
-# 生产侧注入组合根适配层闭包。
-ActionObserver = Callable[[LoopContext, Action, ActionResult], None]
+# 单个观察者异常降级留痕、不改本轮结局。可返回可等待对象（change 0269，钩子接缝）。
+# loop 不 import constraints（架构红线），生产侧注入组合根适配层闭包。
+ActionObserver = Callable[[LoopContext, Action, ActionResult], object | Awaitable[object]]
+
+# 轮首注入点（change 0269）：(session_id, trace_id, turn_index, input) → 是否放行。
+# 返回 False ⇒ 本轮以已拒绝回复终止（与中间件拒绝同语义）。可同步或异步。
+TurnBefore = Callable[[str, str, int, str], bool | Awaitable[bool]]
+
+# 轮尾同步注入点（change 0269）：(session_id, trace_id, ok, steps) → 无返回值；仅留痕，
+# 异常降级不改本轮结局。与后台 `turn_observer` **分列**：本注入点在 trace 封口前执行，
+# 钩子遥测才能随本轮导出。
+TurnAfter = Callable[[str, str, bool, int], object | Awaitable[object]]
 
 # 会话轮级检查点回调：``(trace_id, session_id, goal, done)`` → 无返回值；缺省未注入则不做。
 # 轮首 ``done=False``、轮末 ``done=True``，两次共用同一 ``trace_id`` ⇒ 同一 task id 承载该轮的
@@ -459,6 +470,10 @@ class DefaultLoop(Plugin):
         # 会话轮级检查点回调（change 0214 / ADR-0204，缺省 `None`）。注入 ⇒ 轮首 / 轮末各写
         # 一次（在途 / 完结）；`None` ⇒ **零调用、零 I/O**，既有路径**逐字不变**。
         turn_checkpoint: TurnCheckpoint | None = None,
+        # 轮首 / 轮尾同步注入点（change 0269，缺省 `None`）。`turn_before` 可否决本轮；
+        # `turn_after` 在 trace 封口前执行、仅留痕。`None` ⇒ 零调用，既有路径逐字不变。
+        turn_before: TurnBefore | None = None,
+        turn_after: TurnAfter | None = None,
     ) -> None:
         self._planner = planner
         self._memory = memory
@@ -473,6 +488,9 @@ class DefaultLoop(Plugin):
         self._approver = approver
         self._compactor = compactor
         self._turn_observer = turn_observer
+        self._turn_before = turn_before
+        self._turn_after = turn_after
+        self._turn_index = 0
         self._notes_consult = notes_consult
         self._pinned_notes_consult = pinned_notes_consult
         self._failure_lessons_consult = failure_lessons_consult
@@ -587,6 +605,7 @@ class DefaultLoop(Plugin):
         trace_id = self._start_trace(user_input)
         state: dict[str, bool] = {"finished": False}
         reason = "interrupted"
+        trace_token = current_trace_id.set(trace_id)
         try:
             async with contextlib.aclosing(
                 self._astream_events(user_input, trace_id, state=state, session_id=session_id)
@@ -597,6 +616,12 @@ class DefaultLoop(Plugin):
             reason = type(exc).__name__
             raise
         finally:
+            try:
+                current_trace_id.reset(trace_token)
+            except ValueError:
+                # 生成器在**另一上下文**关闭（`asyncio.run` 收尾时 athrow 于新 task）⇒
+                # token 无法回滚；该上下文随即结束，原地清空即可（change 0269）。
+                current_trace_id.set("")
             if not state["finished"]:
                 self._trace(trace_id, "loop_aborted", {"reason": reason})
                 self._end_trace(trace_id)
@@ -613,10 +638,17 @@ class DefaultLoop(Plugin):
         self._trace(trace_id, "loop_started", {"trace_id": trace_id})
         # 与上一轮后台收尾串行：避免新一轮感知/记忆与旧轮技能迭代、维护节拍并发踩踏。
         await self._await_post_turn()
+        # 轮首注入点（change 0269）：在 context 装配前投递；False ⇒ 本轮以已拒绝回复终止。
+        self._turn_index += 1
+        allowed = await self._notify_turn_before(session_id, trace_id, user_input)
         ctx = self.perceive(user_input, session_id=session_id)
-        self._consult_notes(ctx, trace_id)
-        self._load_pinned_notes(ctx, trace_id)
-        self._load_failure_lessons(ctx, trace_id)
+        if not allowed:
+            ctx.reply = str(self.decline(Action(args={})).args["reply"])
+            ctx.finish()
+        else:
+            self._consult_notes(ctx, trace_id)
+            self._load_pinned_notes(ctx, trace_id)
+            self._load_failure_lessons(ctx, trace_id)
         # 轮首写点（change 0214 / ADR-0204）：用户消息**已进**转录（`perceive` 内追加）、
         # 前置读（Consult / 常驻注入）**已完成** ⇒ 此处标记「本轮在途」。中断路径只补记
         # 遥测（change 0256），不写检查点 ⇒ 中途异常 / 被杀天然留未完结态（与编排波次回调同语义）。
@@ -718,7 +750,9 @@ class DefaultLoop(Plugin):
                             "output": output,
                         },
                     )
-                self._notify_action_result(ctx, action, result, trace_id)
+                # 结果侧观察者（含 tool.after 钩子）：耗时先落到结果上，观察者无需改签名。
+                result.duration_ms = duration_ms
+                await self._notify_action_result(ctx, action, result, trace_id)
                 report = self.rollback(trace_id) if result.failed else None
                 if report is not None and (report.reverted or report.undo_failed):
                     self._trace(
@@ -794,6 +828,9 @@ class DefaultLoop(Plugin):
             },
             module_id="loop.default" if limit_reason else None,
         )
+        # 轮尾同步注入点（change 0269）：在 trace 封口前执行，钩子遥测随本轮导出；
+        # 后台 `turn_observer` 保持既有语义（trace 封口后异步收尾）。
+        await self._notify_turn_after(ctx, trace_id, ok=turn_ok)
         # 本轮遥测已齐：交给 trace 完成回调（登记一条已完成 trace；缺省不启用）
         self._notify_trace_complete(trace_id)
         # 顺序约束：回调之后才封口（回调须能完整回放本轮事件；封口交付导出器 + 释放内存）
@@ -905,6 +942,30 @@ class DefaultLoop(Plugin):
         finally:
             if self._post_turn_task is task:
                 self._post_turn_task = None
+
+    async def _notify_turn_before(self, session_id: str, trace_id: str, text: str) -> bool:
+        """轮首注入点：返回 False ⇒ 本轮终止（fail-closed：钩子适配层异常亦阻断）。"""
+        if self._turn_before is None:
+            return True
+        try:
+            decided = self._turn_before(session_id, trace_id, self._turn_index, text)
+            if inspect.isawaitable(decided):
+                decided = await decided
+            return bool(decided)
+        except Exception as err:  # noqa: BLE001 — 注入点异常 fail-closed
+            self._trace(trace_id, "hook_error", {"event": "turn.before", "error": str(err)})
+            return False
+
+    async def _notify_turn_after(self, ctx: LoopContext, trace_id: str, *, ok: bool) -> None:
+        """轮尾同步注入点：仅留痕；异常降级，不改变本轮结局与终止语义。"""
+        if self._turn_after is None:
+            return
+        try:
+            notified = self._turn_after(ctx.session_id, trace_id, ok, len(_action_steps(ctx)))
+            if inspect.isawaitable(notified):
+                await notified
+        except Exception as err:  # noqa: BLE001 — 轮尾观察失败降级
+            self._trace(trace_id, "hook_error", {"event": "turn.after", "error": str(err)})
 
     def _notify_turn(self, ctx: LoopContext, trace_id: str, *, ok: bool) -> None:
         """收尾钩子：把任务文本 + 行动/结果序列 + 本轮成败交给注入的观察者（缺省不启用）。
@@ -1596,7 +1657,7 @@ class DefaultLoop(Plugin):
         else:
             if key:
                 batch_seen.add(key)
-            action = self._apply_middlewares(ctx, action)
+            action = await self._apply_middlewares(ctx, action)
             action, approved = await self._authorize(action)
         return _PreparedAction(
             action=action, key=key, scope=scope, reused=reused, approved=approved
@@ -1667,22 +1728,29 @@ class DefaultLoop(Plugin):
 
         return list(await asyncio.gather(*(_run(item) for item in prepared)))
 
-    def _apply_middlewares(self, ctx: LoopContext, action: Action) -> Action:
+    async def _apply_middlewares(self, ctx: LoopContext, action: Action) -> Action:
         for middleware in self._middlewares:
             decided = middleware(ctx, action)
+            if inspect.isawaitable(decided):
+                decided = await decided
             if decided is None:
                 return self.decline(action)
             action = decided
         return action
 
-    def _notify_action_result(
+    async def _notify_action_result(
         self, ctx: LoopContext, action: Action, result: ActionResult, trace_id: str
     ) -> None:
-        """结果侧观察者：非终止动作完成后按注册序回调；异常降级留痕、不改本轮结局。"""
+        """结果侧观察者：非终止动作完成后按注册序回调；异常降级留痕、不改本轮结局。
+
+        观察者 MAY 返回可等待对象（change 0269：钩子外部命令不阻塞事件循环）。
+        """
         if action.is_terminal or not self._action_observers:
             return
         for observer in self._action_observers:
             try:
-                observer(ctx, action, result)
+                notified = observer(ctx, action, result)
+                if inspect.isawaitable(notified):
+                    await notified
             except Exception as err:  # noqa: BLE001 — 观察者失败降级不中断本轮
                 self._trace(trace_id, "action_observer_failed", {"error": str(err)})

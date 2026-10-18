@@ -119,6 +119,8 @@ MemoryStore(
                            # 缺省 core.tokens.DEFAULT_ESTIMATOR（启发式，行为逐字不变）
     l2_soft_max_entries=None,  # L2 活跃层软上限（change 0230 / ADR-0237）：缺省 None 关闭；
                                # 超限先 forget，再按 ts 升序迁移可遗忘条目至 L4，异常降级不阻塞写
+    write_observer=None,   # 写入观察者 Callable[[Layer, MemoryEntry], None]（change 0269 / ADR-0259）：
+                           # 公开 write 落库**之后**同步通知、不可否决、异常吞掉；缺省 None ⇒ 零调用
 )
 ```
 

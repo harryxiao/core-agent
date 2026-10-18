@@ -20,6 +20,10 @@ from typing import Any, Protocol, cast, runtime_checkable
 # 缺省空串 = 未归属（与 `arun(..., session_id="")` 同口径）。
 current_session_id: ContextVar[str] = ContextVar("current_session_id", default="")
 
+# 当前轮 trace（change 0269）：`DefaultLoop.astream` 在整轮迭代期间 set/reset，
+# 供组合根注入的钩子中间件 / 观察者取 trace_id 落 `kind="hook"` 遥测。
+current_trace_id: ContextVar[str] = ContextVar("current_trace_id", default="")
+
 
 @dataclass
 class LoopResult:
@@ -138,6 +142,9 @@ class ActionResult:
     failed: bool = False  # True → 回滚本轮
     data: Any = None
     error: str = ""
+    # 执行耗时（毫秒；change 0269）：loop 在提交阶段写入，供结果侧观察者（tool.after 钩子）
+    # 读取。缺省 0 ⇒ 既有构造逐字不变。
+    duration_ms: int = 0
 
 
 class ActFn(Protocol):

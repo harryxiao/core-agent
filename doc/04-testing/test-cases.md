@@ -4158,3 +4158,40 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > （`ruff check` / `ruff format --check` / `pyright` 0 / `pytest -q`）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0258 行（只有计数无路径 / 整轮回滚
 > 可能撤销想保留的写入 / 终止动作只有遥测 / 撤销失败不重试 / 依赖导出器订阅）。
+
+## 181. 钩子实现（TC-HOOKS，change `0269`／ADR-0259，台账 E205／E101）
+
+> **背景**：ADR-0155 只出钩子契约（change `0164`），实现为零：无 `src/core/hooks/`、loop 缺
+> `turn.before` 注入点、中间件只接受同步返回值、`MemoryStore` 无写入观察者、配置面无 `hooks.*`。
+> 本 change 按契约落地，并保持 `hooks.enabled=false` 时既有路径逐字不变。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-HOOKS-01 | hooks/spec.md「钩子事件面与载荷」Scenario（事件面完整） | 七个事件各挂一个回调钩子，依次投递 | 各被投递一次；`payload` 字段与契约表逐项一致（`test_events_cover_the_contract`） |
+| TC-HOOKS-02 | 同 Requirement（`tool.*` 只给摘要） | `tool.before` / `tool.after` 载荷检查 | 只有 `args_digest` / `result_digest`（`chars` + `hash`），无正文（`test_tool_payload_is_digest_only_and_redacted`） |
+| TC-HOOKS-03 | 同 Requirement（载荷不含密钥值） | `turn.before` 载荷含登记明文与 `sk-…` 形态 | 两者均不出现，出现 `<redacted>`（`test_turn_payload_redacts_registered_and_shaped_secrets`） |
+| TC-HOOKS-04 | hooks/spec.md「钩子形态与接缝」Scenario（`tool.before` 可阻断） | `tool.before` 钩子退出码 1，loop 执行非终止动作 | 动作不执行、本轮以已拒绝回复终止；trace `kind="hook"` 带 `blocked_by`（`test_tool_before_hook_blocks_execution_and_traces_blocked_by` / `test_before_hook_nonzero_blocks`） |
+| TC-HOOKS-05 | 同 Requirement（`tool.after` 只留痕） | `tool.after` 钩子退出码非 0 | 本轮结局逐字不变，只留 hook trace（`test_after_hook_nonzero_only_logs`） |
+| TC-HOOKS-06 | 同 Requirement（`turn.before` 可否决） | `turn.before` 返回 False | planner 不被调用；`turn.after` 仍投递 `ok=False`（`test_turn_before_block_skips_planner_and_after_still_runs`） |
+| TC-HOOKS-07 | hooks/spec.md「钩子失败处置与安全边界」Scenario（超时按 `on_error`） | `timeout_s=0.05` 的 `tool.before` 钩子 + `on_error` 缺省 / `allow` | 缺省 ⇒ 阻断；显式 `allow` ⇒ 放行且留 `hook_error` 痕（`test_before_timeout_uses_on_error`） |
+| TC-HOOKS-08 | 同 Requirement（不继承密钥环境） | 父进程设 `CORE_HOOK_KEY`，子进程打印环境 | 子进程环境不含该变量（`test_subprocess_does_not_inherit_secret_env`） |
+| TC-HOOKS-09 | 同 Requirement（输出不回灌） | 钩子 stdout 写 canary | canary 不出现在 trace 事件里（`test_stdout_never_enters_trace`） |
+| TC-HOOKS-10 | hooks/spec.md「钩子声明面」Scenario（标量三层优先级 / 超时硬上限） | yaml / env / flag 三层同时设 `hooks.timeout_s`；另设 `3600` | flag > env > yaml > 缺省；`3600` 截断为 `60` 并告警（`test_hooks_scalar_priority_and_timeout_cap`） |
+| TC-HOOKS-11 | 同 Requirement（清单只走配置文件） | yaml 块序列声明两条钩子，`write_patch` 后重载 | 两条生效；重写后 round-trip 保真（`test_yaml_block_sequence_is_parsed` / `test_yaml_roundtrip_preserves_hook_entries`） |
+| TC-HOOKS-12 | 同 Requirement（缺省关闭） | 非法条目（未知事件 / 空 command / 非法 `on_error`） | 逐项告警并跳过；`on_error` 回落 `block`（`test_entries_from_config_skips_invalid_items`） |
+| TC-HOOKS-13 | hooks/spec.md「钩子事件面」Scenario（记忆写入不可否决） | `memory.write` 观察者抛错 | 写入照常完成；异常不影响调用方（`test_memory_write_observer_cannot_veto_and_isolated_from_failure`） |
+| TC-HOOKS-14 | 同 Requirement（`session.*`） | 同一会话两次 `start_session` / `close()` | 首轮幂等；`session.end` 每会话一次（`test_session_events_are_idempotent`） |
+| TC-HOOKS-15 | 组合根接线 | `hooks.enabled` 关 / 开两份配置各构造 runtime | 关：`turn_before`/`turn_after`/`write_observer` 均 `None`；开：均非 `None`（`test_runtime_wires_hooks_only_when_enabled`） |
+| TC-HOOKS-16 | `tool.after` 时长 | 动作返回带 `duration_ms` | 载荷 `duration_ms` 与结果一致（`test_tool_after_hook_receives_duration`） |
+
+> **反证**：P1 把 `_dispatch_before` 的阻断分支改为 `continue` ⇒ TC-HOOKS-04 红；
+> P2 `_hook_env` 返回完整父环境 ⇒ TC-HOOKS-08 红；P3 `redact_payload` 直通 ⇒ TC-HOOKS-03 红。
+> 复原后 `md5sum` 一致（`manager.py` / `executor.py` / `model.py`）。
+> 规格：`hooks` **MODIFIED**「钩子形态与接缝」（`turn.after` 改挂同步注入点）、`loop` **MODIFIED**
+> 「横切中间件插入」（+可等待语义、+轮首注入点可否决）。`openspec validate --all` 32/0（归档前）/
+> 31/0（归档后）。
+> 测试净 **+20**（2918 → **2938**）。四门禁全绿（`ruff check` / `ruff format --check` /
+> `pyright` 0 / `pytest -q 2938 passed`）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0259 行（串行阻塞语义 / `atexit` 收尾 /
+> 记忆写入路径同步 / 钩子副作用不可逆 / 无并行与权重 / 清单只走 yaml / YAML 子集 / 轮尾钩子
+> 延迟遥测导出）。

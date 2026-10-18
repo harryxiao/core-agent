@@ -9,9 +9,8 @@
 安全边界：载荷脱敏、子进程**不继承**密钥环境、输出不进日志 / 记忆 / 对话；钩子副作用**不可逆**
 （不纳入 `EffectTracker`）—— 本系统对「一切副作用可逆」的**唯一显式例外**。
 
-> **状态：契约先行，尚未实现**（台账 `coding-plan/known-risk.md` §1 **E101**；ADR-0155；
-> 实现另立 change，开工口径见设计稿
-> `doc/openspec/changes/archive/2026-10-07-0164-hooks-architecture/design.md` §9）。
+> **状态：已实现**（change `0269` / ADR-0259 / 台账 E205；契约来源 ADR-0155，
+> 设计稿 `doc/openspec/changes/archive/2026-10-07-0164-hooks-architecture/design.md` §9）。
 
 ## Requirements
 
@@ -58,9 +57,9 @@ SHALL NOT 出现任何密钥的 `${VAR}` **解析结果**。`tool.*` 的载荷 S
 SHALL NOT 改变本轮结局。
 
 系统 SHALL **复用既有横切接缝**消费这些事件（`tool.before` 经动作前链、`tool.after` 经结果侧观察者、
-`turn.after` 经每轮收尾观察者），SHALL NOT 引入通用事件总线；当前无注入点的三个事件
-（`turn.before` / `session.*` / `memory.write`）SHALL 以**新增注入形参**落地，SHALL NOT 在既有
-`middlewares` 或 store 内部硬插分支。
+`turn.after` 经每轮收尾的**同步注入点**；后台 `turn_observer` 保持既有「收尾后异步观察」语义不变），
+SHALL NOT 引入通用事件总线；`turn.before` / `session.*` / `memory.write` 以及 `turn.after` 的同步
+注入点 SHALL 以**新增注入形参**落地，SHALL NOT 在既有 `middlewares` 或 store 内部硬插分支。
 
 #### Scenario: `tool.before` 钩子可阻断
 
@@ -73,7 +72,8 @@ SHALL NOT 改变本轮结局。
 
 - **GIVEN** 钩子已启用
 - **WHEN** 审查 `tool.before` / `tool.after` / `turn.after` 的生产装配
-- **THEN** 三者 SHALL 分别挂在既有 `middlewares` / `action_observers` / 每轮收尾观察者上，
+- **THEN** `tool.before` / `tool.after` SHALL 分别挂在既有 `middlewares` / `action_observers` 上，
+  `turn.after` SHALL 挂在每轮收尾的同步注入点（与后台观察者分列，原因：trace 封口顺序），
   系统 SHALL NOT 存在事件总线组件
 
 #### Scenario: 外部命令协议

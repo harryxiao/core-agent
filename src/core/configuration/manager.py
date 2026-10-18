@@ -61,6 +61,13 @@ _DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT = 600
 # 策略词表（规格 `orchestration`「难易度感知的调度策略」；配置层不 import 能力层，故此处复述）
 _ORCHESTRATION_POLICIES = ("off", "difficulty")
 
+# 钩子缺省口径来源：doc/openspec/specs/hooks/spec.md「钩子配置」（change 0269）。
+# `hooks.enabled` 缺省关闭 ⇒ 不构造 `HookManager`、组合根不注入任何接缝，既有路径逐字不变；
+# 超时缺省 5s、上限 60s（超出截断并告警）；出错策略缺省 block（fail-closed）。
+_DEFAULT_HOOKS_TIMEOUT_S = 5.0
+_MAX_HOOKS_TIMEOUT_S = 60.0
+_HOOK_ON_ERROR_POLICIES = ("block", "allow", "warn")
+
 # 配置项单一真源（全量声明）：CLI flag / env / yaml 三面由 ConfigSpec 生成，禁止硬编码第二真源。
 _CONFIG_SPECS: list[ConfigSpec] = [
     ConfigSpec(
@@ -397,6 +404,29 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         map_to="durability.retention.time_window_s",
         exposure=ConfigExposure.ADVANCED,
     ),
+    ConfigSpec(
+        "hooks.enabled",
+        "--hooks-enabled",
+        "CORE_HOOKS_ENABLED",
+        default=False,
+        map_to="hooks.enabled",
+    ),
+    ConfigSpec(
+        "hooks.timeout_s",
+        "--hooks-timeout-s",
+        "CORE_HOOKS_TIMEOUT_S",
+        default=_DEFAULT_HOOKS_TIMEOUT_S,
+        map_to="hooks.timeout_s",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "hooks.on_error",
+        "--hooks-on-error",
+        "CORE_HOOKS_ON_ERROR",
+        default="block",
+        map_to="hooks.on_error",
+        exposure=ConfigExposure.ADVANCED,
+    ),
 ]
 
 _FEATURE_ENV_PREFIX = "CORE_FEATURES_"
@@ -730,6 +760,69 @@ class ConfigManager:
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in _FEATURE_TRUE
+
+    def hooks_enabled(self) -> bool:
+        """钩子总开关（缺省 ``False`` = 不构造、不注入；change 0269）。
+
+        取值归一与 feature flag 同集；``hooks`` 为**非结构化段**（非法取值不阻断启动）⇒
+        集合外取值归一为**关闭**（方向恒为「不启用」，拼写错误不会静默打开生命周期自动化）。
+        """
+        if self._config is None:
+            return False
+        raw = cast("dict[str, Any]", self._config.extra.get("hooks") or {})
+        value = raw.get("enabled", False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in _FEATURE_TRUE
+
+    def hooks_timeout_s(self) -> float:
+        """单钩子执行超时（秒；缺省 ``5``，上限 ``60``；change 0269）。
+
+        非数值 / ``<= 0`` ⇒ 回落缺省；超出上限 ⇒ **截断为 60 并告警**（不静默接受无界等待）。
+        """
+        if self._config is None:
+            return _DEFAULT_HOOKS_TIMEOUT_S
+        raw = cast("dict[str, Any]", self._config.extra.get("hooks") or {})
+        value = _as_number(raw.get("timeout_s"))
+        if value is None or value <= 0:
+            return _DEFAULT_HOOKS_TIMEOUT_S
+        if value > _MAX_HOOKS_TIMEOUT_S:
+            warnings.warn(
+                f"hooks.timeout_s={value:g} 超出上限，按 {_MAX_HOOKS_TIMEOUT_S:g}s 截断",
+                UserWarning,
+                stacklevel=2,
+            )
+            return _MAX_HOOKS_TIMEOUT_S
+        return value
+
+    def hooks_on_error(self) -> str:
+        """钩子出错策略（``block`` / ``allow`` / ``warn``；缺省 ``block`` = fail-closed）。
+
+        集合外取值归一为缺省 ``block``：钩子是生命周期自动化，出错时**不放行**比放行安全。
+        """
+        if self._config is None:
+            return "block"
+        raw = cast("dict[str, Any]", self._config.extra.get("hooks") or {})
+        value = str(raw.get("on_error", "block")).strip().lower()
+        return value if value in _HOOK_ON_ERROR_POLICIES else "block"
+
+    def hooks_entries(self) -> list[Any]:
+        """钩子条目原文列表（缺省空 = 无条目）。校验/跳过口径见 ``core.hooks.entries_from_config``。
+
+        ``entries`` 非列表 ⇒ 告警并返回空列表（不阻断启动；条目级非法由构造侧逐条跳过）。
+        """
+        if self._config is None:
+            return []
+        raw = cast("dict[str, Any]", self._config.extra.get("hooks") or {})
+        entries = raw.get("entries", [])
+        if isinstance(entries, list):
+            return cast("list[Any]", entries)
+        warnings.warn(
+            "hooks.entries 须为列表，已忽略",
+            UserWarning,
+            stacklevel=2,
+        )
+        return []
 
     def rag_info_map(self) -> bool:
         """rag 文档进信息地图开关（缺省 ``False`` = 不进；change 0210 / ADR-0200）。
@@ -1581,40 +1674,152 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
 
 
 def _parse_yaml_subset(text: str) -> dict[str, Any]:
-    """极简 YAML 子集解析：仅支持 config.yaml 所需的缩进映射 + 标量。
+    """极简 YAML 子集解析：config.yaml 所需的缩进映射 / 序列 + 标量。
 
-    覆盖：嵌套 ``key: value``、``true/false/null``、整数/浮点、引号字符串、
-    ``${VAR}`` 引用与 ``#`` 注释；不含列表 / 锚点 / 多行块。
+    覆盖：嵌套 ``key: value``、块序列（``- item``，条目可为标量 / 映射 / 嵌套序列）、
+    行内 flow 列表 ``[a, b]`` 与映射 ``{k: v}``、``true/false/null``、整数/浮点、
+    引号字符串、``${VAR}`` 引用与 ``#`` 注释；不含锚点 / 多行块 / 顶层序列。
+
+    序列的映射条目按 yaml 的 ``- key`` 列对齐口径缩进（后续兄弟键与 ``-`` 后首键同列，
+    即 ``-`` 缩进 + 2）；更深的缩进归该键的嵌套值。
     """
-    root: dict[str, Any] = {}
-    stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
+    lines: list[tuple[int, str]] = []
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
         indent = len(line) - len(line.lstrip(" "))
-        if ":" not in line:
-            raise ConfigurationError(f"无法解析的 yaml 行: {stripped}")  # noqa: TRY003
-        key, _, value = stripped.partition(":")
-        key = key.strip()
-        value = value.strip()
-        while stack and indent <= stack[-1][0]:
-            stack.pop()
-        if not stack:
-            raise ConfigurationError(f"yaml 缩进错误: {stripped}")  # noqa: TRY003
-        parent = stack[-1][1]
-        if value == "":
-            child: dict[str, Any] = {}
-            parent[key] = child
-            stack.append((indent, child))
-        else:
-            parent[key] = _parse_scalar(value)
+        lines.append((indent, stripped))
+    if not lines:
+        return {}
+    if lines[0][1].startswith("-"):
+        raise ConfigurationError(f"无法解析的 yaml 行: {lines[0][1]}")  # noqa: TRY003
+    root, index = _parse_yaml_mapping(lines, 0, lines[0][0])
+    if index < len(lines):
+        raise ConfigurationError(f"yaml 缩进错误: {lines[index][1]}")  # noqa: TRY003
     return root
 
 
-def _parse_scalar(value: str) -> Any:
+def _parse_yaml_block(lines: list[tuple[int, str]], index: int, indent: int) -> tuple[Any, int]:
+    """按首行形态分派：``-`` 开头为序列，否则为映射。"""
+    if lines[index][1].startswith("-"):
+        return _parse_yaml_sequence(lines, index, indent)
+    return _parse_yaml_mapping(lines, index, indent)
+
+
+def _parse_yaml_mapping(
+    lines: list[tuple[int, str]], index: int, indent: int
+) -> tuple[dict[str, Any], int]:
+    result: dict[str, Any] = {}
+    while index < len(lines):
+        line_indent, stripped = lines[index]
+        if line_indent < indent:
+            break
+        if line_indent > indent:
+            raise ConfigurationError(f"yaml 缩进错误: {stripped}")  # noqa: TRY003
+        if stripped.startswith("-"):
+            break
+        if ":" not in stripped:
+            raise ConfigurationError(f"无法解析的 yaml 行: {stripped}")  # noqa: TRY003
+        key, _, value = stripped.partition(":")
+        key = key.strip()
+        index += 1
+        child, index = _parse_mapping_value(value.strip(), lines, index, indent)
+        result[key] = child
+    return result, index
+
+
+def _parse_mapping_value(
+    value: str, lines: list[tuple[int, str]], index: int, indent: int
+) -> tuple[Any, int]:
+    """映射键的取值：同行为标量；空值 ⇒ 更深缩进为嵌套块，同列 ``-`` 为同列序列。"""
+    if value:
+        return _parse_scalar(value), index
+    if index < len(lines) and lines[index][0] > indent:
+        return _parse_yaml_block(lines, index, lines[index][0])
+    if index < len(lines) and lines[index][0] == indent and lines[index][1].startswith("-"):
+        # yaml 允许序列与键同列（``entries:\n- item``）
+        return _parse_yaml_sequence(lines, index, indent)
+    return {}, index
+
+
+def _parse_yaml_sequence(
+    lines: list[tuple[int, str]], index: int, indent: int
+) -> tuple[list[Any], int]:
+    items: list[Any] = []
+    while index < len(lines):
+        line_indent, stripped = lines[index]
+        if line_indent < indent:
+            break
+        if line_indent > indent:
+            raise ConfigurationError(f"yaml 缩进错误: {stripped}")  # noqa: TRY003
+        if not stripped.startswith("-"):
+            break
+        rest = stripped[1:].strip()
+        index += 1
+        if rest == "":
+            if index < len(lines) and lines[index][0] > indent:
+                item, index = _parse_yaml_block(lines, index, lines[index][0])
+            else:
+                item = None
+            items.append(item)
+            continue
+        pair = _split_mapping_item(rest)
+        if pair is None:
+            items.append(_parse_scalar(rest))
+        else:
+            item, index = _parse_mapping_item(pair, lines, index, indent)
+            items.append(item)
+    return items, index
+
+
+def _split_mapping_item(text: str) -> tuple[str, str] | None:
+    """识别 ``- key: value`` 条目：冒号后须为空白/行尾，且键不含空格与 ``/``（排除 URL）。"""
+    key, sep, value = text.partition(":")
+    if not sep or not key or " " in key or "/" in key or (value and not value.startswith(" ")):
+        return None
+    return key.strip(), value.strip()
+
+
+def _parse_mapping_item(
+    pair: tuple[str, str], lines: list[tuple[int, str]], index: int, dash_indent: int
+) -> tuple[dict[str, Any], int]:
+    key, value = pair
+    item: dict[str, Any] = {}
+    sibling_indent = dash_indent + 2
+    if value == "":
+        if index < len(lines) and lines[index][0] > sibling_indent:
+            child, index = _parse_yaml_block(lines, index, lines[index][0])
+            item[key] = child
+        else:
+            item[key] = {}
+    else:
+        item[key] = _parse_scalar(value)
+    if index < len(lines) and lines[index][0] > dash_indent:
+        if lines[index][0] != sibling_indent or lines[index][1].startswith("-"):
+            raise ConfigurationError(f"yaml 缩进错误: {lines[index][1]}")  # noqa: TRY003
+        extra, index = _parse_yaml_mapping(lines, index, sibling_indent)
+        item.update(extra)
+    return item, index
+
+
+def _parse_scalar(value: str) -> Any:  # noqa: PLR0911 — 标量形态逐类早返回
     if len(value) > 1 and value[0] == value[-1] and value[0] in ('"', "'"):
         return value[1:-1]
+    if len(value) > 1 and value[0] == "[" and value[-1] == "]":
+        inner = value[1:-1].strip()
+        return [] if not inner else [_parse_scalar(part.strip()) for part in _split_flow(inner)]
+    if len(value) > 1 and value[0] == "{" and value[-1] == "}":
+        inner = value[1:-1].strip()
+        if not inner:
+            return {}
+        mapping: dict[str, Any] = {}
+        for part in _split_flow(inner):
+            key, sep, item = part.partition(":")
+            if not sep:
+                raise ConfigurationError(f"无法解析的 yaml 行: {value}")  # noqa: TRY003
+            mapping[key.strip()] = _parse_scalar(item.strip())
+        return mapping
     lowered = value.lower()
     if lowered in _BOOL_NULL:
         return _BOOL_NULL[lowered]
@@ -1629,6 +1834,39 @@ def _parse_scalar(value: str) -> Any:
     return value
 
 
+def _split_flow(text: str) -> list[str]:
+    """按顶层逗号切分行内 flow 内容（引号与嵌套括号内不切）。"""
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    quote = ""
+    for ch in text:
+        if quote:
+            current.append(ch)
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            current.append(ch)
+            continue
+        if ch in "[{":
+            depth += 1
+            current.append(ch)
+            continue
+        if ch in "]}":
+            depth -= 1
+            current.append(ch)
+            continue
+        if ch == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+            continue
+        current.append(ch)
+    parts.append("".join(current))
+    return parts
+
+
 def _merge_raw(raw: dict[str, Any], patch: dict[str, Any]) -> None:
     """递归浅合并 patch 进 raw（原地），未触及的键原样保留。"""
     for key, value in patch.items():
@@ -1639,16 +1877,35 @@ def _merge_raw(raw: dict[str, Any], patch: dict[str, Any]) -> None:
 
 
 def _dump_yaml(data: dict[str, Any], indent: int = 0) -> str:
-    """嵌套 dict → 缩进 yaml（仅标量 + 映射，与 ``_parse_yaml_subset`` 对称）。"""
+    """嵌套 dict / list → 缩进 yaml（与 ``_parse_yaml_subset`` 对称）。"""
     lines: list[str] = []
     pad = "  " * indent
     for key, value in data.items():
         if isinstance(value, dict):
             lines.append(f"{pad}{key}:")
             lines.append(_dump_yaml(cast(dict[str, Any], value), indent + 1))
+        elif isinstance(value, list):
+            lines.append(f"{pad}{key}:")
+            lines.extend(_dump_yaml_list(cast(list[Any], value), indent + 1))
         else:
             lines.append(f"{pad}{key}: {_dump_scalar(value)}")
     return "\n".join(lines)
+
+
+def _dump_yaml_list(items: list[Any], indent: int) -> list[str]:
+    """序列 → 行列表（dict 条目用「``-`` 单独成行 + 缩进映射」形态，与解析器对称）。"""
+    pad = "  " * indent
+    lines: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            lines.append(f"{pad}-")
+            lines.extend(_dump_yaml(cast(dict[str, Any], item), indent + 1).splitlines())
+        elif isinstance(item, list):
+            lines.append(f"{pad}-")
+            lines.extend(_dump_yaml_list(cast(list[Any], item), indent + 1))
+        else:
+            lines.append(f"{pad}- {_dump_scalar(item)}")
+    return lines
 
 
 def _dump_scalar(value: Any) -> str:

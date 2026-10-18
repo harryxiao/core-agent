@@ -279,8 +279,13 @@ L2 条目 `loop.failure.<trace_id>`（`tags=["loop","failure"]`、`kind="episodi
 （`LoopContext`, `Action`, `ActionResult`）；**仅通知** —— 观察者抛错降级为遥测、
 **不改变本轮的结局与终止语义**；终止动作（空 `tool_id`）不触发观察者。
 
+两类接缝的返回值 MAY 为可等待对象（coroutine）；系统 SHALL 逐个 `await` 后再继续。同步实现
+（不返回可等待对象）SHALL 与引入该能力前**逐字等价**。轮首 / 轮尾另有同步注入点
+（`turn_before` / `turn_after`）：`turn_before` 返回 `False` ⇒ 本轮以已拒绝回复终止；
+`turn_after` 仅留痕、SHALL NOT 改变本轮结局。
+
 #### Scenario: 中间件按序执行
-- **GIVEN** 已注册一组横切中间件
+- **GIVEN** 已注册一组横切中间件（同步或异步）
 - **WHEN** loop 执行到对应节点
 - **THEN** 中间件按注册顺序执行，任一拒绝即短路
 
@@ -303,6 +308,11 @@ L2 条目 `loop.failure.<trace_id>`（`tags=["loop","failure"]`、`kind="episodi
 - **GIVEN** 一轮推理产出终止动作（空 `tool_id`，如本轮回复）
 - **WHEN** 该动作「执行」完成后
 - **THEN** 结果侧观察者不被调用
+
+#### Scenario: 轮首注入点可否决本轮
+- **GIVEN** 已注入 `turn_before` 且其返回 `False`
+- **WHEN** 新一轮开始
+- **THEN** 推理 SHALL NOT 被调用，本轮以已拒绝回复终止；轮尾注入点仍照常投递
 
 ### Requirement: 错误与预算控制
 系统 SHALL 限制单任务最大循环次数与 token 预算，超出即终止或转人工。两项上限 SHALL 可经配置链

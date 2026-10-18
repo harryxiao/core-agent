@@ -48,6 +48,11 @@ class DefaultLoop(Plugin):
     #   返回 None 即拒绝短路、返回 Action 则放行/改写）；action_observers:
     #   list[Callable[[LoopContext, Action, ActionResult], None]]（结果侧观察者，仅通知、异常降级留痕；
     #   loop 不 import constraints——生产侧由组合根注入适配层，见 constraints-interface §7 / ADR-0055）
+    #   二者的返回值 MAY 为 coroutine（change 0269 / ADR-0259）：loop 逐个 await；同步实现逐字等价。
+    # 注入面（可选）：turn_before: Callable[[str, str, int, str], bool | Awaitable[bool]]（轮首、context
+    #   装配前；返回 False ⇒ 不调推理、本轮以已拒绝回复终止）；turn_after:
+    #   Callable[[str, str, bool, int], object | Awaitable[object]]（轮尾、trace 封口前；仅留痕）。
+    #   缺省 None ⇒ 零调用（change 0269 / ADR-0259；钩子经此消费，loop 不 import hooks）
     # 注入面（可选）：source: str = "loop"（落记忆的**命名空间**：本轮轨迹写入 L2 条目的 ``source``；
     #   神兽 loop 由组合根注入 "beast.<agent_id>" ⇒ 与主 Agent "loop" 隔离，见 beast-mode-interface §4/§10）
     # 注入面（可选）：transcript: TranscriptStore | None = None（会话转录；缺省未注入 ⇒ 零回灌零写入）；
@@ -316,6 +321,12 @@ def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "
   动作完成后按注册序回调，**仅通知**：单个观察者抛出降级留痕（记 `action_observer_failed`），
   **不改变本轮结局与终止语义**；终止动作（空 `tool_id`）不触发。二者缺省为空 = 零行为变化；
   生产接线（按 `tool_id` 隔离熔断）见 `constraints-interface.md` §7 与 ADR-0055。
+  返回值 MAY 为 coroutine（change 0269 / ADR-0259）：loop `await` 后再继续；同步实现与引入前**逐字等价**。
+- 轮首 / 轮尾注入点（change 0269 / ADR-0259）：`turn_before(session_id, trace_id, turn_index, text) -> bool`
+  与 `turn_after(session_id, trace_id, ok, steps)`（均可等待）。前者返回 `False` ⇒ **不调推理**、
+  本轮以已拒绝回复终止（轮尾注入点仍照常投递 `ok=False`）；后者在 `end_trace` **之前**执行、
+  仅留痕，与既有 `turn_observer`（封口后异步收尾）分工不同。缺省 `None` ⇒ 零调用。
+  `astream` 期间 `current_trace_id` ContextVar 供消费方归因当前轮（无活跃 trace ⇒ 临时 trace）。
 - 收尾钩子：每轮收尾调注入的 `turn_observer(task, steps, ok)`——**成功与失败都提交**（`ok=False`
   即超限终止轮，失败信号供技能迭代判据），由组合根分发到技能反馈与 SOP 提炼
   （`SopExtractor.observe` 仍只吸收成功，见 `skills-interface.md §6`）；钩子抛错降级留痕
