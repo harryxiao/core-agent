@@ -82,6 +82,11 @@ PinnedNotesConsult = Callable[[], str]
 # 生产侧注入组合根闭包（内部调 MemoryStore.failure_lessons）。见 change 0217 / ADR-0207。
 FailureLessonsConsult = Callable[[str], str]
 
+# 后台任务完成通知钩子：**会话标识** → 通知块文本（一次性取走）；缺省未注入则不做。
+# **入参即契约**：通知按会话投递（见 change 0270 / ADR-0260）。loop 不 import orchestration
+# （分层红线），生产侧注入组合根闭包（内部调 BackgroundAgentRegistry.render_notices）。
+NoticesConsult = Callable[[str], str]
+
 # trace 完成回调：本轮遥测记录完毕后按**轮**提交 trace_id（登记一条已完成 trace）；缺省不做。
 # 与冷路径回调**节律不同**（不随维护节拍节流）；loop 不 import evolution（架构红线），
 # 生产侧注入组合根闭包（内部调 EvolutionWorker.on_trace_complete）。
@@ -445,6 +450,9 @@ class DefaultLoop(Plugin):
         notes_consult: NotesConsult | None = None,
         pinned_notes_consult: PinnedNotesConsult | None = None,
         failure_lessons_consult: FailureLessonsConsult | None = None,
+        # 轮首后台任务完成通知（change 0270 / ADR-0260，缺省 `None`）：注入 ⇒ 每轮取用一次；
+        # `None` ⇒ 零调用，`ctx.notices` 恒空，提示词与引入前逐字不变。
+        notices_consult: NoticesConsult | None = None,
         cold_path: ColdPath | None = None,
         trace_observer: TraceObserver | None = None,
         source: str = "loop",
@@ -494,6 +502,7 @@ class DefaultLoop(Plugin):
         self._notes_consult = notes_consult
         self._pinned_notes_consult = pinned_notes_consult
         self._failure_lessons_consult = failure_lessons_consult
+        self._notices_consult = notices_consult
         self._cold_path = cold_path
         self._trace_observer = trace_observer
         # 落记忆的命名空间：主 Agent 缺省 "loop"；神兽 loop 由组合根注入 "beast.<agent_id>"
@@ -649,6 +658,7 @@ class DefaultLoop(Plugin):
             self._consult_notes(ctx, trace_id)
             self._load_pinned_notes(ctx, trace_id)
             self._load_failure_lessons(ctx, trace_id)
+            self._load_notices(ctx, trace_id)
         # 轮首写点（change 0214 / ADR-0204）：用户消息**已进**转录（`perceive` 内追加）、
         # 前置读（Consult / 常驻注入）**已完成** ⇒ 此处标记「本轮在途」。中断路径只补记
         # 遥测（change 0256），不写检查点 ⇒ 中途异常 / 被杀天然留未完结态（与编排波次回调同语义）。
@@ -894,6 +904,19 @@ class DefaultLoop(Plugin):
         except Exception as err:  # noqa: BLE001 — 教训注入失败降级，不影响本轮结果
             ctx.failure_lessons = ""
             self._trace(trace_id, "failure_lessons_consult_failed", {"error": str(err)})
+
+    def _load_notices(self, ctx: LoopContext, trace_id: str) -> None:
+        """轮首注入：取走**本会话**的后台任务完成通知（一次性；缺省不启用）。
+
+        取用钩子异常仅降级留痕、置空，**不改变本轮结局**（与其余 consult 钩子同口径）。
+        """
+        if self._notices_consult is None:
+            return
+        try:
+            ctx.notices = self._notices_consult(ctx.session_id)
+        except Exception as err:  # noqa: BLE001 — 通知取用失败降级，不影响本轮结果
+            ctx.notices = ""
+            self._trace(trace_id, "notices_consult_failed", {"error": str(err)})
 
     def _mark_turn(self, trace_id: str, session_id: str, ctx: LoopContext, *, done: bool) -> None:
         """轮级检查点外发：把本轮「在途 / 完结」交给注入的闭包（缺省不启用；change 0214）。

@@ -8,6 +8,9 @@
 ### Requirement: 分级权限体系
 系统 SHALL 将操作划分为只读查询（read）、数据编辑（data-edit）、高危操作（high-risk）三个等级，并对高危操作默认拦截。分级判定 SHALL 依据**语义分词**（工具 / 动作词的完整词元）而非对标识串的**任意子串**匹配 —— 命名空间前缀或无关子串的偶然命中 SHALL NOT 影响等级。对显式声明的**委托类 coeffect**（字面量 `agent:delegate`）SHALL 判为 read；该豁免 SHALL NOT 放宽为 `agent:` 前缀（其余 `agent:*` coeffect SHALL 仍按高危及后续规则处理）。
 
+对**任务清单工具**（字面量工具 id `tools.tasks`）SHALL 判为 read；该豁免 SHALL NOT 放宽为
+`tasks` 词元或前缀（其余含 `tasks` 的标识 SHALL 仍按词元规则与 deny-by-default 处理）。
+
 只读动作词集合 SHALL 包含 `process`（后台任务巡检）；`process` 词元判为 `read` SHALL NOT 豁免同标识中**更高优先**的高危词元 —— 含 `kill` 的标识 SHALL 仍判 `high-risk`。
 
 #### Scenario: 只读操作放行
@@ -49,6 +52,16 @@
 - **GIVEN** 动作标识为 `tools.process_kill`（同时含 `process` 与 `kill` 词元）
 - **WHEN** 执行前经过权限引擎判定
 - **THEN** 判为 `high-risk`（高危词元优先），未获审批时返回 `APPROVAL_REQUIRED`
+
+#### Scenario: 任务清单判只读
+- **GIVEN** 动作标识为字面量 `tools.tasks`
+- **WHEN** 执行前经过权限引擎判定
+- **THEN** 判为 `read`，在 coeffect 约束满足时放行
+
+#### Scenario: 任务词元豁免不放宽
+- **GIVEN** 一个动作标识含 `tasks` 词元但不是 `tools.tasks`（如 `tools.tasks_purge`）
+- **WHEN** 执行前经过权限引擎判定
+- **THEN** SHALL NOT 因该词元判为 `read`（豁免仅限字面量工具 id）
 
 ### Requirement: 人工审批流
 系统 SHALL 对高危操作（删除、杀进程、系统级写入等）强制发起人工审批，审批超时默认拒绝。

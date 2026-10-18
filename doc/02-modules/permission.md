@@ -44,7 +44,8 @@ PermissionGate（横切）
   `._:-/` 切成**词元集合**再命中，命名空间前缀偶然含只读词子串（`tools.` 含 `"ls"`）SHALL NOT 判为 `read`
   —— 同理 `tools.target`（含 `get`）、`tools.category_sync`（含 `cat`）亦 SHALL NOT 判只读（否则所有
   `tools.*` 误判只读、deny-by-default 失效）；显式声明的字面量 coeffect `agent:delegate` 判 `read`，
-  且**不放宽为 `agent:` 前缀**。
+  且**不放宽为 `agent:` 前缀**；后台任务清单工具按**字面量工具 id `tools.tasks`** 判 `read`，
+  同样**不放宽**为 `tasks` 词元或前缀（change 0270 / ADR-0260）。
 
 **模式覆盖（`PermissionModeGate`）**：四档启动开关覆盖上述默认判定（映射 `config.permission.mode`
 + CLI `--permission-mode`）：

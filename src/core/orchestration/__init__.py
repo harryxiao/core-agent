@@ -7,6 +7,12 @@
 对应规格：doc/openspec/specs/orchestration/spec.md
 """
 
+from .background import (
+    BackgroundAgentRegistry,
+    BackgroundTaskInfo,
+    background_tasks_tool,
+    render_notice_lines,
+)
 from .decomposer import Planner, SubtaskDecomposer, Verifier
 from .errors import OrchestrationError, OrchestrationErrorCode
 from .models import (
@@ -33,6 +39,8 @@ from .state_machine import StateMachine
 
 __all__ = [
     "AgentProfile",
+    "BackgroundAgentRegistry",
+    "BackgroundTaskInfo",
     "DecomposeResult",
     "FileCheckpoint",
     "LLMSubtaskPlanner",
@@ -54,6 +62,8 @@ __all__ = [
     "TaskState",
     "Verifier",
     "VerifyResult",
+    "background_tasks_tool",
     "plan_from_dict",
     "plan_to_dict",
+    "render_notice_lines",
 ]

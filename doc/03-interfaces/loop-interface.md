@@ -123,6 +123,9 @@ class LoopContext:
                                 # 时历史带为空，但已有摘要照常注入（change 0194 / ADR-0184 / 账本 E131）
     summary_mid: str = ""       # 分层历史的**中期**摘要（中带滚动摘要；缺省空 ⇒ 不注入）
                                 # 注入次序：常驻笔记 → 历史摘要（长期）→ 历史摘要（中期）→ 相关事实…
+    notices: str = ""           # 本会话待投递的**后台任务完成通知**块（轮首一次性取用；缺省空 ⇒ 不注入）
+                                # **独立字段 / 独立 system 块**（「后台任务通知：」），不折入 notes /
+                                # failure_lessons；仅主 loop 注入 notices_consult（change 0270 / ADR-0260）
 
     def done(self) -> bool:
         """推理判定可结束本轮时返回 True。"""

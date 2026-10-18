@@ -306,6 +306,51 @@ async def run_handoff(loop, handoff, *, deadline=None) -> LoopResult
 - **行为变更（有意）**：scheduler 路径的 prompt 新增「原始目标 / 前置结果 / 验收标准」段；
   beast / pet 传空上下文，`render_handoff` 逐字返回任务文本，prompt 与改造前一致。
 
+### 3.1 后台委托注册表与任务清单（change `0270` / ADR-0260）
+
+```python
+@dataclass
+class BackgroundTaskInfo:
+    task_id: str
+    agent_id: str
+    task: str                       # 委托任务文本（对外快照截断 120 字符）
+    status: str = "running"         # running / done / failed / cancelled（终态不可逆）
+    started_at: float = 0.0
+    finished_at: float | None = None
+    reply: str = ""                 # 子 Agent 回复（保留上界 4000 字符）
+    error: str = ""                 # 失败原因（异常只留类型名 / 「子 Agent 报告失败」）
+
+    def info(self) -> dict[str, Any]
+        # 对模型暴露的只读快照：不含 session_id；task / reply 有界截断
+
+class BackgroundAgentRegistry:
+    def __init__(self, *, max_running: int = 8, notice_cap: int = 32)
+
+    def spawn(self, loop: LoopPlugin, task: str, *,
+              agent_id: str, session_id: str = "") -> str
+        # 立即返回 task_id（asyncio.create_task）；超限抛
+        # OrchestrationError(BACKGROUND_TASKS_FULL)，不排队
+    def get(self, task_id: str) -> BackgroundTaskInfo | None
+    def list(self) -> list[BackgroundTaskInfo]          # 全部任务，按发起序
+    def drain_notices(self, session_id: str) -> list[BackgroundTaskInfo]  # 一次性取走
+    def render_notices(self, session_id: str) -> str    # 取走并渲染（loop 轮首钩子）
+    def cancel(self, task_id: str) -> bool              # 同步落 cancelled
+    def cancel_all(self) -> None
+    async def wait(self, task_id: str) -> BackgroundTaskInfo  # 取消/异常不抛
+    def running_count(self) -> int
+
+def render_notice_lines(tasks: list[BackgroundTaskInfo]) -> str
+    # 最近 10 条、每任务一行、单行 ≤400 字符
+```
+
+**`tools.delegate` 参数面**：新增可选 `background: bool = false`。缺省/`false` ⇒ 既阻塞语义
+（返回 `{ok, reply}`）逐字不变；`true` ⇒ 返回 `{ok: true, task_id, agent, status: "running"}`，
+超限返回 `{ok: false, error}`。
+
+**`tools.tasks`（只读）**：schema `{action: "list" | "status", task_id?: string}`；
+`status` 未知 id 返回 `{task_id, found: false}`；coeffect `task:read`；只挂主工具面；
+查询**不**清空待投递通知。
+
 ---
 
 ## 4. 错误码
@@ -323,6 +368,7 @@ async def run_handoff(loop, handoff, *, deadline=None) -> LoopResult
 | `PROGRESS_NOT_MET` | 进度未达目标（触发重拆；预算耗尽转 FAILED） |
 | `MISSING_SUCCESS_CHECKER` | 提供了成功标准但未注入判定器（配置错误，fail-fast，转 FAILED） |
 | `TASK_CANCELLED` | 运行中任务被 `cancel` 取消（`task_failed` 终态，change 0249；断流同转 `FAILED`，trace `task_aborted` 分因） |
+| `BACKGROUND_TASKS_FULL` | 运行中后台子 Agent 已达上限 8（`delegate(background=true)` 返回结构化失败，不排队；change 0270） |
 
 > 失败恢复预算固定为「每个失败子任务重试 1 次 + 重新拆解 1 次」（change 0246 / ADR-0234），
 > 不设配置键；`task_failed` 的 `attempts` / `replans` 为可观测计数。

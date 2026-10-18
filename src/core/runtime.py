@@ -113,6 +113,7 @@ from core.notes import NoteStore, promote_session_summary
 from core.observability import BufferedExporter, JSONLExporter, Tracer
 from core.orchestration import (
     AgentProfile,
+    BackgroundAgentRegistry,
     LLMSubtaskPlanner,
     LLMTaskVerifier,
     LLMVerifier,
@@ -123,6 +124,7 @@ from core.orchestration import (
     SubtaskDecomposer,
     SubtaskOutcome,
     TaskScheduler,
+    background_tasks_tool,
     plan_to_dict,
 )
 from core.permission import PermissionGuard, SandboxManager, SandboxPolicy
@@ -213,6 +215,8 @@ class Runtime:
     # 空 = features.evolution_executor 未开启（缺省关；见 OPT_IN_MODULES）
     evolution_executor: EvolutionExecutor | None
     orchestrator: TaskScheduler
+    # 后台子 Agent 注册表（change 0270 / ADR-0260）：完成通知按会话堆积，主 loop 轮首取用。
+    background_tasks: BackgroundAgentRegistry
     checkpoints: CheckpointManager
     time_travel: TimeTravel
     crash_recovery: CrashRecovery
@@ -729,6 +733,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     resolver.register("process:write", True)  # 后台任务终止（不可逆，确认门约束）
     resolver.register("network:outbound", True)
     resolver.register("agent:delegate", True)  # 委托能力：显式声明供默认暴露面识别（B7）
+    resolver.register("task:read", True)  # 后台任务清单（只读；change 0270 / ADR-0260）
     tools = ToolProvider(
         coeffect_resolver=resolver, effect_tracker=effect_tracker, gate=guard, approver=approver
     )
@@ -1142,6 +1147,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         if retention_policy is not None:
             retention.apply(retention_policy)
 
+    # 后台子 Agent（change 0270 / ADR-0260）：注册表先于主 loop 构造 —— 轮首通知取用闭包
+    # 只注入主 loop（子 Agent / 神兽 / 宠物 loop 不接，与会话维度注入面同口径）。
+    background_tasks = BackgroundAgentRegistry()
+
     loop = DefaultLoop(
         causal_links=causal_links,
         planner=planner,
@@ -1158,6 +1167,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         # 既往失败教训：**只**注入主 loop（子 Agent / 神兽 / 宠物 loop 不接 —— 教训按会话维度取用，
         # 同 `transcript` / `turn_checkpoint` 的注入面）；门控缺省关 ⇒ `None`（逐字不变）。
         failure_lessons_consult=_failure_lessons if config.failure_lessons() else None,
+        # 后台任务完成通知：轮首一次性取用（缺省注册表为空 ⇒ 恒无通知 ⇒ 提示词逐字不变）。
+        notices_consult=background_tasks.render_notices,
         cold_path=cold_path,
         trace_observer=trace_observer,
         middlewares=[constraints_chain.middleware, *hook_middlewares],
@@ -1306,8 +1317,12 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         result = await profile.loop.arun(task, session_id=current_session_id.get())
         return {"ok": not result.failed, "reply": result.reply}
 
-    async def _delegate(task: str) -> dict[str, object]:
-        """委托工具：按能力标签匹配子 Agent，阻塞等待其 LoopResult 并回传 reply。
+    async def _delegate(task: str, background: bool = False) -> dict[str, object]:
+        """委托工具：按能力标签匹配子 Agent。
+
+        缺省（``background=False``）阻塞等待 LoopResult 并回传 reply —— 与引入后台能力前
+        逐字一致。``background=True`` 立即返回 ``task_id``；子 Agent 在事件循环上后台执行，
+        终态与完成通知由注册表按会话投递（change 0270 / ADR-0260）。
 
         入站即做委托深度护栏（纵深防御；子 Agent 工具面已不含 delegate）。
         """
@@ -1315,7 +1330,29 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             return {"ok": False, "error": "已达委托深度上限（子 Agent 不可再委托）"}
         token = _DELEGATE_DEPTH.set(_DELEGATE_DEPTH.get() + 1)
         try:
-            return await _dispatch(task)
+            if not background:
+                return await _dispatch(task)
+            try:
+                profile = agent_router.match(task)
+            except OrchestrationError as exc:
+                return {"ok": False, "error": f"无匹配子 Agent: {exc}"}
+            if profile.loop is None:
+                return {"ok": False, "error": f"子 Agent {profile.agent_id} 无可用 loop"}
+            try:
+                task_id = background_tasks.spawn(
+                    profile.loop,
+                    task,
+                    agent_id=profile.agent_id,
+                    session_id=current_session_id.get(),
+                )
+            except OrchestrationError as exc:  # 运行中上限 ⇒ 不排队，结构化拒绝
+                return {"ok": False, "error": str(exc)}
+            return {
+                "ok": True,
+                "task_id": task_id,
+                "status": "running",
+                "agent": profile.agent_id,
+            }
         finally:
             _DELEGATE_DEPTH.reset(token)
 
@@ -1324,12 +1361,17 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             definition=ToolDef(
                 tool_id="tools.delegate",
                 description=(
-                    "将子任务委托给匹配的子 Agent（coding/research）执行，阻塞等待结果并回传汇总"
+                    "将子任务委托给匹配的子 Agent（coding/research）执行。缺省阻塞等待结果；"
+                    "background=true 立即返回 task_id，完成后下一轮收到通知，可用 tools.tasks 查询"
                 ),
                 schema={
                     "type": "object",
                     "properties": {
                         "task": {"type": "string", "description": "要委托给子 Agent 的任务目标"},
+                        "background": {
+                            "type": "boolean",
+                            "description": "true = 后台执行并立即返回（缺省 false = 阻塞等待）",
+                        },
                     },
                     "required": ["task"],
                 },
@@ -1340,6 +1382,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             handler=_delegate,
         )
     )
+    # 模型侧任务清单（change 0270 / ADR-0260）：**只挂主工具面** —— 子 Agent 的 provider
+    # 由 `_agent_tools()` 各自构造，结构上既不能起后台任务也查不到清单。
+    tools.register(background_tasks_tool(registry=background_tasks))
+
     store = CheckpointStore(_checkpoint_path())  # 落盘：跨进程续跑/崩溃恢复可读
     checkpoints = CheckpointManager(store)
     time_travel = TimeTravel(store, effect_tracker=effect_tracker)
@@ -1567,6 +1613,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         evolution=evolution,
         evolution_executor=evolution_executor,
         orchestrator=orchestrator,
+        background_tasks=background_tasks,
         checkpoints=checkpoints,
         time_travel=time_travel,
         crash_recovery=crash_recovery,

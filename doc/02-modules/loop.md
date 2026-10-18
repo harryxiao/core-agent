@@ -224,6 +224,20 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
 - **动作时长**：`ActionResult.duration_ms` 供 `tool.after` 载荷（缺省 0，既有构造不变）。
 - `turn_before` 拒绝时轮尾注入点**仍照常投递**（`ok=False`），消费方可据此记账。
 
+### 3.9 轮首后台任务通知（change `0270`／ADR-0260）
+
+- 新可选构造参 `notices_consult: Callable[[str], str] | None`（**入参 = 本轮会话标识**）——
+  **一次性取走**语义，由组合根闭包调 `BackgroundAgentRegistry.render_notices`（loop 不 import
+  orchestration，分层红线）。
+- `astream` 轮首经 `_load_notices` 写入 `LoopContext.notices`；抛错降级：置空该字段 ＋
+  trace `notices_consult_failed`，**不改变本轮结局**。
+- planner 把非空该字段以**独立系统块**（「后台任务通知：」）注入，块序在「既往失败教训」之后、
+  「可用技能」之前；**不折入**其他块。
+- **缺省 `None`** ⇒ 零调用 ⇒ 字段恒空 ⇒ **提示词逐字不变**；**只接主 loop**（子 Agent / 神兽 /
+  宠物 loop 不接）。
+- **为什么不在轮内轮询**：模型正处在推理 / 动作中途，插入系统块会破坏消息序；轮内进度用
+  `tools.tasks status` 主动查（change 0270 D7）。
+
 ---
 
 ## 4. 伪代码（默认实现骨架，~100 行）

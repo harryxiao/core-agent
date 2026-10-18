@@ -4195,3 +4195,46 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0259 行（串行阻塞语义 / `atexit` 收尾 /
 > 记忆写入路径同步 / 钩子副作用不可逆 / 无并行与权重 / 清单只走 yaml / YAML 子集 / 轮尾钩子
 > 延迟遥测导出）。
+
+## 182. 后台子 Agent、完成通知与模型侧任务清单（TC-BG，change `0270`／ADR-0260，台账 E206）
+
+> **背景**：`tools.delegate` 原只有阻塞语义 —— 子 Agent 跑完前主循环不能推进；结果跨轮丢失；
+> 模型无法自检已派发任务。本 change 增后台派发、按会话一次性完成通知、只读 `tools.tasks`；
+> `background` 缺省 false ⇒ 阻塞路径逐字不变。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-BG-01 | orchestration/spec.md「后台委托与完成通知」Scenario（后台委托立即返回） | `spawn` 一个阻塞中的子 Agent | 立即返回 `task_id`、状态 `running`；子 Agent 未被等待（`test_spawn_returns_immediately_and_completes`） |
+| TC-BG-02 | 同 Requirement Scenario（缺省阻塞语义不变） | 调用 `tools.delegate` 不带 `background` | 返回 `{ok:true, reply}`；注册表无后台任务（`test_delegate_foreground_path_unchanged`） |
+| TC-BG-03 | 同 Requirement（终态 done） | 子 Agent 正常返回 `LoopResult(reply=…)` | 状态 `done`、回复有界保存；会话标识传给子 Agent（`test_spawn_returns_immediately_and_completes`） |
+| TC-BG-04 | 同 Requirement（failed 不留异常正文） | 子 Agent handler 抛 `RuntimeError("内部细节…")` | `failed`；`error` 仅 `RuntimeError`，不含正文（`test_failed_subagent_does_not_leak_exception_text`） |
+| TC-BG-05 | 同 Requirement（failed 来自 LoopResult） | 子 Agent 返回 `failed=True` | 状态 `failed`，`reply` 保留（`test_failed_loop_result_marks_failed`） |
+| TC-BG-06 | 同 Requirement（cancelled） | 运行中 `cancel(task_id)` | 同步落 `cancelled`；仍产生一条通知（`test_cancel_marks_terminal_and_notifies`） |
+| TC-BG-07 | 同 Requirement Scenario（后台任务有界） | `max_running=2` 起 3 个 | 第 3 个抛 `BACKGROUND_TASKS_FULL`；终态释放名额（`test_running_tasks_are_bounded_and_finished_free_slots`） |
+| TC-BG-08 | 同 Scenario（工具级结构化失败） | 已占满 8 个后调用 `delegate(background=true)` | 返回 `{ok:false, error:"BACKGROUND_TASKS_FULL: …"}`，不排队（`test_delegate_background_over_cap_returns_structured_failure`） |
+| TC-BG-09 | 同 Requirement Scenario（通知只投一次） | 完成任务后连续两次 `drain_notices` | 第一次含该任务，第二次为空（`test_notices_are_one_shot_and_session_scoped`） |
+| TC-BG-10 | 同 Requirement Scenario（通知按会话隔离） | s1 / s2 各一任务，取 s1 | 只投 s1；s2 仍待投递（`test_notices_are_one_shot_and_session_scoped`） |
+| TC-BG-11 | 同 Requirement（每会话上界） | 同会话完成 35 个任务 | 待投递恰为最近 32 条（`test_notice_queue_is_bounded_per_session`） |
+| TC-BG-12 | 同 Requirement（渲染有界） | 20 条超长通知 | 单轮最多 10 行，单行 ≤400 字符（`test_notice_line_is_bounded`） |
+| TC-BG-13 | loop/spec.md「轮首通知注入」Scenario（钩子入参） | 注入 `notices_consult` | 收到本轮会话标识；产物写入 `ctx.notices`；缺省字段为空（`test_notices_consult_passes_session_and_sets_field` / `test_loop_context_notices_defaults_empty`） |
+| TC-BG-14 | 同 Requirement Scenario（取用钩子异常降级） | 钩子抛 `RuntimeError` | `ctx.notices` 置空、本轮照常推进（`test_notices_consult_degrades_on_error`） |
+| TC-BG-15 | 同 Requirement Scenario（独立块 / 未注入逐字不变） | 非空 / 空 `notices` 各装配一次提示词 | 出现独立「后台任务通知：」块；空值提示词与缺省**逐字相同**（`test_planner_injects_notices_block` / `test_planner_omits_notices_when_empty_verbatim`） |
+| TC-BG-16 | 块序 | 同时有失败教训 / 通知 / 技能 | 「既往失败教训：」<「后台任务通知：」<「可用技能：」（`test_notices_block_order_after_failure_lessons`） |
+| TC-BG-17 | orchestration/spec.md Scenario（任务清单只读可查） | `list` / `status` 未知 id | 列表含任务；未知 id 返回 `{found:false}`（`test_tasks_tool_status_unknown_id_found_false`） |
+| TC-BG-18 | 同 Scenario（查询不清空通知） | 任务完成后 `list` 再取通知 | 通知仍在（`test_tasks_list_does_not_consume_notices`） |
+| TC-BG-19 | permission/spec.md Scenario（任务清单判只读 / 豁免不放宽） | `classify("tools.tasks")`；`classify("tools.tasks_purge")` | 前者 `READ`，后者非 `READ`（`test_tasks_tool_classified_read_without_token_relaxation`） |
+| TC-BG-20 | orchestration/spec.md Scenario（子 Agent 不可窥视或再委托） | 主 / 各子 Agent 工具面与 `notices_consult` | 主面含 `tools.tasks` 且接通知；子面均无 `tools.delegate` / `tools.tasks`，无通知钩子（`test_runtime_wires_background_capability_only_on_main_loop`） |
+
+> **口径**：注册表归 L4（管理子 Agent 的 loop，不是 OS 进程）；通知是**瞬态协调信号**，
+> 只进轮首独立块，不写记忆、不发 `LoopEvent`；`drain_notices` 一次性、`tools.tasks` 只读不清。
+> 每会话 32 条、单轮 10 行、单行 400 字符、单任务回复 4000 字符均硬上界；子 Agent 异常只留类型名。
+> **反证**：P1 `_delegate` 忽略 `background` ⇒ TC-BG-01/08 路径**挂起超时**（`timeout 15` 退出码 124）；
+> P2 `drain_notices` 只读不取走 ⇒ TC-BG-09 红；P3 通知按空串而非会话键 ⇒ TC-BG-10 + 后台委托
+> 用例红；P4 摘 planner 通知块 ⇒ TC-BG-15 红。复原后 `md5sum` 一致（`runtime.py 46cd1763…` /
+> `background.py 292f8301…` / `planner.py ec13d1cf…`）。
+> 规格：`orchestration` **ADDED**「后台委托与完成通知」（7 scen）、`loop` **ADDED**「轮首通知注入」
+> （3 scen）、`permission` **MODIFIED**「分级权限体系」（+2 scen）。`openspec validate --all`
+> 32/0（归档前）/ 31/0（归档后）。测试净 **+21**（2938 → **2959**）。四门禁全绿
+> （`ruff check` / `ruff format --check` / `pyright` 0 / `pytest -q 2959 passed`）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0260 行（纯进程内 / 无轮内推送 / 进程级
+> 上限 / 取走即丢 / 有界截断 / 取消不回滚 / 不进 MCP 默认面 / 继承会话标识 / 无排队重试）。

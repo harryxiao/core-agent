@@ -66,6 +66,9 @@ _TOKEN_SPLIT = re.compile(r"[._:\-/]+")
 # 委托类 coeffect 的**字面量**只读豁免：SHALL NOT 放宽为 "agent:" 前缀，
 # 否则将来任何 `agent:*` coeffect 会静默变只读（同 change 0095 的「按词元非子串」口径）。
 _DELEGATE_COEFFECT = "agent:delegate"
+# 后台任务清单工具的**字面量**只读豁免（change 0270 / ADR-0260）：`tools.tasks` 无只读词元；
+# SHALL NOT 放宽为 `tasks` 词元/前缀 —— 否则未来含该词元的动作会静默变只读（deny-by-default 破口）。
+_BACKGROUND_TASKS_TOOL = "tools.tasks"
 
 
 def _tokens(op: str, target: str) -> set[str]:
@@ -76,7 +79,9 @@ def _tokens(op: str, target: str) -> set[str]:
 class PolicyEngine:
     """风险分级与授权。"""
 
-    def classify(self, op: str, target: str, coeffect: list[str]) -> RiskLevel:
+    def classify(  # noqa: PLR0911 — 分级规则按优先级逐条短路，分支清晰优于合并
+        self, op: str, target: str, coeffect: list[str]
+    ) -> RiskLevel:
         tokens = _tokens(op, target)
         if tokens & _HIGH_RISK_TOKENS:
             return RiskLevel.HIGH_RISK
@@ -85,6 +90,8 @@ class PolicyEngine:
         ):
             return RiskLevel.HIGH_RISK
         if _DELEGATE_COEFFECT in coeffect:  # list 元素等值匹配，非子串
+            return RiskLevel.READ
+        if op == _BACKGROUND_TASKS_TOOL:  # 字面量工具 id，非词元/前缀
             return RiskLevel.READ
         if tokens & _WRITE_TOKENS:
             return RiskLevel.DATA_EDIT

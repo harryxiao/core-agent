@@ -72,6 +72,10 @@ class LoopContext:
     # **独立字段**：不得折入 `notes` / `summary_*` —— 失败教训的语义与命中笔记、压缩摘要均不同，
     # 折入会改既有块的语义（见 change 0217 / ADR-0207）。
     failure_lessons: str = ""
+    # 本会话待投递的**后台任务完成通知**块（轮首一次性取用；缺省空 ⇒ 不注入）。
+    # **独立字段**：不得折入 `notes` / `failure_lessons` —— 通知是瞬态协调信号，不是知识
+    # （见 change 0270 / ADR-0260）。
+    notices: str = ""
     # 本轮 token 预算（缺省 `0` = **未接线**）。唯一消费者是 planner 的区块配额
     # （`context.plan_blocks`）⇒ 推断期把「记忆」份额传给装配器 `build(budget=…)`。
     # 缺省 `0` ⇒ 不产出配额 ⇒ planner 沿用其既有字面预算（change 0201 / ADR-0191）。

@@ -650,6 +650,10 @@ class LLMPlanner:
         # 也不折入「相关笔记」（语义不同）。
         if ctx.failure_lessons.strip():
             blocks.append("既往失败教训：\n" + ctx.failure_lessons.strip())
+        # 后台任务完成通知：轮首一次性投递的**独立块**（change 0270 / ADR-0260）—— 缺省空
+        # ⇒ 不产块、提示词逐字不变；不折入其他块（瞬态协调信号，非知识）。
+        if ctx.notices.strip():
+            blocks.append("后台任务通知：\n" + ctx.notices.strip())
         skills = self._skill_hints(self._task(ctx), ctx.session_id)
         if skills:
             blocks.append("可用技能：\n" + "\n".join(_format_skill_hint(s) for s in skills))

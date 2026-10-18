@@ -20,7 +20,8 @@ Orchestrator（L3.5）
 ├── StateMachine      任务状态机：状态转移规则，防跑偏/死循环
 ├── SubtaskDecomposer 子任务拆解器：大目标 → 分步 Todo，逐步校验
 ├── MultiAgentRouter  多 Agent 协同：能力匹配 + 消息协议交接
-└── ProgressTracker   进度与校验：每步完成校验后再推进
+├── ProgressTracker   进度与校验：每步完成校验后再推进
+└── BackgroundAgentRegistry 后台子 Agent：非阻塞派发 + 按会话完成通知（change 0270）
 ```
 
 ---
@@ -116,6 +117,24 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
 - 同优先级按入队序（FIFO）稳定执行；priority 缺省时取默认值。
 - 优先级仅在同波次就绪子任务间生效，跨波次仍遵守 DAG 拓扑序。
 
+### 3.7 后台委托与完成通知（change `0270`／ADR-0260）
+
+- **注册表归编排层**：`core/orchestration/background.py::BackgroundAgentRegistry` 管理的是
+  **子 Agent 的 loop**（`spawn` → `asyncio.Task`），与 L1 `ProcessRegistry`（OS 进程）语义分离。
+  `spawn` 立即返回 `task_id`；任务强引用保存在注册表直至终态。
+- **状态机**：`running → done | failed | cancelled`（不可逆）。子 Agent 抛错 ⇒ `failed`，`error`
+  只记**异常类型名**；`LoopResult.failed=True` ⇒ `failed`；取消同步落 `cancelled`。每个终态都
+  产生一条通知。
+- **完成通知**：按**会话**入界（每会话 32 条，丢最旧），`drain_notices` / `render_notices` 为
+  **一次性取走**；主 loop 经 `notices_consult` 在轮首取用，planner 出「后台任务通知：」独立块。
+  `tools.tasks` 只读清单，**不**清空通知。
+- **有界**：运行中任务 8（超限 `BACKGROUND_TASKS_FULL`，不排队）；单轮渲染 10 条；单行 400 字符；
+  单任务保留回复 4000 字符。
+- **注入面**：`tools.delegate` 的 `background` 缺省 `false`（阻塞语义逐字不变）；`tools.tasks`
+  与通知钩子**只挂主工具面 / 主 loop**，子 Agent 结构上不可见（不可再委托、不可窥视清单）。
+- **权限**：`tools.tasks` 由 `PolicyEngine` 按**字面量工具 id** 判 `read`；`tasks` 词元/前缀
+  不放宽（deny-by-default 纪律）。
+
 ---
 
 ## 4. 与 loop 的关系
@@ -140,6 +159,7 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
 | 计划为空 | 直接 FAILED（不因空标准视为通过而判 DONE） |
 | 检测到死循环 | 触发重拆（注入"换策略"提示）；预算耗尽转 FAILED |
 | 交接目标 Agent 不可用 | 降级到备用 Agent 或转为人工审批 |
+| 后台任务已达运行上限 | `BACKGROUND_TASKS_FULL` 结构化拒绝（不排队；change 0270） |
 
 ---
 

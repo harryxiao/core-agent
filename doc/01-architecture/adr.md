@@ -9603,6 +9603,59 @@ Python 代码并重打包。
 （块序列 / 行内 flow / 标量；锚点、多文档、块标量 `|` / `>` 不支持）；⑧ `turn_after` 在 trace
 封口前执行 ⇒ 慢钩子延迟本轮遥测导出。
 
+## ADR-0260：后台子 Agent、完成通知与模型侧任务清单（change 0270 / 台账 E206）
+
+**背景**：`tools.delegate` 只有**阻塞**语义 —— 子 Agent 跑完前主循环不能推进；结果只在本轮
+工具结果里可见，跨轮后**彻底丢失**；模型无法自检「刚才派出去的任务怎么样了」。对照
+claude-code 的「后台任务 + 完成推回」，core-agent 缺三件事：非阻塞派发、下一轮可见的完成通知、
+只读任务清单。
+
+**决策**：
+
+- **D1 注册表归 L4**：`BackgroundAgentRegistry` 放 `core/orchestration/background.py` —— 管理的是
+  **子 Agent 的 loop**（跨边界能力），不是 OS 进程；与 L1 的 `ProcessRegistry` 语义分离。
+  组合根在主工具面注册 `tools.tasks`；子 Agent 的 provider 由 `_agent_tools()` 独立构造，
+  **结构上**既无 `tools.delegate` 也无 `tools.tasks`。
+- **D2 完成通知走轮首独立块**：`LoopContext.notices` + `DefaultLoop(notices_consult=...)`
+  （入参 = 会话标识），planner 出「后台任务通知：」独立块。**不**新增 `LoopEvent`（UI 可见 ≠
+  模型可见），**不**写记忆（瞬态协调信号不是知识）。缺省 `None` ⇒ 零调用、`notices` 恒空、
+  提示词**逐字不变**。
+- **D3 一次性 + 按会话**：`drain_notices(session_id)` 取走即清；`tools.tasks` 只读状态、
+  **不**清空通知。两条消费面分离。
+- **D4 有界**：运行中任务 8（超限结构化拒绝、不排队）；每会话待投递通知 32（丢最旧）；
+  单轮渲染 10 条 / 单行 400 字符；单任务回复保留 4000 字符。
+- **D5 终态与失败面**：`running → done | failed | cancelled` 不可逆；子 Agent 异常只记
+  **异常类型名**（不回传任意异常正文）；`LoopResult.failed=True` ⇒ failed；取消同步落终态并
+  仍产生通知。注册表强引用 `asyncio.Task` 直至终态（避免「异常从未取回」告警）。
+- **D6 权限：字面量工具 id 豁免**：`PolicyEngine` 对 `tools.tasks` 精确判 read；**不**把
+  `tasks` 加入只读词元（否则未来含该词元的动作会静默降级，破坏 deny-by-default）。
+- **D7 默认行为不变**：`background` 缺省 false ⇒ 阻塞路径逐字不变；无新配置键、无新依赖；
+  `tools.tasks` 因 `task:read` 不在 `_DEFAULT_EXPOSED_COEFFEXTS` 而**不**进 MCP 默认暴露面。
+
+**规格**：`orchestration` **ADDED**「后台委托与完成通知」（7 scen）、`loop` **ADDED**「轮首通知注入」
+（3 scen）、`permission` **MODIFIED**「分级权限体系」（+字面量 `tools.tasks` 豁免 +2 scen）。
+`openspec validate --all` 32/0（归档前）/ 31/0（归档后）。
+
+**测试**：新增 `tests/test_background_agents.py` **21 例**（立即返回 / 终态 / 异常不泄正文 /
+取消留痕 / 上限与名额回收 / 通知一次性 / 会话隔离 / 每会话上界 / 渲染上界 / `notices` 缺省 /
+取用入参与降级 / planner 独立块与逐字锚 / 块序 / `background` 工具路径 / 超限结构化失败 /
+缺省阻塞不变 / 清单含未知 id / 清单不清空通知 / 权限字面量豁免 / 子 Agent 不可见）。
+净 **+21**（2918 → **2959**）。反证 4/4：P1 `_delegate` 忽略 `background` ⇒ 立即返回用例
+**挂起超时**（`timeout 15` 退出码 124，非通过）；P2 `drain_notices` 不取走 ⇒ 一次性用例红；
+P3 通知按空串而非会话键 ⇒ 会话隔离 + 后台委托用例红；P4 planner 摘通知块 ⇒ 注入用例红。
+复原后 `md5sum` 一致（`runtime.py 46cd1763…` / `background.py 292f8301…` /
+`planner.py ec13d1cf…`）。四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、
+`pytest -q` **2959 passed**。
+
+**局限**：① **纯进程内** —— 不落盘、不跨重启恢复、不跨会话唤醒，进程退出即在途任务随事件循环
+取消（注册表提供 `cancel_all`，组合根当前未注册关闭钩子）；② **无轮内推送** —— 通知只在该会话
+下一轮轮首投递，运行中只能靠 `tools.tasks` 主动查；③ **上限为进程级**（不按会话）—— 单个会话
+可占满 8 个名额，其余会话得到结构化拒绝；④ 通知**取走即丢** —— `drain_notices` 后本轮若异常
+终止，该通知不再重投；⑤ 任务文本 / 回复仅在内存且有界（回复 4000 字符，清单返回同界截断）；
+⑥ **取消不回滚**子 Agent 已产生的副作用（可逆性仍归效应追踪）；⑦ `tools.tasks` 不进 MCP
+默认暴露面，外部 MCP 客户端不可查；⑧ 后台子 Agent 继承发起会话标识（与前台委托一致），
+其记忆写入与主会话同维度；⑨ `background` 无排队 / 优先级 / 重试语义。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9857,3 +9910,4 @@ Python 代码并重打包。
 | ADR-0257 | 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0258 | 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0259 | 02-modules/hooks.md, 02-modules/loop.md, 02-modules/memory.md, 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0260 | 02-modules/orchestration.md, 02-modules/loop.md, 02-modules/permission.md, 03-interfaces/orchestration-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
