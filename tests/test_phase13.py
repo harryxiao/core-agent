@@ -135,6 +135,8 @@ def test_build_runtime_assembles_all_deps(monkeypatch, tmp_path) -> None:
         "tools.process_kill",
         # 后台子 Agent 任务清单（change 0270 / ADR-0260）：生产工具面可达
         "tools.tasks",
+        # 后台任务重入队（change 0279 / ADR-0269）：生产工具面可达
+        "tools.task_retry",
         # 工具参数按需查询（change 0272 / ADR-0262）：生产工具面可达
         "tools.schema_read",
     }

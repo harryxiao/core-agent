@@ -129,6 +129,7 @@ from core.orchestration import (
     background_tasks_tool,
     plan_from_dict,
     plan_to_dict,
+    task_retry_tool,
 )
 from core.permission import PermissionGuard, SandboxManager, SandboxPolicy
 from core.pet.core import PetActivator, PetManager, PetSession
@@ -260,6 +261,12 @@ def _checkpoint_path() -> Path:
     """
     base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
     return base / "checkpoints.jsonl"
+
+
+def _background_state_path() -> Path:
+    """后台子 Agent 登记路径：$CORE_STATE_DIR（缺省 ~/.core/state）/background-tasks.json。"""
+    base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
+    return base / "background-tasks.json"
 
 
 def _memory_path() -> Path:
@@ -748,6 +755,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     resolver.register("network:outbound", True)
     resolver.register("agent:delegate", True)  # 委托能力：显式声明供默认暴露面识别（B7）
     resolver.register("task:read", True)  # 后台任务清单（只读；change 0270 / ADR-0260）
+    resolver.register("task:write", True)  # 后台任务重入队（需审批；change 0279 / ADR-0269）
     resolver.register("schema:read", True)  # 工具参数查询（只读；change 0272 / ADR-0262）
     tools = ToolProvider(
         coeffect_resolver=resolver, effect_tracker=effect_tracker, gate=guard, approver=approver
@@ -1170,7 +1178,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
 
     # 后台子 Agent（change 0270 / ADR-0260）：注册表先于主 loop 构造 —— 轮首通知取用闭包
     # 只注入主 loop（子 Agent / 神兽 / 宠物 loop 不接，与会话维度注入面同口径）。
-    background_tasks = BackgroundAgentRegistry()
+    # 元数据跨重启登记（change 0279 / ADR-0269）：重启后运行中任务记为 interrupted，
+    # 可由 `tools.tasks` 查询、`tools.task_retry` 显式重入队。
+    background_tasks = BackgroundAgentRegistry(state_path=_background_state_path())
 
     loop = DefaultLoop(
         causal_links=causal_links,
@@ -1406,6 +1416,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     # 模型侧任务清单（change 0270 / ADR-0260）：**只挂主工具面** —— 子 Agent 的 provider
     # 由 `_agent_tools()` 各自构造，结构上既不能起后台任务也查不到清单。
     tools.register(background_tasks_tool(registry=background_tasks))
+    # 重入队（change 0279 / ADR-0269）：按原任务正文重新路由；只挂主工具面，需审批。
+    tools.register(task_retry_tool(registry=background_tasks, match=agent_router.match))
 
     store = CheckpointStore(_checkpoint_path())  # 落盘：跨进程续跑/崩溃恢复可读
     checkpoints = CheckpointManager(store)

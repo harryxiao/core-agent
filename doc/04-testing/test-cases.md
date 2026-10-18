@@ -4502,3 +4502,34 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3043 passed**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0268 行（无跨进程锁 / 上限常量 / 不加密 /
 > 仅 task 入口 / done 口径有意分叉 / 无守护进程）。
+
+## 191. 后台子 Agent 跨重启登记与重入队（TC-BGPERSIST，change `0279`／ADR-0269，台账 E215）
+
+> 覆盖 `orchestration/spec.md`「后台任务跨重启登记与重入队」（ADDED，6 scen）。
+> 测试文件 `tests/test_background_persistence.py`（新，12 例）＋ `tests/test_phase13.py`
+> 生产工具清单补 `tools.task_retry`。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-BGPERSIST-01 | Scenario「终态跨重启可见」 | spawn → done → 新注册表读同文件 | `status=done`、`agent`/`task` 保留；`reply` 为空（不落盘）；文件 `0600`；`info()` 无 `session_id`（`test_terminal_status_restored_by_new_registry`） |
+| TC-BGPERSIST-02 | 默认纯内存 | `BackgroundAgentRegistry()` 无 `state_path` | 不产生任何 JSON 文件（`test_without_state_path_writes_nothing`） |
+| TC-BGPERSIST-03 | Scenario「登记损坏容忍」 | 文件写入 `{not json` | `UserWarning` 含文件名；登记为空（`test_corrupt_file_warns_once_and_starts_empty`） |
+| TC-BGPERSIST-04 | Scenario「登记有界」 | 文件含 5 条、`max_records=3` | 只保留最新 3 条（`test_entries_bounded_to_newest`） |
+| TC-BGPERSIST-05 | Scenario「登记不含密钥明文」 | 任务正文含 `sk-…` canary | 文件不含 canary、含 `<redacted>`（`test_secret_redacted_before_persist`） |
+| TC-BGPERSIST-06 | Scenario「重启把运行中任务标记为被中断」 | 落盘 `running` → 新注册表 | `interrupted`、`finished_at=None`、`error` 含「进程重启」；不占运行名额、不可取消、不重放通知（`test_running_task_becomes_interrupted_on_restart`） |
+| TC-BGPERSIST-07 | Scenario「重入队被中断的任务」 | failed 任务 + 可匹配子 Agent | 返回新 `task_id`/`running`；新任务收到原文与**原会话**；原任务终态不变（`test_retry_failed_task_spawns_new_task`） |
+| TC-BGPERSIST-08 | Scenario「运行中或已完成的任务拒绝重入队」 | running / done / 未知 id | 均 `ok=false`，不启动新任务（`test_retry_rejects_running_done_and_unknown`） |
+| TC-BGPERSIST-09 | 容量上限 | `max_running=1` 已被占 + 重入队 | `ok=false` 含「上限」（`test_retry_respects_running_capacity`） |
+| TC-BGPERSIST-10 | 跨重启重入队脱敏 | 手工文件含 canary 的 interrupted 任务 | 重入队收到的正文为 `REDACTED` 版本（`test_retry_uses_redacted_text_after_restart`） |
+| TC-BGPERSIST-11 | 注入面 | `build_runtime` 工具面 | 主工具面含 `tools.task_retry`；全部子 Agent loop 不含（`test_runtime_registers_retry_only_on_main_surface`） |
+| TC-BGPERSIST-12 | 权限 | `PolicyEngine.classify` | `tools.task_retry` + `task:write` 判 `HIGH_RISK`（`test_task_retry_classified_high_risk`） |
+
+> **口径**：落盘只含元数据（无 `reply`）；`task`/`error` 写读两侧脱敏；重启 `running → interrupted`
+> 是终态、不自动重执行；重入队按任务正文重新路由（不按持久化 `agent_id` 取 loop）。
+> **反证 3/3**：① 加载映射保留 `running` ⇒ TC-06 红；② 摘 `redact_secrets` ⇒ TC-05 红；
+> ③ 摘 `done` 守卫 ⇒ TC-08 红；复原 `md5sum` 一致（background.py）。
+> 规格：`orchestration` ADDED（6 scen）。`validate --all` 31/0（归档后）。
+> 测试净 **+12**（3043 → **3055**）。
+> 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3055 passed**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0269 行（多进程误标 / 64 条有界 /
+> 不恢复 reply / 脱敏后重入队 / 不加密）。

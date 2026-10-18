@@ -12,6 +12,7 @@ from .background import (
     BackgroundTaskInfo,
     background_tasks_tool,
     render_notice_lines,
+    task_retry_tool,
 )
 from .decomposer import Planner, SubtaskDecomposer, Verifier
 from .errors import OrchestrationError, OrchestrationErrorCode
@@ -68,4 +69,5 @@ __all__ = [
     "plan_from_dict",
     "plan_to_dict",
     "render_notice_lines",
+    "task_retry_tool",
 ]

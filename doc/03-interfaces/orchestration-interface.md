@@ -314,7 +314,7 @@ class BackgroundTaskInfo:
     task_id: str
     agent_id: str
     task: str                       # 委托任务文本（对外快照截断 120 字符）
-    status: str = "running"         # running / done / failed / cancelled（终态不可逆）
+    status: str = "running"         # running / done / failed / cancelled / interrupted（终态不可逆）
     started_at: float = 0.0
     finished_at: float | None = None
     reply: str = ""                 # 子 Agent 回复（保留上界 4000 字符）
@@ -324,7 +324,11 @@ class BackgroundTaskInfo:
         # 对模型暴露的只读快照：不含 session_id；task / reply 有界截断
 
 class BackgroundAgentRegistry:
-    def __init__(self, *, max_running: int = 8, notice_cap: int = 32)
+    def __init__(self, state_path: Path | str | None = None, *,
+                 max_running: int = 8, notice_cap: int = 32,
+                 max_records: int = 64)
+        # state_path 非空 ⇒ 元数据跨重启登记（0600 原子写、最多 max_records 条、
+        # 损坏容忍）；加载时 running → interrupted。缺省 None ⇒ 纯内存。
 
     def spawn(self, loop: LoopPlugin, task: str, *,
               agent_id: str, session_id: str = "") -> str
@@ -341,6 +345,12 @@ class BackgroundAgentRegistry:
 
 def render_notice_lines(tasks: list[BackgroundTaskInfo]) -> str
     # 最近 10 条、每任务一行、单行 ≤400 字符
+
+def task_retry_tool(*, registry: BackgroundAgentRegistry,
+                    match: Callable[[str], AgentProfile]) -> Tool
+    # tools.task_retry：只接受 interrupted / failed / cancelled；按任务正文重新路由
+    # 并 spawn 新任务（恢复原会话，原 task_id 终态不变）；running / done 拒绝；
+    # coeffect task:write、reversible=False、只挂主工具面
 ```
 
 **`tools.delegate` 参数面**：新增可选 `background: bool = false`。缺省/`false` ⇒ 既阻塞语义
@@ -349,7 +359,16 @@ def render_notice_lines(tasks: list[BackgroundTaskInfo]) -> str
 
 **`tools.tasks`（只读）**：schema `{action: "list" | "status", task_id?: string}`；
 `status` 未知 id 返回 `{task_id, found: false}`；coeffect `task:read`；只挂主工具面；
-查询**不**清空待投递通知。
+查询**不**清空待投递通知。重启后清单含 `interrupted` 任务（`reply` 为空）。
+
+**`tools.task_retry`（重入队）**：schema `{task_id: string}`；成功返回
+`{ok: true, task_id（新）, status: "running", agent, retried（原 id）}`；未知 id / running /
+done / 容量上限均 `{ok: false, error}`。词元判 `HIGH_RISK`（审批门）；coeffect `task:write`；
+只挂主工具面，子 Agent 不可见。
+
+**登记文件**：`$CORE_STATE_DIR/background-tasks.json`，
+`{version: 1, tasks: [{task_id, agent_id, task, status, started_at, finished_at,
+session_id, error}]}`；`task`/`error` 写读两侧经 `redact_secrets` 且有界；不落 `reply`。
 
 ---
 

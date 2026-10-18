@@ -10073,6 +10073,58 @@ change `0191` 起按 durability「崩溃恢复」只**呈现**未完成任务（
 自动续跑与人工 `--resume` 一致（最新态即真态），故两处扫描口径**有意分叉**；⑥ 不做守护
 进程 / cron / systemd 集成。
 
+## ADR-0269：后台子 Agent 跨重启登记与重入队（change 0279 / 台账 E215）
+
+**背景**：change `0270` 的后台委托注册表只在进程内：进程重启后 `tools.tasks` 清空，用户/模型
+既看不到「哪些后台任务随重启被中断」，也无法重新入队。对比报告把「后台任务跨重启可见」
+列为 P0 长任务缺口；`ProcessRegistry`（change `0259`）已为 OS 后台进程建立了「元数据落盘 +
+重启可见」先例，子 Agent 侧需要同等基座。
+
+**决策**：
+
+- **D1 生产始终登记、注册表默认纯内存**：runtime 以
+  `BackgroundAgentRegistry(state_path=$CORE_STATE_DIR/background-tasks.json)` 构造；
+  `state_path=None`（缺省）⇒ 不读写文件，既有直接构造与全部既有测试零变化。与
+  `ProcessRegistry` 同口径：**元数据登记**不改变执行语义、不放宽权限，故不设配置开关；
+  有后果的动作（重入队）由独立工具 + 审批门控制。
+- **D2 有界原子登记**：`{"version": 1, "tasks": [...]}`，最多保留最新 **64** 条；写入用同目录
+  临时文件 + `fsync` + `os.replace`，`0600`；写失败告警一次（仅本进程内有效），不阻断主循环。
+  加载遇坏 JSON / 结构不符 ⇒ 告警一次并按空登记处理；单条非法记录跳过。运行中上限仍是 8，
+  `interrupted` 不占名额。
+- **D3 字段与脱敏**：落盘 `task_id / agent_id / task / status / started_at / finished_at /
+  session_id / error`；`task` 与 `error` **写读两侧**都经 `redact_secrets` 并有界
+  （120 / 200 字符）。`session_id` 落盘以恢复重入队归属，但不进 `info()`（对模型不可见）。
+  **不落 `reply`**：完成结果已由完成通知投递，避免子 Agent 输出正文长期留在状态文件。
+- **D4 重启映射**：加载时 `running → interrupted`（`finished_at=None`，
+  `error="进程重启导致中断"`）。该状态是终态：不可取消（无在途 `asyncio.Task`）、不重放完成
+  通知（否则每次启动都会重复提醒），可见性由 `tools.tasks` 提供。
+- **D5 重入队 `tools.task_retry`**：只接受 `interrupted / failed / cancelled`；`running`
+  （仍在执行）与 `done`（已完成）结构化拒绝；按登记的任务正文**重新路由**子 Agent（不按
+  `agent_id` 直接取 loop，配置可能变化），`spawn` 新任务并返回新 `task_id`，恢复原会话归属；
+  达到运行中上限返回 `BACKGROUND_TASKS_FULL`。工具词元 `{task, retry}` 不命中只读/写词元 ⇒
+  `HIGH_RISK`（审批门），coeffect `task:write` 显式注册、`reversible=False`；只挂主工具面。
+
+**反证 3/3（均实测转红后复原，`md5sum` 一致）**：① 加载映射改为保留 `running` ⇒ 重启可见性
+用例红；② 摘掉 `_info_record` / `_restore_info` 的 `redact_secrets` ⇒ 密钥 canary 落盘用例红；
+③ 摘掉 `done` 状态守卫 ⇒ 已完成任务被重入队，用例红。
+
+**规格**：`orchestration` **ADDED**「后台任务跨重启登记与重入队」（6 scen）。
+`validate --all` **31/0**（归档后）。
+
+**测试**：新增 `tests/test_background_persistence.py` **12 例**（终态跨重启恢复 + 0600 +
+不落 reply；无路径纯内存；损坏容忍；条目有界；密钥脱敏；`running → interrupted` 且不占名额/
+不可取消/不重放通知；失败任务重入队新 id + 会话归属 + 原终态不变；running/done/未知 id 拒绝；
+重入队容量上限；跨重启使用脱敏正文；runtime 只挂主工具面；词元判 `HIGH_RISK`）。
+`tests/test_phase13.py` 工具清单补 `tools.task_retry`。净 **+12**（3043 → **3055**）。
+四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q`
+**3055 passed**。
+
+**局限**：① 多进程共用 `CORE_STATE_DIR` 时，另一进程启动会把本进程运行中的任务误标
+`interrupted`（单用户 CLI 视为重启；跨进程运行锁不在本 change 范围）；② 登记最多 64 条，
+被淘汰任务不再可查/可重入队；③ 重启后不恢复 `reply`，`tools.tasks` 的 `reply` 为空是预期；
+④ 跨重启重入队使用脱敏后的任务正文，密钥形态子串会被 `REDACTED` 替换（原值本就不应入状态
+文件）；⑤ 状态文件按文件系统权限保护，不加密。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10336,3 +10388,4 @@ change `0191` 起按 durability「崩溃恢复」只**呈现**未完成任务（
 | ADR-0266 | 02-modules/memory.md, 04-testing/test-cases.md, 00-product/requirements.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0267 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0268 | 02-modules/orchestration.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0269 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

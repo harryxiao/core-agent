@@ -12,16 +12,24 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import math
+import os
 import time
 import uuid
+import warnings
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
 from core.loop import LoopPlugin
+from core.memory.extract import redact_secrets
 from core.tools import Tool, ToolDef
 
 from .errors import OrchestrationError, OrchestrationErrorCode
+from .models import AgentProfile
 
 DEFAULT_MAX_RUNNING = 8
 DEFAULT_NOTICE_CAP = 32
@@ -31,6 +39,13 @@ _NOTICE_LINE_CHARS = 400
 _TASK_TEXT_CHARS = 120
 _REPLY_PREVIEW_CHARS = 200
 _REPLY_STORE_CHARS = 4000
+
+# 跨重启登记（change 0279 / ADR-0269）：条目有界、错误文本有界。
+_MAX_PERSISTED = 64
+_PERSIST_VERSION = 1
+_ERROR_CHARS = 200
+_INTERRUPTED_ERROR = "进程重启导致中断"
+_STATUSES = frozenset({"running", "done", "failed", "cancelled", "interrupted"})
 
 TASKS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -43,6 +58,17 @@ TASKS_SCHEMA: dict[str, Any] = {
         "task_id": {"type": "string", "description": "action=status 时必填"},
     },
     "required": ["action"],
+}
+
+TASK_RETRY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {
+            "type": "string",
+            "description": "要重入队的后台任务 id（interrupted / failed / cancelled）",
+        },
+    },
+    "required": ["task_id"],
 }
 
 
@@ -87,20 +113,96 @@ def render_notice_lines(tasks: list[BackgroundTaskInfo]) -> str:
     return "\n".join(lines)
 
 
+def _info_record(info: BackgroundTaskInfo) -> dict[str, Any]:
+    """可持久化元数据：任务正文与错误经脱敏并有界；**不**落回复正文（change 0279）。"""
+    return {
+        "task_id": info.task_id,
+        "agent_id": info.agent_id,
+        "task": redact_secrets(info.task)[:_TASK_TEXT_CHARS],
+        "status": info.status,
+        "started_at": info.started_at,
+        "finished_at": info.finished_at,
+        "session_id": info.session_id,
+        "error": redact_secrets(info.error)[:_ERROR_CHARS],
+    }
+
+
+def _restore_info(item: object) -> BackgroundTaskInfo | None:  # noqa: PLR0911 — 逐字段校验多早退
+    """校验并恢复一条登记；非法条目跳过（不抛错）；``running`` 映射为 ``interrupted``。"""
+    if not isinstance(item, dict):
+        return None
+    record = cast(dict[str, Any], item)
+    task_id = record.get("task_id")
+    agent_id = record.get("agent_id")
+    task = record.get("task")
+    status = record.get("status")
+    started_at = record.get("started_at")
+    finished_at = record.get("finished_at")
+    session_id = record.get("session_id", "")
+    error = record.get("error", "")
+    if not isinstance(task_id, str) or not task_id:
+        return None
+    if not isinstance(agent_id, str) or not agent_id:
+        return None
+    if not isinstance(task, str) or not isinstance(status, str) or status not in _STATUSES:
+        return None
+    if (
+        not isinstance(started_at, (int, float))
+        or isinstance(started_at, bool)
+        or not math.isfinite(started_at)
+    ):
+        return None
+    if finished_at is not None and (
+        not isinstance(finished_at, (int, float))
+        or isinstance(finished_at, bool)
+        or not math.isfinite(finished_at)
+    ):
+        return None
+    if not isinstance(session_id, str) or not isinstance(error, str):
+        return None
+    if status == "running":  # 进程已不在此处 ⇒ 在途任务按被中断处理（不重放通知）
+        status = "interrupted"
+        finished_at = None
+        error = _INTERRUPTED_ERROR
+    return BackgroundTaskInfo(
+        task_id=task_id,
+        agent_id=agent_id,
+        # 读侧同样脱敏：旧格式 / 手工编辑的文件也不得把密钥形态正文重新带进内存。
+        task=redact_secrets(task)[:_TASK_TEXT_CHARS],
+        status=status,
+        started_at=float(started_at),
+        finished_at=float(finished_at) if finished_at is not None else None,
+        error=redact_secrets(error)[:_ERROR_CHARS],
+        session_id=session_id,
+    )
+
+
 class BackgroundAgentRegistry:
-    """有界的后台委托注册表：spawn 立即返回，终态不可变，通知按会话堆积。"""
+    """有界的后台委托注册表：spawn 立即返回，终态不可变，通知按会话堆积。
+
+    ``state_path`` 非空时元数据跨重启登记（change 0279 / ADR-0269）：写入 0600 原子替换，
+    最多保留最新 ``max_records`` 条；加载时把落盘的 ``running`` 映射为 ``interrupted``。
+    缺省 ``None`` ⇒ 纯内存（既有构造零变化）。
+    """
 
     def __init__(
         self,
+        state_path: Path | str | None = None,
         *,
         max_running: int = DEFAULT_MAX_RUNNING,
         notice_cap: int = DEFAULT_NOTICE_CAP,
+        max_records: int = _MAX_PERSISTED,
     ) -> None:
+        self._path = Path(state_path) if state_path is not None else None
         self._max_running = max_running
         self._notice_cap = notice_cap
+        self._max_records = max_records
         self._infos: dict[str, BackgroundTaskInfo] = {}
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._notices: dict[str, deque[BackgroundTaskInfo]] = {}
+        self._warned_persist = False
+        if self._path is not None:
+            self._load()
 
     @property
     def notice_cap(self) -> int:
@@ -135,6 +237,7 @@ class BackgroundAgentRegistry:
         running = asyncio.create_task(self._run(loop, task, session_id))
         self._tasks[task_id] = running
         running.add_done_callback(lambda done: self._finalize(task_id, done))
+        self._save()
         return task_id
 
     def get(self, task_id: str) -> BackgroundTaskInfo | None:
@@ -229,6 +332,76 @@ class BackgroundAgentRegistry:
             self._notices[info.session_id] = found
         queue: deque[BackgroundTaskInfo] = found
         queue.append(info)
+        self._save()
+
+    # ---- 跨重启登记（change 0279 / ADR-0269） ----
+
+    def _load(self) -> None:
+        """加载登记文件：缺失 ⇒ 空；损坏 ⇒ 告警并空；``running`` ⇒ ``interrupted``。"""
+        path = self._path
+        if path is None:
+            return
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError):
+            self._warn_corrupt()
+            return
+        if not isinstance(raw, dict):
+            self._warn_corrupt()
+            return
+        items = cast(dict[str, Any], raw).get("tasks")
+        if not isinstance(items, list):
+            self._warn_corrupt()
+            return
+        restored = [
+            info for item in cast(list[Any], items) if (info := _restore_info(item)) is not None
+        ]
+        restored.sort(key=lambda info: info.started_at)
+        for info in restored[-self._max_records :]:
+            self._infos[info.task_id] = info
+
+    def _save(self) -> None:
+        """整体重写登记文件：同目录临时文件 + fsync + 原子替换（失败告警一次）。"""
+        path = self._path
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            newest = sorted(self._infos.values(), key=lambda info: info.started_at)
+            payload = {
+                "version": _PERSIST_VERSION,
+                "tasks": [_info_record(info) for info in newest[-self._max_records :]],
+            }
+            tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, ensure_ascii=False)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp, path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    tmp.unlink(missing_ok=True)
+                raise
+        except OSError:
+            self._warn_persist()
+
+    def _warn_corrupt(self) -> None:
+        assert self._path is not None
+        warnings.warn(
+            f"后台任务登记文件损坏，按空登记处理: {self._path.name}",
+            stacklevel=3,
+        )
+
+    def _warn_persist(self) -> None:
+        if self._warned_persist:
+            return
+        self._warned_persist = True
+        name = self._path.name if self._path is not None else ""
+        warnings.warn(f"后台任务登记无法落盘（仅本进程内有效）: {name}", stacklevel=2)
 
 
 def background_tasks_tool(*, registry: BackgroundAgentRegistry) -> Tool:
@@ -253,6 +426,58 @@ def background_tasks_tool(*, registry: BackgroundAgentRegistry) -> Tool:
             schema=TASKS_SCHEMA,
             coeffects=["task:read"],
             reversible=True,
+            timeout_s=10.0,
+        ),
+        handler=handler,
+    )
+
+
+def task_retry_tool(
+    *, registry: BackgroundAgentRegistry, match: Callable[[str], AgentProfile]
+) -> Tool:
+    """重入队工具：按登记的任务正文重新路由并启动新后台任务（需审批）。"""
+
+    def handler(task_id: str) -> dict[str, Any]:  # noqa: PLR0911 — 逐种拒绝原因早退
+        info = registry.get(task_id)
+        if info is None:
+            return {"ok": False, "error": f"未登记的后台任务: {task_id}"}
+        if info.status == "running":
+            return {"ok": False, "error": f"任务仍在运行，无需重入队: {task_id}"}
+        if info.status == "done":
+            return {"ok": False, "error": f"任务已完成，不自动重入队: {task_id}"}
+        try:
+            profile = match(info.task)
+        except OrchestrationError as exc:
+            return {"ok": False, "error": f"无匹配子 Agent: {exc}"}
+        if profile.loop is None:
+            return {"ok": False, "error": f"子 Agent {profile.agent_id} 无可用 loop"}
+        try:
+            new_id = registry.spawn(
+                profile.loop,
+                info.task,
+                agent_id=profile.agent_id,
+                session_id=info.session_id,
+            )
+        except OrchestrationError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": True,
+            "task_id": new_id,
+            "status": "running",
+            "agent": profile.agent_id,
+            "retried": task_id,
+        }
+
+    return Tool(
+        definition=ToolDef(
+            tool_id="tools.task_retry",
+            description=(
+                "重入队被中断 / 失败 / 取消的后台子 Agent 任务（需审批）；"
+                "按原任务正文重新路由并返回新 task_id"
+            ),
+            schema=TASK_RETRY_SCHEMA,
+            coeffects=["task:write"],
+            reversible=False,
             timeout_s=10.0,
         ),
         handler=handler,

@@ -21,7 +21,8 @@ Orchestrator（L3.5）
 ├── SubtaskDecomposer 子任务拆解器：大目标 → 分步 Todo，逐步校验
 ├── MultiAgentRouter  多 Agent 协同：能力匹配 + 消息协议交接
 ├── ProgressTracker   进度与校验：每步完成校验后再推进
-├── BackgroundAgentRegistry 后台子 Agent：非阻塞派发 + 按会话完成通知（change 0270）
+├── BackgroundAgentRegistry 后台子 Agent：非阻塞派发 + 按会话完成通知 + 跨重启登记（change 0270/0279）
+├── task_retry_tool   后台任务重入队：interrupted/failed/cancelled → 新任务（change 0279）
 └── AutoResumeState 自动续跑退避账本：跨进程有界尝试（change 0278）
 ```
 
@@ -152,6 +153,23 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
 - **显式入口不受限**：`core-agent task --resume-all` 续跑全部未完成任务，忽略配置开关、退避与
   次数上限（运营商显式重试），仍记录尝试并在成功时清零。
 - **默认关闭测试锚**：关闭时不读取/不执行 `pending_resumes()`，启动呈现逐字不变。
+
+### 3.9 后台任务跨重启登记与重入队（change `0279`／ADR-0269）
+
+- **落盘**：注册表接受 `state_path`（runtime 注入 `$CORE_STATE_DIR/background-tasks.json`；
+  缺省 `None` ⇒ 纯内存，既有构造零变化）。`spawn` 与每次落终态整体重写：同目录临时文件 +
+  `fsync` + `os.replace`，`0600`；最多保留最新 **64** 条；写失败告警一次。
+- **字段**：`task_id / agent_id / task / status / started_at / finished_at / session_id / error`。
+  `task`/`error` **写读两侧**经 `redact_secrets` 并有界（120 / 200 字符）；**不落 `reply`**；
+  `session_id` 只在文件中（`info()` 对模型仍不可见）。
+- **重启映射**：加载时 `running → interrupted`（`finished_at=None`，`error="进程重启导致中断"`）。
+  `interrupted` 是终态：不占运行名额、不可取消、不重放完成通知；`tools.tasks` 可查。
+- **重入队**：`tools.task_retry(task_id)` 只接受 `interrupted / failed / cancelled`；按登记正文
+  重新 `MultiAgentRouter.match` 后 `spawn` 新任务（恢复原会话，原 `task_id` 终态不变）；
+  `running` / `done` 结构化拒绝；容量上限返回 `BACKGROUND_TASKS_FULL`。
+- **权限**：词元 `{task, retry}` 无只读/写词元 ⇒ `HIGH_RISK`（审批门）；coeffect
+  `task:write` 显式注册、`reversible=False`；只挂主工具面。
+- **一致性**：文件损坏 ⇒ 告警一次并按空登记处理，不阻断启动/主循环。
 
 ---
 
