@@ -6,7 +6,7 @@ CLI 运维命令面（cli-ops）为 core-agent 提供运维命令集与启动参
 ## Requirements
 
 ### Requirement: 运维命令集
-系统 SHALL 提供统一的 CLI 命令集，覆盖六组：生命周期（start / stop / restart / kill）、状态（status / doctor / logs / version / help）、资产（install / uninstall / list / info）、连接（mcp add / mcp remove / mcp list）、安全（auth / permission-mode）、网关（gateway）；并 SHALL 提供一次性运维子命令：`memory maintain`（触发记忆压实与遗忘归档）、`evolve run`（强制跑一轮进化冷路径）、`rag ingest <path>`（知识文档摄取建索引）、`rag search <query>`（语义检索 top-k 片段）、`rag ask <query>`（检索片段注入生成）、`memory repair-keyfacts`（修复失效关键事实：按会话重抽 + 清理旧条目；`--dry-run` 只报告）；以上均不改变运行态、不启动常驻进程。
+系统 SHALL 提供统一的 CLI 命令集，覆盖六组：生命周期（start / stop / restart / kill）、状态（status / doctor / logs / version / help）、资产（install / uninstall / list / info）、连接（mcp add / mcp remove / mcp list）、安全（auth / permission-mode）、网关（gateway）；并 SHALL 提供一次性运维子命令：`memory maintain`（触发记忆压实与遗忘归档）、`memory list`（列出记忆条目：id / layer / kind / source / session / importance / ts / 摘要；`--limit N` 只限制展示条数，`0` 表示全部）、`memory get <id>`（打印单条全文与元数据，内容经脱敏后回显）、`memory delete <id>`（删除单条记忆：**先**把该条追加到 `$CORE_STATE_DIR/memory-deleted.jsonl`（0600）作为持久备份，备份失败即 fail-closed 不删除）、`evolve run`（强制跑一轮进化冷路径）、`rag ingest <path>`（知识文档摄取建索引）、`rag search <query>`（语义检索 top-k 片段）、`rag ask <query>`（检索片段注入生成）、`memory repair-keyfacts`（修复失效关键事实：按会话重抽 + 清理旧条目；`--dry-run` 只报告）；以上均不改变运行态、不启动常驻进程。
 
 #### Scenario: 生命周期命令
 - **GIVEN** core-agent 进程运行中
@@ -22,6 +22,24 @@ CLI 运维命令面（cli-ops）为 core-agent 提供运维命令集与启动参
 - **GIVEN** 记忆中存在陈旧且低价值的 L2 episodic 条目
 - **WHEN** 执行 `memory maintain`
 - **THEN** 装配运行时后触发一次记忆维护（压实 + 遗忘归档），打印归档条数；命令为一次性动作，不改变运行态、不启动常驻进程
+
+#### Scenario: 记忆检视命令
+- **GIVEN** 记忆中存在若干条目
+- **WHEN** 执行 `memory list` / `memory list --limit N` / `memory get <id>`
+- **THEN** `list` 按固定字段顺序逐条打印；`--limit N`（`0` = 全部）只限制展示条数并在截断时提示总数；
+  `get` 打印该条元数据与全文；两者输出均经 `redact_secrets` 脱敏，不回显密钥形态；
+  未知 id 时 `get` 以退出码 1 结束；命令为一次性动作，不改变运行态、不启动常驻进程
+
+#### Scenario: 记忆删除命令
+- **GIVEN** 记忆中已存在 id 为 `<id>` 的条目
+- **WHEN** 执行 `memory delete <id>`
+- **THEN** 删除前把该条 JSON 追加到 `$CORE_STATE_DIR/memory-deleted.jsonl`（0600），
+  再调用 `MemoryStore.discard` 删除并打印备份路径；备份写入失败时不删除任何条目并以退出码 1 结束
+
+#### Scenario: 删除未知条目
+- **GIVEN** 记忆中不存在 id 为 `<id>` 的条目
+- **WHEN** 执行 `memory delete <id>`
+- **THEN** 以退出码 1 结束并提示未找到，**不落备份**、不改变记忆
 
 #### Scenario: 关键事实修复命令
 - **GIVEN** 记忆中遗留 change `0173` 修复前判据产生的失效关键事实（`ref` 非 `coeffect:` 形态且取值已被抹）
@@ -59,6 +77,7 @@ CLI 运维命令面（cli-ops）为 core-agent 提供运维命令集与启动参
 - **GIVEN** core-agent 运行中
 - **WHEN** 执行 auth / permission-mode / gateway
 - **THEN** 对应鉴权 / 设置权限模式 / 启停本地服务网关
+
 ### Requirement: 启动参数映射
 系统 SHALL 建立启动参数与配置项的一一对应：优先级链为 CLI flag > env > config.yaml > 默认值，映射关系由单一真源 ConfigSpec 声明（`--foo.bar=value ↔ config.foo.bar ↔ CORE_AGENT_FOO_BAR`）。
 
@@ -71,6 +90,7 @@ CLI 运维命令面（cli-ops）为 core-agent 提供运维命令集与启动参
 - **GIVEN** 一个配置项已由 ConfigSpec 声明
 - **WHEN** 通过 CLI flag（如 `--foo.bar=value`）或 env（如 `CORE_AGENT_FOO_BAR`）指定
 - **THEN** 二者映射到同一 config.foo.bar 配置项，无第二真源
+
 ### Requirement: 会话命令族与交互入口续聊
 系统 SHALL 提供会话命令族：`session create`（新建会话并返回标识，登记于跨进程共享注册表）、
 `session list`（枚举已登记会话：标识 + 模式）、`session show <session_id>`（按追加次序打印该会话的
@@ -132,6 +152,7 @@ SHALL 取**时间戳最新**的检查点重建续跑状态（与崩溃恢复取�
 - **GIVEN** 同一任务的多个检查点，其落盘次序与时间戳次序不一致
 - **WHEN** 执行 `core-agent task --resume <task-id>`
 - **THEN** 取时间戳最新的检查点重建续跑状态（与崩溃恢复 restore 同口径）
+
 ### Requirement: 自检诊断（`doctor`）与运行状态（`status`）
 
 CLI SHALL 提供 `doctor` 与 `status` 两个**只读**运维子命令：二者 SHALL NOT 改变运行态、SHALL NOT 启动
@@ -175,6 +196,7 @@ SHALL NOT 各写一份检查逻辑。该诊断源 SHALL 经**依赖注入**取�
 - **GIVEN** 存在若干会话与工具
 - **WHEN** 执行 `core-agent status`
 - **THEN** 打印会话数 / 工具数 / 已安装资产数 / MCP 端点数 / 模型标识 / 循环预算，退出码为 `0`
+
 ### Requirement: 诊断视图列对齐
 
 诊断源的**全部**列表型视图 —— `render_sessions` / `render_config` / `render_mcp` / `render_skills` /

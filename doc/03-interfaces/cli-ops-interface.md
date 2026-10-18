@@ -136,7 +136,7 @@ def render_sessions / render_config / render_mcp / render_skills / render_notes(
 
 ---
 
-## 6. 一次性运维动作面（`memory <sub>`，change `0174` / ADR-0165）
+## 6. 一次性运维动作面（`memory <sub>`，change `0174` / ADR-0165；检视与纠错增补 change `0262` / ADR-0252）
 
 `memory` 子命令由 `entry._memory()` 经**分派表** `_MEMORY_COMMANDS` 路由到具体动作 ——
 每个动作的签名恒为 `(memory, args) -> int`（与 `rag` / `notes` 的 `handlers` 同形）：
@@ -144,6 +144,9 @@ def render_sessions / render_config / render_mcp / render_skills / render_notes(
 | 子命令 | 退出码 | 产出 |
 |---|---|---|
 | `core-agent memory maintain` | 恒 `0` | 压实 + 遗忘，打印归档条数 |
+| `core-agent memory list [--limit N]` | 恒 `0` | 逐条打印 id / layer / kind / source / session / importance / ts / 单行摘要；`--limit` 只限制展示（缺省 50，`0` = 全部），截断时提示总数 |
+| `core-agent memory get <id>` | 命中 `0`；未找到 `1` | 元数据 + 全文（`redact_secrets` 脱敏后回显） |
+| `core-agent memory delete <id>` | 成功 `0`；未找到 / 备份失败 `1` | 先追加备份到 `$CORE_STATE_DIR/memory-deleted.jsonl`（0600），再 `MemoryStore.discard`；打印备份路径 |
 | `core-agent memory repair-keyfacts [--dry-run]` | 恒 `0` | `MemoryStore.repair_stale_key_facts`，打印报表 |
 
 契约要点：
@@ -158,4 +161,12 @@ def render_sessions / render_config / render_mcp / render_skills / render_notes(
 - **备份「一次操作**恰好一份**」**（change `0175`／ADR-0166）：跨会话的待删条目**合并**写入**一份**
   `memory.repair.<时间戳>.jsonl`（`backup_path` 即该文件，**不再**每会话各落一份、不覆盖）；备份**写入失败**
   ⇒ **跨会话一并阻断**（整次操作**一条都不删**）。
+- **检视面只读、复用公开 API**（change `0262`）：`list` / `get` 走 `MemoryStore.audit(None)`（冷热并集），
+  不新增 `tools.memory` 工具面、不读私有 `_all_entries`；`audit()` 全量加载，`--limit` 只截断**展示**。
+  两命令的输出（摘要 / 全文）均经 `redact_secrets` —— 与「密钥只引用不读取、绝不进日志」同口径。
+- **删除的持久可逆性与 fail-closed**（change `0262`）：`discard` 的可逆效应随 CLI 进程退出即失效，
+  故删除前把条目 JSON **追加**到 `memory-deleted.jsonl`（`O_APPEND` 单次写、0600）；备份写入失败
+  ⇒ **一条不删**、退出码 1。未知 id ⇒ 退出码 1 且**不落备份**。无 `restore` 子命令（靠备份人工重放）。
+- **运行实例不感知 CLI 删除**：CLI 与常驻实例各自持有 store；删除只改磁盘，运行实例可能以内存快照
+  短暂「复活」条目，重启后一致（与 `maintain` / `repair-keyfacts` 同构的已知限制）。
 

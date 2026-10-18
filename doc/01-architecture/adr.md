@@ -9274,6 +9274,45 @@ stale_hits=0`。全量基线 2876 → **2879 passed**。反证 4/4：① 摘除 
 precision@5（单 gold 下上限仅 0.2）；④ recall 阈值留 1 条查询余量 ⇒ 单条 gold 丢失不会触发
 召回红（但通常触发 stale_hits 红）；⑤ 未覆盖长任务端到端成功率（需真实模型与预算，另立评测）。
 
+## ADR-0252：记忆检视与纠错 CLI（change 0262 / 台账 E198）
+
+**背景**：记忆是核心资产，但运维面此前只有 `memory maintain` / `repair-keyfacts`：用户看不到
+系统存了什么、取不出单条全文、也无法删除一条错误记忆。对比审查（2026-10-18）把「缺用户纠错面」
+列为 P1 短板 —— 错误事实只能等自然遗忘（`_FORGET_THRESHOLD` 衰减），没有最直接的纠正手段。
+
+**决策**：
+
+- **D1 三个一次性子命令**：`memory list [--limit N]`、`memory get <id>`、`memory delete <id>`，
+  与既有 `maintain` / `repair-keyfacts` 同构（装配 runtime → 一次动作 → 打印 → 退出），不启动
+  常驻进程、不改变运行态。
+- **D2 `list` 的 `--limit` 只限制展示**：底层 `audit(None)` 恒全量加载（冷热并集）；缺省 50，
+  `0` = 全部，负数 / 非整数由 argparse 拒绝（退出码 2）。截断时输出「共 N 条」提示。字段顺序固定
+  （id / layer / kind / source / session / importance / ts / 单行摘要），便于脚本与目视。
+- **D3 `get` / `list` 输出经 `redact_secrets`**：先脱敏再截断（避免明文跨越截断边界），与
+  「密钥只引用不读取、绝不进日志/记忆」同源；不打印 `reuse_count` / `updated_at` 等内部字段。
+- **D4 删除「先备份、后删除」**：`discard` 的可逆效应随 CLI 进程退出即失效，故把条目 JSON
+  **追加**到 `$CORE_STATE_DIR/memory-deleted.jsonl`（`O_APPEND` 单次写、0600，追加后尽力
+  chmod 收紧）。备份写入失败 ⇒ **fail-closed**（一条不删、退出码 1）；未知 id ⇒ 退出码 1 且
+  **不落备份**。不用「一份时间戳文件」：单条删除无整次操作边界，追加日志天然可累积、可人工重放。
+- **D5 只读复用公开 API**：`audit(None)` + `discard`；不新增 `tools.memory` 工具面、不读私有
+  `_all_entries`、不新增恢复子命令（沿用 `repair-keyfacts` 的备份先例）。
+
+**规格**：`cli-ops` **MODIFIED**「运维命令集」（命令清单 + 3 scenarios：记忆检视 / 记忆删除 /
+删除未知条目）。`openspec validate --all` 32/0（归档前）、31/0（归档后）。
+
+**测试**：`tests/test_entry.py` 新增 6 例（list 字段与 limit、get 与未知 id、delete 备份 0600 +
+条目消失、未知 id 不落备份、备份失败 fail-closed、密钥形态脱敏）。另因 `entry.py` 增行导致
+`doc/03-interfaces/prompts.md` §1 落点行号漂移，已把 ⑭ 的 `entry.py:1689/1681` 同步为 `1810`
+（`test_prompt_mirror.py` 的 34 例守护）。全量基线 2879 → **2885 passed**。反证 4/4：摘备份写入
+⇒ 备份用例红；备份后不 `discard` ⇒ 条目消失用例红；`get` 不脱敏 ⇒ 脱敏用例红；未知 id 也写备份
+⇒ 不落备份用例红；复原 `md5sum` 一致（`b9d841f5…`）。四门禁：`ruff check` / `ruff format --check`
+绿、`pyright` 0 errors、`pytest -q` 全绿。
+
+**局限**：① 无 `restore` 子命令，恢复靠备份 JSONL 人工重放；② `audit()` 全量加载，大库（数万条）
+的内存与耗时未做分页；③ 运行中的实例不感知 CLI 删除，可能以内存快照短暂「复活」条目，重启后
+一致；④ `--limit 0` = 全部，与「0 条」直觉相反（写入帮助文本）；⑤ 不做批量 / 按条件删除，避免
+一次误删大面积记忆。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9520,3 +9559,4 @@ precision@5（单 gold 下上限仅 0.2）；④ recall 阈值留 1 条查询余
 | ADR-0249 | 02-modules/tool-use.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0250 | 02-modules/configuration.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0251 | 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0252 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

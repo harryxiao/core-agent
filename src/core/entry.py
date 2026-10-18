@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import difflib
 import json
 import os
 import sys
+import time
 import uuid
 import warnings
 from collections.abc import Callable
@@ -257,10 +259,29 @@ def _add_session_parser(sub: Any) -> None:
     show.add_argument("session_id", metavar="<session-id>")
 
 
+def _non_negative_int(value: str) -> int:
+    """`--limit` 取值：≥0 的整数（`0` = 全部）；负数 / 非整数由 argparse 拒绝。"""
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"须为整数: {value!r}") from exc  # noqa: TRY003
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"须为 ≥0 的整数: {value!r}")  # noqa: TRY003
+    return number
+
+
 def _add_memory_parser(sub: Any) -> None:
     memory = sub.add_parser("memory", help="记忆维护")
     mem_sub = memory.add_subparsers(dest="memory_cmd", metavar="<memory-cmd>")
     mem_sub.add_parser("maintain", help="触发一次记忆维护（压实 + 遗忘归档）")
+    listp = mem_sub.add_parser("list", help="列出记忆条目（id / 层 / 来源 / 摘要）")
+    listp.add_argument(
+        "--limit", type=_non_negative_int, default=50, metavar="N", help="展示条数（0 = 全部）"
+    )
+    getp = mem_sub.add_parser("get", help="打印单条记忆全文（内容脱敏）")
+    getp.add_argument("entry_id", metavar="<id>")
+    deletep = mem_sub.add_parser("delete", help="删除单条记忆（删除前写持久备份）")
+    deletep.add_argument("entry_id", metavar="<id>")
     repair = mem_sub.add_parser("repair-keyfacts", help="修复失效关键事实（重抽 + 清理旧条目）")
     repair.add_argument("--dry-run", action="store_true", help="只报告将修复的内容，不删不写")
 
@@ -1292,8 +1313,104 @@ def _memory_repair_keyfacts(memory: Any, args: argparse.Namespace) -> int:
     return 0
 
 
+_SUMMARY_CHARS = 120
+
+
+def _format_ts(ts: float) -> str:
+    """条目时间戳 → 本地 `YYYY-MM-DDTHH:MM:SS`；`ts<=0`（未落时间）显示 `-`。"""
+    if ts <= 0:
+        return "-"
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts))
+
+
+def _one_line_summary(text: str) -> str:
+    """正文 → 单行摘要（先脱敏再截断，避免明文跨越截断边界）。"""
+    single = " ".join(redact_secrets(text).split())
+    return single if len(single) <= _SUMMARY_CHARS else single[: _SUMMARY_CHARS - 1] + "…"
+
+
+def _memory_find(entries: list[MemoryEntry], entry_id: str) -> MemoryEntry | None:
+    """按 id 精确匹配取首条（口径同 `MemoryStore._entry_by_id` 的「同 id 即覆盖」）。"""
+    return next((entry for entry in entries if entry.id == entry_id), None)
+
+
+def _backup_memory_entry(entry: MemoryEntry) -> Path:
+    """把待删条目**追加**到 `$CORE_STATE_DIR/memory-deleted.jsonl`（0600）。
+
+    单次 `os.write` 整行（对齐转录落盘的并发追加口径）；追加日志天然可累积、可人工重放。
+    写入失败抛 `OSError`，由调用方 fail-closed（不删除）。
+    """
+    path = _state_path("memory-deleted.jsonl")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(asdict(entry), ensure_ascii=False) + "\n"
+    fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        os.write(fd, line.encode("utf-8"))
+    finally:
+        os.close(fd)
+    with contextlib.suppress(OSError):  # 追加到既有宽权限文件时一并收紧
+        os.chmod(path, 0o600)
+    return path
+
+
+def _memory_list(memory: Any, args: argparse.Namespace) -> int:
+    """`memory list`：全量 `audit()` 后只截断**展示**（`--limit 0` = 全部）。"""
+    entries = memory.audit(None)
+    limit = int(args.limit)
+    shown = entries if limit == 0 else entries[:limit]
+    for entry in shown:
+        print(
+            f"{entry.id}\t{entry.layer}\t{entry.kind}\t{entry.source}\t"
+            f"{entry.session_id or '-'}\t{entry.importance:.2f}\t"
+            f"{_format_ts(entry.ts)}\t{_one_line_summary(entry.content)}"
+        )
+    if limit and len(entries) > limit:
+        print(f"（共 {len(entries)} 条，显示前 {limit} 条；--limit 0 显示全部）")
+    return 0
+
+
+def _memory_get(memory: Any, args: argparse.Namespace) -> int:
+    """`memory get <id>`：打印元数据与全文（`redact_secrets` 脱敏后回显）。"""
+    entry = _memory_find(memory.audit(None), args.entry_id)
+    if entry is None:
+        print(f"未找到条目: {args.entry_id}", file=sys.stderr)
+        return 1
+    print(f"id: {entry.id}")
+    print(f"layer: {entry.layer}")
+    print(f"kind: {entry.kind}")
+    print(f"source: {entry.source}")
+    print(f"session: {entry.session_id or '-'}")
+    print(f"importance: {entry.importance:.2f}")
+    print(f"ts: {_format_ts(entry.ts)}")
+    print(f"trace_id: {entry.trace_id}")
+    print()
+    print(redact_secrets(entry.content))
+    return 0
+
+
+def _memory_delete(memory: Any, args: argparse.Namespace) -> int:
+    """`memory delete <id>`：先备份后删除；备份失败 fail-closed。"""
+    entry = _memory_find(memory.audit(None), args.entry_id)
+    if entry is None:
+        print(f"未找到条目: {args.entry_id}", file=sys.stderr)
+        return 1
+    try:
+        backup = _backup_memory_entry(entry)
+    except OSError as exc:
+        print(f"备份失败，未删除任何条目: {exc}", file=sys.stderr)
+        return 1
+    if not memory.discard(entry.id):
+        print(f"删除失败（条目已不存在）: {entry.id}", file=sys.stderr)
+        return 1
+    print(f"已删除 {entry.id}；备份文件：{backup}")
+    return 0
+
+
 _MEMORY_COMMANDS: dict[str, Callable[[Any, argparse.Namespace], int]] = {
     "maintain": _memory_maintain,
+    "list": _memory_list,
+    "get": _memory_get,
+    "delete": _memory_delete,
     "repair-keyfacts": _memory_repair_keyfacts,
 }
 
@@ -1302,7 +1419,11 @@ def _memory(args: argparse.Namespace) -> int:
     """`memory <sub>`：装配 runtime → 分派到对应记忆运维动作。"""
     action = _MEMORY_COMMANDS.get(args.memory_cmd or "")
     if action is None:
-        print("用法: core-agent memory {maintain|repair-keyfacts [--dry-run]}", file=sys.stderr)
+        print(
+            "用法: core-agent memory {maintain|list [--limit N]|get <id>|delete <id>"
+            "|repair-keyfacts [--dry-run]}",
+            file=sys.stderr,
+        )
         return 1
     try:
         runtime = build_runtime(_config_manager(args))

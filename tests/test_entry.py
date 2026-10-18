@@ -1080,6 +1080,139 @@ def test_memory_maintain_reports_build_failure(
     assert "装配失败" in capsys.readouterr().err
 
 
+# ---- 记忆检视与纠错 CLI（change 0262 / ADR-0252 / 台账 E198） ----
+
+
+_SHOWN_LIMIT = 2
+_MODE_0600 = 0o600
+
+
+def _seed_memory(*entries: MemoryEntry) -> MemoryStore:
+    """以组合根同源路径播种条目（`CORE_STATE_DIR` 由 conftest 隔离）。"""
+    store = MemoryStore(backend=FileBackend(_state_path("memory.jsonl")))
+    for entry in entries:
+        store.write(entry.layer, entry)
+    return store
+
+
+def _entry(entry_id: str, *, content: str = "内容", layer: str = "L2") -> MemoryEntry:
+    return MemoryEntry(
+        id=entry_id,
+        layer=layer,  # type: ignore[arg-type] — 测试内层字面量合法
+        content=content,
+        tags=[],
+        source="test",
+        trace_id="t1",
+        ts=1_700_000_000.0,
+        session_id="s1",
+        importance=0.4,
+        kind="semantic",
+    )
+
+
+def _run_memory_cli(monkeypatch, tmp_path, store: MemoryStore, *argv: str):
+    class _FakeRuntime:
+        memory = store
+
+    monkeypatch.setattr("core.entry.build_runtime", lambda *a, **kw: _FakeRuntime())
+    return main(["--config", _write_config(tmp_path), "memory", *argv])
+
+
+def test_memory_list_renders_entries_and_limit(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`memory list`：固定字段顺序逐条打印；`--limit` 只截断展示并提示总数。"""
+    store = _seed_memory(_entry("e1"), _entry("e2"), _entry("e3"))
+
+    assert _run_memory_cli(monkeypatch, tmp_path, store, "list") == 0
+    out = capsys.readouterr().out
+    for entry_id in ("e1", "e2", "e3"):
+        assert entry_id in out
+    assert "L2" in out and "test" in out and "s1" in out
+
+    assert _run_memory_cli(monkeypatch, tmp_path, store, "list", "--limit", "2") == 0
+    out = capsys.readouterr().out
+    assert out.count("e1") + out.count("e2") + out.count("e3") == _SHOWN_LIMIT
+    assert "共 3 条" in out
+
+    assert _run_memory_cli(monkeypatch, tmp_path, store, "list", "--limit", "0") == 0
+    out = capsys.readouterr().out
+    assert "共 3 条" not in out
+    assert "e1" in out and "e2" in out and "e3" in out
+
+
+def test_memory_get_prints_entry_and_unknown_id_exits_nonzero(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`memory get <id>`：打印元数据与全文；未知 id ⇒ 退出码 1。"""
+    store = _seed_memory(_entry("e1", content="完整正文"))
+
+    assert _run_memory_cli(monkeypatch, tmp_path, store, "get", "e1") == 0
+    out = capsys.readouterr().out
+    assert "e1" in out and "完整正文" in out
+
+    assert _run_memory_cli(monkeypatch, tmp_path, store, "get", "missing") == 1
+    assert "未找到" in capsys.readouterr().err
+
+
+def test_memory_delete_backs_up_then_removes(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`memory delete`：删除前追加备份（0600）、条目消失、打印备份路径。"""
+    store = _seed_memory(_entry("e1"), _entry("e2"))
+
+    assert _run_memory_cli(monkeypatch, tmp_path, store, "delete", "e1") == 0
+    out = capsys.readouterr().out
+    backup = _state_path("memory-deleted.jsonl")
+    assert str(backup) in out
+    assert [e.id for e in store.audit(None)] == ["e2"]
+
+    rows = [json.loads(line) for line in backup.read_text(encoding="utf-8").splitlines()]
+    assert [row["id"] for row in rows] == ["e1"]
+    assert backup.stat().st_mode & 0o777 == _MODE_0600
+
+
+def test_memory_delete_unknown_id_writes_no_backup(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """未知 id ⇒ 退出码 1 且不落备份。"""
+    store = _seed_memory(_entry("e1"))
+
+    assert _run_memory_cli(monkeypatch, tmp_path, store, "delete", "missing") == 1
+    assert "未找到" in capsys.readouterr().err
+    assert not _state_path("memory-deleted.jsonl").exists()
+
+
+def test_memory_delete_backup_failure_is_fail_closed(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """备份写入失败 ⇒ 不删除、退出码 1（删除的持久可逆性来源不可丢）。"""
+    store = _seed_memory(_entry("e1"))
+
+    def _boom(_entry: MemoryEntry) -> pathlib.Path:
+        raise OSError("disk full")  # noqa: TRY003
+
+    monkeypatch.setattr("core.entry._backup_memory_entry", _boom)
+    assert _run_memory_cli(monkeypatch, tmp_path, store, "delete", "e1") == 1
+    assert "备份失败" in capsys.readouterr().err
+    assert [e.id for e in store.audit(None)] == ["e1"]
+
+
+def test_memory_inspect_redacts_secret_shapes(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """list 摘要与 get 全文均经 `redact_secrets`：密钥形态不回显。"""
+    secret = "sk-abcdefgh12345678"
+    store = _seed_memory(_entry("e1", content=f"api key = {secret}"))
+
+    assert _run_memory_cli(monkeypatch, tmp_path, store, "list") == 0
+    assert secret not in capsys.readouterr().out
+    assert _run_memory_cli(monkeypatch, tmp_path, store, "get", "e1") == 0
+    out = capsys.readouterr().out
+    assert secret not in out
+    assert "<redacted>" in out
+
+
 def test_evolve_run_triggers_cold_path(
     monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:

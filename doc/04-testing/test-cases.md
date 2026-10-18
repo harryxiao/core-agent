@@ -3982,3 +3982,24 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > `pyright` 0 / `pytest -q`）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0251 行（英文词法语料 / 过拟合 / 单 gold /
 > 阈值余量 / 未覆盖端到端）。
+
+## 174. 记忆检视与纠错 CLI（TC-MEMCLI，change `0262`／ADR-0252，台账 E198）
+| TC-MEMCLI | 场景 | 输入 | 预期 |
+|---|---|---|---|
+| TC-MEMCLI-01 | **列表字段与截断**（承重） | 播种 3 条；`memory list` / `--limit 2` / `--limit 0` | 固定字段顺序逐条打印；`--limit 2` 只显示 2 条并提示「共 3 条」；`0` 显示全部（`tests/test_entry.py::test_memory_list_renders_entries_and_limit`） |
+| TC-MEMCLI-02 | 单条读取 | `memory get e1` | 元数据 + 全文；未知 id ⇒ stderr「未找到」、退出码 1（`…::test_memory_get_prints_entry_and_unknown_id_exits_nonzero`） |
+| TC-MEMCLI-03 | **删除前备份**（承重） | `memory delete e1` | `memory-deleted.jsonl` 含该条 JSON、权限 0600；条目消失；stdout 含备份路径（`…::test_memory_delete_backs_up_then_removes`） |
+| TC-MEMCLI-04 | 未知 id 不落备份 | `memory delete missing` | 退出码 1；备份文件**不存在**（`…::test_memory_delete_unknown_id_writes_no_backup`） |
+| TC-MEMCLI-05 | **备份失败 fail-closed**（承重） | 备份 writer 抛 `OSError` | 退出码 1、stderr「备份失败」；条目仍在（`…::test_memory_delete_backup_failure_is_fail_closed`） |
+| TC-MEMCLI-06 | 输出脱敏 | 条目内容含 `sk-…`；`list` / `get` | 密钥形态不回显，出现 `<redacted>`（`…::test_memory_inspect_redacts_secret_shapes`） |
+
+> **口径**：`list` / `get` 走公开 `MemoryStore.audit(None)`（冷热并集），`--limit` 只截断**展示**；
+> 删除走 `MemoryStore.discard` 且**先备份后删除**，备份为 `$CORE_STATE_DIR/memory-deleted.jsonl`
+> 的 `O_APPEND` 单次写（0600）。未知 id 不写备份；备份失败一条不删。
+> **反证**：P1 摘备份写入 ⇒ TC-MEMCLI-03 红；P2 备份后不 `discard` ⇒ TC-MEMCLI-03 红；P3 `get`
+> 不脱敏 ⇒ TC-MEMCLI-06 红；P4 未知 id 也写备份 ⇒ TC-MEMCLI-04 红。复原后 `md5sum` 一致。
+> 规格：`cli-ops` **MODIFIED**「运维命令集」（+3 scen）。`openspec validate --all` 32/0（归档前）/
+> 31/0（归档后）。测试净 **+6**（2879 → **2885**）。四门禁全绿（`ruff check` / `ruff format --check` /
+> `pyright` 0 / `pytest -q`）。附带：`entry.py` 增行使 `prompts.md` §1 ⑭ 落点漂移，已同步 1810。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0252 行（无 restore / 全量加载 / 运行实例
+> 不感知 / `--limit 0` 语义 / 无批量删除）。
