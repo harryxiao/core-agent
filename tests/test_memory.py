@@ -260,7 +260,11 @@ def test_read_embedder_failure_degrades_whole_read_to_lexical() -> None:
 
     def _populate(store: MemoryStore) -> None:
         for i in range(65):
-            store.write("L2", _entry(f"e{i}", "L2", f"apple banana item {i}"))
+            entry = _entry(f"e{i}", "L2", f"apple banana item {i}")
+            # 固定且互异的时间戳：缺省 ``_persist`` 会写 ``time.time()``，连续写入常落在
+            # 同一时钟刻度 ⇒ 新鲜度得分近似并列，排序次序随调度抖动，跨 store 比较偶发不等。
+            entry.ts = 1_700_000_000.0 + i * 60.0
+            store.write("L2", entry)
 
     calls = {"n": 0}
 
