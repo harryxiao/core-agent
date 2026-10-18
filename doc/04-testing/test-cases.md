@@ -4444,3 +4444,29 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > 附带：基准自身耗时由 ≈20s 降至 ≈8s（全量 ≈202s）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0266 行（冷启动首读仍 ≈220ms / 进程内缓存 /
 > 未做候选预裁剪 / 20k 上界 / 挂钟波动 / 共享热路径）。
+
+## 189. 记忆内容分区权重（TC-MEMTIER，change `0277`／ADR-0267，台账 E213）
+
+> 覆盖 `memory/spec.md`「内容分区权重（tags 三档）」（ADDED）：`relevance` 加一维加性分区权重
+> `0.15·tier`，`tier ∈ {+1, 0, −1}`（`milestone`/`decision` / 默认 / `log`/`transcript`）；
+> 默认档零偏移 ⇒ 未分档条目排序逐位不变。测试文件 `tests/test_memory_tiers.py`（新，4 例）。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-MEMTIER-01 | Scenario「三档定序」 | 同内容 / 层 / 时间戳，仅 tags 为 `["milestone"]`、`["bench"]`、`["log"]` | `relevance` 与 `rank` 均 高 > 默认 > 低；相邻档差均 ≈ 0.15（`test_three_tiers_order_relevance_and_rank`） |
+| TC-MEMTIER-02 | Scenario「冲突与未知」 | tags 为 `["milestone","log"]`、`["unknown"]`、`["Milestone"]` | 冲突按高档；未知与大小写漂移与默认档得分相等（`test_conflict_prefers_high_and_unknown_is_default`） |
+| TC-MEMTIER-03 | Scenario「同档排序不变」 | 两个未分档条目仅层不同（L2 vs L3） | `rank(L3) > rank(L2)`；默认档零偏移不改变层优先级语义（`test_same_tier_keeps_layer_priority`） |
+| TC-MEMTIER-04 | 端到端（`MemoryStore.read`） | 三条同内容条目 tags 分别为 `transcript` / `bench` / `decision` | 返回顺序 `decision → bench → transcript`（`test_store_read_orders_by_tier`） |
+| TC-MEMTIER-05 | Scenario「基准不回退」 | `0261` 26 条质量基准 ＋ `0275` 1 万条规模基准（语料/阈值不改） | recall@5 = MRR@5 = 1.000、stale_hits = 0；1 万条中位 85.8–108.3ms（`test_memory_quality` / `test_memory_scale_benchmark_at_10k`） |
+
+> **口径**：档位判定只看 `tags`，精确且区分大小写（约定小写）；冲突高档优先；未知标签落默认档。
+> **默认档必须零偏移**：`rank` 为 `relevance × (1+log1p(reuse)) × …`，初版取 `+0.075` 会抬高全部
+> 无标签条目的基数并被复用因子放大 —— 1 万条基准实测 recall@5 **1.000 → 0.45**；改为 `{+1,0,−1}`
+> 后未分档条目得分与分档前逐位相同，两基准逐项不变。
+> **反证 3/3**：① 摘掉 `_W_TIER·tier` 项 ⇒ TC-MEMTIER-01/02 红；② 低档先于高档判定 ⇒ TC-MEMTIER-02 红；
+> ③ 未知标签按低档 ⇒ TC-MEMTIER-01 红。复原后 `md5sum` 一致（`relevance.py`）。
+> 规格：`memory` **ADDED**（4 scen）。`validate --all` 31/0（归档后）。测试净 **+4**（3026 → **3030**）。
+> 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` 3030 例通过
+> （`test_ui_turn_cleanup` 全量并发下偶发既有时序抖动，单跑 6/6 通过，与本 change 无关）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0267 行（依赖显式打标 / 标签写死 / 收益不被
+> 既有基准体现 / 低档分值可为负）。

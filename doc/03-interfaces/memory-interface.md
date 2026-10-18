@@ -187,16 +187,17 @@ class MemoryEntry:
 
 ```python
 def rank(entry, query, embedder=None, *, stats=None) -> float:
-    """rank = relevance(entry, query)          # 语义相似 × 层结构权重（加性）
+    """rank = relevance(entry, query)          # 语义相似 × 层结构 × 内容分区（加性）
                 × recency_decay(entry)        # 新鲜度衰减 1/(1 + age/天)
                 × (1 + log(1 + reuse_count))  # 复用频次
                 × (1 + importance)            # 主观重要度
     """
 
 def relevance(entry, query, embedder=None, *, stats=None) -> float:
-    """relevance = w1·sim(entry, query) + w4·layer_priority(entry.layer)
+    """relevance = w1·sim(entry, query) + w4·layer_priority(entry.layer) + w5·tier(entry)
 
-    仅含语义与层结构；时间/复用/重要度由 ``rank`` 乘性调制（避免双重计数）。
+    仅含语义、层结构与内容分区（change 0277；tier ∈ {+1, 0, −1}，按 tags 精确判定）；
+    时间/复用/重要度由 ``rank`` 乘性调制（避免双重计数）。
     """
 ```
 
@@ -259,7 +260,8 @@ def relevance(entry, query, embedder=None, *, stats=None) -> float:
 **摘要提炼、逐条目打分（``_score_importance``）、结构化关键事实抽取（``_extract_key_facts``）
 三者一致地看不到失败条目**（同一材料源、一处排除三处生效）。故失败条目**不被摘要吸收**、
 **不随压实迁 L4**、其 id **不入**摘要条目 ``tags`` 的 ``from:`` 出处。
-判据用 **tag** 而非 ``source``：``rank`` / ``_decay_score`` **完全不看 tags** ⇒ 零排序副作用，
+判据用 **tag** 而非 ``source``：``_decay_score`` **不看 tags**；``rank`` 自 change `0277` 起
+**只读四个档位标签**（``milestone`` / ``decision`` / ``log`` / ``transcript``），``failure`` 等既有 tag 语义零副作用，
 且不触碰 ``exclude_source_prefixes`` 的命名空间红线。**遗忘路径不受此豁免**：``forget``
 逐字不动 ⇒ 失败条目仍按自然衰减归档 L4（有界）。
 写入侧闸门（§3）**不改**：注入 ``importance_scorer`` 时失败条目照常受闸门约束。

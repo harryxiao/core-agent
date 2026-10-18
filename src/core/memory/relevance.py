@@ -24,9 +24,17 @@ from .protocol import Layer, MemoryEntry
 # 层优先级：L0 元策略 > L3 技能 > L2 事实 > L1 索引 > L4 归档
 _LAYER_PRIORITY: dict[Layer, float] = {"L0": 1.0, "L1": 0.4, "L2": 0.6, "L3": 0.8, "L4": 0.2}
 
-# 加性权重：语义相似 / 层优先级（时间·复用·重要度改由 ``rank`` 乘性调制）
+# 加性权重：语义相似 / 层优先级 / 内容分区（时间·复用·重要度改由 ``rank`` 乘性调制）
 _W_SIM = 0.5
 _W_LAYER = 0.2
+_W_TIER = 0.15
+
+# 内容分区标签（change 0277 / ADR-0267）：精确小写匹配；未知标签/无标签 ⇒ 默认档。
+# 冲突（高低档同时命中）⇒ 高档优先；只看 tags，不从 source/kind 推断。
+# 档位取 {+1, 0, −1}（默认档为零）：rank 会乘复用/重要度调制，默认档若取常量偏移会
+# 抬高全部无标签条目的基数，令高复用填充项反超 gold（0275 基准实测 recall 1.000 → 0.45）。
+_TIER_HIGH_TAGS = frozenset({"milestone", "decision"})
+_TIER_LOW_TAGS = frozenset({"log", "transcript"})
 
 # 检索分词：非中文词元沿用 \w+ 语义（排除汉字，保留其他 Unicode 词字符），
 # 连续汉字另按二元组切分——中文无空格，整句 \w+ / split() 会退化成单一词元，
@@ -116,7 +124,18 @@ def relevance(
     ``stats`` 仅用于 embedder 缺省/失败时的词法打分；``None`` ⇒ 原重叠公式（兼容面）。
     """
     sim = _similarity(entry, query, embedder, stats)
-    return _W_SIM * sim + _W_LAYER * _LAYER_PRIORITY[entry.layer]
+    return _W_SIM * sim + _W_LAYER * _LAYER_PRIORITY[entry.layer] + _W_TIER * _tier_weight(entry)
+
+
+def _tier_weight(entry: MemoryEntry) -> float:
+    """内容分区权重：高档 +1.0 / 默认 0.0 / 低档 −1.0（冲突高档优先）。"""
+    for tag in entry.tags:
+        if tag in _TIER_HIGH_TAGS:
+            return 1.0
+    for tag in entry.tags:
+        if tag in _TIER_LOW_TAGS:
+            return -1.0
+    return 0.0
 
 
 def recency_decay(entry: MemoryEntry) -> float:

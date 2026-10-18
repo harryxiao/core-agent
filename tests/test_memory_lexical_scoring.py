@@ -83,6 +83,7 @@ def test_stats_none_keeps_legacy_overlap_formula() -> None:
     entry = _entry("a", "alpha beta")
     query = "alpha gamma"
 
+    # 无档位标签 ⇒ 默认档偏移为 0（change 0277 分档项不改变未分档得分）
     assert relevance(entry, query) == pytest.approx(0.5 * 0.5 + 0.2 * 0.6)
     assert rank(entry, query) == pytest.approx(
         relevance(entry, query) * recency_decay(entry) * (1.0 + 0.0) * (1.0 + 0.0)

@@ -9966,6 +9966,59 @@ BM25 统计 ≈104ms（含分词）> 排序 ≈21ms。两处热点都**不承载
 **后续**：PA-09 **C 分区加权**可在本基线上直接评估收益；D 图 / E 真语义仍须各自独立裁决
 （E 与零三方依赖红线对账）。更远的候选预裁剪 / 持久化索引不在本 change。
 
+## ADR-0267：记忆内容分区权重（tags 三档）（change 0277 / 台账 E213）
+
+**背景**：PA-09 C（检索质量之「分区」）。`0275`/`0276` 之后检索已可在 1 万条规模下测量且延迟达标，
+但 `relevance` 只有两维：`0.5·sim + 0.2·layer_priority`。`layer_priority` 是 **L0–L4 稳定度**轴，
+**不是内容重要性轴** ⇒ 过程日志（`transcript`/`log`）与关键决策 / 里程碑同权。蓝图要求
+「里程碑区权重拉满 / 关键决策区次之 / 过程日志区最低」。用户在 PA-09 C 裁决中选定
+**tags 约定**口径（而非 source/kind 推断）。
+
+**决策**：
+
+- **D1 加性、居零三档**：`relevance = 0.5·sim + 0.2·layer_priority + 0.15·tier`，
+  `tier ∈ {+1, 0, −1}`，系数 `_W_TIER = 0.15`。加性项与 `layer_priority` 同量纲，不改变
+  `rank = relevance × recency × (1+log1p(reuse)) × (1+importance)` 的结构。
+- **D2 标签约定**：高档 `{"milestone", "decision"}`；低档 `{"log", "transcript"}`；其余（无标签 /
+  未知标签）默认档。**精确、区分大小写**（约定小写）⇒ `"Milestone"` 不生效、未知标签不意外降权；
+  同时命中高低档 ⇒ **高档优先**（宁可多留不可漏掉）。只看 `tags`，不从 `source` / `kind` 推断。
+- **D3 默认开启、无配置开关**：用户裁决。默认档**零偏移** ⇒ 未分档条目得分与分档前逐位相同，
+  既有检索语义不变。
+- **D4 初版默认档 `+0.075` 已证伪（评审内实测）**：`rank` 的乘性调制会放大任何非零常量偏移。
+  1 万条基准中高复用填充项（`reuse_count` 经多轮检索累积）反超 gold，**recall@5 由 1.000 降至
+  0.45**。改为 `{+1, 0, −1}` 后未分档条目零偏移，recall/MRR 回到 1.000。这是「加性项必须居零」
+  的直接反证，写入规格。
+- **D5 接口口径订正**：`memory-interface.md` 原称「`rank` / `_decay_score` 完全不看 tags」。
+  现 `rank` 会读取 `tags`，但**仅**用于四个档位标签的精确匹配；`_PRESERVE_TAGS = {"failure"}`
+  的压实排除面与 `_decay_score` 不受影响。
+
+**实测（本机 WSL2）**：
+
+| 基准 | 结果 |
+|---|---|
+| `0261` 检索质量（26 条 / 12 查询） | recall@5 = 1.000、MRR@5 = 1.000、stale_hits = 0（不变） |
+| `0275` 1 万条规模（20 查询，三次单跑） | recall@5 = MRR@5 = 1.000；中位 **108.3 / 85.8 / 92.3ms**，p95 157.2 / 124.9 / 132.2ms |
+
+⇒ 两个基准的准确率**逐项不变**，延迟与 `0276` 基线（85.8ms）同一水平（波动为机器负载）。
+
+**规格**：`memory` **ADDED**「内容分区权重（tags 三档）」（4 scen：三档定序 / 冲突与未知 /
+同档排序不变 / 基准不回退）。`validate --all` **31/0**（归档后）。
+
+**测试**：新增 `tests/test_memory_tiers.py` **4 例**（三档定序含权重差 / 冲突与未知与大小写 /
+同档层优先级不变 / `MemoryStore.read` 端到端定序）；`test_memory_lexical_scoring.py` 数值不变
+（默认档零偏移），仅更新注释。净 **+4**（3026 → **3030**）。**反证 3/3**：① 摘掉 tier 项 ⇒
+三档定序红；② 低档先于高档判定 ⇒ 冲突用例红；③ 未知标签落低档 ⇒ 定序用例红；复原后
+`md5sum` 一致（`relevance.py`）。四门禁：`ruff check` / `ruff format --check` 绿、
+`pyright` 0 errors、`pytest -q` 3030 例（其中 `test_ui_turn_cleanup` 在全量并发下为既有时序
+抖动，单跑 6/6 通过，与本 change 无关）。
+
+**局限**：① 收益取决于写入方**显式打标**；现有库与全部既有基准语料均无这四个标签 ⇒ 落默认档、
+基准无法体现收益，收益仅由单测覆盖；② 四个标签名写死在代码里，扩展档位须改代码（用户裁决的
+无配置口径）；③ `milestone` 与 notes 模块的笔记 tag 同名，但笔记不是 `MemoryEntry`，两域独立；
+④ 加性权重只破接近的并列，高相关低档条目仍可排在高相关高档之上（相关性优先，有意）；
+⑤ 低档条目 `relevance` 可为负（`0.5·0 + 0.12 − 0.15 = −0.03` 起步），排序语义正常但分值不再
+全为非负；⑥ 标签纪律缺失时不会退化 —— 默认档零偏移保证了这一点。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10227,3 +10280,4 @@ BM25 统计 ≈104ms（含分词）> 排序 ≈21ms。两处热点都**不承载
 | ADR-0264 | 04-testing/test-cases.md, 00-product/product-definition.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0265 | 02-modules/memory.md, 04-testing/test-cases.md, 00-product/requirements.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0266 | 02-modules/memory.md, 04-testing/test-cases.md, 00-product/requirements.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
+| ADR-0267 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |

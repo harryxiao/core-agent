@@ -45,7 +45,7 @@ MemoryStore
 
 ### 3.2 检索与上下文上界
 
-- 相关性打分：`relevance = f(关键词/向量相似度, 新鲜度, 复用次数, 层权重)`。
+- 相关性打分：`relevance = 0.5·sim + 0.2·layer_priority + 0.15·tier`；时间 / 复用 / 重要度由 `rank` 乘性调制。
 - **词法 IDF/长度归一**（change `0252`／ADR-0242）：未注入 embedder（或调用失败）时，相似度按
   BM25 口径计算——罕见词元权重更高、长文档被长度惩罚；`read` 对**过滤后的候选集**构建一次
   语料统计（分词缓存），排序阶段不再重复分词。注入 embedder 的余弦相似路径与 `stats=None` 的
@@ -54,6 +54,11 @@ MemoryStore
   （change `0271`／ADR-0261）。
 - **硬性 budget**：`read` 返回的总 token 不超过预算；超限按 `layer_priority × relevance` 截断。
 - 层权重默认：L0 > L3（相关技能）> L2（相关事实）> L1 > L4。
+- **内容分区权重**（change `0277`／ADR-0267／台账 E213）：按条目 `tags` 三档加性加权 ——
+  `milestone`/`decision` ⇒ `tier = +1`、`log`/`transcript` ⇒ `tier = −1`、其余（含未知 / 无标签）
+  ⇒ `0`，系数 `0.15`。精确小写匹配、冲突高档优先、只看 `tags`（不看 `source`/`kind`）；默认开启、
+  无配置开关。**默认档零偏移**是硬约束：`rank` 乘复用/重要度调制，正常量偏移会被放大（初版
+  `+0.075` 使 1 万条基准 recall@5 由 1.000 降至 0.45），居零后未分档条目得分与分档前逐位相同。
 - **检索质量离线回归门**（change `0261`／ADR-0251／台账 E197）：`tests/test_memory_quality.py`
   以 26 条固定合成语料（L2 当前事实 / L3 技能 / L4 归档 / 跨会话 / `bench.stale` 陈旧冲突 /
   诱饵）＋ 12 条带 gold 查询做**纯离线、确定性**基准：**recall@5 ≥ 0.9**、**MRR@5 ≥ 0.7**、
