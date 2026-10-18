@@ -4615,3 +4615,51 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` 全绿。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0271 行（单次无重试 / 无 IM 方言 /
 > 5s 退出延迟 / URL 即凭据 / 不校验响应体 / 到达顺序）。
+
+## 194. auto-approve 命令模式级允许面（TC-CMDALLOW，change `0282`／ADR-0272，台账 E218）
+
+> 覆盖 `configuration`「自动放行的命令允许面配置」（ADDED，4 scen）、`permission`
+> 「自动放行的命令允许面」（ADDED，7 scen）。测试文件 `tests/test_command_allowlist.py`
+> （新，26 例）。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-CMDALLOW-01 | 三面单一真源 | `config_specs()` | CLI `--permission.auto-approve-commands` / env `CORE_PERMISSION_AUTO_APPROVE_COMMANDS` / 默认 `""`（`test_command_allowlist_spec_three_faces_and_default`） |
+| TC-CMDALLOW-02 | Scenario「缺省关闭」 | 未配置 | 访问器返回 `{}`（`test_command_allowlist_default_empty`） |
+| TC-CMDALLOW-03 | Scenario「三面取值与优先级」 | yaml / env / CLI 各给一条 | 返回 CLI 条目（`test_command_allowlist_three_face_priority`） |
+| TC-CMDALLOW-04 | Scenario「条目解析」 | 全角逗号分隔 + 重复条目 | 按工具分组、保序去重（`test_command_allowlist_fullwidth_and_dedupe`） |
+| TC-CMDALLOW-05 | Scenario「非法条目阻断启动」 | `git status`（缺 `:`） | `ConfigurationError`，消息含条目类别、**不含取值**（`test_invalid_command_allowlist_blocks_startup_without_echo[git status]`） |
+| TC-CMDALLOW-06 | 同上 | `tools.file_write:cat` | 同上（`...[tools.file_write:cat]`） |
+| TC-CMDALLOW-07 | 同上 | `tools.code_run:`（空前缀） | 同上（`...[tools.code_run:]`） |
+| TC-CMDALLOW-08 | 同上 | 前缀含 `;` | 同上（`...[`tools.code_run:git status; rm -rf /`]`） |
+| TC-CMDALLOW-09 | 同上 | `true`（非字符串） | 同上（`...[true]`） |
+| TC-CMDALLOW-10 | Scenario「前缀匹配放行」 | `git status` / `git status --short` / 首尾空白 | `auto`（`test_guard_allows_matching_prefix_and_arguments`） |
+| TC-CMDALLOW-11 | Scenario「不匹配即拒绝」 | `rm -rf /tmp/x` | `deny`，消息**不回显命令**（`test_guard_denies_nonmatching_without_echo`） |
+| TC-CMDALLOW-12 | Scenario「词元边界」 | `git statusx`（前缀为 `git status`） | `deny`（`test_guard_requires_token_boundary`） |
+| TC-CMDALLOW-13 | Scenario「元字符整类拒绝」 | `git status; rm -rf /tmp/x` | `deny`（`test_guard_denies_shell_metacharacters[...]`） |
+| TC-CMDALLOW-14 | 同上 | `git status && curl …` | 同上（`...[&&]`） |
+| TC-CMDALLOW-15 | 同上 | `git status $(whoami)` | 同上（`...[$()]`） |
+| TC-CMDALLOW-16 | 同上 | `git status > /tmp/x` | 同上（`...[>]`） |
+| TC-CMDALLOW-17 | 同上 | `git status | cat` | 同上（`...[|]`） |
+| TC-CMDALLOW-18 | 同上 | `git status\nrm -rf /tmp/x` | 同上（`...[换行]`） |
+| TC-CMDALLOW-19 | Scenario「缺失 fail-closed」 | `script=None` / `123` / `["git status"]` | `deny`（`test_guard_fail_closed_on_non_string_script[...]`） |
+| TC-CMDALLOW-20 | 同上 | 无 `script` 键 | `deny`（`test_guard_fail_closed_on_missing_script`） |
+| TC-CMDALLOW-21 | Scenario「仅约束命中工具」 | `tools.file_write` | `auto`（无条目 ⇒ 不受约束；`test_guard_other_tools_unaffected`） |
+| TC-CMDALLOW-22 | Scenario「空配置等价于引入前」 | `allowed_commands=None` / `{}` | `rm -rf /tmp/x` 仍 `auto`（`test_guard_empty_allowlist_keeps_full_release`） |
+| TC-CMDALLOW-23 | Scenario「非 auto 档忽略」 | `INTERACTIVE` + 条目 | `rm -rf /tmp/x` 仍 `confirm`（`test_guard_ignores_allowlist_outside_auto_approve`） |
+| TC-CMDALLOW-24 | 组合根接线 | `build_runtime` + `mode=auto-approve` + 条目 | `runtime.loop._gate`：`pytest -q` ⇒ `deny`；`git status --short` ⇒ `auto`（`test_runtime_wires_command_allowlist`） |
+
+> **口径**：条目 `tools.code_run:<前缀>`（工具 id 白名单仅 `tools.code_run`），全角逗号兼容、
+> 保序去重；前缀非空且不含 shell 元字符。判定在 `PermissionGuard.confirm` 的**模式放行之后、
+> guardrail 之前**，仅 `AUTO_APPROVE`；命令取 `args["script"]`，含元字符（`;` `|` `&` `$`
+> 反引号 `<` `>` `(` `)`、换行）一律拒绝，否则须完全等于前缀或以「前缀 + 空白」开头；
+> 缺失 / 非字符串 fail-closed。拒绝信息与配置校验错误均**不回显命令**（命令可能内嵌令牌）。
+> 空映射 / 无条目工具 / 其他档位逐字不变。前缀匹配**不是沙箱**。
+> **反证 3/3**：① 摘元字符判定 ⇒ TC-13~18 红（4 类）；② 词元边界改裸 `startswith(prefix)`
+> ⇒ TC-12 红；③ 摘 `confirm` 命令面分支 ⇒ 13 例红（TC-10~12、19~24 及部分配置面断言）；
+> 复原 `md5sum` 一致（guard.py）。
+> 规格：`configuration` ADDED（4 scen）、`permission` ADDED（7 scen）。`validate --all` 31/0（归档后）。
+> 测试净 **+26**（3105 → **3131**）。
+> 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3131 passed**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0272 行（非沙箱 / 元字符保守 / 无通配 /
+> 仅 code_run / 收窄非放宽）。

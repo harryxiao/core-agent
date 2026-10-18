@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from core.judgment import DecisionResult, Guardrail
@@ -17,6 +18,10 @@ from core.tools import GateDecision, SafetyGate
 from .errors import AccessControlError
 from .models import Decision, PermissionMode
 from .policy import PermissionModeGate
+
+# 命令允许面的保守元字符集（change 0282）：出现在命令任意位置即拒绝。
+# 配置层「自动放行的命令允许面配置」持有同源复述（不 import 能力层）。
+_SHELL_METACHARS = frozenset(";|&$`<>()\n\r")
 
 
 class PermissionGuard(SafetyGate):
@@ -28,6 +33,7 @@ class PermissionGuard(SafetyGate):
         *,
         guardrail: Guardrail | None = None,
         allowed_coeffects: frozenset[str] | None = None,
+        allowed_commands: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
         self._gate = PermissionModeGate(
             mode if isinstance(mode, PermissionMode) else PermissionMode.from_config(mode),
@@ -35,6 +41,12 @@ class PermissionGuard(SafetyGate):
         )
         self._mode = self._gate.mode  # 模式构造后不变（无 setter），记下供 confirm 分支读取
         self._guardrail = guardrail
+        # 命令允许面（change 0282）：空映射 = 不限制（与引入前逐字一致）。
+        self._allowed_commands = (
+            {tool: tuple(prefixes) for tool, prefixes in allowed_commands.items() if prefixes}
+            if allowed_commands
+            else {}
+        )
 
     def confirm(
         self,
@@ -50,6 +62,10 @@ class PermissionGuard(SafetyGate):
             return GateDecision("deny", str(exc))
         if not decision.allowed:
             return _to_gate(decision)
+        if self._mode is PermissionMode.AUTO_APPROVE:
+            denial = self._denied_command(tool_id, args)
+            if denial:
+                return GateDecision("deny", denial)
         if self._guardrail is not None:
             verdict = self._guardrail.check(
                 {"op": tool_id, "target": target, "coeffects": coeffects},
@@ -66,6 +82,19 @@ class PermissionGuard(SafetyGate):
             return GateDecision("confirm", f"工具 {tool_id} 不可逆写，需人工审批")
         return GateDecision("auto", decision.reason)
 
+    def _denied_command(self, tool_id: str, args: dict[str, Any]) -> str | None:
+        """命令允许面判定：无条目 / 未配置 ⇒ `None`（不受约束）。
+
+        命令正文可能含令牌 ⇒ 拒绝信息只报工具 id，**不回显 `script`**。
+        """
+        prefixes = self._allowed_commands.get(tool_id)
+        if not prefixes:
+            return None
+        script = args.get("script")
+        if not isinstance(script, str) or not _command_allowed(script, prefixes):
+            return f"auto-approve 命令允许面拒绝 {tool_id}（命令不在允许的前缀内）"
+        return None
+
     @staticmethod
     def _is_write(coeffects: list[str]) -> bool:
         return any("write" in c for c in coeffects)
@@ -78,6 +107,21 @@ class PermissionGuard(SafetyGate):
         if not isinstance(answer, dict):
             return True
         return bool(cast(dict[str, Any], answer).get("noul"))
+
+
+def _command_allowed(script: str, prefixes: tuple[str, ...]) -> bool:
+    """保守匹配（change 0282）：元字符整类拒绝 + 词元边界前缀。
+
+    - 含 shell 元字符（任意位置）⇒ 拒绝，避免 `git status; rm` / `&&` / `$(…)` 绕过前缀。
+    - 命令等于前缀，或以「前缀 + 空白」开头 ⇒ 放行（`git statusx` 不匹配 `git status`）。
+    """
+    command = script.strip()
+    if not command or any(ch in _SHELL_METACHARS for ch in command):
+        return False
+    return any(
+        command == prefix or command.startswith(prefix + " ") or command.startswith(prefix + "\t")
+        for prefix in prefixes
+    )
 
 
 def _to_gate(decision: Decision) -> GateDecision:

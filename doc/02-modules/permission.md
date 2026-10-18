@@ -61,6 +61,14 @@ PermissionGate（横切）
 顶部短路（覆盖 HIGH_RISK 的 `approval_required`）+ `PermissionGuard.confirm` 的不可逆写分支感知模式
 （该分支原本与权限档无关）。全放行**仅限权限层**，不越过正交的 guardrail 红线。
 
+**命令级允许面**（change 0282 / ADR-0272）：`permission.auto_approve_commands` 以
+`tools.code_run:<命令前缀>` 收窄 auto-approve 下可执行的命令。`PermissionGuard.confirm`
+在模式放行后、guardrail 之前判定：命令含 shell 元字符（`;` `|` `&` `$` 反引号 `<` `>`
+`(` `)`、换行）⇒ 拒绝；否则须与前缀**词元边界**匹配（完全相等或前缀后接空白）。命令正文
+缺失或非字符串 ⇒ fail-closed 拒绝；拒绝信息不回显命令。无条目的工具与空配置不受影响，
+非 auto-approve 档完全忽略该项。**前缀匹配不是沙箱**：它不解析命令语义、不支持通配/正则、
+不隔离进程，只降低「执行任意命令」的概率。
+
 ### 3.2 人工审批流
 
 ```

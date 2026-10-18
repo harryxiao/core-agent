@@ -10231,6 +10231,50 @@ POST 方法 / 头 / JSON 与脱敏 / 截断 / `text`；空配置零请求；webh
 不提供密钥轮换或签名；⑤ 不校验接收端响应体，2xx 即视为成功；⑥ 与文件 sink 同为单机进程
 行为，多进程并发推送的到达顺序不保证。
 
+## ADR-0272：auto-approve 命令模式级允许面（change 0282 / 台账 E218）
+
+**背景**：ADR-0270 的 `permission.auto_approve_coeffects` 只按 **coeffect** 收窄放行面，
+而 `tools.code_run` 的 coeffect 固定为 `process:spawn` + `filesystem:write`：无人值守部署
+只有「允许执行任意命令」或「禁止执行任何命令」两种选择，无法表达「只允许 `git status` /
+`pytest` 这类命令」。
+
+**决策**：
+
+- **D1 在 `PermissionGuard.confirm` 判定**：`PermissionModeGate.authorize(op, target,
+  coeffects)` 拿不到工具实参；`confirm(tool_id, args, coeffects, reversible)` 是唯一同时具备
+  模式与实参的接缝。命令面在模式放行**之后**、guardrail **之前**判定；两层都通过才 `auto`。
+- **D2 条目与作用域**：`permission.auto_approve_commands`，条目 `tools.code_run:<前缀>`
+  （工具 id 白名单仅 `tools.code_run` —— 当前唯一执行任意命令的工具）。无条目的工具不受
+  约束；空配置 = 关闭，与引入前逐字一致。
+- **D3 保守匹配**：命令取 `args["script"]`；非字符串/缺失 ⇒ fail-closed 拒绝；含 shell
+  元字符（`;` `|` `&` `$` 反引号 `<` `>` `(` `)`、换行）⇒ 一律拒绝；否则须**完全等于**
+  前缀或以「前缀 + 空白」开头（词元边界，`git statusx` 不匹配 `git status`）。不做 shell
+  解析、不支持通配/正则。
+- **D4 不回显命令**：命令正文可能内嵌令牌（`curl -H "Authorization: Bearer …"`）⇒ 拒绝
+  信息只报工具 id 与「不在允许的前缀内」；配置校验错误同样不回显条目取值。
+- **D5 只作用于 auto-approve**：非 auto 档仍按既有风险分级/审批语义；命令面不放宽
+  coeffect 面，同时配置时取交集。
+- **D6 组合根接线**：`build_runtime` 以 `config.permission_auto_approve_commands()` 注入
+  `PermissionGuard(allowed_commands=...)`；未传参的既有构造行为不变。
+
+**反证 3/3（均实测转红后复原，`md5sum` 一致）**：① 摘掉元字符判定（恒不拒绝）⇒ `&&` /
+`$(…)` / 重定向 / 管道四条注入用例红；② 词元边界改为裸 `startswith(prefix)` ⇒
+`git statusx` 误匹配用例红；③ 摘掉 `confirm` 的命令面分支 ⇒ 13 例红（不匹配、fail-closed、
+接线）。
+
+**规格**：`configuration` **ADDED**「自动放行的命令允许面配置」（4 scen）；`permission`
+**ADDED**「自动放行的命令允许面」（7 scen）。`validate --all` **31/0**（归档后）。
+
+**测试**：新增 `tests/test_command_allowlist.py` **26 例**（三面与优先级；全角逗号与去重；
+非法条目阻断且不回显；前缀匹配 / 词元边界 / 元字符 / fail-closed；其他工具、空配置与非
+auto 档不受影响；组合根接线）。净 **+26**（3105 → **3131**）。四门禁：ruff check / format
+绿、`pyright` 0 errors、`pytest -q` **3131 passed**。
+
+**局限**：前缀匹配**不是沙箱** —— 参数可携带任意语义（`git config` 改配置、`pytest` 执行
+仓库代码）、`cwd` 不受限、后台执行同样只按正文匹配；只降低「模型随手执行任意命令」的
+概率。Python `type` 脚本通常含括号/分号，在命令面开启时会被元字符规则拒绝（保守取舍）。
+不支持子命令级/参数级约束与通配；新增执行命令的工具须先改规格。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10497,3 +10541,4 @@ POST 方法 / 头 / JSON 与脱敏 / 截断 / `text`；空配置零请求；webh
 | ADR-0269 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0270 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0271 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0272 | 02-modules/permission.md, 03-interfaces/permission-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

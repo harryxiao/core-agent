@@ -659,6 +659,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         guardrail=Guardrail(router) if jev is not None else None,
         # 无人值守允许面（change 0280）：空配置 ⇒ None（全放行，与引入前逐字一致）。
         allowed_coeffects=frozenset(config.permission_auto_approve_coeffects()) or None,
+        # 命令级允许面（change 0282）：空映射 ⇒ {}（不限制，与引入前逐字一致）。
+        allowed_commands=config.permission_auto_approve_commands(),
     )
     backend = memory_backend if memory_backend is not None else FileBackend(_memory_path())
     effect_tracker = EffectTracker()

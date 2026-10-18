@@ -169,7 +169,12 @@ class PermissionMode(str, Enum):
     def from_config(cls, value: str | None) -> "PermissionMode": ...
 
 class PermissionModeGate:
-    def __init__(self, mode: PermissionMode = PermissionMode.INTERACTIVE) -> None: ...
+    def __init__(
+        self,
+        mode: PermissionMode = PermissionMode.INTERACTIVE,
+        *,
+        allowed_coeffects: frozenset[str] | None = None,  # change 0280：空/None = 不限制
+    ) -> None: ...
     def classify(self, op, target, coeffect) -> RiskLevel: ...
     def authorize(self, op, target, coeffect) -> Decision:
         """按 mode 前置判定；AUTO_APPROVE 顶部短路全放行；read-only / high-risk-block
@@ -184,6 +189,14 @@ class PermissionModeGate:
 `PolicyEngine.authorize` 对 HIGH_RISK 返回 `approval_required=True`，`guard._to_gate` 会翻成 `confirm`
 ⇒ 出站网络 / 不可归类动作仍走审批（名实不符）。全放行**仅覆盖权限层**，SHALL NOT 越过与之正交的 guardrail
 拦截（`PermissionGuard` 的 guardrail 分支保留在不可逆写分支**之前**）；read-only 与 high-risk-block 两档逐字不变。
+
+**命令级允许面（change `0282` / ADR-0272）**：`PermissionGuard(mode, *,
+allowed_commands={"tools.code_run": ("git status", ...)})`。在 `AUTO_APPROVE` 且该工具有
+条目时，`confirm` 于模式放行**之后**、guardrail **之前**判定 `args["script"]`：含 shell
+元字符（`;` `|` `&` `$` 反引号 `<` `>` `(` `)`、换行）⇒ `deny`；否则须完全等于前缀或以
+「前缀 + 空白」开头；`script` 缺失 / 非字符串 ⇒ `deny`（fail-closed）。拒绝信息不回显
+命令。`PermissionModeGate.authorize` 无工具实参、不感知该配置 —— 命令面只在
+`PermissionGuard` 落地；空映射 / 无条目工具 / 非 auto 档逐字不变。前缀匹配**不是沙箱**。
 
 **无人值守前置条件（change `0096`）**：auto-approve 解除的是**权限层**的门；下列与权限档正交者仍可能拦住
 无人值守运行，按「缺省是否成立」列出：

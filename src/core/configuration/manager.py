@@ -76,6 +76,10 @@ _DEFAULT_ORCHESTRATION_FAILURE_NOTIFY_FILE = ""
 _DEFAULT_ORCHESTRATION_FAILURE_NOTIFY_WEBHOOK = ""
 # coeffect 名形态（`namespace:action`；小写字母开头，允许数字 / `_` / `-`）。
 _COEFFECT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_-")
+# auto-approve 命令允许面（change 0282）：当前唯一执行任意命令的工具 + shell 元字符集。
+# 配置层不 import 能力层，故与 `permission/guard.py::_SHELL_METACHARS` 同源复述。
+_COMMAND_ALLOWLIST_TOOLS = frozenset({"tools.code_run"})
+_SHELL_METACHARS = frozenset(";|&$`<>()\n\r")
 # 策略词表（规格 `orchestration`「难易度感知的调度策略」；配置层不 import 能力层，故此处复述）
 _ORCHESTRATION_POLICIES = ("off", "difficulty")
 
@@ -164,6 +168,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_PERMISSION_AUTO_APPROVE_COEFFECTS",
         default="",
         map_to="permission.auto_approve_coeffects",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "permission.auto_approve_commands",
+        "--permission.auto-approve-commands",
+        "CORE_PERMISSION_AUTO_APPROVE_COMMANDS",
+        default="",
+        map_to="permission.auto_approve_commands",
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
@@ -642,6 +654,7 @@ class ConfigManager:
             )
         errors.extend(_sandbox_errors(perm))
         errors.extend(_auto_approve_coeffects_errors(perm))
+        errors.extend(_auto_approve_commands_errors(perm))
         cons = cast("dict[str, Any]", config.extra.get("constraints") or {})
         errors.extend(_circuit_breaker_errors(cons))
         errors.extend(_retry_errors(cons))
@@ -749,6 +762,17 @@ class ConfigManager:
             return []
         perm = cast(dict[str, Any], self._config.extra.get("permission") or {})
         return _split_coeffects(str(perm.get("auto_approve_coeffects", "") or ""))
+
+    def permission_auto_approve_commands(self) -> dict[str, tuple[str, ...]]:
+        """auto-approve 的命令允许面（空映射 = 不限制；change 0282 / ADR-0272）。
+
+        条目已过校验（`tools.code_run:<前缀>` 形态、前缀无 shell 元字符），此处只做拆分、
+        分组与去重。只在 auto-approve 档被权限门消费；其余权限档忽略本值。
+        """
+        if self._config is None:
+            return {}
+        perm = cast("dict[str, Any]", self._config.extra.get("permission") or {})
+        return _parse_command_allowlist(str(perm.get("auto_approve_commands", "") or ""))
 
     def circuit_breaker(self) -> tuple[int, float]:
         """熔断阈值/冷却查询 → ``(failure_threshold, cooldown_s)``，缺省 ``(5, 30.0)``。
@@ -1778,6 +1802,47 @@ def _auto_approve_coeffects_errors(perm: dict[str, Any]) -> list[str]:
         for token in _split_coeffects(raw)
         if not _valid_coeffect_name(token)
     ]
+
+
+def _auto_approve_commands_errors(perm: dict[str, Any]) -> list[str]:
+    """auto-approve 命令允许面取值校验（对齐 permission「自动放行的命令允许面」）。
+
+    条目须为 ``tools.code_run:<命令前缀>``：工具 id 白名单、前缀非空、前缀不含 shell
+    元字符。错误信息**不回显条目取值**（命令前缀可能内嵌令牌）。空配置合法 = 不限制。
+    """
+    raw = perm.get("auto_approve_commands", "")
+    if not isinstance(raw, str):
+        return [
+            "非法 auto-approve 命令允许面取值: permission.auto_approve_commands"
+            "（须为逗号分隔的 tools.code_run:<命令前缀>）"
+        ]
+    for entry in _split_coeffects(raw):
+        tool, sep, prefix = entry.partition(":")
+        if (
+            not sep
+            or tool not in _COMMAND_ALLOWLIST_TOOLS
+            or not prefix.strip()
+            or any(ch in _SHELL_METACHARS for ch in prefix)
+        ):
+            return [
+                "非法 auto-approve 命令允许面条目: permission.auto_approve_commands"
+                "（须形如 tools.code_run:<命令前缀>，前缀非空且不含 shell 元字符）"
+            ]
+    return []
+
+
+def _parse_command_allowlist(raw: str) -> dict[str, tuple[str, ...]]:
+    """条目列表 → ``{工具 id: (前缀, ...)}``（空项忽略、去重保序）。"""
+    grouped: dict[str, list[str]] = {}
+    for entry in _split_coeffects(raw):
+        tool, _, prefix = entry.partition(":")
+        prefix = prefix.strip()
+        if not prefix:
+            continue
+        bucket = grouped.setdefault(tool, [])
+        if prefix not in bucket:
+            bucket.append(prefix)
+    return {tool: tuple(prefixes) for tool, prefixes in grouped.items()}
 
 
 def _valid_coeffect_name(token: str) -> bool:
