@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 import re
 import time
-from collections.abc import Callable, Iterable, MutableMapping
+from collections.abc import Callable, Iterable, MutableMapping, Sequence
 from dataclasses import dataclass
 
 from .protocol import Layer, MemoryEntry
@@ -35,6 +35,9 @@ _W_TIER = 0.15
 # 抬高全部无标签条目的基数，令高复用填充项反超 gold（0275 基准实测 recall 1.000 → 0.45）。
 _TIER_HIGH_TAGS = frozenset({"milestone", "decision"})
 _TIER_LOW_TAGS = frozenset({"log", "transcript"})
+
+# 一次检索的向量化批大小（change 0290 / ADR-0280）：候选数 N ⇒ 调用数 ceil((N+1)/64)。
+_SIM_BATCH_SIZE = 64
 
 # 检索分词：非中文词元沿用 \w+ 语义（排除汉字，保留其他 Unicode 词字符），
 # 连续汉字另按二元组切分——中文无空格，整句 \w+ / split() 会退化成单一词元，
@@ -111,19 +114,94 @@ def build_lexical_stats(
     )
 
 
+def _chunk_similarities(
+    content_ids: Sequence[str],
+    content_vectors: Sequence[list[float]],
+    query_vec: list[float],
+) -> dict[str, float] | None:
+    """一块内容的余弦映射；数量 / 维度不符 ⇒ ``None``。"""
+    if len(content_vectors) != len(content_ids):
+        return None
+    sims: dict[str, float] = {}
+    for entry_id, vector in zip(content_ids, content_vectors, strict=True):
+        if len(vector) != len(query_vec):
+            return None
+        sims[entry_id] = _cosine(vector, query_vec)
+    return sims
+
+
+def batch_similarities(
+    entries: Sequence[MemoryEntry],
+    query: str,
+    embedder: Callable[[list[str]], list[list[float]]],
+    *,
+    batch_size: int = _SIM_BATCH_SIZE,
+) -> dict[str, float] | None:
+    """一次检索的余弦相似映射（change 0290 / ADR-0280）。
+
+    - 空候选集返回 ``{}`` 且**不调用** embedder（避免空读的瞬时失败置粘性降级）。
+    - ``query`` 恒在第一批 ⇒ 每次检索至多向量化一次；每批一次 embedder 调用。
+    - 任一批异常 / 数量不符 / 维度不符 ⇒ ``None``（本次检索**整体**降级词法，
+      不返回部分映射，避免余弦与词法混合尺度）。
+    """
+    if not entries:
+        return {}
+    return _batched_cosine(entries, query, embedder, batch_size)
+
+
+def _batched_cosine(
+    entries: Sequence[MemoryEntry],
+    query: str,
+    embedder: Callable[[list[str]], list[list[float]]],
+    batch_size: int,
+) -> dict[str, float] | None:
+    texts = [query, *(entry.content for entry in entries)]
+    ids = [entry.id for entry in entries]
+    sims: dict[str, float] = {}
+    query_vec: list[float] | None = None
+    try:
+        for start in range(0, len(texts), batch_size):
+            chunk = texts[start : start + batch_size]
+            vectors = embedder(chunk)
+            if len(vectors) != len(chunk):
+                return None
+            if start == 0:  # 第一批含 query，其向量作为后续所有块的比较基准
+                query_vec = vectors[0]
+                content_ids = ids[: len(vectors) - 1]
+                content_vectors = vectors[1:]
+            else:
+                content_ids = ids[start - 1 : start - 1 + len(vectors)]
+                content_vectors = vectors
+            chunk_sims = (
+                None
+                if query_vec is None
+                else _chunk_similarities(content_ids, content_vectors, query_vec)
+            )
+            if chunk_sims is None:
+                return None
+            sims.update(chunk_sims)
+    except Exception:  # noqa: BLE001 — 任一失败 ⇒ 本次检索整体降级词法
+        return None
+    return sims
+
+
 def relevance(
     entry: MemoryEntry,
     query: str,
     embedder: Callable[[list[str]], list[list[float]]] | None = None,
     *,
     stats: LexicalStats | None = None,
+    sim: float | None = None,
 ) -> float:
     """**语义相似 × 层结构权重**（加性项；越高越相关）。
 
     时间 / 复用 / 重要度不在此处——由 :func:`rank` 乘性调制，避免与加性项双重计数。
     ``stats`` 仅用于 embedder 缺省/失败时的词法打分；``None`` ⇒ 原重叠公式（兼容面）。
+    ``sim`` 为预计算相似度（:func:`batch_similarities`），提供时优先于 ``embedder``；
+    ``0.0`` 与负余弦是合法值，故用 ``is None`` 而非真值判断。
     """
-    sim = _similarity(entry, query, embedder, stats)
+    if sim is None:
+        sim = _similarity(entry, query, embedder, stats)
     return _W_SIM * sim + _W_LAYER * _LAYER_PRIORITY[entry.layer] + _W_TIER * _tier_weight(entry)
 
 
@@ -152,10 +230,11 @@ def rank(
     embedder: Callable[[list[str]], list[list[float]]] | None = None,
     *,
     stats: LexicalStats | None = None,
+    sim: float | None = None,
 ) -> float:
     """检索排序得分：``relevance · recency_decay · (1 + log1p(reuse)) · (1 + importance)``。"""
     return (
-        relevance(entry, query, embedder, stats=stats)
+        relevance(entry, query, embedder, stats=stats, sim=sim)
         * recency_decay(entry)
         * (1.0 + math.log1p(entry.reuse_count))
         * (1.0 + entry.importance)

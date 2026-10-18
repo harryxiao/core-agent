@@ -38,7 +38,7 @@ from .extract import (
     slug_entity,
 )
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
-from .relevance import build_lexical_stats, rank, recency_decay
+from .relevance import batch_similarities, build_lexical_stats, rank, recency_decay
 from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter
 
 # 向量缓存上界（超出按 FIFO 逐出）；进程内易失，不落盘
@@ -353,14 +353,24 @@ class MemoryStore:
                 for entry_id, entry in candidates.items()
                 if entry.session_id in ("", session_id)
             }
+        values = list(candidates.values())
+        # 批量语义相似（change 0290 / ADR-0280）：排序前按批向量化，query 至多一次；
+        # 任一批失败 ⇒ sim_map=None ⇒ 本次检索整体走词法（不混合两种尺度）。
         embedder = self._memo_embedder() if self._embedder is not None else None
+        sim_map = batch_similarities(values, query, embedder) if embedder is not None else None
         # 词法语料统计（change 0252 / ADR-0242）：候选集只分词一次，排序阶段查缓存；
         # embedder 失败降级时同样带 IDF/长度归一。
-        stats = build_lexical_stats(candidates.values(), query, token_cache=self._token_cache)
+        stats = build_lexical_stats(values, query, token_cache=self._token_cache)
         self._trim_token_cache()
         ranked = sorted(
-            candidates.values(),
-            key=lambda e: rank(e, query, embedder, stats=stats),
+            values,
+            key=lambda e: rank(
+                e,
+                query,
+                None,
+                stats=stats,
+                sim=sim_map.get(e.id) if sim_map is not None else None,
+            ),
             reverse=True,
         )
         selected = self._truncate(ranked, budget)

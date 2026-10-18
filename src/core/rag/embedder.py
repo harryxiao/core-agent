@@ -70,3 +70,13 @@ class LLMEmbedder(Embedder):
         except LLMError as exc:
             raise RAGError(RAGErrorCode.EMBEDDING_FAILED, f"embedding 生成失败: {exc}") from exc
         return embeddings[0].vector
+
+    def embed_many(self, texts: list[str]) -> list[list[float]]:
+        """批量向量化：一次 provider 调用（memory 的批量契约；change 0290 / ADR-0280）。"""
+        if not texts:
+            return []
+        try:
+            embeddings = self._provider.embedding(texts)
+        except LLMError as exc:
+            raise RAGError(RAGErrorCode.EMBEDDING_FAILED, f"embedding 生成失败: {exc}") from exc
+        return [embedding.vector for embedding in embeddings]

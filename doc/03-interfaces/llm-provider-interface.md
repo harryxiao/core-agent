@@ -19,7 +19,8 @@ class LLMProvider(ABC):
     async def aembedding(self, texts: list[str]) -> list[Embedding]: ...
 ```
 
-- 六入口：`completion` / `stream` / `embedding`（同步）+ `acompletion` / `astream` / `aembedding`（异步）；异步为主、同步为薄壳（内部 `asyncio.run` 桥接），支持事件循环内非阻塞与真并发。
+- 六入口：`completion` / `stream` / `embedding`（同步）+ `acompletion` / `astream` / `aembedding`（异步）；异步为主、同步为薄壳，支持事件循环内非阻塞与真并发。
+- 同步薄壳的桥接（change `0290` / ADR-0280）：**无运行事件循环**时直接 `asyncio.run`；在**运行中事件循环**内改在一次性工作线程的新循环中执行同一异步实现并等待结果 —— 不抛 `asyncio.run()` 嵌套错误、不留未等待协程。**两种上下文均为阻塞语义**；需要非阻塞的调用方应使用 `a*` 入口（桥接仍会阻塞发起线程，远端调用期间事件循环停摆）。
 - 调用方（内核 loop 及所有消费方）只面向此接口，替换实现零改动。
 
 ---

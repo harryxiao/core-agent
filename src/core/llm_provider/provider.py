@@ -1,8 +1,10 @@
 """LLMProvider 抽象接口（llm-provider）。
 
 异步为主（acompletion / astream / aembedding），同步为薄壳（completion /
-stream / embedding），内部经事件循环桥接（asyncio.run）完成调用，语义与
-异步入口一致。内核 loop 只依赖此接口，替换实现零改动。
+stream / embedding）：无运行事件循环时直接 ``asyncio.run``；已有运行循环时
+在一次性工作线程的新循环中执行同一异步实现并等待结果（change 0290 /
+ADR-0280）。同步薄壳在两种上下文中都**阻塞**，非阻塞调用方用异步入口。
+内核 loop 只依赖此接口，替换实现零改动。
 
 对应接口：doc/03-interfaces/llm-provider-interface.md §1
 """
@@ -11,9 +13,28 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, TypeVar
 
 from .models import Embedding, LLMChunk, LLMRequest, LLMResponse
+
+_T = TypeVar("_T")
+
+
+def _run_sync(factory: Callable[[], Coroutine[Any, Any, _T]]) -> _T:
+    """把异步实现桥接为同步调用（循环安全）。
+
+    传入**协程工厂**而非协程：桥接本身失败时不会留下未等待协程。运行中事件循环内
+    同步等待会死锁，故改在一次性工作线程中 ``asyncio.run``；不用进程级单 worker
+    （worker 内再调同步薄壳会互相等待）。
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(factory())
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda: asyncio.run(factory())).result()
 
 
 class LLMProvider(ABC):
@@ -34,16 +55,16 @@ class LLMProvider(ABC):
         """异步向量化。"""
         raise NotImplementedError
 
-    # ---- 同步薄壳：内部 asyncio.run 桥接，语义与异步入口一致 ----
+    # ---- 同步薄壳：循环安全桥接，语义与异步入口一致（两种上下文均阻塞）----
 
     def completion(self, request: LLMRequest) -> LLMResponse:
-        return asyncio.run(self.acompletion(request))
+        return _run_sync(lambda: self.acompletion(request))
 
     def stream(self, request: LLMRequest) -> Iterator[LLMChunk]:
-        yield from asyncio.run(self._collect_stream(request))
+        yield from _run_sync(lambda: self._collect_stream(request))
 
     def embedding(self, texts: list[str]) -> list[Embedding]:
-        return asyncio.run(self.aembedding(texts))
+        return _run_sync(lambda: self.aembedding(texts))
 
     async def _collect_stream(self, request: LLMRequest) -> list[LLMChunk]:
         return [chunk async for chunk in self.astream(request)]

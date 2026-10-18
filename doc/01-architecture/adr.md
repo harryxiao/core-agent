@@ -10583,6 +10583,60 @@ busy 用例红（第二个实例扫描并执行）；② 打开失败改为 `acq
 不代表真实存储/协议成本；概念 embedder 证明通路与量纲，不证明真实模型质量（须在线测量）；
 required 不保证端点可达；「真实关系为 0」基于 2026-10-18 的本机记忆快照，随部署变化。
 
+## ADR-0280：同步薄壳循环桥接 ＋ 记忆批量语义相似（change 0290 / 台账 E226）
+
+**背景**：2026-10-18 的真实 `task` 冒烟打印
+`RuntimeWarning: coroutine 'StdlibLLMProvider.aembedding' was never awaited`。根因链：
+`MemoryStore.read` 在事件循环线程上同步执行 → `_similarity` 逐候选调用 embedder →
+`batch_embed` 串行适配 → `LLMEmbedder.embed` → `LLMProvider.embedding` 的
+`asyncio.run` → 循环嵌套 `RuntimeError`（先建协程再调用，留下未等待协程）→
+`_memo_embedder` 置**粘性** `_embed_failed=True` ⇒ 本进程后续检索全走词法。
+`llm.embedding_required` 抓不到（ADR-0279 明确它只做配置期阻断、不探测可达性）。
+同一路径还有规模问题：逐候选调用 ⇒ N 条候选 N 次远端往返。
+
+**决策**：
+
+- **D1 同步薄壳在运行中事件循环内走一次性工作线程**。私有 `_run_sync(factory)` 先
+  `asyncio.get_running_loop()`：无循环 ⇒ `asyncio.run(factory())`（与旧实现逐字同义）；
+  有循环 ⇒ `ThreadPoolExecutor(max_workers=1)` 内新循环执行同一异步实现并 `.result()`
+  等待。传**协程工厂**而非协程 ⇒ 桥接失败不留孤儿协程。三个薄壳
+  （`completion` / `stream` / `embedding`）统一接入；两种上下文均为**阻塞**语义。
+  不 import `core.runtime._run_coro`（架构门禁禁止 `llm_provider` 依赖 `runtime`）。
+- **D2 `LLMEmbedder.embed_many(texts)`**：一次 provider 同步调用收齐一批并映射
+  `LLMError → RAGError(EMBEDDING_FAILED)`；空输入返回 `[]` 不触网。**不加入 `Embedder`
+  ABC**（HashEmbedder 等实现不需要批量，契约扩散无收益）；`batch_embed` 保留为
+  「只提供单文本 callable」的兼容适配器。组合根 memory 通路改为注入 `embed_many`。
+- **D3 `relevance.batch_similarities`**：`[query, *(content)]` 按 `_SIM_BATCH_SIZE=64`
+  切块，query 恒在第一块 ⇒ 每次检索至多嵌入一次；逐块校验数量，首块取 query 向量并
+  校验维度一致（`_cosine` 用 `zip(strict=False)`，维度不符会静默截断）；余弦算完即丢，
+  不累计 10k 向量。**空候选集提前返回 `{}` 且不调用 embedder** —— 空读触网失败会置
+  粘性降级、毒化后续检索，这是必须堵住的最小事故面。
+- **D4 整次检索一个尺度**：任一批异常 / 数量或维度不符 ⇒ 返回 `None`，`read` 对**全部**
+  候选走 BM25，绝不返回部分映射（否则同一排序里余弦与词法混合、尺度不可比）。
+  `rank` / `relevance` 新增仅关键字 `sim: float | None`，用 `is None` 判断
+  （`0.0` 与负余弦合法），`sim` 优先于 `embedder`；`build_lexical_stats` 仍无条件执行
+  （预热 token 缓存并服务降级路径）。缺省词法路径、`embedding_required` 配置期语义、
+  粘性失败后的词法降级均逐字保留。
+
+**被拒方案**：同步薄壳检测到循环就抛清晰错误（`read` 是既有同步契约，抛错只是把静默
+降级换成显式中断，语义检索仍不可用）；把 `read` / `ContextAssembler.build` 异步化
+（调用链全改，超出缺陷修复范围）；把 `embed_many` 加到 `Embedder` ABC（强制所有实现
+跟进）；进程级单 worker executor（worker 内再调薄壳会自等死锁）；语义 top-K 预筛
+（真正的延迟优化，需独立召回质量评估，不能与缺陷修复捆绑）。
+
+**验证**：新增 20 例（provider 3 / rag 4 / 批量相似 8 / 词法预计算 2 / memory 3）＋
+修改 `test_phase13` 注入断言；全量 3221 → **3241**；反证 3/3（薄壳改回裸 `asyncio.run`、
+组合根改回 `batch_embed`、`read` 改回逐候选）；四门禁全绿；`openspec validate --all`
+归档后 31/0；真实 embedding 端点在 `asyncio.run` 内检索无告警。
+
+**局限**：① 桥接仍**阻塞**事件循环 —— 每次远端调用期间循环停摆，非阻塞调用方须用
+`a*` 入口；② 一次性线程使 `HTTPConnectionPool` 的 thread-local 连接在该路径不复用
+（每次新连接）；③ `_VEC_CACHE_MAX=4096` 的 FIFO 淘汰不变，10k 候选时缓存仍抖动，
+批量只减少调用次数（10k 约 157 次顺序往返）；④ 粘性 `_embed_failed` 不变：一次失败后
+本进程语义检索不可用，需重启；⑤ `CORE-NFR-PERF2`（<100ms）仍是**词法**基准，不据此
+外推远端 embedding 路径达标；⑥ `stream` 仍为缓冲式，桥接不使其增量；⑦ 冒烟只证明
+「告警消失、语义排序生效」，不证明远端模型质量。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10857,3 +10911,4 @@ required 不保证端点可达；「真实关系为 0」基于 2026-10-18 的本
 | ADR-0277 | 04-testing/test-cases.md, coding-plan/README.md, coding-plan/phase-38.md, coding-plan/Pending-Arbitration.md, coding-plan/known-risk.md |
 | ADR-0278 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0279 | 03-interfaces/configuration-interface.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
+| ADR-0280 | 03-interfaces/llm-provider-interface.md, 02-modules/llm-provider.md, 03-interfaces/memory-interface.md, 02-modules/memory.md, 03-interfaces/rag-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

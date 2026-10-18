@@ -234,6 +234,62 @@ def test_read_degrades_to_lexical_when_embedder_raises() -> None:
     assert [e.id for e in store.read("apple", budget=100)] == ["e1"]
 
 
+def test_read_batches_embedding_across_candidates() -> None:
+    """候选集按批向量化：130 条 + query ⇒ 64/64/3 三次调用（change 0290 / ADR-0280）。"""
+    sizes: list[int] = []
+    embedded: list[str] = []
+
+    def embedder(texts: list[str]) -> list[list[float]]:
+        sizes.append(len(texts))
+        embedded.extend(texts)
+        return [[1.0, 0.0] for _ in texts]
+
+    store = MemoryStore(embedder=embedder)
+    for i in range(130):
+        store.write("L2", _entry(f"e{i}", "L2", f"fact {i}"))
+
+    store.read("query", budget=100_000)
+
+    assert sizes == [64, 64, 3]
+    assert len(embedded) == 131  # noqa: PLR2004 — 130 条内容 + 1 次 query
+    assert embedded.count("query") == 1
+
+
+def test_read_embedder_failure_degrades_whole_read_to_lexical() -> None:
+    """第二块失败 ⇒ 本次检索**整体**词法（与纯词法排序逐项一致，无混合尺度）。"""
+
+    def _populate(store: MemoryStore) -> None:
+        for i in range(65):
+            store.write("L2", _entry(f"e{i}", "L2", f"apple banana item {i}"))
+
+    calls = {"n": 0}
+
+    def flaky(texts: list[str]) -> list[list[float]]:
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("second batch down")  # noqa: TRY003 — 模拟服务中途不可达
+        return [[1.0, 0.0] for _ in texts]
+
+    semantic = MemoryStore(embedder=flaky)
+    lexical = MemoryStore()
+    _populate(semantic)
+    _populate(lexical)
+
+    ids = [entry.id for entry in semantic.read("apple", budget=100_000)]
+    assert calls["n"] == 2  # noqa: PLR2004 — 第一批成功、第二批失败
+    assert ids == [entry.id for entry in lexical.read("apple", budget=100_000)]
+
+
+def test_read_empty_store_skips_embedding() -> None:
+    """空候选集不触网（空读的瞬时失败不得毒化粘性降级）。"""
+
+    def embedder(texts: list[str]) -> list[list[float]]:
+        raise AssertionError("empty store must not call embedder")  # noqa: TRY003
+
+    store = MemoryStore(embedder=embedder)
+    assert store.read("q", budget=100) == []
+
+
 def test_batch_embed_adapter() -> None:
     """单条可调用 → MemoryStore 的批量契约。"""
     batch = batch_embed(lambda t: [float(len(t))])

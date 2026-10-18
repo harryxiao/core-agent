@@ -1294,7 +1294,7 @@
 > 四个注入接缝（`turn_observer` / `cold_path` / `summarizer` / `key_fact_extractor`）仍为同步 callable。
 > **已知局限**：交叉会话并发写未加锁（竞态先于本 change 存在，不引入也不消除）；`to_thread` 无超时/取消
 > （卡住时本轮收尾会等它，缓解面是既有 `timeout_s` 与失败降级链）；只覆盖三处已确认边界（无自动门禁）；
-> 线程跳一次成本非零；不改 `completion()` 薄壳（从事件循环内直接调用仍是错误用法，未加防呆断言）。
+> 线程跳一次成本非零；本 change 不改 `completion()` 薄壳（**change `0290` 起**该薄壳在运行中事件循环内改经一次性工作线程桥接，仍是阻塞语义，见 §203）。
 
 ## 80. 诊断视图列对齐（TC-NOTES-ALIGN，change `0165`／ADR-0158）
 
@@ -4868,3 +4868,26 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > 流水线 `kept=8 candidates=30 cap=8`；白名单 `48/48`。
 > **裁决**：机制增益成立，但生产关系抽取缺省关、真实数据为 0 ⇒ 本轮**不建图**；
 > 轻图为重新开启时的既定形态。**局限**：完美抽取合成链，不测 LLM 抽取质量。
+
+## 203. 循环安全同步桥与记忆批量语义相似（TC-SYNC-BRIDGE，change `0290`／ADR-0280，台账 E226）
+
+| 编号 | 覆盖 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-SYNC-BRIDGE-01 | 循环内三薄壳 | `asyncio.run` 内调 `completion` / `stream` / `embedding` | 均返回正确结果，不抛嵌套 `RuntimeError`（`tests/test_llm_provider.py::test_sync_wrappers_inside_running_loop`） |
+| TC-SYNC-BRIDGE-02 | 工作线程执行 | 循环内调薄壳，异步实现记录 `get_running_loop()` / 线程 | 执行发生在**另一线程**的新循环上，结果回传（`...::test_sync_wrapper_runs_coroutine_in_worker_thread`） |
+| TC-SYNC-BRIDGE-03 | 异常透传无告警 | 循环内异步实现抛 `LLMError`，`warnings` 以 `error` 捕获 `RuntimeWarning` | 同一异常类型透传；**无** never-awaited 告警（`...::test_sync_wrapper_propagates_llm_error_inside_loop`） |
+| TC-SYNC-BRIDGE-04 | `embed_many` 单次调用 | 3 条文本 + 记录型 provider | provider 同步 `embedding` **只调 1 次**、参数为全部文本，返回向量按序（`tests/test_rag.py::test_llm_embedder_embed_many_calls_provider_once`） |
+| TC-SYNC-BRIDGE-05 | `embed_many` 错误映射 / 空输入 / 循环内 | provider 抛 `LLMError`；`[]`；循环内调用 | 映射 `RAGError(EMBEDDING_FAILED)`；空输入返回 `[]` 且不调 provider；循环内可用（`test_llm_embedder_embed_many_maps_llm_error` / `_empty_returns_empty` / `_inside_running_loop`） |
+| TC-SYNC-BRIDGE-06 | 余弦映射与分块 | 129 条候选、批大小 64、记录型 embedder | 3 次调用 `[64,64,2]`（含 query 共 130 文本），query **只出现一次**且在第一块；返回值 `id → 余弦`（`tests/test_memory_batch_similarity.py` 前两例） |
+| TC-SYNC-BRIDGE-07 | 空集不触网 | 空候选集 + 一旦调用即失败的 embedder | 返回 `{}`，embedder **零调用**（`...::test_empty_entries_do_not_call_embedder`） |
+| TC-SYNC-BRIDGE-08 | 整次降级 | 第二块抛错 / 返回数量不符 / 维度不符 | 均返回 `None`（**不**返回部分映射）（`...::test_chunk_error_returns_none` / `_count_mismatch_returns_none` / `_dimension_mismatch_returns_none`） |
+| TC-SYNC-BRIDGE-09 | 循环内端到端排序 | `asyncio.run` 内 `MemoryStore.read`，语义 gold vs 词面干扰项 | 语义向量生效、gold 排前；`_embed_failed is False`（`...::test_memory_read_semantic_inside_running_loop`） |
+| TC-SYNC-BRIDGE-10 | `sim` 预计算 | `rank` / `relevance` 传 `sim=0.0` / 正值 + 会抛错的 embedder | 采用传入值、**不调用** embedder；`0.0` 不被当作缺失（`tests/test_memory_lexical_scoring.py` 两例） |
+| TC-SYNC-BRIDGE-11 | 130 候选批量 / 整次降级 / 空读 | 131 条候选（含 query）分块；第二块失败对照纯词法 store；空 store | 调用规模 `[64,64,3]`；失败后全部候选走 BM25 且顺序与纯词法 store 一致；空 store 零调用（`tests/test_memory.py` 三例） |
+| TC-SYNC-BRIDGE-12 | 组合根注入 | `build_runtime` 注入面 | embedder 为批量入口：一次 provider 调用收齐 `["ab","cde"]`（`tests/test_phase13.py::test_build_runtime_embedding_model_wires_batched_embedder`） |
+
+> **反证 3/3**：薄壳改回裸 `asyncio.run` ⇒ 01/03/05/09 类用例红；组合根改回
+> `batch_embed` ⇒ 11 红；`read` 改回逐候选 `_similarity` ⇒ 11 红（复原后 `md5sum` 同）。
+> **实测**：真实 `task` 冒烟告警消失；真实 embedding 端点在 `asyncio.run` 内检索、
+> 语义排序生效且 `_embed_failed is False`。**已知局限**：见 `coding-plan/known-risk.md`
+> §3 ADR-0280 行（桥接仍阻塞、连接不复用、缓存抖动、粘性失败、PERF2 仍为词法基准）。

@@ -35,17 +35,22 @@
 （`1 + log1p(reuse_count)`）、主观重要度（`1 + importance`）**乘性调制**；条目 SHALL 携带
 `kind`（episodic / semantic）与 `importance` 元数据，供下沉固化聚合。语义相似 SHALL 经
 **可注入 embedder**（缺省词法、可远端向量化）计算，并对检索 query 与未变条目向量做**缓存**
-（每次检索 query 至多向量化一次）。
+（每次检索 query 至多向量化一次）。候选相似度 SHALL 按**有界批次**计算：一次检索的候选文本
+合批后调用 embedder，每批一次调用（调用数为 O(候选数/批大小)），SHALL NOT 逐候选调用；
+query SHALL 恒在第一批内。
 
 **缺省词法相似** SHALL 按**词元 IDF 加权与文档长度归一**（BM25 口径）计算，SHALL NOT 对
 所有查询词元等权、SHALL NOT 忽略文档长度；得分 SHALL 按查询词元的 IDF 总和归一并以 1 为上界
 （与层结构权重同一量纲）。embedder 缺失或调用失败降级词法时 SHALL 使用同一 IDF/长度归一
-口径。组合根在**有效 embedding 模型为空且 `llm.embedding_required` 关闭**时（既未显式配置
-`llm.embedding_model`，也未按 `llm.embedding_auto` 从已知端点推导出模型）SHALL 在进程启动
-（CLI 入口）向 stderr 输出一次「词法匹配、语义检索未启用」的提示，SHALL NOT 每轮检索重复输出；
-有效模型来自端点推导时 SHALL 输出一次「按端点自动选用 …（可用 `llm.embedding_model` 覆盖）」
-提示（不含端点与密钥）。`llm.embedding_required` **开启**时，有效模型为空 SHALL 在**配置
-校验期阻断启动**（由 configuration 规格承载），组合根 SHALL NOT 进入本提示面。
+口径。任一批 embedder 调用异常、返回向量数量与输入文本数不符、或向量维度不一致时，本次检索的
+**全部候选** SHALL 降级为同一 IDF/长度归一化的词法相似，SHALL NOT 出现部分候选用余弦、
+其余用词法的混合排序；候选集为空时 SHALL NOT 调用 embedder。组合根在**有效 embedding 模型
+为空且 `llm.embedding_required` 关闭**时（既未显式配置 `llm.embedding_model`，也未按
+`llm.embedding_auto` 从已知端点推导出模型）SHALL 在进程启动（CLI 入口）向 stderr 输出一次
+「词法匹配、语义检索未启用」的提示，SHALL NOT 每轮检索重复输出；有效模型来自端点推导时
+SHALL 输出一次「按端点自动选用 …（可用 `llm.embedding_model` 覆盖）」提示（不含端点与密钥）。
+`llm.embedding_required` **开启**时，有效模型为空 SHALL 在**配置校验期阻断启动**（由
+configuration 规格承载），组合根 SHALL NOT 进入本提示面。
 
 `llm.embedding_required` 只保证「embedding 模型已确定」，SHALL NOT 探测网络可达性，
 SHALL NOT 改变**调用期**降级语义：注入的 embedder 调用失败时仍 SHALL 降级为同一 IDF/长度
@@ -91,14 +96,26 @@ SHALL 逐条写回（语义不变）。批量写 SHALL 与逐条写回**同一�
   trace 回滚而还原为强化前的值
 
 #### Scenario: 语义相似经 embedder
-- **GIVEN** 注入了 embedder
+- **GIVEN** 注入了 embedder，候选集有多条条目
 - **WHEN** 检索一个语义相近但词面不重叠的查询
-- **THEN** 以向量相似度参与排序，且本次检索对 query 只向量化一次、未变条目复用缓存向量
+- **THEN** 候选按有界批次向量化（每批一次 embedder 调用），以余弦相似度参与排序；
+  本次检索对 query 只向量化一次、未变条目复用缓存向量
+
+#### Scenario: 运行中事件循环内语义检索不降级
+- **GIVEN** `MemoryStore.read` 在**运行中事件循环**线程上被调用，且注入了可用的同步 embedder
+- **WHEN** 检索器计算语义相似
+- **THEN** 语义排序仍然生效，SHALL NOT 仅因 `asyncio.run` 在循环内不可用而降级词法
+
+#### Scenario: 空候选集不触网
+- **GIVEN** 候选集为空
+- **WHEN** 检索器准备计算语义相似
+- **THEN** 不调用 embedder（空读的瞬时失败不得置粘性降级、毒化后续检索）
 
 #### Scenario: embedder 不可用降级词法
-- **GIVEN** 未注入 embedder，或 embedder 调用抛错
+- **GIVEN** 未注入 embedder，或 embedder 调用抛错（含任一批失败、返回向量数量/维度不符）
 - **WHEN** 检索器计算相似度
-- **THEN** 降级为 IDF/长度归一化的词法相似（罕见词元权重更高），检索不中断
+- **THEN** 本次检索的**全部**候选降级为 IDF/长度归一化的词法相似（罕见词元权重更高），
+  SHALL NOT 混合余弦与词法两种尺度，检索不中断
 
 #### Scenario: 罕见词元优先
 - **GIVEN** 两条同层、同新鲜度、同复用与重要度的条目，各命中查询的一个词元

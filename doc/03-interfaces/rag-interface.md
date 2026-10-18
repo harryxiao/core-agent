@@ -97,6 +97,18 @@ class Embedder:
 
 远端模型切换经 llm-provider 归一化 embedding 入口完成，调用方零改动。
 
+``LLMEmbedder`` 另提供**仅具体类**的批量入口（**不**加入 ``Embedder`` ABC，避免强制所有实现跟进）：
+
+```python
+class LLMEmbedder(Embedder):
+    def embed_many(self, texts: list[str]) -> list[list[float]]:
+        """一次 provider 同步调用收齐一批；空输入返回 [] 且不触网；
+        LLMError → RAGError(EMBEDDING_FAILED)（change 0290 / ADR-0280）。"""
+```
+
+memory 检索通路经此入口按 64 条一批向量化；注入「只提供单文本 callable」的场景仍用
+``memory/embedding.py::batch_embed`` 适配器（保留，不删除）。
+
 ---
 
 ## 4. Retriever 接口（语义检索）

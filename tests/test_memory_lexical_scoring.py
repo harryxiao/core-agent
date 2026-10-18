@@ -118,6 +118,28 @@ def test_embedder_failure_still_uses_idf_stats() -> None:
     assert ids.index("rare") < ids.index("common")
 
 
+def test_rank_uses_precomputed_similarity_without_embedder() -> None:
+    """``sim`` 预计算值优先于 embedder：embedder 永不被调用。"""
+    entry = _entry("a", "alpha")
+    expected = relevance(entry, "alpha")
+
+    def broken(texts: list[str]) -> list[list[float]]:
+        raise AssertionError("precomputed sim must skip embedder")  # noqa: TRY003
+
+    assert rank(entry, "alpha", broken, sim=1.0) == pytest.approx(expected * recency_decay(entry))
+
+
+def test_relevance_precomputed_zero_similarity_is_honored() -> None:
+    """``0.0`` 是合法相似度：用 ``is None`` 判断，而非真值。"""
+    entry = _entry("a", "alpha")
+
+    def broken(texts: list[str]) -> list[list[float]]:
+        raise AssertionError("precomputed sim must skip embedder")  # noqa: TRY003
+
+    # L2 层优先级 0.6，默认档 0 ⇒ 只剩加性层权重
+    assert relevance(entry, "alpha", broken, sim=0.0) == pytest.approx(0.2 * 0.6)
+
+
 def test_stats_default_none_for_empty_query() -> None:
     """空查询 / 空语料 ⇒ 无统计（调用方走原路径，不抛错）。"""
     assert build_lexical_stats(_store_entries(), "") is None

@@ -13,6 +13,7 @@ import json
 import threading
 import time
 import urllib.error
+import warnings
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
@@ -110,6 +111,58 @@ def test_sync_wrappers_equivalent() -> None:
     assert provider.completion(req).content == "ok"
     assert [c.content for c in provider.stream(req)] == ["a", "b"]
     assert [e.vector for e in provider.embedding(["x"])] == [[0.1, 0.2]]
+
+
+def test_sync_wrappers_inside_running_loop() -> None:
+    """运行中事件循环内调用三个薄壳：经工作线程桥接，不再抛嵌套 asyncio.run 错误。"""
+    provider = _StubProvider()
+    req = LLMRequest(messages=[Message("user", "hi")], model="stub")
+
+    async def main() -> None:
+        assert provider.completion(req).content == "ok"
+        assert [c.content for c in provider.stream(req)] == ["a", "b"]
+        assert [e.vector for e in provider.embedding(["x"])] == [[0.1, 0.2]]
+
+    asyncio.run(main())
+
+
+def test_sync_wrapper_runs_coroutine_in_worker_thread() -> None:
+    """循环内桥接在**另一线程**的新事件循环执行（异步实现可安全用 asyncio.run）。"""
+    thread_ids: list[int] = []
+
+    class _RecordingProvider(_StubProvider):
+        async def acompletion(self, request: LLMRequest) -> LLMResponse:
+            thread_ids.append(threading.get_ident())
+            return _resp("ok")
+
+    provider = _RecordingProvider()
+    req = LLMRequest(messages=[Message("user", "hi")], model="stub")
+
+    async def main() -> int:
+        provider.completion(req)
+        return threading.get_ident()
+
+    loop_thread = asyncio.run(main())
+    assert thread_ids and thread_ids[0] != loop_thread
+
+
+def test_sync_wrapper_propagates_llm_error_inside_loop() -> None:
+    """循环内桥接透传归一化错误，且桥接失败不留下未等待协程（无 RuntimeWarning）。"""
+
+    class _FailingProvider(_StubProvider):
+        async def acompletion(self, request: LLMRequest) -> LLMResponse:
+            raise LLMError("boom")
+
+    provider = _FailingProvider()
+    req = LLMRequest(messages=[Message("user", "hi")], model="stub")
+
+    async def main() -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            with pytest.raises(LLMError):
+                provider.completion(req)
+
+    asyncio.run(main())
 
 
 # ---- registry 依赖注入 ----

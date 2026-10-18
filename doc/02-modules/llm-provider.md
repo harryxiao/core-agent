@@ -35,6 +35,10 @@ L3 Loop ──► LLMProvider（抽象接口）──► StdlibLLMProvider（默
 
 - 三入口：`completion`（同步补全）/ `stream`（流式补全）/ `embedding`（向量化）。
 - 统一请求模型：消息列表 + 参数（temperature / max_tokens 等）；统一响应模型：内容 + 令牌统计 + finish_reason。
+- **同步/异步桥接**（change `0290` / ADR-0280）：同步入口为薄壳。无运行事件循环 ⇒ `asyncio.run`
+  对应异步实现；运行中事件循环内 ⇒ 在**一次性工作线程**的新循环执行同一异步实现并等待
+  （`_run_sync` 接收**协程工厂**，桥接失败不留孤儿协程）。两种上下文均为阻塞语义；一次性线程
+  意味着该路径的 HTTP 连接池 thread-local 连接不复用。`stream` 仍为缓冲式。
 
 ### 3.2 stdlib 默认实现（OpenAI 兼容）
 

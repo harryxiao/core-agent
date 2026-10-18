@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 
 import pytest
@@ -99,6 +100,55 @@ def test_llm_embedder_maps_llm_error() -> None:
     with pytest.raises(RAGError) as exc:
         embedder.embed("text")
     assert exc.value.code == RAGErrorCode.EMBEDDING_FAILED
+
+
+class _RecordingEmbeddingProvider(_StubProvider):
+    """记录每次 embedding 调用的文本批（change 0290 / ADR-0280）。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.batches: list[list[str]] = []
+
+    async def aembedding(self, texts: list[str]) -> list[Embedding]:
+        self.batches.append(list(texts))
+        return [Embedding(vector=[float(len(t)), 1.0]) for t in texts]
+
+
+def test_llm_embedder_embed_many_calls_provider_once() -> None:
+    """批量入口一次 provider 调用收齐全部文本（不是逐条）。"""
+    provider = _RecordingEmbeddingProvider()
+    vectors = LLMEmbedder(provider).embed_many(["a", "bbb", "cc"])
+
+    assert vectors == [[1.0, 1.0], [3.0, 1.0], [2.0, 1.0]]
+    assert provider.batches == [["a", "bbb", "cc"]]
+
+
+def test_llm_embedder_embed_many_maps_llm_error() -> None:
+    embedder = LLMEmbedder(_FailingEmbeddingProvider())
+    with pytest.raises(RAGError) as exc:
+        embedder.embed_many(["text"])
+    assert exc.value.code == RAGErrorCode.EMBEDDING_FAILED
+    assert isinstance(exc.value.__cause__, LLMError)
+
+
+def test_llm_embedder_embed_many_empty_returns_empty() -> None:
+    """空输入不触网（provider 永不被调用）。"""
+
+    class _NeverCalled(_StubProvider):
+        async def aembedding(self, texts: list[str]) -> list[Embedding]:
+            raise AssertionError("empty batch must not reach provider")  # noqa: TRY003
+
+    assert LLMEmbedder(_NeverCalled()).embed_many([]) == []
+
+
+def test_llm_embedder_embed_many_inside_running_loop() -> None:
+    """运行中事件循环内仍可批量向量化（同步薄壳桥接，change 0290）。"""
+    embedder = LLMEmbedder(_RecordingEmbeddingProvider())
+
+    async def main() -> list[list[float]]:
+        return embedder.embed_many(["a", "bb"])
+
+    assert asyncio.run(main()) == [[1.0, 1.0], [2.0, 1.0]]
 
 
 # ---- 向量存储 ----

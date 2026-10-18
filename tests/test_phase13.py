@@ -758,7 +758,12 @@ def test_build_runtime_embedder_di_passthrough(monkeypatch, tmp_path) -> None:
     assert runtime2.memory._embedder is fake_embedder
 
 
-def _fake_provider_cls(constructed: list[tuple[str, str | None]], *, fail: bool = False):
+def _fake_provider_cls(
+    constructed: list[tuple[str, str | None]],
+    *,
+    fail: bool = False,
+    calls: list[list[str]] | None = None,
+):
     """假 provider 类：记录 (model, base_url)，embedding 返回定长向量或抛错（不触网）。"""
 
     class _FakeProvider:
@@ -775,6 +780,8 @@ def _fake_provider_cls(constructed: list[tuple[str, str | None]], *, fail: bool 
             constructed.append((model, base_url))
 
         def embedding(self, texts: list[str]) -> list[Embedding]:
+            if calls is not None:
+                calls.append(list(texts))
             if fail:
                 raise LLMError("embedding unreachable")  # noqa: TRY003 — 模拟端点不可达
             return [Embedding(vector=[float(len(t))]) for t in texts]
@@ -782,13 +789,16 @@ def _fake_provider_cls(constructed: list[tuple[str, str | None]], *, fail: bool 
     return _FakeProvider
 
 
-def test_build_runtime_embedding_model_wires_batch_embedder(monkeypatch, tmp_path) -> None:
+def test_build_runtime_embedding_model_wires_batched_embedder(monkeypatch, tmp_path) -> None:
     """llm.embedding_model 非空 → 该模型另构造 provider → 批量 embedder 注入 memory。"""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.chdir(tmp_path)
     constructed: list[tuple[str, str | None]] = []
-    monkeypatch.setattr("core.runtime.StdlibLLMProvider", _fake_provider_cls(constructed))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "core.runtime.StdlibLLMProvider", _fake_provider_cls(constructed, calls=calls)
+    )
 
     rt = build_runtime(
         ConfigManager(yaml_path=_write_config(tmp_path, embedding_model="text-embed-3"))
@@ -800,6 +810,7 @@ def test_build_runtime_embedding_model_wires_batch_embedder(monkeypatch, tmp_pat
     embedder = rt.memory._embedder
     assert embedder is not None
     assert embedder(["ab", "cde"]) == [[2.0], [3.0]]
+    assert calls == [["ab", "cde"]], "批量契约：一次 provider 调用收齐，而不是逐条"
 
 
 def test_build_runtime_embedding_unreachable_degrades_to_lexical(monkeypatch, tmp_path) -> None:
