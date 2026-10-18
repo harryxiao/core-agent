@@ -4356,3 +4356,31 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > （1820 → 1836）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0263 行（显式触发 / 无模型归纳 /
 > 头部保留截断 / 常驻总预算共享 / keyfact 仅按会话标签 / unpin 后不注入）。
+
+## 186. M4 长任务 token 增长基准（TC-M4TOKENS，change `0274`／ADR-0264，台账 E210）
+
+> 覆盖 `loop/spec.md`「长任务 token 增长基准」：离线确定性 harness 在**同一会话**内以固定
+> 任务序列（24 轮、等长载荷）驱动真实 `DefaultLoop`，逐轮采集
+> `LLMPlanner.last_prompt_tokens()` 曲线，并与「全量原文回灌」线性基线对比。
+> 测试文件 `tests/test_m4_token_growth.py`（2 例）。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-M4TOKENS-01 | Scenario「固定序列采集」 | 24 轮固定任务序列（用户 240 字符 / 桩回复 480 字符），同一会话逐轮 `astream` | 曲线长度 = 24，且每轮 `prompt_tokens > 0`（`test_m4_prompt_tokens_grow_sublinearly`） |
+| TC-M4TOKENS-02 | Scenario「记忆外置生效」 | 维护节拍按轮触发（步进时钟 + `maintenance_interval=1s`） | 首轮后 `memory.summary_for(session)` 非空；第 12 轮起逐轮装配占用恒定（末 8 轮 `max - min == 0`） |
+| TC-M4TOKENS-03 | Scenario「次线性判定」 | 外置曲线 vs 全量回灌基线（关闭摘要器与维护节拍、`history_turns=24`） | 外置整斜率 `<` 基线斜率（实测 292.19 vs 624.00）；末轮占用 `<` 基线末轮（7771 vs 14840） |
+| TC-M4TOKENS-04 | Scenario「重放确定性」 | 同一 harness 独立运行两次 | 两次逐轮曲线逐值一致（`test_m4_benchmark_is_deterministic`） |
+| TC-M4TOKENS-05 | 反证（摘要不注入） | 临时让 `_load_summaries` 恒返回 `("", "")` | 外置曲线退化为 20 轮全量回灌、远期饱和判据红（复原后 `md5sum` 同） |
+
+> **口径**：`last_prompt_tokens()` 取「装配全量估算」与「provider 实报」的较大者（`0152` /
+> ADR-0144），覆盖系统提示、摘要块、历史与工具 schema。外置运行使用生产缺省窗口
+> （`history_turns=20` ⇒ 短带 10 轮 / 中带 6 轮）与 `token_budget=65536`（预算闸门不介入单轮）。
+> 摘要器替身保留合并内容尾部 600 字符 —— 模拟**有界**模型摘要输出；无界拼接会让摘要自身线性
+> 膨胀（替身缺陷，非被测机制）。**不设绝对阈值门禁**（PA-10 选项 C 未采纳）。
+> **反证 2/2**：① 摘要不注入 ⇒ 远期饱和红；② `_estimate_prompt` 只估算最后一条消息 ⇒
+> 斜率严格比较红。复原后 `md5sum` 一致（`default.py 74f76844…` / `planner.py e20e0902…`）。
+> 规格：`loop` **ADDED**「长任务 token 增长基准」（4 scen）。`validate --all` 31/0（归档后）。
+> 测试净 **+2**（3018 → **3020**）。四门禁全绿（`ruff check` / `ruff format --check` /
+> `pyright` 0 / `pytest -q 3020 passed`）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0264 行（相对增长非绝对成本 / 摘要替身
+> 无信息损失 / 不覆盖工具轮 / 无绝对阈值 / 节拍加速为上界）。

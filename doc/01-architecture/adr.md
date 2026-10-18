@@ -9819,6 +9819,52 @@ usage 列出动词）。净 **+12**（3006 → **3018**）。反证 5/5：摘来
 整篇排除（`notes pinned` 可查）；⑤ `--session` keyfact 只取带 `session:<id>` 标签者，跨会话 /
 全局 keyfact 不入报告；⑥ 报告只经 pinned 通道 —— `unpin` 后不再每轮注入（显式语义，非缺陷）。
 
+## ADR-0264：M4 长任务 token 增长基准（change 0274 / 台账 E210）
+
+**背景**：产品 M4 写明「长任务 token 增长随任务数呈**次线性**（记忆外置生效）｜衡量方式：
+**基准任务序列测量**」，但该基准在仓内**不存在** ⇒ M4 既不可证伪也不可证实（PA-10）。
+记账口径已在 `0152` / ADR-0144 修对：`LLMPlanner.last_prompt_tokens()` 取「装配全量估算」与
+「provider 实报」的较大者，覆盖系统提示、摘要块、历史与工具 schema，可直接作为逐轮探针。
+
+**决策**：
+
+- **D1 最小 harness（PA-10 选项 B）**：新增 `tests/test_m4_token_growth.py`，在**同一会话**内
+  以固定任务序列（24 轮，用户 240 字符 / 桩回复 480 字符，等长载荷）驱动真实 `DefaultLoop`
+  （`LLMPlanner` ＋ 桩 provider ＋ 本地有界摘要器），逐轮采集 `last_prompt_tokens()` ⇒
+  输出曲线与最小二乘斜率。**不设绝对阈值、不入门禁**（选项 C 未采纳，阈值另行裁决）、
+  不做真模型长跑（选项 D）。
+- **D2 对照组而非「无记忆」**：线性基线 = 同一循环、同一序列，但关闭摘要器与维护节拍
+  （`maintenance_interval=0`）且 `history_turns=count` ⇒ 全量原文回灌。比较的是
+  「外置 vs 全量回灌」，不是「有记忆 vs 无记忆」。
+- **D3 确定性三件套**：注入**步进时钟**（每轮 +1s ⇒ 维护节拍确定性触发）；桩 provider 从当前
+  用户消息派生等长回复（无调用计数耦合）；摘要器替身保留合并内容尾部 600 字符（模拟**有界**
+  模型摘要输出 —— 无界拼接会让摘要自身线性膨胀，属替身缺陷）。
+- **D4 判据是机制性相对量**：远期（窗口与摘要到界后）逐轮占用**恒定**（末 8 轮
+  `max - min == 0`）；外置整体斜率 < 线性基线斜率；末轮占用 < 基线末轮；两次重放曲线逐值
+  一致。绝对 token 阈值留待独立裁决。
+- **D5 零 `src/` 改动**：基准只消费既有探针与三层滑窗；若揭示膨胀缺陷，另立 change 修复。
+
+**实测**（本机，固定常量）：外置曲线在**第 12 轮**到界后恒为 `7771` tokens；线性基线逐轮
+`+624`，末轮 `14840`。整体斜率 `292.19` vs `624.00`，远期斜率 `0.00`。数字随常量与估计器
+口径变化，属**相对增长**证据而非绝对成本。
+
+**规格**：`loop` **ADDED**「长任务 token 增长基准」（4 scen）。`validate <change>` 通过
+（归档前）；`validate --all` **31/0**（归档后）。
+
+**测试**：新增 `tests/test_m4_token_growth.py` **2 例**（次线性判定 / 重放确定性）。
+净 **+2**（3018 → **3020**）。反证 2/2：① 临时让 `_load_summaries` 恒返回 `("", "")`
+⇒ 外置曲线退化为 20 轮全量回灌、远期饱和判据红；② 临时让 `_estimate_prompt` 只估算最后一条
+消息 ⇒ 两条曲线同时变平、斜率严格比较红。复原后 `md5sum` 一致
+（`default.py 74f76844…` / `planner.py e20e0902…`）。四门禁：`ruff check` /
+`ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3020 passed**。
+
+**局限**：① 合成文本以中文为主，token 估计器口径与真实模型 tokenizer 不同 —— 测的是**同一
+口径下的相对增长**，不是绝对成本；② 摘要替身不模拟真实 LLM 摘要的信息损失，只验证「有界
+外置」结构性质；③ 24 轮、单一任务形态不覆盖工具调用轮（多步 ReAct）与会话交错；④ 无绝对
+阈值 ⇒ 曲线整体抬升（性能退化）不会被本基准单独抓住，只能由「远期不饱和 / 斜率不低于基线」
+这类结构性崩坏触发；⑤ 维护节拍按轮强制触发（`maintenance_interval=1s` + 步进时钟），
+生产 15 分钟节拍下早期窗口更易线性增长 —— 本基准是**机制上界**而非生产时序复刻。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10077,3 +10123,4 @@ usage 列出动词）。净 **+12**（3006 → **3018**）。反证 5/5：摘来
 | ADR-0261 | 02-modules/configuration.md, 02-modules/memory.md, 02-modules/rag.md, 03-interfaces/configuration-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0262 | 02-modules/loop.md, 02-modules/tool-use.md, 02-modules/configuration.md, 03-interfaces/loop-interface.md, 03-interfaces/tool-use-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0263 | 02-modules/notes.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
+| ADR-0264 | 04-testing/test-cases.md, 00-product/product-definition.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
