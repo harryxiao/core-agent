@@ -4384,3 +4384,30 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > `pyright` 0 / `pytest -q 3020 passed`）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0264 行（相对增长非绝对成本 / 摘要替身
 > 无信息损失 / 不覆盖工具轮 / 无绝对阈值 / 节拍加速为上界）。
+
+## 187. 记忆检索规模基准（TC-MSCALE，change `0275`／ADR-0265，台账 E211）
+
+> 覆盖 `memory/spec.md`「检索规模离线基准（1 万条）」：固定 10 000 条合成事实 × 20 条带 gold
+> 查询，纯内存后端、无 embedder / 真实 LLM / 网络，度量 recall@5 / MRR@5 / 逐查询延迟。
+> 测试文件 `tests/test_memory_scale_benchmark.py`（2 例）。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-MSCALE-01 | Scenario「规模与准确率」 | 10 000 条确定性事实（L2/L3/L4；每条唯一锚点 `zqNNNNN`）× 20 条 gold 查询（`stride=500`，预热门槛外首查） | `len(store.audit(None)) == 10000`；recall@5 ≥ 0.9、MRR@5 ≥ 0.7（**实测均 1.000**）（`test_memory_scale_benchmark_at_10k`） |
+| TC-MSCALE-02 | Scenario「延迟可度量」 | 同一语料与查询集，逐查询 `perf_counter` 计时 | 输出中位 / p95 / max 并与 100ms 目标对照（**实测 median 657.4ms / p95 771.9ms / max 795.5ms**）；仅 `p95 < 5000ms` 为断言，未达 100ms **不转红**（同文件） |
+| TC-MSCALE-03 | Scenario「语料确定性」 | 独立生成两次语料 | 两次逐条 `(id, layer, content)` 一致（`test_memory_scale_corpus_is_deterministic`） |
+| TC-MSCALE-04 | 反证（排序反转） | `store.py:360` 把 `reverse=True` 改为 `False` | recall@5 / MRR@5 跌至 0.000，TC-MSCALE-01 红（复原后 `md5sum` 同 `d4676280…`） |
+
+> **口径**：查询串 `负责人 张三NNNNN` 与事实中的唯一编号构成**近唯一 gold 锚**——本基准验证的是
+> 「**规模下**的词法排序稳定性」，不验证语义/改写召回（属 PA-09 选项 E）。`budget=4096` 下 20 条
+> 查询均能在预算内返回；延迟含 `read` 的过滤 + BM25 统计 + 排序 + 截断全链路（预热门槛外首查剔除
+> 一次性构建开销）。**延迟目标只报告、不作门禁**：本机中位 ≈657ms 对照 CORE-NFR-PERF2
+> （<100ms / 1 万条）**未达标**，cProfile 定位约 78% 在 `_truncate` 对全部候选逐条
+> `estimate_tokens` —— 修复须另立 change；p95 5000ms 仅防「整体再恶化一个数量级」。
+> 语料 / 阈值变更视为**显式重定基线**（须记录原因），不得为变绿静默放宽。
+> **反证 1/1**：反转排序 ⇒ 准确率归零（如上）。复原后 `md5sum` 一致。
+> 规格：`memory` **ADDED**「检索规模离线基准（1 万条）」（3 scen）。`validate --all` 31/0（归档后）。
+> 测试净 **+2**（3020 → **3022**）。四门禁全绿（`ruff check` / `ruff format --check` /
+> `pyright` 0 / `pytest -q 3022 passed`）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0265 行（近唯一锚点 / 单机 wall-clock /
+> 不覆盖并发与 embedder / 增加约 20s / **延迟缺口已知未修**）。

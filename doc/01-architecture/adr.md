@@ -9865,6 +9865,52 @@ usage 列出动词）。净 **+12**（3006 → **3018**）。反证 5/5：摘来
 这类结构性崩坏触发；⑤ 维护节拍按轮强制触发（`maintenance_interval=1s` + 步进时钟），
 生产 15 分钟节拍下早期窗口更易线性增长 —— 本基准是**机制上界**而非生产时序复刻。
 
+## ADR-0265：记忆检索规模基准（1 万条，PA-09 方案 B）（change 0275 / 台账 E211）
+
+**背景**：PA-09 点名的检索面缺口（无分区权重 / 无图 / 缺省降级 / 循环内查不到向量库）都以
+「先能证明优化有效」为前提，但仓内只有 `0261` 的 **26 条**排序语义基准；产品
+CORE-NFR-PERF2 写明「记忆检索延迟 < 100ms（1 万条事实规模）」，却没有任何 1 万条规模的测量
+文件。于是「万条后是否漂移」「是否满足性能目标」均不可判定 —— 这正是 PA-09 选项 B 的动因。
+
+**决策**：
+
+- **D1 固定 1 万条语料**：`_fact(i)` 确定性生成（L2 80% / L3 10% / L4 10%、`ts=0`、
+  `source="bench"`），每条带唯一 ASCII 锚点 `zqNNNNN`；20 条带 gold 的查询（每 500 条取一）。
+  写入内存 `FileBackend`，不落盘、不触网。
+- **D2 准确率门禁**：recall@5 ≥ 0.9、MRR@5 ≥ 0.7（与 `0261` 同口径；两者互补 —— 0261 管
+  **排序语义**，本基准管**规模稳定性**）。实测 recall@5 = 1.000、MRR@5 = 1.000。
+- **D3 延迟只报告、不设产品门禁**：逐查询计时并输出中位 / p95 / max。产品目标
+  「<100ms」**只对照**；断言仅设宽松回归上限 `p95 < 5000ms`（产品目标的 50 倍），抓
+  「整体恶化一个数量级」。理由：当前实现**未达标**，若把 100ms 写成断言，基准一落地即红，
+  无法区分「回归」与「既有缺口」。
+- **D4 确定性**：语料生成无随机源、无时钟；两次独立生成逐条比较 `(id, layer, content)`；
+  查询集固定。检索强化只改被选中条目的 `reuse_count`，唯一锚点使 gold 恒居首 ⇒ 同 store
+  顺序执行的 recall/MRR 可复现。
+- **D5 零 `src/` 改动**：方案 B 明确「无产品行为改动」；本 change 只建立可测性。
+
+**实测（本机 WSL2，Python 3.11）**：20 条查询，recall@5 = **1.000**、MRR@5 = **1.000**；
+延迟中位 **657.4ms**、p95 **771.9ms**、max **795.5ms** —— **未达 CORE-NFR-PERF2 的 100ms**。
+cProfile 显示单次 `read()` 约 **78%** 时间在 `_truncate` 对全部 1 万候选逐条调用
+`estimate_tokens`（`0245` 的 CJK 逐字符判定）；BM25 统计与排序占比小。⇒ 修复方向明确
+（按条目缓存 token 估计 / 预计算），但**不在本 change**（方案 B 零行为改动），应另立 change。
+
+**规格**：`memory` **ADDED**「检索规模离线基准（1 万条）」（3 scen）。`validate <change>`
+通过（归档前）；`validate --all` **31/0**（归档后）。
+
+**测试**：新增 `tests/test_memory_scale_benchmark.py` **2 例**（规模与准确率 / 语料确定性），
+约 20s。净 **+2**（3020 → **3022**）。反证 1/1：临时把 `MemoryStore.read` 的排序改为升序 ⇒
+recall@5 = 0、用例红；复原后 `md5sum` 一致（`store.py d4676280…`）。四门禁：
+`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3022 passed**。
+
+**局限**：① 唯一 ASCII 锚点让查询近乎唯一可检索 —— recall/MRR 验证**规模下的排序稳定性**，
+不验证语义 / 改写召回（属选项 E）；② 单机 wall-clock 受负载影响，跨机器不可直接比较；
+③ 未覆盖并发读、embedder 路径、L1 路由与真实会话混合负载；④ 全量测试增加约 20s（未标
+slow，仓内无 slow 标记约定）；⑤ 延迟缺口已知但未修：本基准只保证「不继续恶化一个数量级」。
+
+**后续（未在本 change 实施）**：① **检索延迟修复**（`_truncate` / token 估计缓存）——
+建议优先于 PA-09 C；② PA-09 **C 分区加权**（`tags` / 来源三档）；③ D 图 / E 真语义须各自
+独立裁决（E 与零三方依赖红线对账）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10124,3 +10170,4 @@ usage 列出动词）。净 **+12**（3006 → **3018**）。反证 5/5：摘来
 | ADR-0262 | 02-modules/loop.md, 02-modules/tool-use.md, 02-modules/configuration.md, 03-interfaces/loop-interface.md, 03-interfaces/tool-use-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0263 | 02-modules/notes.md, 03-interfaces/notes-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0264 | 04-testing/test-cases.md, 00-product/product-definition.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
+| ADR-0265 | 02-modules/memory.md, 04-testing/test-cases.md, 00-product/requirements.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |

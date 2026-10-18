@@ -328,7 +328,7 @@
 | ID | 需求 | 目标 |
 |---|---|---|
 | CORE-NFR-PERF1 | loop 单轮延迟（不含 LLM） | < 50ms |
-| CORE-NFR-PERF2 | 记忆检索延迟 | < 100ms（1 万条事实规模） |
+| CORE-NFR-PERF2 | 记忆检索延迟 | < 100ms（1 万条事实规模）；**实测未达标**：中位 ≈657ms（change `0275`／ADR-0265，修复待立项） |
 | CORE-NFR-PERF3 | 插件热插拔 | < 1s 完成加载/卸载 |
 
 ### 2.3 可靠性与安全（Reliability & Safety）
