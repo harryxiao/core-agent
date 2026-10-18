@@ -536,6 +536,69 @@ def context_read(*, fetch_detail: Callable[[str], str]) -> Tool:
     )
 
 
+# 工具参数查询的固定 id（change 0272 / ADR-0262）：planner 的按需注入与 loop 的加载吸收
+# 共用此单一真源（不得各写一份字面量）。
+SCHEMA_READ_TOOL_ID = "tools.schema_read"
+
+
+def schema_read(*, catalog: Callable[[], list[ToolDef]]) -> Tool:
+    """按需查询工具参数 schema（只读，自动放行）——「工具目录常驻、参数按需加载」的消费面。
+
+    目录**委托注入的取数器**（组合根传 ``tools.active_tools``）：本层不持有注册表，
+    故返回内容始终反映调用时的真实工具面（含 MCP 动态工具）。参数 schema 放进工具观察，
+    使文本 JSON 动作路径的模型也能读到（change 0272 / ADR-0262）。
+    """
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "tool_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "要加载参数 schema 的工具 id 列表；省略则列出全部可用工具",
+            }
+        },
+    }
+
+    def handler(tool_ids: list[str] | None = None) -> dict[str, Any]:
+        defs = {definition.tool_id: definition for definition in catalog()}
+        if not tool_ids:
+            return {
+                "tools": [
+                    {"tool_id": tool_id, "description": definition.description}
+                    for tool_id, definition in defs.items()
+                ]
+            }
+        schemas: list[dict[str, Any]] = []
+        unknown: list[str] = []
+        for tool_id in tool_ids:
+            definition = defs.get(tool_id)
+            if definition is None:
+                unknown.append(tool_id)
+                continue
+            schemas.append(
+                {
+                    "tool_id": tool_id,
+                    "description": definition.description,
+                    "parameters": definition.schema,
+                }
+            )
+        return {"schemas": schemas, "unknown": unknown}
+
+    return Tool(
+        definition=ToolDef(
+            tool_id=SCHEMA_READ_TOOL_ID,
+            description=(
+                "查询工具参数 schema（未随请求注入参数的工具，须先经本工具加载，下一轮生效）；"
+                "不带参数列出全部可用工具"
+            ),
+            schema=schema,
+            coeffects=["schema:read"],
+            reversible=True,
+        ),
+        handler=handler,
+    )
+
+
 class GateOutcome(Protocol):
     """门禁结果的最小结构面（L1 视角）。
 

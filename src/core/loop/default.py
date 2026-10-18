@@ -35,7 +35,7 @@ from core.judgment import DecisionResult, DecisionRouter
 from core.memory import MemoryEntry, MemoryStore, TranscriptStore, redact_secrets
 from core.observability import TraceEvent, TraceLogger, Tracer
 from core.plugin_registry import Plugin, RollbackReport
-from core.tools import SafetyGate, ToolProvider
+from core.tools import SCHEMA_READ_TOOL_ID, SafetyGate, ToolProvider
 
 from .protocol import (
     ActFn,
@@ -774,6 +774,7 @@ class DefaultLoop(Plugin):
                         },
                     )
                 self._record_observation(ctx, action, result, rollback=report)
+                self._absorb_loaded_tools(ctx, action, result)
                 ctx = self.observe(ctx, result)
                 yield LoopEvent("step_completed", {"round": ctx.rounds, "failed": result.failed})
                 self._trace(
@@ -1321,6 +1322,24 @@ class DefaultLoop(Plugin):
             }
         ctx.messages.append(
             {"role": "tool", "content": json.dumps(observation, ensure_ascii=False)}
+        )
+
+    def _absorb_loaded_tools(self, ctx: LoopContext, action: Action, result: ActionResult) -> None:
+        """把 `tools.schema_read` **成功**请求的已注册 id 吸收进本回合已加载集合。
+
+        下一轮 `LLMPlanner._tool_schemas(ctx)` 据此注入其参数 schema（change 0272 /
+        ADR-0262）。未知 id / 非数组入参静默跳过：工具面已把它们记入 `unknown`，循环不重复报错。
+        """
+        if result.failed or action.tool_id != SCHEMA_READ_TOOL_ID or self._tools is None:
+            return
+        requested = action.args.get("tool_ids")
+        if not isinstance(requested, list):
+            return
+        known = {definition.tool_id for definition in self._tools.active_tools()}
+        ctx.loaded_tools.update(
+            tool_id
+            for tool_id in cast("list[Any]", requested)
+            if isinstance(tool_id, str) and tool_id in known
         )
 
     def observe(self, ctx: LoopContext, result: ActionResult) -> LoopContext:

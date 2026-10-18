@@ -463,3 +463,21 @@ known_window(llm.model)  ──►  表命中 ⇒ 该族真实窗口（本 chang
   RAG `LLMEmbedder` 共用）；有效值为空 ⇒ 记忆词法 / RAG `HashEmbedder`（与引入前逐字一致）。
   CLI 启动提示按有效值判断：为空 ⇒ 词法提示；仅推导 ⇒「按端点自动选用 …」一次。
 - 口径来源：`doc/openspec/specs/configuration/spec.md`「LLM 提供商配置（必选）」（**MODIFIED**）。
+
+### 2.15 工具注入范围（change `0272` / ADR-0262，台账 E208）
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `loop.tool_scope` | **`auto`** | `all` / `auto`（大小写不敏感、忽略首尾空白） | 请求侧工具参数 schema 注入范围；非法值**校验期阻断启动** |
+
+- **三面**：CLI `--loop.tool-scope` / env `CORE_LOOP_TOOL_SCOPE` / yaml `loop.tool_scope`
+  （priority CLI > env > yaml，同既有配置链）。
+- **访问器**：`ConfigManager.tool_scope() -> str` —— 无配置源时返回 `auto`；返回值归一为小写、
+  去首尾空白。
+- **消费方**：只有组合根的**主 planner** 注入该值（`LLMPlanner(..., tool_scope=config.tool_scope())`）。
+  `LLMPlanner` 构造缺省仍是 `all`（库级保守缺省，既有直接构造逐字不变）；子 Agent / 神兽 / 宠物
+  不注入该值。
+- **语义**：`auto` 仅在工具数 > 8 且 `tools.schema_read` 已注册时收窄**请求侧** schema；
+  `all` 恒注入全部（kill-switch，与引入前逐字一致）。只影响 `LLMRequest.tools`，不改变工具注册、
+  权限、coeffect、撤销或去重（详见 `loop-interface.md` §3.3）。
+- 口径来源：`doc/openspec/specs/configuration/spec.md`「工具注入范围配置」（**ADDED**）。

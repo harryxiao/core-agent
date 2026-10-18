@@ -96,6 +96,12 @@ Configuration（横切）
   无 CLI/env/yaml 面，故**不是**第二真源；它只**补充** `llm.context_window` 的推导来源。
   归一后统一 `window − output_reserve` ⇒ 减法只有一处；`_window_reserve_errors` 闸门只管**显式配置**
   的窗口（表推导路径不经该闸门 —— 见 ADR-0175 局限③）。
+- **工具注入范围 `loop.tool_scope`**（change `0272`／ADR-0262）：取值仅 `all` / `auto`（缺省
+  `auto`），**非法值校验期阻断启动**（`bool` / 非字符串 / 空串一律非法）；访问器 `tool_scope()`
+  返回归一后取值（去首尾空白、小写，无配置源时返回 `auto`）。三面：`--loop.tool-scope` /
+  `CORE_LOOP_TOOL_SCOPE` / yaml `loop.tool_scope`。语义见 `loop` 模块 §3.10 —— 配置值只决定
+  **请求侧** schema 注入面，不改变工具注册、权限或执行面。`all` 为 kill-switch（逐字保持引入前
+  行为）；`LLMPlanner` 构造缺省仍为 `all`（库级保守缺省，生产由组合根显式注入配置值）。
 - **embedding 模型端点推导**（change `0271`／ADR-0261）：`llm.embedding_model` 未显式声明时，
   `LLMConfig.effective_embedding_model` 按 `embedding_models.default_embedding_model(endpoint)`
   从**有据可查的端点表**推导默认模型（`llm.embedding_auto` 缺省 `true`，非法值阻断启动）。

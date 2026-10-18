@@ -94,6 +94,21 @@ class ToolDef:
   返回 `killed=false` / `restored=true`，不触达进程（无句柄、非 Linux 无身份核对）。
   落盘失败与损坏文件均静默降级，不阻断后台任务登记。
 
+### 3.5 参数按需查询（`tools.schema_read`，change `0272`／ADR-0262）
+
+- **契约**：`tools.schema_read`（只读，`coeffects=["schema:read"]`，`reversible=True`）——
+  可选 `tool_ids: string[]`。无参 ⇒ `{"tools": [{tool_id, description}...]}`（全部可用工具目录）；
+  有参 ⇒ `{"schemas": [{tool_id, description, parameters}...], "unknown": [...]}`。未知 id 记入
+  `unknown`，**不阻断**。
+- **catalog 用闭包**：`schema_read(catalog=tools.active_tools)` ⇒ 读取的是**调用时**真实注册面
+  （含 MCP 动态注册），不是构造快照。
+- **权限**：coeffect 词元 `schema:read` 命中 `read` ⇒ `PolicyEngine` 判 `READ`，只读放行。
+- **与 `loop.tool_scope=auto` 的关系**（见 `loop` 模块 §3.10）：`auto` 生效时，未随请求注入参数
+  schema 的工具须先经本工具加载，循环吸收后**下一轮**生效。只挂主工具面；子 Agent / 神兽 / 宠物
+  不注册。
+- **不是访问控制**：本工具只提供参数信息；即使未加载 schema，文本 JSON 动作路径仍可调用任何
+  注册工具。
+
 ---
 
 ## 4. 工具聚合（ToolProvider）

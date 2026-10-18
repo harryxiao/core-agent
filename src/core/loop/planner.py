@@ -17,7 +17,7 @@ from typing import Any, cast
 
 from core.context import DynamicAssembler, estimate_tokens, plan_blocks
 from core.llm_provider import LLMError, LLMProvider, LLMRequest, Message, TokenUsage, ToolCall
-from core.tools import ToolProvider
+from core.tools import SCHEMA_READ_TOOL_ID, ToolDef, ToolProvider
 from core.tools.env_shell import EnvironmentSnapshot, format_env_block
 
 from .protocol import Action, ActionGroup, LoopContext, Thinking
@@ -43,6 +43,42 @@ SkillHint = dict[str, str]  # {"skill_id": ..., "version": ..., "instructions": 
 # 「记忆 / 事实」注入面的**字面** token 额度：区块配比未启用时的既有缺省
 # （change 0201 / ADR-0191 之前为内联字面量 —— 见 `_fact_budget`）。
 _FACT_BUDGET = 2048
+
+# 工具参数按需注入（change 0272 / ADR-0262）：scope 取值、小工具面阈值与核心集。
+# `all` = 恒注入全部（kill-switch，与引入前逐字一致）；`auto` = 阈值以上只注入核心集 +
+# 本回合已加载 + `tools.schema_read`。阈值 8 = 核心集 7 + schema_read 1 ⇒ 子 Agent /
+# 宠物的工具面天然全量，无需按 loop 类型分叉。
+_TOOL_SCOPE_ALL = "all"
+_TOOL_SCOPE_AUTO = "auto"
+_TOOL_SCOPE_THRESHOLD = 8
+# 「几乎每轮都可能用」的工具；按需集是情境触发型（进程管理 / 门禁 / 插件 / 任务清单 / MCP）。
+_CORE_TOOL_IDS = frozenset(
+    {
+        "tools.file_read",
+        "tools.file_write",
+        "tools.file_patch",
+        "tools.code_run",
+        "tools.web_fetch",
+        "tools.context_read",
+        "tools.delegate",
+    }
+)
+_SCHEMA_HINT = "- 说明：未注入参数 schema 的工具，先调用 tools.schema_read 获取参数（下一轮生效）"
+
+
+def _visible_tool_defs(defs: list[ToolDef], *, scope: str, loaded: set[str]) -> list[ToolDef]:
+    """按 scope 收窄随请求发送的工具定义（顺序保持注册序）。
+
+    `auto` 只在「工具面足够大」且 `tools.schema_read` 已注册时生效；否则回落全量 ——
+    不得造出模型无法加载参数的不可达工具面。
+    """
+    if scope != _TOOL_SCOPE_AUTO or len(defs) <= _TOOL_SCOPE_THRESHOLD:
+        return list(defs)
+    ids = {definition.tool_id for definition in defs}
+    if SCHEMA_READ_TOOL_ID not in ids:
+        return list(defs)
+    visible = _CORE_TOOL_IDS | loaded | {SCHEMA_READ_TOOL_ID}
+    return [definition for definition in defs if definition.tool_id in visible]
 
 
 def _format_skill_hint(hint: SkillHint) -> str:
@@ -388,6 +424,10 @@ class LLMPlanner:
         # 运行环境事实（change 0237）：注入快照或工厂 ⇒ 系统提示产「运行环境」块；
         # ``None`` ⇒ 不产块（既有提示逐字不变）。
         env_snapshot: EnvironmentSnapshot | Callable[[], EnvironmentSnapshot] | None = None,
+        # 工具参数注入范围（change 0272 / ADR-0262）。构造缺省 `all` = **库级保守缺省**：
+        # 既有直接构造 planner 的调用方请求形状逐字不变；生产主 planner 由组合根显式注入
+        # `loop.tool_scope`（配置缺省 `auto`）。
+        tool_scope: str = _TOOL_SCOPE_ALL,
     ) -> None:
         self._llm = llm
         self._model = model
@@ -400,6 +440,7 @@ class LLMPlanner:
         self._block_plan = block_plan
         self._parse_retry = parse_retry
         self._env_snapshot = env_snapshot
+        self._tool_scope = tool_scope
         # 最近一次装配的提示 token 观测（记账下界）：由 `last_prompt_tokens()` 对外暴露，
         # 供 loop 侧以 duck-typing 探针消费（见 change 0152 / 账本 E96）。
         self._last_prompt_tokens = 0
@@ -590,7 +631,7 @@ class LLMPlanner:
             messages=messages,
             model=self._model or "",
             max_tokens=self._max_tokens,
-            tools=self._tool_schemas(),
+            tools=self._tool_schemas(ctx),
             reasoning_effort=self._reasoning_effort,
         )
 
@@ -606,7 +647,7 @@ class LLMPlanner:
         plan = plan_blocks(ctx.token_budget, enabled=self._block_plan)
         return plan.memory_tokens if plan is not None else _FACT_BUDGET
 
-    def _system_prompt(self, ctx: LoopContext) -> str:  # noqa: C901 — 块装配多分支长管道
+    def _system_prompt(self, ctx: LoopContext) -> str:  # noqa: C901, PLR0912 — 块装配多分支
         # （与 `default.py::astream` 同口径：分支数随块种类线性增长，拆函数反而割裂块装配单点）
         blocks: list[str] = [_SYSTEM_PROMPT]
         # 装配器调用提到块外：常驻笔记注入**不依赖**装配器（缺省未装装配器亦须每轮在场）
@@ -661,7 +702,11 @@ class LLMPlanner:
         if env_block:
             blocks.append(env_block)
         if self._tools is not None:
-            schemas = [f"- {t.tool_id}: {t.description}" for t in self._tools.active_tools()]
+            defs = self._tools.active_tools()
+            schemas = [f"- {t.tool_id}: {t.description}" for t in defs]
+            # 目录**不收窄**（模型须知道有哪些工具）；auto 生效时补一行按需加载说明。
+            if self._scope_auto_active(defs):
+                schemas.append(_SCHEMA_HINT)
             blocks.append("可用工具：\n" + "\n".join(schemas))
         return "\n\n".join(blocks)
 
@@ -673,9 +718,20 @@ class LLMPlanner:
         snap = raw() if callable(raw) else raw
         return "运行环境：\n" + format_env_block(snap)
 
-    def _tool_schemas(self) -> list[Any] | None:
+    def _scope_auto_active(self, defs: list[ToolDef]) -> bool:
+        """`auto` 是否**真的**收窄本次请求（前置同 `_visible_tool_defs`）。"""
+        return (
+            self._tool_scope == _TOOL_SCOPE_AUTO
+            and len(defs) > _TOOL_SCOPE_THRESHOLD
+            and any(definition.tool_id == SCHEMA_READ_TOOL_ID for definition in defs)
+        )
+
+    def _tool_schemas(self, ctx: LoopContext) -> list[Any] | None:
         if self._tools is None:
             return None
+        visible = _visible_tool_defs(
+            self._tools.active_tools(), scope=self._tool_scope, loaded=ctx.loaded_tools
+        )
         # OpenAI 兼容工具信封：端点按 function.name 校验，裸参数 schema 会被拒（400）
         return [
             {
@@ -686,7 +742,7 @@ class LLMPlanner:
                     "parameters": t.schema,
                 },
             }
-            for t in self._tools.active_tools()
+            for t in visible
         ]
 
     def _skill_hints(self, task: str, session_id: str = "") -> list[SkillHint]:

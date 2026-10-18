@@ -7,6 +7,7 @@
 """
 
 from .builtin import (
+    SCHEMA_READ_TOOL_ID,
     builtin_tools,
     code_run,
     context_read,
@@ -16,6 +17,7 @@ from .builtin import (
     gate_run,
     process_kill,
     process_manage,
+    schema_read,
     web_fetch,
 )
 from .env_shell import EnvironmentSnapshot, format_env_block, probe_environment
@@ -29,6 +31,7 @@ from .tool import Tool
 
 __all__ = [
     "EnvironmentSnapshot",
+    "SCHEMA_READ_TOOL_ID",
     "GateDecision",
     "ProcessRegistry",
     "SafetyGate",
@@ -54,5 +57,6 @@ __all__ = [
     "probe_environment",
     "process_kill",
     "process_manage",
+    "schema_read",
     "uninstall_tool",
 ]

@@ -4274,3 +4274,50 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > `entry.py` 增行使 `prompts.md` §1 ⑭ 落点 1810 → 1820，已同步。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0261 行（静态表 / 不验证可用性 / 代理不识别 /
 > 首次远端费用 / 不参与 config show / 主机名匹配）。
+
+## 184. 工具参数按需注入（TC-TOOLSCOPE，change `0272`／ADR-0262，台账 E208）
+
+> **背景**：主工具面已增长到十五件以上（内置 + 门禁 + `context_read` + `delegate` +
+> install/uninstall/list + `tasks` + MCP 动态注册），每轮请求都全量携带参数 schema；
+> 单轮通常只用两三个工具。本 change 在**请求侧**按需注入 schema：`auto`（缺省）只给核心集 +
+> 本回合已加载 + `tools.schema_read`；`all` 为 kill-switch，逐字保持既有行为。
+> 权限 / coeffect / 撤销 / 去重仍看全量注册面 —— 收窄**不是**访问控制。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-TOOLSCOPE-01 | configuration/spec.md Scenario（缺省为 auto） | `config_specs()` 中 `loop.tool_scope` | `(--loop.tool-scope, CORE_LOOP_TOOL_SCOPE, loop.tool_scope, "auto")`（`test_spec_declares_tool_scope`） |
+| TC-TOOLSCOPE-02 | 同 Scenario | 无配置加载 | `tool_scope() == "auto"`（`test_default_scope_is_auto`） |
+| TC-TOOLSCOPE-03 | configuration/spec.md Scenario（三面覆盖） | yaml / env / CLI 均设 `all`，含三层同时给出 | 三面可达，CLI > env > yaml（`test_scope_three_faces`） |
+| TC-TOOLSCOPE-04 | configuration/spec.md（取值归一） | `'  AUTO '` | `"auto"`（`test_scope_is_normalized`） |
+| TC-TOOLSCOPE-05 | configuration/spec.md Scenario（非法取值阻断启动） | `maybe` / `""` / `true` | 各自抛 `ConfigurationError`，消息含「非法工具注入范围」（`test_invalid_scope_blocks_startup`） |
+| TC-TOOLSCOPE-06 | loop/spec.md Scenario（缺省按需注入主工具面） | 9 件工具 + `schema_read`、`auto` | 请求只含核心集 7 件 + `schema_read`，按需集（`gate_run` / `process`）缺席（`test_auto_narrows_main_surface`） |
+| TC-TOOLSCOPE-07 | Scenario（all 模式保持全量） | 同工具面、`all` | 请求含全部 10 件（`test_all_injects_every_tool`） |
+| TC-TOOLSCOPE-08 | Scenario（all 模式保持全量） | 直接构造 `LLMPlanner` 不给 scope | 库级缺省为 `all`，全量注入（`test_constructor_default_keeps_all`） |
+| TC-TOOLSCOPE-09 | Scenario（小工具面注入全部） | 3 件工具 + `schema_read`、`auto` | 4 件全部注入（阈值 8 以内免加载）（`test_small_surface_injects_all_under_auto`） |
+| TC-TOOLSCOPE-10 | Scenario（schema_read 未注册时回落全量） | 9 件工具、无 `schema_read`、`auto` | 9 件全部注入（不得造出不可达工具面）（`test_auto_without_schema_read_falls_back_to_all`） |
+| TC-TOOLSCOPE-11 | Scenario（加载后下一轮可见） | `ctx.loaded_tools={"tools.process"}`、`auto` | `tools.process` 出现在本轮请求（`test_loaded_tool_is_injected`） |
+| TC-TOOLSCOPE-12 | Scenario（工具目录不随开关收窄） | `auto` vs `all` | 系统提示均含 `- tools.gate_run:`；加载说明行只在 `auto` 生效时出现（`test_catalog_not_narrowed_and_hint_only_in_auto`） |
+| TC-TOOLSCOPE-13 | loop/spec.md Scenario（加载后下一轮可见 / 新回合重置已加载集合） | 模型先 `schema_read(["tools.gate_run"])` 再结束；随后新跑一轮 | 第 1 轮请求无 `gate_run`、第 2 轮有；新回合首个请求重新无（`test_schema_read_visible_next_round_and_reset_next_turn`） |
+| TC-TOOLSCOPE-14 | Scenario（未知工具 id 的加载不阻断） | `schema_read(["tools.nope"])` | 本轮 `failed=False`；下一轮仍不注入 `tools.nope`（`test_unknown_schema_read_id_is_not_absorbed`） |
+| TC-TOOLSCOPE-15 | tool-use/spec.md Scenario（无参列出全部工具） | `tools.schema_read` 空参数 | 返回目录含 `schema_read` 与按需工具 id（`test_schema_read_lists_all_tools`） |
+| TC-TOOLSCOPE-16 | tool-use/spec.md Scenario（按 id 返回参数 schema） | `{"tool_ids": ["tools.process", "tools.nope"]}` | `schemas` 含 `tools.process` 的 `parameters`；`unknown == ["tools.nope"]`（`test_schema_read_returns_parameters_by_id`） |
+| TC-TOOLSCOPE-17 | tool-use/spec.md Scenario（只读放行） | `schema:read` 经 `PolicyEngine.classify` | `RiskLevel.READ`（`test_schema_read_is_read_only`） |
+| TC-TOOLSCOPE-18 | loop/spec.md Scenario（缺省按需注入主工具面）+ configuration/spec.md Scenario（缺省为 auto） | 组合根 `build_runtime`、无配置 | 主 planner `_tool_scope == "auto"`；`tools.schema_read` 已注册（`test_runtime_wires_auto_and_registers_schema_read`） |
+| TC-TOOLSCOPE-19 | Scenario（all 模式保持全量） | `loop.tool_scope: all` | 组合根把 `all` 注入主 planner（`test_runtime_honours_all_scope`） |
+| TC-TOOLSCOPE-20 | loop/spec.md Scenario（请求侧收窄不构成访问控制） | 读 `_visible_tool_defs` 调用面 | 只生成 `LLMRequest.tools` 副本，不改 `ToolProvider.active_tools()`；目录与执行面恒全量（由 TC-TOOLSCOPE-12 与既有工具面用例共同钉住） |
+
+> **口径**：阈值 8 = 核心集 7 + `schema_read` 1 ⇒ 子 Agent（内置七件）/ 宠物（白名单）
+> 天然全量，无需按 loop 类型分叉；`auto` 生效条件是「工具数 > 8 **且** `schema_read` 已注册」，
+> 任一不满足即回落全量。`loaded_tools` 只吸收**成功**且在注册面内的 id，随回合新建上下文清空。
+> **反证**：P1 摘 `_visible_tool_defs` 过滤 ⇒ TC-TOOLSCOPE-06/13 红；P2 忽略 `ctx.loaded_tools`
+> ⇒ TC-TOOLSCOPE-11/13 红；P3 摘循环吸收调用 ⇒ TC-TOOLSCOPE-13 红；P4 忽略 scope 开关
+> （只按阈值判断）⇒ TC-TOOLSCOPE-07/08 红。复原后 `md5sum` 一致
+> （`planner.py e20e0902…` / `default.py 74f76844…`）。
+> 规格：`loop` **ADDED**「工具参数按需注入」（9 scen）、`configuration` **ADDED**
+> 「工具注入范围配置」（3 scen）、`tool-use` **ADDED**「工具参数查询」（3 scen）。
+> `openspec validate --all` 32/0（归档前）/ 31/0（归档后）。测试净 **+23**（2983 → **3006**）。
+> 四门禁全绿（`ruff check` / `ruff format --check` / `pyright` 0 / `pytest -q 3006 passed`）。
+> 附带：`planner.py` 新增 36 行常量使 `prompts.md` §1 ①② 落点漂移（55→91、72→108），已同步；
+> `test_phase13` 生产工具面断言补 `tools.schema_read`。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0262 行（原生 tool_calls 加载前不可直达 /
+> 多一轮往返 / 核心集静态 / 按回合重置 / 目录不收窄 / schema_read 无条目上限）。

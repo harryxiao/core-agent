@@ -30,7 +30,7 @@
 
 | # | 面 | 提词 | 落点（`src/core/`） | 输出契约 | pin |
 |---|---|---|---|---|---|
-| ① | 控制面 | 推理规划器 | `loop/planner.py:55` `_SYSTEM_PROMPT` | 自然语言 **或** 工具 JSON | ✓ `0215` |
+| ① | 控制面 | 推理规划器 | `loop/planner.py:91` `_SYSTEM_PROMPT` | 自然语言 **或** 工具 JSON | ✓ `0215` |
 | ② | 控制面 | 任务拆解器 | `orchestration/planner.py:23` `_DECOMPOSE_SYSTEM` | JSON `{success_criteria:[…],subtasks:[…]}` | ✓ `0215`/`0248` |
 | ③ | 控制面 | 验收判定器 | `orchestration/planner.py:38` `_VERIFY_SYSTEM` | JSON `{passed,reason}` | ✓ `0215` |
 | ④ | 数据面 | 记忆压实器 | `memory/summarize.py:37` `_PROMPT_HEAD` | 文本（更新后摘要） | ✓ `0215` |
@@ -44,13 +44,13 @@
 | ⑫ | 进化面 | 候选审查者 | `evolution/validator.py:44` `_REVIEW_PROMPT_HEAD` | 文本（首行 `PASS`/`REJECT`） | ✓ `0219` |
 | ⑬ | 人格面 | 宠物人格 | `pet/library/persona.py:25` `render_prompt()` | 文本（人格设定） | ✗ 动态拼接 |
 | ⑭ | 数据面 | 文档摘要器 | `entry.py:1820` `_DOC_SUMMARY_PROMPT` | 文本（文档摘要） | ✗ 内联注入 |
-| ⑮ | 控制面 | 解析失败回喂重试 | `loop/planner.py:72` `_RETRY_NUDGE` | 文本（重试指令） | ✓ `0227` |
+| ⑮ | 控制面 | 解析失败回喂重试 | `loop/planner.py:108` `_RETRY_NUDGE` | 文本（重试指令） | ✓ `0227` |
 
 ---
 
 ## 2. 控制面（4 条）—— 推理与编排循环本体
 
-### ① 主推理规划器 · `loop/planner.py:55`
+### ① 主推理规划器 · `loop/planner.py:91`
 ```
 你是 CORE-Harness 无特权核心的推理规划器，把用户任务推理为下一步动作。
 输出格式二选一，整条回复只能是其中之一（硬性互斥，须 100% 可解析）：
@@ -96,7 +96,7 @@
 > 输入侧：结果正文经 `_MAX_VERIFY_CHARS = 4000` 截断后拼入（有界）。
 
 
-### ⑮ 解析失败回喂重试 · `loop/planner.py:72`（`0227`/ADR-0217 新增；`{cause}` 注入）
+### ⑮ 解析失败回喂重试 · `loop/planner.py:108`（`0227`/ADR-0217 新增；`{cause}` 注入）
 ```
 你上一轮的输出无法解析为动作（{cause}），该轮作废。请重新输出并严格遵守输出格式协议：整条回复只能是①自然语言回复，或②形如 {"tool_id": …, "args": {…}} 的单个 JSON 对象 —— 选②时 JSON 必须是整条回复的第一个字符，其后不得再有任何字符（含解释、总结、围栏、或重复一份动作对象）；选①时禁止在正文中夹杂任何 JSON / tool_id 示例（评审说明只用自然语言）；要写入的内容较长时，请分多次、每次写一小段。
 ```

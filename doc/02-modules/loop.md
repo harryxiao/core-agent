@@ -240,6 +240,29 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
 
 ---
 
+### 3.10 工具参数按需注入（change `0272`／ADR-0262）
+
+- **只收窄请求侧**：`LLMPlanner._tool_schemas(ctx)` 生成 `LLMRequest.tools` 的**副本**；
+  `ToolProvider.active_tools()` 仍是全量真源 —— 参数校验 / 权限 / coeffect / 确认门 / 撤销 /
+  去重都看全量集合。请求侧收窄**不是访问控制**：文本 JSON 动作路径调用未注入 schema 的工具照常执行。
+- **两个 scope**：`loop.tool_scope` ∈ {`all`, `auto`}（缺省 `auto`，见配置模块 §3.5）。
+  `all` = 恒注入全部（kill-switch，与引入前逐字一致）。`auto` 仅在「已注册工具数 > 8 **且**
+  `tools.schema_read` 已注册」时生效：注入 `_CORE_TOOL_IDS`（`file_read` / `file_write` /
+  `file_patch` / `code_run` / `web_fetch` / `context_read` / `delegate`）+ `ctx.loaded_tools` +
+  `schema_read`；否则回落全量（小工具面免加载；不造不可达工具面）。阈值 8 = 核心集 7 + 1 ⇒
+  子 Agent / 宠物天然全量。
+- **加载吸收**：`DefaultLoop._absorb_loaded_tools` 在动作提交阶段、`observe` 之前，把
+  `tools.schema_read` **成功**请求的、**在注册面内**的 id 写入 `LoopContext.loaded_tools`，
+  **下一轮**请求即携带其 schema。集合随 `perceive()` 新建上下文包清空（回合内状态，不写记忆、
+  不跨会话）。吸收放循环而非工具：`schema_read` 是 L1 工具，不感知 `LoopContext`。
+- **系统提示**：工具目录（id + 描述）**不收窄**；`auto` 生效时追加一行「未注入参数 schema 的工具，
+  先调用 tools.schema_read 获取参数（下一轮生效）」。`all` 不产该行 ⇒ 提示词逐字不变。
+- **构造缺省分叉**：`LLMPlanner(tool_scope="all")` 是库级保守缺省（既有直接构造零变化）；
+  生产主 planner 由组合根显式注入 `config.tool_scope()`。收窄只接主 loop —— 子 Agent /
+  神兽 / 宠物不注册 `schema_read`、也不需要。
+
+---
+
 ## 4. 伪代码（默认实现骨架，~100 行）
 
 ```python

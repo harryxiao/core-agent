@@ -9707,6 +9707,66 @@ P3 入口仍取显式字段 ⇒ 推导提示用例红。复原后 `md5sum` 一�
 ⑤ 有效值属性不参与 `config show` 的字段展示（仍显示显式值）；⑥ 端点表按主机名匹配，CDN /
 网关域名若与官方主机不同名则不命中。
 
+## ADR-0262：工具参数按需注入（change 0272 / 台账 E208）
+
+**背景**：主工具面从「内置七件」增长到十五件以上：内置原子工具（含后台进程管理）、
+`tools.gate_run`、`tools.context_read`、`tools.delegate`、`tools.install` /
+`tools.uninstall` / `tools.list`、`tools.tasks`，加上 MCP 端点动态注册的工具。每一轮推理请求
+都把**全部**工具的完整参数 schema 随请求发送，而单轮通常只用其中两三个 —— 工具 schema 是
+每轮固定成本，工具越多越贵，且挤占上下文预算。
+
+**决策**：
+
+- **D1 只过滤请求侧 schema，不动注册面**：`ToolProvider.active_tools()` 仍是全量真源；收窄
+  只发生在 `LLMPlanner._tool_schemas(ctx)` 生成的 `LLMRequest.tools` 副本。参数校验 / 权限 /
+  coeffect / 确认门 / 撤销 / 去重全部继续看全量集合 —— `auto` **不是访问控制**；文本 JSON
+  动作路径调用未注入 schema 的工具照常执行。
+- **D2 两个 scope 与阈值**：`loop.tool_scope` 取值 `all` | `auto`（缺省 `auto`）。`all` =
+  恒注入全部（kill-switch，与引入前逐字一致）。`auto` 在「已注册工具数 > 8 且
+  `tools.schema_read` 已注册」时只注入核心集 + 本回合已加载 + `schema_read`；否则回落全量
+  （小工具面免加载；不得造出模型无法加载参数的不可达工具面）。阈值 8 = 核心集 7 +
+  schema_read 1 ⇒ 子 Agent（内置七件）/ 宠物（白名单）天然全量，无需按 loop 类型分叉。
+- **D3 核心集**：`file_read` / `file_write` / `file_patch` / `code_run` / `web_fetch` /
+  `context_read` / `delegate` —— 判据是「几乎每轮都可能用」；按需集是情境触发型
+  （进程管理 / 门禁 / 插件 / 任务清单 / MCP）。
+- **D4 `tools.schema_read`**：可选 `tool_ids` 数组；无参列全量目录（id + 描述），有参返回
+  `description` + `parameters`（参数 schema 放进工具观察，文本 JSON 动作路径的模型也能读到），
+  未知 id 记入 `unknown` 不阻断。`coeffects=["schema:read"]`、`reversible=True` ⇒ 权限分词命中
+  `read` 词元、只读放行。catalog 用闭包 `tools.active_tools`（调用时真实注册面，含 MCP）。
+  只挂主工具面（子 Agent / 神兽 / 宠物不注册、也不需要）。
+- **D5 加载吸收与生命周期**：`LoopContext.loaded_tools`（回合内集合）。循环在动作提交阶段、
+  `observe` 之前把 `schema_read` **成功**请求的已注册 id 吸收进去，**下一轮**请求即携带其
+  schema；集合随 `perceive()` 新建上下文包而清空（不写记忆、不跨会话）。吸收放循环而非工具：
+  `schema_read` 是 L1 工具，不感知 `LoopContext`；只有循环知道回合边界。
+- **D6 系统提示**：目录（id + 描述）**不收窄**；`auto` 生效时追加一行
+  「未注入参数 schema 的工具，先调用 tools.schema_read 获取参数（下一轮生效）」；`all` 不产
+  该行（提示词逐字不变）。这是模型行为的唯一提示，成本远低于被裁掉的 schema JSON。
+- **D7 配置与缺省分工**：`loop.tool_scope` 进 ConfigSpec 三面（`--loop.tool-scope` /
+  `CORE_LOOP_TOOL_SCOPE` / yaml），缺省 `auto`；非法值校验期阻断启动。**构造缺省分叉是故意的**：
+  `LLMPlanner(tool_scope="all")` 是库级保守缺省（既有直接构造的调用方零变化）；生产主 planner
+  由组合根显式注入 `config.tool_scope()`。`all` 同时是产品面 kill-switch。
+
+**规格**：`loop` **ADDED**「工具参数按需注入」（9 scen）；`configuration` **ADDED**
+「工具注入范围配置」（3 scen）；`tool-use` **ADDED**「工具参数查询」（3 scen）。
+`openspec validate --all` 32/0（归档前）/ 31/0（归档后）。
+
+**测试**：新增 `tests/test_tool_scope.py` **23 例**（配置三面 / 归一 / 非法阻断；auto 收窄 /
+all 全量 / 构造缺省 / 小工具面 / 无 schema_read 回落 / 已加载可见 / 目录不收窄与说明行；
+吸收后下一轮可见且新回合重置 / 未知 id 不吸收；schema_read 列表 / 按 id + unknown / 权限只读；
+组合根 auto 接线 / all 接线）；`tests/test_phase13.py` 生产工具面断言补 `tools.schema_read`；
+`doc/03-interfaces/prompts.md` 两处 planner 常量落点随行号更新（55→91、72→108）。
+净 **+23**（2983 → **3006**）。反证 4/4：P1 摘过滤 ⇒ 2 例红；P2 忽略 `loaded` ⇒ 2 例红；
+P3 摘吸收 ⇒ 1 例红；P4 忽略 scope ⇒ 2 例红（all / 构造缺省）。复原后 `md5sum` 一致
+（`planner.py e20e0902…` / `default.py 74f76844…`）。四门禁：`ruff check` /
+`ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3006 passed**。
+
+**局限**：① `auto` 缺省改变主 loop 的请求形状：依赖原生 tool_calls 的模型在加载前**不能**
+直接调用按需工具（机制本身；文本 JSON 动作路径不受限）；② 每次按需加载多一轮模型往返 ——
+单轮只用核心集时净省 token，反复加载多工具时可能更贵；③ 核心集是静态启发式（同 embedding
+端点表）：任务长期以 `gate_run` / MCP 为主时需 `tool_scope=all` 或后续扩核心集；④ 已加载集合
+按回合重置 ⇒ 多轮长任务每回合重新加载；⑤ 系统提示目录不收窄 ⇒ 工具数极多时目录本身仍有成本；
+⑥ `schema_read` 输出不设条目上限（模型可一次请求全部 schema，属自伤性入参）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9963,3 +10023,4 @@ P3 入口仍取显式字段 ⇒ 推导提示用例红。复原后 `md5sum` 一�
 | ADR-0259 | 02-modules/hooks.md, 02-modules/loop.md, 02-modules/memory.md, 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0260 | 02-modules/orchestration.md, 02-modules/loop.md, 02-modules/permission.md, 03-interfaces/orchestration-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0261 | 02-modules/configuration.md, 02-modules/memory.md, 02-modules/rag.md, 03-interfaces/configuration-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0262 | 02-modules/loop.md, 02-modules/tool-use.md, 02-modules/configuration.md, 03-interfaces/loop-interface.md, 03-interfaces/tool-use-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -126,6 +126,11 @@ class LoopContext:
     notices: str = ""           # 本会话待投递的**后台任务完成通知**块（轮首一次性取用；缺省空 ⇒ 不注入）
                                 # **独立字段 / 独立 system 块**（「后台任务通知：」），不折入 notes /
                                 # failure_lessons；仅主 loop 注入 notices_consult（change 0270 / ADR-0260）
+    loaded_tools: set[str] = field(default_factory=set)
+                                # **本回合**已按需加载参数 schema 的工具 id（change 0272 / ADR-0262）。
+                                # 循环在 ``tools.schema_read`` 成功后写入；``auto`` scope 下下一轮
+                                # 请求据此注入对应 schema。回合内状态：随 ``perceive()`` 新建
+                                # 上下文包清空；不写记忆、不跨会话。
 
     def done(self) -> bool:
         """推理判定可结束本轮时返回 True。"""
@@ -280,6 +285,28 @@ def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "
   **`LoopResult.raw_output` 不入**本条（ADR-0161 明文禁入面，失败条目不得成为旁路）。
 - **下游语义**：`failure` 标签使**压实材料排除**该条（见 `memory-interface.md`）⇒ 不被摘成中性总结、
   不被迁 L4；但**遗忘不豁免**（仍按自然衰减归档，有界）。注入面**零改动**：失败条目靠既有按相关度检索命中。
+
+---
+
+### 3.3 工具参数按需注入（planner，change `0272` / ADR-0262）
+
+- **构造参数**：`LLMPlanner(..., tool_scope: str = "all")` —— 库级缺省 `"all"`（既有直接构造
+  逐字不变）；生产主 planner 由组合根注入 `config.tool_scope()`（缺省 `"auto"`，见
+  `configuration-interface.md` §2.15）。取值仅 `all` / `auto`（配置层校验）。
+- **`all`**：`LLMRequest.tools` 恒含全部激活工具（kill-switch，与引入前逐字一致）。
+- **`auto` 生效条件**：激活工具数 **> 8** **且** `tools.schema_read` 已注册；否则回落全量。
+  生效时 `LLMRequest.tools` = 核心集（`tools.file_read` / `file_write` / `file_patch` /
+  `code_run` / `web_fetch` / `context_read` / `delegate`）+ `LoopContext.loaded_tools` +
+  `tools.schema_read`。
+- **只收窄请求侧**：`ToolProvider.active_tools()` 仍是全量真源 —— 参数校验 / 权限 / coeffect /
+  确认门 / 撤销 / 去重均看全量集合。`auto` **不是**访问控制；文本 JSON 动作路径调用未注入
+  schema 的工具照常执行。
+- **系统提示**：工具目录（`- {tool_id}: {description}`）恒列**全部**激活工具；`auto` 生效时
+  追加一行「未注入参数 schema 的工具，先调用 tools.schema_read 获取参数（下一轮生效）」。
+  `all` 下不产该行 ⇒ 提示词逐字不变。
+- **加载吸收**：循环在提交阶段、`observe` 之前把 `tools.schema_read` **成功**请求的、在注册面
+  内的 id 写入 `ctx.loaded_tools` ⇒ **下一轮**请求即携带；未知 id 不吸收且不阻断本轮。
+  回合边界由 `perceive()` 新建上下文包自然重置。
 
 ---
 

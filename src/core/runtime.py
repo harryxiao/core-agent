@@ -164,6 +164,7 @@ from core.tools import (
     gate_run,
     install_tool,
     list_tool,
+    schema_read,
     uninstall_tool,
 )
 from core.tools.env_shell import EnvironmentSnapshot, probe_environment
@@ -736,11 +737,15 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     resolver.register("network:outbound", True)
     resolver.register("agent:delegate", True)  # 委托能力：显式声明供默认暴露面识别（B7）
     resolver.register("task:read", True)  # 后台任务清单（只读；change 0270 / ADR-0260）
+    resolver.register("schema:read", True)  # 工具参数查询（只读；change 0272 / ADR-0262）
     tools = ToolProvider(
         coeffect_resolver=resolver, effect_tracker=effect_tracker, gate=guard, approver=approver
     )
     for tool in builtin_tools():  # 零注入五件（单一真源：`core.tools.builtin_tools`）
         tools.register(tool)
+    # 工具参数按需查询（change 0272 / ADR-0262）：catalog 用闭包取**调用时**的注册面
+    # （含后续注册的 gate/context/delegate/插件类工具与 MCP 动态工具）。只挂主工具面。
+    tools.register(schema_read(catalog=tools.active_tools))
 
     # 门禁工具面（0111 / phase-27 切片 S1）：把 ci-cd 既有门禁执行器暴露为原子工具，
     # 门禁名与命令取自**单一真源** `GATE_COMMANDS`；执行器**注入**（L1 不依赖 L5）。
@@ -1014,6 +1019,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         block_plan=block_plan,
         parse_retry=parse_retry,
         env_snapshot=env_snapshot,
+        # 工具参数注入范围（change 0272 / ADR-0262）：只注主 planner —— 子 Agent / 神兽 /
+        # 宠物工具面 ≤ 阈值，构造缺省 `all` 即全量，无需按 loop 类型分叉。
+        tool_scope=config.tool_scope(),
     )
     # 门控（0067）：evolution 关闭 ⇒ 引擎/worker 不建，loop 冷路径与 trace 完成回调一并置 None
     # （不为「未装配」造空转闭包 —— DefaultLoop 本就接受 cold_path / trace_observer =None）。

@@ -80,6 +80,10 @@ class LoopContext:
     # （`context.plan_blocks`）⇒ 推断期把「记忆」份额传给装配器 `build(budget=…)`。
     # 缺省 `0` ⇒ 不产出配额 ⇒ planner 沿用其既有字面预算（change 0201 / ADR-0191）。
     token_budget: int = 0
+    # **本回合**已按需加载参数 schema 的工具 id（change 0272 / ADR-0262）：由循环在
+    # `tools.schema_read` 成功后写入，下一轮请求据此注入对应 schema。回合内状态 ——
+    # 随 `perceive()` 新建上下文包而清空；不写记忆、不跨会话。
+    loaded_tools: set[str] = field(default_factory=set[str])
     _done: bool = field(default=False, repr=False)
 
     def done(self) -> bool:

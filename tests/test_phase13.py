@@ -135,6 +135,8 @@ def test_build_runtime_assembles_all_deps(monkeypatch, tmp_path) -> None:
         "tools.process_kill",
         # 后台子 Agent 任务清单（change 0270 / ADR-0260）：生产工具面可达
         "tools.tasks",
+        # 工具参数按需查询（change 0272 / ADR-0262）：生产工具面可达
+        "tools.schema_read",
     }
     delegate = next(t for t in runtime.tools.active_tools() if t.tool_id == "tools.delegate")
     min_delegate_timeout = 120.0  # 委托跑完整子循环，远超 ToolDef 默认 30s

@@ -99,6 +99,7 @@ class ToolError:
 | `tools.uninstall` | `plugin_id` | 卸载插件（deactivate→uninstall 对称回退；写 + 不可逆 ⇒ 走确认门） |
 | `tools.list` | — | 列出已装插件（只读，`coeffects=[]`） |
 | `tools.gate_run` | `gate` | 按名运行质量门禁（`lint`/`typecheck`/`test`/`build`）；门禁名与门禁命令取自 `ci-cd` **单一真源** `GATE_COMMANDS`，**执行器经组合根注入**（工具层不依赖 L5）；`coeffects=["process:spawn","filesystem:write"]` + 不可逆 ⇒ 走确认门；`timeout_s=660` > 执行器内部 600 上界 |
+| `tools.schema_read` | `tool_ids`（可选字符串数组） | 查询工具参数 schema（只读，`coeffects=["schema:read"]` + 可逆 ⇒ 自动放行；无参列全部工具目录，有参返回 `description` + `parameters`，未知 id 记入 `unknown`）；`loop.tool_scope=auto` 下，未随请求注入 schema 的工具须先经本工具加载，**下一轮**生效。**只挂主工具面** |
 | `tools.context_read` | `pointer` | 按信息地图指针（`doc_id#section`）取文档片段详情（只读，`coeffects=[]` + 可逆 ⇒ 自动放行）；**取数器经组合根注入**（工具层不依赖 context 层）；指针无命中返空串不报错（context spec「信息地图」；change 0140 / ADR-0133） |
 
 > 上表为示例清单。插件安装三工具（`tools.install` / `tools.uninstall` / `tools.list`）经组合根
@@ -152,6 +153,14 @@ class ToolError:
 > `kill(pid, 0)` 探测（Windows 用 `OpenProcess` + `GetExitCodeProcess`，因 `os.kill(pid, 0)`
 > 在 Windows 会终止进程）；Linux 再核对 `/proc/<pid>/stat` starttime，不符（PID 复用）判为
 > 已退出。落盘失败与损坏文件均静默降级，不阻断任务登记；恢复条目遵守注册表上界。
+>
+> **工具参数按需查询（change `0272` / ADR-0262）**：`tools.schema_read(catalog=...)` 以闭包
+> 读取**调用时**真实注册面（含 MCP 动态注册），不是构造快照。返回形状：
+> 无参 `{"tools": [{tool_id, description}...]}`；有参
+> `{"schemas": [{tool_id, description, parameters}...], "unknown": [...]}`（未知 id 不阻断）。
+> 权限按 coeffect 词元 `schema:read` 判 `READ` 自动放行。它只提供参数信息，**不是**访问控制
+> —— 未加载 schema 的工具仍可经文本 JSON 动作路径调用。`auto` 生效时的请求侧收窄语义见
+> `loop-interface.md` §3.3。
 >
 > **输出首尾保留（change `0264` / ADR-0254）**：前景 `stdout` / `stderr` 超过
 > `_MAX_OUTPUT_CHARS = 8192` 时按「头部约 1/3 + `\n…[truncated N chars]…\n` + 尾部其余」

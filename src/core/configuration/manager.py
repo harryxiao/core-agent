@@ -48,6 +48,11 @@ _DEFAULT_HISTORY_TURNS = 20
 # 方向；先例 `_DEFAULT_PERMISSION_MODE`）。一致性由 `test_config_default_matches_compactor_default`
 # 钉住；缺省 **6 < `max_rounds` 缺省 20** ⇒ 步数维度可真正提前触发。
 _DEFAULT_COMPACT_STEPS = 6
+# 工具参数注入范围缺省口径来源：doc/openspec/specs/configuration/spec.md「工具注入范围配置」
+# （change 0272 / ADR-0262）：`auto` = 工具面超过阈值时按需加载参数 schema；`all` = 全量注入
+# （kill-switch，与引入前逐字一致）。
+_DEFAULT_TOOL_SCOPE = "auto"
+_TOOL_SCOPES = ("all", "auto")
 
 # 编排调度缺省口径来源：doc/openspec/specs/configuration/spec.md「编排调度配置」
 # （change 0123）。`_DEFAULT_ORCHESTRATION_POLICY = "off"` ⇒ 缺省**不启用**难易度策略，
@@ -330,6 +335,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_LOOP_PARSE_RETRY",
         default=False,
         map_to="loop.parse_retry",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "loop.tool_scope",
+        "--loop.tool-scope",
+        "CORE_LOOP_TOOL_SCOPE",
+        default=_DEFAULT_TOOL_SCOPE,
+        map_to="loop.tool_scope",
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
@@ -900,6 +913,20 @@ class ConfigManager:
             return value
         return str(value).strip().lower() in _FEATURE_TRUE
 
+    def tool_scope(self) -> str:
+        """工具参数注入范围（缺省 ``auto``；change 0272 / ADR-0262）。
+
+        **独立访问器**（同 `parse_retry()` 先例）。``loop`` 为**结构化段**（非法取值已在
+        校验期阻断启动，见 `_loop_errors`），故此处只做大小写 / 空白归一。
+        """
+        if self._config is None:
+            return _DEFAULT_TOOL_SCOPE
+        raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
+        value = raw.get("tool_scope", _DEFAULT_TOOL_SCOPE)
+        if isinstance(value, str):
+            return value.strip().lower()
+        return _DEFAULT_TOOL_SCOPE
+
     def turn_checkpoint(self) -> bool:
         """会话轮级检查点开关（缺省 ``False`` = 不写；change 0214 / ADR-0204）。
 
@@ -1394,7 +1421,7 @@ def _llm_max_retries(raw: dict[str, Any]) -> int:
     return retries
 
 
-def _loop_errors(raw: dict[str, Any]) -> list[str]:
+def _loop_errors(raw: dict[str, Any]) -> list[str]:  # noqa: C901 — 逐键校验按序累积错误
     """循环预算取值校验（对齐 loop「错误与预算控制」）。
 
     轮数上限与压实步数阈值须为 **≥1 的整数**、输出预留与回灌轮数须为 **≥0 的整数**；``bool``
@@ -1448,6 +1475,9 @@ def _loop_errors(raw: dict[str, Any]) -> list[str]:
         _FEATURE_TRUE | _FEATURE_FALSE
     ):
         errors.append(f"非法解析失败重试开关: loop.parse_retry={value}（须为 true/false 之一）")
+    value = raw.get("tool_scope", _DEFAULT_TOOL_SCOPE)
+    if not isinstance(value, str) or value.strip().lower() not in _TOOL_SCOPES:
+        errors.append(f"非法工具注入范围: loop.tool_scope={value!r}（须为 all / auto 之一）")
     return errors
 
 
