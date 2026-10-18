@@ -10731,6 +10731,49 @@ required 不保证端点可达；「真实关系为 0」基于 2026-10-18 的本
 `stop`）仍显示旧文案；③ 不区分「思考耗尽」与「正文本身超长被截断」两个子因，后者由
 非空内容的既有截断提示覆盖。
 
+## ADR-0283：供应商输出上限能力适配与终止原因归一（change 0293 / 台账 E229）
+
+**背景。** `loop.output_reserve`（缺省 `8192`）自 ADR-0174 起作为请求侧 `max_tokens` 下发，
+但各供应商的**上限字段与数值并不统一**：OpenAI o 系 / GPT-5 系要求 `max_completion_tokens`；
+`gpt-4-turbo` / `gpt-3.5` 的最大输出仅 `4096`，发 `8192` 会被端点 400。这正是 ADR-0174
+局限②与 ADR-0175 局限④留下的坑（窗口表只推导上下文窗口）。同时，部分兼容层用
+`MAX_TOKENS` / `max_tokens` 作为 `finish_reason` 截断别名，change 0292 的截断诊断只认
+`length`，会漏报。
+
+**决策**：
+
+- **D1 能力表落在 `configuration` 底座层。** 新模块 `configuration/model_capabilities.py`
+  （纯常量 + 纯函数）：`模型名子串 → {max_output_tokens, max_tokens_field,
+  supports_reasoning_effort}`。未收录 ⇒ `None`；`max_output_tokens=0` 与
+  `supports_reasoning_effort=None` 均表示「不知道」，不钳制、不告警。表不新增配置键。
+  放底座层的原因：provider 要查表，配置校验要告警；而架构测试禁止底座反向依赖能力层。
+- **D2 钳制与字段选择在 provider 请求体构建处。** 有效上限 =
+  `min(请求值, 已知最大输出)`（只向下收紧，绝不抬高用户配置）；字段按表选
+  `max_tokens` / `max_completion_tokens`，SHALL NOT 同时下发两个。未收录模型字段与数值
+  逐字不变。`planner` / 组合根的注入口不动，适配全在协议边界。
+- **D3 终止原因别名归一。** `max_tokens` / `MAX_TOKENS` / `max_output_tokens`
+  （大小写与首尾空白不敏感）⇒ `length`，同时作用于流式与非流式；其余取值原样保留，
+  不折叠为 `stop`，缺失沿用既有口径（流式空串 / 非流式 `stop`）。
+- **D4 配置期仅告警。** ① 预留 > 已知最大输出 ⇒ 告警「请求将按模型上限下发」；
+  ② 显式 `reasoning_effort` 对已知不支持模型 ⇒ 告警「仍会照常下发，端点可能拒绝」。
+  未收录/未知能力不告警；SHALL NOT 改变校验通过与否，SHALL NOT 丢弃显式配置。
+
+**被拒方案**：按各家 tokenizer 计算上限（维护不可持续，上限是协议常量）；启动期探测
+`/models`（网络依赖与启动不确定性，ADR-0175 已拒）；同时发多个上限字段（严格端点 400、
+宽松网关歧义）；按能力表静默丢弃 `reasoning_effort`（显式配置被改写）；新增
+`llm.max_output_tokens` 键（当前主流族可由表覆盖，避免第二真源）；`length` 时自动加倍重试
+（成本/延迟不可控，仍可能超模型上限）。
+
+**验证**：能力表 6 例、provider 请求体/终止原因 7 例、配置告警 3 例；全量 **3270 passed**
+（3254 → 3270）；反证 3/3（去钳制/字段选择、去别名归一、去告警分别变红）；四门禁全绿；GLM-5.3 真实单轮冒烟
+（未收录上限、字段 `max_tokens`）确认请求形状与变更前一致。
+
+**局限**：① 表是静态常量，新模型族需改代码；② 子串匹配无边界语义，自建模型名含
+`gpt-4o` 等子串会被误纳入；③ 未收录的自研网关无法通过配置表达更低上限（本 change 不加键）；
+④ `reasoning_effort` 只告警不拦截，已知不支持的端点仍会 400；⑤ 不改 `known_window`
+既有窗口值（`gpt-4.1` 等窗口口径保持既有，窗口表更新是另一件事）；⑥ 不覆盖 Anthropic /
+Gemini **原生协议**（仓库只走 OpenAI 兼容端点）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11008,3 +11051,4 @@ required 不保证端点可达；「真实关系为 0」基于 2026-10-18 的本
 | ADR-0280 | 03-interfaces/llm-provider-interface.md, 02-modules/llm-provider.md, 03-interfaces/memory-interface.md, 02-modules/memory.md, 03-interfaces/rag-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0281 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0282 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0283 | 02-modules/llm-provider.md, 03-interfaces/llm-provider-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

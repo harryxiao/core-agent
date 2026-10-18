@@ -76,6 +76,10 @@ L3 Loop ──► LLMProvider（抽象接口）──► StdlibLLMProvider（默
   此类块 `content` 仍为空串（事件面零变化）。非流式 `LLMResponse.usage` 解析**逐字不动**。
 - **请求侧形状**：流式请求体增 `stream_options: {"include_usage": true}`；**非流式不含**该字段。
   `LLMRequest.max_tokens` 由组合根按输出预留注入 ⇒ `> 0` 才下发（见 §3.2 的请求体构建）。
+- **供应商方言适配**（change `0293` / ADR-0283）：请求体上限按内置能力表
+  （`configuration/model_capabilities.py`）**向下钳制**到模型已知最大输出，并选择字段
+  （`max_tokens` / `max_completion_tokens`，只发一个）；未收录模型逐字不变。`finish_reason`
+  的截断别名（`MAX_TOKENS` 等）归一为 `length`，流式/非流式同口径。
 - 无新增三方依赖（仍 `urllib` 直连 + 手写 SSE）。
 
 ---

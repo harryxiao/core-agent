@@ -4927,3 +4927,24 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **实测**：真实冒烟复现（reasoning 8192 / content 0 / finish_reason=length）→ 配置
 > `reasoning_effort: low` 后端到端恢复。**已知局限**：见 `coding-plan/known-risk.md`
 > §3 ADR-0282 行。
+
+## 206. 供应商输出上限能力适配与终止原因归一（TC-OUTPUT-CAP，change `0293`／ADR-0283，台账 E229）
+
+| 编号 | 覆盖 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-OUTPUT-CAP-01 | 向下钳制 | `gpt-4-turbo`（上限 4096）+ 请求 8192 | 请求体 `max_tokens: 4096`（`tests/test_llm_provider.py::test_max_tokens_clamped_to_known_model_cap`） |
+| TC-OUTPUT-CAP-02 | 字段选择 | `o1-preview` + 请求 8192 | 请求体 `max_completion_tokens: 8192`，无 `max_tokens` 键（`...::test_known_model_uses_its_own_limit_field`） |
+| TC-OUTPUT-CAP-03 | 未收录不变 | `my-local-model` + 请求 8192 | 请求体 `max_tokens: 8192`，字段与数值逐字不变（`...::test_unknown_model_request_body_unchanged`） |
+| TC-OUTPUT-CAP-04 | 未注入不下发 | 请求 `max_tokens=None` | 请求体不含任何输出上限键（`...::test_absent_max_tokens_sends_no_limit_field`） |
+| TC-OUTPUT-CAP-05 | 非流式别名 | `finish_reason="MAX_TOKENS"` | `LLMResponse.finish_reason == "length"`（`...::test_non_stream_truncation_alias_normalized`） |
+| TC-OUTPUT-CAP-06 | 流式别名 | 末块 `finish_reason="max_tokens"` | `LLMChunk.finish_reason == "length"`（`...::test_stream_truncation_alias_normalized`） |
+| TC-OUTPUT-CAP-07 | 非截断原样 | `finish_reason="content_filter"` | 原样保留，不折叠为 `stop`（`...::test_non_truncation_finish_reason_preserved`） |
+| TC-OUTPUT-CAP-08 | 表查表纪律 | 族命中 / 顺序 / 大小写 / 未收录 | 命中返回能力、未收录 `None`（`tests/test_model_capabilities.py`） |
+| TC-OUTPUT-CAP-09 | 钳制边界 | 低于 / 等于 / 高于上限、未知上限、`None` | 只向下收紧，未知保持原值，`None` 保持 `None`（同文件） |
+| TC-OUTPUT-CAP-10 | 预留超上限告警 | `gpt-4-turbo` + 缺省预留 8192 | 校验通过，告警含 `output_reserve` 与 `4096`（`tests/test_loop_budget_config.py::test_output_reserve_above_known_cap_only_warns`） |
+| TC-OUTPUT-CAP-11 | 档位不支持告警 | `gpt-4o` + `reasoning_effort: low` | 校验通过，告警含 `reasoning_effort`，配置值不丢弃（`...::test_unsupported_reasoning_effort_only_warns`） |
+| TC-OUTPUT-CAP-12 | 未收录不告警 | `my-local-model` + `reasoning_effort: low` | 无能力告警，既有校验结果不变（`...::test_unknown_model_has_no_capability_warnings`） |
+
+> **反证 3/3**：去掉钳制/字段选择 ⇒ 01/02 红；去掉别名归一 ⇒ 05/06 红；去掉能力告警 ⇒ 10/11 红
+> （12 仍绿）。**实测**：GLM-5.3（能力表未收录上限、字段 `max_tokens`）真实单轮冒烟
+> `exit=0`，回复正常、零告警。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0283 行。

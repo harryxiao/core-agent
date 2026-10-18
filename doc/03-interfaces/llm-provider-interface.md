@@ -98,9 +98,11 @@ class LLMChunk:
 - **请求侧**：流式请求体带 `stream_options: {"include_usage": true}`（要求端点上报）；**非流式**
   请求体**不含**该字段（其响应本就携带 `usage`）。
 - **`LLMRequest.max_tokens`**：由组合根按**输出预留**（`loop.output_reserve`）注入 `LLMPlanner`
-  的构造期注入点 ⇒ `> 0` 时填入每次请求（provider 据此下发 `max_tokens`），`None` 或 `≤ 0` 时
-  **不**下发（请求形状逐字不变）。该注入使「预留」从**记账假设**变为**端点上界**（预算派生
-  `窗口 − 预留` 本已假设输出至多占预留这么多）。
+  的构造期注入点 ⇒ `> 0` 时填入每次请求，`None` 或 `≤ 0` 时**不**下发（请求形状逐字不变）。
+  内置默认实现构建请求体时 SHALL 按**模型输出能力表**（`configuration/model_capabilities.py`）
+  **向下钳制**并选择字段（`max_tokens` / `max_completion_tokens`，只发一个）；未收录模型
+  字段与数值逐字不变（change `0293` / ADR-0283）。该注入使「预留」从**记账假设**变为
+  **端点上界**（预算派生 `窗口 − 预留` 本已假设输出至多占预留这么多）。
 - **消费面**（`LLMPlanner`）：`prompt_tokens` 与装配估算取**较大者**为记账下界（与非流式同口径），
   `completion_tokens` **仅**记观测（`last_completion_tokens()`），**不参与**任何判定。
 
@@ -111,8 +113,10 @@ class LLMChunk:
 
 - **键位**：`LLMChunk.finish_reason` 取 `choices[0].finish_reason`，**该块未携带时为空串**（OpenAI
   兼容端点通常在**末块**携带，如 `stop` / `length`）；与 `content` / `thinking` 同为**归一化后的字符串**。
-- **只读不解释**：provider **只透传**该值，不解读语义；「`length` ⇒ 输出被截断」的**归因**由消费方
-  （`LLMPlanner._parse(..., finish_reason=…)`）完成 ⇒ 提示成因可辨（见 §3.1）。
+- **方言归一、只读不解释**：provider 将截断别名（`max_tokens` / `MAX_TOKENS` / `max_output_tokens`，
+  大小写与首尾空白不敏感）归一为 `length`，其余取值原样透传（change `0293` / ADR-0283）；
+  「`length` ⇒ 输出被截断」的**归因**仍由消费方（`LLMPlanner._parse(..., finish_reason=…)`）
+  完成 ⇒ 提示成因可辨（见 §3.1）。
 - **尾字段带缺省**：缺省空串 ⇒ 全部既有构造点零改动；`getattr` 取值 ⇒ 第三方 provider 自有的形块
   不致破。
 

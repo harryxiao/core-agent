@@ -21,6 +21,8 @@ import urllib.request
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any, cast
 
+from core.configuration.model_capabilities import effective_output_tokens, max_tokens_field
+
 from .errors import (
     LLMAuthError,
     LLMError,
@@ -78,6 +80,17 @@ def _iter_sse_payloads(resp: Any) -> Iterator[str]:
         if payload == "[DONE]":
             break
         yield payload
+
+
+# 各协议的「输出被截断」别名（小写比较）——统一归一到 OpenAI 口径的 ``length``，
+# 使 0292 的截断诊断对非 OpenAI 兼容层同样命中（change 0293 / ADR-0283）。
+_TRUNCATION_ALIASES = frozenset({"max_tokens", "max_output_tokens"})
+
+
+def _normalize_finish_reason(value: Any) -> str:
+    """终止原因归一：截断别名 ⇒ ``length``；其余取值原样保留（含空串）。"""
+    text = "" if value is None else str(value)
+    return "length" if text.strip().lower() in _TRUNCATION_ALIASES else text
 
 
 def _thinking_text(message: dict[str, Any]) -> str:
@@ -233,7 +246,9 @@ class StdlibLLMProvider(LLMProvider):
             "temperature": request.temperature,
         }
         if request.max_tokens is not None:
-            body["max_tokens"] = request.max_tokens
+            # 按模型能力表选择字段并向下钳制（change 0293 / ADR-0283）；未收录模型与
+            # 变更前逐字一致（字段 `max_tokens`、原值）。
+            body[max_tokens_field(model)] = effective_output_tokens(model, request.max_tokens)
         if request.tools is not None:
             body["tools"] = request.tools
         if request.reasoning_effort is not None:
@@ -278,7 +293,7 @@ class StdlibLLMProvider(LLMProvider):
                 prompt_tokens=int(usage.get("prompt_tokens", 0)),
                 completion_tokens=int(usage.get("completion_tokens", 0)),
             ),
-            finish_reason=str(choice.get("finish_reason") or "stop"),
+            finish_reason=_normalize_finish_reason(choice.get("finish_reason") or "stop"),
             provider=self._provider,
             model=model,
             tool_calls=self._map_tool_calls(message.get("tool_calls")),
@@ -298,7 +313,7 @@ class StdlibLLMProvider(LLMProvider):
             tool_calls=self._map_tool_calls(delta.get("tool_calls")),
             thinking=_thinking_text(delta),
             # 终止原因通常只在末块携带（缺省块为空串）⇒ 归因「被截断」的权威信号（change 0170）。
-            finish_reason=str(choice.get("finish_reason") or ""),
+            finish_reason=_normalize_finish_reason(choice.get("finish_reason")),
             usage=self._map_usage(part),
         )
 

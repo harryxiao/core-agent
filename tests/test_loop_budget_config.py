@@ -524,3 +524,35 @@ def test_build_runtime_labels_provider_from_config(tmp_path: Path, state_dir: Pa
     planner = _main_loop(runtime)._planner  # noqa: SLF001 — 接线断言
     provider = planner._llm  # noqa: SLF001 — 接线断言
     assert provider._provider == "litellm"  # noqa: SLF001 — 接线断言
+
+
+# ---- 已知模型能力告警（change 0293 / ADR-0283 / 台账 E229）----
+
+
+def _capability_warnings(
+    tmp_path: Path, model: str, llm_extra: str = "", extra: str = ""
+) -> list[str]:
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(_llm_section(model, llm_extra) + extra, encoding="utf-8")
+    manager = ConfigManager(yaml_path=str(cfg), environ={"OPENAI_API_KEY": "sk-test"})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        manager.load()
+    return [str(item.message) for item in caught if "已知模型" in str(item.message)]
+
+
+def test_output_reserve_above_known_cap_only_warns(tmp_path: Path) -> None:
+    """预留高于已知最大输出 ⇒ 校验通过，仅告警（请求侧会钳制）。"""
+    messages = _capability_warnings(tmp_path, "gpt-4-turbo")
+    assert any("output_reserve" in message and "4096" in message for message in messages)
+
+
+def test_unsupported_reasoning_effort_only_warns(tmp_path: Path) -> None:
+    """显式档位对已知不支持模型 ⇒ 仅告警，配置值不被丢弃。"""
+    messages = _capability_warnings(tmp_path, "gpt-4o", "  reasoning_effort: low\n")
+    assert any("reasoning_effort" in message for message in messages)
+
+
+def test_unknown_model_has_no_capability_warnings(tmp_path: Path) -> None:
+    """未收录模型 ⇒ 不产生能力告警（既有校验结果逐字不变）。"""
+    assert _capability_warnings(tmp_path, "my-local-model", "  reasoning_effort: low\n") == []

@@ -787,3 +787,79 @@ def test_response_provider_blank_falls_back_to_identity() -> None:
     )
 
     assert result.provider == "stdlib"
+
+
+# ---- 输出上限能力适配与终止原因归一（change 0293 / ADR-0283 / 台账 E229）----
+
+
+def _request(model: str, max_tokens: int | None = 8192) -> LLMRequest:
+    return LLMRequest(messages=[Message("user", "hi")], model=model, max_tokens=max_tokens)
+
+
+def _completion_body(model: str, max_tokens: int | None = 8192) -> dict[str, Any]:
+    transport = _FakeTransport(
+        _fake_json_response({"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]})
+    )
+    provider = _make_provider(transport)
+    asyncio.run(provider.acompletion(_request(model, max_tokens)))
+    return json.loads(transport.last.data.decode("utf-8"))
+
+
+def test_max_tokens_clamped_to_known_model_cap() -> None:
+    """已知模型上限低于预留 ⇒ 请求体按模型上限下发（不发送会 400 的过大值）。"""
+    body = _completion_body("gpt-4-turbo")
+    assert body["max_tokens"] == 4096  # noqa: PLR2004 — 能力表上限
+
+
+def test_known_model_uses_its_own_limit_field() -> None:
+    """o 系 / GPT-5 系要求 `max_completion_tokens`，不得同时发 `max_tokens`。"""
+    body = _completion_body("o1-preview")
+    assert body["max_completion_tokens"] == 8192  # noqa: PLR2004 — 未超上限 ⇒ 原值
+    assert "max_tokens" not in body
+
+
+def test_unknown_model_request_body_unchanged() -> None:
+    """未收录模型：字段名与数值与引入能力表前逐字一致。"""
+    body = _completion_body("my-local-model")
+    assert body["max_tokens"] == 8192  # noqa: PLR2004 — 逐字原值
+    assert "max_completion_tokens" not in body
+
+
+def test_absent_max_tokens_sends_no_limit_field() -> None:
+    body = _completion_body("gpt-4-turbo", None)
+    assert "max_tokens" not in body
+    assert "max_completion_tokens" not in body
+
+
+def test_non_stream_truncation_alias_normalized() -> None:
+    transport = _FakeTransport(
+        _fake_json_response(
+            {"choices": [{"message": {"content": "hi"}, "finish_reason": "MAX_TOKENS"}]}
+        )
+    )
+    result = asyncio.run(_make_provider(transport).acompletion(_request("m")))
+    assert result.finish_reason == "length"
+
+
+def test_stream_truncation_alias_normalized() -> None:
+    lines = [
+        b'data: {"choices":[{"delta":{"content":"x"},"finish_reason":"max_tokens"}]}\n',
+        b"data: [DONE]\n",
+    ]
+    transport = _FakeTransport(_stream_response(lines))
+
+    async def collect() -> list[LLMChunk]:
+        return [chunk async for chunk in _make_provider(transport).astream(_request("m"))]
+
+    chunks = asyncio.run(collect())
+    assert chunks[-1].finish_reason == "length"
+
+
+def test_non_truncation_finish_reason_preserved() -> None:
+    transport = _FakeTransport(
+        _fake_json_response(
+            {"choices": [{"message": {"content": "hi"}, "finish_reason": "content_filter"}]}
+        )
+    )
+    result = asyncio.run(_make_provider(transport).acompletion(_request("m")))
+    assert result.finish_reason == "content_filter"

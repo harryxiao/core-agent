@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 from core.plugin_registry import CoeffectResolver, Effect, EffectTracker
 
 from .errors import ConfigurationError
+from .model_capabilities import known_capability
 from .model_windows import known_window
 from .models import (
     AppConfig,
@@ -690,7 +691,11 @@ class ConfigManager:
         errors.extend(_orchestration_errors(orch_raw))
         dur_raw = cast("dict[str, Any]", config.extra.get("durability") or {})
         errors.extend(_retention_errors(dur_raw))
-        warnings = self._unknown_section_warnings(config) + self._unknown_feature_warnings(config)
+        warnings = (
+            self._unknown_section_warnings(config)
+            + self._unknown_feature_warnings(config)
+            + _model_capability_warnings(config.llm, loop_raw)
+        )
         return ValidationResult(ok=not errors, errors=errors, warnings=warnings)
 
     def _known_sections(self) -> set[str]:
@@ -1807,6 +1812,35 @@ def _window_reserve_errors(context_window: int, raw: dict[str, Any]) -> list[str
         f"上下文窗口不敷输出预留: llm.context_window={context_window} ≤ "
         f"loop.output_reserve={reserve}（派生 token 预算须为正）"
     ]
+
+
+def _model_capability_warnings(llm: LLMConfig, loop_raw: Mapping[str, Any]) -> list[str]:
+    """已知模型能力告警（change 0293 / ADR-0283）：仅告警，不阻断、不改配置。
+
+    未收录模型 ⇒ 不告警（「不知道」不下断语）。已知上限低于预留时提示请求将按上限钳制；
+    显式推理档位对已知不支持模型时提示仍会下发、端点可能拒绝。
+    """
+    capability = known_capability(llm.model)
+    if capability is None:
+        return []
+    messages: list[str] = []
+    reserve = _parse_int(loop_raw.get("output_reserve", _DEFAULT_OUTPUT_RESERVE))
+    if (
+        reserve is not None
+        and capability.max_output_tokens > 0
+        and reserve > capability.max_output_tokens
+    ):
+        messages.append(
+            f"已知模型输出上限低于输出预留: loop.output_reserve={reserve} > "
+            f"llm.model={llm.model} 的最大输出 {capability.max_output_tokens}"
+            "（请求将按模型上限下发；仅告警，不阻断）"
+        )
+    if llm.reasoning_effort and capability.supports_reasoning_effort is False:
+        messages.append(
+            f"已知模型可能不支持推理档位: llm.reasoning_effort={llm.reasoning_effort} 对 "
+            f"llm.model={llm.model}（仍会照常下发；端点若不接受会报错）"
+        )
+    return messages
 
 
 def _split_hosts(raw: str) -> list[str]:
