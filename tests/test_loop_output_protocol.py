@@ -38,14 +38,15 @@ def _echo_tool() -> Tool:
 class _FakeLLM:
     """按序出内容的假 LLM（单个字符串 ⇒ 恒定；列表 ⇒ 逐个消费，末项重复）。"""
 
-    def __init__(self, content: str | list[str]) -> None:
+    def __init__(self, content: str | list[str], finish_reason: str = "stop") -> None:
         self._queue = [content] if isinstance(content, str) else list(content)
+        self._finish_reason = finish_reason
 
     def completion(self, request: Any) -> LLMResponse:
         return LLMResponse(
             content=self._queue.pop(0) if len(self._queue) > 1 else self._queue[0],
             usage=TokenUsage(prompt_tokens=0, completion_tokens=0),
-            finish_reason="stop",
+            finish_reason=self._finish_reason,
             provider="fake",
             model="test-model",
         )
@@ -64,10 +65,10 @@ class _BoomLLM:
         return self.completion(request)
 
 
-def _parse(content: str) -> Action:
+def _parse(content: str, *, finish_reason: str = "stop") -> Action:
     provider = ToolProvider()
     provider.register(_echo_tool())
-    planner = LLMPlanner(_FakeLLM(content), tools=provider)
+    planner = LLMPlanner(_FakeLLM(content, finish_reason=finish_reason), tools=provider)
     return asyncio.run(planner(LoopContext(messages=[{"role": "user", "content": "hi"}])))
 
 
@@ -164,6 +165,25 @@ def test_empty_content_marks_action_failed() -> None:
     action = _parse("   ")
     assert "LLM_PLAN_PARSE_FAILED" in action.args["reply"]
     assert action.failed is True
+
+
+def test_empty_content_with_length_reports_truncation() -> None:
+    """空内容 + finish_reason=length ⇒ 明示截断/预算可能被思考耗尽（change 0292）。"""
+    action = _parse("   ", finish_reason="length")
+    assert action.tool_id == ""
+    assert action.failed is True
+    assert "LLM_PLAN_PARSE_FAILED" in action.args["reply"]
+    assert "空响应" in action.args["reply"]
+    assert "截断" in action.args["reply"]
+    assert "max_tokens" in action.args["reply"]
+
+
+def test_empty_content_without_length_keeps_exact_wording() -> None:
+    """无截断信号（stop / 缺失）⇒ 空响应文案逐字不变（change 0292）。"""
+    for reason in ("stop", ""):
+        action = _parse("", finish_reason=reason)
+        assert action.failed is True
+        assert action.args["reply"] == "LLM_PLAN_PARSE_FAILED: 空响应"
 
 
 def test_object_without_tool_id_or_reply_marks_action_failed() -> None:

@@ -787,7 +787,12 @@ class LLMPlanner:
     ) -> Action:
         raw = content.strip()
         if not raw:
-            return Action(args={"reply": f"{_PARSE_FAILED}: 空响应"}, failed=True)
+            # 空内容区分成因（change 0292 / ADR-0282）：provider 报 length 时明示截断，
+            # 否则维持既有「空响应」逐字文案；失败语义两侧相同。
+            reply = f"{_PARSE_FAILED}: 空响应"
+            if finish_reason == "length":
+                reply += "（输出被截断；思考可能占用全部 max_tokens）"
+            return Action(args={"reply": reply}, failed=True)
         # JSON 头 + <parameter> 混写：在剥渣**之前**恢复（否则尾部 </parameter> 会被剥掉）
         recovered = _recover_hybrid_tool_call(raw)
         if recovered is not None:

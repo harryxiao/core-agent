@@ -10698,6 +10698,39 @@ required 不保证端点可达；「真实关系为 0」基于 2026-10-18 的本
 信息质量，不增加恢复次数；⑥ 真实冒烟只证明输入内容与失败码，不证明模型第二次拆解一定
 满足任务级标准。
 
+## ADR-0282：空响应的截断成因诊断（change 0292 / 台账 E228）
+
+**背景**：2026-10-19 真实冒烟（session `03c49ecf…`）第二轮约 89 秒后返回
+`LLM_PLAN_PARSE_FAILED: 空响应`。复现确认：GLM-5.3 在 `reasoning_effort` 不下发时走默认
+深度思考，把本次请求的 `max_tokens`（= `loop.output_reserve`，8192）全部耗在
+`reasoning_content` 上，`content` 为空、`finish_reason="length"`。`LLMPlanner._parse`
+在内容为空时先判空、未读取已传入的 `finish_reason`，于是把「输出预算耗尽/被截断」
+误报为无成因的「空响应」，排障者无法区分空包、模型沉默与思考吃满预算。
+
+**决策**：
+
+- **D1 空内容分支读取 `finish_reason`**。去空白后为空且 `finish_reason == "length"`
+  ⇒ `reply` 在既有前缀后追加「输出被截断；思考可能占用全部 max_tokens」；
+  `finish_reason` 缺失、空串或非 `length` ⇒ 维持逐字
+  `LLM_PLAN_PARSE_FAILED: 空响应`。保留原前缀子串，既有日志检索/呈现/前缀断言不受影响。
+- **D2 只诊断，不自动兜底**。不自动加大 `max_tokens`、不自动降档重试、不探测思考长度；
+  请求形状、调用次数、失败语义（`failed=true`、`ok=False`、零工具执行、无原始产出）不变。
+- **D3 只读权威信号**。不按 `completion_tokens == max_tokens` 推断（部分 provider 不报
+  用量，且 planner 拿不到可靠的请求侧对应关系）；`finish_reason` 是协议内的截断信号。
+
+**被拒方案**：把空内容一律归为截断（`stop` 的空包会被误报，掩盖真实原因）；在空内容时
+自动改用 `reasoning_effort=low` 重试（改变调用次数/延迟/成本，需独立恢复策略与规格）；
+自动调大 `output_reserve`（改变预算分配与输入预算，超出诊断范围）。
+
+**验证**：`tests/test_loop_output_protocol.py` 新增 2 例（length 成因 / 无信号逐字不变）；
+全量 **3254 passed**（3252 → 3254）；反证 1/1（去掉 `finish_reason == "length"` 分支 ⇒ 截断文案用例红）；
+四门禁全绿；真实冒烟前已用配置 `reasoning_effort: low` 完成端到端恢复。
+
+**局限**：① 只改善提示，不阻止同类失败 —— GLM 系仍需显式 `reasoning_effort: low`
+或调大 `output_reserve`；② provider 截断时不报 `finish_reason="length"`（缺失或
+`stop`）仍显示旧文案；③ 不区分「思考耗尽」与「正文本身超长被截断」两个子因，后者由
+非空内容的既有截断提示覆盖。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10974,3 +11007,4 @@ required 不保证端点可达；「真实关系为 0」基于 2026-10-18 的本
 | ADR-0279 | 03-interfaces/configuration-interface.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0280 | 03-interfaces/llm-provider-interface.md, 02-modules/llm-provider.md, 03-interfaces/memory-interface.md, 02-modules/memory.md, 03-interfaces/rag-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0281 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0282 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

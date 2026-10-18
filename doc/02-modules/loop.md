@@ -155,6 +155,9 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
   原始产出（`Action.raw_output` → `LoopResult.raw_output`，上界 `_RAW_OUTPUT_MAX`），只供呈现层折叠
   与 trace 留痕，**不进**转录 / 记忆 / 笔记、**不并入** `reply`。**成因可辨**：消费 provider 的
   `finish_reason`（`LLMChunk` 亦已携带）—— `length` ⇒ 提示明示**被截断**，否则 ⇒ **未闭合**。
+- **空内容成因可辨**（change `0292` / ADR-0282）：`content` 去首尾空白后为空 ⇒ 仍为失败态终止动作；
+  provider 报 `finish_reason="length"` ⇒ `reply` 明示**输出被截断 / 输出预算可能被思考耗尽**，
+  信号不可用或非 `length` ⇒ 维持 `LLM_PLAN_PARSE_FAILED: 空响应` **逐字**；两种情形失败语义相同。
 - **行动序列人类可读**（change `0171` / ADR-0162）：收尾观察者交付的 `steps` 由
   「`role: json.dumps(...)`」改为「工具名（有界参数摘要）→ 有界结果节选」——
   **不落** ReAct 消息原文与整篇工具输出（容器型参数只报类型与规模）；纯文字回复轮为空列表

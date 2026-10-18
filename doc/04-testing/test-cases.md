@@ -4915,3 +4915,15 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > `SUBTASK_VERIFY_FAILED` 收口且回执未执行；真实 `task` CLI 冒烟（简单任务）通过、
 > 零告警。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0281 行（仅任务级分支、
 > 精确相等守卫、标准为建议性上下文、600 字截断、重拆预算仍为 1）。
+
+## 205. 空响应截断成因诊断（TC-EMPTY-TRUNC，change `0292`／ADR-0282，台账 E228）
+
+| 编号 | 覆盖 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-EMPTY-TRUNC-01 | 截断成因 | 空内容 + `finish_reason="length"` | 失败态终止动作；`reply` 含 `LLM_PLAN_PARSE_FAILED`、`空响应`、`截断`、`max_tokens`（`tests/test_loop_output_protocol.py::test_empty_content_with_length_reports_truncation`） |
+| TC-EMPTY-TRUNC-02 | 无信号逐字不变 | 空内容 + `finish_reason` 为 `stop` / 空串 | `reply` 逐字 `LLM_PLAN_PARSE_FAILED: 空响应`，失败语义相同（`...::test_empty_content_without_length_keeps_exact_wording`） |
+
+> **反证 1/1**：去掉 `finish_reason == "length"` 分支 ⇒ 01 红（02 仍绿，证明只改截断分支）。
+> **实测**：真实冒烟复现（reasoning 8192 / content 0 / finish_reason=length）→ 配置
+> `reasoning_effort: low` 后端到端恢复。**已知局限**：见 `coding-plan/known-risk.md`
+> §3 ADR-0282 行。

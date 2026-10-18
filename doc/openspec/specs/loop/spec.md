@@ -478,6 +478,12 @@ planner 流式协议 SHALL **额外**支持**思考增量通道**：以独立的
 中间夹带一律按回复」的语义 —— 旧语义把「完整动作协议 + 尾随正文」整段当答复（记成功、JSON
 进转录与记忆的**静默零执行**），其代价高于一次**可见**的解析失败。
 
+内容为空（去除首尾空白后为空）SHALL 仍以**失败态终止动作**收尾。provider 报告
+`finish_reason="length"` 时，`reply` 的可读提示 SHALL 明示**输出被截断 / 输出预算可能被思考耗尽**
+（SHALL NOT 只报「空响应」）；`finish_reason` 不可用（未携带 / 空串 / 非 `length`）时，`reply`
+SHALL 维持既有「`LLM_PLAN_PARSE_FAILED: 空响应`」措辞。两种情形的失败语义（`failed=true`、
+`ok=False`、零工具执行、无原始产出）SHALL 相同，本条 SHALL NOT 改变非空内容的任何解析分支。
+
 推理产出**不可用**（解析失败 `LLM_PLAN_PARSE_FAILED` 各分支、模型调用失败）时，循环 SHALL 以
 **失败态终止动作**收尾：该轮 `trajectory` 记 `ok=False`、`loop_finished` 载荷 `failed=true`、
 `LoopResult.failed=true`、收尾观察者 SHALL 收到 `ok=False`。该失败态 SHALL NOT 外溢为工具执行
@@ -500,6 +506,20 @@ SHALL NOT 写入转录 / 记忆 / 笔记，SHALL NOT 并入 `reply`（`reply` SH
 重试仍不可用 ⇒ 维持本条失败语义（两次模型调用，不第三次重试）。已外发内容增量（自然语言流已
 逐段外发）的场合 SHALL NOT 重试（不得让已见内容「回滚」）；配置关闭（缺省）⇒ 请求形状、模型
 调用次数与失败语义与既有实现**逐字一致**。
+
+#### Scenario: 空内容且 provider 报告截断时提示预算耗尽
+
+- **GIVEN** 模型输出去除首尾空白后为空，且 provider 报告 `finish_reason="length"`
+- **WHEN** 循环解析该输出
+- **THEN** 得到失败态终止动作，`reply` 含 `LLM_PLAN_PARSE_FAILED` 且明示「输出被截断 / 输出预算可能被思考耗尽」
+- **AND** 本轮不执行任何工具、无原始产出，失败语义与既有空响应分支相同
+
+#### Scenario: 空内容且无截断信号时维持原文案
+
+- **GIVEN** 模型输出去除首尾空白后为空，且 `finish_reason` 缺失、为空串或不为 `length`
+- **WHEN** 循环解析该输出
+- **THEN** 得到失败态终止动作，`reply` 逐字为 `LLM_PLAN_PARSE_FAILED: 空响应`
+- **AND** 失败语义与截断分支相同
 
 #### Scenario: 混写正文的动作 JSON 被识别为工具调用
 
