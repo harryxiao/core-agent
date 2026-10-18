@@ -4047,3 +4047,30 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > 四门禁全绿（`ruff check` / `ruff format --check` / `pyright` 0 / `pytest -q`）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0254 行（abspath 依赖 cwd / 不做 inode 与
 > 符号链接去重 / 不归一 shell·URL / 截断计数为近似 / 损坏行不隔离只告警）。
+
+## 177. 组内只读工具并发（TC-CONC，change `0265`／ADR-0255，台账 E201）
+| TC-CONC | 场景 | 输入 | 预期 |
+|---|---|---|---|
+| TC-CONC-01 | **只读动作并发**（承重） | 同一 `ActionGroup` 两个 `filesystem:read` 工具调用，处理器各 `sleep 0.2s` | 两个处理器**重叠**执行（总耗时 < 0.35s，串行约 0.4s）；两动作各产出事件与观测（`tests/test_concurrent_group_tools.py::test_read_only_group_actions_run_concurrently`） |
+| TC-CONC-02 | **写动作是屏障**（承重） | 组内 `[read(sleep 0.2s), write]` | `write` 处理器在 `read` 完成之后才开始（日志 `end:read` 先于 `start:write`）（`…::test_write_action_is_a_barrier`） |
+| TC-CONC-03 | **按原序提交**（承重） | 两个只读动作：a 慢 0.25s、b 快 0.05s（b 先完成） | `action_completed` 的 `round` 仍为 `[0, 1]`，输出 a 在前 b 在后（`…::test_concurrent_results_commit_in_index_order`） |
+| TC-CONC-04 | 关闭并发开关 | `DefaultLoop(concurrent_reads=False)`，两个各 0.2s 的只读动作 | 逐个串行（总耗时 ≥ 0.35s），日志 `start:a,end:a,start:b,end:b`（`…::test_concurrent_reads_can_be_disabled`） |
+| TC-CONC-05 | 批内重复键不预取 | 组内两个完全相同的 `tools.read` 调用 | 处理器只调用一次；`action_deduplicated(scope=batch)`（`…::test_duplicate_key_in_group_is_not_prefetched`） |
+| TC-CONC-06 | 并发不越轮次额度 | `max_rounds=2`，组内 3 个只读动作 | 只执行前 2 个（`start:a`、`start:b`）（`…::test_concurrent_batch_does_not_exceed_max_rounds`） |
+| TC-CONC-07 | **同步 handler 不阻塞事件循环**（承重） | 同步 handler `sleep 0.2s`；事件循环上每 10ms tick 一次 | tick ≥ 10（事件循环未被阻塞）（`…::test_sync_handler_does_not_block_event_loop`） |
+| TC-CONC-08 | 同步 handler 真并发 | 两个 `ainvoke` 并发，同步 handler 各 `sleep 0.2s` | 总耗时 < 0.35s（工作线程重叠）（`…::test_sync_handlers_run_concurrently_via_ainvoke`） |
+
+> **口径**：并发资格只认工具**声明**的 coeffects（含 `write` / `spawn` / `outbound` 词元即串行）；
+> 只有**连续只读段**并发，写 / 副作用 / 未知工具是串行屏障；重复键不吸收（复用需前一个结果已提交）。
+> `action_started` 在启动前按原序全部发出，结果按原序提交；压实与预算在整批提交后判定。
+> `concurrent_reads=False` 逐字回退串行路径。
+> **反证**：P1 `_is_concurrent_safe` 恒 False ⇒ TC-CONC-01 红；P2 `_call` 退回事件循环内联调用 ⇒
+> TC-CONC-07/08 红；P3 `_is_concurrent_safe` 恒 True（摘写屏障）⇒ TC-CONC-02 红；P4 提交时
+> `reversed(outcomes)` ⇒ TC-CONC-03 红。复原后 `md5sum` 一致（`default.py d48fd3a4…` /
+> `provider.py c0b26b0a…`）。
+> 规格：`loop` **MODIFIED**「单次推理多工具动作」（+4 scen）；`tool-use` **MODIFIED**
+> 「异步工具调用」（+2 scen）。`openspec validate --all` 32/0（归档前）/ 31/0（归档后）。
+> 测试净 **+8**（2897 → **2905**）。四门禁全绿（`ruff check` / `ruff format --check` /
+> `pyright` 0 / `pytest -q`）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0255 行（仅组内连续只读段 / 工作线程不可
+> 取消 / 依赖 coeffects 如实声明 / 并发段先于压实执行）。

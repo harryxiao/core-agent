@@ -162,7 +162,14 @@ class ToolProvider:
         return None
 
     async def _call(self, tool: Tool, args: dict[str, Any]) -> Any:
-        result = tool.handler(**args)
+        """执行 handler：协程在事件循环上 await，同步 handler 卸载到工作线程。
+
+        同步 handler 直接调用会阻塞事件循环，使多个独立 `ainvoke` 无法真并发
+        （change 0265）。`asyncio.to_thread` 不可取消：外层超时只停止等待。
+        """
+        if inspect.iscoroutinefunction(tool.handler):
+            return await tool.handler(**args)
+        result = await asyncio.to_thread(tool.handler, **args)
         if inspect.isawaitable(result):
             result = await result
         return result

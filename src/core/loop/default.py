@@ -27,6 +27,7 @@ from collections.abc import (
     Sequence,
     Sized,
 )
+from dataclasses import dataclass
 from typing import Any, cast
 
 from core.context import Compactor, ContextError, WindowPlan, estimate_tokens, plan_window
@@ -170,6 +171,38 @@ def _action_key(action: Action) -> str:
     except (TypeError, ValueError):  # 自引用等不可序列化 ⇒ 退化 repr（仅用于等值比较）
         args = repr(action.args)
     return f"{action.tool_id}\x00{args}"
+
+
+_CONCURRENT_DENY_TOKENS = ("write", "spawn", "outbound")
+
+
+def _is_concurrent_safe(action: Action, tools: ToolProvider | None) -> bool:
+    """并发资格：只读工具（coeffects 不含写 / 派生 / 出站词元）、非终止、有定义。
+
+    只认工具**声明**，fail-closed：找不到定义 ⇒ 不并发。写 / 副作用 / 未知工具保持串行
+    （作为并发批次之间的屏障，保证写序与撤销快照序）。
+    """
+    if action.is_terminal or tools is None:
+        return False
+    for definition in tools.active_tools():
+        if definition.tool_id == action.tool_id:
+            return not any(
+                token in coeffect
+                for coeffect in definition.coeffects
+                for token in _CONCURRENT_DENY_TOKENS
+            )
+    return False
+
+
+@dataclass
+class _PreparedAction:
+    """已过去重 / 中间件 / 确认门的待执行动作（change 0265）。"""
+
+    action: Action
+    key: str
+    scope: str
+    reused: ActionResult | None
+    approved: bool
 
 
 def _is_suppressible_write(action: Action) -> bool:
@@ -405,6 +438,9 @@ class DefaultLoop(Plugin):
         trace_observer: TraceObserver | None = None,
         source: str = "loop",
         max_rounds: int = 20,
+        # 组内只读动作并发（change 0265，缺省开）：写 / 副作用动作仍串行并作为屏障；
+        # 置 False ⇒ 组内动作逐个串行，事件序与观测与变更前逐字一致（kill-switch）。
+        concurrent_reads: bool = True,
         token_budget: int = 65536,
         transcript: TranscriptStore | None = None,
         history_turns: int = 20,
@@ -445,6 +481,7 @@ class DefaultLoop(Plugin):
         # 落记忆的命名空间：主 Agent 缺省 "loop"；神兽 loop 由组合根注入 "beast.<agent_id>"
         self._source = source
         self._max_rounds = max_rounds
+        self._concurrent_reads = concurrent_reads
         self._token_budget = token_budget
         # 对话转录：按会话落盘本轮 (user 原话, 最终回复)；缺省未注入 ⇒ 零落盘零回灌
         self._transcript = transcript
@@ -625,85 +662,72 @@ class DefaultLoop(Plugin):
                 action, pending = actions[0], actions[1:]
                 batch_seen = set()
                 batch_results = {}
-            scope = ""  # ""=正常执行 / "batch"=批内重复 / "turn"=轮内紧邻重复写
-            key = "" if action.is_terminal else _action_key(action)
-            if key and key in batch_seen:
-                scope = "batch"
-            elif (
-                key
-                and key == last_key
-                and last_result is not None
-                and not last_result.failed
-                and _is_suppressible_write(action)
+            # 去重 / 中间件 / 确认门逐动作顺序执行；首个动作可并发时向后吸收连续只读动作
+            # （change 0265）：写 / 副作用动作留在 pending，作为下一批次的串行屏障。
+            prepared: list[_PreparedAction] = [
+                await self._prepare_action(
+                    ctx, trace_id, action, batch_seen, batch_results, last_key, last_result
+                )
+            ]
+            if (
+                self._concurrent_reads
+                and prepared[0].scope == ""
+                and _is_concurrent_safe(prepared[0].action, self._tools)
             ):
-                scope = "turn"
-            reused: ActionResult | None = None
-            approved = False
-            if scope:
-                reused = batch_results.get(key) if scope == "batch" else last_result
-                if reused is None:  # 兜底：无缓存则按正常执行处理（不静默丢动作）
-                    scope = ""
-            if scope:
+                prepared.extend(
+                    await self._prefetch_actions(
+                        ctx, trace_id, pending, batch_seen, batch_results, last_key, last_result
+                    )
+                )
+            concurrent = len(prepared) > 1 and all(
+                item.scope == "" and _is_concurrent_safe(item.action, self._tools)
+                for item in prepared
+            )
+            base_round = ctx.rounds
+            # 先按原序发出全部 started（终止动作非工具调用，不发），再执行；
+            # 并发段结果可能乱序返回，串行段逐动作 await。
+            for event in self._started_events(prepared, base_round):
+                yield event
+            outcomes = (
+                await self._gather_actions(prepared, ctx, trace_id)
+                if concurrent
+                else await self._execute_serial(prepared, ctx, trace_id)
+            )
+            # 提交严格按原序：事件、观测、回滚、轮次推进与动作顺序一一对应。
+            for item, (result, duration_ms) in zip(prepared, outcomes, strict=True):
+                action = item.action
+                if item.key:  # 终止动作 key="" ⇒ 天然跳过
+                    batch_results.setdefault(item.key, result)
+                if action.is_terminal and result.failed:
+                    turn_failed = True  # 终止动作的失败态（工具动作失败不入此列：ReAct 多轮自愈）
+                    raw_output = action.raw_output  # 不可解析原始产出：另路留存，不进回复正文
+                if not action.is_terminal:
+                    last_key, last_result = item.key, result
+                    output = _output_excerpt(result.error if result.failed else result.data)
+                    # 遥测先于事件外发：不依赖消费方继续拉取生成器（同判据、同点、同载荷）
+                    self._log_tool_call(
+                        trace_id, action, result, latency_ms=duration_ms, output=output
+                    )
+                    yield LoopEvent(
+                        "action_completed",
+                        {
+                            "round": ctx.rounds,
+                            "tool_id": action.tool_id,
+                            "ok": not result.failed,
+                            "duration_ms": duration_ms,
+                            "output": output,
+                        },
+                    )
+                self._notify_action_result(ctx, action, result, trace_id)
+                self._record_observation(ctx, action, result)
+                if result.failed:
+                    self.rollback(trace_id)
+                ctx = self.observe(ctx, result)
+                yield LoopEvent("step_completed", {"round": ctx.rounds, "failed": result.failed})
                 self._trace(
-                    trace_id,
-                    "action_deduplicated",
-                    {"scope": scope, "tool_id": action.tool_id, "round": ctx.rounds},
+                    trace_id, "step_completed", {"round": ctx.rounds, "failed": result.failed}
                 )
-            else:
-                if key:
-                    batch_seen.add(key)
-                action = self._apply_middlewares(ctx, action)
-                action, approved = await self._authorize(action)
-            if not action.is_terminal:  # 终止动作（空 tool_id）非工具调用，不发
-                yield LoopEvent(
-                    "action_started",
-                    {
-                        "round": ctx.rounds,
-                        "tool_id": action.tool_id,
-                        "args": _args_excerpt(action.args),
-                    },
-                )
-            act_t0 = time.monotonic()
-            if scope:
-                result = cast(ActionResult, reused)
-            else:
-                # 动作期会话归属（change 0247）：工具处理器（如 delegate）据此把发起会话
-                # 转交子 Agent；`finally` 复位，异常不得把会话 ID 泄漏到后续调用。
-                session_token = current_session_id.set(ctx.session_id)
-                try:
-                    result = await self._act(action, trace_id, approved=approved)
-                finally:
-                    current_session_id.reset(session_token)
-            if not action.is_terminal:
-                if key:
-                    batch_seen.add(key)
-                    batch_results.setdefault(key, result)
-                last_key, last_result = key, result
-            if action.is_terminal and result.failed:
-                turn_failed = True  # 终止动作的失败态（工具动作失败不入此列：ReAct 多轮自愈）
-                raw_output = action.raw_output  # 不可解析原始产出：另路留存，不进回复正文
-            if not action.is_terminal:
-                duration_ms = 0 if scope else int((time.monotonic() - act_t0) * 1000)
-                output = _output_excerpt(result.error if result.failed else result.data)
-                # 遥测先于事件外发：不依赖消费方继续拉取生成器（同判据、同点、同载荷）
-                self._log_tool_call(trace_id, action, result, latency_ms=duration_ms, output=output)
-                yield LoopEvent(
-                    "action_completed",
-                    {
-                        "round": ctx.rounds,
-                        "tool_id": action.tool_id,
-                        "ok": not result.failed,
-                        "duration_ms": duration_ms,
-                        "output": output,
-                    },
-                )
-            self._notify_action_result(ctx, action, result, trace_id)
-            self._record_observation(ctx, action, result)
-            if result.failed:
-                self.rollback(trace_id)
-            ctx = self.observe(ctx, result)
-            yield LoopEvent("step_completed", {"round": ctx.rounds, "failed": result.failed})
-            self._trace(trace_id, "step_completed", {"round": ctx.rounds, "failed": result.failed})
+            # 压实 / 预算在该批动作提交完成后判定一次（同一批次语义）。
             if not compacted and self._should_compact(ctx):
                 # 卸载到工作线程：压实含**同步**模型调用（摘要 / 关键事实抽取）——`completion()`
                 # 是 `asyncio.run` 薄壳，在事件循环线程上必抛；且其耗时为模型网络往返，
@@ -1491,6 +1515,130 @@ class DefaultLoop(Plugin):
             if any(t.tool_id == tool_id for t in self._tools.active_tools())
             else []
         )
+
+    @staticmethod
+    def _started_events(prepared: list[_PreparedAction], base_round: int) -> Iterator[LoopEvent]:
+        """按原序产出并发批次的 `action_started`（终止动作非工具调用，不发）。"""
+        for offset, item in enumerate(prepared):
+            if item.action.is_terminal:
+                continue
+            yield LoopEvent(
+                "action_started",
+                {
+                    "round": base_round + offset,
+                    "tool_id": item.action.tool_id,
+                    "args": _args_excerpt(item.action.args),
+                },
+            )
+
+    async def _prepare_action(  # noqa: PLR0913, PLR0917 — 去重/中间件状态逐项传入
+        self,
+        ctx: LoopContext,
+        trace_id: str,
+        action: Action,
+        batch_seen: set[str],
+        batch_results: dict[str, ActionResult],
+        last_key: str,
+        last_result: ActionResult | None,
+    ) -> _PreparedAction:
+        """去重判定 + 中间件 + 确认门（change 0265，语义与串行路径逐字一致）。"""
+        scope = ""  # ""=正常执行 / "batch"=批内重复 / "turn"=轮内紧邻重复写
+        key = "" if action.is_terminal else _action_key(action)
+        if key and key in batch_seen:
+            scope = "batch"
+        elif (
+            key
+            and key == last_key
+            and last_result is not None
+            and not last_result.failed
+            and _is_suppressible_write(action)
+        ):
+            scope = "turn"
+        reused: ActionResult | None = None
+        approved = False
+        if scope:
+            reused = batch_results.get(key) if scope == "batch" else last_result
+            if reused is None:  # 兜底：无缓存则按正常执行处理（不静默丢动作）
+                scope = ""
+        if scope:
+            self._trace(
+                trace_id,
+                "action_deduplicated",
+                {"scope": scope, "tool_id": action.tool_id, "round": ctx.rounds},
+            )
+        else:
+            if key:
+                batch_seen.add(key)
+            action = self._apply_middlewares(ctx, action)
+            action, approved = await self._authorize(action)
+        return _PreparedAction(
+            action=action, key=key, scope=scope, reused=reused, approved=approved
+        )
+
+    async def _prefetch_actions(  # noqa: PLR0913, PLR0917 — 与 _prepare_action 同组状态
+        self,
+        ctx: LoopContext,
+        trace_id: str,
+        pending: list[Action],
+        batch_seen: set[str],
+        batch_results: dict[str, ActionResult],
+        last_key: str,
+        last_result: ActionResult | None,
+    ) -> list[_PreparedAction]:
+        """吸收 `pending` 头部**连续**的只读动作（去重键唯一、不越轮次上限）。
+
+        遇到写 / 副作用 / 未知工具或重复键即停：前者留作串行屏障，后者需等前一个结果提交后
+        才能复用（留给后续迭代走 `batch` 去重）。
+        """
+        taken: list[_PreparedAction] = []
+        while pending and ctx.rounds + 1 + len(taken) < self._max_rounds:
+            candidate = pending[0]
+            key = "" if candidate.is_terminal else _action_key(candidate)
+            if not key or key in batch_seen or not _is_concurrent_safe(candidate, self._tools):
+                break
+            pending.pop(0)
+            taken.append(
+                await self._prepare_action(
+                    ctx, trace_id, candidate, batch_seen, batch_results, last_key, last_result
+                )
+            )
+        return taken
+
+    async def _execute_serial(
+        self, prepared: list[_PreparedAction], ctx: LoopContext, trace_id: str
+    ) -> list[tuple[ActionResult, int]]:
+        """逐动作串行执行（去重动作复用缓存结果，耗时记 0）。"""
+        outcomes: list[tuple[ActionResult, int]] = []
+        for item in prepared:
+            if item.scope:
+                outcomes.append((cast(ActionResult, item.reused), 0))
+                continue
+            act_t0 = time.monotonic()
+            # 动作期会话归属（change 0247）：工具处理器（如 delegate）据此把发起会话
+            # 转交子 Agent；`finally` 复位，异常不得把会话 ID 泄漏到后续调用。
+            session_token = current_session_id.set(ctx.session_id)
+            try:
+                result = await self._act(item.action, trace_id, approved=item.approved)
+            finally:
+                current_session_id.reset(session_token)
+            outcomes.append((result, int((time.monotonic() - act_t0) * 1000)))
+        return outcomes
+
+    async def _gather_actions(
+        self, prepared: list[_PreparedAction], ctx: LoopContext, trace_id: str
+    ) -> list[tuple[ActionResult, int]]:
+        """并发执行只读动作（保留 `act` 接缝：重试链逐动作生效）。"""
+
+        async def _run(item: _PreparedAction) -> tuple[ActionResult, int]:
+            act_t0 = time.monotonic()
+            session_token = current_session_id.set(ctx.session_id)
+            try:
+                result = await self._act(item.action, trace_id, approved=item.approved)
+            finally:
+                current_session_id.reset(session_token)
+            return result, int((time.monotonic() - act_t0) * 1000)
+
+        return list(await asyncio.gather(*(_run(item) for item in prepared)))
 
     def _apply_middlewares(self, ctx: LoopContext, action: Action) -> Action:
         for middleware in self._middlewares:

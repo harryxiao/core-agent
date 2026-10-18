@@ -9395,6 +9395,48 @@ TC-THARD-03/04/05 红；P4 退化纯头截断 ⇒ TC-THARD-08 红；复原后 `m
 N 是「省略字符数（含标记占用的预算）」，非精确尾部缺口；极端小 `limit` 下标记可能超上限
 （生产常量 8192 不受影响）。④ 检查点损坏行只告警不隔离，重复启动会重复告警；不归档损坏行。
 
+## ADR-0255：组内只读工具并发执行（change 0265 / 台账 E201）
+
+**背景**：planner 的原生多 `tool_calls` 已全量进入 `ActionGroup`，但循环**逐个串行**执行；模型一次
+请求读多个文件 / 查多个后台任务时，耗时是各动作之和。且 `ToolProvider._call` 在事件循环线程上
+直接调用同步 handler —— 即使外层用 `gather` 发起，事件循环也被阻塞，「真并发」只对协程 handler
+成立。
+
+**决策**：
+
+- **D1 并发资格只认工具声明**：`_is_concurrent_safe` 检查 `ToolDef.coeffects`，任何 coeffect 含
+  `write` / `spawn` / `outbound` 词元即不并发；终止动作 / 无定义工具（fail-closed）不并发。
+  `file_read`（`filesystem:read`）、`process`（`process:read`）、`context_read`（`[]`）可并发；
+  `file_write` / `file_patch` / `code_run` / `gate_run` / `web_fetch` 一律串行。
+- **D2 连续只读段 + 写屏障**：仅当**当前**动作可并发、无去重命中且键唯一时，才向后吸收
+  `pending` 头部连续可并发动作；遇到写 / 副作用 / 未知工具立即停止，该动作留作下一轮串行执行
+  （写序与撤销快照序不被并发打乱）。重复键也不吸收 —— 复用前一个结果需其**已提交**。
+  吸收上限 = `max_rounds - ctx.rounds`，并发批次不越过轮次剩余额度。
+- **D3 执行与提交分离**：去重 / 中间件 / 确认门**顺序**执行（确认门可能含人工审批，不能并发
+  询问）；随后按原序发出全部 `action_started`（`round = ctx.rounds + i`），`asyncio.gather`
+  并发执行（保留 `act_wrapper` 重试链与 per-action 会话 ContextVar），结果按**原序**提交
+  （`action_completed` / 观察者 / 观测回灌 / 失败回滚 / `observe` / `step_completed`）。
+  压实与预算在整批提交后判定一次。单动作路径与 `concurrent_reads=False` 时事件序逐字不变。
+- **D4 同步 handler 卸载**：`ToolProvider._call` 对非协程 handler 用 `asyncio.to_thread`，
+  协程 handler 仍在事件循环上 await。普通调用不再阻塞事件循环，多个 `ainvoke` 可真并发。
+
+**规格**：`loop` **MODIFIED**「单次推理多工具动作」（+4 scen：只读并发 / 写屏障 / 按序提交 /
+关闭开关）；`tool-use` **MODIFIED**「异步工具调用」（+2 scen：同步 handler 不阻塞事件循环 /
+同步 handler 并发）。`openspec validate --all` 32/0（归档前）/ 31/0（归档后）。
+
+**测试**：新增 `tests/test_concurrent_group_tools.py` 8 例，净 **+8**（2897 → **2905**）。
+反证 4/4：P1 `_is_concurrent_safe` 恒 False ⇒ 并发用例红；P2 `_call` 退回内联调用 ⇒ 事件循环
+阻塞 / 同步并发两例红；P3 `_is_concurrent_safe` 恒 True（摘屏障）⇒ 写屏障用例红；P4 提交逆序 ⇒
+按序提交用例红；复原后 `md5sum` 一致（`default.py d48fd3a4…` / `provider.py c0b26b0a…`）。
+四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` 全绿。
+
+**局限**：① 并发仅限**同一组内连续只读段**；跨轮次 / 跨动作组的调度不做，单动作时无收益。
+② `asyncio.wait_for` 无法终止已进入的工作线程：超时返回 `TIMEOUT` 后线程可能继续运行至返回
+（Python 线程不可取消）；受影响的同步 handler 均为本地短操作（默认 `timeout_s=30`）。
+③ 只读判定依赖插件如实声明 coeffects —— 声明为只读但实际有副作用的插件会被并发执行
+（插件契约责任，非本层可验证）。④ 并发段执行早于其前置动作的压实：同一批内动作在压实前
+已全部执行（批次语义）；对只读动作无副作用影响。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9644,3 +9686,4 @@ N 是「省略字符数（含标记占用的预算）」，非精确尾部缺口
 | ADR-0252 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0253 | 02-modules/loop.md, 03-interfaces/observability-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0254 | 02-modules/durability.md, 02-modules/loop.md, 02-modules/tool-use.md, 03-interfaces/durability-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0255 | 02-modules/loop.md, 02-modules/tool-use.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

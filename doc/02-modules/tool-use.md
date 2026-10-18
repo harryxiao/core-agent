@@ -77,6 +77,10 @@ class ToolDef:
   `_MAX_OUTPUT_CHARS`（8192）时保留头部约 1/3 与尾部其余，中间以 `…[truncated N chars]…`
   分隔，总长仍 ≤ 上限；`*_truncated` 判据不变。仅前景结果，后台日志文件不截断。
 - 工具执行异常被捕获为结构化结果，回传给模型而不是崩溃。
+- **同步 handler 卸载（change `0265` / ADR-0255）**：`ToolProvider._call` 对非协程 handler 经
+  `asyncio.to_thread` 在工作线程执行，协程 handler 仍在事件循环上 await —— 多个 `ainvoke`
+  可真并发，普通调用不再阻塞事件循环。`asyncio.wait_for` 超时只停止等待、不能终止已进入的
+  工作线程（已知局限；同步 handler 均为本地短操作）。
 - **子进程治理（change `0259` / ADR-0249）**：`code_run` 前景以独立进程组启动（POSIX
   `start_new_session` / Windows `CREATE_NEW_PROCESS_GROUP`）；超时 / 取消终止**整棵进程树**并归一
   `TIMEOUT`，不遗留仍可写文件的子进程。`timeout` 缺省 120s、上限 600s（有限数校验）。

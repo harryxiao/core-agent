@@ -48,8 +48,10 @@ class ToolProvider:
     async def ainvoke(self, tool_id: str, args: dict, *, trace_id: str, approved: bool = False) -> ToolResult:
         """异步统一调用入口：与 invoke 同构，事件循环内非阻塞，支持真并发执行。
 
-        确认门判 confirm 时经 approver 请求人工批准（approved=True 表示上层
-        已批准、跳过重复询问）；无 approver 时 fail-closed 返回 IRREVERSIBLE_BLOCKED。"""
+        同步 handler 经 asyncio.to_thread 在工作线程执行（多个调用可真并发）；
+        超时只停止等待、不能终止工作线程。确认门判 confirm 时经 approver 请求
+        人工批准（approved=True 表示上层已批准、跳过重复询问）；无 approver 时
+        fail-closed 返回 IRREVERSIBLE_BLOCKED。"""
 ```
 
 调用前 schema 校验（必填 / 类型）**口径单一真源**为 `constraints.Validator.validate_input`，
