@@ -171,12 +171,12 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
   `task:write` 显式注册、`reversible=False`；只挂主工具面。
 - **一致性**：文件损坏 ⇒ 告警一次并按空登记处理，不阻断启动/主循环。
 
-### 3.10 无人值守 profile（change `0280`／ADR-0270）
+### 3.10 无人值守 profile（change `0280`／`0281`／ADR-0270／0271）
 
 - **组合而非新模式**：无人值守 = `permission.mode=auto-approve` + 可选
   `permission.auto_approve_coeffects` + 可选 `orchestration.task_timeout` /
-  `task_token_budget` + 可选 `orchestration.failure_notify_file`。四项缺省
-  `"" / 0 / 0 / ""` ⇒ 全部关闭，既有路径逐字不变。
+  `task_token_budget` + 可选 `orchestration.failure_notify_file` /
+  `failure_notify_webhook`。五项缺省 `"" / 0 / 0 / "" / ""` ⇒ 全部关闭，既有路径逐字不变。
 - **整任务墙钟在入口**：`entry._run_task_stream` 以 `asyncio.wait_for` 包住完整
   `_stream_task`，覆盖 fresh / `--resume` / 自动续跑 / `--resume-all`；超时 `TASK_TIMEOUT`、
   退出码 1、**保留最近波次检查点**。`serve` / TUI / 编程式调用不受该配置约束。
@@ -184,9 +184,15 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
   `task_id` 累计，越过正预算 ⇒ `TASK_TOKEN_BUDGET_EXCEEDED`，**禁重试、禁重拆**，终态
   `FAILED`（`extra={"token_used","token_budget"}`），`_release` 清累计。预算 0 = 关闭，
   负数构造期拒绝。
-- **失败通知**：`entry._notify_failure` 向 JSONL 追加一行（`ts/event/task_id/session_id/
-  code/reason/goal`），`reason`/`goal` 经 `redact_secrets` + 500 字符截断，新建文件 `0600`；
-  写失败只 stderr 告警、不改变任务结局。`TASK_CANCELLED` 不通知；超时与自动续跑失败显式通知。
+- **失败通知（本地）**：`entry._notify_failure` 向 JSONL 追加一行（`ts/event/task_id/
+  session_id/code/reason/goal`），`reason`/`goal` 经 `redact_secrets` + 500 字符截断，新建
+  文件 `0600`；写失败只 stderr 告警、不改变任务结局。`TASK_CANCELLED` 不通知；超时与自动
+  续跑失败显式通知。
+- **失败通知（远程，change 0281）**：`failure_notify_webhook` 非空时，同一失败收口另向该
+  URL 单次 `POST` 通用 JSON（`text` + 上述字段）。`core/orchestration/notify.py` 仅用 stdlib
+  `urllib.request`，超时 5s、不重试、不排队。两个 sink **相互独立**（任一失败不阻止另一个，
+  只 stderr 告警）。非空 URL 只接受 `http(s)` + 非空 host；**URL 可能内嵌令牌 ⇒ 校验错误与
+  推送失败告警均不回显 URL**。
 
 ---
 

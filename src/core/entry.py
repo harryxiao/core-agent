@@ -78,6 +78,7 @@ from core.notes import (
 )
 from core.orchestration import OrchestrationErrorCode, Plan, TaskScheduler, plan_from_dict
 from core.orchestration.auto_resume import AutoResumeState
+from core.orchestration.notify import post_failure_webhook
 from core.permission import (
     ApprovalChannel,
     ApprovalRequest,
@@ -2134,35 +2135,59 @@ async def _stream(api: UIAPILayer, session_id: str, prompt: str) -> None:
 _NOTIFY_TEXT_CHARS = 500
 
 
-def _notify_failure(  # noqa: PLR0913 — 通知字段均为 keyword-only（缺省空路径即关闭）
-    path: str, *, task_id: str, session_id: str, goal: str, code: str, reason: str
+def _notify_failure(  # noqa: PLR0913 — 通知字段均为 keyword-only（缺省空值即关闭）
+    path: str,
+    *,
+    task_id: str,
+    session_id: str,
+    goal: str,
+    code: str,
+    reason: str,
+    webhook: str = "",
 ) -> None:
-    """无人值守失败通知：向 JSONL sink 追加一行（change 0280 / ADR-0270）。
+    """无人值守失败通知：追加 JSONL / POST webhook（change 0280 / 0281）。
 
-    - `path` 为空 ⇒ 关闭（零 I/O，与引入前一致）。
+    - `path` / `webhook` 为空 ⇒ 对应 sink 关闭（零 I/O，与引入前一致）。
     - `reason` / `goal` 经 `redact_secrets` 且截断；`task_id` / `session_id` 原样。
-    - 新建文件 `0600`；写失败只 stderr 告警，**不改变任务结局**。
+    - 文件 sink 新建 `0600`；两个 sink 相互独立、各自兜底，失败只 stderr 告警，
+      **不改变任务结局**。webhook 失败只报异常类名——URL 可能内嵌令牌，绝不回显。
     """
-    if not path:
+    if not path and not webhook:
         return
-    target = Path(path).expanduser()
+    safe_reason = redact_secrets(reason)[:_NOTIFY_TEXT_CHARS]
+    safe_goal = redact_secrets(goal)[:_NOTIFY_TEXT_CHARS]
     payload = {
         "ts": time.time(),
         "event": "task_failed",
         "task_id": task_id,
         "session_id": session_id,
         "code": code,
-        "reason": redact_secrets(reason)[:_NOTIFY_TEXT_CHARS],
-        "goal": redact_secrets(goal)[:_NOTIFY_TEXT_CHARS],
+        "reason": safe_reason,
+        "goal": safe_goal,
+    }
+    if path:
+        target = Path(path).expanduser()
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            print(
+                f"⚠ 失败通知写入失败: {target}（{exc.__class__.__name__}）",
+                file=sys.stderr,
+            )
+    if not webhook:
+        return
+    remote = {
+        "text": f"[core-agent] 任务失败 {task_id}（{code}）：{safe_reason}",
+        **payload,
     }
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except OSError as exc:
+        post_failure_webhook(webhook, remote)
+    except Exception as exc:  # noqa: BLE001 — 远程 sink 失败绝不改变任务结局
         print(
-            f"⚠ 失败通知写入失败: {target}（{exc.__class__.__name__}）",
+            f"⚠ 失败通知 webhook 推送失败（{exc.__class__.__name__}）",
             file=sys.stderr,
         )
 
@@ -2178,6 +2203,7 @@ async def _run_task_stream(  # noqa: PLR0913, PLR0917 — 与 _stream_task 同�
     *,
     timeout: float = 0,
     notify_file: str = "",
+    notify_webhook: str = "",
 ) -> bool:
     """按整任务时限驱动 `_stream_task`（`timeout <= 0` = 不设限；change 0280）。
 
@@ -2193,6 +2219,7 @@ async def _run_task_stream(  # noqa: PLR0913, PLR0917 — 与 _stream_task 同�
         results,
         session_id,
         notify_file=notify_file,
+        notify_webhook=notify_webhook,
     )
     if timeout <= 0:
         return await stream
@@ -2212,6 +2239,7 @@ def _run_auto_resume(runtime: Runtime, *, force: bool) -> bool:
         return False
     timeout = runtime.config.orchestration_task_timeout()
     notify_file = runtime.config.orchestration_failure_notify_file()
+    notify_webhook = runtime.config.orchestration_failure_notify_webhook()
     state = AutoResumeState(_state_path("auto-resume.json"))
     state.retain({resume.task_id for resume in resumes})
     failed = False
@@ -2236,6 +2264,7 @@ def _run_auto_resume(runtime: Runtime, *, force: bool) -> bool:
                     resume.session_id,
                     timeout=timeout,
                     notify_file=notify_file,
+                    notify_webhook=notify_webhook,
                 )
             )
         except TimeoutError:
@@ -2247,6 +2276,7 @@ def _run_auto_resume(runtime: Runtime, *, force: bool) -> bool:
                 goal=resume.goal,
                 code=OrchestrationErrorCode.TASK_TIMEOUT.value,
                 reason=f"任务超过 {timeout}s 未完成，已终止",
+                webhook=notify_webhook,
             )
             print(
                 f"⚠ 续跑超时 {resume.task_id}：检查点保留，退避后自动重试",
@@ -2337,6 +2367,7 @@ def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR0915, 
         return 1
     timeout = runtime.config.orchestration_task_timeout()
     notify_file = runtime.config.orchestration_failure_notify_file()
+    notify_webhook = runtime.config.orchestration_failure_notify_webhook()
     try:
         failed = asyncio.run(
             _run_task_stream(
@@ -2349,6 +2380,7 @@ def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR0915, 
                 session_id,
                 timeout=timeout,
                 notify_file=notify_file,
+                notify_webhook=notify_webhook,
             )
         )
     except TimeoutError:
@@ -2365,6 +2397,7 @@ def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR0915, 
             goal=goal,
             code=OrchestrationErrorCode.TASK_TIMEOUT.value,
             reason=f"任务超过 {timeout}s 未完成，已终止",
+            webhook=notify_webhook,
         )
         return 1
     return 1 if failed else 0
@@ -2380,11 +2413,12 @@ async def _stream_task(  # noqa: PLR0913, PLR0917 — 续跑注入面参数组
     session_id: str = "",
     *,
     notify_file: str = "",
+    notify_webhook: str = "",
 ) -> bool:
     """流式驱动编排器并打印进度事件；返回是否终态失败（task_failed）。
 
-    `notify_file` 非空 ⇒ 终态失败时追加一行失败通知；取消（`TASK_CANCELLED`）**不通知**
-    —— 主动取消不是无人值守场景的告警（change 0280）。
+    `notify_file` / `notify_webhook` 非空 ⇒ 终态失败时分别写文件 / 推送远端；取消
+    （`TASK_CANCELLED`）**不通知** —— 主动取消不是无人值守场景的告警（0280 / 0281）。
     """
     failed = False
     async for event in orchestrator.astream(
@@ -2405,6 +2439,7 @@ async def _stream_task(  # noqa: PLR0913, PLR0917 — 续跑注入面参数组
                     goal=goal,
                     code=code,
                     reason=str(payload.get("reason", "")),
+                    webhook=notify_webhook,
                 )
     return failed
 

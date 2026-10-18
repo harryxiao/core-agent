@@ -455,6 +455,9 @@ def test_task_timeout_returns_nonzero_and_notifies(
         def orchestration_failure_notify_file(self) -> str:
             return str(path)
 
+        def orchestration_failure_notify_webhook(self) -> str:
+            return ""
+
     runtime = SimpleNamespace(
         config=_Config(),
         orchestrator=object(),
@@ -491,6 +494,9 @@ def test_auto_resume_timeout_keeps_checkpoint_and_notifies(
 
         def orchestration_failure_notify_file(self) -> str:
             return str(path)
+
+        def orchestration_failure_notify_webhook(self) -> str:
+            return ""
 
     runtime = SimpleNamespace(
         pending_resumes=lambda: [resume],

@@ -16,6 +16,7 @@ import warnings
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 from core.plugin_registry import CoeffectResolver, Effect, EffectTracker
 
@@ -72,6 +73,7 @@ _DEFAULT_ORCHESTRATION_AUTO_RESUME = False
 _DEFAULT_ORCHESTRATION_TASK_TIMEOUT = 0
 _DEFAULT_ORCHESTRATION_TASK_TOKEN_BUDGET = 0
 _DEFAULT_ORCHESTRATION_FAILURE_NOTIFY_FILE = ""
+_DEFAULT_ORCHESTRATION_FAILURE_NOTIFY_WEBHOOK = ""
 # coeffect 名形态（`namespace:action`；小写字母开头，允许数字 / `_` / `-`）。
 _COEFFECT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_-")
 # 策略词表（规格 `orchestration`「难易度感知的调度策略」；配置层不 import 能力层，故此处复述）
@@ -346,6 +348,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_ORCHESTRATION_FAILURE_NOTIFY_FILE",
         default=_DEFAULT_ORCHESTRATION_FAILURE_NOTIFY_FILE,
         map_to="orchestration.failure_notify_file",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "orchestration.failure_notify_webhook",
+        "--orchestration.failure-notify-webhook",
+        "CORE_ORCHESTRATION_FAILURE_NOTIFY_WEBHOOK",
+        default=_DEFAULT_ORCHESTRATION_FAILURE_NOTIFY_WEBHOOK,
+        map_to="orchestration.failure_notify_webhook",
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
@@ -1213,6 +1223,13 @@ class ConfigManager:
         raw = cast("dict[str, Any]", self._config.extra.get("orchestration") or {})
         return str(raw.get("failure_notify_file", _DEFAULT_ORCHESTRATION_FAILURE_NOTIFY_FILE))
 
+    def orchestration_failure_notify_webhook(self) -> str:
+        """失败通知 webhook URL（缺省空串 = 不推送；change 0281 / ADR-0271）。"""
+        if self._config is None:
+            return _DEFAULT_ORCHESTRATION_FAILURE_NOTIFY_WEBHOOK
+        raw = cast("dict[str, Any]", self._config.extra.get("orchestration") or {})
+        return str(raw.get("failure_notify_webhook", _DEFAULT_ORCHESTRATION_FAILURE_NOTIFY_WEBHOOK))
+
     def sandbox_host_allowlist(self) -> list[str]:
         """出站网络白名单（缺省空 = fail-closed 全拒，安全默认）。
 
@@ -1667,7 +1684,20 @@ def _orchestration_errors(raw: dict[str, Any]) -> list[str]:
             f"非法失败通知文件: orchestration.failure_notify_file={notify_file!r}"
             "（须为文件路径字符串，空串=关闭）"
         )
+    webhook = raw.get("failure_notify_webhook", _DEFAULT_ORCHESTRATION_FAILURE_NOTIFY_WEBHOOK)
+    # 密钥安全：URL 可能内嵌令牌 ⇒ 错误信息只报键名与合法形态，**不回显取值**。
+    if not isinstance(webhook, str) or (webhook and not _valid_webhook_url(webhook)):
+        errors.append(
+            "非法失败通知 webhook: orchestration.failure_notify_webhook"
+            "（须为 http(s) URL，空串=关闭）"
+        )
     return errors
+
+
+def _valid_webhook_url(url: str) -> bool:
+    """只接受 http/https 绝对 URL（scheme 与 host 均非空）。"""
+    parts = urlsplit(url)
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
 
 
 def _window_reserve_errors(context_window: int, raw: dict[str, Any]) -> list[str]:

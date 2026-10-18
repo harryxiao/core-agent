@@ -172,11 +172,14 @@ class TaskScheduler:
   `--resume` 从该 task-id 最新检查点重建 Plan 与已完成集，续跑未完成子任务；
   检查点经 CheckpointStore 落盘 `$CORE_STATE_DIR/checkpoints.jsonl`（缺省
   `~/.core/state/`），跨进程 kill/重启可续跑。
-- **无人值守护栏**（change 0280 / ADR-0270）：`task` 入口按
+- **无人值守护栏**（change 0280 / 0281 / ADR-0270 / 0271）：`task` 入口按
   `orchestration.task_timeout` 用 `asyncio.wait_for` 包住整条任务流（含 `--resume` /
   自动续跑 / `--resume-all`）；超时打印 `[task_timeout]`、退出码 1、保留最近波次检查点；
   失败（含超时与自动续跑失败）追加 JSONL 到 `orchestration.failure_notify_file`
-  （脱敏、有界、`0600`；`TASK_CANCELLED` 不通知）。两项缺省 `0` / `""` ⇒ 不设限、不通知。
+  （脱敏、有界、`0600`；`TASK_CANCELLED` 不通知），并在
+  `orchestration.failure_notify_webhook` 非空时向该 URL 单次 `POST` 通用 JSON
+  （`text` + 同上字段；stdlib、5s、不重试）。两 sink 相互独立、失败只告警；三个配置缺省
+  `0` / `""` / `""` ⇒ 不设限、不通知、不发请求。
 - **文件型检查点**（change 0230 / ADR-0237）：`FileCheckpoint(path=".core/scheduler-checkpoint.json")`
   满足 `CheckpointFn` 四参契约，JSON 落盘 `task_id / session_id / plan / completed / results`，
   同目录 `.tmp` + `os.replace` **原子写**；`load(task_id=None)` 读回（损坏/缺失返回 `None`，

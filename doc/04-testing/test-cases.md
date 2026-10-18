@@ -4579,3 +4579,39 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3092 passed**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0270 行（记账非账单 / 中间波次续跑 /
 > 墙钟仅 CLI / 本地文件 / 插件少报 coeffect）。
+
+## 193. 失败通知 webhook sink（TC-WEBHOOK，change `0281`／ADR-0271，台账 E217）
+
+> 覆盖 `configuration`「失败通知 webhook 配置」（ADDED，3 scen）、`orchestration`「任务失败
+> 通知 sink」（MODIFIED，5 → 7 scen：新增「webhook 推送失败不影响任务结局」「未配置 webhook
+> 不发起请求」）。测试文件 `tests/test_failure_webhook.py`（新，13 例）。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-WEBHOOK-01 | 三面单一真源 | `config_specs()` | CLI `--orchestration.failure-notify-webhook` / env `CORE_ORCHESTRATION_FAILURE_NOTIFY_WEBHOOK` / 默认 `""`（`test_webhook_spec_three_faces_and_default`） |
+| TC-WEBHOOK-02 | Scenario「三面取值与优先级」 | yaml A / env B / CLI C | 访问器返回 C（`test_webhook_default_and_three_face_priority`） |
+| TC-WEBHOOK-03 | Scenario「非法 URL 阻断启动」 | `file:///tmp/x` | `ConfigurationError`，消息含键名、**不含该值**（`test_invalid_webhook_blocks_startup_without_echo[file:///tmp/x]`） |
+| TC-WEBHOOK-04 | 同上 | `ftp://h/x` | 同上（`...[ftp://h/x]`） |
+| TC-WEBHOOK-05 | 同上 | `https://`（无 host） | 同上（`...[https://]`） |
+| TC-WEBHOOK-06 | 同上 | `http://`（无 host） | 同上（`...[http://]`） |
+| TC-WEBHOOK-07 | 非字符串 | `true` | 同上（`...[true]`） |
+| TC-WEBHOOK-08 | Scenario「通知正文脱敏」 | `_notify_failure(webhook=...)` + 密钥 canary | 恰一次 POST、超时 5.0、`Content-Type: application/json`；`event/task_id/session_id/code` 原样；canary 不在请求体、`<redacted>` 在 `reason`；`text` 以 `[core-agent] 任务失败 t1` 起头（`test_notify_failure_posts_redacted_json`） |
+| TC-WEBHOOK-09 | Scenario「未配置 webhook 不发起请求」 | `webhook=""` | 零 `urlopen` 调用（`test_empty_webhook_makes_no_request`） |
+| TC-WEBHOOK-10 | Scenario「webhook 推送失败不影响任务结局」 | `URLError`（其文本含 URL 令牌） | 不抛；文件 sink 仍写一行；stderr 含 `webhook`、不含令牌（`test_webhook_failure_does_not_block_file_sink`） |
+| TC-WEBHOOK-11 | 两 sink 相互独立 | 文件路径为目录（写失败） | webhook 仍恰好推送一次（`test_file_sink_failure_does_not_block_webhook`） |
+| TC-WEBHOOK-12 | Scenario「失败即推送」 | `_stream_task(notify_webhook=...)` + `task_failed` | 返回 True、恰一次推送（`test_stream_task_posts_webhook_on_failure`） |
+| TC-WEBHOOK-13 | Scenario「主动取消不通知」 | 终态 `TASK_CANCELLED` | 零推送（`test_stream_task_skips_webhook_on_cancellation`） |
+
+> **口径**：通用 JSON `POST`（`text` + 本地 JSONL 同源字段），stdlib `urllib.request` 单次
+> 5s 有界、不重试；非空 URL 只接受 `http(s)` + 非空 host；校验错误与推送失败告警均**不回显
+> URL**（URL 可能内嵌令牌，`HTTPError`/`URLError` 文本含完整 URL）；两 sink 相互独立、失败
+> 只 stderr 告警、不改变任务结局与退出码；缺省 `""` = 零网络 I/O。
+> **反证 3/3**：① 摘 `redact_secrets` ⇒ TC-08 红（canary 进请求体）；② `_valid_webhook_url`
+> 恒 `True` ⇒ TC-03~06 红；③ 告警带上 `{webhook}` ⇒ TC-10 红；复原 `md5sum` 一致
+> （entry.py / manager.py）。
+> 规格：`configuration` ADDED（3 scen）、`orchestration` MODIFIED（5 → 7 scen）。
+> `validate --all` 31/0（归档后）。
+> 测试净 **+13**（3092 → **3105**）。
+> 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` 全绿。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0271 行（单次无重试 / 无 IM 方言 /
+> 5s 退出延迟 / URL 即凭据 / 不校验响应体 / 到达顺序）。

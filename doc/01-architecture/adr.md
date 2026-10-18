@@ -10186,6 +10186,51 @@ runtime 接线；预算累计/禁重试/禁重拆/零预算不限；`LoopResult.
 依赖 `O_APPEND`（每行一次 `write`），不保证跨主机汇聚；⑤ 允许面按**声明的** coeffect 判定，
 插件若少报 coeffect 则允许面管不住（无特权核心的既有假设：插件契约可信）。
 
+## ADR-0271：失败通知 webhook sink（change 0281 / 台账 E217）
+
+**背景**：ADR-0270 的失败通知只落到**本机文件**（其局限④）—— 无人值守部署若不在同一台
+机器上盯文件，失败依旧无人知晓。需要一条**远程**通道，但不得为此引入三方依赖或 IM 平台方言。
+
+**决策**：
+
+- **D1 通用 JSON POST，不做平台方言**：`orchestration.failure_notify_webhook` 指向任意
+  HTTP(S) 端点，收口时单次 `POST` 一份 JSON：`text`（一行摘要，供机器人直接展示）+ 本地
+  JSONL 同源字段 `event / ts / task_id / session_id / code / reason / goal`（供自动化解析）。
+  理由：仓内无真实 IM provider（`im/provider.py` 只有 Protocol），做方言等于猜测；通用
+  JSON 由接收端适配。
+- **D2 stdlib 单次有界推送**：新 `core/orchestration/notify.py::post_failure_webhook` 仅用
+  `urllib.request`，超时 5s（`WEBHOOK_TIMEOUT_S`）、**不重试**、不排队、不持久化待发。
+  推送点位于任务失败收口（进程即将退出），重试只会拖延收口；「发出一次」优先。
+- **D3 两个 sink 相互独立**：`_notify_failure` 先写文件、再推远端，各自兜底；任一失败只
+  stderr 告警，**不阻止另一个**、不改变任务结局与退出码。`TASK_CANCELLED` 与文件 sink 同口径
+  不通知。
+- **D4 密钥安全：URL 可能内嵌令牌**：非空 URL 只接受 `http/https` + 非空 host；校验错误
+  信息**只报键名与合法形态、不回显取值**；推送失败的告警**只报异常类名**（`HTTPError` /
+  `URLError` 的 `str` 含完整 URL）。`reason` / `goal` 与文件 sink 同源脱敏与 500 字符截断。
+- **D5 缺省关闭**：默认空串 ⇒ 不发起任何网络请求，与引入前逐字一致；只校验非空取值。
+
+**反证 3/3（均实测转红后复原，`md5sum` 一致）**：① 摘掉 `_notify_failure` 的
+`redact_secrets` ⇒ 密钥 canary 进请求体，脱敏用例红；② `_valid_webhook_url` 恒 `True`
+⇒ `file://` / `ftp://` / 无 host 四项校验用例红；③ 告警带上 `{webhook}` ⇒ URL 内嵌令牌
+回显用例红。
+
+**规格**：`configuration` **ADDED**「失败通知 webhook 配置」（3 scen）；`orchestration`
+**MODIFIED**「任务失败通知 sink」（5 → 7 scen，新增 webhook 失败不影响结局 / 未配置不发起
+请求）。`validate --all` **31/0**（归档后）。
+
+**测试**：新增 `tests/test_failure_webhook.py` **13 例**（三面与优先级；非法 URL 阻断且不回显；
+POST 方法 / 头 / JSON 与脱敏 / 截断 / `text`；空配置零请求；webhook 失败不阻断文件、文件失败
+不阻断 webhook；`_stream_task` 失败推送 / 取消不推送）。`tests/test_entry.py` /
+`tests/test_auto_resume.py` / `tests/test_unattended.py` 的配置桩补
+`orchestration_failure_notify_webhook` 缺省访问器（缺省关 ⇒ 既有断言逐字不变）。净 **+13**
+（3092 → **3105**）。四门禁：ruff check / format 绿、`pyright` 0 errors、`pytest -q` 全绿。
+
+**局限**：① 单次尝试、无重试队列 —— 端点瞬时故障即丢该条通知；② 通用 JSON 不是任何 IM
+平台的原生格式，接收端需自行转换（无 Slack / 飞书 / 钉钉适配器）；③ 同步推送发生在收口
+路径，最坏增加 5s 退出延迟；④ URL 本身即凭据（若内嵌 token）—— 仅保证不回显 / 不落日志，
+不提供密钥轮换或签名；⑤ 不校验接收端响应体，2xx 即视为成功；⑥ 与文件 sink 同为单机进程
+行为，多进程并发推送的到达顺序不保证。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10451,3 +10496,4 @@ runtime 接线；预算累计/禁重试/禁重拆/零预算不限；`LoopResult.
 | ADR-0268 | 02-modules/orchestration.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0269 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0270 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0271 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

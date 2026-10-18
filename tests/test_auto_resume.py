@@ -245,6 +245,7 @@ def _runtime(orch: _Orch, resumes: list[TaskResume], *, auto: bool) -> SimpleNam
             # 无人值守护栏（change 0280）：缺省关 ⇒ 既有路径逐字不变
             orchestration_task_timeout=lambda: 0,
             orchestration_failure_notify_file=lambda: "",
+            orchestration_failure_notify_webhook=lambda: "",
         ),
         recover=lambda: [],
         recover_turns=lambda: [],

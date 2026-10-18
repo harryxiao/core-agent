@@ -43,7 +43,7 @@
 | ⑪ | 进化面 | 源码修补者 | `evolution/author.py:32` `_PROMPT_HEAD` | 文本（完整文件内容） | ✓ `0219` |
 | ⑫ | 进化面 | 候选审查者 | `evolution/validator.py:44` `_REVIEW_PROMPT_HEAD` | 文本（首行 `PASS`/`REJECT`） | ✓ `0219` |
 | ⑬ | 人格面 | 宠物人格 | `pet/library/persona.py:25` `render_prompt()` | 文本（人格设定） | ✗ 动态拼接 |
-| ⑭ | 数据面 | 文档摘要器 | `entry.py:1843` `_DOC_SUMMARY_PROMPT` | 文本（文档摘要） | ✗ 内联注入 |
+| ⑭ | 数据面 | 文档摘要器 | `entry.py:1844` `_DOC_SUMMARY_PROMPT` | 文本（文档摘要） | ✗ 内联注入 |
 | ⑮ | 控制面 | 解析失败回喂重试 | `loop/planner.py:108` `_RETRY_NUDGE` | 文本（重试指令） | ✓ `0227` |
 
 ---

@@ -511,3 +511,21 @@ known_window(llm.model)  ──►  表命中 ⇒ 该族真实窗口（本 chang
   不限制），把 `task_token_budget` 注入 `TaskScheduler`；`task_timeout` 与
   `failure_notify_file` 只由 CLI `task` 入口读取（`serve` / TUI 不受约束）。
 - 口径来源：`doc/openspec/specs/configuration/spec.md`「无人值守配置项」（**ADDED**）。
+
+### 2.17 失败通知 webhook 配置（change `0281` / ADR-0271，台账 E217）
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `orchestration.failure_notify_webhook` | `""` | 空串，或 `http`/`https` 绝对 URL（scheme 与 host 均非空） | 任务失败远程 JSON 推送端点；空 = 关闭 |
+
+- **三面**：CLI `--orchestration.failure-notify-webhook`；env
+  `CORE_ORCHESTRATION_FAILURE_NOTIFY_WEBHOOK`；yaml 同名点路径。优先链 CLI > env >
+  config.yaml > 缺省（空串）。
+- **访问器**：`ConfigManager.orchestration_failure_notify_webhook() -> str`（配置未加载时回落
+  空串）。
+- **校验期拒绝（不静默兜底）**：非字符串，或非空取值不是 `http(s)` + 非空 host 的绝对 URL
+  ⇒「非法失败通知 webhook」（阻断启动）。错误信息只报键名与合法形态，**不回显 URL 取值**
+  （URL 可能内嵌令牌）。
+- **消费方**：只由 CLI `task` 入口（含自动续跑）读取并传给 `entry._notify_failure`；与
+  `failure_notify_file` 相互独立。
+- 口径来源：`doc/openspec/specs/configuration/spec.md`「失败通知 webhook 配置」（**ADDED**）。

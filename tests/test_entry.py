@@ -710,6 +710,7 @@ def _patch_runtime(  # noqa: PLR0913 — 测试桩装配参数组（checkpoints/
             # 无人值守护栏（change 0280）：缺省关 ⇒ 既有路径逐字不变
             orchestration_task_timeout=lambda: 0,
             orchestration_failure_notify_file=lambda: "",
+            orchestration_failure_notify_webhook=lambda: "",
         ),
         pending_resumes=lambda: [],
     )
