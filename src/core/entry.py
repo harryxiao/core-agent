@@ -540,14 +540,24 @@ def _build_ui(
     except Exception as exc:  # noqa: BLE001 — 配置/装配失败统一转 stderr 退出码
         print(f"装配失败: {exc}", file=sys.stderr)
         return None
-    # 词法检索提示（change 0252 / ADR-0242）：未配置 embedding 模型时记忆检索只能走词法，
-    # 语义召回不可用。与 `_rag` 的既有权重提示同口径，每次启动只输出一次。
+    # 词法检索提示（change 0252 / ADR-0242）：无有效 embedding 模型时记忆检索只能走词法，
+    # 语义召回不可用。有效模型 = 显式配置或按端点推导（change 0271 / ADR-0261）；
+    # 推导值额外提示一次自动选用（不回显 endpoint / 密钥），每次启动只输出一次。
     llm = getattr(getattr(runtime, "app", None), "llm", None)
-    if llm is not None and not getattr(llm, "embedding_model", ""):
-        print(
-            "未配置 llm.embedding_model：记忆检索使用词法匹配（语义检索未启用，召回质量受限）",
-            file=sys.stderr,
-        )
+    if llm is not None:
+        explicit_model = getattr(llm, "embedding_model", "")
+        effective_model = getattr(llm, "effective_embedding_model", explicit_model)
+        if not effective_model:
+            print(
+                "未配置 llm.embedding_model：记忆检索使用词法匹配（语义检索未启用，召回质量受限）",
+                file=sys.stderr,
+            )
+        elif not explicit_model:
+            print(
+                f"按端点自动选用 {effective_model}（语义检索已启用；"
+                "可用 llm.embedding_model 覆盖）",
+                file=sys.stderr,
+            )
     if surface_recovery:
         _surface_incomplete(runtime)
     api = UIAPILayer(
@@ -1770,7 +1780,7 @@ def _rag(args: argparse.Namespace) -> int:
     if runtime is None:
         return 1
     app = getattr(runtime, "app", None)
-    if app is not None and not app.llm.embedding_model:
+    if app is not None and not app.llm.effective_embedding_model:
         # 降级提示落 stderr（不污染 stdout 机读输出）：索引维度与后端绑定，换后端须重建索引
         print(
             "未配置 llm.embedding_model：检索走离线 HashEmbedder 降级基线"

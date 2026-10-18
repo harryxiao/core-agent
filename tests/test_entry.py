@@ -1282,7 +1282,13 @@ class _FixedLoop:
         yield LoopEvent("loop_finished", {"reply": "pong"})
 
 
-def _patch_fake_runtime(monkeypatch: pytest.MonkeyPatch, *, embedding_model: str = "") -> None:
+def _patch_fake_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    embedding_model: str = "",
+    endpoint: str = "https://x",
+    embedding_auto: bool = True,
+) -> None:
     """装配替身 runtime：四入口共用 `_build_ui` 只取 loop/memory/tools/app.llm。"""
 
     runtime = SimpleNamespace(
@@ -1302,9 +1308,10 @@ def _patch_fake_runtime(monkeypatch: pytest.MonkeyPatch, *, embedding_model: str
             llm=LLMConfig(
                 provider="openai",
                 model="gpt-4o",
-                endpoint="https://x",
+                endpoint=endpoint,
                 api_key_ref="${K}",
                 embedding_model=embedding_model,
+                embedding_auto=embedding_auto,
             )
         ),
     )
@@ -1392,6 +1399,57 @@ def test_run_no_lexical_hint_when_embedding_model_configured(
 
     assert rc == 0
     assert "记忆检索使用词法匹配" not in capsys.readouterr().err
+
+
+def test_run_hints_derived_embedding_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """端点推导出 embedding 模型 ⇒ 提示自动选用（不打印 endpoint）。"""
+    _patch_fake_runtime(monkeypatch, endpoint="https://open.bigmodel.cn/api/paas/v4")
+
+    rc = main(["--config", str(tmp_path / "missing.yaml"), "run", "--prompt", "hi"])
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "按端点自动选用 embedding-3" in err
+    assert "记忆检索使用词法匹配" not in err
+    assert "open.bigmodel.cn" not in err
+
+
+def test_run_no_derived_hint_when_embedding_auto_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """关闭端点推导 ⇒ 回到词法提示。"""
+    _patch_fake_runtime(
+        monkeypatch,
+        endpoint="https://open.bigmodel.cn/api/paas/v4",
+        embedding_auto=False,
+    )
+
+    rc = main(["--config", str(tmp_path / "missing.yaml"), "run", "--prompt", "hi"])
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "记忆检索使用词法匹配" in err
+    assert "按端点自动选用" not in err
+
+
+def test_run_explicit_embedding_model_has_no_auto_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """显式配置 ⇒ 不额外提示（与既有行为一致）。"""
+    _patch_fake_runtime(
+        monkeypatch,
+        endpoint="https://open.bigmodel.cn/api/paas/v4",
+        embedding_model="custom-embed",
+    )
+
+    rc = main(["--config", str(tmp_path / "missing.yaml"), "run", "--prompt", "hi"])
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "按端点自动选用" not in err
+    assert "记忆检索使用词法匹配" not in err
 
 
 def test_session_show_prints_transcript(capsys: pytest.CaptureFixture[str]) -> None:

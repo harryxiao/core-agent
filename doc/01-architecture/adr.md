@@ -9656,6 +9656,57 @@ P3 通知按空串而非会话键 ⇒ 会话隔离 + 后台委托用例红；P4 
 默认暴露面，外部 MCP 客户端不可查；⑧ 后台子 Agent 继承发起会话标识（与前台委托一致），
 其记忆写入与主会话同维度；⑨ `background` 无排队 / 优先级 / 重试语义。
 
+## ADR-0261：语义检索默认化（端点推导 embedding 模型，change 0271 / 台账 E207）
+
+**背景**：记忆 / RAG 的语义检索此前是**显式配置才启用** —— `llm.embedding_model` 为空时组合根
+不注入 embedder，`MemoryStore` 恒走词法、RAG 用 `HashEmbedder` 降级基线，CLI 每次启动打印
+「语义检索未启用」。真实配置常不写该键（例如智谱端点 `open.bigmodel.cn` 明明提供 `embedding-3`）
+⇒ 能力默认不在场，原因不是模型不支持，而是要求用户知道并手写一个与聊天模型无关的模型名。
+
+**决策**：
+
+- **D1 推导放在有效配置属性，不回写字段**：新增 `LLMConfig.embedding_auto`（缺省 `true`）与只读
+  `effective_embedding_model`。口径：显式 `embedding_model` 非空 ⇒ 恒用它；否则开关开启 ⇒
+  端点表推导；否则空。`embedding_model` 字段仍表示「用户写了什么」——`_merge_patch` 热更新基线
+  取显式值 ⇒ 换端点后推导自动跟随，旧端点推导值不会被固化成用户声明。
+- **D2 确定性端点表**：新 `configuration/embedding_models.py`，四行有据可查的 OpenAI 兼容端点
+  （`api.openai.com` / `open.bigmodel.cn` / `dashscope.aliyuncs.com` / `api.siliconflow.cn`），
+  按主机名**精确或子域**匹配（大小写不敏感、允许省略 scheme）。未命中返回空 = **不猜**；
+  不启动 `/models` 探测（无网络、无启动延迟、测试确定性）；不引入本地语义模型（沿用既有裁决
+  语义走 `LLMEmbedder`）。表无配置键面 ⇒ 不是第二真源；显式配置永远胜出。
+- **D3 开关与非法取值**：`llm.embedding_auto` 进 `ConfigSpec` 三面（`--llm.embedding-auto` /
+  `CORE_LLM_EMBEDDING_AUTO` / yaml `llm.embedding_auto`），缺省 `true`；取值口径与 feature flag
+  同集，非法值在 `_build_config` 当场 `raise ConfigurationError`（`bool("maybe")` 为真会静默开启）。
+  关闭开关 = 逐字保留旧行为（词法 / `HashEmbedder` / 启动提示）。
+- **D4 单一有效模型、两条通路共用**：组合根以 `effective_embedding_model` 构造既有单一
+  `embed_provider`：记忆走 `batch_embed(LLMEmbedder)`、RAG 走 `LLMEmbedder`；为空 ⇒ 不注入 /
+  `HashEmbedder`。不新增 provider、不改 `MemoryStore` / `RagService` 契约。
+- **D5 提示**：CLI `_build_ui` 按有效值判断 —— 空 ⇒ 既有词法提示；仅推导 ⇒ 一次
+  「按端点自动选用 <model>（可用 llm.embedding_model 覆盖）」，不回显 endpoint / 密钥；
+  显式配置 ⇒ 无额外提示。`_rag` 的降级提示同样改看有效值。
+
+**规格**：`configuration` **MODIFIED**「LLM 提供商配置（必选）」（+`embedding_auto` 子项、
++4 scen，保留原「未配置 embedding 模型回退词法」）；`memory` **MODIFIED**「温度分层检索」
+（启动提示改按有效值，+2 scen）；`rag` **MODIFIED**「本地 Embedding」（+1 scen）。
+`openspec validate --all` 32/0（归档前）/ 31/0（归档后）。
+
+**测试**：新增 `tests/test_semantic_default.py` **21 例**（端点表精确/子域/大小写/无 scheme/
+未知/边界；有效值显式优先、开关关闭、未知端点；配置三面 + 非法阻断 + 热更新不固化；
+组合根推导注入 / 开关关闭 / 显式优先 / 未知端点 / 推导不可达降级），`tests/test_entry.py`
+**+3 例**（推导提示 / 开关关闭回词法 / 显式无推导提示），并调整 `test_rag_wiring` 维度失配用例
+显式钉住未知端点配置（不再依赖用户 HOME 配置）。净 **+24**（2959 → **2983**）。
+反证 3/3：P1 `effective_embedding_model` 推导分支返回 `""` ⇒ 6 例红；P2 摘开关判断 ⇒ 4 例红；
+P3 入口仍取显式字段 ⇒ 推导提示用例红。复原后 `md5sum` 一致（`models.py 28018332…` /
+`entry.py 175d4395…`）。四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、
+`pytest -q` **2983 passed**。
+
+**局限**：① 端点表**静态**：新端点/新模型名需改表；未命中只退回词法、不报错；② 推导模型
+**不验证可用性**：首次检索若 404/超时，记忆按既有 `_embed_failed` 短路降级、RAG 按调用期
+降级，启动不阻断但首轮可能有一次失败网络往返；③ 代理/自建网关无法识别端点语义 ⇒ 不推导；
+④ 推导开启后首次语义检索产生远端调用与费用（`llm.embedding_auto=false` 可关）；
+⑤ 有效值属性不参与 `config show` 的字段展示（仍显示显式值）；⑥ 端点表按主机名匹配，CDN /
+网关域名若与官方主机不同名则不命中。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9911,3 +9962,4 @@ P3 通知按空串而非会话键 ⇒ 会话隔离 + 后台委托用例红；P4 
 | ADR-0258 | 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0259 | 02-modules/hooks.md, 02-modules/loop.md, 02-modules/memory.md, 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0260 | 02-modules/orchestration.md, 02-modules/loop.md, 02-modules/permission.md, 03-interfaces/orchestration-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0261 | 02-modules/configuration.md, 02-modules/memory.md, 02-modules/rag.md, 03-interfaces/configuration-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

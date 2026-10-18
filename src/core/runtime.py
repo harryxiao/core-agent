@@ -641,18 +641,20 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     )
     backend = memory_backend if memory_backend is not None else FileBackend(_memory_path())
     effect_tracker = EffectTracker()
-    # 语义 embedding 来源（0040 / 0104 共用）：llm.embedding_model 非空时以该模型**另构造**
-    # provider（聊天模型名打 /embeddings 通常 404），memory 通路经 rag LLMEmbedder →
-    # batch_embed 适配为批量契约、rag 通路直接消费 LLMEmbedder；密钥复用 api_key（已登记脱敏）。
-    # 未设置则不构造 → memory 走 0039 词法路径、rag 走离线 HashEmbedder 降级基线，
+    # 语义 embedding 来源（0040 / 0104 共用）：有效模型非空时以该模型**另构造** provider
+    # （聊天模型名打 /embeddings 通常 404），memory 通路经 rag LLMEmbedder → batch_embed
+    # 适配为批量契约、rag 通路直接消费 LLMEmbedder；密钥复用 api_key（已登记脱敏）。
+    # 有效模型 = 显式 embedding_model，或按端点推导的默认值（change 0271 / ADR-0261）。
+    # 为空则不构造 → memory 走 0039 词法路径、rag 走离线 HashEmbedder 降级基线，
     # 远端不可达由调用期降级兜底，均不阻断启动。
+    embedding_model = app.llm.effective_embedding_model
     embed_provider = (
         StdlibLLMProvider(
             api_key=api_key,
             base_url=app.llm.endpoint or None,
-            model=app.llm.embedding_model,
+            model=embedding_model,
         )
-        if app.llm.embedding_model
+        if embedding_model
         else None
     )
     if embedder is None and embed_provider is not None:

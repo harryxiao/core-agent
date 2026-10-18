@@ -52,7 +52,14 @@
 ### Requirement: LLM 提供商配置（必选）
 系统 SHALL 要求 LLM 配置（provider/model/endpoint/api_key）为必选项，缺失或不完整时阻断
 启动并报明确错误；并 SHALL 支持**可选**子项 `embedding_model`（复用 `endpoint` 与密钥
-引用）用于记忆检索的向量化，未设置或不可达时记忆检索回退词法，不影响启动；并 SHALL 支持
+引用）用于记忆检索的向量化，并 SHALL 支持**可选**子项 `embedding_auto`（端点推导开关，
+**缺省 `true`**）：显式 `embedding_model` 永远优先；未显式配置且 `embedding_auto` 开启时，
+SHALL 按 `endpoint` 主机从**内置已知端点表**推导默认 embedding 模型（精确或子域匹配，
+大小写不敏感），表中未命中 SHALL 不推导（有效模型为空）；`embedding_auto` 关闭时 SHALL NOT
+推导。有效 embedding 模型为空或不可达时记忆检索回退词法，不影响启动；`embedding_auto`
+取值口径与 feature flag **同集**（原生布尔与 `true/false`·`yes/no`·`on/off`·`1/0`，大小写
+不敏感、忽略首尾空白），其余取值 SHALL **在校验期拒绝并阻断启动**（错误信息指明键名与
+合法取值），SHALL NOT 静默强转。并 SHALL 支持
 **可选**子项 `context_window`（模型上下文窗口，正整数，`0` = 未配置）作为 token 预算的派生来源
 （派生口径见 loop「错误与预算控制」），未配置时 SHALL **按 `model` 从内置已知模型窗口表推导**
 （子串匹配，大小写不敏感），表中未命中 SHALL 回落内置缺省，不影响启动；并 SHALL 支持
@@ -89,10 +96,29 @@
 - **WHEN** 系统启动装配记忆
 - **THEN** 以该模型构造 embedding 客户端并注入 `MemoryStore`（经单条→批量适配器）
 
-#### Scenario: 未配置 embedding 模型回退词法
-- **GIVEN** llm 段未设置 `embedding_model`
+#### Scenario: 未配置时按端点推导默认 embedding 模型
+- **GIVEN** llm 段未设置 `embedding_model`（或为空），`embedding_auto` 为缺省开启，
+  且 `endpoint` 主机命中内置端点表（如 `open.bigmodel.cn`）
 - **WHEN** 系统启动装配记忆
-- **THEN** 记忆检索不注入 embedder，回退词法相似，启动不受影响
+- **THEN** 有效 embedding 模型取该端点的默认模型（如 `embedding-3`），并以之构造 embedding
+  客户端注入 `MemoryStore`；显式 `embedding_model` 不被推导值覆盖
+
+#### Scenario: 未配置 embedding 模型回退词法
+- **GIVEN** llm 段未设置 `embedding_model`，且 `endpoint` 主机不在内置端点表内（如自建代理）
+- **WHEN** 系统启动装配记忆
+- **THEN** 有效 embedding 模型为空，记忆检索不注入 embedder，回退词法相似，启动不受影响
+
+#### Scenario: 关闭端点推导回退词法
+- **GIVEN** llm 段未设置 `embedding_model` 且 `embedding_auto` 显式关闭（`false`）
+- **WHEN** 系统启动装配记忆
+- **THEN** 有效 embedding 模型为空，记忆检索回退词法（与引入端点推导前逐字一致）
+
+#### Scenario: embedding_auto 取值归一与非法拒绝
+- **GIVEN** `llm.embedding_auto` 取值为原生布尔、`true/false`、`yes/no`、`on/off`、`1/0`
+  （大小写不敏感）
+- **WHEN** 系统加载配置
+- **THEN** 归一为开或关；取值为 `maybe` / 空串 / 映射时校验失败并阻断启动，错误信息指明
+  键名与合法取值，SHALL NOT 静默强转
 
 #### Scenario: context_window 经配置链解析
 - **GIVEN** `llm.context_window` 经 CLI flag / env / config.yaml 任一面设置

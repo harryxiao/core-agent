@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from .embedding_models import default_embedding_model
+
 
 class ConfigExposure(StrEnum):
     """配置项暴露面分级。"""
@@ -39,11 +41,25 @@ class LLMConfig:
     endpoint: str
     api_key_ref: str  # api_key 的 ${VAR} 引用（非明文）
     reasoning_effort: str | None = None  # 推理档位 low/medium/high（可选）
-    embedding_model: str = ""  # 记忆检索向量化模型（可选；空=不注入 embedder，回退词法）
+    embedding_model: str = ""  # 用户显式 embedding 模型（空=未声明，见 effective_embedding_model）
+    embedding_auto: bool = True  # 未显式声明时是否按端点推导默认 embedding 模型（change 0271）
     context_window: int = 0  # 模型上下文窗口（可选；0=未配置，不派生预算 —— 见 loop 预算控制）
     show_thinking: bool = False  # 思考回显开关（可选；缺省关 ⇒ 事件面零新增，见 loop / ui）
     timeout: float = 60.0  # 单次调用超时上限（秒，可选；缺省=实现类缺省，见 llm-provider）
     max_retries: int = 3  # 调用失败最大重试次数（可选；缺省=实现类缺省）
+
+    @property
+    def effective_embedding_model(self) -> str:
+        """生效的 embedding 模型：显式值优先，否则按端点推导（开关可关）；均无 ⇒ 空。
+
+        推导只影响**有效配置**，不回写 ``embedding_model`` 字段 —— 热更新基线与用户
+        显式值语义保持不变（change 0271）。
+        """
+        if self.embedding_model:
+            return self.embedding_model
+        if not self.embedding_auto:
+            return ""
+        return default_embedding_model(self.endpoint)
 
 
 @dataclass(frozen=True)

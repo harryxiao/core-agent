@@ -169,12 +169,15 @@ def test_cli_rag_ask_without_generator_fails_closed(monkeypatch, capsys) -> None
     assert "GENERATION_UNAVAILABLE" in capsys.readouterr().err
 
 
-def test_cli_rag_search_rejects_dim_mismatch_with_hint(offline, capsys) -> None:
+def test_cli_rag_search_rejects_dim_mismatch_with_hint(offline, tmp_path, capsys) -> None:
     """索引维度与当前 embedding 不一致 ⇒ 结构化错误 + 「重建索引」提示 + 退出码 1。"""
     store = SqliteVectorStore(_index_path())
     store.put(Chunk("c1", "d1", "旧索引", [1.0, 0.0]))
+    # 显式钉住未知端点 ⇒ HashEmbedder（change 0271 后默认配置可能按端点推导语义后端，
+    # 维度失配用例不应依赖用户 HOME 下的配置内容）。
+    cfg = _write_config(tmp_path)
 
-    assert main(["rag", "search", "部署"]) == 1
+    assert main(["--config", cfg, "rag", "search", "部署"]) == 1
     err = capsys.readouterr().err
     assert "INDEX_CORRUPT" in err
     assert "重建索引" in err

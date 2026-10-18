@@ -40,8 +40,10 @@
 **缺省词法相似** SHALL 按**词元 IDF 加权与文档长度归一**（BM25 口径）计算，SHALL NOT 对
 所有查询词元等权、SHALL NOT 忽略文档长度；得分 SHALL 按查询词元的 IDF 总和归一并以 1 为上界
 （与层结构权重同一量纲）。embedder 缺失或调用失败降级词法时 SHALL 使用同一 IDF/长度归一
-口径。组合根在未配置 `llm.embedding_model` 时 SHALL 在进程启动（CLI 入口）向 stderr 输出一次
-「词法匹配、语义检索未启用」的提示，SHALL NOT 每轮检索重复输出。
+口径。组合根在**有效 embedding 模型为空**时（既未显式配置 `llm.embedding_model`，也未按
+`llm.embedding_auto` 从已知端点推导出模型）SHALL 在进程启动（CLI 入口）向 stderr 输出一次
+「词法匹配、语义检索未启用」的提示，SHALL NOT 每轮检索重复输出；有效模型来自端点推导时
+SHALL 输出一次「按端点自动选用 …（可用 `llm.embedding_model` 覆盖）」提示（不含端点与密钥）。
 
 命中条目的复用强化 SHALL **落盘持久化**：`reuse_count` 的递增 SHALL 写入持久后端
 （SHALL NOT 只存在于进程内）—— 因该计数经 `1 + log1p(reuse_count)` 与
@@ -103,9 +105,17 @@ SHALL 逐条写回（语义不变）。批量写 SHALL 与逐条写回**同一�
 - **THEN** 较短（词元长度更接近语料平均）的条目排在更前
 
 #### Scenario: 未配置 embedding 模型时启动提示
-- **GIVEN** `llm.embedding_model` 未配置
+- **GIVEN** `llm.embedding_model` 未配置，且 `embedding_auto` 关闭或端点未命中内置表
 - **WHEN** CLI 入口装配运行时
-- **THEN** stderr 输出一次「记忆检索使用词法匹配（语义检索未启用）」提示；已配置时不输出
+- **THEN** stderr 输出一次「记忆检索使用词法匹配（语义检索未启用）」提示；有显式或推导模型时
+  不输出该词法提示
+
+#### Scenario: 端点推导启用语义检索
+- **GIVEN** `llm.embedding_model` 未配置、`embedding_auto` 为缺省开启且 `endpoint` 主机命中
+  内置端点表
+- **WHEN** CLI 入口装配运行时
+- **THEN** 记忆注入以推导模型构造的 embedder（语义检索生效），stderr 输出一次「按端点自动
+  选用 …」提示，且不输出词法降级提示
 
 #### Scenario: 复用强化批量落盘
 - **GIVEN** 一次检索选中多条条目，且后端提供批量写入口

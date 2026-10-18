@@ -94,6 +94,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "llm.embedding_auto",
+        "--llm.embedding-auto",
+        "CORE_LLM_EMBEDDING_AUTO",
+        default="true",
+        map_to="llm.embedding_auto",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "im.gateway",
         "--im.gateway",
         "CORE_IM_GATEWAY",
@@ -1190,6 +1198,7 @@ class ConfigManager:
             api_key_ref=str(llm_raw.get("api_key") or ""),
             reasoning_effort=_opt_str(llm_raw.get("reasoning_effort")),
             embedding_model=str(llm_raw.get("embedding_model", "")),
+            embedding_auto=_llm_embedding_auto(llm_raw),
             context_window=_llm_context_window(llm_raw),
             show_thinking=_llm_show_thinking(llm_raw),
             timeout=_llm_timeout(llm_raw),
@@ -1329,6 +1338,26 @@ def _llm_show_thinking(raw: dict[str, Any]) -> bool:
         return False
     raise ConfigurationError(  # noqa: TRY003
         f"非法思考回显开关: llm.show_thinking={value!r}"
+        "（须为布尔或 true/false、yes/no、on/off、1/0）"
+    )
+
+
+def _llm_embedding_auto(raw: dict[str, Any]) -> bool:
+    """llm 段 `embedding_auto` 解析（构建前阻断，取值口径与 feature flag 同集）。
+
+    缺省 ``True``（未显式配置 ``embedding_model`` 时按端点推导默认 embedding 模型）。
+    非法取值当场拒绝 —— 放行 ``maybe`` 会把配置笔误静默当作**开启**。
+    """
+    value = raw.get("embedding_auto", True)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in _FEATURE_TRUE:
+        return True
+    if text in _FEATURE_FALSE:
+        return False
+    raise ConfigurationError(  # noqa: TRY003
+        f"非法 embedding 自动推导开关: llm.embedding_auto={value!r}"
         "（须为布尔或 true/false、yes/no、on/off、1/0）"
     )
 
@@ -1621,6 +1650,7 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
         "api_key": config.llm.api_key_ref,
         "reasoning_effort": config.llm.reasoning_effort,
         "embedding_model": config.llm.embedding_model,
+        "embedding_auto": config.llm.embedding_auto,
         "context_window": config.llm.context_window,
         "show_thinking": config.llm.show_thinking,
     }
@@ -1660,6 +1690,7 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
             api_key_ref=str(llm_raw["api_key"]),
             reasoning_effort=_opt_str(llm_raw.get("reasoning_effort")),
             embedding_model=str(llm_raw.get("embedding_model", "")),
+            embedding_auto=_llm_embedding_auto(llm_raw),
             context_window=_llm_context_window(llm_raw),
             show_thinking=_llm_show_thinking(llm_raw),
             timeout=_llm_timeout(llm_raw),

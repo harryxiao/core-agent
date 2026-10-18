@@ -37,6 +37,7 @@ no-op、契约不破坏；实现方若提供，块文本 SHALL 按**块序号升
 - **GIVEN** 一份长文档经 `ingest` 切成超过 10 个块（块 id 形如 `doc#0…#12`）
 - **WHEN** 经访问器取该文档的块文本并按序拼接
 - **THEN** 拼接结果**等于原文**（按块序号升序，而非 `chunk_id` 字典序 —— `#10 < #2` 是错序）
+
 ### Requirement: 文档摄取与分块
 系统 SHALL 提供文档摄取管线：导入知识文档 → 分块 → 生成 embedding → 建立向量索引，并支持增量更新与索引失效检测。
 
@@ -68,21 +69,32 @@ no-op、契约不破坏；实现方若提供，块文本 SHALL 按**块序号升
 - **THEN** 系统把文档全文交给一次模型调用产出摘要，并落成一篇 canonical 结论笔记
   （`source="notes.rag"`，`note_id` 由 `doc_id` 确定性派生）；该笔记**不进**向量索引语料；
   未带 `--summarize` 时 SHALL NOT 产生任何笔记（摄取行为与既有逐字一致）
+
 ### Requirement: 本地 Embedding
-系统 SHALL **本地优先、零外呼**地生成 embedding：未配置 `llm.embedding_model` 时用 `HashEmbedder`
+系统 SHALL **本地优先、零外呼**地生成 embedding：**有效 embedding 模型为空**时（既未显式配置
+`llm.embedding_model`，也未按 `llm.embedding_auto` 从已知端点推导出模型）用 `HashEmbedder`
 （字符 n-gram 哈希 → 确定性向量的**离线降级基线**，零三方依赖、不请求外部 embedding API）；
-配置后经 llm-provider 归一化 embedding 入口调用远端模型，检索与调用方零改动。降级基线的**向量维度**
-与远端模型不同，故索引按维度拒绝混用（见「本地向量库存储」）。
+有效模型非空时（显式配置，或按端点表推导）经 llm-provider 归一化 embedding 入口调用远端模型，
+检索与调用方零改动。降级基线的**向量维度**与远端模型不同，故索引按维度拒绝混用
+（见「本地向量库存储」）。
 
 #### Scenario: 本地推理无外部依赖
-- **GIVEN** 未配置远端 embedding 模型，一段文本需生成向量
+- **GIVEN** 无有效 embedding 模型（未配置且未推导 / 推导关闭），一段文本需生成向量
 - **WHEN** 调用 embedding 生成
 - **THEN** 由本地 `HashEmbedder` 推理完成（确定性向量），不请求外部 embedding API
 
 #### Scenario: 经 llm-provider 切换远端模型
-- **GIVEN** 用户配置了远端 embedding 模型（`llm.embedding_model`）
+- **GIVEN** 用户显式配置了远端 embedding 模型（`llm.embedding_model`）
 - **WHEN** 经 llm-provider 归一化入口请求
 - **THEN** 无缝切换到远端模型，检索与调用方无感知
+
+#### Scenario: 端点推导启用远端 embedding
+- **GIVEN** 未显式配置 `llm.embedding_model`，`embedding_auto` 为缺省开启且 endpoint 主机命中
+  内置端点表
+- **WHEN** 系统装配 RAG
+- **THEN** 以推导模型经 llm-provider 归一化入口生成 embedding（不再使用 `HashEmbedder`），
+  检索与调用方零改动
+
 ### Requirement: 存储与 Embedding 依赖注入隔离
 系统 SHALL 通过依赖注入隔离 VectorStore 与 Embedder 实现：替换向量库（如 stdlib `sqlite3` → 三方向量库）
 或替换 embedding 后端（离线 `HashEmbedder` → 远端模型 / 换模型）时，检索与调用方零改动。
@@ -96,6 +108,7 @@ no-op、契约不破坏；实现方若提供，块文本 SHALL 按**块序号升
 - **GIVEN** 需要替换 embedding 后端（离线 `HashEmbedder` → 远端模型）
 - **WHEN** 经 llm-provider 归一化入口或注册新的 Embedder 实现
 - **THEN** 检索与调用方无感知切换
+
 ### Requirement: 语义检索
 系统 SHALL 按向量相似度检索 top-k 最相关片段、弥补 LLM 知识缺口，检索结果带相关度得分供后续裁剪排序。
 
@@ -103,6 +116,7 @@ no-op、契约不破坏；实现方若提供，块文本 SHALL 按**块序号升
 - **GIVEN** 一条查询语句
 - **WHEN** 执行语义检索
 - **THEN** 返回按向量相似度排序的 top-k 片段及相关度得分
+
 ### Requirement: 生成融合
 系统 SHALL 将检索片段作为上下文注入生成链路：经 context 装配器按预算裁剪后随提示词送入 llm-provider 生成，检索缺失时降级为纯 LLM 生成。
 
@@ -115,6 +129,7 @@ no-op、契约不破坏；实现方若提供，块文本 SHALL 按**块序号升
 - **GIVEN** 语义检索无相关片段
 - **WHEN** 构建生成请求
 - **THEN** 降级为纯 LLM 生成，不阻断流程
+
 ### Requirement: 与 CodeBase Engine 职责边界
 系统 SHALL 保持 RAG 与 codebase-memory-mcp 的互补分工：RAG 管「知识文档」语义检索，codebase-memory-mcp 管「代码结构」结构化理解，两者同时引入、互不重叠。
 

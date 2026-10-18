@@ -96,6 +96,11 @@ Configuration（横切）
   无 CLI/env/yaml 面，故**不是**第二真源；它只**补充** `llm.context_window` 的推导来源。
   归一后统一 `window − output_reserve` ⇒ 减法只有一处；`_window_reserve_errors` 闸门只管**显式配置**
   的窗口（表推导路径不经该闸门 —— 见 ADR-0175 局限③）。
+- **embedding 模型端点推导**（change `0271`／ADR-0261）：`llm.embedding_model` 未显式声明时，
+  `LLMConfig.effective_embedding_model` 按 `embedding_models.default_embedding_model(endpoint)`
+  从**有据可查的端点表**推导默认模型（`llm.embedding_auto` 缺省 `true`，非法值阻断启动）。
+  显式值永远优先；推导**不回写字段**（热更新换端点自动跟随）；未知端点 / 开关关闭 ⇒ 空，
+  与引入前逐字一致。表纯常量、无配置键，不是第二真源。
 - 变更即生效；写入失败时回滚到变更前完整配置，不留半写状态，并记录告警。
 - **写回是可逆效应（change `0130` / ADR-0123）**：变更作用于**内存 + yaml 文件**两处，`apply_change`
   与 `write_patch` 记在**同一 trace**（`"config"`）⇒ 按该 trace 回滚时磁盘态与内存态**一并回退**；

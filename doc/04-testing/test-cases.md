@@ -4238,3 +4238,39 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > （`ruff check` / `ruff format --check` / `pyright` 0 / `pytest -q 2959 passed`）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0260 行（纯进程内 / 无轮内推送 / 进程级
 > 上限 / 取走即丢 / 有界截断 / 取消不回滚 / 不进 MCP 默认面 / 继承会话标识 / 无排队重试）。
+
+## 183. 语义检索默认化（TC-SEMDEFAULT，change `0271`／ADR-0261，台账 E207）
+
+> **背景**：`llm.embedding_model` 为空时记忆恒词法、RAG 用 `HashEmbedder`，语义检索默认不在场。
+> 本 change 以**确定性端点表**在未显式配置时推导默认 embedding 模型（`llm.embedding_auto` 缺省
+> true），显式值永远优先；未知端点 / 开关关闭 ⇒ 与引入前逐字一致。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-SEMDEFAULT-01 | configuration/spec.md Scenario（未配置时按端点推导） | 四个已知端点各推导一次 | 分别得 `text-embedding-3-small` / `embedding-3` / `text-embedding-v3` / `BAAI/bge-m3`（`test_endpoint_table_matches_known_hosts`） |
+| TC-SEMDEFAULT-02 | 同 Scenario（主机匹配口径） | 大写 host / 省略 scheme / 带端口 / 子域 | 均命中同表项；`evilopen.bigmodel.cn.attacker.test` **不**命中（`test_endpoint_table_is_case_insensitive_and_scheme_optional` / `test_endpoint_table_matches_subdomains` / `test_endpoint_table_does_not_match_suffix_without_dot_boundary`） |
+| TC-SEMDEFAULT-03 | Scenario（未配置 embedding 模型回退词法） | 空 / 未知端点 / `api.deepseek.com` / 本机地址 | 推导返回空串（不猜）（`test_endpoint_table_unknown_or_empty_returns_empty`） |
+| TC-SEMDEFAULT-04 | configuration/spec.md Scenario（显式优先） | `embedding_model="custom-embed"` + 已知端点 | `effective_embedding_model == "custom-embed"`；字段仍是显式值（`test_effective_model_explicit_wins_over_derivation`） |
+| TC-SEMDEFAULT-05 | Scenario（关闭端点推导回退词法） | 已知端点 + `embedding_auto=False` | 有效值为空；显式模型在开关关闭时仍生效（`test_effective_model_disabled_by_switch` / `test_effective_model_explicit_survives_disabled_switch`） |
+| TC-SEMDEFAULT-06 | configuration/spec.md Scenario（embedding_auto 三面与非法拒绝） | 缺省 / yaml `false` / env `off` / CLI `0` / yaml `maybe` | 缺省 true；三面均能关闭；`maybe` 抛 `ConfigurationError` 阻断启动（`test_config_embedding_auto_*`） |
+| TC-SEMDEFAULT-07 | configuration/spec.md（推导不回写字段） | 热更新端点 `open.bigmodel.cn` → `api.openai.com` | 字段仍为空串；有效值跟随新端点（`test_hot_update_keeps_explicit_field_and_follows_endpoint`） |
+| TC-SEMDEFAULT-08 | configuration/spec.md Scenario（端点推导启用语义检索） | 已知端点、无显式模型 | 以推导模型另构造 provider；记忆 `_embedder` 非空并产出批量向量；RAG 后端为 `LLMEmbedder`（`test_runtime_derives_embedder_for_known_endpoint`） |
+| TC-SEMDEFAULT-09 | Scenario（关闭端点推导回退词法） | 已知端点 + `embedding_auto=false` | 不构造 embedding provider；记忆 `_embedder is None`；RAG 为 `HashEmbedder`（`test_runtime_respects_embedding_auto_false`） |
+| TC-SEMDEFAULT-10 | Scenario（显式优先 / 未命中回退） | 显式模型 + 已知端点；未知端点 | 只构造显式模型；未知端点记忆词法、RAG `HashEmbedder`（`test_runtime_explicit_model_wins` / `test_runtime_unknown_endpoint_keeps_lexical`） |
+| TC-SEMDEFAULT-11 | rag/spec.md Scenario（端点推导启用远端 embedding） | 推导模型调用抛 `LLMError` | 启动不阻断；首次 embed 失败后记忆降级词法仍可检索（`test_runtime_derivation_failure_degrades_without_blocking`） |
+| TC-SEMDEFAULT-12 | memory/spec.md Scenario（未配置 embedding 模型时启动提示）+ configuration/spec.md Scenario（端点推导） | run 入口：推导 / 开关关闭 / 显式 | 推导 ⇒ 一次「按端点自动选用 embedding-3」且不回显 endpoint、无词法提示；关闭 ⇒ 词法提示；显式 ⇒ 无额外提示（`test_run_hints_derived_embedding_model` / `test_run_no_derived_hint_when_embedding_auto_disabled` / `test_run_explicit_embedding_model_has_no_auto_hint`） |
+
+> **口径**：推导只影响**有效配置**，不回写 yaml / dataclass 字段；记忆与 RAG 共用同一
+> `embed_provider`；CLI 提示按有效值判断且每次启动至多一次，不回显 endpoint / 密钥。
+> **反证**：P1 `effective_embedding_model` 推导分支返回 `""` ⇒ TC-SEMDEFAULT-06/07/08/11/12
+> 共 6 例红；P2 摘 `embedding_auto` 判断 ⇒ TC-SEMDEFAULT-05/06/09/12 共 4 例红；P3 入口仍取显式
+> 字段 ⇒ TC-SEMDEFAULT-12 推导提示红。复原后 `md5sum` 一致（`models.py 28018332…` /
+> `entry.py 175d4395…`）。
+> 规格：`configuration` **MODIFIED**「LLM 提供商配置（必选）」（+4 scen）、`memory` **MODIFIED**
+> 「温度分层检索」（+2 scen）、`rag` **MODIFIED**「本地 Embedding」（+1 scen）。
+> `openspec validate --all` 32/0（归档前）/ 31/0（归档后）。测试净 **+24**（2959 → **2983**）。
+> 四门禁全绿（`ruff check` / `ruff format --check` / `pyright` 0 / `pytest -q 2983 passed`）。
+> 附带：`test_rag_wiring` 维度失配用例改为显式钉住未知端点配置，不再依赖用户 HOME 配置；
+> `entry.py` 增行使 `prompts.md` §1 ⑭ 落点 1810 → 1820，已同步。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0261 行（静态表 / 不验证可用性 / 代理不识别 /
+> 首次远端费用 / 不参与 config show / 主机名匹配）。

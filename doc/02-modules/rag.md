@@ -70,9 +70,10 @@ RAG（L3）
 ### 3.3 embedding 后端选择与降级
 
 - 默认 **`HashEmbedder`**：字符 n-gram 哈希生成确定性向量，**零三方依赖、零外呼**（离线降级基线；
-  未配 `llm.embedding_model` 时组合根选用，CLI 打印降级提示）。依据 memory 既有裁决「HashEmbedder
+  有效 embedding 模型为空时组合根选用，CLI 打印降级提示）。依据 memory 既有裁决「HashEmbedder
   是降级基线不完善，语义走 `LLMEmbedder`，不引入本地语义模型」（不引 sentence-transformers）。
-- 配 `llm.embedding_model` ⇒ **`LLMEmbedder`** 经 llm-provider 归一化入口调远端 embedding 模型，
+- 配 `llm.embedding_model`，或端点命中内置表且 `llm.embedding_auto` 开启（change `0271` /
+  ADR-0261）⇒ **`LLMEmbedder`** 经 llm-provider 归一化入口调远端 embedding 模型，
   检索与调用方零改动。**维度随后端变化**：索引记录 `dim`，不一致即 `INDEX_CORRUPT` 并提示重建。
 
 ### 3.4 语义检索

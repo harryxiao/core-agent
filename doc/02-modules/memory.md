@@ -49,7 +49,9 @@ MemoryStore
 - **词法 IDF/长度归一**（change `0252`／ADR-0242）：未注入 embedder（或调用失败）时，相似度按
   BM25 口径计算——罕见词元权重更高、长文档被长度惩罚；`read` 对**过滤后的候选集**构建一次
   语料统计（分词缓存），排序阶段不再重复分词。注入 embedder 的余弦相似路径与 `stats=None` 的
-  原重叠公式均逐字不变；未配置 `llm.embedding_model` 时 CLI 启动向 stderr 提示一次「词法匹配」。
+  原重叠公式均逐字不变；无有效 embedding 模型（未配置且端点未命中 / 推导关闭）时 CLI 启动向
+  stderr 提示一次「词法匹配」；仅经端点表推导出模型时提示一次「按端点自动选用 …」
+  （change `0271`／ADR-0261）。
 - **硬性 budget**：`read` 返回的总 token 不超过预算；超限按 `layer_priority × relevance` 截断。
 - 层权重默认：L0 > L3（相关技能）> L2（相关事实）> L1 > L4。
 - **检索质量离线回归门**（change `0261`／ADR-0251／台账 E197）：`tests/test_memory_quality.py`
