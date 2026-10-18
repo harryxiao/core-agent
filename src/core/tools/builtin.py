@@ -439,6 +439,9 @@ def _kill_job(registry: ProcessRegistry, pid: int) -> dict[str, Any]:
     job = registry.get(pid)
     if job is None:
         return {"pid": pid, "found": False, "killed": False}
+    if job.proc is None:
+        # 恢复项无进程句柄、身份无法在全部平台安全验证 ⇒ 只读，不触达进程
+        return {"pid": pid, "found": True, "killed": False, "restored": True}
     already_exited = job.proc.poll() is not None
     if not already_exited:
         execution.kill_process_tree(job.proc)

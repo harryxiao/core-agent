@@ -85,7 +85,14 @@ class ToolDef:
   `start_new_session` / Windows `CREATE_NEW_PROCESS_GROUP`）；超时 / 取消终止**整棵进程树**并归一
   `TIMEOUT`，不遗留仍可写文件的子进程。`timeout` 缺省 120s、上限 600s（有限数校验）。
   后台任务（`background=true`）写 0600 日志并登记到有界注册表，经 `tools.process` 巡检、
-  `tools.process_kill` 终止；注册表仅进程内、不存脚本正文。
+  `tools.process_kill` 终止；注册表不存脚本正文。
+- **后台任务跨重启登记（change `0266` / ADR-0256）**：注册表元数据（pid / 输出路径 / 启动时间 /
+  运行类型 / 启动时刻标识）原子落盘 `$CORE_STATE_DIR/processes.json`（0600，临时文件 + `fsync`
+  + `os.replace`）；进程重启后加载为**恢复项**（`proc=None`），`list` / `status` / `output`
+  可用并标 `restored=true`。恢复项存活用 `kill(pid, 0)` 探测（Windows 改用 `OpenProcess`），
+  Linux 再核对 `/proc/<pid>/stat` starttime 防 PID 复用。恢复项**只读**：`process_kill`
+  返回 `killed=false` / `restored=true`，不触达进程（无句柄、非 Linux 无身份核对）。
+  落盘失败与损坏文件均静默降级，不阻断后台任务登记。
 
 ---
 

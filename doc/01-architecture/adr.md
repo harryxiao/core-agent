@@ -9437,6 +9437,50 @@ N 是「省略字符数（含标记占用的预算）」，非精确尾部缺口
 （插件契约责任，非本层可验证）。④ 并发段执行早于其前置动作的压实：同一批内动作在压实前
 已全部执行（批次语义）；对只读动作无副作用影响。
 
+## ADR-0256：后台进程跨重启登记（change 0266 / 台账 E202）
+
+**背景**：后台任务以 `start_new_session=True` 启动，core-agent 退出后仍在运行；但
+`ProcessRegistry` 只存在于内存，重启后 `tools.process` 的 `list` / `status` / `output` 全部
+查不到 —— 日志文件在磁盘上，模型却丢失 pid 与路径的唯一入口；也无法判断某 pid 是否仍是当初
+启动的进程。
+
+**决策**：
+
+- **D1 元数据持久化**：注册表把 `pid` / `output_path` / `started_at` / `run_type` /
+  `start_ticks` 整体写入 `$CORE_STATE_DIR/processes.json`（`O_CREAT|O_EXCL` 0600 临时文件 +
+  `flush` + `fsync` + `os.replace`）。**不**记录命令 / 脚本 / 环境变量。落盘失败被吞掉
+  （后台任务必须照常登记）；损坏文件按空注册表、非法条目跳过。
+- **D2 启动时恢复**：`ProcessRegistry.__init__` 加载登记项为**恢复项**（`proc=None`），
+  `list` / `status` / `output` 继续可用；`info()` 附加 `restored` 标记，退出码为 `null`。
+  恢复条目按 `started_at` 保留最新 `max_jobs` 条，遵守注册表上界。
+- **D3 存活与身份核对**：本进程任务看 `Popen.poll()`；恢复项用 `os.kill(pid, 0)` 判活
+  （Windows 改 `OpenProcess` + `GetExitCodeProcess`，因 `os.kill(pid, 0)` 在 Windows 会
+  `TerminateProcess`），Linux 再比对 `/proc/<pid>/stat` 的 starttime（字段 22）。starttime
+  不符 ⇒ PID 已被复用，判为已退出；非 Linux / 读取失败时只凭存活判定。
+- **D4 恢复项拒绝终止**：进程树终止依赖 `Popen` 句柄，重启后没有句柄；非 Linux 又无身份
+  核对。故 `tools.process_kill` 对恢复项返回 `found=true` / `killed=false` /
+  `restored=true`，**不触达**进程。终止能力仍仅限本进程启动的任务；注册表外 pid 仍
+  `found=false`。
+
+**规格**：`tool-use` **MODIFIED**「后台命令执行与进程管理」（+3 scen：重启后仍可巡检 /
+PID 复用不误报 / 恢复项不可终止；另 +1 scen 持久化文件损坏不阻断）。
+`openspec validate --all` 32/0（归档前）/ 31/0（归档后）。
+
+**测试**：新增 `tests/test_process_persistence.py` 9 例，净 **+9**（2905 → **2914**）。
+反证 4/4：P1 摘恢复加载 ⇒ 恢复 / 身份 / 上界等 6 例红；P2 摘身份核对 ⇒ PID 复用用例红；
+P3 摘恢复项拒绝终止 ⇒ 恢复项 kill 用例红（`NoneType.poll` 归一 `EXECUTION_FAILED`）；
+P4 改非原子直写 ⇒ 0600 / 原子替换两例红；复原后 `md5sum` 一致
+（`execution.py 0d7c20dd…` / `builtin.py 9971c87e…`）。四门禁：`ruff check` /
+`ruff format --check` 绿、`pyright` 0 errors、`pytest -q` 2914 passed。
+
+**局限**：① 恢复项只读，**不可终止**；需要终止时用户须按 pid / `output_path` 自行处置
+（保 `run_type` 不保命令，故无法自动重建）。② Windows 无 starttime 核对，恢复项只凭
+`OpenProcess` 判活；PID 复用时可能误报 `running=true` —— 因拒绝终止，不会误杀。
+③ 持久化为整体重写、假设**单写者**（生产只有一个注册表实例）；多实例共享同一
+`CORE_STATE_DIR` 会互相覆盖。④ 落盘失败静默（该层无日志设施）；恢复项退出码恒 `null`。
+⑤ 已退出的恢复项在下一次 `add` 淘汰时才从文件移除，`list` 会短暂保留（与既有内存注册表
+行为一致）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9687,3 +9731,4 @@ N 是「省略字符数（含标记占用的预算）」，非精确尾部缺口
 | ADR-0253 | 02-modules/loop.md, 03-interfaces/observability-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0254 | 02-modules/durability.md, 02-modules/loop.md, 02-modules/tool-use.md, 03-interfaces/durability-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0255 | 02-modules/loop.md, 02-modules/tool-use.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0256 | 02-modules/tool-use.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

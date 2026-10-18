@@ -4074,3 +4074,38 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > `pyright` 0 / `pytest -q`）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0255 行（仅组内连续只读段 / 工作线程不可
 > 取消 / 依赖 coeffects 如实声明 / 并发段先于压实执行）。
+
+---
+
+## 178. 后台进程跨重启登记（TC-PERSIST，change `0266`／ADR-0256，台账 E202）
+
+> **背景**：后台任务以独立会话启动，core-agent 退出后仍在运行；但注册表只在内存，重启后
+> `tools.process` 查不到日志路径与 pid。本组用例钉住「元数据落盘 + 启动恢复 + PID 复用防护 +
+> 恢复项拒绝终止」的边界。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-PERSIST-01 | tool-use/spec.md「后台命令执行与进程管理」Scenario（元数据） | 启动后台任务并 `registry.add` | `processes.json` 存在、0600、无临时文件残留；条目键集合恰为 `pid/output_path/started_at/run_type/start_ticks`（`tests/test_process_persistence.py::test_add_persists_metadata_atomically`） |
+| TC-PERSIST-02 | 同 Requirement「重启后仍可巡检」 | 落盘后新建 `ProcessRegistry`，调用 `tools.process status/list/output` | 可查到该任务；`restored=true`、`running=true`、`returncode=null`；输出尾部可读（`...::test_registry_restores_running_job`） |
+| TC-PERSIST-03 | 同 Requirement（已退出恢复项） | 登记一个已退出 pid 后重启 | `running=false`、`restored=true`，条目仍可见（`...::test_restored_dead_entry_reports_not_running`） |
+| TC-PERSIST-04 | 同 Requirement「PID 复用不误报」 | Linux：恢复项 starttime = 当前进程真实值 / 真实值 + 1 | 匹配 ⇒ `running=true`；不匹配 ⇒ `running=false`（`...::test_restored_identity_mismatch_is_not_running`） |
+| TC-PERSIST-05 | 同 Requirement「恢复项不可终止」 | 重启后对恢复项调用 `tools.process_kill` 并批准 | `found=true` / `killed=false` / `restored=true`；进程仍存活（`...::test_restored_entry_kill_refused`） |
+| TC-PERSIST-06 | 同 Requirement「持久化文件损坏不阻断」 | 文件为非法 JSON；条目缺字段 / 类型错 / `started_at=NaN` | 构造不抛异常；坏文件 ⇒ 空表；非法行跳过、合法行保留（`...::test_registry_load_tolerates_corruption_and_illegal_rows`） |
+| TC-PERSIST-07 | 同 Requirement（恢复上界） | 3 条登记项，`ProcessRegistry(max_jobs=2)` | 只恢复最新 2 条（`...::test_registry_load_is_bounded`） |
+| TC-PERSIST-08 | 同 Requirement（落盘失败降级） | `_save_registry` 抛 `OSError` | `add` 成功、任务可查（`...::test_persistence_failure_does_not_block_spawn`） |
+| TC-PERSIST-09 | 同 Requirement（原子替换） | `os.replace` 抛 `OSError` 时添加新任务 | 旧 `processes.json` 逐字不变、临时文件清理、登记成功（`...::test_replace_failure_keeps_previous_file`） |
+
+> **口径**：持久化只含元数据（`pid` / 输出路径 / 启动时间 / 运行类型 / starttime），**不含**
+> 命令、脚本正文或环境变量。恢复项无 `Popen` 句柄：存活用 `os.kill(pid, 0)`（Windows 改
+> `OpenProcess` + `GetExitCodeProcess`，因 `os.kill(pid,0)` 在 Windows 会终止进程），Linux
+> 再核对 `/proc/<pid>/stat` starttime；身份不符即判退出。恢复项**只读** —— `process_kill`
+> 不触达进程。落盘失败 / 损坏文件均静默降级。
+> **反证**：P1 构造器不调用 `_load` ⇒ TC-PERSIST-02/03/04/05/06/07 红；P2 `_identity_ok` 恒
+> True ⇒ TC-PERSIST-04 红；P3 删除 `_kill_job` 恢复项分支 ⇒ TC-PERSIST-05 红；P4 非原子直写
+> ⇒ TC-PERSIST-01/09 红。复原后 `md5sum` 一致（`execution.py 0d7c20dd…` /
+> `builtin.py 9971c87e…`）。
+> 规格：`tool-use` **MODIFIED**「后台命令执行与进程管理」（+4 scen）。`openspec validate --all`
+> 32/0（归档前）/ 31/0（归档后）。测试净 **+9**（2905 → **2914**）。四门禁全绿
+> （`ruff check` / `ruff format --check` / `pyright` 0 / `pytest -q`）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0256 行（恢复项不可终止 / Windows 无
+> starttime 核对 / 单写者假设 / 落盘失败静默 / 退出恢复项延迟淘汰）。

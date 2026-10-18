@@ -92,8 +92,8 @@ class ToolError:
 | `tools.web_execute_js` | `script`, `switch_tab_id` | 执行页面 JS |
 | `tools.web_fetch` | `url`, `timeout` | GET 抓取网页（仅 http/https，出站经确认门） |
 | `tools.ask_user` | `question`, `candidates` | 人机确认 |
-| `tools.process` | `action`, `pid`, `max_chars` | 后台任务巡检（`list` / `status` / `output`；只读可逆，`process:read`；仅本进程注册表内任务；`output` 读日志尾部，缺省 8K、上限 64K） |
-| `tools.process_kill` | `pid` | 终止本进程启动的后台任务及其后代（`process:write` + 不可逆 ⇒ 确认门；未知 pid `found=false`） |
+| `tools.process` | `action`, `pid`, `max_chars` | 后台任务巡检（`list` / `status` / `output`；只读可逆，`process:read`；含跨重启恢复项，`restored=true`；`output` 读日志尾部，缺省 8K、上限 64K） |
+| `tools.process_kill` | `pid` | 终止**本进程启动的**后台任务及其后代（`process:write` + 不可逆 ⇒ 确认门；恢复项 `killed=false`；未知 pid `found=false`） |
 | `tools.memory` | `layer`, `action`, `entry` | 记忆读写 |
 | `tools.install` | `source`, `kind`, `name` | 安装插件（discover→verify→install→register→activate；写 + 不可逆 ⇒ 走确认门） |
 | `tools.uninstall` | `plugin_id` | 卸载插件（deactivate→uninstall 对称回退；写 + 不可逆 ⇒ 走确认门） |
@@ -140,8 +140,18 @@ class ToolError:
 > 内的有限秒数（越界 / NaN / inf ⇒ `EXECUTION_FAILED` 且不启动子进程）；工具外层 `timeout_s=660`。
 > `background=true` 时 stdout / stderr 合并写入 `$CORE_STATE_DIR/run/<type>-<uuid>.log`
 > （目录 0700、文件 0600），立即返回 `pid` / `output_path` / `started_at`；**不接受**模型指定输出路径。
-> 后台任务不随 loop 结束强杀，由 `tools.process_kill` 显式终止；注册表有界（32，仅进程内）。
-> `tools.process` / `tools.process_kill` 只能看到 / 终止**同一份注册表**内由本进程启动的任务。
+> 后台任务不随 loop 结束强杀，由 `tools.process_kill` 显式终止；注册表有界（32），只登记
+> **本进程启动**的任务，并跨重启恢复先前条目（change `0266` / ADR-0256）。
+> `tools.process` / `tools.process_kill` 只能看到**同一份注册表**内的任务；终止仅限本进程启动
+> 的任务 —— 恢复项（`restored=true`，无 `Popen` 句柄）返回 `killed=false`，不触达进程。
+>
+> **跨重启登记（change `0266` / ADR-0256）**：注册表元数据（pid / 输出路径 / 启动时间 / 运行
+> 类型 / starttime）原子写到 `$CORE_STATE_DIR/processes.json`（0600，临时文件 + `fsync` +
+> `os.replace`；仅元数据，**不含**命令 / 脚本 / 环境变量）。构造注册表时加载恢复项，`list` /
+> `status` / `output` 可用，`info()` 带 `restored=true`、`returncode=null`。恢复项存活以
+> `kill(pid, 0)` 探测（Windows 用 `OpenProcess` + `GetExitCodeProcess`，因 `os.kill(pid, 0)`
+> 在 Windows 会终止进程）；Linux 再核对 `/proc/<pid>/stat` starttime，不符（PID 复用）判为
+> 已退出。落盘失败与损坏文件均静默降级，不阻断任务登记；恢复条目遵守注册表上界。
 >
 > **输出首尾保留（change `0264` / ADR-0254）**：前景 `stdout` / `stderr` 超过
 > `_MAX_OUTPUT_CHARS = 8192` 时按「头部约 1/3 + `\n…[truncated N chars]…\n` + 尾部其余」
