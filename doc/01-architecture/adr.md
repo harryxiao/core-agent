@@ -10543,6 +10543,46 @@ busy 用例红（第二个实例扫描并执行）；② 打开失败改为 `acq
 5 个无后端动词的判断基于 2026-10-18 代码快照；argparse 顶层命令经私有 `_subparsers` 读取；
 不删除不可达 `status()` 分支。
 
+## ADR-0279：PA-09 D/E 裁决 —— 多跳基准不建图 ＋ 语义检索可强制（change 0289 / 台账 E225）
+
+**背景**：PA-09 的 D（图存储/遍历）与 E（真语义检索）在 2026-10-18 由用户裁决为
+「**先测后裁**」与「**基准 + 可选强制**」。裁决前的事实：关系三元组以扁平 L2 条目落库
+（`relation.*`，tags 含 `entity:` / `predicate:`），`MemoryBackend` 无遍历方法，
+`memory.relation_extract` 缺省 `false`，本机真实记忆样本 `relation.*` 为 **0** 条；change
+`0271` 已按端点表默认启用 embedding，但缺少「语义优于词法」的离线证据，且无法要求
+「没有 embedding 就拒绝启动」。
+
+**决策**：
+
+- **D1（D）本轮不建图，只交付测量**。新增 `tests/test_memory_graph_benchmark.py`：20 条
+  合成链（`Z --owns--> B`、`B --part_of--> C`），查询只命中首跳。实测：扁平 BM25 的
+  第二跳 recall@5 = **0.000**；从查询实体做 2 跳 tags 邻接 BFS 后 recall@5 = **1.000**。
+  机制增益成立，但生产侧关系抽取缺省关、真实数据为 0 ⇒ 现在建图等于为零数据造索引。
+  轻图（tags 邻接 + 遍历 API）保留为关系抽取真实运行并积累数据后的**既定形态**。
+- **D2（E）新增 `llm.embedding_required`，缺省 `false`**。`ConfigSpec` 三面
+  （`--llm.embedding-required` / `CORE_LLM_EMBEDDING_REQUIRED` / `llm.embedding_required`）；
+  开启且 `effective_embedding_model` 为空 ⇒ `validate_schema` 阻断 `load()` / `apply_change()`。
+  错误只含键名与提示，**不回显 endpoint / 密钥**。取值口径与 `embedding_auto` 同集。
+- **D3 required 的语义边界**：只断言「模型已确定」，**不探测网络可达性**；调用期
+  `/embeddings` 失败仍按既有路径降级 BM25 词法。required 缺省关 ⇒ 行为逐字不变。
+- **D4（E 基准）**：新增 `tests/test_semantic_benchmark.py`：20 组同义词域，确定性概念
+  embedder 让改写查询与 gold 词面零重叠。实测词法 recall@1 = **0.000** / MRR@5 = 0.037，
+  语义 recall@1 = 1.000 / recall@5 = 1.000 / MRR@5 = 1.000；断言语义 MRR 至少高出词法 0.5。
+- **D5 关系流水线覆盖率**：同一基准度量确定性后处理 —— 闭合谓词表 48/48 变体可归一、
+  未知谓词/空实体/密钥形态丢弃、同批重复归并、`relation_cap` 截断（30 条 ⇒ 8 条）。
+
+**被拒方案**：本轮直接建轻图（零真实关系数据，无法验证收益，且触碰后端协议）；
+引入本地 embedding 模型（违反零三方运行时依赖红线，2026-10-18 已裁）；required 默认开启
+（把现有「未知端点词汇降级」部署变成启动失败，破坏缺省兼容）；把 required 做成网络健康探测
+（与「密钥只引用不读取」纠缠，且启动期多一次不可控网络调用）。
+
+**验证**：新增 22 例（配置三面/校验 12 + 语义基准 4 + 多跳/覆盖 6）；反证 3/3；四门禁全绿；
+`openspec validate --all` 归档后 31/0。
+
+**局限**：多跳基准是**完美抽取**的合成链，不测 LLM 抽取召回/精度；邻接在测试内模拟，
+不代表真实存储/协议成本；概念 embedder 证明通路与量纲，不证明真实模型质量（须在线测量）；
+required 不保证端点可达；「真实关系为 0」基于 2026-10-18 的本机记忆快照，随部署变化。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10816,3 +10856,4 @@ busy 用例红（第二个实例扫描并执行）；② 打开失败改为 `acq
 | ADR-0276 | 05-development/unattended-ops.md, 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/durability-interface.md, 00-product/user-guide.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0277 | 04-testing/test-cases.md, coding-plan/README.md, coding-plan/phase-38.md, coding-plan/Pending-Arbitration.md, coding-plan/known-risk.md |
 | ADR-0278 | 03-interfaces/cli-ops-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0279 | 03-interfaces/configuration-interface.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |

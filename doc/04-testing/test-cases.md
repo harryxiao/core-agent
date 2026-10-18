@@ -4839,3 +4839,32 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > 规格中性（`skip_specs`，零 `src/` 行为改动）。测试净 **+2**（3199 → **3201**）。
 > 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3201 passed**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0278 行。
+
+## 201. 语义检索离线基准（TC-SEM-BENCH，change `0289`／ADR-0279，台账 E225）
+
+| 编号 | 覆盖 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-SEM-BENCH-01 | 词法基线 | 20 组同义词域；查询与 gold 词面零重叠、干扰共享 2 词 | recall@1 = 0、MRR@5 < 0.5（`test_lexical_ranking_misses_paraphrase`） |
+| TC-SEM-BENCH-02 | 语义通路 | 同一语料 + 确定性概念 embedder | recall@1 ≥ 0.9、recall@5 = 1.0、MRR@5 ≥ 0.9（`test_semantic_ranking_recovers_paraphrase`） |
+| TC-SEM-BENCH-03 | 增益裁决 | 同一查询集分别跑两个 store | 语义 MRR − 词法 MRR ≥ 0.5（`test_semantic_gain_over_lexical_is_large`） |
+| TC-SEM-BENCH-04 | 可复现性 | 两次构造概念表与向量 | 逐项一致（`test_benchmark_corpus_is_deterministic`） |
+
+> **实测（参考机）**：词法 `recall@1=0.000 recall@5=0.100 mrr@5=0.037`；语义
+> `recall@1=1.000 recall@5=1.000 mrr@5=1.000`。**局限**：假 embedder 只证明通路与量纲，
+> 真实模型质量须在线测量（见 §3 ADR-0279 行）。
+
+## 202. 多跳检索与关系流水线基准（TC-GRAPH-BENCH，change `0289`／ADR-0279，台账 E225）
+
+| 编号 | 覆盖 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-GRAPH-BENCH-01 | 扁平漏检 | 20 条链；查询只含首跳实体 | 第二跳 gold recall@5 = 0（`test_flat_retrieval_misses_second_hop`） |
+| TC-GRAPH-BENCH-02 | 2 跳邻接 | tags `entity:` 邻接 + 从查询实体 BFS 两跳 | 第二跳 gold recall@5 = 1（`test_one_hop_expansion_recovers_second_hop`） |
+| TC-GRAPH-BENCH-03 | 入口可定位 | 查询词元 ∩ `entity:` 标签 | 仅命中 `zNN`；首跳事实集合完全一致（`test_query_entity_resolves_to_first_hop_facts`） |
+| TC-GRAPH-BENCH-04 | 流水线覆盖 | 合法 + 未知谓词 + 空实体 + 重复 + 密钥形态 | 合法保留、其余按原因丢弃/归并（`test_relation_pipeline_coverage`） |
+| TC-GRAPH-BENCH-05 | 名额上限 | 30 条合法候选 | `relation_cap(30)=8`，保留 8 条（`test_relation_pipeline_respects_cap`） |
+| TC-GRAPH-BENCH-06 | 白名单完备 | `RELATION_PREDICATES` 全部变体 | 48/48 归一成功；未声明谓词拒绝（`test_predicate_allowlist_is_total_over_declared_variants`） |
+
+> **实测（参考机）**：`flat recall@5=0.000` / `graph recall@5=1.000`；
+> 流水线 `kept=8 candidates=30 cap=8`；白名单 `48/48`。
+> **裁决**：机制增益成立，但生产关系抽取缺省关、真实数据为 0 ⇒ 本轮**不建图**；
+> 轻图为重新开启时的既定形态。**局限**：完美抽取合成链，不测 LLM 抽取质量。

@@ -56,10 +56,18 @@
 **缺省 `true`**）：显式 `embedding_model` 永远优先；未显式配置且 `embedding_auto` 开启时，
 SHALL 按 `endpoint` 主机从**内置已知端点表**推导默认 embedding 模型（精确或子域匹配，
 大小写不敏感），表中未命中 SHALL 不推导（有效模型为空）；`embedding_auto` 关闭时 SHALL NOT
-推导。有效 embedding 模型为空或不可达时记忆检索回退词法，不影响启动；`embedding_auto`
+推导。`embedding_required` 关闭时，有效 embedding 模型为空或不可达时记忆检索回退词法，
+不影响启动；`embedding_auto`
 取值口径与 feature flag **同集**（原生布尔与 `true/false`·`yes/no`·`on/off`·`1/0`，大小写
 不敏感、忽略首尾空白），其余取值 SHALL **在校验期拒绝并阻断启动**（错误信息指明键名与
-合法取值），SHALL NOT 静默强转。并 SHALL 支持
+合法取值），SHALL NOT 静默强转。并 SHALL 支持**可选**子项 `embedding_required`
+（**缺省 `false`**）：开启时，若**有效 embedding 模型为空**（既未显式配置
+`embedding_model`，也未能按 `embedding_auto` 从端点推导），系统 SHALL 在**配置校验期**
+阻断启动并报明确错误（错误信息指明键名与可操作提示，SHALL NOT 回显 `endpoint` 或密钥）；
+显式模型或端点推导命中任一存在即视为满足。该开关只保证「模型已确定」，SHALL NOT 探测
+网络可达性——调用期失败仍按既有路径降级词法。`embedding_required` 取值口径与
+`embedding_auto` **同集**，其余取值 SHALL 在校验期拒绝并阻断启动，SHALL NOT 静默强转；
+关闭（缺省）时行为与引入前**逐字一致**。并 SHALL 支持
 **可选**子项 `context_window`（模型上下文窗口，正整数，`0` = 未配置）作为 token 预算的派生来源
 （派生口径见 loop「错误与预算控制」），未配置时 SHALL **按 `model` 从内置已知模型窗口表推导**
 （子串匹配，大小写不敏感），表中未命中 SHALL 回落内置缺省，不影响启动；并 SHALL 支持
@@ -104,17 +112,39 @@ SHALL 按 `endpoint` 主机从**内置已知端点表**推导默认 embedding �
   客户端注入 `MemoryStore`；显式 `embedding_model` 不被推导值覆盖
 
 #### Scenario: 未配置 embedding 模型回退词法
-- **GIVEN** llm 段未设置 `embedding_model`，且 `endpoint` 主机不在内置端点表内（如自建代理）
+- **GIVEN** llm 段未设置 `embedding_model`，`embedding_required` 关闭（缺省），且 `endpoint`
+  主机不在内置端点表内（如自建代理）
 - **WHEN** 系统启动装配记忆
 - **THEN** 有效 embedding 模型为空，记忆检索不注入 embedder，回退词法相似，启动不受影响
 
 #### Scenario: 关闭端点推导回退词法
-- **GIVEN** llm 段未设置 `embedding_model` 且 `embedding_auto` 显式关闭（`false`）
+- **GIVEN** llm 段未设置 `embedding_model`，`embedding_auto` 显式关闭（`false`），
+  且 `embedding_required` 关闭（缺省）
 - **WHEN** 系统启动装配记忆
 - **THEN** 有效 embedding 模型为空，记忆检索回退词法（与引入端点推导前逐字一致）
 
 #### Scenario: embedding_auto 取值归一与非法拒绝
 - **GIVEN** `llm.embedding_auto` 取值为原生布尔、`true/false`、`yes/no`、`on/off`、`1/0`
+  （大小写不敏感）
+- **WHEN** 系统加载配置
+- **THEN** 归一为开或关；取值为 `maybe` / 空串 / 映射时校验失败并阻断启动，错误信息指明
+  键名与合法取值，SHALL NOT 静默强转
+
+#### Scenario: embedding_required 空模型阻断启动
+- **GIVEN** `llm.embedding_required=true`，未显式配置 `embedding_model`，且 `endpoint` 主机
+  不在内置端点表内（有效模型为空）
+- **WHEN** 系统加载配置（含热更新 `apply_change`）
+- **THEN** 校验失败并阻断启动 / 拒绝该次热更新；错误信息指明 `llm.embedding_required`
+  与「有效 embedding 模型为空」，SHALL NOT 回显 `endpoint` 或密钥
+
+#### Scenario: embedding_required 有确定模型时正常启动
+- **GIVEN** `llm.embedding_required=true`，且显式配置了 `embedding_model`，或 `endpoint`
+  主机命中内置端点表（`embedding_auto` 开启）
+- **WHEN** 系统加载配置
+- **THEN** 校验通过并正常启动；该开关 SHALL NOT 触发网络可达性探测
+
+#### Scenario: embedding_required 取值归一与非法拒绝
+- **GIVEN** `llm.embedding_required` 取值为原生布尔、`true/false`、`yes/no`、`on/off`、`1/0`
   （大小写不敏感）
 - **WHEN** 系统加载配置
 - **THEN** 归一为开或关；取值为 `maybe` / 空串 / 映射时校验失败并阻断启动，错误信息指明

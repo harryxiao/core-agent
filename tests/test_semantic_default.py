@@ -15,7 +15,13 @@ from core.runtime import build_runtime
 _ENV = {"OPENAI_API_KEY": "sk-test"}
 
 
-def _llm(endpoint: str, *, embedding_model: str = "", embedding_auto: bool = True) -> LLMConfig:
+def _llm(
+    endpoint: str,
+    *,
+    embedding_model: str = "",
+    embedding_auto: bool = True,
+    embedding_required: bool = False,
+) -> LLMConfig:
     return LLMConfig(
         provider="zai",
         model="glm-5.3",
@@ -23,6 +29,7 @@ def _llm(endpoint: str, *, embedding_model: str = "", embedding_auto: bool = Tru
         api_key_ref="${K}",
         embedding_model=embedding_model,
         embedding_auto=embedding_auto,
+        embedding_required=embedding_required,
     )
 
 
@@ -164,6 +171,133 @@ def test_config_embedding_auto_invalid_blocks_startup(tmp_path, monkeypatch) -> 
 
     with pytest.raises(ConfigurationError, match="embedding_auto"):
         manager.load()
+
+
+# ---- embedding_required（change 0289） ----
+
+
+def _write_config_at(tmp_path, endpoint: str, llm_block: str) -> str:
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "llm:\n"
+        "  provider: zai\n"
+        "  model: glm-5.3\n"
+        f"  endpoint: {endpoint}\n"
+        "  api_key: ${OPENAI_API_KEY}\n" + llm_block,
+        encoding="utf-8",
+    )
+    return str(cfg)
+
+
+def test_config_embedding_required_defaults_false(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    manager = ConfigManager(yaml_path=_write_config(tmp_path, ""), environ=_ENV)
+
+    assert manager.load().llm.embedding_required is False
+
+
+def test_config_embedding_required_from_yaml(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    manager = ConfigManager(
+        yaml_path=_write_config(tmp_path, "  embedding_required: true\n"), environ=_ENV
+    )
+
+    assert manager.load().llm.embedding_required is True
+
+
+def test_config_embedding_required_from_env(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    manager = ConfigManager(
+        yaml_path=_write_config(tmp_path, ""),
+        environ={**_ENV, "CORE_LLM_EMBEDDING_REQUIRED": "yes"},
+    )
+
+    assert manager.load().llm.embedding_required is True
+
+
+def test_config_embedding_required_from_cli(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    manager = ConfigManager(
+        yaml_path=_write_config(tmp_path, ""),
+        environ=_ENV,
+        cli={"llm.embedding_required": "1"},
+    )
+
+    assert manager.load().llm.embedding_required is True
+
+
+def test_config_embedding_required_invalid_blocks_startup(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    manager = ConfigManager(
+        yaml_path=_write_config(tmp_path, "  embedding_required: maybe\n"), environ=_ENV
+    )
+
+    with pytest.raises(ConfigurationError, match="embedding_required"):
+        manager.load()
+
+
+def test_embedding_required_blocks_startup_when_effective_model_empty(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    manager = ConfigManager(
+        yaml_path=_write_config_at(
+            tmp_path, "https://example.com/v1", "  embedding_required: true\n"
+        ),
+        environ=_ENV,
+    )
+
+    with pytest.raises(ConfigurationError) as excinfo:
+        manager.load()
+
+    message = str(excinfo.value)
+    assert "embedding_required" in message
+    assert "example.com" not in message  # 不回显端点（更不回显密钥）
+
+
+def test_embedding_required_accepts_explicit_model(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    manager = ConfigManager(
+        yaml_path=_write_config_at(
+            tmp_path,
+            "https://example.com/v1",
+            "  embedding_model: custom-embed\n  embedding_required: true\n",
+        ),
+        environ=_ENV,
+    )
+
+    config = manager.load()
+
+    assert config.llm.effective_embedding_model == "custom-embed"
+
+
+def test_embedding_required_accepts_derived_model(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    manager = ConfigManager(
+        yaml_path=_write_config(tmp_path, "  embedding_required: true\n"), environ=_ENV
+    )
+
+    assert manager.load().llm.effective_embedding_model == "embedding-3"
+
+
+def test_embedding_required_off_keeps_lexical_fallback(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    manager = ConfigManager(
+        yaml_path=_write_config_at(tmp_path, "https://example.com/v1", ""), environ=_ENV
+    )
+
+    assert manager.load().llm.effective_embedding_model == ""
+
+
+def test_embedding_required_hot_update_to_empty_model_is_rejected(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    manager = ConfigManager(
+        yaml_path=_write_config(tmp_path, "  embedding_required: true\n"), environ=_ENV
+    )
+    manager.load()
+
+    with pytest.raises(ConfigurationError, match="embedding_required"):
+        manager.apply_change({"llm": {"endpoint": "https://example.com/v1"}})
 
 
 def test_hot_update_keeps_explicit_field_and_follows_endpoint(tmp_path, monkeypatch) -> None:

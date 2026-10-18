@@ -40,10 +40,16 @@
 **缺省词法相似** SHALL 按**词元 IDF 加权与文档长度归一**（BM25 口径）计算，SHALL NOT 对
 所有查询词元等权、SHALL NOT 忽略文档长度；得分 SHALL 按查询词元的 IDF 总和归一并以 1 为上界
 （与层结构权重同一量纲）。embedder 缺失或调用失败降级词法时 SHALL 使用同一 IDF/长度归一
-口径。组合根在**有效 embedding 模型为空**时（既未显式配置 `llm.embedding_model`，也未按
-`llm.embedding_auto` 从已知端点推导出模型）SHALL 在进程启动（CLI 入口）向 stderr 输出一次
-「词法匹配、语义检索未启用」的提示，SHALL NOT 每轮检索重复输出；有效模型来自端点推导时
-SHALL 输出一次「按端点自动选用 …（可用 `llm.embedding_model` 覆盖）」提示（不含端点与密钥）。
+口径。组合根在**有效 embedding 模型为空且 `llm.embedding_required` 关闭**时（既未显式配置
+`llm.embedding_model`，也未按 `llm.embedding_auto` 从已知端点推导出模型）SHALL 在进程启动
+（CLI 入口）向 stderr 输出一次「词法匹配、语义检索未启用」的提示，SHALL NOT 每轮检索重复输出；
+有效模型来自端点推导时 SHALL 输出一次「按端点自动选用 …（可用 `llm.embedding_model` 覆盖）」
+提示（不含端点与密钥）。`llm.embedding_required` **开启**时，有效模型为空 SHALL 在**配置
+校验期阻断启动**（由 configuration 规格承载），组合根 SHALL NOT 进入本提示面。
+
+`llm.embedding_required` 只保证「embedding 模型已确定」，SHALL NOT 探测网络可达性，
+SHALL NOT 改变**调用期**降级语义：注入的 embedder 调用失败时仍 SHALL 降级为同一 IDF/长度
+归一化的词法相似，检索不中断。
 
 命中条目的复用强化 SHALL **落盘持久化**：`reuse_count` 的递增 SHALL 写入持久后端
 （SHALL NOT 只存在于进程内）—— 因该计数经 `1 + log1p(reuse_count)` 与
@@ -105,7 +111,8 @@ SHALL 逐条写回（语义不变）。批量写 SHALL 与逐条写回**同一�
 - **THEN** 较短（词元长度更接近语料平均）的条目排在更前
 
 #### Scenario: 未配置 embedding 模型时启动提示
-- **GIVEN** `llm.embedding_model` 未配置，且 `embedding_auto` 关闭或端点未命中内置表
+- **GIVEN** `llm.embedding_model` 未配置，`embedding_required` 关闭（缺省），且
+  `embedding_auto` 关闭或端点未命中内置表
 - **WHEN** CLI 入口装配运行时
 - **THEN** stderr 输出一次「记忆检索使用词法匹配（语义检索未启用）」提示；有显式或推导模型时
   不输出该词法提示
@@ -116,6 +123,18 @@ SHALL 逐条写回（语义不变）。批量写 SHALL 与逐条写回**同一�
 - **WHEN** CLI 入口装配运行时
 - **THEN** 记忆注入以推导模型构造的 embedder（语义检索生效），stderr 输出一次「按端点自动
   选用 …」提示，且不输出词法降级提示
+
+#### Scenario: embedding_required 阻断空模型启动
+- **GIVEN** `llm.embedding_required=true`，未显式配置 `embedding_model`，且端点未命中内置表
+  （有效 embedding 模型为空）
+- **WHEN** 系统加载配置
+- **THEN** 校验期阻断启动；记忆装配与「词法匹配」启动提示均不进入（该路径不可达）
+
+#### Scenario: embedding_required 不改变调用期降级
+- **GIVEN** `llm.embedding_required=true` 且有效 embedding 模型非空，但远端调用
+  `/embeddings` 失败
+- **WHEN** 检索器计算相似度
+- **THEN** 仍降级为 IDF/长度归一化的词法相似，检索不中断（required 不探测可达性）
 
 #### Scenario: 复用强化批量落盘
 - **GIVEN** 一次检索选中多条条目，且后端提供批量写入口

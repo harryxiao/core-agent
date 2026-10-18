@@ -24,6 +24,7 @@ class LLMConfig:
     api_key_ref: str               # api_key 的 ${VAR} 引用（非明文）
     embedding_model: str = ""      # 用户显式向量化模型（空=未声明，见 effective_embedding_model）
     embedding_auto: bool = True    # 未显式声明时按端点推导默认模型（change 0271；false=关闭）
+    embedding_required: bool = False  # 有效模型为空时阻断启动（change 0289）
     context_window: int = 0        # 模型上下文窗口（可选；0=未配置，不派生预算 —— change 0098）
 
     @property
@@ -451,15 +452,20 @@ known_window(llm.model)  ──►  表命中 ⇒ 该族真实窗口（本 chang
   `MemoryStore(write_observer=...)`；关闭时注入面为 `None` / 空列表 ⇒ 既有路径逐字不变。
 - 口径来源：`doc/openspec/specs/hooks/spec.md`「钩子声明面」（change `0269` 实现）。
 
-### 2.14 embedding 模型端点推导（change `0271` / ADR-0261，台账 E207）
+### 2.14 embedding 模型端点推导与强制（change `0271` / ADR-0261、change `0289` / ADR-0279，台账 E207/E225）
 
 | 键 | 缺省 | 约束 | 说明 |
 |---|---|---|---|
 | `llm.embedding_auto` | **`true`** | 布尔（`true/false`·`yes/no`·`on/off`·`1/0`） | 未显式声明 `embedding_model` 时按端点表推导默认模型；非法值阻断启动 |
+| `llm.embedding_required` | **`false`** | 同上（与 `embedding_auto` 同集） | 开启时有效 embedding 模型为空 ⇒ **校验期阻断启动**；非法值阻断启动 |
 
 - **有效值属性**：`LLMConfig.effective_embedding_model` —— 显式 `embedding_model` 非空时恒用它；
   否则 `embedding_auto` 开启时按 `configuration/embedding_models.py::default_embedding_model(endpoint)`
   推导；开关关闭或端点未命中 ⇒ 空串。推导**不回写字段**，热更新基线仍取显式值（换端点自动跟随）。
+- **强制开关**（change `0289` / ADR-0279）：`llm.embedding_required` 开启时，
+  `ConfigManager.validate_schema` 在有效值为空时追加错误并阻断 `load()` / `apply_change()`；
+  错误只含键名与可操作提示，**不回显 endpoint / 密钥**。该开关只断言「模型已确定」，
+  **不探测网络可达性**：调用期失败仍按既有路径降级词法（见 memory 接口）。
 - **端点表**：静态、小而有据（`api.openai.com` → `text-embedding-3-small`、`open.bigmodel.cn` →
   `embedding-3`、`dashscope.aliyuncs.com` → `text-embedding-v3`、`api.siliconflow.cn` →
   `BAAI/bge-m3`），按主机名精确或子域匹配；未命中不猜。表不引入配置键，不是第二真源。

@@ -127,6 +127,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "llm.embedding_required",
+        "--llm.embedding-required",
+        "CORE_LLM_EMBEDDING_REQUIRED",
+        default="false",
+        map_to="llm.embedding_required",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "im.gateway",
         "--im.gateway",
         "CORE_IM_GATEWAY",
@@ -657,6 +665,12 @@ class ConfigManager:
         ):
             if not value:
                 errors.append(f"缺失 LLM 配置项: llm.{key}")
+        if config.llm.embedding_required and not config.llm.effective_embedding_model:
+            errors.append(
+                "llm.embedding_required=true 但有效 embedding 模型为空："
+                "请显式设置 llm.embedding_model，或启用 llm.embedding_auto 并使用内置端点表"
+                "支持的端点（不回显端点取值）"
+            )
         perm = cast("dict[str, Any]", config.extra.get("permission") or {})
         mode = str(perm.get("mode", _DEFAULT_PERMISSION_MODE))
         if mode not in _PERMISSION_MODES:
@@ -1394,6 +1408,7 @@ class ConfigManager:
             reasoning_effort=_opt_str(llm_raw.get("reasoning_effort")),
             embedding_model=str(llm_raw.get("embedding_model", "")),
             embedding_auto=_llm_embedding_auto(llm_raw),
+            embedding_required=_llm_embedding_required(llm_raw),
             context_window=_llm_context_window(llm_raw),
             show_thinking=_llm_show_thinking(llm_raw),
             timeout=_llm_timeout(llm_raw),
@@ -1553,6 +1568,26 @@ def _llm_embedding_auto(raw: dict[str, Any]) -> bool:
         return False
     raise ConfigurationError(  # noqa: TRY003
         f"非法 embedding 自动推导开关: llm.embedding_auto={value!r}"
+        "（须为布尔或 true/false、yes/no、on/off、1/0）"
+    )
+
+
+def _llm_embedding_required(raw: dict[str, Any]) -> bool:
+    """llm 段 `embedding_required` 解析（构建前阻断，取值口径与 feature flag 同集）。
+
+    缺省 ``False``（有效 embedding 模型为空时回退词法，与引入前逐字一致）。
+    非法取值当场拒绝 —— 放行 ``maybe`` 会把配置笔误静默当作**强制**。
+    """
+    value = raw.get("embedding_required", False)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in _FEATURE_TRUE:
+        return True
+    if text in _FEATURE_FALSE:
+        return False
+    raise ConfigurationError(  # noqa: TRY003
+        f"非法 embedding 强制开关: llm.embedding_required={value!r}"
         "（须为布尔或 true/false、yes/no、on/off、1/0）"
     )
 
@@ -1982,6 +2017,7 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
         "reasoning_effort": config.llm.reasoning_effort,
         "embedding_model": config.llm.embedding_model,
         "embedding_auto": config.llm.embedding_auto,
+        "embedding_required": config.llm.embedding_required,
         "context_window": config.llm.context_window,
         "show_thinking": config.llm.show_thinking,
     }
@@ -2022,6 +2058,7 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
             reasoning_effort=_opt_str(llm_raw.get("reasoning_effort")),
             embedding_model=str(llm_raw.get("embedding_model", "")),
             embedding_auto=_llm_embedding_auto(llm_raw),
+            embedding_required=_llm_embedding_required(llm_raw),
             context_window=_llm_context_window(llm_raw),
             show_thinking=_llm_show_thinking(llm_raw),
             timeout=_llm_timeout(llm_raw),

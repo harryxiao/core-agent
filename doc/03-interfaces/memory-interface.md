@@ -211,6 +211,11 @@ def relevance(entry, query, embedder=None, *, stats=None) -> float:
   ``Embedder.embed``）经 ``memory/embedding.py::batch_embed`` 适配；memory **不依赖 rag**。
 - **向量缓存**：``read`` 对 query **至多向量化一次**；条目按 ``content`` 哈希缓存向量，
   内容未变即复用；缓存**进程内易失**（不落盘）。
+- **强制与降级的边界**（change `0289` / ADR-0279）：``llm.embedding_required=true`` 只在
+  **配置校验期**要求有效模型非空（空则阻断启动，见 configuration 接口）；它**不**探测可达性，
+  也**不**改变本节的调用期降级——远端 ``/embeddings`` 失败仍降级 BM25 词法、检索不中断。
+  语义 vs 词法的离线基准见 ``tests/test_semantic_benchmark.py``；多跳/关系流水线基准见
+  ``tests/test_memory_graph_benchmark.py``（均只测通路与量纲，不测真实模型质量）。
 - **复用强化**：命中条目 ``reuse_count`` 递增并**写回持久后端**（change 0187 / ADR-0178）——
   ``read`` 是**有副作用的读**（副作用**有界**：只覆盖进入预算的**选中**条目；非选中候选不写、不强化），
   每条写回记**可撤销效应**（``op="memory.reuse"``，``trace_id="reuse.<entry_id>"``，undo **还原**
