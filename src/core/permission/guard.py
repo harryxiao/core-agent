@@ -27,9 +27,11 @@ class PermissionGuard(SafetyGate):
         mode: PermissionMode | str = PermissionMode.INTERACTIVE,
         *,
         guardrail: Guardrail | None = None,
+        allowed_coeffects: frozenset[str] | None = None,
     ) -> None:
         self._gate = PermissionModeGate(
-            mode if isinstance(mode, PermissionMode) else PermissionMode.from_config(mode)
+            mode if isinstance(mode, PermissionMode) else PermissionMode.from_config(mode),
+            allowed_coeffects=allowed_coeffects,
         )
         self._mode = self._gate.mode  # 模式构造后不变（无 setter），记下供 confirm 分支读取
         self._guardrail = guardrail

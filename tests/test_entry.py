@@ -705,7 +705,12 @@ def _patch_runtime(  # noqa: PLR0913 — 测试桩装配参数组（checkpoints/
         recover=lambda: handles or [],  # 启动扫描：未完成任务句柄（change 0191）
         recover_turns=lambda: [],  # 启动扫描：中止的会话轮（change 0214）；空 ⇒ 无轮面呈现
         # 自动续跑（change 0278）：缺省关 ⇒ 既有路径不触发续跑；扫描为空
-        config=SimpleNamespace(orchestration_auto_resume=lambda: False),
+        config=SimpleNamespace(
+            orchestration_auto_resume=lambda: False,
+            # 无人值守护栏（change 0280）：缺省关 ⇒ 既有路径逐字不变
+            orchestration_task_timeout=lambda: 0,
+            orchestration_failure_notify_file=lambda: "",
+        ),
         pending_resumes=lambda: [],
     )
     monkeypatch.setattr("core.entry.build_runtime", lambda config: runtime)

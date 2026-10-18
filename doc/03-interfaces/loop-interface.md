@@ -93,6 +93,9 @@ class LoopResult:
     failed: bool = False        # 成败信号（目标未达成/异常终止/预算耗尽/推理产出不可用）
     raw_output: str = ""        # 推理产出不可解析时的**原始文本**（有界；缺省空）。仅供呈现层
                                 # 折叠查看与 trace 留痕，SHALL NOT 进转录/记忆/笔记（change 0170 / ADR-0161）
+    token_used: int = 0         # 本轮收尾的 token 记账（**上下文估算**，口径同错误与预算控制）。
+                                # 只读输出，供编排层累计整任务预算；不参与循环自身预算判定
+                                # （change 0280 / ADR-0270）
 
 @dataclass
 class LoopEvent:

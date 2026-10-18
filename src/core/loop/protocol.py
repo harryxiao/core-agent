@@ -35,6 +35,9 @@ class LoopResult:
     # 推理产出不可解析时的**原始文本**（有界；缺省空）。仅供呈现层折叠查看与 trace 留痕，
     # SHALL NOT 进入转录 / 记忆 / 笔记（见 change 0170 / ADR-0161）。
     raw_output: str = ""
+    # 本轮收尾时的 token 记账（上下文估算，口径同「错误与预算控制」；change 0280）。
+    # 供编排层累计整任务预算，只读输出，不参与循环自身的预算判定。
+    token_used: int = 0
 
 
 @dataclass

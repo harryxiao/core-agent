@@ -247,6 +247,9 @@ class TaskScheduler:
         # 子任务交接超时（秒；`0` = 不设限）。构造缺省保持 `0`（不注入即不改变行为）；
         # 配置缺省 `600` 由组合根显式注入（change 0247 / 0260）。
         subtask_timeout: float = 0,
+        # 整任务 token 预算（change 0280）：构造缺省 `0` = 关闭（不注入即不改变行为）；
+        # 生产由组合根注入配置值。
+        task_token_budget: int = 0,
         success_checker: SuccessChecker | None = None,
         checkpoint: CheckpointFn | None = None,
         on_done: DoneFn | None = None,
@@ -267,6 +270,11 @@ class TaskScheduler:
                 OrchestrationErrorCode.INVALID_DISPATCH_POLICY,
                 f"非法子任务超时: {subtask_timeout}（须为 ≥0 的秒数，0=不设限）",
             )
+        if task_token_budget < 0:
+            raise OrchestrationError(
+                OrchestrationErrorCode.INVALID_DISPATCH_POLICY,
+                f"非法整任务 token 预算: {task_token_budget}（须为 ≥0，0=关闭）",
+            )
         self._decomposer = decomposer
         self._router = router
         self._state_machine = state_machine
@@ -274,11 +282,14 @@ class TaskScheduler:
         self._max_concurrency = max_concurrency
         self._difficulty_policy = difficulty_policy
         self._subtask_timeout = subtask_timeout
+        self._task_token_budget = task_token_budget
         self._success_checker = success_checker
         self._checkpoint = checkpoint
         self._on_done = on_done
         self._tracer = tracer
         self._results: dict[str, dict[str, str]] = {}  # task_id → subtask_id → 验收通过的回复
+        # 整任务 token 累计（change 0280）：task_id → 各子任务 `LoopResult.token_used` 之和。
+        self._task_tokens: dict[str, int] = {}
         # 运行中取消 / 断流登记（change 0249）：取消信号与当前波次的扇出任务，终态释放。
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._wave_tasks: dict[str, asyncio.Task[list[SubtaskOutcome]]] = {}
@@ -470,6 +481,19 @@ class TaskScheduler:
                 )
                 yield LoopEvent("task_finished", {"task_id": task_id, "outcomes": outcomes})
                 return
+            if failure.code is OrchestrationErrorCode.TASK_TOKEN_BUDGET_EXCEEDED:
+                # 预算耗尽不重拆（change 0280）：新计划仍受同一累计值约束。
+                self._state_machine.transition(task_id, TaskState.FAILED)
+                yield self._failed(
+                    task_id,
+                    failure.code,
+                    failure.reason,
+                    extra={
+                        "token_used": self._task_tokens.get(task_id, 0),
+                        "token_budget": self._task_token_budget,
+                    },
+                )
+                return
             if plan.replans >= _MAX_REPLANS:
                 self._state_machine.transition(task_id, TaskState.FAILED)
                 yield self._failed(
@@ -542,6 +566,18 @@ class TaskScheduler:
         self._tracker.reset(task_id)
         self._results.pop(task_id, None)
 
+    def _record_tokens(self, task_id: str, tokens: int) -> bool:
+        """累计子任务 token 记账；返回本次累计是否达到正预算（change 0280）。
+
+        预算为 `0` ⇒ 不记账、恒返回 False（关闭即零行为变化）。并发波次按各子任务
+        **完成时**累加，可能小幅越过预算（不做跨协程预留）。
+        """
+        if self._task_token_budget <= 0:
+            return False
+        used = self._task_tokens.get(task_id, 0) + max(0, tokens)
+        self._task_tokens[task_id] = used
+        return used >= self._task_token_budget
+
     def _is_cancelled(self, task_id: str) -> bool:
         event = self._cancel_events.get(task_id)
         return event is not None and event.is_set()
@@ -575,6 +611,7 @@ class TaskScheduler:
         if wave_task is not None and not wave_task.done():
             wave_task.cancel()
         self._results.pop(task_id, None)
+        self._task_tokens.pop(task_id, None)
         if self._state_machine.state(task_id) in (TaskState.DONE, TaskState.FAILED):
             return
         self._state_machine.transition(task_id, TaskState.FAILED)
@@ -649,6 +686,13 @@ class TaskScheduler:
         outcomes = _merge_outcomes(result.outcomes, wave_outcomes)
         self._state_machine.transition(task_id, TaskState.VERIFYING)
         failure = _failure_from(wave_outcomes)
+        if (
+            failure is not None
+            and failure.code is OrchestrationErrorCode.TASK_TOKEN_BUDGET_EXCEEDED
+        ):
+            # 预算耗尽不重试（change 0280）：重试只会继续烧预算。
+            result.outcomes, result.failure = outcomes, failure
+            return
         if failure is not None:
             self._state_machine.transition(task_id, TaskState.EXECUTING)
             retried: list[SubtaskOutcome] = []
@@ -948,6 +992,34 @@ class TaskScheduler:
             result = await collect_result(
                 stream, lambda event: self._emit_progress(task_id, subtask.id, event, emit)
             )
+            if self._record_tokens(task_id, result.token_used):
+                # 整任务预算耗尽（change 0280）：即使验收本可通过也 fail-closed；
+                # 调度器不在重试/重拆回路里再烧预算（见 _execute_wave / _stream_task）。
+                reason = (
+                    f"任务 {task_id} token 预算耗尽"
+                    f"（{self._task_tokens.get(task_id, 0)}/{self._task_token_budget}）"
+                )
+                emit(
+                    LoopEvent(
+                        "subtask_completed",
+                        {
+                            "task_id": task_id,
+                            "subtask_id": subtask.id,
+                            "ok": False,
+                            "reason": reason,
+                            "trace_id": result.trace_id,
+                            "attempt": attempt,
+                        },
+                    )
+                )
+                return SubtaskOutcome(
+                    subtask.id,
+                    ok=False,
+                    error=OrchestrationErrorCode.TASK_TOKEN_BUDGET_EXCEEDED,
+                    reason=reason,
+                    trace_id=result.trace_id,
+                    attempt=attempt,
+                )
             verify = await self._decomposer.verify(subtask, result.reply)
             self._trace(
                 task_id,

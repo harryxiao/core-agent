@@ -861,6 +861,7 @@ class DefaultLoop(Plugin):
                 trace_id=trace_id,
                 failed=bool(limit_reason) or turn_failed,
                 raw_output=raw_output,
+                token_used=ctx.token_used,
             ),
         )
 

@@ -240,7 +240,12 @@ def _runtime(orch: _Orch, resumes: list[TaskResume], *, auto: bool) -> SimpleNam
     return SimpleNamespace(
         orchestrator=orch,
         pending_resumes=lambda: list(resumes),
-        config=SimpleNamespace(orchestration_auto_resume=lambda: auto),
+        config=SimpleNamespace(
+            orchestration_auto_resume=lambda: auto,
+            # 无人值守护栏（change 0280）：缺省关 ⇒ 既有路径逐字不变
+            orchestration_task_timeout=lambda: 0,
+            orchestration_failure_notify_file=lambda: "",
+        ),
         recover=lambda: [],
         recover_turns=lambda: [],
     )

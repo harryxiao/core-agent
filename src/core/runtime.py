@@ -657,6 +657,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     guard = PermissionGuard(
         mode=config.permission_mode(),
         guardrail=Guardrail(router) if jev is not None else None,
+        # 无人值守允许面（change 0280）：空配置 ⇒ None（全放行，与引入前逐字一致）。
+        allowed_coeffects=frozenset(config.permission_auto_approve_coeffects()) or None,
     )
     backend = memory_backend if memory_backend is not None else FileBackend(_memory_path())
     effect_tracker = EffectTracker()
@@ -1495,6 +1497,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         difficulty_policy=config.orchestration_difficulty_policy(),
         # 子任务交接超时（change 0247）：0 = 不设限（不接线则不暴露，故必须显式传）。
         subtask_timeout=config.orchestration_subtask_timeout(),
+        # 整任务 token 预算（change 0280）：0 = 关闭（与引入前行为一致）。
+        task_token_budget=config.orchestration_task_token_budget(),
         # 任务级判定器（change 0248）：与 planner 生成标准同批落地，缺省开启。
         success_checker=LLMTaskVerifier(llm, model=app.llm.model),
         checkpoint=_checkpoint,

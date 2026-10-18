@@ -76,7 +76,7 @@ from core.notes import (
     render_note,
     slug_topic,
 )
-from core.orchestration import Plan, TaskScheduler, plan_from_dict
+from core.orchestration import OrchestrationErrorCode, Plan, TaskScheduler, plan_from_dict
 from core.orchestration.auto_resume import AutoResumeState
 from core.permission import (
     ApprovalChannel,
@@ -2130,16 +2130,88 @@ async def _stream(api: UIAPILayer, session_id: str, prompt: str) -> None:
         print(f"[{event.type}] {payload}")
 
 
+# 失败通知正文上界（change 0280）：reason / goal 逐字段截断，避免通知文件被单条正文撑大。
+_NOTIFY_TEXT_CHARS = 500
+
+
+def _notify_failure(  # noqa: PLR0913 — 通知字段均为 keyword-only（缺省空路径即关闭）
+    path: str, *, task_id: str, session_id: str, goal: str, code: str, reason: str
+) -> None:
+    """无人值守失败通知：向 JSONL sink 追加一行（change 0280 / ADR-0270）。
+
+    - `path` 为空 ⇒ 关闭（零 I/O，与引入前一致）。
+    - `reason` / `goal` 经 `redact_secrets` 且截断；`task_id` / `session_id` 原样。
+    - 新建文件 `0600`；写失败只 stderr 告警，**不改变任务结局**。
+    """
+    if not path:
+        return
+    target = Path(path).expanduser()
+    payload = {
+        "ts": time.time(),
+        "event": "task_failed",
+        "task_id": task_id,
+        "session_id": session_id,
+        "code": code,
+        "reason": redact_secrets(reason)[:_NOTIFY_TEXT_CHARS],
+        "goal": redact_secrets(goal)[:_NOTIFY_TEXT_CHARS],
+    }
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        print(
+            f"⚠ 失败通知写入失败: {target}（{exc.__class__.__name__}）",
+            file=sys.stderr,
+        )
+
+
+async def _run_task_stream(  # noqa: PLR0913, PLR0917 — 与 _stream_task 同注入面 + 时限/通知
+    orchestrator: TaskScheduler,
+    task_id: str,
+    goal: str,
+    plan: Plan | None,
+    completed: set[str] | None,
+    results: dict[str, str] | None,
+    session_id: str = "",
+    *,
+    timeout: float = 0,
+    notify_file: str = "",
+) -> bool:
+    """按整任务时限驱动 `_stream_task`（`timeout <= 0` = 不设限；change 0280）。
+
+    超时经 `asyncio.wait_for` 取消完整任务流；调度器 `astream` 的 `finally` 照常
+    释放上下文并保留最近一次波次检查点。超时异常由调用方捕获并写 `TASK_TIMEOUT` 通知。
+    """
+    stream = _stream_task(
+        orchestrator,
+        task_id,
+        goal,
+        plan,
+        completed,
+        results,
+        session_id,
+        notify_file=notify_file,
+    )
+    if timeout <= 0:
+        return await stream
+    return await asyncio.wait_for(stream, timeout)
+
+
 def _run_auto_resume(runtime: Runtime, *, force: bool) -> bool:
     """续跑未完成编排任务；返回是否有任务续跑失败（change 0278 / ADR-0268）。
 
     ``force``（`task --resume-all`）不受退避与尝试上限约束；自动模式在失败后退避。
     尝试次数**执行前**落盘（进程中途崩溃也已计入上限）；成功清零，失败保留检查点。
+    每个任务独立施加整任务时限与失败通知（change 0280）。
     """
     resumes = runtime.pending_resumes()
     if not resumes:
         print("无未完成任务（续跑扫描为空）", file=sys.stderr)
         return False
+    timeout = runtime.config.orchestration_task_timeout()
+    notify_file = runtime.config.orchestration_failure_notify_file()
     state = AutoResumeState(_state_path("auto-resume.json"))
     state.retain({resume.task_id for resume in resumes})
     failed = False
@@ -2152,17 +2224,35 @@ def _run_auto_resume(runtime: Runtime, *, force: bool) -> bool:
             )
             continue
         state.record_attempt(resume.task_id)
-        task_failed = asyncio.run(
-            _stream_task(
-                runtime.orchestrator,
-                resume.task_id,
-                resume.goal,
-                resume.plan,
-                set(resume.completed),
-                dict(resume.results),
-                resume.session_id,
+        try:
+            task_failed = asyncio.run(
+                _run_task_stream(
+                    runtime.orchestrator,
+                    resume.task_id,
+                    resume.goal,
+                    resume.plan,
+                    set(resume.completed),
+                    dict(resume.results),
+                    resume.session_id,
+                    timeout=timeout,
+                    notify_file=notify_file,
+                )
             )
-        )
+        except TimeoutError:
+            failed = True
+            _notify_failure(
+                notify_file,
+                task_id=resume.task_id,
+                session_id=resume.session_id,
+                goal=resume.goal,
+                code=OrchestrationErrorCode.TASK_TIMEOUT.value,
+                reason=f"任务超过 {timeout}s 未完成，已终止",
+            )
+            print(
+                f"⚠ 续跑超时 {resume.task_id}：检查点保留，退避后自动重试",
+                file=sys.stderr,
+            )
+            continue
         if task_failed:
             failed = True
             print(
@@ -2174,7 +2264,7 @@ def _run_auto_resume(runtime: Runtime, *, force: bool) -> bool:
     return failed
 
 
-def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, C901 — 入口校验天然多早退/多分支
+def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR0915, C901 — 入口校验天然多早退/多分支
     """多任务编排入口：拆解 → 波次执行 → 验收，流式打印进度事件。
 
     非交互入口：无审批通道，高风险工具动作 fail-closed（与 run/serve 一致）。
@@ -2245,9 +2335,38 @@ def _task(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, C901 — 
     if not goal:
         print("缺少任务目标（检查点未携带且未给定 <目标>）", file=sys.stderr)
         return 1
-    failed = asyncio.run(
-        _stream_task(runtime.orchestrator, task_id, goal, plan, completed, results, session_id)
-    )
+    timeout = runtime.config.orchestration_task_timeout()
+    notify_file = runtime.config.orchestration_failure_notify_file()
+    try:
+        failed = asyncio.run(
+            _run_task_stream(
+                runtime.orchestrator,
+                task_id,
+                goal,
+                plan,
+                completed,
+                results,
+                session_id,
+                timeout=timeout,
+                notify_file=notify_file,
+            )
+        )
+    except TimeoutError:
+        # 整任务墙钟超时（change 0280）：调度器已保留最近波次检查点，可 `--resume` 续跑。
+        print(
+            f"[task_timeout] 任务 {task_id} 超过 {timeout}s 未完成，已终止"
+            "（检查点保留，可用 task --resume 续跑）",
+            file=sys.stderr,
+        )
+        _notify_failure(
+            notify_file,
+            task_id=task_id,
+            session_id=session_id,
+            goal=goal,
+            code=OrchestrationErrorCode.TASK_TIMEOUT.value,
+            reason=f"任务超过 {timeout}s 未完成，已终止",
+        )
+        return 1
     return 1 if failed else 0
 
 
@@ -2259,8 +2378,14 @@ async def _stream_task(  # noqa: PLR0913, PLR0917 — 续跑注入面参数组
     completed: set[str] | None,
     results: dict[str, str] | None,
     session_id: str = "",
+    *,
+    notify_file: str = "",
 ) -> bool:
-    """流式驱动编排器并打印进度事件；返回是否终态失败（task_failed）。"""
+    """流式驱动编排器并打印进度事件；返回是否终态失败（task_failed）。
+
+    `notify_file` 非空 ⇒ 终态失败时追加一行失败通知；取消（`TASK_CANCELLED`）**不通知**
+    —— 主动取消不是无人值守场景的告警（change 0280）。
+    """
     failed = False
     async for event in orchestrator.astream(
         task_id, goal, plan=plan, completed=completed, results=results, session_id=session_id
@@ -2270,6 +2395,17 @@ async def _stream_task(  # noqa: PLR0913, PLR0917 — 续跑注入面参数组
             print(line)
         if event.type == "task_failed":
             failed = True
+            payload = cast("dict[str, Any]", event.payload)
+            code = str(payload.get("code", "") or "")
+            if code != OrchestrationErrorCode.TASK_CANCELLED.value:
+                _notify_failure(
+                    notify_file,
+                    task_id=task_id,
+                    session_id=session_id,
+                    goal=goal,
+                    code=code,
+                    reason=str(payload.get("reason", "")),
+                )
     return failed
 
 

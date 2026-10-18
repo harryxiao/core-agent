@@ -27,6 +27,9 @@ class OrchestrationErrorCode(StrEnum):
     MISSING_SUCCESS_CHECKER = "MISSING_SUCCESS_CHECKER"
     TASK_CANCELLED = "TASK_CANCELLED"
     BACKGROUND_TASKS_FULL = "BACKGROUND_TASKS_FULL"
+    # 无人值守护栏（change 0280）：整任务墙钟超时 / token 预算耗尽。
+    TASK_TIMEOUT = "TASK_TIMEOUT"
+    TASK_TOKEN_BUDGET_EXCEEDED = "TASK_TOKEN_BUDGET_EXCEEDED"
 
 
 class OrchestrationError(Exception):

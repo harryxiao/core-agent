@@ -4533,3 +4533,49 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3055 passed**。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0269 行（多进程误标 / 64 条有界 /
 > 不恢复 reply / 脱敏后重入队 / 不加密）。
+
+## 192. 无人值守 profile（TC-UNATT，change `0280`／ADR-0270，台账 E216）
+
+> 覆盖 `configuration`「无人值守配置项」（ADDED，4 scen）、`permission`「自动放行的 coeffect
+> 允许面」（ADDED，5 scen）、`orchestration`「整任务时限与 token 预算」/「任务失败通知 sink」
+> （ADDED，5+5 scen）、`loop`「执行结果透出本轮 token 记账」（ADDED，2 scen）。
+> 测试文件 `tests/test_unattended.py`（新，37 例）。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-UNATT-01 | 四项配置三面 | `config_specs` / yaml / env | 4 个 key 的 CLI/env/config 名齐备（`test_specs_declare_unattended_keys`） |
+| TC-UNATT-02 | 缺省全关 | 无配置文件 | `"" / 0 / 0 / ""`（`test_defaults_are_all_off`） |
+| TC-UNATT-03 | 允许面规范化 | yaml 逗号/全角逗号/重复项 | 去空白、去重、保序（`test_values_from_yaml_and_allowlist_normalization`） |
+| TC-UNATT-04 | 校验 fail-fast | 非法 `task_timeout` / `token_budget` / 条目 / 非字符串路径 | 均 `ConfigurationError`，启动阻断（`test_invalid_*_blocks_startup`） |
+| TC-UNATT-05 | Scenario「声明子集放行」 | gate(auto, {fs:write}) + `["filesystem:write"]` | 放行（`test_auto_approve_allowlist_permits_declared_subset`） |
+| TC-UNATT-06 | Scenario「越界拒绝」 | gate(auto, {fs:write}) + `["network:outbound"]` | `PERMISSION_DENIED`（`test_auto_approve_allowlist_denies_outside`） |
+| TC-UNATT-07 | Scenario「全含判定」 | 声明 `[fs:write, network:outbound]`，白名单只含其一 | 拒绝，消息列出越界项（`test_auto_approve_allowlist_requires_all_declared_coeffects`） |
+| TC-UNATT-08 | Scenario「空值不限制」 | `allowed_coeffects=()` / `None` | 全放行（`test_empty_allowlist_keeps_full_release`） |
+| TC-UNATT-09 | Scenario「非 auto 忽略」 | `HIGH_RISK_BLOCK` + 白名单 | 按风险等级裁决，不看白名单（`test_allowlist_ignored_outside_auto_approve`） |
+| TC-UNATT-10 | 确认门顺序 | `PermissionGuard(auto, {fs:write})` + 越界 | 直接 deny，不进 auto 放行（`test_guard_denies_before_automatic_pass`） |
+| TC-UNATT-11 | 组合根接线 | `build_runtime` | `orchestrator._task_token_budget` 与 `loop._gate` 白名单取配置值（`test_runtime_wires_allowlist_and_token_budget`） |
+| TC-UNATT-12 | token 记账 | `LoopResult()` / `DefaultLoop().arun` | 缺省 0；真实执行 >0（`test_loop_result_token_used_default_and_filled`） |
+| TC-UNATT-13 | Scenario「预算耗尽即失败」 | 2 子任务 × 60，预算 100 | `TASK_TOKEN_BUDGET_EXCEEDED`、各执行 1 次（无重试）、拆解 1 次（无重拆）、`FAILED`（`test_token_budget_exceeded_fails_without_retry_or_replan`） |
+| TC-UNATT-14 | 零预算不限 | 预算 0 + 巨量记账 | 两子任务 `ok`、`DONE`（`test_zero_budget_does_not_change_outcome`） |
+| TC-UNATT-15 | 负预算拒绝 | `task_token_budget=-1` | 构造期 `OrchestrationError`（`test_negative_token_budget_rejected`） |
+| TC-UNATT-16 | Scenario「失败追加 JSONL」 | canary 正文 + 两次调用 | 两行；canary 被替换；文件 `0600`（`test_notify_failure_appends_redacted_jsonl`） |
+| TC-UNATT-17 | 空路径关闭 | `path=""` | 无 I/O、不抛（`test_notify_failure_empty_path_is_noop`） |
+| TC-UNATT-18 | Scenario「失败即通知」 | `_stream_task(notify_file=...)` + 失败事件 | 一行 `task_failed`（`test_stream_task_notifies_on_failure`） |
+| TC-UNATT-19 | Scenario「取消不通知」 | 终态 `TASK_CANCELLED` | 文件不产生（`test_stream_task_does_not_notify_cancellation`） |
+| TC-UNATT-20 | Scenario「整任务超时」 | `_run_task_stream(timeout=0.01)` + 挂起流 | 抛 `TimeoutError`（`test_run_task_stream_enforces_timeout`） |
+| TC-UNATT-21 | 零时限不限 | `timeout=0` | 正常返回（`test_run_task_stream_zero_timeout_is_unlimited`） |
+| TC-UNATT-22 | CLI 超时分支 | `_task` + 超时 + `notify_file` | 退出码 1、`[task_timeout]`、通知 `TASK_TIMEOUT`（`test_task_timeout_returns_nonzero_and_notifies`） |
+| TC-UNATT-23 | 续跑超时分支 | `_run_auto_resume` + 超时 | 返回 True（保留检查点）、通知 `TASK_TIMEOUT`（`test_auto_resume_timeout_keeps_checkpoint_and_notifies`） |
+
+> **口径**：四项配置缺省全关 ⇒ 引入前行为逐字不变；允许面严格全含、只在 `auto-approve`
+> 生效、空值不限制；墙钟在 CLI `task` 入口（`wait_for` 包整条流），超时保留最近波次检查点；
+> token 预算按 `LoopResult.token_used`（上下文估算）累计，越界禁重试禁重拆；通知脱敏、
+> 逐字段 500 字符、0600、写失败不改变结局、排除 `TASK_CANCELLED`。
+> **反证 3/3**：① 摘允许面判定 ⇒ TC-05/06/07/11 红；② 摘预算短路 ⇒ TC-13 红（DID NOT RAISE）；
+> ③ 摘通知脱敏 ⇒ TC-16 红；复原 `md5sum` 一致（policy.py / scheduler.py / entry.py）。
+> 规格：`configuration`+`permission`+`orchestration`+`loop` ADDED（4+5+5+5 scen）。
+> `validate --all` 31/0（归档后）。
+> 测试净 **+37**（3055 → **3092**）。
+> 四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、`pytest -q` **3092 passed**。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0270 行（记账非账单 / 中间波次续跑 /
+> 墙钟仅 CLI / 本地文件 / 插件少报 coeffect）。

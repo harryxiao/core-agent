@@ -10125,6 +10125,67 @@ change `0191` 起按 durability「崩溃恢复」只**呈现**未完成任务（
 ④ 跨重启重入队使用脱敏后的任务正文，密钥形态子串会被 `REDACTED` 替换（原值本就不应入状态
 文件）；⑤ 状态文件按文件系统权限保护，不加密。
 
+## ADR-0270：无人值守 profile（整任务时限/预算 + 允许面 + 失败通知）（change 0280 / 台账 E216）
+
+**背景**：长任务无人值守（CI / 定时 / 无人在屏前）需要三样东西：① 无人审批时的**放行面不能
+无限**——`auto-approve` 当前全放行，一次误配置即把全部 coeffect 交给模型；② 任务可以**跑飞**
+（墙钟无限、token 无限）；③ 失败**无人知晓**。三项都不引入新权限模式，而是在既有
+`auto-approve` 上组合可关闭的旋钮，缺省值逐字保持引入前行为。
+
+**决策**：
+
+- **D1 profile 即组合，不新增模式**：无人值守 = `permission.mode=auto-approve` +
+  可选 `permission.auto_approve_coeffects` + 可选 `orchestration.task_timeout` /
+  `task_token_budget` + 可选 `orchestration.failure_notify_file`。四项缺省 `"" / 0 / 0 / ""`
+  ⇒ 全部关闭；不改变 `serve` / TUI / 编程式调用的语义（墙钟只在 CLI `task` 入口施加）。
+- **D2 允许面严格全含、只在 auto-approve 生效**：`PermissionModeGate.authorize` 在
+  `AUTO_APPROVE` 顶部短路内、放行前检查**声明的全部** coeffect ⊆ 白名单；任一越界 ⇒
+  `PERMISSION_DENIED`（fail-closed，不回落确认门）。空串/未配置 = `None` = 不限制（空集合与
+  `None` 等价，避免「配了空值 ⇒ 全拒」的意外锁死）；其他模式**完全不看**该配置。
+  条目形态 `namespace:action`（小写字母起头，`[a-z0-9_-]`），yaml/env/CLI 三面同源解析，
+  逗号（含全角）分隔、去重。
+- **D3 墙钟在入口而非调度器**：`entry._run_task_stream` 用
+  `asyncio.wait_for(_stream_task(...), timeout)` 包住**完整任务流**，覆盖 fresh、`--resume`、
+  自动续跑与 `--resume-all`。理由：`serve` / TUI / 编程式消费方不应被静默设限，墙钟是
+  「无人值守会话」的策略，属于入口。超时 ⇒ `TASK_TIMEOUT`：打印、写通知、退出码 1；
+  调度器 `astream` 的 `finally`/`_release` 照常保留最近波次检查点 ⇒ 可 `--resume` 续跑。
+  `0` = 不设限。
+- **D4 token 预算在调度器、按记账口径**：`LoopResult.token_used`（缺省 0）由 `DefaultLoop`
+  以 `ctx.token_used`（上下文估算）填充；调度器按 `task_id` 累计**本任务所有子任务**的记账，
+  越过正预算 ⇒ 当前子任务 `ok=False` + `TASK_TOKEN_BUDGET_EXCEEDED`，并**禁重试、禁重拆**，
+  终态 `FAILED`（`extra={"token_used","token_budget"}`），`_release` 清累计。
+  预算 `0` = 关闭（不改变任何裁决）；负数构造期拒绝。
+- **D5 失败通知是本地 JSONL 追加**：`entry._notify_failure` 每失败一行
+  `{ts,event,task_id,session_id,code,reason,goal}`；`reason`/`goal` 经 `redact_secrets` 且
+  逐字段截断 500 字符；新建文件 `0600`、父目录 `mkdir -p`；写失败只 stderr 告警，**不改变
+  任务结局**。`_stream_task` 在 `task_failed` 时通知，**排除 `TASK_CANCELLED`**（主动取消
+  不是无人值守告警）；超时分支与自动续跑失败分支显式通知。不做远程/webhook 推送。
+
+**反证 3/3（均实测转红后复原，`md5sum` 一致）**：① 摘掉 `_denied_coeffects` 的越界判定
+（恒返回 `[]`）⇒ 越界拒绝 / 全含 / 接线三条用例红；② 摘掉 `_record_tokens` 的越界返回
+（恒 `False`）⇒ 预算耗尽用例红（DID NOT RAISE）；③ 摘掉 `_notify_failure` 的
+`redact_secrets` ⇒ 密钥 canary 落盘用例红。
+
+**规格**：`configuration` **ADDED**「无人值守配置项」（4 scen）；`permission` **ADDED**
+「自动放行的 coeffect 允许面」（5 scen）；`orchestration` **ADDED**「整任务时限与 token 预算」
+（5 scen）与「任务失败通知 sink」（5 scen）；`loop` **ADDED**「执行结果透出本轮 token 记账」
+（2 scen）。`validate --all` **31/0**（归档后）。
+
+**测试**：新增 `tests/test_unattended.py` **37 例**（三面配置与校验；允许面 5 例 + guard 顺序 +
+runtime 接线；预算累计/禁重试/禁重拆/零预算不限；`LoopResult.token_used` 缺省与填充；通知
+脱敏/0600/多行/空路径无操作/失败与取消；`_run_task_stream` 超时/不限；`_task` 与
+`_run_auto_resume` 超时分支）。`tests/test_entry.py` / `tests/test_auto_resume.py` 的
+`SimpleNamespace` 配置桩补两项缺省访问器（缺省关 ⇒ 既有断言逐字不变）。净 **+37**
+（3055 → **3092**）。四门禁：`ruff check` / `ruff format --check` 绿、`pyright` 0 errors、
+`pytest -q` **3092 passed**。
+
+**局限**：① `token_used` 是**上下文估算**（同错误与预算控制口径），不是账单 token；流式
+增量、工具输出截断前的真实计费可能高于该值 ⇒ 预算只能近似约束成本；② 子任务在预算越界时
+`ok=False`，已执行的前序子任务结果仍写入检查点，续跑会从中间波次继续；③ 墙钟只在 CLI
+`task` 入口施加，`serve`/TUI 编程式调用不受此配置约束；④ 通知是单机本地文件，多进程追加
+依赖 `O_APPEND`（每行一次 `write`），不保证跨主机汇聚；⑤ 允许面按**声明的** coeffect 判定，
+插件若少报 coeffect 则允许面管不住（无特权核心的既有假设：插件契约可信）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -10389,3 +10450,4 @@ change `0191` 起按 durability「崩溃恢复」只**呈现**未完成任务（
 | ADR-0267 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md, coding-plan/Pending-Arbitration.md |
 | ADR-0268 | 02-modules/orchestration.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0269 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0270 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

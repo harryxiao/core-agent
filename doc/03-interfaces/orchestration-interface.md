@@ -129,7 +129,14 @@ class LLMTaskVerifier:
 class TaskScheduler:
     def __init__(self, ..., max_concurrency: int = 4, difficulty_policy: str = "off",
                  tracer: Tracer | None = None,
-                 success_checker: SuccessChecker | None = None) -> None: ...
+                 success_checker: SuccessChecker | None = None,
+                 task_token_budget: int = 0) -> None:
+        """``task_token_budget``：整任务 token 预算（change 0280 / ADR-0270）。
+        按 ``LoopResult.token_used``（上下文估算）逐子任务累计；越过正预算 ⇒ 当前子任务
+        ``TASK_TOKEN_BUDGET_EXCEEDED``，**禁重试、禁重拆**，终态 ``FAILED``
+        （``extra={"token_used","token_budget"}``）。``0`` = 关闭（既有行为逐字不变）；
+        负数构造期 ``OrchestrationError(INVALID_DISPATCH_POLICY)``。生产值由组合根注入
+        ``orchestration.task_token_budget``。"""
 
     async def run(
         self, task_id: str, goal: str, success_criteria: list[str] | None = None,
@@ -165,6 +172,11 @@ class TaskScheduler:
   `--resume` 从该 task-id 最新检查点重建 Plan 与已完成集，续跑未完成子任务；
   检查点经 CheckpointStore 落盘 `$CORE_STATE_DIR/checkpoints.jsonl`（缺省
   `~/.core/state/`），跨进程 kill/重启可续跑。
+- **无人值守护栏**（change 0280 / ADR-0270）：`task` 入口按
+  `orchestration.task_timeout` 用 `asyncio.wait_for` 包住整条任务流（含 `--resume` /
+  自动续跑 / `--resume-all`）；超时打印 `[task_timeout]`、退出码 1、保留最近波次检查点；
+  失败（含超时与自动续跑失败）追加 JSONL 到 `orchestration.failure_notify_file`
+  （脱敏、有界、`0600`；`TASK_CANCELLED` 不通知）。两项缺省 `0` / `""` ⇒ 不设限、不通知。
 - **文件型检查点**（change 0230 / ADR-0237）：`FileCheckpoint(path=".core/scheduler-checkpoint.json")`
   满足 `CheckpointFn` 四参契约，JSON 落盘 `task_id / session_id / plan / completed / results`，
   同目录 `.tmp` + `os.replace` **原子写**；`load(task_id=None)` 读回（损坏/缺失返回 `None`，
@@ -388,6 +400,8 @@ session_id, error}]}`；`task`/`error` 写读两侧经 `redact_secrets` 且有�
 | `MISSING_SUCCESS_CHECKER` | 提供了成功标准但未注入判定器（配置错误，fail-fast，转 FAILED） |
 | `TASK_CANCELLED` | 运行中任务被 `cancel` 取消（`task_failed` 终态，change 0249；断流同转 `FAILED`，trace `task_aborted` 分因） |
 | `BACKGROUND_TASKS_FULL` | 运行中后台子 Agent 已达上限 8（`delegate(background=true)` 返回结构化失败，不排队；change 0270） |
+| `TASK_TOKEN_BUDGET_EXCEEDED` | 整任务 token 预算耗尽（调度器累计；禁重试禁重拆，终态 FAILED，change 0280） |
+| `TASK_TIMEOUT` | 整任务墙钟超时（**CLI `task` 入口**施加的 `asyncio.wait_for`；检查点保留，change 0280） |
 
 > 失败恢复预算固定为「每个失败子任务重试 1 次 + 重新拆解 1 次」（change 0246 / ADR-0234），
 > 不设配置键；`task_failed` 的 `attempts` / `replans` 为可观测计数。

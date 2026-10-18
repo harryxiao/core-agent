@@ -485,3 +485,29 @@ known_window(llm.model)  ──►  表命中 ⇒ 该族真实窗口（本 chang
   `all` 恒注入全部（kill-switch，与引入前逐字一致）。只影响 `LLMRequest.tools`，不改变工具注册、
   权限、coeffect、撤销或去重（详见 `loop-interface.md` §3.3）。
 - 口径来源：`doc/openspec/specs/configuration/spec.md`「工具注入范围配置」（**ADDED**）。
+
+### 2.16 无人值守配置（change `0280` / ADR-0270，台账 E216）
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `permission.auto_approve_coeffects` | `""` | 逗号分隔的 `namespace:action` 条目（全角逗号亦可；去空白/去重） | auto-approve 的允许面；空 = 不限制；仅在该模式生效 |
+| `orchestration.task_timeout` | `0` | **≥0 的整数**（秒；`bool` 非法） | 整任务墙钟（CLI `task` 入口）；`0` = 不设限 |
+| `orchestration.task_token_budget` | `0` | **≥0 的整数**（`bool` 非法） | 整任务 token 预算（调度器累计记账）；`0` = 不设限 |
+| `orchestration.failure_notify_file` | `""` | 字符串（路径） | 任务失败 JSONL 通知文件；空 = 关闭 |
+
+- **三面**：CLI `--permission.auto-approve-coeffects` / `--orchestration.task-timeout` /
+  `--orchestration.task-token-budget` / `--orchestration.failure-notify-file`；env
+  `CORE_PERMISSION_AUTO_APPROVE_COEFFECTS` / `CORE_ORCHESTRATION_TASK_TIMEOUT` /
+  `CORE_ORCHESTRATION_TASK_TOKEN_BUDGET` / `CORE_ORCHESTRATION_FAILURE_NOTIFY_FILE`；yaml
+  同名点路径。优先链 CLI > env > config.yaml > 缺省。
+- **访问器**：`ConfigManager.permission_auto_approve_coeffects() -> list[str]`（已解析去重）/
+  `orchestration_task_timeout() -> int` / `orchestration_task_token_budget() -> int` /
+  `orchestration_failure_notify_file() -> str`。
+- **校验期拒绝（不静默兜底）**：条目非 `namespace:action` 形态（小写字母起头，
+  `[a-z0-9_-]`）⇒「非法 auto-approve 允许面条目」；`task_timeout` / `task_token_budget` 非 ≥0
+  整数 ⇒「非法整任务超时」/「非法整任务 token 预算」；`failure_notify_file` 非字符串 ⇒
+  「非法失败通知文件」。四者均阻断启动。
+- **消费方**：组合根把允许面注入 `PermissionGuard(allowed_coeffects=...)`（空列表 ⇒ `None`
+  不限制），把 `task_token_budget` 注入 `TaskScheduler`；`task_timeout` 与
+  `failure_notify_file` 只由 CLI `task` 入口读取（`serve` / TUI 不受约束）。
+- 口径来源：`doc/openspec/specs/configuration/spec.md`「无人值守配置项」（**ADDED**）。

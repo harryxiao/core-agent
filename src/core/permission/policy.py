@@ -114,12 +114,21 @@ class PermissionModeGate:
     - interactive：高危走人工审批（默认行为）。
     - auto-approve：无人值守全放行 —— 一切可由权限层决定的操作（含高危 / 不可逆写 /
       出站网络 / 无法归类）直接放行，不进入审批流、不因风险等级阻断。
+      可选 ``allowed_coeffects`` 收窄放行面（change 0280）：动作声明的任一 coeffect
+      不在集合内 ⇒ `PERMISSION_DENIED`；空集合 = 不限制（既有全放行语义）。
     - high-risk-block：高危无条件阻断，不进入审批流。
     """
 
-    def __init__(self, mode: PermissionMode = PermissionMode.INTERACTIVE) -> None:
+    def __init__(
+        self,
+        mode: PermissionMode = PermissionMode.INTERACTIVE,
+        *,
+        allowed_coeffects: frozenset[str] | None = None,
+    ) -> None:
         self.mode = mode
         self._engine = PolicyEngine()
+        # 空集合与 None 等价（不限制），避免「配置了空值 ⇒ 全部拒绝」的意外锁死。
+        self._allowed_coeffects = frozenset(allowed_coeffects) if allowed_coeffects else None
 
     def classify(self, op: str, target: str, coeffect: list[str]) -> RiskLevel:
         return self._engine.classify(op, target, coeffect)
@@ -127,6 +136,13 @@ class PermissionModeGate:
     def authorize(self, op: str, target: str, coeffect: list[str]) -> Decision:
         if self.mode is PermissionMode.AUTO_APPROVE:
             # 顶部短路：无人值守全放行，不调用 classify（模式不关心风险等级）。
+            # 允许面（change 0280）在放行前检查：声明的**任一** coeffect 越界即拒绝。
+            denied = self._denied_coeffects(coeffect)
+            if denied:
+                raise AccessControlError(
+                    PermissionErrorCode.PERMISSION_DENIED,
+                    f"auto-approve 允许面拒绝 {op}（未授权 coeffect: {', '.join(denied)}）",
+                )
             return Decision(True, f"auto-approve 模式全放行: {op}")
         risk = self.classify(op, target, coeffect)
         if self.mode is PermissionMode.READ_ONLY and risk in (
@@ -143,3 +159,9 @@ class PermissionModeGate:
                 f"high-risk-block 模式下一律阻断高危操作: {op}",
             )
         return self._engine.authorize(op, target, risk)
+
+    def _denied_coeffects(self, coeffect: list[str]) -> list[str]:
+        """允许面检查：返回不在白名单内的 coeffect（空列表 = 通过 / 未配置）。"""
+        if self._allowed_coeffects is None:
+            return []
+        return [name for name in coeffect if name not in self._allowed_coeffects]

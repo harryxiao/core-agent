@@ -66,6 +66,14 @@ _DEFAULT_ORCHESTRATION_SUBTASK_TIMEOUT = 600
 # 自动续跑开关（change 0278 / ADR-0268）：缺省 **关** —— 既有入口「只呈现不重执行」逐字不变；
 # 开启仅影响 `task` 入口，`serve` 等启动扫描仍纯呈现（`durability`「崩溃恢复」）。
 _DEFAULT_ORCHESTRATION_AUTO_RESUME = False
+# 无人值守护栏（change 0280 / ADR-0270）：整任务墙钟时限 / token 预算缺省 0 = 关闭
+# （不改变既有任务执行）；失败通知文件缺省空 = 不落盘；auto-approve 的 coeffect 允许面
+# 缺省空 = 全放行（与引入前逐字一致）。四项旋钮本身即 kill-switch，不设额外总开关。
+_DEFAULT_ORCHESTRATION_TASK_TIMEOUT = 0
+_DEFAULT_ORCHESTRATION_TASK_TOKEN_BUDGET = 0
+_DEFAULT_ORCHESTRATION_FAILURE_NOTIFY_FILE = ""
+# coeffect 名形态（`namespace:action`；小写字母开头，允许数字 / `_` / `-`）。
+_COEFFECT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_-")
 # 策略词表（规格 `orchestration`「难易度感知的调度策略」；配置层不 import 能力层，故此处复述）
 _ORCHESTRATION_POLICIES = ("off", "difficulty")
 
@@ -146,6 +154,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_SANDBOX_HOST_ALLOWLIST",
         default="",
         map_to="permission.sandbox.host_allowlist",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "permission.auto_approve_coeffects",
+        "--permission.auto-approve-coeffects",
+        "CORE_PERMISSION_AUTO_APPROVE_COEFFECTS",
+        default="",
+        map_to="permission.auto_approve_coeffects",
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
@@ -306,6 +322,30 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_ORCHESTRATION_AUTO_RESUME",
         default=_DEFAULT_ORCHESTRATION_AUTO_RESUME,
         map_to="orchestration.auto_resume",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "orchestration.task_timeout",
+        "--orchestration.task-timeout",
+        "CORE_ORCHESTRATION_TASK_TIMEOUT",
+        default=_DEFAULT_ORCHESTRATION_TASK_TIMEOUT,
+        map_to="orchestration.task_timeout",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "orchestration.task_token_budget",
+        "--orchestration.task-token-budget",
+        "CORE_ORCHESTRATION_TASK_TOKEN_BUDGET",
+        default=_DEFAULT_ORCHESTRATION_TASK_TOKEN_BUDGET,
+        map_to="orchestration.task_token_budget",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "orchestration.failure_notify_file",
+        "--orchestration.failure-notify-file",
+        "CORE_ORCHESTRATION_FAILURE_NOTIFY_FILE",
+        default=_DEFAULT_ORCHESTRATION_FAILURE_NOTIFY_FILE,
+        map_to="orchestration.failure_notify_file",
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
@@ -591,6 +631,7 @@ class ConfigManager:
                 f"非法权限模式: permission.mode={mode}（可选：{'/'.join(_PERMISSION_MODES)}）"
             )
         errors.extend(_sandbox_errors(perm))
+        errors.extend(_auto_approve_coeffects_errors(perm))
         cons = cast("dict[str, Any]", config.extra.get("constraints") or {})
         errors.extend(_circuit_breaker_errors(cons))
         errors.extend(_retry_errors(cons))
@@ -687,6 +728,17 @@ class ConfigManager:
             return _DEFAULT_PERMISSION_MODE
         perm = cast(dict[str, Any], self._config.extra.get("permission") or {})
         return str(perm.get("mode", _DEFAULT_PERMISSION_MODE))
+
+    def permission_auto_approve_coeffects(self) -> list[str]:
+        """auto-approve 的 coeffect 允许面（空 = 不限制；change 0280 / ADR-0270）。
+
+        只在 auto-approve 档被权限门消费；条目已过校验（`namespace:action` 形态），
+        此处只做拆分与去重。其余权限档忽略本值。
+        """
+        if self._config is None:
+            return []
+        perm = cast(dict[str, Any], self._config.extra.get("permission") or {})
+        return _split_coeffects(str(perm.get("auto_approve_coeffects", "") or ""))
 
     def circuit_breaker(self) -> tuple[int, float]:
         """熔断阈值/冷却查询 → ``(failure_threshold, cooldown_s)``，缺省 ``(5, 30.0)``。
@@ -1134,6 +1186,33 @@ class ConfigManager:
             return value
         return str(value).strip().lower() in _FEATURE_TRUE
 
+    def orchestration_task_timeout(self) -> int:
+        """整任务墙钟时限秒数（缺省 ``0`` = 不设限；change 0280 / ADR-0270）。"""
+        if self._config is None:
+            return _DEFAULT_ORCHESTRATION_TASK_TIMEOUT
+        raw = cast("dict[str, Any]", self._config.extra.get("orchestration") or {})
+        timeout = _parse_int(raw.get("task_timeout", _DEFAULT_ORCHESTRATION_TASK_TIMEOUT))
+        return _DEFAULT_ORCHESTRATION_TASK_TIMEOUT if timeout is None else timeout
+
+    def orchestration_task_token_budget(self) -> int:
+        """整任务 token 预算（缺省 ``0`` = 关闭；change 0280 / ADR-0270）。
+
+        口径见规格：累计各子任务的 `LoopResult.token_used`（上下文记账估算），
+        非账单口径。
+        """
+        if self._config is None:
+            return _DEFAULT_ORCHESTRATION_TASK_TOKEN_BUDGET
+        raw = cast("dict[str, Any]", self._config.extra.get("orchestration") or {})
+        budget = _parse_int(raw.get("task_token_budget", _DEFAULT_ORCHESTRATION_TASK_TOKEN_BUDGET))
+        return _DEFAULT_ORCHESTRATION_TASK_TOKEN_BUDGET if budget is None else budget
+
+    def orchestration_failure_notify_file(self) -> str:
+        """失败通知 JSONL 文件路径（缺省空串 = 不落盘；change 0280 / ADR-0270）。"""
+        if self._config is None:
+            return _DEFAULT_ORCHESTRATION_FAILURE_NOTIFY_FILE
+        raw = cast("dict[str, Any]", self._config.extra.get("orchestration") or {})
+        return str(raw.get("failure_notify_file", _DEFAULT_ORCHESTRATION_FAILURE_NOTIFY_FILE))
+
     def sandbox_host_allowlist(self) -> list[str]:
         """出站网络白名单（缺省空 = fail-closed 全拒，安全默认）。
 
@@ -1568,6 +1647,26 @@ def _orchestration_errors(raw: dict[str, Any]) -> list[str]:
         errors.append(
             f"非法自动续跑开关: orchestration.auto_resume={auto_resume!r}（须为 true/false 之一）"
         )
+    task_timeout = _parse_int(raw.get("task_timeout", _DEFAULT_ORCHESTRATION_TASK_TIMEOUT))
+    if task_timeout is None or task_timeout < 0:
+        errors.append(
+            f"非法整任务超时: orchestration.task_timeout={raw.get('task_timeout')}"
+            "（须为 ≥0 的整数，0=不设限）"
+        )
+    token_budget = _parse_int(
+        raw.get("task_token_budget", _DEFAULT_ORCHESTRATION_TASK_TOKEN_BUDGET)
+    )
+    if token_budget is None or token_budget < 0:
+        errors.append(
+            f"非法整任务 token 预算: orchestration.task_token_budget="
+            f"{raw.get('task_token_budget')}（须为 ≥0 的整数，0=关闭）"
+        )
+    notify_file = raw.get("failure_notify_file", _DEFAULT_ORCHESTRATION_FAILURE_NOTIFY_FILE)
+    if not isinstance(notify_file, str):
+        errors.append(
+            f"非法失败通知文件: orchestration.failure_notify_file={notify_file!r}"
+            "（须为文件路径字符串，空串=关闭）"
+        )
     return errors
 
 
@@ -1599,6 +1698,16 @@ def _split_hosts(raw: str) -> list[str]:
     return hosts
 
 
+def _split_coeffects(raw: str) -> list[str]:
+    """逗号分隔 coeffect 名 → 去空白、去空项、去重（保序）。兼容全角逗号。"""
+    tokens: list[str] = []
+    for part in raw.replace("，", ",").split(","):
+        token = part.strip()
+        if token and token not in tokens:
+            tokens.append(token)
+    return tokens
+
+
 def _sandbox_errors(perm: dict[str, Any]) -> list[str]:
     """出站白名单取值校验（对齐 permission「沙箱执行颗粒度」）。
 
@@ -1618,6 +1727,40 @@ def _sandbox_errors(perm: dict[str, Any]) -> list[str]:
         for host in _split_hosts(raw)
         if "/" in host or ":" in host or any(ch.isspace() for ch in host)
     ]
+
+
+def _auto_approve_coeffects_errors(perm: dict[str, Any]) -> list[str]:
+    """auto-approve 允许面取值校验（对齐 permission「自动放行的 coeffect 允许面」）。
+
+    逗号分隔的 coeffect 名，空项忽略；每项须形如 ``namespace:action``（小写字母开头，
+    仅数字 / ``_`` / ``-``）。拼错的条目在运行时**永不匹配** ⇒ 静默把动作挡在门外，
+    故与出站白名单同口径：**校验期拒绝，不静默兜底**。空配置合法 = 不限制。
+    """
+    raw = perm.get("auto_approve_coeffects", "")
+    if not isinstance(raw, str):
+        return [
+            "非法 auto-approve 允许面取值: permission.auto_approve_coeffects="
+            f"{raw!r}（须为逗号分隔的 coeffect 名）"
+        ]
+    return [
+        f"非法 auto-approve 允许面条目: permission.auto_approve_coeffects={token}"
+        "（须形如 namespace:action）"
+        for token in _split_coeffects(raw)
+        if not _valid_coeffect_name(token)
+    ]
+
+
+def _valid_coeffect_name(token: str) -> bool:
+    """coeffect 名形态：两段均以小写字母开头，仅小写字母 / 数字 / `_` / `-`。"""
+    namespace, sep, action = token.partition(":")
+    if not sep:
+        return False
+    for part in (namespace, action):
+        if not part or not ("a" <= part[0] <= "z"):
+            return False
+        if any(ch not in _COEFFECT_CHARS for ch in part):
+            return False
+    return True
 
 
 def _normalize_features(raw: Any) -> dict[str, bool]:
