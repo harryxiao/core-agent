@@ -9481,6 +9481,35 @@ P4 改非原子直写 ⇒ 0600 / 原子替换两例红；复原后 `md5sum` 一�
 ⑤ 已退出的恢复项在下一次 `add` 淘汰时才从文件移除，`list` 会短暂保留（与既有内存注册表
 行为一致）。
 
+## ADR-0257：委托动作并发判级修正（change 0267 / 台账 E203）
+
+**背景**：`tools.delegate` 的 coeffect 是 `agent:delegate`，不含 `write` / `spawn` /
+`outbound` 词元。组内并发判定只看 coeffect 词元，故同批多个 delegate 被判为「只读」并
+`gather` 并发执行；而子 Agent 可写文件、可执行命令。一旦并发，写序与撤销快照序不再由父
+loop 的屏障保证，且子 Agent 写入不进入父 `EffectTracker`，无法按序撤销。
+
+**决策**：
+
+- **D1 词元补全**：`_CONCURRENT_DENY_TOKENS` 增加 `"delegate"`；`agent:delegate` 命中即
+  视为有副作用，串行执行并作为并发批次之间的屏障。判定仍是声明式、fail-closed 的词元匹配。
+- **D2 不以 `reversible` 作判据**：`reversible` 表达「效应能否撤销」而非「是否只读」；既有
+  只读测试工具也常声明 `reversible=False`，该口径会误伤只读并发。未来跨边界能力应在
+  coeffect 命名中沿用 `spawn` / `write` / `delegate` 词元。
+- **D3 无运行时开关**：这是正确性修复，缺省即生效；`concurrent_reads=False` 仍可整体关闭并发。
+
+**规格**：`loop` **MODIFIED**「单次推理多工具动作」（只读并发条件补 `delegate` 词元，新增
+「委托动作作为屏障」场景）。`openspec validate --all` 32/0（归档前）/ 31/0（归档后）。
+
+**测试**：`tests/test_concurrent_group_tools.py` 新增 1 例，净 **+1**（2914 → **2915**）。
+反证：摘 `delegate` 词元 ⇒ 用例红（两个 delegate 重叠执行）；复原后 `md5sum` 一致
+（`default.py 2d96a5e8…`）。四门禁：`ruff check` / `ruff format --check` 绿、`pyright`
+0 errors、`pytest -q` 2915 passed。
+
+**局限**：① 子 Agent 的写入仍**不进入**父 `EffectTracker`；本修复只保证串行（不发生并发
+写乱序），不提供跨 Agent 的撤销归因。② 词元匹配是启发式：未来若新增跨边界 coeffect 而
+未沿用既有词元，仍可能误判；须在新增工具时同步维护 deny 词元表。③ 仅约束同一
+`ActionGroup` 内的批次；不同会话 / 不同 loop 实例之间的并发不受此判定管辖。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -9732,3 +9761,4 @@ P4 改非原子直写 ⇒ 0600 / 原子替换两例红；复原后 `md5sum` 一�
 | ADR-0254 | 02-modules/durability.md, 02-modules/loop.md, 02-modules/tool-use.md, 03-interfaces/durability-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0255 | 02-modules/loop.md, 02-modules/tool-use.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0256 | 02-modules/tool-use.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0257 | 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

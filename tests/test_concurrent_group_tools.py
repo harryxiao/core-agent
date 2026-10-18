@@ -21,7 +21,7 @@ _MIN_TICKS = 10  # 20ms 内约 3 tick；200ms 阻塞期间应显著更多
 
 def _provider() -> ToolProvider:
     resolver = CoeffectResolver()
-    for coeffect in ("filesystem:read", "filesystem:write"):
+    for coeffect in ("filesystem:read", "filesystem:write", "agent:delegate"):
         resolver.register(coeffect, True)
     return ToolProvider(coeffect_resolver=resolver)
 
@@ -118,6 +118,29 @@ def test_write_action_is_a_barrier() -> None:
     _run(DefaultLoop(planner=planner, tools=provider, max_rounds=5))
 
     assert log.index("end:read") < log.index("start:write")
+
+
+def test_delegate_action_is_a_barrier() -> None:
+    log: list[str] = []
+    provider = _provider()
+    provider.register(_sleep_tool("tools.delegate", ["agent:delegate"], _DELAY, log))
+
+    def planner(ctx: LoopContext) -> Action | ActionGroup:
+        if ctx.rounds == 0:
+            return ActionGroup(
+                [
+                    Action(tool_id="tools.delegate", args={"text": "a"}),
+                    Action(tool_id="tools.delegate", args={"text": "b"}),
+                ]
+            )
+        return Action(args={"reply": "done"})
+
+    started = time.perf_counter()
+    _run(DefaultLoop(planner=planner, tools=provider, max_rounds=5))
+    elapsed = time.perf_counter() - started
+
+    assert log == ["start:a", "end:a", "start:b", "end:b"]
+    assert elapsed >= _DELAY * 1.75, f"委托动作被并发执行（耗时 {elapsed:.3f}s）"
 
 
 def test_concurrent_results_commit_in_index_order() -> None:

@@ -97,8 +97,9 @@ L3 是**智能体的心脏**：把 L1 工具、L2 记忆、模型适配器装配
   单调用仍返回 `Action`，事件序与观测**逐字不变**。批次任一调用解析失败 ⇒ 单个
   `LLM_PLAN_PARSE_FAILED` 终止动作、**零部分执行**。
 - **组内只读并发**（change `0265` / ADR-0255）：组内**连续**只读动作（工具声明的 coeffects 不含
-  `write` / `spawn` / `outbound` 词元）经 `asyncio.gather` 并发执行；写 / 副作用 / 未知工具保持
-  串行并作为批次屏障。`action_started` 按原序在启动前全部发出，结果按**原序**提交
+  `write` / `spawn` / `outbound` / `delegate` 词元）经 `asyncio.gather` 并发执行；写 / 副作用 /
+  未知工具保持串行并作为批次屏障。`delegate` 词元于 change `0267` / ADR-0257 补入：
+  `tools.delegate` 的 `agent:delegate` 不再被判为只读（子 Agent 可写文件）。`action_started` 按原序在启动前全部发出，结果按**原序**提交
   （`action_completed` / 观测 / 回滚 / 轮次推进），压实与预算在整批提交后判定一次。并发不越过
   `max_rounds` 剩余额度；`concurrent_reads=False` 逐字回退串行路径，单动作路径不变。
 - **重复调用抑制**（change `0257`／ADR-0248）：批内完全相同的调用只执行一次（保留首个结果）；

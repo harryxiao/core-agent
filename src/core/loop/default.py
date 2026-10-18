@@ -173,7 +173,7 @@ def _action_key(action: Action) -> str:
     return f"{action.tool_id}\x00{args}"
 
 
-_CONCURRENT_DENY_TOKENS = ("write", "spawn", "outbound")
+_CONCURRENT_DENY_TOKENS = ("write", "spawn", "outbound", "delegate")
 
 
 def _is_concurrent_safe(action: Action, tools: ToolProvider | None) -> bool:

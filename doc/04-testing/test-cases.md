@@ -4109,3 +4109,27 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > （`ruff check` / `ruff format --check` / `pyright` 0 / `pytest -q`）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0256 行（恢复项不可终止 / Windows 无
 > starttime 核对 / 单写者假设 / 落盘失败静默 / 退出恢复项延迟淘汰）。
+
+---
+
+## 179. 委托动作并发判级（TC-DELEGATE-CONC，change `0267`／ADR-0257，台账 E203）
+
+> **背景**：组内并发资格只看 coeffect 词元。`tools.delegate` 声明 `agent:delegate`，不含
+> `write` / `spawn` / `outbound` ⇒ 同批多个委托动作被判只读并并发；子 Agent 实际可写文件，
+> 破坏写序与撤销快照序。
+
+| 用例 | 规格锚点 | 输入 / 操作 | 期望（锚点） |
+|---|---|---|---|
+| TC-DCONC-01 | loop/spec.md「单次推理多工具动作」Scenario（委托动作作为屏障） | 同一 `ActionGroup` 两个 coeffect `agent:delegate` 的委托动作，处理器各 `sleep 0.2s` | 串行执行（日志 `start:a,end:a,start:b,end:b`，总耗时 ≥ 0.35s），不并发（`tests/test_concurrent_group_tools.py::test_delegate_action_is_a_barrier`） |
+
+> **口径**：`_CONCURRENT_DENY_TOKENS` = `write` / `spawn` / `outbound` / `delegate`；命中任一
+> 词元即串行屏障。不以 `reversible` 作判据（它表示「能否撤销」，不是「是否只读」；既有只读
+> 测试工具也常声明 `reversible=False`）。这是正确性修复，无运行时开关；`concurrent_reads=False`
+> 仍可整体关闭并发。
+> **反证**：摘 `delegate` 词元 ⇒ TC-DCONC-01 红（两个 delegate 重叠执行）；复原后 `md5sum`
+> 一致（`default.py 2d96a5e8…`）。
+> 规格：`loop` **MODIFIED**「单次推理多工具动作」（+1 scen）。`openspec validate --all`
+> 32/0（归档前）/ 31/0（归档后）。测试净 **+1**（2914 → **2915**）。四门禁全绿
+> （`ruff check` / `ruff format --check` / `pyright` 0 / `pytest -q`）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0257 行（子 Agent 写入不进父
+> `EffectTracker` / 词元匹配为启发式 / 仅约束同批 `ActionGroup`）。

@@ -814,9 +814,10 @@ SHALL NOT 只执行首个或静默丢弃其余调用。
 - 每个调用 SHALL 作为独立动作走既有执行体：中间件 → 确认门 → 执行 → 观测回灌 → 事件
   （`action_started` / `action_completed` / `step_completed`）→ 压实阈值判定；载荷键集不变。
 - **只读动作并发**：组内**连续**的只读动作（工具声明的 coeffects 不含 `write` / `spawn` /
-  `outbound` 词元、且非终止、去重键互不相同）SHALL 并发执行；写类 / 有副作用 / 未知工具的
-  动作 SHALL 串行执行并作为并发批次之间的**屏障**（保证写序与撤销快照序）。并发批量 SHALL NOT
-  越过 `max_rounds` 剩余额度；构造参数 `concurrent_reads=False` 时 SHALL 逐字回到串行路径。
+  `outbound` / `delegate` 词元、且非终止、去重键互不相同）SHALL 并发执行；写类 / 有副作用 /
+  未知工具的动作 SHALL 串行执行并作为并发批次之间的**屏障**（保证写序与撤销快照序）。并发批量
+  SHALL NOT 越过 `max_rounds` 剩余额度；构造参数 `concurrent_reads=False` 时 SHALL 逐字回到
+  串行路径。
 - **按序提交**：并发执行的结果 SHALL 按动作原序提交（`action_started` 按原序在启动前发出；
   `action_completed` / `step_completed` / 观测回灌 / 失败回滚 / 轮次推进 SHALL 按原序）。
   压实阈值与 token 预算判定 SHALL 在该批动作提交完成后执行。
@@ -847,6 +848,11 @@ SHALL NOT 只执行首个或静默丢弃其余调用。
 - **GIVEN** 一个批次依次包含只读动作与写动作
 - **WHEN** 循环执行该批次
 - **THEN** 写动作在只读动作完成**之后**才开始执行；写动作不与其他动作并发
+
+#### Scenario: 委托动作作为屏障
+- **GIVEN** 同一批次包含两个 coeffect 为 `agent:delegate` 的委托动作（子 Agent 可写文件）
+- **WHEN** 循环执行该批次
+- **THEN** 两个委托动作**串行**执行、互不重叠；它们作为并发批次之间的屏障
 
 #### Scenario: 并发结果按原序提交
 - **GIVEN** 并发段内两个只读动作，后一个先完成
