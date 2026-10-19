@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+import threading
 import time
 import warnings
 from collections.abc import Callable, Sequence
@@ -51,13 +52,26 @@ _STEP_LINE = re.compile(r"^\s*(?:\d+[.、)]|[-*•])\s+\S", re.MULTILINE)
 _MIN_INSTRUCTIONS_CHARS = 10
 _MIN_STEPS = 2
 
+# 准入闸（change 0295）：任务去空白后的最小长度（「继续」「hi」「完成了吗」皆拒收）
+_TASK_MIN_CHARS = 6
+# 任务级命名空间的子任务骨架最少步数
+_TASK_MIN_STEPS = 2
+# 提炼器拒绝/道歉文本的确定性标记（`hi` 垃圾技能即此成因）
+_REFUSAL_MARKERS = ("未提供有效的执行轨迹", "无法提炼", "无法协助", "抱歉", "cannot assist")
+
 # 入库效应按此 trace 登记（回滚即移除本次提炼产物）
 _EXTRACT_TRACE = "skills.extract"
 
 _PROMPT_HEAD = (
     "你是 SOP 提炼器。下面是同一类任务的多次成功执行轨迹（任务 + 行动/结果序列）。"
-    "请提炼为可复用的标准作业步骤：只输出编号步骤清单，不要复述轨迹、不要解释理由。"
-    "要求：合并多次执行中重复出现的步骤，只保留每次执行都成立的必要步骤，剔除偶发细节；"
+    "若轨迹之间没有共同的可复用步骤（例如闲聊、问候、与任务无关的对话），"
+    "输出空字符串，绝不编造步骤。否则输出结构化 Markdown，严格包含以下小节：\n"
+    "## 适用场景\n（什么任务适用）\n"
+    "## 前置条件\n（需要的环境/输入）\n"
+    "## 步骤\n1. 具体动作\n2. 具体动作\n"
+    "## 验证\n（如何确认完成）\n"
+    "## 失败模式\n（常见失败与处置）\n"
+    "要求：合并多次执行中重复出现的步骤，只保留每次都成立的必要步骤，剔除偶发细节；"
     "每步以动词开头，写清具体工具、路径、命令或参数，不要写「处理一下」这类空话；"
     "步骤数控制在 3-10 步。"
 )
@@ -112,63 +126,85 @@ class SopExtractor:
         # 两步序语义不同（任务级 = 子任务骨架；单轮 = 工具调用行），混组会产出浑浊 SOP。
         self._namespace = namespace
         self._samples: dict[str, list[list[str]]] = {}
+        # 主 / 子 / beast loop 的 worker 线程共享同一实例：样本累积与落盘须串行化
+        self._lock = threading.RLock()
         self._load()
 
-    def observe(  # noqa: PLR0911 — 发布前守卫分支（阈值 / 空 / 确定性门 / 判定门 / 退役）
+    def observe(  # noqa: PLR0911 — 发布前守卫分支（准入 / 阈值 / 状态 / 确定性门 / 判定门）
         self, task: str, steps: Sequence[str], *, ok: bool = True
     ) -> Skill | None:
-        """提交一条轨迹；达阈值则提炼入库并返回技能，否则返回 None。
+        """提交一条轨迹；达阈值则提炼入库（**draft**）并返回技能，否则返回 None。
 
         ``ok=False`` 的失败轨迹不是 SOP，直接丢弃（教训沉淀走 memory/evolution 通道）；
         未注入提炼器时不累积、不提炼（零额外模型调用）。
+
+        准入闸（change 0295，全部零模型调用、确定性）：空轨迹 / 短指令（``继续`` / ``hi``）/
+        单轮面无 ``tools.`` 动作 / 任务级面不足 2 步 —— 一律拒收，不入样本、不触发提炼。
+        单轮面同一轨迹逐字重复只算一次（防一次动作刷满阈值）；任务级面每次子任务骨架
+        是独立一次执行证据，不做去重。
         """
         if not ok or self._writer is None or self._threshold <= 0:
             return None
-        key = self._group_key(task)
-        group = self._samples.setdefault(key, [])
-        group.append(list(steps))
-        self._persist()
-        if len(group) < self._threshold:
+        if not self._admissible(task, steps):
             return None
-        # 脱敏在空文本判定 / 质量门 / 入库**之前**（change 0254）：提炼器输出可能复述轨迹中的
-        # 明文密钥；门看到的已是脱敏文本，入库正文不含明文。
-        text = redact_secrets(self._writer(build_sop_prompt(task, group)))
-        if not text.strip():
-            return None  # 空提炼不入库（不写半成品），样本保留待下轮
-        if not _deterministic_ok(self._library, text):
-            # 确定性门（缺省开启、零模型调用）：单步 / 超短 / 超长 / 逐字重复 ⇒ 不发布。
-            # 与判定门失败路径同构：清组（免同批样本反复触发提炼）+ 留痕**只报组键**。
-            warnings.warn(f"SOP 未过确定性质量门，不入库（组键 {key}）", stacklevel=2)
-            del self._samples[key]
+        with self._lock:
+            key = self._group_key(task)
+            trace = list(steps)
+            group = self._samples.setdefault(key, [])
+            if not self._namespace and any(existing == trace for existing in group):
+                return None
+            group.append(trace)
             self._persist()
-            return None
-        if self._gate is not None and not self._gate_ok(task, text):
-            # 门未过 ⇒ 不发布 + **清组**（免同批样本反复触发提炼调用）+ 留痕**只报组键**。
-            # 留痕绝不回显提炼正文（密钥红线）；未入库 ⇒ 无效应可回滚。
-            warnings.warn(f"SOP 质量门未过，不入库（组键 {key}）", stacklevel=2)
-            del self._samples[key]
+            if len(group) < self._threshold:
+                return None
+
+            skill_id = _skill_id_for(key)
+            current = self._lookup(skill_id)
+            if current is not None and current.status in ("active", "gray"):
+                # 已发布技能不被重抽覆盖/降级（change 0295）：清组免反复触发，留痕只报组键。
+                warnings.warn(f"SOP 技能已发布，重抽不覆盖（组键 {key}）", stacklevel=2)
+                del self._samples[key]
+                self._persist()
+                return None
+            if current is not None and current.status == "deprecated":
+                # 粘性防复活（0205 / ADR-0195）：已退役的 id SHALL NOT 因重抽无声复活
+                # （复活须显式 `SkillLibrary.activate`）。留痕只报组键，绝不回显正文。
+                warnings.warn(f"SOP 技能已退役，重抽不复活（组键 {key}）", stacklevel=2)
+                del self._samples[key]
+                self._persist()
+                return None
+
+            # 脱敏在空文本判定 / 质量门 / 入库**之前**（change 0254）：提炼器输出可能复述轨迹中的
+            # 明文密钥；门看到的已是脱敏文本，入库正文不含明文。
+            text = redact_secrets(self._writer(build_sop_prompt(task, group)))
+            if not text.strip():
+                return None  # 空提炼不入库（不写半成品），样本保留待下轮
+            if not _deterministic_ok(self._library, text):
+                # 确定性门（缺省开启、零模型调用）：单步 / 超短 / 超长 / 拒绝文本 / 逐字重复
+                # ⇒ 不发布。与判定门失败路径同构：清组 + 留痕**只报组键**。
+                warnings.warn(f"SOP 未过确定性质量门，不入库（组键 {key}）", stacklevel=2)
+                del self._samples[key]
+                self._persist()
+                return None
+            if self._gate is not None and not self._gate_ok(task, text):
+                # 门未过 ⇒ 不发布 + **清组**（免同批样本反复触发提炼调用）+ 留痕**只报组键**。
+                # 留痕绝不回显提炼正文（密钥红线）；未入库 ⇒ 无效应可回滚。
+                warnings.warn(f"SOP 质量门未过，不入库（组键 {key}）", stacklevel=2)
+                del self._samples[key]
+                self._persist()
+                return None
+            skill = Skill(
+                skill_id=skill_id,
+                description=f"SOP：{key}",
+                task_types=[key],
+                instructions=text,
+                status="draft",  # 先 draft：路由只放行 active/gray，显式 activate 后才生效
+            )
+            self._library.register(skill)
+            self._track(skill)
+            del self._samples[key]  # 提炼后清组，下批重新累积
             self._persist()
-            return None
-        skill = Skill(
-            skill_id=_skill_id_for(key),
-            description=f"SOP：{key}",
-            task_types=[key],
-            instructions=text,
-            status="active",  # 维度1 技能库层：低风险自动发布（draft 对路由不可见）
-        )
-        if self._is_retired(skill.skill_id):
-            # 粘性防复活（0205 / ADR-0195）：已退役的 id SHALL NOT 因重抽无声复活为 active
-            # （复活须显式 `SkillLibrary.activate`）。清组免同批样本反复触发提炼调用；
-            # 留痕**只报组键**，绝不回显提炼正文（密钥红线）。
-            warnings.warn(f"SOP 技能已退役，重抽不复活（组键 {key}）", stacklevel=2)
-            del self._samples[key]
-            self._persist()
-            return None
-        self._library.register(skill)
-        self._track(skill)
-        del self._samples[key]  # 提炼后清组，下批重新累积
-        self._persist()
-        return skill
+            return skill
 
     # ---- 落盘 ----
 
@@ -187,6 +223,16 @@ class SopExtractor:
         write_state(self._path, self._samples)
 
     # ---- 内部辅助 ----
+
+    def _admissible(self, task: str, steps: Sequence[str]) -> bool:
+        """准入闸（确定性、零模型调用）：琐碎任务 / 空轨迹 / 无工具动作一律不入样本。"""
+        if not steps:
+            return False
+        if len("".join(task.split())) < _TASK_MIN_CHARS:
+            return False
+        if self._namespace:
+            return len(steps) >= _TASK_MIN_STEPS
+        return any(step.lstrip().startswith("tools.") for step in steps)
 
     def _group_key(self, task: str) -> str:
         """归组键：优先复用词法命中的已有 ``task_types``，否则用任务词元签名。
@@ -215,12 +261,12 @@ class SopExtractor:
         except Exception:  # noqa: BLE001 — 门故障按放行
             return True
 
-    def _is_retired(self, skill_id: str) -> bool:
-        """该 id 是否已在库中且已退役（粘性防复活判据；不在库 ⇒ 未退役）。"""
+    def _lookup(self, skill_id: str) -> Skill | None:
+        """库中同 id 技能（不存在 ⇒ ``None``）。"""
         try:
-            return self._library.lookup(skill_id).status == "deprecated"
+            return self._library.lookup(skill_id)
         except KeyError:
-            return False
+            return None
 
     def _same_namespace(self, task_type: str) -> bool:
         """该 ``task_type`` 是否属本实例命名空间（空命名空间 ⇒ 只认无前缀键）。"""
@@ -258,10 +304,14 @@ def _deterministic_ok(library: SkillLibrary, text: str) -> bool:
     """确定性发布门：形式合格且不与库中技能逐字重复（change 0255 / ADR-0246）。
 
     判据：`strip()` 后长度在 [10, MAX_INSTRUCTIONS_CHARS]；至少 2 个步骤行；
-    `instructions` 不与库中**任一**技能逐字相同。只拦逐字重复，不做相似度判定。
+    不含提炼器的拒绝/道歉固定短语；`instructions` 不与库中**任一**技能逐字相同。
+    只拦逐字重复，不做相似度判定。
     """
     body = text.strip()
     if len(body) < _MIN_INSTRUCTIONS_CHARS or len(body) > MAX_INSTRUCTIONS_CHARS:
+        return False
+    lowered = body.lower()
+    if any(marker in lowered for marker in _REFUSAL_MARKERS):
         return False
     if len(_STEP_LINE.findall(text)) < _MIN_STEPS:
         return False

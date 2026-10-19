@@ -197,6 +197,10 @@ TUI（REPL）SHALL 支持**主视图 ⇄ 子任务焦点视图**的切换：`/fo
 
 切回主视图 SHALL NOT 改变主时间线的**内容**（呈现层切换，非数据层变更）。未知子任务标识 SHALL NOT 切换视图（提示并保持主视图）。焦点命令 SHALL 在任务**运行中**可用（SHALL NOT 被忙态拒绝拦截）。`task_started` 与**审批挂起**时 SHALL 回到主视图。
 
+当存在当前/最近一次任务的**已开工**子任务时，TUI SHALL 在时间线下方（输入区上方）自动呈现**标签栏**：首位 `main`，其后每个已开工子任务一项，标签为题缩写（有界；goal 为空时回退 `子任务 <sid>`）。点击标签 SHALL 切换到对应视图；点击子任务折叠块标题 SHALL 同样进入该子任务焦点视图，且折叠块的展开/收起语义 SHALL 保持不变。
+
+标签 SHALL 随 `subtask_started` / `subtask_completed` 更新状态；`task_started` SHALL 清空旧标签并回到主视图；会话切换（`/resume`）SHALL 清空标签；任务收尾（`task_finished` / `task_failed`）SHALL 保留终态标签与当前视图（快照），直到下一次 `task_started` 或会话切换。标签数据 SHALL 仅取自既有 `task.*` 事件载荷，SHALL NOT 新建第二数据源。
+
 #### Scenario: 聚焦显示子任务框且主时间线不可见
 - **GIVEN** 一个在途任务且其子任务已开工（已有对应折叠块）
 - **WHEN** 用户输入 `/focus <该子任务标识>`
@@ -226,6 +230,26 @@ TUI（REPL）SHALL 支持**主视图 ⇄ 子任务焦点视图**的切换：`/fo
 - **GIVEN** 已聚焦某子任务且其已产生工具类里程碑
 - **WHEN** 焦点面板呈现里程碑
 - **THEN** 面板文本含**友好名**（如 `Bash`），且**不含**内部 `tool_id` 与工具原始参数
+
+#### Scenario: 标签栏自动展示并支持点击切换
+- **GIVEN** 一个在途任务且其子任务已开工
+- **WHEN** TUI 呈现时间线
+- **THEN** 时间线下方出现标签栏，首位为 `main`，其后为该子任务的主题缩写；点击该子任务标签 ⇒ 焦点面板可见、主时间线不可见；点击 `main` ⇒ 主时间线恢复且文本逐字不变
+
+#### Scenario: 点击子任务块标题进入焦点视图
+- **GIVEN** 时间线上存在某子任务的折叠块
+- **WHEN** 用户点击该折叠块标题
+- **THEN** 进入该子任务的焦点视图，且折叠块自身的展开/收起状态仍按既有语义切换
+
+#### Scenario: 收尾保留终态标签，下一次任务重置
+- **GIVEN** 已聚焦某子任务且该任务收尾
+- **WHEN** `task_finished` / `task_failed` 到达
+- **THEN** 标签栏保留该子任务的 ✓ / ✗ 终态且当前焦点视图不被强制切回；下一次 `task_started` 到达时标签栏重置为仅 `main` 并回到主视图
+
+#### Scenario: 会话切换清空标签
+- **GIVEN** 标签栏中存在若干子任务标签
+- **WHEN** 用户经 `/resume` 切换会话
+- **THEN** 标签栏隐藏、标签模型清空，主视图恢复
 
 ### Requirement: Web 界面访问
 系统 SHALL 支持以 HTTP 服务 + 单页应用（SPA）形式提供 Web 界面，流式输出通过 SSE 推送。
@@ -443,8 +467,16 @@ SHALL NOT 为此新建第二数据源。
 任务收尾（`task_finished` / `task_failed`）SHALL 使该任务**移出在途列表**（任务区回落），SHALL NOT
 因收尾而进入会话列表（任务不产生会话）。
 
-**进入子 agent 会话 / 主-子焦点切换** SHALL NOT 在本 Requirement 内：子 Agent 消息流**无数据源**
-（转录只注入主 loop），故本 Requirement 的「详情」仅指既有事件载荷内可见的字段。
+SPA SHALL 在聊天区下方（输入框上方）呈现**标签栏**：首位 `main`，其后为当前/最近任务的每个子任务
+（主题缩写）。点击子任务标签 SHALL 将聊天区切换为该子任务的**只读**详情视图（标题 / 状态 / 验收 /
+里程碑 / 判定理由 / 结果节选，全部取自既有 `task.*` 事件载荷）；点击 `main` SHALL 立即返回主 Agent
+会话。任务区中的子任务行 SHALL 可点击并选中同一视图。输入框 SHALL 仅对主 Agent 生效。
+
+任务收尾 SHALL 保留终态标签与详情快照，直到下一次 `task_started` 或会话切换；下一次任务开始 SHALL
+回到 `main` 并清空旧标签。
+
+**进入子 agent 会话 / 向子 Agent 发消息** SHALL NOT 在本 Requirement 内：子 Agent 消息流**无数据源**
+（转录只注入主 loop）；上述详情视图 SHALL NOT 新建第二数据源、SHALL NOT 接子 Agent 消息流。
 
 #### Scenario: HTTP 派发任务并流式呈现进度
 
@@ -481,6 +513,30 @@ SHALL NOT 为此新建第二数据源。
 - **GIVEN** 一个在途任务
 - **WHEN** 该任务收尾（`task_finished` / `task_failed`）
 - **THEN** 该任务移出任务区的在途列表（任务区回落），且**不**出现在会话列表中
+
+#### Scenario: 标签栏展示并切换只读子任务详情
+
+- **GIVEN** 一个在途任务且其子任务已开始执行
+- **WHEN** 用户点击聊天区下方的该子任务标签（或任务区的该子任务行）
+- **THEN** 聊天区切换为该子任务的只读详情（标题 / 状态 / 验收 / 里程碑 / 理由 / 结果节选），输入框不对子 Agent 生效
+
+#### Scenario: 点击 main 返回主 Agent 会话
+
+- **GIVEN** 聊天区处于某子任务只读详情
+- **WHEN** 用户点击 `main` 标签
+- **THEN** 立即恢复主 Agent 时间线，且其内容与切换前逐字一致
+
+#### Scenario: 收尾保留快照，下一次任务重置
+
+- **GIVEN** 用户正查看某子任务详情且该任务收尾
+- **WHEN** `task_finished` / `task_failed` 到达
+- **THEN** 标签与该子任务详情快照保留（终态可见）；下一次 `task_started` 到达后标签重置为仅 `main` 并回到主视图
+
+#### Scenario: 详情只取事件载荷
+
+- **GIVEN** 子 Agent 产生了其内部消息流或思考增量
+- **WHEN** Web 呈现该子任务详情
+- **THEN** 详情只包含既有 `task.*` 载荷字段（验收 / 里程碑 / 理由 / 结果节选），不出现子 Agent 消息流内容
 
 ### Requirement: 思考过程回显（Think）
 系统 SHALL 在**三端**（TUI / Web / APP）以**折叠块**呈现模型的思考原文（`loop.reasoning` 事件），用户可展开查看全文；**同一 ReAct 步**（同一 `round`）的思考增量 SHALL **归并到同一个折叠块**（增量更新，SHALL NOT 逐段新建块）；**不同步** SHALL 使用**不同**折叠块。思考原文 SHALL ONLY 经该事件面呈现，SHALL NOT 写入转录 / 记忆 / 日志 / trace 遥测（思考回显是**纯呈现层**）。

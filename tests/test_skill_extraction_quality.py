@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import itertools
 import warnings
 from typing import Any
 
@@ -13,20 +14,25 @@ import pytest
 
 from core.skills import Skill, SkillError, SkillErrorCode, SkillLibrary, SopExtractor
 
-_STEPS = ["tool: echo"]
+_SEQ = itertools.count()
+
+
+def _steps() -> list[str]:
+    """真实行动序列形态（`tools.` 行首）；自增 nonce 代表不同执行轨迹。"""
+    return [f"tools.echo（n={next(_SEQ)}）→ 结果"]
 
 
 # ---- 确定性发布门 ----
 
 
 def test_two_step_sop_publishes() -> None:
-    """对照锚：满足确定性门的两步提炼照常以 `active` 入库。"""
+    """对照锚：满足确定性门的两步提炼照常以 `draft` 入库。"""
     lib = SkillLibrary()
     extractor = SopExtractor(lib, writer=lambda _prompt: "1. 准备输入\n2. 输出结果", threshold=1)
 
-    skill = extractor.observe("task a", _STEPS)
+    skill = extractor.observe("task alpha", _steps())
 
-    assert skill is not None and skill.status == "active"
+    assert skill is not None and skill.status == "draft"
     assert lib.lookup(skill.skill_id) is skill
 
 
@@ -36,19 +42,19 @@ def test_single_step_sop_rejected_and_group_cleared() -> None:
     body = "1. 只做一个步骤而已"
     extractor = SopExtractor(lib, writer=lambda _prompt: body, threshold=2)
 
-    assert extractor.observe("task a", _STEPS) is None, "未达阈值不提炼"
+    assert extractor.observe("task alpha", _steps()) is None, "未达阈值不提炼"
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        assert extractor.observe("task a", _STEPS) is None, "单步 ⇒ 不入库"
+        assert extractor.observe("task alpha", _steps()) is None, "单步 ⇒ 不入库"
 
     assert lib.all_skills() == [], "单步提炼不发布"
     assert len(caught) == 1, "确定性门未过留痕"
     text = str(caught[0].message)
-    assert extractor._group_key("task a") in text, "留痕报组键"  # type: ignore[reportPrivateUsage]
+    assert extractor._group_key("task alpha") in text, "留痕报组键"  # type: ignore[reportPrivateUsage]
     assert body not in text, "留痕绝不回显提炼正文"
-    key = extractor._group_key("task a")  # type: ignore[reportPrivateUsage]
+    key = extractor._group_key("task alpha")  # type: ignore[reportPrivateUsage]
     assert extractor._samples.get(key, []) == [], "组已清空（免同批样本反复触发提炼）"  # type: ignore[reportPrivateUsage]
-    assert extractor.observe("task a", _STEPS) is None, "重新累积，不立即提炼"
+    assert extractor.observe("task alpha", _steps()) is None, "重新累积，不立即提炼"
 
 
 def test_too_short_sop_rejected_and_group_cleared() -> None:
@@ -56,16 +62,16 @@ def test_too_short_sop_rejected_and_group_cleared() -> None:
     lib = SkillLibrary()
     extractor = SopExtractor(lib, writer=lambda _prompt: "ok", threshold=2)
 
-    assert extractor.observe("task a", _STEPS) is None
+    assert extractor.observe("task alpha", _steps()) is None
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        assert extractor.observe("task a", _STEPS) is None
+        assert extractor.observe("task alpha", _steps()) is None
 
     assert lib.all_skills() == [], "超短提炼不发布"
     assert len(caught) == 1
-    key = extractor._group_key("task a")  # type: ignore[reportPrivateUsage]
+    key = extractor._group_key("task alpha")  # type: ignore[reportPrivateUsage]
     assert extractor._samples.get(key, []) == [], "组已清空"  # type: ignore[reportPrivateUsage]
-    assert extractor.observe("task a", _STEPS) is None, "重新累积，不立即提炼"
+    assert extractor.observe("task alpha", _steps()) is None, "重新累积，不立即提炼"
 
 
 def test_too_long_sop_rejected() -> None:
@@ -74,7 +80,7 @@ def test_too_long_sop_rejected() -> None:
     body = "1. 步骤一\n2. " + "执行子步骤 " * 900  # > 4000 字符；不含密钥形态
     extractor = SopExtractor(lib, writer=lambda _prompt: body, threshold=1)
 
-    assert extractor.observe("task a", _STEPS) is None
+    assert extractor.observe("task alpha", _steps()) is None
 
     assert lib.all_skills() == [], "超长提炼不发布"
 
@@ -92,7 +98,7 @@ def test_deterministic_gate_runs_before_injected_gate() -> None:
 
     with warnings.catch_warnings(record=True):
         warnings.simplefilter("always")
-        assert extractor.observe("task a", _STEPS) is None
+        assert extractor.observe("task alpha", _steps()) is None
 
     assert seen == [], "确定性门先拦，判定门不执行"
     assert lib.all_skills() == []
@@ -111,17 +117,17 @@ def test_duplicate_instructions_not_published() -> None:
     lib.register(existing)
     extractor = SopExtractor(lib, writer=lambda _prompt: "1. 读输入\n2. 输出摘要", threshold=2)
 
-    assert extractor.observe("task a", _STEPS) is None
+    assert extractor.observe("task alpha", _steps()) is None
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        assert extractor.observe("task a", _STEPS) is None, "逐字重复 ⇒ 不入库"
+        assert extractor.observe("task alpha", _steps()) is None, "逐字重复 ⇒ 不入库"
 
     assert lib.all_skills() == [existing], "技能库条目数不变"
     assert lib.lookup(existing.skill_id).instructions == "1. 读输入\n2. 输出摘要"
     assert len(caught) == 1, "重复拦截留痕"
-    key = extractor._group_key("task a")  # type: ignore[reportPrivateUsage]
+    key = extractor._group_key("task alpha")  # type: ignore[reportPrivateUsage]
     assert extractor._samples.get(key, []) == [], "组已清空"  # type: ignore[reportPrivateUsage]
-    assert extractor.observe("task a", _STEPS) is None, "重新累积，不立即提炼"
+    assert extractor.observe("task alpha", _steps()) is None, "重新累积，不立即提炼"
 
 
 # ---- 技能库字段上界 ----

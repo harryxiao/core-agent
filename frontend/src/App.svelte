@@ -4,12 +4,37 @@
   import Settings from "./views/Settings.svelte";
   import TaskPanel from "./views/TaskPanel.svelte";
   import { createSession, listSessions } from "./lib/api.js";
+  import {
+    activeAgent,
+    initialTaskState,
+    reduceTaskEvent,
+    selectTaskAgent,
+    taskTabModel,
+  } from "./lib/taskview.js";
 
   // 两页签（不引路由库）；会话页两栏 —— 会话列表与会话标识由本层持有（同一真源）。
   let tab = $state("chat");
   let sessions = $state([]);
   let sessionId = $state("");
   let error = $state("");
+
+  // 任务状态上提：任务区、标签栏与聊天区只读详情共用同一份纯 reducer 模型。
+  let taskState = $state(initialTaskState());
+  let tabs = $derived(taskTabModel(taskState));
+  let agentView = $derived(activeAgent(taskState));
+
+  function onTaskEvent(ev) {
+    taskState = reduceTaskEvent(taskState, ev);
+  }
+
+  function selectAgent(taskId, subtaskId) {
+    taskState = selectTaskAgent(taskState, taskId, subtaskId);
+  }
+
+  function useSession(id) {
+    sessionId = id;
+    taskState = initialTaskState(); // 会话切换 ⇒ 标签/快照/选择全部复位
+  }
 
   async function refresh() {
     try {
@@ -23,7 +48,7 @@
     error = "";
     try {
       const body = await createSession();
-      sessionId = body.session_id;
+      useSession(body.session_id);
       await refresh();
     } catch (exc) {
       error = String(exc.message || exc);
@@ -42,11 +67,24 @@
   </nav>
   {#if tab === "chat"}
     <div class="columns">
-      <Chat {sessionId} onTurnEnd={refresh} />
+      <Chat
+        {sessionId}
+        {tabs}
+        {agentView}
+        onSelectAgent={selectAgent}
+        onTurnEnd={refresh}
+      />
       <div class="rail">
         <!-- 任务区与会话列表同处右栏、**各自独立**（在途运行态 vs 持久记录，不混池） -->
-        <TaskPanel {sessionId} />
-        <SessionList {sessions} {sessionId} onSelect={(id) => (sessionId = id)} onNew={newSession} />
+        <TaskPanel
+          {sessionId}
+          tasks={taskState.tasks}
+          notice={taskState.notice}
+          selected={taskState.selected}
+          onEvent={onTaskEvent}
+          onSelectAgent={selectAgent}
+        />
+        <SessionList {sessions} {sessionId} onSelect={useSession} onNew={newSession} />
       </div>
     </div>
     {#if error}<p class="error">{error}</p>{/if}

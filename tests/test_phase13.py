@@ -861,10 +861,16 @@ def test_build_runtime_wires_sop_extractor(monkeypatch, tmp_path) -> None:
     assert planner._skill_router("summarize the report") == [], "提炼前技能库为空"
 
     extractor._writer = lambda prompt: "1. 读输入\n2. 输出摘要"
-    for _ in range(3):
-        observer("summarize the report", ["assistant: tools.echo", "tool: ok"], True)
+    for index in range(3):
+        observer("summarize the report", [f"tools.echo（text=x-{index}）→ ok"], True, "done")
 
-    assert planner._skill_router("please summarize the report"), "提炼产物进同一技能库 → 路由命中"
+    library = runtime.skill_router._library
+    sop_skills = [s for s in library.all_skills() if s.skill_id.startswith("skills.sop.")]
+    assert sop_skills and sop_skills[0].status == "draft", "0295：只产 draft"
+    assert planner._skill_router("please summarize the report") == [], "draft 不进路由"
+
+    library.activate(sop_skills[0].skill_id)
+    assert planner._skill_router("please summarize the report"), "显式启用后路由命中"
 
 
 # ---- 0044 语义路由接线 ----
@@ -952,7 +958,7 @@ def test_build_runtime_wires_skill_iteration(monkeypatch, tmp_path) -> None:
     rounds: list[list[dict[str, str]]] = []
     for _ in range(3):
         rounds.append(planner_router("summarize report"))  # 每轮推理前路由命中（loop 真实节奏）
-        runtime.loop._turn_observer("summarize report", ["assistant: x"], False)
+        runtime.loop._turn_observer("summarize report", ["assistant: x"], False, "failed")
 
     assert [h["instructions"] for h in rounds[0]] == ["1. 读输入"], "命中注入 instructions"
     assert rounds[0][0]["version"] == "v1"
@@ -996,7 +1002,9 @@ def test_build_runtime_forwards_failure_steps_to_iterator(monkeypatch, tmp_path)
     runtime.skill_iterator._writer = lambda prompt: seen.append(prompt) or "1. 改进步骤"
     for _ in range(3):
         planner_router("summarize report")
-        runtime.loop._turn_observer("summarize report", ["code_run（pytest -q）→ 3 failed"], False)
+        runtime.loop._turn_observer(
+            "summarize report", ["code_run（pytest -q）→ 3 failed"], False, "failed"
+        )
 
     assert seen, "失败率达阈值 → 已触发改写"
     assert "最近一次失败的实际执行步骤：" in seen[0]

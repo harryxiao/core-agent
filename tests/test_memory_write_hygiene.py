@@ -79,7 +79,7 @@ def test_sop_instructions_are_redacted_before_register() -> None:
         writer=lambda _prompt: f"1. 调用 {_SECRET} 对应接口\n2. 校验返回码",
         threshold=1,
     )
-    skill = extractor.observe("发布服务", ["tools.code_run（…）→ ok"], ok=True)
+    skill = extractor.observe("发布服务流程", ["tools.code_run（…）→ ok"], ok=True)
     assert skill is not None
     assert _SECRET not in skill.instructions
     assert "<redacted>" in skill.instructions

@@ -124,8 +124,13 @@ canonical 目录缺省 `$CORE_STATE_DIR/notes`（未设则 `~/.core/state/notes`
 - 全局层：`pinned()/pinned_digest()/pinned_overflow()/set_pinned()` **不接受**会话维度（承 §4 的「刻意知识不参与隔离」）。
 - 三 loop 同注入（主 / 子任务 / 神兽）—— 子任务与神兽同须遵守任务级硬约束。
 
-### 3.5 Update：任务后写回（复用既有收尾观察者）
+### 3.5 Update：任务后沉淀（复用既有收尾观察者）
 
+- **change 0295 / ADR-0285 起为两段式**：组合根把 `TurnObserver(task, steps, ok, reply)` 交给
+  `Sedimenter.observe_turn` —— 成功轮先过确定性预滤，再由模型提炼为结构化**候选**写入
+  `notes-candidates.json`（对 `digest/list/search` 不可见），显式 `candidate-promote` 后才经
+  `NoteStore.update` 写 canonical。下方 `NoteStore.observe_turn` 的直写语义保留为**低层原语**
+  （单测/来源守护），生产**不再接线**。
 - **复用 `TurnObserver`**，不新增第二个收尾钩子：成功轮的（任务, 行动/结果序列）已经过该钩子，
   再开一条「笔记写回」回调会得到**两个节律、两处真源**。
 - `observe_turn(task, steps, *, ok)`：`ok=False` 直接返回（**失败轮不写**，失败信号仍归技能迭代）；

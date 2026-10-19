@@ -229,7 +229,7 @@ def _run_with(content: str | list[str]) -> tuple[LoopResult, list[bool], list[st
     loop = DefaultLoop(
         planner=LLMPlanner(_FakeLLM(content), tools=provider),
         tools=provider,
-        turn_observer=lambda task, steps, ok: seen.append(ok),
+        turn_observer=lambda task, steps, ok, reply: seen.append(ok),
     )
     return loop.run("hi"), seen, calls
 

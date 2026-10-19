@@ -58,10 +58,11 @@ Middleware = Callable[[LoopContext, Action], Action | None | Awaitable[Action | 
 # 审批回调：不可逆动作经确认门判 confirm 时询问人工（tool_id, args, reason）→ 是否放行。
 Approver = Callable[[str, dict[str, Any], str], Awaitable[bool]]
 
-# 收尾观察者：每轮收尾时提交（任务文本, 行动/结果序列, 本轮成功与否）→ 观察产物（不返回值）。
+# 收尾观察者：每轮收尾时提交（任务文本, 行动/结果序列, 本轮成功与否, 最终回复）→ 观察产物。
 # 成功与失败都提交（失败信号是技能迭代的判据）；loop 不 import skills（架构红线），
-# 生产侧注入组合根闭包（内部再分发到 SopExtractor / 技能反馈）。
-TurnObserver = Callable[[str, list[str], bool], object]
+# 生产侧注入组合根闭包（内部再分发到 SopExtractor / 沉淀候选区）。
+# ``reply`` 是**不可信**的模型原文：观察者自行脱敏与截断（change 0295）。
+TurnObserver = Callable[[str, list[str], bool, str], object]
 
 # 冷路径回调：收尾维护节拍给出一次进化冷路径机会（无参、不返回）；缺省未注入则不做。
 # loop 不 import evolution（架构红线），生产侧注入组合根闭包（内部调 EvolutionWorker.maybe_run）。
@@ -1001,7 +1002,7 @@ class DefaultLoop(Plugin):
         if self._turn_observer is None:
             return
         try:
-            self._turn_observer(_task_text(ctx), _action_steps(ctx), ok)
+            self._turn_observer(_task_text(ctx), _action_steps(ctx), ok, ctx.reply)
         except Exception as err:  # noqa: BLE001 — 观察失败降级，不影响本轮结果
             self._trace(trace_id, "turn_observer_failed", {"error": str(err)})
 

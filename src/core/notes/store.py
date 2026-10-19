@@ -59,7 +59,7 @@ def _tool_of_step(step: str) -> str:
     return step.split("（", 1)[0].strip()
 
 
-def _has_write_effect(steps: list[str]) -> bool:
+def has_write_effect(steps: list[str]) -> bool:
     """本轮是否含**成功的写效应**工具动作（确定性、零 LLM —— 与 ADR-0045 依赖方向一致）。
 
     纯读型动作（``file_read`` / ``web_fetch`` / ``context_read`` / ``list``）产出的内容是
@@ -161,6 +161,23 @@ class NoteStore(Plugin):
             )
         )
         return note
+
+    def raw(self, note_id: str) -> str | None:
+        """读一篇 canonical 的**原始字节**（回收/备份用）；不存在返回 ``None``。
+
+        与 ``get()`` 的差别：不解析、不重建 —— 回收目录要求「逐字可恢复」。
+        """
+        entry = self._backend.get(_NOTE_LAYER, note_id)
+        return entry.content if entry is not None else None
+
+    def remove(self, note_id: str) -> None:
+        """删除一篇 canonical（仅限显式运维入口，如 ``notes prune``）。
+
+        不存在 → ``NOTE_NOT_FOUND``。
+        """
+        if self._load(note_id) is None:
+            raise NoteError(NoteErrorCode.NOTE_NOT_FOUND, f"笔记不存在: {note_id}")
+        self._backend.delete(note_id)
 
     def list(self) -> list[NoteEntry]:
         """canonical 文件清单（标题 / id / 更新时间）。"""
@@ -282,7 +299,7 @@ class NoteStore(Plugin):
         侧 keyfact 抽取），不进 canonical 知识层。判据确定性（按行首工具名匹配写效应工具集），
         非工具行形态 ⇒ 保守判定为无写效应。
         """
-        if not ok or not steps or not _has_write_effect(steps):
+        if not ok or not steps or not has_write_effect(steps):
             return None
         topic = slug_topic(task)
         if not topic:

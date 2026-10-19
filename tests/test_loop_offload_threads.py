@@ -128,7 +128,7 @@ def test_turn_observer_runs_off_loop_thread() -> None:
     """收尾钩子在**无运行中事件循环**的线程上被调用（同步模型桥接因此可用）。"""
     on_loop: list[bool] = []
 
-    def observer(task: str, steps: list[str], ok: bool) -> None:
+    def observer(task: str, steps: list[str], ok: bool, reply: str) -> None:
         on_loop.append(_on_loop_thread())
 
     _reply_loop(turn_observer=observer).run("hi")
@@ -222,7 +222,7 @@ def test_turn_observer_failure_still_degrades() -> None:
     """观察者抛错仍只降级留痕：本轮回复与终态零回归。"""
     traced: list[str] = []
 
-    def observer(task: str, steps: list[str], ok: bool) -> None:
+    def observer(task: str, steps: list[str], ok: bool, reply: str) -> None:
         raise RuntimeError("boom")
 
     class _Tracer:
@@ -252,7 +252,7 @@ def test_loop_finished_emitted_before_slow_turn_observer() -> None:
     release = threading.Event()
     observed = threading.Event()
 
-    def observer(task: str, steps: list[str], ok: bool) -> None:
+    def observer(task: str, steps: list[str], ok: bool, reply: str) -> None:
         observed.set()
         release.wait(timeout=2.0)
 

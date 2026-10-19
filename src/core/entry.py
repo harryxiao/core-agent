@@ -78,8 +78,10 @@ from core.notes import (
     NoteEntry,
     NoteError,
     NoteStore,
+    Sedimenter,
     close_milestone,
     promote_session_summary,
+    prune_notes,
     render_note,
     slug_topic,
 )
@@ -243,6 +245,12 @@ def _add_plugin_parser(sub: Any) -> None:
 def _add_skill_parser(sub: Any) -> None:
     skill = sub.add_parser("skill", help="技能市场")
     sk_sub = skill.add_subparsers(dest="skill_cmd", metavar="<skill-cmd>")
+    list_skills = sk_sub.add_parser("list", help="列出本地技能（可按状态过滤；review draft 用）")
+    list_skills.add_argument(
+        "--status", metavar="S", help="只列该状态（draft|active|gray|deprecated）"
+    )
+    deprecate = sk_sub.add_parser("deprecate", help="退役技能（退出路由，可 activate 显式复活）")
+    deprecate.add_argument("name")
     search = sk_sub.add_parser("search", help="搜索技能市场")
     search.add_argument("query")
     search.add_argument("--source", metavar="S")
@@ -333,6 +341,28 @@ def _add_notes_parser(sub: Any) -> None:
     unpin = notes_sub.add_parser("unpin", help="清常驻标记（正文不再无条件注入；优先级一并归零）")
     unpin.add_argument("note_id", help="笔记（主题）id")
     notes_sub.add_parser("pinned", help="列出常驻笔记及其是否进场（超预算篇目报为未进场）")
+    notes_sub.add_parser("candidates", help="列出沉淀候选（未晋升，不进 digest/search）")
+    candidate_show = notes_sub.add_parser("candidate-show", help="打印一条沉淀候选")
+    candidate_show.add_argument("candidate_id", metavar="<candidate-id>")
+    candidate_promote = notes_sub.add_parser(
+        "candidate-promote", help="把候选晋升为 canonical 笔记（唯一晋升入口）"
+    )
+    candidate_promote.add_argument("candidate_id", metavar="<candidate-id>")
+    candidate_promote.add_argument("--as", dest="as_note_id", metavar="NOTE_ID")
+    candidate_promote.add_argument("--title", default="", metavar="TITLE")
+    candidate_reject = notes_sub.add_parser("candidate-reject", help="丢弃一条沉淀候选")
+    candidate_reject.add_argument("candidate_id", metavar="<candidate-id>")
+    prune = notes_sub.add_parser(
+        "prune", help="按来源把存量 canonical 笔记移入回收目录（不物理删除）"
+    )
+    prune.add_argument(
+        "--source", default="notes.turn", metavar="S", help="来源标记（缺省 notes.turn）"
+    )
+    prune.add_argument("--dry-run", action="store_true", help="只列出将移动的 note_id")
+    prune.add_argument("--include-pinned", action="store_true", help="连常驻笔记一并移走")
+    prune.add_argument(
+        "--trash-dir", metavar="DIR", help="回收目录（缺省 $CORE_STATE_DIR/notes-trash）"
+    )
     promote = notes_sub.add_parser("promote", help="把会话摘要提升为 canonical 常驻笔记")
     promote.add_argument("session_id", metavar="<session-id>", help="会话 id（派生 note_id）")
     promote.add_argument("--as", dest="as_note_id", metavar="NOTE_ID", help="显式覆盖 note_id")
@@ -966,6 +996,10 @@ def _skill(args: argparse.Namespace) -> int:  # noqa: PLR0911 — CLI 分支各�
         return _skill_search(_build_skillhub_client(library), args.query, source=source)
     if args.skill_cmd == "install":
         return _skill_install(_build_skillhub_client(library), args.name, source=source)
+    if args.skill_cmd == "list":
+        return _skill_list(library, status=getattr(args, "status", None))
+    if args.skill_cmd == "deprecate":
+        return _skill_deprecate(library, args.name)
     if args.skill_cmd == "remove":
         return _skill_remove(library, args.name)
     if args.skill_cmd == "activate":
@@ -1193,6 +1227,28 @@ def _skill_install(client: SkillHubClient, skill_id: str, *, source: str = "offi
     return 0
 
 
+def _skill_list(library: SkillLibrary, *, status: str | None = None) -> int:
+    """`skill list [--status S]`：列出本地技能（id / status / description），供 review draft。"""
+    skills = [skill for skill in library.all_skills() if status is None or skill.status == status]
+    if not skills:
+        print("（无匹配技能）")
+        return 0
+    for skill in sorted(skills, key=lambda item: item.skill_id):
+        print(f"{skill.skill_id}\t{skill.status}\t{skill.description}")
+    return 0
+
+
+def _skill_deprecate(library: SkillLibrary, name: str) -> int:
+    """退役技能：退出路由但不物理删除；未知 id 非零退出。"""
+    try:
+        skill = library.deprecate(name)
+    except KeyError:
+        print(f"技能未注册: {name}", file=sys.stderr)
+        return 1
+    print(f"已退役技能 {skill.skill_id}（deprecated，不再参与路由）")
+    return 0
+
+
 def _skill_remove(library: SkillLibrary, name: str) -> int:
     try:
         library.remove(name)
@@ -1272,11 +1328,11 @@ def _yaml_scalar(value: Any) -> str:
 
 
 def _key_to_patch(key: str, value: str) -> dict[str, Any]:
-    """点分键 → apply_change 支持的嵌套 patch（llm./features./im./loop./orchestration.）。"""
+    """点分键 → apply_change 支持的嵌套 patch（llm./features./im./loop./orchestration./notes.）。"""
     top, _, rest = key.partition(".")
-    if top not in ("llm", "features", "im", "loop", "orchestration") or not rest:
+    if top not in ("llm", "features", "im", "loop", "orchestration", "notes") or not rest:
         raise ValueError(  # noqa: TRY003
-            f"config set 暂不支持键: {key}（仅支持 llm./features./im./loop./orchestration.）"
+            f"config set 暂不支持键: {key}（仅支持 llm./features./im./loop./orchestration./notes.）"
         )
     node: dict[str, Any] = {}
     parts = rest.split(".")
@@ -1962,6 +2018,9 @@ def _rag_ask(runtime: Any, args: argparse.Namespace) -> int:
 _NOTES_USAGE = (
     "用法: core-agent notes {list|show <note_id>|search <query>|"
     "pin <note_id> [--priority N]|unpin <note_id>|pinned|"
+    "candidates|candidate-show <id>|candidate-promote <id> [--as ID] [--title T]|"
+    "candidate-reject <id>|"
+    "prune [--source S] [--dry-run] [--include-pinned] [--trash-dir DIR]|"
     "promote <session-id> [--as ID] [--title T]|"
     "milestone <name> [--session SID] [--as ID] [--title T] [--priority N]"
     " [--conclusion TEXT] [--decision TEXT] [--constraint TEXT]}"
@@ -1973,6 +2032,14 @@ def _notes_store() -> NoteStore:
     return NoteStore(path=_state_path("notes"))
 
 
+def _notes_sedimenter(store: NoteStore) -> Sedimenter:
+    """候选区门面：与组合根同源的 JSON（`$CORE_STATE_DIR/notes-candidates.json`）。
+
+    CLI 侧 `writer=None`：晋升/丢弃都是**零模型调用**的确定性操作。
+    """
+    return Sedimenter(store, writer=None, path=_state_path("notes-candidates.json"))
+
+
 def _notes(args: argparse.Namespace) -> int:
     """文档化记忆操作面：列清单 / 打印一篇 / 词法检索（读）+ 常驻标记（写回 canonical 文档层）。"""
     handlers = {
@@ -1982,6 +2049,11 @@ def _notes(args: argparse.Namespace) -> int:
         "pin": _notes_pin,
         "unpin": _notes_unpin,
         "pinned": _notes_pinned,
+        "candidates": _notes_candidates,
+        "candidate-show": _notes_candidate_show,
+        "candidate-promote": _notes_candidate_promote,
+        "candidate-reject": _notes_candidate_reject,
+        "prune": _notes_prune,
         "promote": _notes_promote,
         "milestone": _notes_milestone,
     }
@@ -2032,6 +2104,81 @@ def _notes_pinned(store: NoteStore, _args: argparse.Namespace) -> int:
     for note in notes:
         status = "[未进场]" if note.note_id in excluded else "[在场]"
         print(f"{note.note_id}\t{note.title or note.note_id}\t优先 {note.pin_priority}\t{status}")
+    return 0
+
+
+def _notes_candidates(store: NoteStore, _args: argparse.Namespace) -> int:
+    """`notes candidates`：列出沉淀候选（**不进** digest / search，晋升后才是 canonical）。"""
+    candidates = _notes_sedimenter(store).list_candidates()
+    if not candidates:
+        print("（无候选）")
+        return 0
+    for candidate in candidates:
+        print(
+            f"{candidate.candidate_id}\t{candidate.title or candidate.candidate_id}"
+            f"\tsupport={candidate.support}\t{candidate.kind}"
+        )
+    return 0
+
+
+def _notes_candidate_show(store: NoteStore, args: argparse.Namespace) -> int:
+    """`notes candidate-show <id>`：打印候选全文与证据；不存在 ⇒ 退出 1。"""
+    try:
+        candidate = _notes_sedimenter(store).get_candidate(args.candidate_id)
+    except KeyError:
+        print(f"候选不存在: {args.candidate_id}", file=sys.stderr)
+        return 1
+    print(f"{candidate.candidate_id}\t{candidate.title or candidate.candidate_id}")
+    print(f"kind={candidate.kind}\tsupport={candidate.support}")
+    print(f"tags={', '.join(candidate.tags)}")
+    print(f"queries={', '.join(candidate.queries)}")
+    print(f"evidence={candidate.evidence}")
+    print(candidate.content)
+    return 0
+
+
+def _notes_candidate_promote(store: NoteStore, args: argparse.Namespace) -> int:
+    """`notes candidate-promote <id> [--as ID] [--title T]`：候选 → canonical（来源守护）。"""
+    try:
+        note = _notes_sedimenter(store).promote(
+            args.candidate_id, as_topic=args.as_note_id, title=args.title
+        )
+    except KeyError:
+        print(f"候选不存在: {args.candidate_id}", file=sys.stderr)
+        return 1
+    print(f"已晋升: {note.note_id}\t{note.title or note.note_id}")
+    return 0
+
+
+def _notes_candidate_reject(store: NoteStore, args: argparse.Namespace) -> int:
+    """`notes candidate-reject <id>`：丢弃候选（不触碰 canonical）；不存在 ⇒ 退出 1。"""
+    if not _notes_sedimenter(store).reject(args.candidate_id):
+        print(f"候选不存在: {args.candidate_id}", file=sys.stderr)
+        return 1
+    print(f"已丢弃候选: {args.candidate_id}")
+    return 0
+
+
+def _notes_prune(store: NoteStore, args: argparse.Namespace) -> int:
+    """`notes prune [--source S]`：按来源移入回收目录（0600 + manifest），不物理删除。"""
+    trash_dir = Path(args.trash_dir) if args.trash_dir else _state_path("notes-trash")
+    result = prune_notes(
+        store,
+        source=args.source,
+        trash_dir=trash_dir,
+        dry_run=args.dry_run,
+        include_pinned=args.include_pinned,
+    )
+    if result.kept_pinned:
+        print(f"保留常驻（pinned）: {', '.join(result.kept_pinned)}")
+    if not result.moved:
+        print(f"没有来源为 {args.source} 的笔记")
+        return 1
+    prefix = "[dry-run] " if args.dry_run else ""
+    for note_id in result.moved:
+        print(f"{prefix}{note_id}")
+    if not args.dry_run:
+        print(f"已移入回收目录: {result.trash_path}")
     return 0
 
 

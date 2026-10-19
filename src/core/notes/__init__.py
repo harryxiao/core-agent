@@ -19,20 +19,39 @@ from .milestone import (
 )
 from .models import NoteEntry, parse_note, render_note, slug_topic
 from .promote import promote_session_summary
+from .prune import PruneResult, prune_notes
+from .sediment import (
+    AUTO_PROMOTE_MIN_SUPPORT,
+    CANDIDATE_LIMIT,
+    SEDIMENT_SOURCE,
+    Candidate,
+    CandidateStore,
+    Sedimenter,
+    candidate_writer_with,
+)
 from .store import NoteStore
 
 __all__ = [
+    "AUTO_PROMOTE_MIN_SUPPORT",
+    "CANDIDATE_LIMIT",
     "MAX_MILESTONE_CHARS",
     "MILESTONE_PIN_PRIORITY",
     "MILESTONE_SOURCE",
+    "SEDIMENT_SOURCE",
+    "Candidate",
+    "CandidateStore",
     "MarkdownBackend",
     "NoteEntry",
     "NoteError",
     "NoteErrorCode",
     "NoteStore",
+    "PruneResult",
+    "Sedimenter",
+    "candidate_writer_with",
     "close_milestone",
     "parse_note",
     "promote_session_summary",
+    "prune_notes",
     "render_note",
     "slug_topic",
 ]

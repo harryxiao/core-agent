@@ -807,7 +807,7 @@ class _CapturingExporter:
 
 
 def test_loop_fires_turn_observer_on_success() -> None:
-    seen: list[tuple[str, list[str], bool]] = []
+    seen: list[tuple[str, list[str], bool, str]] = []
     provider = ToolProvider()
     provider.register(_echo_tool())
 
@@ -820,16 +820,17 @@ def test_loop_fires_turn_observer_on_success() -> None:
         planner=planner,
         tools=provider,
         max_rounds=3,
-        turn_observer=lambda task, steps, ok: seen.append((task, steps, ok)),
+        turn_observer=lambda task, steps, ok, reply: seen.append((task, steps, ok, reply)),
     )
 
     loop.run("整理会议纪要")
 
     assert len(seen) == 1, "成功收尾触发一次"
-    task, steps, ok = seen[0]
+    task, steps, ok, reply = seen[0]
     assert ok is True, "成功轮 ok=True"
     assert task == "整理会议纪要", "钩子拿到任务文本"
     assert any("tools.echo" in step for step in steps), "行动/结果序列承载工具调用"
+    assert reply == "done", "钩子拿到最终回复（沉淀提炼的输入）"
 
 
 def test_loop_fires_turn_observer_on_failure() -> None:
@@ -837,7 +838,7 @@ def test_loop_fires_turn_observer_on_failure() -> None:
     loop = DefaultLoop(
         planner=lambda ctx: Action(args={"reply": "unused"}),
         max_rounds=0,
-        turn_observer=lambda task, steps, ok: seen.append((task, steps, ok)),
+        turn_observer=lambda task, steps, ok, reply: seen.append((task, steps, ok)),
     )
 
     result = loop.run("超限任务")
@@ -849,7 +850,7 @@ def test_loop_fires_turn_observer_on_failure() -> None:
 def test_loop_turn_observer_error_does_not_break_round() -> None:
     tracer = _RecordingTracer()
 
-    def boom(task: str, steps: list[str], ok: bool) -> None:
+    def boom(task: str, steps: list[str], ok: bool, reply: str) -> None:
         raise RuntimeError("观察者不可用")  # noqa: TRY003
 
     loop = DefaultLoop(

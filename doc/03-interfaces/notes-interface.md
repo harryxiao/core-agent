@@ -124,7 +124,10 @@ class NoteStore(Plugin):
   `_ARCHIVE_SOURCES`（＝提升产物 `notes.promote`）的笔记 —— 其正文源自 memory 会话摘要、已由 loop
   「历史摘要（长期）」块每轮注入，同源内容免二次注入；此类仍以**清单标题**在场。**排除仅落在
   `digest` 注入面**：`consult` / `search` / `list` / `pinned_digest` 口径**逐字不变**。
-- `observe_turn`：成功轮把「解决过程」覆盖式写回 `slug_topic(task)` 主题的 canonical 文件；`ok=False`
+- `observe_turn`：**非默认沉淀路径**（change 0295 / ADR-0285）—— 组合根已改走 `Sedimenter`
+  两段式（见 §3.3），本方法保留为低层原语（现有单测与来源守护覆盖），成功轮直写 canonical
+  **不再由 `build_runtime` 接线**。以下为原语语义：成功轮把「解决过程」覆盖式写回
+  `slug_topic(task)` 主题的 canonical 文件；`ok=False`
   或 slug 为空 ⇒ `None`（不写盘）。写回**原样携带**既有 `pinned` 标记（逐轮写回不抹除常驻）。
   **来源守护**（change 0151 / ADR-0143）：撞上来源**非** `notes.turn` 的既有笔记 ⇒ **不覆写**该主题，
   沉淀改写入派生主题 `<topic>-<n>`（`n` 为 2 起、取首个「不存在或来源为 `notes.turn`」者）。
@@ -222,6 +225,96 @@ def close_milestone(
   派生输入，不是隔离维度。
 - **显式触发**：不自动置常驻（ADR-0263 D7；方案 C 维持否决）。
 
+### 3.3 沉淀候选区与晋升（`core.notes.sediment`，change 0295 / ADR-0285 / 台账 E231）
+
+**两段式沉淀**：成功轮只产**候选**，显式晋升后才写 canonical。notes 包**不 import LLM/skills/loop**；
+模型调用经 `CandidateWriter = Callable[[str], str]` 由组合根注入。
+
+```python
+from core.notes import (
+    CANDIDATE_LIMIT, AUTO_PROMOTE_MIN_SUPPORT, SEDIMENT_SOURCE,
+    Candidate, CandidateStore, Sedimenter, candidate_writer_with,
+)
+
+@dataclass
+class Candidate:
+    candidate_id: str            # = topic slug
+    title: str = ""
+    content: str = ""            # Markdown（≤4000）
+    tags: list[str] = field(default_factory=list)
+    queries: list[str] = field(default_factory=list)
+    kind: str = "fact"           # decision|procedure|fact|preference|pitfall
+    support: int = 1
+    first_seen: float = 0.0
+    last_seen: float = 0.0
+    trace_digests: list[str] = field(default_factory=list)   # ≤8
+    evidence: str = ""           # 任务首行（≤120）
+
+class CandidateStore:
+    def __init__(self, path: Path | None = None, *, limit: int = CANDIDATE_LIMIT,
+                 clock: Callable[[], float] | None = None) -> None: ...
+    def list(self) -> list[Candidate]: ...          # 按 (-last_seen, candidate_id)
+    def get(self, candidate_id: str) -> Candidate: ...
+    def upsert(self, candidate: Candidate, *, trace_digest: str = "") -> Candidate: ...
+    def remove(self, candidate_id: str) -> bool: ...
+
+class Sedimenter:
+    def __init__(self, note_store, *, writer: CandidateWriter | None = None,
+                 path: Path | None = None, store: CandidateStore | None = None,
+                 clock: Callable[[], float] | None = None,
+                 auto_promote: bool = False,
+                 min_support: int = AUTO_PROMOTE_MIN_SUPPORT) -> None: ...
+
+    def observe_turn(self, task: str, steps: list[str], *, ok: bool,
+                     reply: str = "") -> Candidate | None: ...
+    def promote(self, candidate_id: str, *, as_topic: str | None = None,
+                title: str = "") -> NoteEntry: ...
+    def reject(self, candidate_id: str) -> bool: ...
+    def list_candidates(self) -> list[Candidate]: ...
+    def get_candidate(self, candidate_id: str) -> Candidate: ...
+```
+
+- **预滤**（确定性、零模型调用）：`ok` 为真、`steps` 非空、含**写效应**动作（复用
+  `store.has_write_effect`）、任务去空白 ≥6 字符、writer 非空 —— 任一不满足即返回 `None`。
+- **候选区**：`$CORE_STATE_DIR/notes-candidates.json`（runtime/CLI 传路径）；0600 原子写、
+  `RLock` 串行化；上限 **128**（`CANDIDATE_LIMIT`，按 `last_seen/first_seen/id` 淘汰最旧）；
+  损坏/结构不符 ⇒ warn（只报条数）并空态启动。候选**不进入** `digest/list/search`。
+- **提炼与解析**：prompt 含任务/轨迹/最终回复（**先脱敏、再有界**：task≤500、≤20 步×300、
+  reply≤1500）与已有 topic/note id（≤40）；要求严格 JSON（容忍围栏，取首 `{` 至末 `}`）。
+  `durable is not True`、topic 非 str / slug 为空、正文空 ⇒ 丢弃（fail-closed）。
+- **支持度**：`blake2b(脱敏 steps)` 已在候选 `trace_digests` 中 ⇒ 只刷新内容与 `last_seen`，
+  support 不增；否则 +1（列表最多保留 8 个 digest）。
+- **晋升**：`promote()` 复用 `NoteStore.update()`（唯一 canonical 写路径），产出
+  `source="notes.sediment"`；既有主题来源非 sediment ⇒ `NoteError(TOPIC_EXISTS)`；既有
+  `sediment:<other>` 标签 ⇒ 同样拒绝（候选保留，CLI 提示 `--as`）；既有的 `pinned/pin_priority`
+  保留，tags 取并集并追加 `sediment:<candidate_id>`；成功后移除候选。
+- **自动晋升**：`auto_promote` 缺省 `False`；开启后当 `support >= min_support`（缺省 2）
+  尝试晋升，冲突只 warn、候选保留。
+- `candidate_writer_with(llm)`：把「prompt → 文本」模型调用适配为 `CandidateWriter`。
+
+### 3.4 存量清理：回收目录（`core.notes.prune`，change 0295 / ADR-0285）
+
+```python
+from core.notes import PruneResult, prune_notes
+
+def prune_notes(store: NoteStore, *, source: str, trash_dir: Path,
+                dry_run: bool = False, include_pinned: bool = False,
+                clock: Callable[[], float] | None = None) -> PruneResult: ...
+
+@dataclass
+class PruneResult:
+    moved: list[str]
+    kept_pinned: list[str]
+    trash_path: Path | None = None
+    manifest_path: Path | None = None
+```
+
+- 过滤 `store.list()` 中 `source` 匹配者；缺省跳过 `pinned` 并计入 `kept_pinned`。
+- 逐篇 `store.raw(note_id)`（**原字节**）写入 `trash_dir/<UTC stamp>/<note_id>.md`（0600），
+  再 `store.remove(note_id)`；全部完成后原子写 `manifest.json`（0600，含 source/timestamp/
+  moved/kept_pinned）。`dry_run` 只返回 `moved`、不建目录。
+- **恢复** = 把回收文件复制回 canonical 笔记目录。0 篇移动 ⇒ CLI 退出 1（dry-run 除外）。
+
 ---
 
 ## 4. 错误码（`core.notes.errors`）
@@ -247,6 +340,9 @@ class NoteError(Exception):
 
 - `core.loop.protocol.LoopContext` 新增附加字段 `notes: str = ""`（缺省空 ⇒ 既有行为逐字不变）与
   `pinned_notes: str = ""`（**独立字段** —— 常驻面与命中面分列成块，不得折入 `notes`；change 0149）。
+- **Update 侧（change 0295 / ADR-0285）**：`TurnObserver = Callable[[str, list[str], bool, str], object]`
+  —— 第 4 参为 `ctx.reply`（模型最终回复，**不可信文本**，由 `Sedimenter` 先脱敏再截断）；
+  组合根 `_loop_hooks` 把它交给 `Sedimenter.observe_turn`，不再调用 `NoteStore.observe_turn`。
 - `core.loop.default` 新增钩子别名（**纯 Callable，不含 notes 类型**）：
 
 ```python
@@ -275,6 +371,11 @@ PinnedNotesConsult = Callable[[], str]   # **零参** → 常驻注入块（签�
 | `notes pinned` | 列出常驻笔记：`note_id` / 标题 / 优先级 / **是否进场**（超预算篇目报为未进场，change 0154） |
 | `notes promote <session-id> [--as NOTE_ID] [--title TITLE]` | 会话摘要 → canonical 常驻笔记（显式提升；幂等覆盖；会话无摘要 / 派生 id 为空 / 撞非 promotion 来源且未给 `--as` ⇒ 非零退出、不写盘） |
 | `notes milestone <name> [--session SID] [--as NOTE_ID] [--title TITLE] [--priority N] [--conclusion T]... [--decision T]... [--constraint T]...` | 里程碑收口 → 结构化报告并置常驻（确定性装配；缺省优先级 100；幂等覆盖；无内容 / 派生 id 为空 / 撞非 milestone 来源且未给 `--as` ⇒ 非零退出、不写盘） |
+| `notes candidates` | 列出沉淀候选（id / 支持度 / 标题 / 最后出现时间；零模型调用） |
+| `notes candidate-show <id>` | 打印一条候选全文（未知 id ⇒ 非零退出） |
+| `notes candidate-promote <id> [--as NOTE_ID] [--title TITLE]` | 候选 → canonical（`source=notes.sediment`；来源/异候选冲突 ⇒ 非零退出、候选保留） |
+| `notes candidate-reject <id>` | 丢弃一条候选（未知 id ⇒ 非零退出） |
+| `notes prune [--source S] [--dry-run] [--include-pinned] [--trash-dir DIR]` | 按来源把 canonical 笔记移入回收目录（缺省 `notes.turn`；跳过 pinned；写 manifest；0 篇移动退出 1） |
 
 **入口侧写路径（非 `notes` 命令）**：`rag ingest <path> --doc-id ID --summarize`（change `0213`／
 ADR-0203）⇒ 文档摘要落 `doc-<slug(doc_id)>`、`source="notes.rag"`、**恒非 pinned**（幂等覆盖；

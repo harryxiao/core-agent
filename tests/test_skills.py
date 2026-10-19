@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import itertools
 import warnings
 from pathlib import Path
 
@@ -282,8 +283,13 @@ def _writer(text: str = "1. 读输入\n2. 提炼要点\n3. 输出摘要"):
     return _write
 
 
+_STEP_SEQ = itertools.count()
+
+
 def _steps(tool: str = "tools.echo") -> list[str]:
-    return [f'assistant: {{"tool_id": "{tool}", "args": {{"text": "x"}}}}', 'tool: {"data": "x"}']
+    """真实行动序列形态（`tools.` 行首）；带自增 nonce 以代表**不同**执行轨迹。"""
+    n = next(_STEP_SEQ)
+    return [f"{tool}（text=x-{n}）→ 结果 {n}"]
 
 
 def test_sop_extract() -> None:
@@ -296,15 +302,17 @@ def test_sop_extract() -> None:
     skill = extractor.observe("summarize the report", _steps())
 
     assert skill is not None, "第 3 次成功轨迹触发提炼"
-    assert skill.status == "active", "维度1 低风险自动发布"
+    assert skill.status == "draft", "SOP 先 draft，显式 activate 后才生效"
     assert skill.instructions.startswith("1. 读输入"), "instructions 承载 SOP 步骤"
     assert skill.task_types and "summarize" in skill.task_types[0], "task_types 为归组键"
     assert lib.lookup(skill.skill_id) is skill
     assert len(writer.calls) == 1  # type: ignore[attr-defined]
     assert "summarize the report" in writer.calls[0]  # type: ignore[attr-defined]
+    assert SkillRouter(lib).match("please summarize the report") == [], "draft 不进路由"
 
+    lib.activate(skill.skill_id)
     matches = SkillRouter(lib).match("please summarize the report")
-    assert matches and matches[0].skill.skill_id == skill.skill_id, "提炼产物可被路由命中"
+    assert matches and matches[0].skill.skill_id == skill.skill_id, "激活后可被路由命中"
 
 
 def test_sop_extract_below_threshold_and_failures_not_counted() -> None:
@@ -351,12 +359,12 @@ def test_sop_extract_empty_text_not_registered_and_samples_kept() -> None:
     lib = SkillLibrary()
     extractor = SopExtractor(lib, writer=_writer("   "), threshold=2)
 
-    assert extractor.observe("task a", _steps()) is None
-    assert extractor.observe("task a", _steps()) is None
+    assert extractor.observe("task alpha", _steps()) is None
+    assert extractor.observe("task alpha", _steps()) is None
     assert lib.all_skills() == [], "空提炼不入库（不写半成品）"
 
     extractor._writer = _writer("1. 步骤一\n2. 步骤二")  # type: ignore[assignment]
-    assert extractor.observe("task a", _steps()) is not None, "样本保留，下轮可再提炼"
+    assert extractor.observe("task alpha", _steps()) is not None, "样本保留，下轮可再提炼"
 
 
 def test_sop_extract_is_reversible() -> None:
@@ -364,7 +372,7 @@ def test_sop_extract_is_reversible() -> None:
     lib = SkillLibrary()
     extractor = SopExtractor(lib, writer=_writer(), threshold=1, effect_tracker=tracker)
 
-    skill = extractor.observe("task a", _steps())
+    skill = extractor.observe("task alpha", _steps())
     assert skill is not None and lib.all_skills() == [skill]
 
     report = tracker.rollback("skills.extract")
@@ -419,7 +427,7 @@ def test_sop_extract_task_namespace_isolates_from_per_turn_group() -> None:
     task_level = SopExtractor(
         lib, writer=_writer("1. 取数\n2. 汇总输出"), threshold=1, namespace="task"
     )
-    task_skill = task_level.observe("summarize report", ["子任务目标：取数"])
+    task_skill = task_level.observe("summarize report", ["子任务目标：取数", "子任务目标：汇总"])
 
     assert task_skill is not None
     assert task_skill.task_types == ["task::report summarize"], "任务级组键前缀化，不复用单轮组"
@@ -435,21 +443,21 @@ def test_sop_extract_quality_gate_rejects_group_cleared_and_key_only() -> None:
     body = "1. 步骤一\n2. 步骤二-不可复用"
     extractor = SopExtractor(lib, writer=_writer(body), threshold=2, gate=lambda _task, _sop: False)
 
-    assert extractor.observe("task a", _steps()) is None, "未达阈值不提炼"
+    assert extractor.observe("task alpha", _steps()) is None, "未达阈值不提炼"
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        assert extractor.observe("task a", _steps()) is None, "门未过 ⇒ 不入库"
+        assert extractor.observe("task alpha", _steps()) is None, "门未过 ⇒ 不入库"
 
     assert lib.all_skills() == [], "门未过不发布"
     assert len(caught) == 1, "门未过留有痕"
     text = str(caught[0].message)
-    assert extractor._group_key("task a") in text, "留痕报组键"
+    assert extractor._group_key("task alpha") in text, "留痕报组键"
     assert body not in text, "留痕绝不回显提炼正文"
-    assert extractor.observe("task a", _steps()) is None, "组已清空 ⇒ 重新累积，不立即提炼"
+    assert extractor.observe("task alpha", _steps()) is None, "组已清空 ⇒ 重新累积，不立即提炼"
 
 
 def test_sop_extract_quality_gate_passing_publishes() -> None:
-    """门放行 ⇒ 照常以 `active` 入库，且门拿到的正是（任务, 提炼正文）。"""
+    """门放行 ⇒ 照常以 `draft` 入库，且门拿到的正是（任务, 提炼正文）。"""
     lib = SkillLibrary()
     seen: list[tuple[str, str]] = []
 
@@ -458,20 +466,20 @@ def test_sop_extract_quality_gate_passing_publishes() -> None:
         return True
 
     extractor = SopExtractor(lib, writer=_writer(), threshold=1, gate=gate)
-    skill = extractor.observe("task a", _steps())
+    skill = extractor.observe("task alpha", _steps())
 
-    assert skill is not None and skill.status == "active"
-    assert seen and seen[0][0] == "task a" and "1. 读输入" in seen[0][1], "门看到（任务, 正文）"
+    assert skill is not None and skill.status == "draft"
+    assert seen and seen[0][0] == "task alpha" and "1. 读输入" in seen[0][1], "门看到（任务, 正文）"
 
 
 def test_sop_extract_without_quality_gate_publishes_unchanged() -> None:
-    """未注入门 ⇒ 发布路径与引入质量门之前**逐字一致**。"""
+    """未注入门 ⇒ 仍照常入库（0295 起发布状态为 draft）。"""
     lib = SkillLibrary()
     extractor = SopExtractor(lib, writer=_writer(), threshold=1)
 
-    skill = extractor.observe("task a", _steps())
+    skill = extractor.observe("task alpha", _steps())
 
-    assert skill is not None and skill.status == "active"
+    assert skill is not None and skill.status == "draft"
     assert lib.lookup(skill.skill_id) is skill
 
 
@@ -484,10 +492,10 @@ def test_sop_extract_quality_gate_failure_fails_open() -> None:
     lib = SkillLibrary()
     extractor = SopExtractor(lib, writer=_writer(), threshold=1, gate=gate)
 
-    skill = extractor.observe("task a", _steps())
+    skill = extractor.observe("task alpha", _steps())
 
     assert skill is not None, "判定故障不阻断发布"
-    assert skill.status == "active"
+    assert skill.status == "draft"
 
 
 # ---- 语义路由（0044） ----
@@ -886,13 +894,15 @@ def test_sop_samples_persist_across_restart(tmp_path) -> None:
     path = tmp_path / "sop-samples.json"
     lib = SkillLibrary()
     first = _sop(lib, path)
-    assert first.observe("读文档并摘要", ["step1"]) is None, "不足阈值不提炼"
+    assert first.observe("读文档并摘要", ["tools.file_read（path=a.md）→ 文档"]) is None, (
+        "不足阈值不提炼"
+    )
 
     # 模拟进程重启：同一路径重建，样本应从 1 条续起（再提交 2 条即达阈值 3）
     revived_lib = SkillLibrary()
     second = _sop(revived_lib, path)
-    second.observe("读文档并摘要", ["step2"])
-    skill = second.observe("读文档并摘要", ["step3"])
+    second.observe("读文档并摘要", ["tools.file_read（path=b.md）→ 文档"])
+    skill = second.observe("读文档并摘要", ["tools.file_read（path=c.md）→ 文档"])
 
     assert skill is not None, "样本跨重启累积，达阈值即提炼"
     assert revived_lib.lookup(skill.skill_id) is skill

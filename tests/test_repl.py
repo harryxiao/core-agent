@@ -16,6 +16,7 @@ from core.ui import Event, UIAPILayer, UiError, UiErrorCode
 from core.ui.repl import (
     _COMMANDS,
     _MAX_TARGET_CHARS,
+    _TAB_MAX_CHARS,
     _action_title,
     _event_delta,
     _format_event,
@@ -2706,3 +2707,258 @@ def test_tui_no_raw_output_block_on_normal_turn() -> None:
             return len(_blocks(app))
 
     assert asyncio.run(drive()) == 0
+
+
+# ---- TUI 主/子 Agent 标签栏（change 0294 / ADR-0284） ----
+
+
+def _tab_labels(app: object) -> list[str]:
+    """标签栏文本（按渲染顺序；`main` 恒在首位）。"""
+    return [str(w.render()) for w in app.query(".task-tab")]  # type: ignore[attr-defined]
+
+
+class _SnapThenResetOrchestrator:
+    """第一次任务：开工后挂起，收尾后保留快照；第二次任务：`task_started` 后挂起（可观察重置）。"""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.done = asyncio.Event()
+        self.second_started = asyncio.Event()
+        self.release = asyncio.Event()
+        self._runs = 0
+
+    async def astream(self, task_id: str, goal: str, **kwargs: object):
+        self._runs += 1
+        if self._runs == 1:
+            yield LoopEvent("task_started", {"task_id": task_id, "goal": goal})
+            yield LoopEvent(
+                "subtask_started",
+                {
+                    "task_id": task_id,
+                    "subtask_id": "1",
+                    "goal": "查资料",
+                    "acceptance": "给出来源",
+                },
+            )
+            self.started.set()
+            await self.done.wait()
+            yield LoopEvent(
+                "subtask_completed",
+                {
+                    "task_id": task_id,
+                    "subtask_id": "1",
+                    "ok": True,
+                    "reason": "验收通过",
+                    "reply": "答案 42",
+                },
+            )
+            yield LoopEvent("task_finished", {"outcomes": []})
+            return
+        yield LoopEvent("task_started", {"task_id": task_id, "goal": goal})
+        self.second_started.set()
+        await self.release.wait()
+        yield LoopEvent("task_finished", {"outcomes": []})
+
+
+def test_task_tabs_appear_and_switch_views() -> None:
+    """标签自动出现（main + 主题缩写）；点击子任务/`main` 切换且主时间线逐字不变。"""
+    milestone, done = asyncio.Event(), asyncio.Event()
+    orch = _GatedOrchestrator(milestone=milestone, done=done)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> tuple[list[str], bool, bool, bool, bool, str, str]:
+        from textual.containers import Horizontal, Vertical  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            await _type_line(pilot, "/task 查答案")
+            await _wait_started(pilot, orch)
+            for _ in range(5):
+                await pilot.pause()
+            labels = _tab_labels(app)
+            bar_shown = app.query_one("#task-tabs", Horizontal).display is True
+            before = _timeline_text(app)
+            sub_tab = next(w for w in app.query(".task-tab") if w.sid == "1")  # type: ignore[attr-defined]
+            assert await pilot.click(sub_tab)
+            for _ in range(5):
+                await pilot.pause()
+            panel_shown = app.query_one("#panel", Vertical).display is True
+            timeline_hidden = app.query_one("#timeline", Vertical).display is False
+            main_tab = next(w for w in app.query(".task-tab") if w.sid == "")  # type: ignore[attr-defined]
+            assert await pilot.click(main_tab)
+            for _ in range(5):
+                await pilot.pause()
+            timeline_back = app.query_one("#timeline", Vertical).display is True
+            after = _timeline_text(app)
+            milestone.set()
+            done.set()
+            for _ in range(20):
+                await pilot.pause()
+            return labels, bar_shown, panel_shown, timeline_hidden, timeline_back, before, after
+
+    labels, bar_shown, panel_shown, timeline_hidden, timeline_back, before, after = asyncio.run(
+        drive()
+    )
+    assert labels[0] == "main"
+    assert any("查资料" in label for label in labels)
+    assert bar_shown is True
+    assert panel_shown is True
+    assert timeline_hidden is True
+    assert timeline_back is True
+    assert after == before  # 切换是呈现层操作：零时间线写入
+
+
+def test_clicking_subtask_block_title_focuses_and_still_toggles() -> None:
+    """点击子任务折叠块标题 ⇒ 进入焦点视图，且既有展开/收起语义保持不变。"""
+    milestone, done = asyncio.Event(), asyncio.Event()
+    orch = _GatedOrchestrator(milestone=milestone, done=done)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> tuple[bool, bool, bool]:
+        from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            await _type_line(pilot, "/task 查答案")
+            await _wait_started(pilot, orch)
+            for _ in range(5):
+                await pilot.pause()
+            block = _blocks(app)[0]
+            assert block.collapsed is True
+            assert await pilot.click(block.query_one("CollapsibleTitle"))
+            for _ in range(5):
+                await pilot.pause()
+            return (
+                app.query_one("#panel", Vertical).display is True,
+                app.query_one("#timeline", Vertical).display is False,
+                bool(block.collapsed),
+            )
+
+    panel_shown, timeline_hidden, collapsed = asyncio.run(drive())
+    assert panel_shown is True
+    assert timeline_hidden is True
+    assert collapsed is False  # 标题点击的展开语义未被拦截
+
+
+def test_task_tabs_keep_terminal_snapshot_then_reset_on_next_task() -> None:
+    """收尾保留 ✓ 标签与焦点；下一次 `task_started` 重置为仅 `main` 并回主视图。"""
+    orch = _SnapThenResetOrchestrator()
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> tuple[list[str], bool, bool, list[str], bool, bool]:
+        from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            await _type_line(pilot, "/task 查答案")
+            await _wait_started(pilot, orch)
+            for _ in range(5):
+                await pilot.pause()
+            sub_tab = next(w for w in app.query(".task-tab") if w.sid == "1")  # type: ignore[attr-defined]
+            assert await pilot.click(sub_tab)
+            for _ in range(5):
+                await pilot.pause()
+            orch.done.set()
+            for _ in range(20):
+                await pilot.pause()
+            labels_after_finish = _tab_labels(app)
+            focus_kept = app.query_one("#panel", Vertical).display is True
+            timeline_hidden = app.query_one("#timeline", Vertical).display is False
+
+            inp.focus()
+            await _type_line(pilot, "/task 第二个目标")
+            for _ in range(30):
+                await pilot.pause()
+                if orch.second_started.is_set():
+                    break
+            labels_reset = _tab_labels(app)
+            panel_reset = app.query_one("#panel", Vertical).display is False
+            timeline_back = app.query_one("#timeline", Vertical).display is True
+            orch.release.set()
+            for _ in range(10):
+                await pilot.pause()
+            return (
+                labels_after_finish,
+                focus_kept,
+                timeline_hidden,
+                labels_reset,
+                panel_reset,
+                timeline_back,
+            )
+
+    labels_after_finish, focus_kept, timeline_hidden, labels_reset, panel_reset, timeline_back = (
+        asyncio.run(drive())
+    )
+    assert any("✓" in label and "查资料" in label for label in labels_after_finish)
+    assert focus_kept is True  # 收尾不强制切回主视图
+    assert timeline_hidden is True
+    assert labels_reset == ["main"]  # 下一次 task_started：仅 main
+    assert panel_reset is True
+    assert timeline_back is True
+
+
+def test_resume_clears_task_tabs() -> None:
+    """`/resume` 切换会话 ⇒ 标签栏隐藏、标签模型清空、主视图恢复。"""
+    orch = _TaskOrchestrator(
+        [
+            ("task_started", {"task_id": "t1", "goal": "复合目标"}),
+            (
+                "subtask_started",
+                {"task_id": "t1", "subtask_id": "1", "goal": "查资料", "acceptance": "给出来源"},
+            ),
+            ("subtask_completed", {"task_id": "t1", "subtask_id": "1", "ok": True}),
+            ("task_finished", {"outcomes": []}),
+        ]
+    )
+    api, _loop, a, b = _switch_api(orchestrator=orch)
+    app = build_app(api, a)
+
+    async def drive() -> tuple[list[str], bool, bool, bool, bool]:
+        from textual.containers import Horizontal, Vertical  # noqa: PLC0415 — 可选依赖懒 import
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            await _type_line(pilot, "/task 查答案")
+            for _ in range(30):
+                await pilot.pause()
+            before = _tab_labels(app)
+            inp.focus()
+            inp.value = f"/resume {b}"
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+            return (
+                before,
+                app.query_one("#task-tabs", Horizontal).display is True,
+                bool(app._task_tabs),  # noqa: SLF001 — 断言标签模型已清
+                app.query_one("#panel", Vertical).display is True,
+                app.query_one("#timeline", Vertical).display is True,
+            )
+
+    before, bar_shown, tabs_left, panel_shown, timeline_shown = asyncio.run(drive())
+    assert any("查资料" in label for label in before)
+    assert bar_shown is False
+    assert tabs_left is False
+    assert panel_shown is False
+    assert timeline_shown is True
+
+
+def test_tab_label_bounds_and_fallbacks() -> None:
+    """主题缩写单行有界；空/空白 goal 回退 `子任务 <sid>`；markup 字符按字面呈现。"""
+    from core.ui.repl import _tab_label  # noqa: PLC0415 — 被测纯函数
+
+    long = _tab_label("查" * 50, "1")
+    assert len(long) <= _TAB_MAX_CHARS
+    assert long.endswith("…")
+    assert "\n" not in _tab_label("第一行\n第二行", "2")
+    assert _tab_label("   ", "3") == "子任务 3"
+    assert _tab_label("", "4") == "子任务 4"
+    assert "[red]" in _tab_label("[red]目标", "5")  # markup 不被解释

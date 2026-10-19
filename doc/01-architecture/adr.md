@@ -10774,6 +10774,110 @@ required 不保证端点可达；「真实关系为 0」基于 2026-10-18 的本
 既有窗口值（`gpt-4.1` 等窗口口径保持既有，窗口表更新是另一件事）；⑥ 不覆盖 Anthropic /
 Gemini **原生协议**（仓库只走 OpenAI 兼容端点）。
 
+## ADR-0284：主/子 Agent 视图标签栏（TUI + Web/Desktop，change 0294 / 台账 E230）
+
+**背景。** TUI 已有 `/focus <sid>`、`/main`、`F2` 的主视图 ⇄ 子任务焦点视图，但没有可见入口：
+用户看不到有哪些子 Agent，也不知道子任务标识；点击子任务折叠块只会展开详情。Web/Desktop
+任务区只列子任务与 `<details>`，主聊天区没有主/子视图切换。用户要求类似 Claude Code 的体验：
+聊天窗下方自动展示 `main` 与各 subagent（主题缩写），单击切换到该 subagent 的实时详情。
+子 Agent **没有消息通道/转录**（转录只注入主 loop），因此本次是**只读视图切换**。
+
+**决策**：
+
+- **D1 TUI：标签栏是既有焦点视图的可见入口。** `#footer` 内、输入区上方新增
+  `Horizontal(id="task-tabs")`；首位 `main`，其后为当前/最近任务的**已开工**子任务
+  （`subtask_started` 的 goal 有界缩写；空 goal 回退 `子任务 <sid>`）。标签 `_TaskTab`
+  **不可聚焦**（点击不抢输入框焦点），点击调用 `_select_agent(sid)` 复用既有 `_set_focus`：
+  只切 `#panel` / `#timeline` 的 `display`，零时间线写入。标签模型 `_task_tabs` 与折叠块
+  注册表 `_open` **分离**（`_open` 跨任务保留，既有焦点按 widget 身份绑定）。
+- **D2 TUI 点击折叠块标题也进入焦点。** 不覆写 `_on_collapsible_title_toggle` —— Textual
+  的消息分发会沿 MRO 依次调用子类与基类的同名命名约定处理器，覆写会导致**双切换**（展开后
+  立即收起）。改为处理 `Collapsible.Expanded` / `Collapsed` 消息：基类完成一次展开/收起后，
+  子类收到消息再切视图，展开语义逐字保留。
+- **D3 TUI 终态快照与重置。** `task_started` 清空旧标签并回主视图；`subtask_started` upsert
+  并刷新状态（重试重建折叠块时若正聚焦该 sid，重新绑定新 widget）；`subtask_completed` 只刷新
+  徽标；`task_finished` / `task_failed` **保留**终态标签与当前焦点（快照），直到下一次
+  `task_started` 或 `/resume` 才清空。标签仅取 `task.*` 载荷，不新建第二数据源。
+- **D4 Web：状态上提 + 纯 reducer。** 新 `frontend/src/lib/taskview.js`（无 DOM/runes）承载
+  `reduceTaskEvent` / `selectTaskAgent` / `taskTabModel` / `activeAgent` / `abbreviateGoal` /
+  `replyExcerpt` / `milestoneLine`；`App` 持有 `taskState`，`TaskPanel` 改为受控（只留输入/
+  忙态/传输错误），聊天区标签栏与任务区行选中**同一**只读详情。选中键 = `taskId + subtaskId`
+  （sid 仅任务内唯一）；非法/跨任务选择 fail-closed 回 main。
+- **D5 Web 视图不卸载。** 主时间线与子任务详情同时挂载，用 `display:none` 切换（流式与本地
+  状态不丢）；标签栏位于内容区下方、输入框上方；输入框仅对主 Agent 渲染。详情只呈现
+  acceptance / milestones / reason / bounded reply，**不使用** `{@html}`，不接子 Agent 消息流。
+  收尾用 `outcomes` 回填终态，任务移出在途列表但保留 `lastTask` 快照与当前选择。
+
+**被拒方案**：接子 Agent 消息流 / 允许发消息（无数据源与协议，需改调度器并发语义，另立
+change）；自动聚焦正在运行的子 Agent（打断主视图阅读，只自动展示标签）；新增后端 `/task`
+快照端点（当前单消费者 SSE + `outcomes` 足够重建终态）；全局 `.svelte.js` store（会话切换需
+同时重置三处，`App` 已是会话真源，上提更直接）；覆写 `_on_collapsible_title_toggle`（双切换，
+见 D2）；TUI 标签用 `Collapsible` 原生标题拦截（标题点击会 `stop()` 事件，无可用点击钩子）。
+
+**验证**：TUI 5 例（标签出现/点击切换、标题点击且展开保持、终态快照与下一次重置、`/resume`
+清空、标签有界与回退）；前端 `taskview` 12 例（缩写/节选边界、reducer 全序列、收尾快照、
+失败快照、选择 fail-closed、旧任务隔离、`milestoneLine`）。全量 pytest **3275 passed**
+（3270 基线 → 3275）；`npm test` 21 passed、`npm run build` 绿；反证 3/3；四门禁全绿。
+
+**局限**：① TUI 标签只为**已开工**子任务创建（无折叠块时保持「不延迟聚焦」不变量；Web 可
+展示 `plan_ready` 的 pending）；② 标签主题缩写有界（14 字符），长目标截断；标签多时横向
+换行，不做分页；③ 收尾快照是静态的，不再更新，且只保留最近一次任务；④ 不展示子 Agent 的
+思考、流式正文或完整对话，结果只有 ≤240 字（Web）/ ≤600 字（事件口径）节选；⑤ TUI 不提供
+键盘标签切换（仍可用 `/focus`、`/main`、`F2`）；⑥ `task_failed` 时未收到 `subtask_completed`
+的在途子任务在 TUI 标签仍显示 ⟳（标签状态复用折叠块标题口径，不推断终态）。
+
+## ADR-0285：沉淀两段式 —— 候选区 + 晋升，SOP 先 draft（change 0295 / 台账 E231）
+
+**背景。** 实测 `~/.core/state`：notes 35 篇中 34 篇 `source=notes.turn`，文件名是用户原话
+（`写一个吧.md`），正文只是 `## 解决过程` 加原始动作行；`skills.json` 的 3 个 active SOP 全为垃圾
+（`继续`、`hi`、`完成了吗`），其中 `hi` 是**模型拒绝文本被当成 SOP 发布**。根因：
+`runtime._loop_hooks` 无条件调用 `NoteStore.observe_turn` 把每轮成功轨迹直接写成 canonical；
+`SopExtractor.observe` 达 3 样本即自动 `status="active"`，且无准入闸 —— 空 steps、寒暄、拒绝文本
+都会累积并发布。沉淀物成了对话本身，而不是从中提炼的知识。
+
+**决策**：
+
+- **D1 笔记两段式。** 成功轮先过确定性预滤（`ok`、steps 非空、含写效应、任务去空白 ≥6 字、
+  注入 writer），再由模型判定是否值得长期保留并产出**结构化 JSON**（`durable/topic/title/
+  content/tags/queries/kind`）。产物写入 `$CORE_STATE_DIR/notes-candidates.json` 候选区，
+  **对 `list/search/digest` 不可见**；解析失败、`durable=false`、空正文一律丢弃（fail-closed）。
+- **D2 晋升是唯一 canonical 写入口。** `Sedimenter.promote()` 复用 `NoteStore.update()`，
+  `source="notes.sediment"`；已有主题来源非 sediment ⇒ `TOPIC_EXISTS`（CLI 提示 `--as`）；
+  已有 `sediment:<other>` 标签 ⇒ 同样拒绝（防候选互相覆盖）；保留既有 `pinned/pin_priority`，
+  tags 取并集并追加 `sediment:<candidate_id>`。`auto_promote` 缺省关，开启后支持度 ≥2 才尝试。
+- **D3 候选区有界、可审计。** 上限 128 条（按 `last_seen/first_seen/id` 淘汰最旧）；0600 原子写；
+  损坏/结构不符 ⇒ warn（只报条数）并空态启动；同一条轨迹（`blake2b(steps)`）不重复增加支持度。
+  `RLock` 串行化主/子/beast loop 的共享实例。
+- **D4 SOP 先 draft。** `SopExtractor` 产物一律 `status="draft"`；路由只放行 active/gray，
+  故 draft 零行为影响，`skill activate` 是唯一生效入口。已有 active/gray ⇒ 跳过并清组、warn
+  （不静默覆盖已发布技能）；deprecated 粘性保留；draft 覆盖刷新。
+- **D5 准入闸与提炼质量。** `observe` 确定性拒收：空 steps、任务去空白 <6 字、单轮面（namespace 空）
+  无 `tools.` 动作行、组内重复轨迹（逐字相同只刷新持久化、不再累积）。prompt 改为结构化 Markdown
+  （`## 适用场景 / ## 前置条件 / ## 步骤 / ## 验证 / ## 失败模式`），并明确「无共同可复用步骤就输出
+  空字符串」；确定性门增加拒绝/道歉固定短语拦截 —— 直接封死 `hi` 这类垃圾技能的成因。
+- **D6 存量可逆清理。** 新增 `notes prune --source notes.turn`：逐篇把 `raw()` 原字节写入回收目录
+  `trash_dir/<UTC>/<id>.md`（0600）后再 `remove()`，并写 `manifest.json`；缺省跳过 pinned，
+  `--dry-run` 只列 id，0 篇移动退出 1。`skill deprecate` 提供 SOP 退役入口。**不物理删除**。
+- **D7 接线。** `TurnObserver` 扩为 `(task, steps, ok, reply)`（reply 视为不可信，Sedimenter 内
+  先脱敏再有界）；runtime 删除 `note_store.observe_turn` 直写，改注入 `Sedimenter`。notes 仍不
+  import LLM/skills/loop，skills 不 import notes/loop —— 模型调用与存储方向保持不变。
+
+**被拒方案**：保留「每轮直写 canonical，事后靠人工清理」；SOP 达阈自动 active（本次事故原形）；
+把 reply 拼进 steps 充当沉淀内容；notes 直接调用 LLM；晋升冲突时静默覆盖；物理删除存量（不可逆）；
+默认开启 `auto_promote`（未经验证的自动晋升会重蹈自动发布覆辙）。
+
+**验证**：新增 `tests/test_notes_sediment.py` 36 例与 `tests/test_skill_draft_quality.py` 14 例；
+全量 pytest **3325 passed**；ruff check / ruff format --check / pyright 全绿；反证 3/3
+（去效果预滤 ⇒ 闲聊产候选红；去 `durable` 判定 ⇒ 垃圾候选红；SOP 改回 active ⇒ draft 不路由红）。
+
+**局限**：① 候选区是**单文件 JSON、无跨进程文件锁** —— 多进程同时写以最后一次原子替换为准
+（与 notes canonical 同口径）；② `notes prune` 与运行中 agent 存在**检查后删除**竞态：逐篇
+`raw()` 为空时跳过，但无法保证移动瞬间无并发写；③ LLM 主题漂移 —— 同一知识可能以不同 topic
+产生多个候选（支持度无法合并），需人工 `candidate-promote --as` 归并；④ 预滤与拒绝文本门都是
+**形态判据**，不保证语义质量；`durable=true` 的边界由模型判定，本次不引入第二模型复核；⑤
+`auto_promote` 支持度固定 2，无配置旋钮；⑥ 迁移只移 `notes.turn` 来源，既有 promote/milestone/rag
+保持原状；⑦ SOP 的 `threshold=3` 与样本文件仍为进程内/单文件语义，未改跨进程协调。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11052,3 +11156,5 @@ Gemini **原生协议**（仓库只走 OpenAI 兼容端点）。
 | ADR-0281 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0282 | 02-modules/loop.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0283 | 02-modules/llm-provider.md, 03-interfaces/llm-provider-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0284 | 03-interfaces/ui-interface.md, 03-interfaces/ui-scheme.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0285 | 03-interfaces/notes-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

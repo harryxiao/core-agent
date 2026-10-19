@@ -363,7 +363,8 @@ def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "
   本轮以已拒绝回复终止（轮尾注入点仍照常投递 `ok=False`）；后者在 `end_trace` **之前**执行、
   仅留痕，与既有 `turn_observer`（封口后异步收尾）分工不同。缺省 `None` ⇒ 零调用。
   `astream` 期间 `current_trace_id` ContextVar 供消费方归因当前轮（无活跃 trace ⇒ 临时 trace）。
-- 收尾钩子：每轮收尾调注入的 `turn_observer(task, steps, ok)`——**成功与失败都提交**（`ok=False`
+- 收尾钩子：每轮收尾调注入的 `turn_observer(task, steps, ok, reply)`（change 0295 / ADR-0285；
+  第 4 参为 `ctx.reply`，下游须视为不可信文本自行脱敏/截断）——**成功与失败都提交**（`ok=False`
   即超限终止轮，失败信号供技能迭代判据），由组合根分发到技能反馈与 SOP 提炼
   （`SopExtractor.observe` 仍只吸收成功，见 `skills-interface.md §6`）；钩子抛错降级留痕
   （记 `turn_observer_failed`），不改变本轮结果与终止语义；未注入钩子时行为完全不变。

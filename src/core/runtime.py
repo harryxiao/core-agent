@@ -109,7 +109,12 @@ from core.memory import (
     score_with,
     summarize_with,
 )
-from core.notes import NoteStore, promote_session_summary
+from core.notes import (
+    NoteStore,
+    Sedimenter,
+    candidate_writer_with,
+    promote_session_summary,
+)
 from core.observability import BufferedExporter, JSONLExporter, Tracer
 from core.orchestration import (
     AgentProfile,
@@ -399,15 +404,18 @@ def _notes_workflow_skill() -> Skill:
     """
     return Skill(
         skill_id="skills.notes.consult_build_update",
-        description="文档化记忆循环：先 Consult 相关笔记、再 Build、再 Update 写回 canonical 文档",
+        description=(
+            "文档化记忆循环：先 Consult 相关笔记、再 Build、最后沉淀候选（晋升后成为 canonical）"
+        ),
         task_types=["notes", "documentation", "remember", "决策记录", "研究笔记", "解决过程"],
         preconditions=[],
         param_schema={},
         instructions=(
             "1) Consult：任务前先读相关 canonical 笔记（NoteStore.consult）与笔记清单；"
             "2) Build：在既有结论之上执行任务；"
-            "3) Update：任务后把新结论/决策/解决过程覆盖式写回对应主题的 canonical Markdown 文件"
-            "（去重、精炼、保持权威）。"
+            "3) Update：任务后只沉淀**候选** —— 组合根会把成功轮的写效应轨迹提炼为结构化候选"
+            "（notes-candidates.json，对 Consult 不可见）；确需固定为 canonical 时用 "
+            "`notes candidate-promote` 显式晋升，不要直接覆盖 canonical 文件。"
         ),
         version="v1",
         status="active",
@@ -710,6 +718,15 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     # **先于** MemoryStore 构造：半自动提升钩子（0153 / G3）需引用之
     # （memory 只报越界、notes 才落盘，零反向依赖）。
     note_store = NoteStore(path=_notes_path())
+    # 两段式沉淀（0295）：成功轮先产**候选**（不直写 canonical），`notes candidate-promote`
+    # 显式晋升后才进 truth 层。writer 缺省接线（`notes.candidate_distill` kill-switch 关闭
+    # ⇒ None ⇒ 零模型调用）；候选区与 notes 目录同级，独立 JSON、不进 digest/search。
+    sedimenter = Sedimenter(
+        note_store,
+        writer=candidate_writer_with(_llm_text) if config.notes_candidate_distill() else None,
+        path=_notes_path().parent / "notes-candidates.json",
+        auto_promote=config.notes_candidate_auto_promote(),
+    )
 
     def _promote_summary(session_id: str, summary: MemoryEntry) -> object:
         """半自动提升（0153 / G3）：会话摘要首次越过滚动上界 ⇒ 落 canonical（不自动 pin）。"""
@@ -911,7 +928,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 result.append(skill_hint(skill.skill_id, version, text))
             return result
 
-        def on_turn(task: str, steps: list[str], ok: bool) -> None:
+        def on_turn(task: str, steps: list[str], ok: bool, reply: str) -> None:
             for skill, version in surfaced:
                 skill_feedback.record_outcome(skill.skill_id, version=version, ok=ok)
                 skill_iterator.decide(skill)  # 两版本样本齐备 → A/B 定夺
@@ -921,7 +938,8 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                     skill_iterator.consider(skill, failure_steps=steps)
             surfaced.clear()
             sop_extractor.observe(task, steps, ok=ok)
-            note_store.observe_turn(task, steps, ok=ok)  # 任务后 Update：成功轮覆盖式写回笔记
+            # 任务后 Update（0295）：成功轮只产候选，不再直写 canonical（两段式沉淀）
+            sedimenter.observe_turn(task, steps, ok=ok, reply=reply)
 
         return hints, on_turn
 

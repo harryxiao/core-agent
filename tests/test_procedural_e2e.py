@@ -184,7 +184,7 @@ def test_task_done_registers_task_level_sop(
     assert len(_sop_skills(runtime)) == 1
     skill = _sop_skills(runtime)[0]
     assert skill.instructions == _SOP_TEXT, "入库正文应为提炼器产出"
-    assert skill.status == "active", "维度1：低风险自动发布（draft 对路由不可见）"
+    assert skill.status == "draft", "SOP 先 draft（路由不可见），显式 activate 后生效"
     assert len(skill.task_types) == 1
     assert skill.task_types[0].startswith("task::"), "任务级面无命名空间前缀 ⇒ 会与单轮面混组"
 

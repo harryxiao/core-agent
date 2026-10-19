@@ -231,23 +231,26 @@ def test_retired_sop_skill_is_not_resurrected_by_reextraction() -> None:
     lib.register(_skill(sid, status="deprecated"))
     extractor = SopExtractor(lib, writer=lambda _p: "1. 新步骤一\n2. 新步骤二", threshold=1)
 
-    published = extractor.observe(_TASK, ["step"], ok=True)
+    published = extractor.observe(_TASK, ["tools.echo（n=1）→ ok"], ok=True)
 
     assert published is None, "已退役 ⇒ 重抽不入库"
     assert lib.lookup(sid).status == "deprecated", "粘性：重抽不得复活为 active"
 
 
-def test_reextraction_after_activate_publishes() -> None:
-    """对照锚：显式 `activate` 后再重抽，守卫不再拦截（复活走显式面）。"""
+def test_reextraction_after_activate_does_not_overwrite() -> None:
+    """已 active（含显式复活）⇒ 重抽**不覆盖**已发布技能（0295 发布保护）。"""
     lib = SkillLibrary()
     sid = _skill_id_for(_TASK)
     lib.register(_skill(sid, status="deprecated"))
     lib.activate(sid)
+    original = lib.lookup(sid).instructions
     extractor = SopExtractor(lib, writer=lambda _p: "1. 新步骤一\n2. 新步骤二", threshold=1)
 
-    published = extractor.observe(_TASK, ["step"], ok=True)
+    published = extractor.observe(_TASK, ["tools.echo（n=1）→ ok"], ok=True)
 
-    assert published is not None, "显式激活后重抽可入库"
+    assert published is None, "active ⇒ 重抽不入库"
+    assert lib.lookup(sid).status == "active"
+    assert lib.lookup(sid).instructions == original, "已发布正文逐字不变"
 
 
 # ---- 配置面（ConfigSpec 单一真源） ----

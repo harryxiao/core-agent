@@ -8,6 +8,7 @@ loop 不 import notes），故此处用注入闭包 + 真 NoteStore 验证行为
 from __future__ import annotations
 
 import asyncio
+import json
 
 from core.configuration import ConfigManager
 from core.context import Compactor
@@ -15,7 +16,7 @@ from core.llm_provider import LLMResponse, TokenUsage
 from core.loop import Action, DefaultLoop, LoopContext
 from core.loop.planner import LLMPlanner
 from core.memory import MemoryEntry, MemoryStore
-from core.notes import NoteEntry, NoteStore
+from core.notes import NoteEntry, NoteStore, Sedimenter
 from core.observability import TraceEvent
 from core.runtime import build_runtime
 from core.tools import Tool, ToolDef, ToolProvider
@@ -87,6 +88,25 @@ def _write_tool() -> Tool:
             reversible=True,
         ),
         handler=lambda text: f"written:{text}",
+    )
+
+
+def _sedimenter(tmp_path, store: NoteStore) -> Sedimenter:
+    """假提炼器：固定结构化 JSON（不触网）；候选区与 notes 目录同级。"""
+    payload = json.dumps(
+        {
+            "durable": True,
+            "topic": "login-timeout-fix",
+            "title": "登录超时修复",
+            "content": "## 结论\n先查会话过期，再改超时配置。",
+            "tags": ["auth"],
+            "queries": ["登录", "超时"],
+            "kind": "fact",
+        },
+        ensure_ascii=False,
+    )
+    return Sedimenter(
+        store, writer=lambda _prompt: payload, path=tmp_path / "notes-candidates.json"
     )
 
 
@@ -212,8 +232,10 @@ def test_loop_promoted_note_pinned_stays_in_single_channel(tmp_path) -> None:
 # ---- 任务后 Update ----
 
 
-def test_loop_turn_observer_writes_canonical_note(tmp_path) -> None:
+def test_loop_turn_observer_produces_candidate_then_promotes(tmp_path) -> None:
+    """0295 两段式：成功轮只产候选；显式晋升后才有 canonical 文件。"""
     store = _store(tmp_path)
+    sedimenter = _sedimenter(tmp_path, store)
     provider = ToolProvider()
     provider.register(_write_tool())
 
@@ -221,16 +243,20 @@ def test_loop_turn_observer_writes_canonical_note(tmp_path) -> None:
         planner=_tool_then_reply(reply="done", tool_id="tools.file_write"),
         tools=provider,
         max_rounds=3,
-        turn_observer=lambda task, steps, ok: store.observe_turn(task, steps, ok=ok),
+        turn_observer=lambda task, steps, ok, reply: sedimenter.observe_turn(
+            task, steps, ok=ok, reply=reply
+        ),
     )
     loop.run("修复 登录 超时")
 
-    note_id = store.list()[0].note_id
-    raw = (tmp_path / f"{note_id}.md").read_text(encoding="utf-8")
-    assert "## 解决过程" in raw, "成功轮写回 canonical Markdown"
-    # change 0171：正文为人类可读行（工具名 + 参数摘要 + 结果节选），**不落** ReAct 消息原文。
-    assert "tools.file_write" in raw and "中间结论" in raw, "写回内容承载可读的行动/结果序列"
-    assert '{"tool_id"' not in raw and '{"data"' not in raw, "不落 JSON 原文转储"
+    assert list(tmp_path.glob("*.md")) == [], "候选阶段不写 canonical"
+    assert [c.candidate_id for c in sedimenter.list_candidates()] == ["login-timeout-fix"]
+    assert store.digest("登录超时") == "", "候选对 digest 不可见"
+
+    sedimenter.promote("login-timeout-fix")
+    raw = (tmp_path / "login-timeout-fix.md").read_text(encoding="utf-8")
+    assert "先查会话过期" in raw, "晋升后正文落 canonical"
+    assert "- source: notes.sediment" in raw, "晋升来源标记"
 
 
 def test_loop_pure_read_turn_does_not_write_note(tmp_path) -> None:
@@ -243,7 +269,7 @@ def test_loop_pure_read_turn_does_not_write_note(tmp_path) -> None:
         planner=_tool_then_reply(reply="done"),
         tools=provider,
         max_rounds=3,
-        turn_observer=lambda task, steps, ok: store.observe_turn(task, steps, ok=ok),
+        turn_observer=lambda task, steps, ok, reply: store.observe_turn(task, steps, ok=ok),
     )
     loop.run("查一下资料")
 
@@ -255,7 +281,7 @@ def test_loop_reply_only_turn_does_not_write_note(tmp_path) -> None:
     store = _store(tmp_path)
     loop = DefaultLoop(
         planner=lambda ctx: Action(args={"reply": "你好呀"}),
-        turn_observer=lambda task, steps, ok: store.observe_turn(task, steps, ok=ok),
+        turn_observer=lambda task, steps, ok, reply: store.observe_turn(task, steps, ok=ok),
     )
     loop.run("你好")
 
@@ -267,7 +293,7 @@ def test_loop_failed_round_does_not_write_note(tmp_path) -> None:
     loop = DefaultLoop(
         planner=lambda ctx: Action(args={"reply": "unused"}),
         max_rounds=0,
-        turn_observer=lambda task, steps, ok: store.observe_turn(task, steps, ok=ok),
+        turn_observer=lambda task, steps, ok, reply: store.observe_turn(task, steps, ok=ok),
     )
     result = loop.run("超限任务")
 
@@ -280,6 +306,7 @@ def test_loop_failed_round_does_not_write_note(tmp_path) -> None:
 
 def test_consult_update_loop_roundtrip_through_loop(tmp_path) -> None:
     store = _store(tmp_path)
+    sedimenter = _sedimenter(tmp_path, store)
     provider = ToolProvider()
     provider.register(_write_tool())
 
@@ -288,13 +315,16 @@ def test_consult_update_loop_roundtrip_through_loop(tmp_path) -> None:
         tools=provider,
         max_rounds=3,
         notes_consult=store.digest,
-        turn_observer=lambda task, steps, ok: store.observe_turn(task, steps, ok=ok),
+        turn_observer=lambda task, steps, ok, reply: sedimenter.observe_turn(
+            task, steps, ok=ok, reply=reply
+        ),
     )
     loop.run("整理发布流程")
 
-    # 第二轮 Consult 读到第一轮 Update 写回的笔记（闭环成立）
+    assert "login-timeout-fix" not in store.digest("整理发布流程"), "候选不进 Consult"
+    sedimenter.promote("login-timeout-fix")
     digest = store.digest("整理发布流程")
-    assert "整理发布流程" in digest
+    assert "login-timeout-fix" in digest, "晋升后 Consult 读到 canonical（闭环成立）"
 
 
 # ---- 摘要进 LLMPlanner 的 system prompt ----
@@ -458,7 +488,7 @@ def test_loop_compaction_below_bound_does_not_promote(tmp_path) -> None:
         compactor=Compactor(memory=memory, step_threshold=0),
         max_rounds=3,
         notes_consult=store.digest,
-        turn_observer=lambda task, steps, ok: store.observe_turn(task, steps, ok=ok),
+        turn_observer=lambda task, steps, ok, reply: store.observe_turn(task, steps, ok=ok),
     )
 
     loop.run("会话结论 任务", session_id="s1")

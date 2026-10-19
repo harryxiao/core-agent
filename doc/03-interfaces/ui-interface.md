@@ -224,8 +224,19 @@ fail-closed，先于进入 TUI 拒绝），缺省 ⇒ 新建（既有行为不�
 （待执行 / 运行中 / 完成 / 失败），`<details>` 展开**详情**（里程碑行由 `subtask_progress` 的 `event`/`data`
 转写、验收标准、完成 / 失败理由）—— 全部取自**既有事件载荷**，不建第二数据源。任务区与会话列表
 **并列不混池**（在途运行态 vs 持久记录）；任务收尾（`task_finished` / `task_failed`）该任务**移出在途列表**
-（回落）并以一次性提示呈现终态，**不**进入会话列表。「进入子 agent 会话 / 主-子焦点切换」不在其内
-（子 Agent 消息流**无数据源**：转录只注入主 loop，见 change `0115`）。
+（回落）并以一次性提示呈现终态，**不**进入会话列表。change `0294` / ADR-0284 起，任务区子任务行**可点击**，
+与聊天区标签栏**选中同一只读详情**；主/子视图切换与只读边界见下。
+
+**Web 主/子 Agent 标签栏与只读详情（change 0294 / ADR-0284）**：任务状态上提至 `App.svelte`，
+由纯函数模块 `frontend/src/lib/taskview.js`（`reduceTaskEvent` / `selectTaskAgent` / `taskTabModel` /
+`activeAgent`）派生。聊天区下方（输入框上方）呈现标签栏：首位 `main`，其后为当前/最近任务的子任务
+（主题缩写 + 状态徽标）。点击子任务标签（或任务区子任务行）把聊天区切为该子任务的**只读**详情
+（标题 / 状态 / 验收 / 里程碑 / 判定理由 / 有界结果节选，全部取自既有 `task.*` 载荷）；点击 `main`
+立即恢复主时间线。主时间线与详情**同时挂载**、以 `display` 切换（不 unmount，流式与本地状态不丢）；
+**输入框仅对主 Agent 渲染**。收尾保留终态标签与详情快照，下一次 `task_started` 或会话切换重置
+（`App.useSession`）。选中键 = `taskId + subtaskId`（sid 仅在任务内唯一），非法选择 fail-closed 回
+`main`。「进入子 agent 会话 / 向子 Agent 发消息」仍不在其内（子 Agent 消息流**无数据源**：转录只注入
+主 loop，见 change `0115`）；详情 SHALL NOT 使用 `{@html}`。
 
 **TUI 子 Agent 焦点视图（change 0125 / ADR-0118）**：REPL 支持**主视图 ⇄ 子任务焦点视图**切换 ——
 `/focus <子任务标识>` 进入该子任务的焦点视图（`#panel`：标题沿用折叠块口径 `▸ 子任务 <sid>  ⟳|✓|✗ <goal>`，
@@ -234,7 +245,18 @@ fail-closed，先于进入 TUI 拒绝），缺省 ⇒ 新建（既有行为不�
 焦点**绑定 widget 身份**（`self._open` 跨任务不清空而 sid 逐任务复用）；成功切换**零时间线写入** ⇒
 返回后主时间线内容**逐字不变**。焦点命令在 `on_input_submitted` 中**先于忙态拒绝**处理（任务运行中亦可用，
 且**不进推理**）；未知标识不切换（提示「未找到」）。`task_started` 与**审批挂起**时强制回主视图
-（计划头 / 审批提示写在时间线上，隐藏即不可见）。Web 侧**不做**焦点视图（面板式布局，沿用 `TaskPanel`）。
+（计划头 / 审批提示写在时间线上，隐藏即不可见）。
+
+change `0294` / ADR-0284 起，焦点视图有了**可见入口**：时间线下方（输入区上方）自动呈现
+`Horizontal(id="task-tabs")` —— 首位 `main`，其后为当前/最近任务**已开工**子任务的主题缩写
+（`_tab_label` 单行有界 14 字符；空 goal 回退 `子任务 <sid>`）。标签 widget `_TaskTab` **不可聚焦**
+（点击不抢输入框），点击调用 `_select_agent(sid)` 复用 `_set_focus`；点击子任务折叠块标题同样进入
+焦点视图（基类先完成展开/收起，子类经 `Collapsible.Expanded` / `Collapsed` 消息切视图 —— **不覆写**
+`_on_collapsible_title_toggle`，否则命名约定处理器会沿 MRO 双调用导致展开后立即收起）。标签随
+`subtask_started` / `subtask_completed` 更新状态（`⟳` / `✓` / `✗`）；`task_started` 清空旧标签并回
+主视图；`/resume` 清空；`task_finished` / `task_failed` **保留**终态标签与当前焦点（快照），直到下一次
+任务或会话切换。标签模型 `_task_tabs` 与 `_open` 分离（`_open` 跨任务保留），标签只取 `task.*` 载荷。
+Web 侧同一语义由标签栏 + 只读详情承接（见上段）。
 
 **TUI 神兽斜杠命令（change 0137 / ADR-0130）**：REPL 命令面补 `/summon <神兽> [任务]` 与
 `/recall <神兽>`，经 `UIAPILayer.beast_command` 落到**与 CLI `summon`/`recall` 同一** `BeastActivator`

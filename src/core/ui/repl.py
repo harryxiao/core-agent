@@ -232,6 +232,20 @@ def _tool_target(tool_id: object, args: object) -> str:
     return line[:_MAX_TARGET_CHARS] + "…" if len(line) > _MAX_TARGET_CHARS else line
 
 
+_TAB_MAX_CHARS = 14
+
+
+def _tab_label(goal: object, sid: str, limit: int = _TAB_MAX_CHARS) -> str:
+    """子任务主题缩写：单行化 + 去空白 + 有界；空 goal 回退 `子任务 <sid>`。
+
+    返回**原始文本**（调用方以 `markup=False` 呈现）⇒ `[...]` 等 markup 字符按字面显示。
+    """
+    line = " ".join(str(goal or "").split())
+    if not line:
+        return f"子任务 {sid}"
+    return line[: max(limit - 1, 0)] + "…" if len(line) > limit else line
+
+
 def _action_title(tool: str, target: str, *, ok: bool | None = None, ms: object = None) -> str:
     """工具步骤块标题：`Name(摘要)`；完成落 ` · 1.2s` / ` · failed`（**无 ⏺ 前缀**）。"""
     if tool in _PAREN_TITLES:
@@ -470,6 +484,42 @@ def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — �
     class _PaletteList(OptionList, can_focus=False):
         """命令浮层：**不可聚焦**（`Tab` 不得把焦点从输入框抢走），仅由代码驱动高亮。"""
 
+    class _TaskTab(Static, can_focus=False):
+        """标签栏条目（`main` / 子任务）：不可聚焦（点击不抢输入框），点击切视图。"""
+
+        def __init__(self, sid: str, label: str, on_select: Callable[[str], None]) -> None:
+            super().__init__(label, markup=False, classes="task-tab")
+            self.sid = sid
+            self._on_select = on_select
+
+        def on_click(self, event: events.Click) -> None:
+            event.stop()
+            self._on_select(self.sid)
+
+    class _SubtaskBlock(Collapsible):
+        """子任务折叠块：标题点击先走既有展开/收起，再进入该子任务焦点视图。"""
+
+        def __init__(
+            self,
+            sid: str,
+            *children: Widget,
+            on_select: Callable[[str], None],
+            **kwargs: Any,
+        ) -> None:
+            super().__init__(*children, **kwargs)
+            self.sid = sid
+            self._on_select = on_select
+
+        def _select_from_toggle(self, event: Any) -> None:
+            event.stop()
+            self._on_select(self.sid)
+
+        def on_collapsible_expanded(self, event: Any) -> None:
+            self._select_from_toggle(event)
+
+        def on_collapsible_collapsed(self, event: Any) -> None:
+            self._select_from_toggle(event)
+
     class _StepBlock(Collapsible):
         """步骤块（思考 / 工具动作共用）：缺省**收起**；展开即**全文**（ui-scheme.md）。
 
@@ -535,6 +585,27 @@ def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — �
 #footer {  /* 输入区+提示盒钉底：时间线独占剩余空间（内层容器默认 1fr 会撑满全屏） */
     dock: bottom;
     height: auto;
+}
+#task-tabs {  /* 主/子 Agent 标签栏：初始隐藏，任务期间在输入区上方自动展示 */
+    display: none;
+    height: auto;
+    width: auto;
+    margin: 0 1;
+}
+.task-tab {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+    background: transparent;
+}
+.task-tab:hover {
+    background: $panel;
+}
+.task-tab.active {
+    color: $text;
+    background: $panel;
+    text-style: bold;
 }
 #input-box {
     height: auto;
@@ -658,6 +729,9 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             self._focus_sid: str = ""  # 焦点中的子任务标识（"" = 主视图）
             self._focus_box: Collapsible | None = None  # 焦点折叠块（身份绑定：sid 跨任务复用）
             self._focus_detail: Static | None = None  # 焦点折叠块详情（面板正文取此渲染文本）
+            self._task_active = False  # 当前/最近一次任务存在（标签栏可见性闸）
+            self._task_tabs: list[tuple[str, str]] = []  # 当前/最近任务的 (sid, goal)
+            self._tab_widgets: dict[str, _TaskTab] = {}  # sid → 标签 widget（"" = main）
             self._actions: dict[str, tuple[_StepBlock, str, object]] = {}
             # round:tool → (块, 目标摘要, args) —— args 供完成态按 code_run type 命名
             self._reasoning_by_round: dict[int, _StepBlock] = {}  # round→思考块（同 round 归并）
@@ -681,6 +755,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             yield Static(id="spinner")
             yield _PaletteList(id="palette")  # 斜杠命令浮层（CSS 初始 display:none）
             with Vertical(id="footer"):  # 输入区+提示盒钉底，时间线独占剩余空间
+                yield Horizontal(id="task-tabs")  # 主/子 Agent 标签栏（初始隐藏）
                 with Horizontal(id="input-box"):
                     yield Static("❯ ", id="prompt")
                     yield Input(
@@ -1146,6 +1221,8 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             data = cast(dict[str, Any], payload)
             kind = event.type.removeprefix("task.")
             if kind == "task_started":
+                self._task_active = True  # 当前任务存在 ⇒ 标签栏可见（仅 main）
+                self._task_tabs.clear()
                 self._set_focus("")  # 新计划回主视图（否则计划头落进被隐藏的时间线）
                 line = f"◍ 任务 {data.get('task_id')}：{data.get('goal', '')}"
                 self._add(Static(line, classes="hint", markup=False))
@@ -1158,13 +1235,16 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 self._add(Static(f"Planner(wave {data.get('wave')})", classes="hint", markup=False))
                 return
             if kind == "subtask_started":
-                self._open_subtask(str(data.get("subtask_id", "")), data)
+                sid = str(data.get("subtask_id", ""))
+                self._open_subtask(sid, data)
+                self._track_subtask_tab(sid, data)
                 return
             if kind == "subtask_progress":
                 self._progress_subtask(str(data.get("subtask_id", "")), data)
                 return
             if kind == "subtask_completed":
                 self._complete_subtask(str(data.get("subtask_id", "")), data)
+                self._refresh_tabs()
                 return
             if kind == "task_failed":
                 line = f"✗ 任务失败 {data.get('code')}: {data.get('reason')}"
@@ -1311,15 +1391,26 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 markup=False,
             )
             sym = _step_symbol("subtask")
-            box = Collapsible(
+            box = _SubtaskBlock(
+                sid,
                 detail,
                 title=f"子任务 {sid}  ⟳ {escape(goal)}",
                 collapsed=True,
                 collapsed_symbol=sym,
                 expanded_symbol=sym,
+                on_select=self._select_agent,
             )
             self._add(box)
             self._open[sid] = (box, detail, goal)
+
+        def _track_subtask_tab(self, sid: str, data: dict[str, Any]) -> None:
+            """`subtask_started` → 标签模型 upsert；重试重建折叠块时焦点重绑新 widget。"""
+            self._task_tabs = [(s, g) for s, g in self._task_tabs if s != sid]
+            self._task_tabs.append((sid, str(data.get("goal", ""))))
+            if self._focus_sid == sid:
+                self._set_focus(sid)
+            else:
+                self._refresh_tabs()
 
         def _progress_subtask(self, sid: str, data: dict[str, Any]) -> None:
             """子任务里程碑：追加进展开区（工具类复用动作行口径：友好名 + 耗时，不暴露 id 与参数）。
@@ -1365,6 +1456,51 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             if detail is self._focus_detail:
                 self._render_panel()
 
+        # ---- 主/子 Agent 标签栏（change 0294 / ADR-0284） ----
+
+        def _tab_status(self, sid: str) -> str:
+            """标签状态徽标：沿用折叠块标题口径（收尾 ✓/✗，其余 ⟳）。"""
+            entry = self._open.get(sid)
+            if entry is None:
+                return "⟳"
+            title = str(entry[0].title)
+            if "✓" in title:
+                return "✓"
+            if "✗" in title:
+                return "✗"
+            return "⟳"
+
+        def _refresh_tabs(self) -> None:
+            """重建/更新标签栏（`main` 首位 + 当前/最近任务子任务）。
+
+            只动 `#task-tabs`（绝不动 `#timeline`）；标签 widget 复用，点击引用不失效。
+            """
+            bar = self.query_one("#task-tabs", Horizontal)
+            bar.display = self._task_active
+            if not self._task_active:
+                return
+            desired: list[tuple[str, str]] = [("", "main")]
+            desired.extend(
+                (sid, f"{self._tab_status(sid)} {_tab_label(goal, sid)}")
+                for sid, goal in self._task_tabs
+            )
+            wanted = {sid for sid, _ in desired}
+            for stale in [sid for sid in self._tab_widgets if sid not in wanted]:
+                self._tab_widgets.pop(stale).remove()
+            for sid, label in desired:
+                widget = self._tab_widgets.get(sid)
+                if widget is None:
+                    widget = _TaskTab(sid, label, self._select_agent)
+                    self._tab_widgets[sid] = widget
+                    bar.mount(widget)
+                else:
+                    widget.update(label)
+                widget.set_class(sid == self._focus_sid, "active")
+
+        def _select_agent(self, sid: str) -> None:
+            """标签/折叠块标题点击入口：切换主视图 ⇄ 该子任务焦点视图。"""
+            self._set_focus(sid)
+
         # ---- 子 Agent 焦点视图（presentation-only：复用折叠块已渲染文本） ----
 
         def _set_focus(self, sid: str) -> bool:
@@ -1375,13 +1511,13 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             **widget 身份**（`_focus_box`/`_focus_detail`），非 sid 字符串。
             """
             if not sid:
-                if not self._focus_sid:
-                    return True  # 已在主视图 ⇒ 零 widget 抖动
-                self._focus_sid = ""
-                self._focus_box = None
-                self._focus_detail = None
-                self.query_one("#panel", Vertical).display = False
-                self.query_one("#timeline", Vertical).display = True
+                if self._focus_sid:
+                    self._focus_sid = ""
+                    self._focus_box = None
+                    self._focus_detail = None
+                    self.query_one("#panel", Vertical).display = False
+                    self.query_one("#timeline", Vertical).display = True
+                self._refresh_tabs()  # 已在主视图也刷新（新任务的 main 标签）
                 return True
             entry = self._open.get(sid)
             if entry is None:
@@ -1393,6 +1529,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             self.query_one("#timeline", Vertical).display = False
             self.query_one("#panel", Vertical).display = True
             self._render_panel()
+            self._refresh_tabs()
             return True
 
         def _render_panel(self) -> None:
@@ -1469,6 +1606,9 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
         def _reset_turn_state(self) -> None:
             """清空**跨会话无意义**的呈现态（旧内容已随时间线销毁 ⇒ 句柄不得悬挂）。"""
             self._open.clear()
+            self._task_active = False
+            self._task_tabs.clear()
+            self._refresh_tabs()
             self._actions.clear()
             self._reasoning_by_round.clear()
             self._reasoning_fallback = None

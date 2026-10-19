@@ -1,9 +1,18 @@
 <script>
   import { fetchMessages, runStream } from "../lib/api.js";
   import { labeledTitle, thinkingTitle, titleFromAction, toolName } from "../lib/activity.js";
+  import SubtaskDetail from "./SubtaskDetail.svelte";
+  import TaskTabs from "./TaskTabs.svelte";
 
   // 会话由父组件持有；本组件负责该会话时间线呈现与发送（ui-scheme：TUI/Web 一套）。
-  let { sessionId = "", onTurnEnd = () => {} } = $props();
+  // 主/子 Agent 标签与只读详情来自 App 的同一份任务模型（不放第二数据源）。
+  let {
+    sessionId = "",
+    tabs = [],
+    agentView = null,
+    onSelectAgent = () => {},
+    onTurnEnd = () => {},
+  } = $props();
 
   let input = $state("");
   /** @type {Array<Record<string, unknown>>} */
@@ -201,10 +210,11 @@
 
 <section>
   <p class="meta">会话：{sessionId || "（尚未选择）"}</p>
-  {#if phase === "thinking"}
-    <p class="phase" aria-live="polite">思考中…</p>
-  {/if}
-  <ul class="timeline">
+  <div class="main-view" class:is-hidden={Boolean(agentView)}>
+    {#if phase === "thinking"}
+      <p class="phase" aria-live="polite">思考中…</p>
+    {/if}
+    <ul class="timeline">
     {#each timeline as item}
       {#if item.kind === "user"}
         <li class="user"><strong>user</strong> {item.text}</li>
@@ -235,17 +245,26 @@
         </li>
       {/if}
     {/each}
-  </ul>
-  {#if error}<p class="error">{error}</p>{/if}
-  <form
-    onsubmit={(e) => {
-      e.preventDefault();
-      send();
-    }}
-  >
-    <input bind:value={input} placeholder="说点什么…" disabled={busy} />
-    <button type="submit" disabled={busy}>{busy ? "思考中…" : "发送"}</button>
-  </form>
+    </ul>
+    {#if error}<p class="error">{error}</p>{/if}
+  </div>
+  <div class="agent-view" class:is-hidden={!agentView}>
+    <SubtaskDetail view={agentView} onMain={() => onSelectAgent("", "")} />
+  </div>
+  <TaskTabs {tabs} onSelect={onSelectAgent} />
+  {#if agentView}
+    <p class="readonly">只读视图：子 Agent 没有消息通道，输入框仅对主 Agent 生效。</p>
+  {:else}
+    <form
+      onsubmit={(e) => {
+        e.preventDefault();
+        send();
+      }}
+    >
+      <input bind:value={input} placeholder="说点什么…" disabled={busy} />
+      <button type="submit" disabled={busy}>{busy ? "思考中…" : "发送"}</button>
+    </form>
+  {/if}
 </section>
 
 <style>
@@ -256,6 +275,14 @@
   .meta {
     color: #59636e;
     font-size: 0.85rem;
+  }
+  .is-hidden {
+    display: none;
+  }
+  .readonly {
+    color: #59636e;
+    font-size: 0.8rem;
+    margin: 0.5rem 0;
   }
   .phase {
     color: #59636e;

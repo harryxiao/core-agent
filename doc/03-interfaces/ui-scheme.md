@@ -99,6 +99,32 @@ TUI：图标经 Collapsible 的 `collapsed_symbol`/`expanded_symbol`（收起/�
 
 Web **允许**增强（不影响 TUI 义务）：进行中图标 pulse、失败时自动展开 `details`、工具块等宽字体预览。增强不得改变标题字符串与缺省收起语义。
 
+### 5.2 主/子 Agent 视图（change 0294 / ADR-0284）
+
+共享模型（两端同源，事件只取 `task.*`）：
+
+```
+标签栏 = main + 当前/最近任务的子任务（主题缩写 + ⟳/✓/✗/·）
+选择键 = taskId + subtaskId（sid 仅在任务内唯一）
+视图   = main（主时间线） | 子任务只读详情（验收 / 里程碑 / 判定 / 有界结果节选）
+生命周期 = task_started 重置为 main-only；subtask_started upsert；收尾保留终态快照；
+          /resume 或下一次 task_started 清空
+```
+
+| 共享概念 | TUI | Web / Desktop |
+|---|---|---|
+| 标签栏 | `Horizontal(id="task-tabs")` + 不可聚焦 `_TaskTab`；点击调 `_select_agent` | `views/TaskTabs.svelte`；点击调 `selectTaskAgent` |
+| 切换入口 | 标签点击；子任务折叠块标题点击（展开语义保留） | 标签点击；任务区子任务行点击/Enter/Space |
+| 主视图 | `#timeline`（`display` 切换，不 unmount） | 主聊天 DOM 保留，`.is-hidden` 切换 |
+| 子视图 | 既有 `#panel` 焦点视图（复用折叠块已渲染文本） | `views/SubtaskDetail.svelte` 只读卡片 |
+| 输入 | 普通输入回主视图；标签点击不抢焦点 | 输入框仅 main 渲染；详情显示只读提示 |
+| 主题缩写 | `_tab_label`（单行、≤14 字符、空 goal 回退 `子任务 <sid>`） | `abbreviateGoal`（同口径） |
+| 状态 | 复用折叠块标题 `⟳/✓/✗` | `subtask.status` → `⟳/✓/✗/·` |
+
+**只读边界（硬规则）**：子 Agent 没有消息通道/转录（只注入主 loop）⇒ 子视图 SHALL NOT 新建数据源、
+SHALL NOT 接子 Agent 消息流、SHALL NOT 允许发送；详情只用 `task.*` 载荷字段，Web 禁 `{@html}`。
+侧边任务区仍只列**在途**任务（收尾移出）；标签栏的终态快照与其独立（任务区回落不代表标签消失）。
+
 ## 6. 动画与交互（分端义务）
 
 | 效果 | Web | TUI |
@@ -123,6 +149,7 @@ Web **允许**增强（不影响 TUI 义务）：进行中图标 pulse、失败�
 | 锚点 | 说明 |
 |---|---|
 | change `0233` | TUI 活动块：缺省收起、标题语法、Thinking 按 round、撤回 Task 壳 |
+| change `0294` / ADR-0284 | 主/子 Agent 标签栏与只读详情（`taskview.js` / `_TaskTab` / `_SubtaskBlock`） |
 | `doc/openspec/specs/ui/spec.md` | 三端思考回显、步骤块、SSE、会话等正式 Requirement |
 | `src/core/ui/repl.py` | TUI 时间线 / spinner / `_StepBlock` |
 | `src/core/ui/api.py` | 事件类型映射（`loop.reasoning` 透传等） |

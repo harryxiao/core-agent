@@ -569,3 +569,21 @@ known_window(llm.model)  ──►  表命中 ⇒ 该族真实窗口（本 chang
   （`$CORE_STATE_DIR/worktrees`）并注册 `worktree:read` / `worktree:write` coeffect 与两个
   `tools.worktree.*` 工具；false ⇒ 工具面 / 结果形状 / 持久化字段逐字不变。
 - 口径来源：`doc/openspec/specs/configuration/spec.md`「工作树隔离配置」（**ADDED**）。
+
+### 2.19 沉淀候选配置（change `0295` / ADR-0285，台账 E231）
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `notes.candidate_distill` | `true` | `bool` 或 `true` / `false`（大小写不敏感、去空白） | 成功轮是否调用模型提炼候选；false = 不构造 writer（零模型调用、不产候选） |
+| `notes.candidate_auto_promote` | `false` | 同上 | 候选支持度达 2（不同轨迹）时是否自动晋升；false = 只产候选，显式 `candidate-promote` 才写 canonical |
+
+- **三面**：CLI `--notes-candidate-distill` / `--notes-candidate-auto-promote`；env
+  `CORE_NOTES_CANDIDATE_DISTILL` / `CORE_NOTES_CANDIDATE_AUTO_PROMOTE`；yaml `notes.<key>`。
+  优先链 CLI > env > config.yaml > 缺省。
+- **访问器**：`ConfigManager.notes_candidate_distill() -> bool`、
+  `notes_candidate_auto_promote() -> bool`；宽容 bool 归一与 `skills.retirement` 同口径
+  （`candidate_distill` 是**缺省开启的 kill-switch**：集合外取值归一为开启；`auto_promote`
+  集合外归一为关闭）。
+- **消费方**：`build_runtime` 只在 `candidate_distill()` 为真时注入 `candidate_writer_with(_llm_text)`，
+  并把 `auto_promote()` 传给 `Sedimenter`；关闭 distill ⇒ `writer=None` ⇒ 预滤直接返回、零模型调用。
+- 口径来源：`doc/openspec/specs/configuration/spec.md`「沉淀候选配置」（**ADDED**）。

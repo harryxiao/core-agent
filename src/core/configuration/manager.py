@@ -455,6 +455,22 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "notes.candidate_distill",
+        "--notes-candidate-distill",
+        "CORE_NOTES_CANDIDATE_DISTILL",
+        default=True,
+        map_to="notes.candidate_distill",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "notes.candidate_auto_promote",
+        "--notes-candidate-auto-promote",
+        "CORE_NOTES_CANDIDATE_AUTO_PROMOTE",
+        default=False,
+        map_to="notes.candidate_auto_promote",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "memory.importance_gate",
         "--memory-importance-gate",
         "CORE_MEMORY_IMPORTANCE_GATE",
@@ -1104,6 +1120,32 @@ class ConfigManager:
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() not in _FEATURE_FALSE
+
+    def notes_candidate_distill(self) -> bool:
+        """沉淀候选提炼开关（缺省 ``True`` = 接线提炼器；change 0295）。
+
+        关闭 ⇒ 组合根**不构造**提炼 writer（``writer=None``）⇒ 成功轮不产候选、零模型调用；
+        既有 canonical 读写与 digest 路径逐字不变。
+        """
+        return self._notes_bool("candidate_distill", default=True)
+
+    def notes_candidate_auto_promote(self) -> bool:
+        """候选自动晋升开关（缺省 ``False``；change 0295）。
+
+        开启后候选支持度达 2（不同执行轨迹）时尝试晋升；冲突只留痕、候选保留。
+        """
+        return self._notes_bool("candidate_auto_promote", default=False)
+
+    def _notes_bool(self, key: str, *, default: bool) -> bool:
+        if self._config is None:
+            return default
+        raw = cast("dict[str, Any]", self._config.extra.get("notes") or {})
+        value = raw.get(key, default)
+        if isinstance(value, bool):
+            return value
+        if default:  # 缺省开启的 kill-switch：集合外取值归一为开启（拼写错误不静默关能力）
+            return str(value).strip().lower() not in _FEATURE_FALSE
+        return str(value).strip().lower() in _FEATURE_TRUE
 
     def relation_extract(self) -> bool:
         """实体关系抽取开关（缺省 ``False`` = 不接线抽取器；change 0203 / ADR-0193）。

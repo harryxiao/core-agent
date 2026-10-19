@@ -1,97 +1,26 @@
 <script>
   import { runTask } from "../lib/api.js";
-  import { titleFromAction } from "../lib/activity.js";
 
   // 任务区（右栏，与会话列表**并列不混池**）：任务是**在途**运行态、会话是**持久**记录。
-  // 数据全部来自 `POST /task` 的 `task.*` 事件载荷（不建第二数据源；子 agent 会话流无数据源）。
-  let { sessionId = "" } = $props();
+  // 任务状态由 App 持有（纯 reducer 派生）；本组件只保留输入/忙态/传输错误。
+  // 子任务行点击与聊天区标签栏选中**同一**只读视图（不建第二数据源）。
+  let {
+    sessionId = "",
+    tasks = [],
+    notice = "",
+    selected = null,
+    onEvent = () => {},
+    onSelectAgent = () => {},
+  } = $props();
 
   let goal = $state("");
-  let tasks = $state([]); // 在途任务；收尾即移出（任务区回落）
-  let notice = $state(""); // 终态一次性提示（任务不进入会话列表）
   let busy = $state(false);
   let error = $state("");
 
   const LABEL = { pending: "待执行", running: "运行中", done: "完成", failed: "失败" };
 
-  function updateSubtask(taskId, subtaskId, fn) {
-    tasks = tasks.map((t) =>
-      t.taskId === taskId
-        ? {
-            ...t,
-            subtasks: t.subtasks.map((s) => (s.id === subtaskId ? fn(s) : s)),
-          }
-        : t,
-    );
-  }
-
-  /** 里程碑事件 → 详情行（标题语法与 Chat/TUI 同源；载荷已白名单化）。 */
-  function milestone(ev) {
-    const d = ev.payload.data ?? {};
-    if (ev.payload.event === "action_started") {
-      return titleFromAction(d.tool_id, d.args ?? {});
-    }
-    if (ev.payload.event === "action_completed") {
-      return titleFromAction(d.tool_id, d.args ?? {}, {
-        ok: Boolean(d.ok),
-        ms: d.duration_ms,
-      });
-    }
-    return `· 第 ${d.round} 步${d.failed ? "（失败）" : "完成"}`;
-  }
-
-  function apply(ev) {
-    const p = ev.payload ?? {};
-    switch (ev.type) {
-      case "task.task_started":
-        tasks = [...tasks, { taskId: p.task_id, goal: p.goal, subtasks: [] }];
-        break;
-      case "task.plan_ready":
-        tasks = tasks.map((t) =>
-          t.taskId === p.task_id
-            ? {
-                ...t,
-                subtasks: (p.subtasks ?? []).map((s) => ({
-                  id: s.id,
-                  title: s.goal,
-                  status: "pending",
-                  detail: s.acceptance ? [`验收：${s.acceptance}`] : [],
-                })),
-              }
-            : t,
-        );
-        break;
-      case "task.subtask_started":
-        updateSubtask(p.task_id, p.subtask_id, (s) => ({ ...s, status: "running" }));
-        break;
-      case "task.subtask_progress":
-        updateSubtask(p.task_id, p.subtask_id, (s) => ({
-          ...s,
-          detail: [...s.detail, milestone(ev)],
-        }));
-        break;
-      case "task.subtask_completed":
-        updateSubtask(p.task_id, p.subtask_id, (s) => ({
-          ...s,
-          status: p.ok ? "done" : "failed",
-          detail: p.reason ? [...s.detail, p.reason] : s.detail,
-        }));
-        break;
-      case "task.task_finished": {
-        const task = tasks.find((t) => t.taskId === p.task_id);
-        const n = (p.outcomes ?? []).filter((o) => o.ok).length;
-        notice = `任务完成：${n}/${(p.outcomes ?? []).length} 子任务通过（${task?.goal ?? ""}）`;
-        tasks = tasks.filter((t) => t.taskId !== p.task_id); // 收尾 ⇒ 移出在途列表
-        break;
-      }
-      case "task.task_failed":
-        notice = `任务失败：${p.code} ${p.reason ?? ""}`;
-        tasks = tasks.filter((t) => t.taskId !== p.task_id);
-        break;
-      case "error":
-        error = `${p.code}: ${p.message}`;
-        break;
-    }
+  function isSelected(taskId, subtaskId) {
+    return Boolean(selected && selected.taskId === taskId && selected.subtaskId === subtaskId);
   }
 
   async function start() {
@@ -102,11 +31,10 @@
       return;
     }
     error = "";
-    notice = "";
     goal = "";
     busy = true;
     try {
-      for await (const ev of runTask(sessionId, text)) apply(ev);
+      for await (const ev of runTask(sessionId, text)) onEvent(ev);
     } catch (exc) {
       error = String(exc.message || exc);
     } finally {
@@ -144,13 +72,30 @@
       <ul>
         {#each task.subtasks as st (st.id)}
           <li>
-            <span class="badge {st.status}">{LABEL[st.status] ?? st.status}</span>
-            <span class="title">{st.title}</span>
-            {#if st.detail.length > 0}
+            <div
+              class="row"
+              class:selected={isSelected(task.taskId, st.id)}
+              role="button"
+              tabindex="0"
+              onclick={() => onSelectAgent(task.taskId, st.id)}
+              onkeydown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onSelectAgent(task.taskId, st.id);
+                }
+              }}
+            >
+              <span class="badge {st.status}">{LABEL[st.status] ?? st.status}</span>
+              <span class="title">{st.title || `子任务 ${st.id}`}</span>
+            </div>
+            {#if st.acceptance || st.milestones.length > 0 || st.reason || st.reply}
               <details>
                 <summary>详情</summary>
                 <ul class="detail">
-                  {#each st.detail as line}<li>{line}</li>{/each}
+                  {#if st.acceptance}<li>验收：{st.acceptance}</li>{/if}
+                  {#each st.milestones as line}<li>{line}</li>{/each}
+                  {#if st.reason}<li>判定：{st.reason}</li>{/if}
+                  {#if st.reply}<li>{st.reply}</li>{/if}
                 </ul>
               </details>
             {/if}
@@ -179,7 +124,7 @@
     border: 1px solid #d0d7de;
     border-radius: 6px;
   }
-  button {
+  form button {
     padding: 0.4rem;
     border-radius: 6px;
     border: 1px solid #1f6feb;
@@ -225,6 +170,20 @@
   li {
     margin-bottom: 0.3rem;
     font-size: 0.8rem;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.15rem 0.25rem;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .row:hover {
+    background: #f6f8fa;
+  }
+  .row.selected {
+    background: #ddf4ff;
   }
   .badge {
     display: inline-block;

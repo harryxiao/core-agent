@@ -47,7 +47,7 @@ class SkillLibrary:
 | **字段上界**（change `0255`／ADR-0246） | `skill_id ≤ 120`、`instructions ≤ 4000`、`description ≤ 400`、`task_types ≤ 16×80`、`preconditions ≤ 8×200`；越界 ⇒ `INVALID_SKILL_SCHEMA` 且**不新增 / 不覆盖**。常量单一定义于 `skills/models.py`，与 evolution 内容校验同源 |
 | **启用放行集** | 路由候选集仍只含 `active` / `gray` —— `activate` **只补迁移路径**，不扩大放行集、不自动启用（下载恒 draft） |
 | **启用可逆** | 注入 `effect_tracker` 时登记 `op="skills.activate"`（undo 恢复启用前状态）；未注入不记（同 `SopExtractor` 接缝口径） |
-| **生产触达点** | CLI `skill activate <name>`（作用于与组合根同源的持久库，故跨进程可见） |
+| **生产触达点** | CLI `skill activate <name>`（draft → active）、`skill deprecate <name>`（→ deprecated，退出路由、可 `activate` 复活）、`skill list [--status S]`（review draft 用）；均作用于与组合根同源的持久库，故跨进程可见 |
 
 ---
 
@@ -241,12 +241,14 @@ class SopExtractor:
 
 | 维度 | 口径 |
 |---|---|
-| **调用方** | **单轮面**：`DefaultLoop` 收尾钩子（`TurnObserver`）——每轮收尾都提交（任务文本, 行动/结果序列, ok）；**任务级面**（change `0197`）：编排 `DoneFn`（任务成功达成 `DONE` 时一次）提交（`plan.goal`, 子任务步序）。`observe` 对 `ok=False` 直接丢弃（失败轨迹不是 SOP），由组合根再转交技能反馈 |
+| **调用方** | **单轮面**：`DefaultLoop` 收尾钩子（`TurnObserver(task, steps, ok, reply)`，change 0295 / ADR-0285）——每轮收尾都提交（任务文本, 行动/结果序列, ok）；reply 只供 notes 沉淀，SOP 不使用；**任务级面**（change `0197`）：编排 `DoneFn`（任务成功达成 `DONE` 时一次）提交（`plan.goal`, 子任务步序）。`observe` 对 `ok=False` 直接丢弃（失败轨迹不是 SOP），由组合根再转交技能反馈 |
 | **归组键** | 优先词法命中已有技能的 `task_types` 并复用其作键（**限**同命名空间），否则「任务词元签名」（`terms_of` 与 SkillRouter 同口径）——确定性、离线可断言 |
+| **准入闸**（change 0295 / ADR-0285） | 达阈值前后都确定性拒收：空 steps；任务去空白 <6 字符；**单轮面**（`namespace==""`）无任何 `tools.` 动作行；**任务级面**要求 ≥2 步。组内重复轨迹（逐字相同）只刷新持久化、不再累积（防一次动作刷满样本） |
 | **阈值** | 同组累计达 3 条（`_SOP_MIN_SAMPLES`）提炼一次，提炼后**清空该组**（下批重新累积） |
-| **产物** | `skill_id="skills.sop.<组键 blake2b-8hex>"`（确定性、同组重复提炼覆盖同一条）、`description="SOP：<组键>"`、`task_types=[组键]`、`instructions=<提炼文本>`、`status="active"` |
-| **发布口径** | `active`（维度1 技能库层属低风险自动发布）；`draft` 对路由不可见 → 不置 draft |
-| **确定性质量门**（0255，缺省开启、零模型调用） | 非空文本先过确定性门：`strip()` 后 10 ≤ 长度 ≤ 4000；≥ 2 个步骤行（`1.` / `1)` / `1、` / `-` / `*` / `•` 后接非空内容）；不与库中任一技能 `instructions` 逐字相同。未过 ⇒ 不入库 + 清组 + 留痕（只报组键）；无关闭开关 |
+| **产物** | `skill_id="skills.sop.<组键 blake2b-8hex>"`（确定性、同组重复提炼覆盖同一条）、`description="SOP：<组键>"`、`task_types=[组键]`、`instructions=<提炼文本>`、`status="draft"` |
+| **发布口径** | **`draft`（change 0295 / ADR-0285）** —— 路由只放行 `active`/`gray`，故 draft 零行为影响；`skill activate` 是唯一生效入口。已有同 id：`active`/`gray` ⇒ 跳过 + 清组 + warn（只报组键，绝不静默覆盖）；`deprecated` ⇒ 粘性不复活；`draft` ⇒ 覆盖刷新 |
+| **确定性质量门**（0255，缺省开启、零模型调用） | 非空文本先过确定性门：`strip()` 后 10 ≤ 长度 ≤ 4000；≥ 2 个步骤行（`1.` / `1)` / `1、` / `-` / `*` / `•` 后接非空内容）；**不含拒绝/道歉固定短语**（「未提供有效的执行轨迹」「无法提炼」「无法协助」「抱歉」「cannot assist」，change 0295 / ADR-0285）；不与库中任一技能 `instructions` 逐字相同。未过 ⇒ 不入库 + 清组 + 留痕（只报组键）；无关闭开关 |
+| **提炼模板**（change 0295 / ADR-0285） | prompt 要求结构化 Markdown：`## 适用场景` / `## 前置条件` / `## 步骤` / `## 验证` / `## 失败模式`；无共同可复用步骤（闲聊/问候）⇒ 输出空字符串。**不引入 JSON**（`Skill` 无对应程序字段、无消费方） |
 | **质量门**（0198） | 注入 `gate` 时：**在确定性门之后**执行，未过 ⇒ 不入库 + 清组 + 留痕（只报组键）；门故障 ⇒ 放行（fail-open）；`gate=None`（缺省）⇒ 满足确定性门的发布路径逐字不变 |
 | **降级** | 未注入 writer：不累积、不提炼（零额外模型调用）；提炼文本为空：不入库、样本保留待下轮 |
 | **可逆** | 入库登记 `Effect(op="skills.register", undo=移除)`（`trace_id="skills.extract"`）；回滚即移除，重复回滚幂等 |

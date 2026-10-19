@@ -4948,3 +4948,50 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **反证 3/3**：去掉钳制/字段选择 ⇒ 01/02 红；去掉别名归一 ⇒ 05/06 红；去掉能力告警 ⇒ 10/11 红
 > （12 仍绿）。**实测**：GLM-5.3（能力表未收录上限、字段 `max_tokens`）真实单轮冒烟
 > `exit=0`，回复正常、零告警。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0283 行。
+
+## 207. 主/子 Agent 视图标签栏（TC-AGENT-TABS，change `0294`／ADR-0284，台账 E230）
+
+| 编号 | 覆盖 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-AGENT-TABS-01 | TUI 标签出现与点击切换 | 在途任务 + 子任务开工 | 时间线下方标签栏显示 `main` 与主题缩写；点击子任务标签 ⇒ 焦点面板可见、时间线隐藏；点击 `main` ⇒ 时间线恢复且文本逐字不变（`tests/test_repl.py::test_task_tabs_appear_and_switch_views`） |
+| TC-AGENT-TABS-02 | 折叠块标题进入焦点 | 点击子任务 `CollapsibleTitle` | 进入焦点视图，且折叠块展开状态仍按既有语义切换（`...::test_clicking_subtask_block_title_focuses_and_still_toggles`） |
+| TC-AGENT-TABS-03 | 终态快照与下一次重置 | 收尾后观察；再发 `/task` | 收尾保留 ✓ 标签与当前焦点；下一次 `task_started` ⇒ 标签仅 `main`、回主视图（`...::test_task_tabs_keep_terminal_snapshot_then_reset_on_next_task`） |
+| TC-AGENT-TABS-04 | 会话切换清空 | 标签存在时 `/resume <B>` | 标签栏隐藏、`_task_tabs` 清空、主视图恢复（`...::test_resume_clears_task_tabs`） |
+| TC-AGENT-TABS-05 | 标签有界与回退 | 长 goal / 换行 / markup / 空 goal | 单行、≤14 字符、`……` 结尾；空/空白回退 `子任务 <sid>`；`[red]` 按字面呈现（`...::test_tab_label_bounds_and_fallbacks`） |
+| TC-AGENT-TABS-06 | 纯函数边界 | `abbreviateGoal` / `replyExcerpt` | 单行化、去空白；主题 ≤14、结果 ≤240（含省略号）；空值 ⇒ `""`（`frontend/src/lib/taskview.test.js`） |
+| TC-AGENT-TABS-07 | reducer 全序列 | started → plan → running → progress → completed | 在途任务、pending/running/done 状态、验收、里程碑（友好名+耗时）、判定与结果节选（同文件） |
+| TC-AGENT-TABS-08 | 收尾/失败快照 | `task_finished` / `task_failed` + 选择 | 任务移出在途列表但保留 `lastTask`、选择与终态标签；`outcomes`/`failed` 回填子任务状态；`activeAgent` 仍可解析（同文件） |
+| TC-AGENT-TABS-09 | 选择校验与旧任务隔离 | 非法 id / 跨任务同名 sid / 晚到旧任务事件 | 非法选择 fail-closed 回 main；旧任务事件不复活 `lastTask`、不污染新任务（同文件） |
+| TC-AGENT-TABS-10 | 下一次任务重置 | `task_started`（新任务） | `lastTask`/选择清空，标签仅 `main`（同文件） |
+
+> **反证 3/3**：去掉标签渲染 ⇒ TC-AGENT-TABS-01/03/04 红；去掉点击处理 ⇒ 01/02 红；
+> 去掉终态快照（收尾即清标签）⇒ 03 红。**实测**：TUI 定向用例 5 passed；`npm test`
+> 21 passed；`npm run build` 绿。**已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0284 行。
+
+## 208. 沉淀质量重构：候选区 + 晋升、SOP 先 draft（TC-SEDIMENT，change `0295`／ADR-0285，台账 E231）
+
+| 编号 | 覆盖 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-SEDIMENT-01 | 预滤零调用 | 失败轮 / 空 steps / 纯读步骤 / 短任务 | `observe_turn` 返回 `None`，writer 调用数 0，候选区为空（`tests/test_notes_sediment.py::test_prefilter_never_calls_writer`） |
+| TC-SEDIMENT-02 | 结构化候选 | 合法 JSON（含围栏） | 产出 `Candidate`，字段有界，候选文件 0600（`...::test_valid_json_creates_candidate_with_0600` / `test_fenced_json_is_tolerated`） |
+| TC-SEDIMENT-03 | fail-closed | 坏 JSON / `durable=false` / 空正文 / 非法 topic | 不入候选，零 canonical 写入（`...::test_invalid_or_non_durable_is_dropped`） |
+| TC-SEDIMENT-04 | 支持度去重 | 同轨迹重复观察 / 不同轨迹 | 同 digest 不增 support；不同轨迹 +1（`...::test_same_trace_does_not_inflate_support` / `test_distinct_trace_increments_support`） |
+| TC-SEDIMENT-05 | 候选不可见 | 观察后调 `list` / `digest` | canonical 为空、digest 空；`candidates` 可见（`...::test_candidates_are_invisible_to_canonical_surfaces`） |
+| TC-SEDIMENT-06 | 晋升来源保护 | 已有非 sediment 同主题 / 异候选 `sediment:` 标签 | `TOPIC_EXISTS`，候选保留；`--as` 可改道（`...::test_promote_refuses_foreign_source` / `test_promote_refuses_other_candidate_target`） |
+| TC-SEDIMENT-07 | 晋升保留属性 | 既有 pinned / tags / queries | 晋升产物 `source=notes.sediment`、pinned/priority 保留、tags 并集＋`sediment:<id>`（`...::test_promote_preserves_pinned_and_priority`） |
+| TC-SEDIMENT-08 | 自动晋升开关 | 缺省 / 开启且 support=2 | 缺省不写 canonical；开启达 2 才晋升，冲突只 warn（`...::test_auto_promote_default_off` / `test_auto_promote_on_at_two_supports`） |
+| TC-SEDIMENT-09 | 候选区有界 | 超过 128 条 | 按 `last_seen` 淘汰最旧（`...::test_store_is_bounded`） |
+| TC-SEDIMENT-10 | 损坏容错 | 候选 JSON 非对象 / 条目非对象 | warn 后空态启动，不抛异常（`...::test_corrupt_store_degrades_to_empty`） |
+| TC-SEDIMENT-11 | prune 可逆 | `notes.turn` × 2 + pinned + 其他来源 | 只移目标来源；pinned 缺省保留；回收文件与原字节一致；manifest 0600（`...::test_prune_moves_only_matching_source` / `test_prune_trash_is_restorable`） |
+| TC-SEDIMENT-12 | prune dry-run / 空集 | `--dry-run`；无匹配 | dry-run 不建目录；0 篇移动退出 1（`...::test_prune_moves_only_matching_source` / `test_prune_trash_is_restorable`） |
+| TC-SOP-DRAFT-01 | 准入闸 | 空 steps / 短任务 / 无 `tools.` 行 | `observe` 返回 `None`，不累积样本（`tests/test_skill_draft_quality.py::test_short_task_never_sampled` / `test_empty_steps_never_sampled` / `test_no_tool_action_never_sampled`） |
+| TC-SOP-DRAFT-02 | 重复轨迹 | 同一轨迹重复 3 次 | 只记一次，不达阈值（`...::test_duplicate_trace_does_not_inflate_samples`） |
+| TC-SOP-DRAFT-03 | draft 不路由 | 达阈提炼 | 产物 `status="draft"`，router 不命中（`...::test_publish_is_draft_and_not_routable`） |
+| TC-SOP-DRAFT-04 | 显式启用 | `library.activate` / `skill activate` | 路由命中；`skill deprecate` 退出路由（`tests/test_skills.py::test_draft_not_routed_until_activated` / `tests/test_skill_draft_quality.py::test_cli_skill_list_and_deprecate`） |
+| TC-SOP-DRAFT-05 | 已发布保护 | 已有 active / deprecated 同 id | 不覆盖、不复活，warn 只报组键（`...::test_existing_active_skill_not_overwritten` / `...::test_existing_deprecated_skill_not_resurrected`） |
+| TC-SOP-DRAFT-06 | 拒绝文本门 | writer 输出「无法提炼…」 | 确定性门拒收，不入库（`...::test_refusal_text_is_rejected`） |
+
+> **反证 3/3**：去掉写效应预滤 ⇒ TC-SEDIMENT-01 中纯读轮红；去掉 `durable` 判定 ⇒
+> TC-SEDIMENT-03 红（垃圾候选落区）；SOP 改回 `active` ⇒ TC-SOP-DRAFT-03 红（draft 直接进路由）。
+> **实测**：全量 pytest **3325 passed**；`openspec validate --all` 33/0。**已知局限**：
+> 见 `coding-plan/known-risk.md` §3 ADR-0285 行。
