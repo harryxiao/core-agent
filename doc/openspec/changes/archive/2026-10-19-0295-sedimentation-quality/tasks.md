@@ -39,5 +39,5 @@
 ## 6. 文档与迁移
 
 - [x] 6.1 ADR-0285 / known-risk E231 / test-cases §208 / 四份接口文档
-- [ ] 6.2 迁移（agent 空闲时）：`notes prune` 34 篇、`sop-samples.json` 入回收目录、3 条 SOP deprecate
-- [x] 6.3 归档 / 提交（含 0294）；6.2 迁移待 core-agent 进程重启后执行
+- [x] 6.2 迁移：`notes prune` 34 篇、`sop-samples.json` 入回收目录、3 条 SOP deprecate（回收目录 `~/.core/state/notes-trash/2026-10-19-sediment`；canonical 仅保留 1 篇 `notes.promote`）
+- [x] 6.3 归档 / 提交（含 0294）
