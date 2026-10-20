@@ -10946,6 +10946,40 @@ _await_post_turn()`（无上限）—— 上一轮收尾里的 `turn_observer` /
 ⑤ `SkillLibrary` 的锁只覆盖单进程，跨进程（多实例共写 `skills.json`）仍以最后落盘为准；
 ⑥ CLI `--timeout` 只作用于 `memory maintain`，其他命令不设统一墙钟。
 
+## ADR-0287：动作 JSON 后的纯 JSON 注释对象按首动作执行（change 0297 / 台账 E233）
+
+**背景。** 子 Agent 实机事故（trace `fc82601b…`）：模型输出完整动作对象之后，又跟了一个
+`{"integrated_analysis": […]}` 注释对象。旧解析把余部「含词元」一律判为形态 5（动作 JSON
+之后仍有正文）⇒ 本轮失败、动作不执行；`loop.parse_retry` 缺省关，失败直接回执用户。
+动作本身完整、无歧义，注释也无动作语义，丢弃一个可用动作的代价高于接受它。
+
+**决策**：
+
+- **D1 结构判据，不按键名。** 新增 `_only_json_annotations(rest)`：余部必须是一个或多个
+  **完整 JSON 值**（对象 / 数组 / 标量），值间允许空白与一个可选逗号，序列后仅空白或至多
+  一个收尾围栏；任一值不可完整解析或仍有其余字符 ⇒ 不命中。
+- **D2 顶层语义排除。** 每个顶层对象不得含非空 `tool_id`（第二个动作）或 `reply`（第二个
+  终态）；嵌套字段不参与判定。第二动作 / `reply` / 注释后正文 ⇒ 维持形态 5 可见失败。
+- **D3 只接 `{` 开头分支。** 首对象为动作且余部为纯注释 ⇒ 直接 `_from_dict` 首对象；注释
+  不进入 `args` / `reply` / 转录 / 记忆，也不记 `raw_output`。非 `{` 开头（正文 + 尾部动作 +
+  注释）不在本轮范围，避免重写「只认尾部对象」的既有语义。
+- **D4 提词仍禁止。** `_SYSTEM_PROMPT` 与 `_RETRY_NUDGE` 明确禁止动作后追加第二段 JSON
+  （含 `integrated_analysis`）；容错是安全网，不是推荐输出形态。
+- **D5 不动重试缺省。** `loop.parse_retry` 保持缺省关、次数不变；确定性恢复覆盖现场形态。
+
+**被拒方案**：把注释并入 `reply`（动作轮的回复由下一轮生成，会污染转录/记忆）；接受第二个
+动作并取第一个（模型看到的世界与意图不一致）；同一轮既执行又回复；按
+`integrated_analysis` 等键名启发式白名单（键名不可枚举）；默认开启解析回喂重试
+（多一次模型调用且不保证收敛）。
+
+**验证**：`tests/test_loop_output_protocol.py` 新增 5 例（注释对象 / 数组执行；第二动作 /
+`reply` 对象 / 注释后正文失败）；既有形态 2/3/4/5 用例零改动。反证：去掉注释判据 ⇒ 执行
+用例红；去掉第二动作排除 ⇒ 第二动作用例红。全量 pytest 与四门禁见 test-cases §210。
+
+**局限**：① 只覆盖 `{` 开头的「动作 + 注释」；正文 + 尾部动作 + 注释仍失败；② 注释被
+丢弃，若关键结论只写在注释里，用户看不到；③ 只看顶层字段，注释对象嵌套动作字段会被当数据
+接受；④ 可选/无逗号拼接均接受，理论上的非标准多值拼接也会被接受。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11227,3 +11261,4 @@ _await_post_turn()`（无上限）—— 上一轮收尾里的 `turn_observer` /
 | ADR-0284 | 03-interfaces/ui-interface.md, 03-interfaces/ui-scheme.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0285 | 03-interfaces/notes-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0286 | 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/cli-ops-interface.md, 03-interfaces/skills-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0287 | 03-interfaces/loop-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -230,7 +230,7 @@ def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "
 
 | 输入形态 | 解析结果 | 失败态 |
 |---|---|---|
-| 纯 JSON 对象（首字符 `{`） | `_from_dict` ⇒ 动作 / 回复 | 解析失败 ⇒ `failed=True` |
+| 纯 JSON 对象（首字符 `{`；允许其后退化残渣或纯 JSON 注释，change `0297`） | `_from_dict` ⇒ 动作 / 回复 | 解析失败 ⇒ `failed=True` |
 | 原生 `tool_calls` | `_from_tool_calls`（**优先于** content 协议） | 缺 `function.name` / 参数非对象 ⇒ `failed=True` |
 | 自然语言回复（**含尾部动作 JSON**） | 正文 + **收在文末**的 JSON 对象（其后仅剩空白与 Markdown 围栏符）且含非空 `tool_id` ⇒ 转动作；否则整段为回复 | 解析失败 ⇒ `failed=True` |
 | **未闭合的动作载荷**（尾部有**到内容结束仍未闭合**的 `"tool_id"` 结构，change `0170`） | **失败态终止动作** ⇒ `reply` 为可读提示，SHALL NOT 把原文当回复 | 命中即 `failed=True` |
@@ -264,6 +264,12 @@ def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "
   （形态 2 的 `{` 开头分支先试「首个对象 + 残渣」，形态 3 的尾部对象亦同）。**缺词元残渣此前一律
   整轮报废**（`Extra data` ⇒ 误判形态 5，且 `loop.parse_retry` 缺省关 ⇒ 无补救）⇒ 本改为
   **缺陷修复**，不设配置键。含词元余部（形态 5 真正要防的**解释性正文**）行为**逐字不变**。
+- **纯 JSON 注释容差（change `0297` / ADR-0287，无条件生效）**：完整动作对象之后若恰为一个或
+  多个**完整 JSON 值**（对象 / 数组 / 标量；值间允许空白与可选逗号；序列后仅空白或收尾围栏），
+  且每个**顶层**对象都无 `tool_id` / `reply`，则按首个动作**执行**，注释值丢弃（不进 `args` /
+  `reply` / 转录 / 记忆），不记 `raw_output`、不标失败。顶层含非空 `tool_id`（第二个动作）或
+  含 `reply`（第二个终态）、以及注释后再跟正文 ⇒ 仍为形态 5 可见失败。仅 `{` 开头分支生效；
+  「正文 + 尾部动作 + 注释」不在本轮范围。
 
 - **解析失败回喂重试（change `0227` / ADR-0217，**缺省关**）**：键 `loop.parse_retry` 开启、且
   ①失败门（空 `tool_id` ＋ `reply` 前缀 `LLM_PLAN_PARSE_FAILED`；`LLM 调用失败` 前缀自然排除）

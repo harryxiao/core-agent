@@ -94,7 +94,8 @@ _SYSTEM_PROMPT = (
     "①自然语言回复——用于任务已完成、无需调用工具、澄清、或文字评审/说明时；\n"
     '②JSON 工具调用——形如 {"tool_id": "...", "args": {...}}。\n'
     "选②时：JSON 必须是整条回复的**第一个字符**，其后**不得**再有任何字符"
-    "（含解释、总结、结尾语、代码块围栏）；tool_id 必须取自「可用工具」列表，"
+    "（含解释、总结、结尾语、代码块围栏，亦不得追加第二段 JSON——"
+    "如 integrated_analysis 一类分析对象）；tool_id 必须取自「可用工具」列表，"
     "不得臆造；args 必须符合该工具声明的参数。\n"
     "选①时：整条只能是自然语言；**禁止**以任何形式夹杂 JSON"
     '（含 Markdown 代码块、示例、半截或完整的 {"tool_id":…}）——'
@@ -109,7 +110,8 @@ _RETRY_NUDGE = (
     "你上一轮的输出无法解析为动作（{cause}），该轮作废。请重新输出并严格遵守输出格式协议："
     '整条回复只能是①自然语言回复，或②形如 {{"tool_id": …, "args": {{…}}}} 的单个 JSON 对象 —— '
     "选②时 JSON 必须是整条回复的第一个字符，其后不得再有任何字符（含解释、总结、围栏、"
-    "或重复一份动作对象）；选①时禁止在正文中夹杂任何 JSON / tool_id 示例"
+    "重复一份动作对象、或附带 integrated_analysis 一类分析 JSON）；选①时禁止在正文中"
+    "夹杂任何 JSON / tool_id 示例"
     "（评审说明只用自然语言）；要写入的内容较长时，请分多次、每次写一小段。"
 )
 
@@ -394,6 +396,49 @@ def _embedded_action_payload(text: str) -> bool:
         if payload.get("tool_id") and _has_word(text[end:]):
             return True
     return False
+
+
+def _only_json_annotations(text: str) -> bool:  # noqa: C901 — 顺序扫描 + 多门早退
+    """余部是否恰为**纯 JSON 注释值序列**（change 0297 / ADR-0287）。
+
+    现场（trace ``fc82601b…``）：完整动作对象之后跟了一个
+    ``{"integrated_analysis": […]}}`` —— 顶层无 ``tool_id`` / ``reply``，是模型附带的结构化
+    分析，而非「追加正文」。旧判据只看余部是否含词元 ⇒ 把完整可用的动作判成形态 5。
+
+    判据（严格、确定性）：一个或多个完整 JSON 值（对象 / 数组 / 标量），值间允许空白与
+    一个可选 ``,``；顶层对象**不得**含非空 ``tool_id``（第二个动作）或 ``reply``（第二个
+    终态）；序列后仅允许空白与至多一个收尾代码围栏。任一值不可完整解析或仍有其余字符 ⇒
+    ``False``（交由形态 5 判据）。
+    """
+    tail = text.strip()
+    if tail.endswith("```"):
+        tail = tail[:-3].rstrip()
+    if not tail:
+        return False
+    decoder = json.JSONDecoder()
+    index = 0
+    seen = False
+    while index < len(tail):
+        while index < len(tail) and tail[index].isspace():
+            index += 1
+        if index >= len(tail):
+            break
+        if tail[index] == ",":  # 首值前的逗号是 JSONL 分隔残渣；序列内同样允许
+            index += 1
+            while index < len(tail) and tail[index].isspace():
+                index += 1
+            if index >= len(tail):
+                return False
+        try:
+            value, index = decoder.raw_decode(tail, index)
+        except ValueError:
+            return False
+        if isinstance(value, dict):
+            payload = cast("dict[str, Any]", value)
+            if payload.get("tool_id") or "reply" in payload:
+                return False
+        seen = True
+    return seen
 
 
 class LLMPlanner:
@@ -782,7 +827,7 @@ class LLMPlanner:
 
     # ---- 解析 ----
 
-    def _parse(  # noqa: PLR0911,C901 — 五种形态 + 空/首字符分支，逐形态早返更清晰
+    def _parse(  # noqa: PLR0911,PLR0912,C901 — 五种形态 + 空/首字符分支，逐形态早返更清晰
         self, content: str, *, finish_reason: str = ""
     ) -> Action:
         raw = content.strip()
@@ -804,8 +849,15 @@ class LLMPlanner:
             # （无词元）⇒ 按该对象处理（`{"reply": …}` 亦然，避免「同一谓词、两种朝向、
             # 三种结论」的新不对称）。余部含词元 ⇒ 落到下方既有路径（成因措辞逐字不变）。
             leading = _leading_object(text)
-            if leading is not None and not _has_word(text[leading[1] :]):
-                return self._from_dict(leading[0])
+            if leading is not None:
+                first, end = leading
+                rest = text[end:]
+                if not _has_word(rest):
+                    return self._from_dict(first)
+                # 动作 + 纯 JSON 注释（change 0297 / ADR-0287）：注释不构成「追加正文」，
+                # 首动作完整可用 ⇒ 执行；第二动作 / reply 对象 / 正文仍落回形态 5。
+                if first.get("tool_id") and _only_json_annotations(rest):
+                    return self._from_dict(first)
             try:
                 data = json.loads(text)
             except ValueError:

@@ -314,6 +314,55 @@ def test_trailing_xml_arg_value_residue_still_executes() -> None:
     assert action.args["script"] == "echo hi"
 
 
+# ---- ⑤ 动作 JSON + 纯 JSON 注释（change 0297 / ADR-0287）----
+
+# 事故现场（trace fc82601b…）：完整动作后跟一个无动作语义的分析对象。
+_ANNOTATION = '\n,{"integrated_analysis": ["目录不存在", "工作区有未提交修改"]}'
+
+
+def test_action_json_with_trailing_annotation_object_executes() -> None:
+    """动作后跟纯 JSON 注释对象 ⇒ 执行首动作，注释不进入 args/reply。"""
+    action = _parse(_ACTION + _ANNOTATION)
+    assert action.failed is False
+    assert action.tool_id == "tools.echo"
+    assert action.args == {"text": "hi"}
+    assert action.raw_output == ""
+
+
+def test_action_json_with_trailing_annotation_array_executes() -> None:
+    """注释值可为数组（或标量）—— 同一结构判据。"""
+    action = _parse(_ACTION + '\n["note", 1, true]')
+    assert action.failed is False
+    assert action.tool_id == "tools.echo"
+    assert action.args == {"text": "hi"}
+
+
+def test_action_json_with_trailing_second_action_still_fails() -> None:
+    """动作后跟第二个动作 ⇒ 维持形态 5 可见失败，不静默丢弃第二个动作。"""
+    second = '{"tool_id": "tools.echo", "args": {"text": "second"}}'
+    action = _parse(_ACTION + "\n" + second)
+    assert action.is_terminal
+    assert action.failed is True
+    assert "LLM_PLAN_PARSE_FAILED" in action.args["reply"]
+    assert action.raw_output
+
+
+def test_action_json_with_trailing_reply_object_still_fails() -> None:
+    """动作后跟 reply 对象 ⇒ 无法判定本轮终态，维持形态 5。"""
+    action = _parse(_ACTION + '\n{"reply": "done"}')
+    assert action.is_terminal
+    assert action.failed is True
+    assert "LLM_PLAN_PARSE_FAILED" in action.args["reply"]
+
+
+def test_action_json_with_annotation_then_prose_still_fails() -> None:
+    """注释序列之后再跟正文 ⇒ 不是纯 JSON 注释序列，维持形态 5。"""
+    action = _parse(_ACTION + _ANNOTATION + "\n完成")
+    assert action.is_terminal
+    assert action.failed is True
+    assert "动作 JSON 之后仍跟有正文" in action.args["reply"]
+
+
 def test_hybrid_json_head_plus_xml_parameters_recovers() -> None:
     """JSON 头被 ``">`` 打断 + ``<parameter>`` 混写 ⇒ 恢复为可执行动作。
 

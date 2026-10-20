@@ -5026,3 +5026,19 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > （`RuntimeError`）。**实测**：全量 pytest **3367 passed**；`openspec validate --all` 32/0。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0286 行。
 
+## 210. 动作 JSON 后的纯 JSON 注释（TC-TRAILANNO，change `0297`／ADR-0287，台账 E233）
+
+| 编号 | 场景 | 输入 | 期望 |
+|---|---|---|---|
+| TC-TRAILANNO-01 | 注释对象 | 完整动作 + `,{"integrated_analysis": […]}` | 执行首动作，`args` 不含注释，`failed=False`（`tests/test_loop_output_protocol.py::test_action_json_with_trailing_annotation_object_executes`） |
+| TC-TRAILANNO-02 | 注释数组 | 完整动作 + `["note", 1, true]` | 执行首动作（`...::test_action_json_with_trailing_annotation_array_executes`） |
+| TC-TRAILANNO-03 | 第二动作 | 完整动作 + 另一 `tool_id` 对象 | 形态 5 可见失败，不执行（`...::test_action_json_with_trailing_second_action_still_fails`） |
+| TC-TRAILANNO-04 | `reply` 对象 | 完整动作 + `{"reply": "done"}` | 形态 5 可见失败（`...::test_action_json_with_trailing_reply_object_still_fails`） |
+| TC-TRAILANNO-05 | 注释后正文 | 动作 + 注释 + `完成` | 形态 5，`reply` 明示「动作 JSON 之后仍跟有正文」（`...::test_action_json_with_annotation_then_prose_still_fails`） |
+
+> **反证 2/2**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：去掉 `_only_json_annotations` 分支 ⇒
+> TC-TRAILANNO-01/02 红；去掉顶层 `tool_id` 排除 ⇒ TC-TRAILANNO-03 红。
+> **实测**：全量 pytest **3380 passed**（与 0298 同轮）；`openspec validate --all` **34/0**
+> （active：0296 / 0297 / 0298）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0287 行。
+
