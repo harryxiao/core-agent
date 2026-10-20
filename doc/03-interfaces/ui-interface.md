@@ -87,6 +87,7 @@ class UIAPILayer:
 | `loop.result` | turn_id, result | **终态**结果回传（`loop_finished` 映射，载荷 `LoopResult`；**不**承载增量） |
 | `loop.error` | turn_id, error | 结构化错误（不中断循环） |
 | `task.*` | 编排事件载荷 | 任务进度（task_started / plan_ready / wave_started / subtask_started / subtask_progress / subtask_completed / task_checkpoint / task_finished / task_failed，type 前缀 `task.`；TUI 时间线呈现：任务/波次浅灰单行，子任务 Collapsible 折叠块（标题含运行态徽标 `⟳`，收尾落 ✓/✗），展开含验收/**里程碑**（`subtask_progress` 逐条追加，工具类复用动作行**友好名**，见下注）/判定/结果节选；Web 任务区呈现见 §1.2 末） |
+| `agent.*` | agent_id, agent, title / event + data / ok + reply | **前台委托子 Agent 实况**（change `0298`/ADR-0288）：`agent.started` / `agent.progress`（`data` 按**字段白名单**裁剪，与 `subtask_progress` 同口径）/ `agent.completed`（有界回复节选）。TUI/Web 在 `main` 后追加 `Agent · <标题>` 标签与只读详情；无订阅方（`arun` / 后台委托）不产。详见 §1 末 |
 
 > **注（TUI 流式结构化块整体解析，change `0146` / ADR-0138）**：TUI 流式增量固化以**结构化块为
 > 单位** —— 当尾段处于**未闭合的结构化块**内（Markdown 表格：表头行 / `|---|` 分隔行 / 数据行；或
@@ -257,6 +258,18 @@ change `0294` / ADR-0284 起，焦点视图有了**可见入口**：时间线下
 主视图；`/resume` 清空；`task_finished` / `task_failed` **保留**终态标签与当前焦点（快照），直到下一次
 任务或会话切换。标签模型 `_task_tabs` 与 `_open` 分离（`_open` 跨任务保留），标签只取 `task.*` 载荷。
 Web 侧同一语义由标签栏 + 只读详情承接（见上段）。
+
+**前台委托子 Agent 实况（change 0298 / ADR-0288）**：`tools.delegate` 走 `Runtime._dispatch`，
+不经过编排器；0298 起父循环在动作批次执行期开**事件侧信道**（`loop.protocol.current_event_sink`），
+前台委托按 `agent.started` → `agent.progress`* → `agent.completed` 外发。`agent_id` 为
+`<画像>:<8 位实例后缀>`；`title` 取任务首个非空行（空白折叠、≤60 字符）；`progress.data` 只含
+白名单字段（`action_started` / `action_completed` / `step_completed` / `loop.compacting` /
+`loop.compacted`），思考/回复增量与表外类型**不外发**；`completed.reply` 为 ≤4000 字事件节选
+（工具返回值仍为全文），异常路径只含异常类型名。TUI 以 `agent_id` 复用 `_SubtaskBlock` /
+`_open` / `_progress_subtask` / `_set_focus`，`_agent_tabs` 与 `_task_tabs` 并列；Web 以
+`AGENT_SCOPE`（`"__agent__"`）作选择域，`activeAgent` 合成与 `SubtaskDetail` 同形的只读视图，
+`Chat` 把 `agent.*` 上抛 `App` 并在每轮发送前发 `agent.reset`。后台 `background=true` 委托与
+`arun` 路径**不产** `agent.*`（原事件面逐字不变），为其已知局限（known-risk E234）。
 
 **TUI 神兽斜杠命令（change 0137 / ADR-0130）**：REPL 命令面补 `/summon <神兽> [任务]` 与
 `/recall <神兽>`，经 `UIAPILayer.beast_command` 落到**与 CLI `summon`/`recall` 同一** `BeastActivator`

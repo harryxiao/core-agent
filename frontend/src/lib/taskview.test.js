@@ -6,6 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  AGENT_SCOPE,
   abbreviateGoal,
   activeAgent,
   initialTaskState,
@@ -212,6 +213,63 @@ test("无任务时标签为空；选中 main 时 main 激活", () => {
   assert.equal(tabs[0].label, "main");
   assert.equal(tabs[0].active, true); // 缺省主视图
   assert.equal(taskTabModel(selectTaskAgent(state, "t1", "1"))[0].active, false);
+});
+
+const AGENT_START = ev("agent.started", {
+  agent_id: "coding:abcd",
+  agent: "coding",
+  title: "写代码",
+});
+const AGENT_PROGRESS = ev("agent.progress", {
+  agent_id: "coding:abcd",
+  event: "action_started",
+  data: { round: 0, tool_id: "tools.file_write", args: { path: "a.py" } },
+});
+const AGENT_DONE = ev("agent.completed", {
+  agent_id: "coding:abcd",
+  ok: true,
+  reply: "子结果",
+});
+
+test("委托子 Agent：无任务也出现 main + Agent 标签，可选中查看详情", () => {
+  let state = applyAll([AGENT_START, AGENT_PROGRESS]);
+  const tabs = taskTabModel(state);
+  assert.deepEqual(
+    tabs.map((tab) => tab.label),
+    ["main", "⟳ Agent · 写代码"],
+  );
+  assert.equal(tabs[0].active, true);
+
+  state = selectTaskAgent(state, AGENT_SCOPE, "coding:abcd");
+  assert.deepEqual(state.selected, { taskId: AGENT_SCOPE, subtaskId: "coding:abcd" });
+  const view = activeAgent(state);
+  assert.equal(view.task.goal, "前台委托子 Agent");
+  assert.equal(view.subtask.status, "running");
+  assert.deepEqual(view.subtask.milestones, ["Write(a.py)"]);
+  assert.equal(taskTabModel(state)[1].active, true);
+
+  state = reduceTaskEvent(state, AGENT_DONE);
+  assert.equal(state.delegates[0].status, "done");
+  assert.equal(state.delegates[0].reply, "子结果");
+  assert.ok(taskTabModel(state)[1].label.startsWith("✓"));
+  assert.equal(activeAgent(state).subtask.reply, "子结果");
+
+  state = selectTaskAgent(state, AGENT_SCOPE, "nope");
+  assert.equal(state.selected, null);
+});
+
+test("agent.reset 清空委托与委托选择，不触碰任务选择", () => {
+  let state = applyAll([AGENT_START]);
+  state = selectTaskAgent(state, AGENT_SCOPE, "coding:abcd");
+  state = reduceTaskEvent(state, ev("agent.reset", {}));
+  assert.deepEqual(state.delegates, []);
+  assert.equal(state.selected, null);
+  assert.deepEqual(taskTabModel(state), []);
+
+  let withTask = applyAll([START, PLAN, RUN1]);
+  withTask = selectTaskAgent(withTask, "t1", "1");
+  withTask = reduceTaskEvent(withTask, ev("agent.reset", {}));
+  assert.deepEqual(withTask.selected, { taskId: "t1", subtaskId: "1" });
 });
 
 test("milestoneLine：动作行复用友好名 + 耗时；轮次级落步数", () => {

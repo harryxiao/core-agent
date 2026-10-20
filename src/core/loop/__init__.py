@@ -29,6 +29,7 @@ from .protocol import (
     LoopResult,
     Thinking,
     collect_result,
+    current_event_sink,
     current_session_id,
     current_trace_id,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "TurnBefore",
     "TurnObserver",
     "collect_result",
+    "current_event_sink",
     "current_session_id",
     "current_trace_id",
 ]

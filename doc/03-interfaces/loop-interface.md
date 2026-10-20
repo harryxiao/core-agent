@@ -109,6 +109,12 @@ class LoopEvent:
                                 # completed(round/tool_id/ok/duration_ms/output 节选，≤400 字符)
     payload: Any                # 事件负载（delta token / step 结果 / 终态原因 / {"text": 思考增量}）
 
+# 动作执行期**事件侧信道**（change 0298 / ADR-0288）
+current_event_sink: ContextVar[asyncio.Queue[LoopEvent] | None]
+# `DefaultLoop.astream` 在动作批次期间 set/reset；工具处理器（如 `tools.delegate`）可把事件写入
+# 队列，循环边执行边 yield，哨兵保证侧信道事件先于该批次的 action_completed / 终态。
+# 缺省 None = 无订阅方（`arun` / 后台路径），事件面逐字不变。
+
 @dataclass
 class LoopContext:
     messages: list[Message]     # 本轮消息流

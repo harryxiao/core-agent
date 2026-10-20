@@ -9,10 +9,19 @@ import { titleFromAction } from "./activity.js";
 
 export const TAB_MAX_CHARS = 14;
 export const REPLY_MAX_CHARS = 240;
+/** 委托子 Agent 的选择域（change 0298）：与 `task.*` 子任务共用选择模型但不进 tasks。 */
+export const AGENT_SCOPE = "__agent__";
 
-/** 空状态：无在途任务、无快照、主视图。 */
+/** 空状态：无在途任务、无快照、无委托、主视图。 */
 export function initialTaskState() {
-  return { tasks: [], lastTask: null, selected: null, notice: "", error: "" };
+  return {
+    tasks: [],
+    lastTask: null,
+    delegates: [],
+    selected: null,
+    notice: "",
+    error: "",
+  };
 }
 
 /** 子任务主题缩写：单行化 + 去空白 + 有界；空目标 ⇒ ""（调用方回退 `子任务 <id>`）。 */
@@ -106,12 +115,58 @@ function applyOutcome(subtask, outcome) {
   };
 }
 
+/** 委托子 Agent upsert（同一 agent_id 重入 ⇒ 重置进度，保留最新标题）。 */
+function upsertDelegate(delegates, p) {
+  const id = String(p.agent_id ?? "");
+  if (!id) return delegates;
+  const entry = {
+    id,
+    agent: String(p.agent ?? ""),
+    title: String(p.title ?? ""),
+    status: "running",
+    milestones: [],
+    reply: "",
+  };
+  const found = delegates.some((item) => item.id === id);
+  return found ? delegates.map((item) => (item.id === id ? entry : item)) : [...delegates, entry];
+}
+
+function replaceDelegate(state, agentId, fn) {
+  return {
+    ...state,
+    delegates: state.delegates.map((item) => (item.id === agentId ? fn(item) : item)),
+  };
+}
+
 /**
- * 单个 SSE 事件 → 新状态（不可变）。只处理 `task.*` 与 `error`；其余原样返回。
+ * 单个 SSE 事件 → 新状态（不可变）。处理 `task.*` / `agent.*` 与 `error`；其余原样返回。
  */
 export function reduceTaskEvent(state, ev) {
   const p = ev?.payload ?? {};
   switch (ev?.type) {
+    case "agent.reset":
+      return {
+        ...state,
+        delegates: [],
+        selected: state.selected?.taskId === AGENT_SCOPE ? null : state.selected,
+      };
+    case "agent.started":
+      return { ...state, delegates: upsertDelegate(state.delegates, p) };
+    case "agent.progress": {
+      const agentId = String(p.agent_id ?? "");
+      return replaceDelegate(state, agentId, (agent) => ({
+        ...agent,
+        milestones: [...agent.milestones, milestoneLine(ev)],
+      }));
+    }
+    case "agent.completed": {
+      const agentId = String(p.agent_id ?? "");
+      return replaceDelegate(state, agentId, (agent) => ({
+        ...agent,
+        status: p.ok ? "done" : "failed",
+        reply: replyExcerpt(p.reply ?? agent.reply),
+      }));
+    }
     case "task.task_started": {
       const task = {
         taskId: String(p.task_id ?? ""),
@@ -227,6 +282,11 @@ function finishTask(state, taskId, status, payload, failed) {
 
 function validateSelection(state, taskId, subtaskId) {
   if (!taskId || !subtaskId) return null;
+  if (taskId === AGENT_SCOPE) {
+    return state.delegates.some((item) => item.id === subtaskId)
+      ? { taskId, subtaskId }
+      : null;
+  }
   const task = findTask(state, taskId);
   if (!task || !task.subtasks.some((st) => st.id === subtaskId)) return null;
   return { taskId, subtaskId };
@@ -242,10 +302,10 @@ export function currentTask(state) {
   return state.tasks.length > 0 ? state.tasks[state.tasks.length - 1] : state.lastTask;
 }
 
-/** 标签模型：首位 `main`，其后当前/最近任务的子任务（主题缩写 + 状态徽标）。 */
+/** 标签模型：首位 `main`，其后当前/最近任务的子任务与前台委托子 Agent。 */
 export function taskTabModel(state) {
   const task = currentTask(state);
-  if (!task) return [];
+  if (!task && state.delegates.length === 0) return [];
   const selected = state.selected;
   const tabs = [
     {
@@ -257,7 +317,7 @@ export function taskTabModel(state) {
       active: !selected,
     },
   ];
-  for (const st of task.subtasks) {
+  for (const st of task?.subtasks ?? []) {
     const mark =
       st.status === "done" ? "✓" : st.status === "failed" ? "✗" : st.status === "running" ? "⟳" : "·";
     const title = abbreviateGoal(st.title) || `子任务 ${st.id}`;
@@ -272,13 +332,48 @@ export function taskTabModel(state) {
       ),
     });
   }
+  for (const agent of state.delegates) {
+    const mark =
+      agent.status === "done" ? "✓" : agent.status === "failed" ? "✗" : "⟳";
+    const title = abbreviateGoal(agent.title) || agent.agent || `Agent ${agent.id}`;
+    tabs.push({
+      key: `${AGENT_SCOPE}:${agent.id}`,
+      taskId: AGENT_SCOPE,
+      subtaskId: agent.id,
+      label: `${mark} Agent · ${title}`,
+      status: agent.status,
+      active: Boolean(
+        selected && selected.taskId === AGENT_SCOPE && selected.subtaskId === agent.id,
+      ),
+    });
+  }
   return tabs;
 }
 
-/** 当前选中视图（`{task, subtask}`）；主视图/非法选择 ⇒ null。 */
+/**
+ * 当前选中视图（`{task, subtask}`）；主视图/非法选择 ⇒ null。
+ * 委托子 Agent 合成同形视图：`subtask` 字段取自 `agent.*` 事件（只读）。
+ */
 export function activeAgent(state) {
   const selected = state.selected;
   if (!selected) return null;
+  if (selected.taskId === AGENT_SCOPE) {
+    const agent = state.delegates.find((item) => item.id === selected.subtaskId);
+    if (!agent) return null;
+    return {
+      task: { taskId: AGENT_SCOPE, goal: "前台委托子 Agent", subtasks: [] },
+      subtask: {
+        id: agent.id,
+        title: agent.title || agent.agent,
+        acceptance: "",
+        status: agent.status,
+        milestones: agent.milestones,
+        reason: "",
+        reply: agent.reply,
+        attempt: 1,
+      },
+    };
+  }
   const task = findTask(state, selected.taskId);
   const subtask = task?.subtasks.find((st) => st.id === selected.subtaskId);
   return task && subtask ? { task, subtask } : null;

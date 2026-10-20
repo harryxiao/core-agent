@@ -731,6 +731,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             self._focus_detail: Static | None = None  # 焦点折叠块详情（面板正文取此渲染文本）
             self._task_active = False  # 当前/最近一次任务存在（标签栏可见性闸）
             self._task_tabs: list[tuple[str, str]] = []  # 当前/最近任务的 (sid, goal)
+            self._agent_tabs: list[tuple[str, str]] = []  # 前台委托子 Agent 的 (id, title)
             self._tab_widgets: dict[str, _TaskTab] = {}  # sid → 标签 widget（"" = main）
             self._actions: dict[str, tuple[_StepBlock, str, object]] = {}
             # round:tool → (块, 目标摘要, args) —— args 供完成态按 code_run type 命名
@@ -1223,6 +1224,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             if kind == "task_started":
                 self._task_active = True  # 当前任务存在 ⇒ 标签栏可见（仅 main）
                 self._task_tabs.clear()
+                self._agent_tabs.clear()  # 新任务 ⇒ 上一任务的委托标签不留
                 self._set_focus("")  # 新计划回主视图（否则计划头落进被隐藏的时间线）
                 line = f"◍ 任务 {data.get('task_id')}：{data.get('goal', '')}"
                 self._add(Static(line, classes="hint", markup=False))
@@ -1254,6 +1256,63 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 outcomes = data.get("outcomes", [])
                 ok = sum(1 for o in outcomes if getattr(o, "ok", False))
                 self._add(Static(f"✔ 任务完成（{ok}/{len(outcomes)} 子任务通过）", classes="ok"))
+
+        def _add_agent_widget(self, event: Event) -> None:
+            """前台委托子 Agent 实况（change 0298）：主轮内联折叠块 + 标签栏条目。"""
+            payload = event.payload
+            if not isinstance(payload, dict):
+                return
+            data = cast(dict[str, Any], payload)
+            agent_id = str(data.get("agent_id", ""))
+            if not agent_id:
+                return
+            kind = event.type.removeprefix("agent.")
+            if kind == "started":
+                self._open_agent(agent_id, data)
+            elif kind == "progress":
+                self._progress_subtask(agent_id, data)
+            elif kind == "completed":
+                self._complete_agent(agent_id, data)
+
+        def _open_agent(self, agent_id: str, data: dict[str, Any]) -> None:
+            """子 Agent 开工：折叠块（复用子任务块）+ 标签条目；焦点已指向它则重绑。"""
+            title = str(data.get("title", "")).strip() or str(data.get("agent", ""))
+            detail = Static(f"Agent：{data.get('agent', '')}", classes="hint", markup=False)
+            sym = _step_symbol("subtask")
+            box = _SubtaskBlock(
+                agent_id,
+                detail,
+                title=f"子 Agent  ⟳ {escape(title)}",
+                collapsed=True,
+                collapsed_symbol=sym,
+                expanded_symbol=sym,
+                on_select=self._select_agent,
+            )
+            self._add(box)
+            self._open[agent_id] = (box, detail, title)
+            self._agent_tabs = [(sid, text) for sid, text in self._agent_tabs if sid != agent_id]
+            self._agent_tabs.append((agent_id, title))
+            if self._focus_sid == agent_id:
+                self._set_focus(agent_id)
+            else:
+                self._refresh_tabs()
+
+        def _complete_agent(self, agent_id: str, data: dict[str, Any]) -> None:
+            """子 Agent 收尾：标题落 ✓/✗，展开区补回复节选。"""
+            entry = self._open.get(agent_id)
+            if entry is None:
+                return
+            box, detail, title = entry
+            mark = "✓" if data.get("ok") else "✗"
+            box.title = f"子 Agent  {mark} {escape(title)}"
+            lines = [str(detail.render())]
+            reply = str(data.get("reply", "")).strip()
+            if reply:
+                lines.append(reply)
+            detail.update("\n".join(lines))
+            if detail is self._focus_detail:
+                self._render_panel()
+            self._refresh_tabs()
 
         def _add_action_widget(self, event: Event) -> None:
             """工具动作 → `Name(摘要)` 步骤块；缺省收起；完成更新耗时，输出灰显。"""
@@ -1476,13 +1535,17 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             只动 `#task-tabs`（绝不动 `#timeline`）；标签 widget 复用，点击引用不失效。
             """
             bar = self.query_one("#task-tabs", Horizontal)
-            bar.display = self._task_active
-            if not self._task_active:
+            bar.display = self._task_active or bool(self._agent_tabs)
+            if not bar.display:
                 return
             desired: list[tuple[str, str]] = [("", "main")]
             desired.extend(
                 (sid, f"{self._tab_status(sid)} {_tab_label(goal, sid)}")
                 for sid, goal in self._task_tabs
+            )
+            desired.extend(
+                (sid, f"{self._tab_status(sid)} Agent · {_tab_label(title, sid)}")
+                for sid, title in self._agent_tabs
             )
             wanted = {sid for sid, _ in desired}
             for stale in [sid for sid in self._tab_widgets if sid not in wanted]:
@@ -1608,6 +1671,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             self._open.clear()
             self._task_active = False
             self._task_tabs.clear()
+            self._agent_tabs.clear()
             self._refresh_tabs()
             self._actions.clear()
             self._reasoning_by_round.clear()
@@ -1680,7 +1744,7 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
 
         # ---- 普通消息轮 ----
 
-        async def _run_turn(self, text: str) -> None:
+        async def _run_turn(self, text: str) -> None:  # noqa: C901 — 逐事件类型分支
             """单轮执行：流式增量上 live、终态/错误落时间线；结束复位状态。"""
             try:
                 self._spin_start("思考中")
@@ -1696,6 +1760,9 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                         continue
                     if event.type.startswith("loop.action_"):  # 工具动作（缺省收起）
                         self._add_action_widget(event)
+                        continue
+                    if event.type.startswith("agent."):  # 前台委托实况（change 0298）
+                        self._add_agent_widget(event)
                         continue
                     if event.type == "loop.result":  # 终态：立刻停「思考中」，再等流收束
                         self._add_raw_output_widget(event)

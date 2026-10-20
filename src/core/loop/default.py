@@ -48,9 +48,24 @@ from .protocol import (
     LoopResult,
     Thinking,
     collect_result,
+    current_event_sink,
     current_session_id,
     current_trace_id,
 )
+
+# 动作批次侧信道的结束哨兵（change 0298）：哨兵沿同一队列随事件后到达，保证「先外发、
+# 后取结果」的次序；真实事件类型不会与之重名。
+_ACTIONS_DONE = LoopEvent("__actions_done__", None)
+
+
+async def _drain_sink(queue: asyncio.Queue[LoopEvent]) -> AsyncIterator[LoopEvent]:
+    """把侧信道队列投影为事件流；结束哨兵只用于收束，不外发。"""
+    while True:
+        item = await queue.get()
+        if item is _ACTIONS_DONE:
+            return
+        yield item
+
 
 # 中间件契约：返回 Action 放行/改写，返回 None 表示拒绝（短路）。可返回可等待对象
 # （change 0269：钩子外部命令经 `asyncio.to_thread` 执行，不得阻塞事件循环）。
@@ -780,11 +795,35 @@ class DefaultLoop(Plugin):
             # 并发段结果可能乱序返回，串行段逐动作 await。
             for event in self._started_events(prepared, base_round):
                 yield event
-            outcomes = (
-                await self._gather_actions(prepared, ctx, trace_id)
-                if concurrent
-                else await self._execute_serial(prepared, ctx, trace_id)
-            )
+            # 动作批次经**事件侧信道**执行（change 0298）：工具处理器可把子 Agent 生命周期
+            # 事件写入 `current_event_sink`，本循环边执行边外发；哨兵保证「先事件、后结果」。
+            # 无订阅方时（arun / 后台路径）队列只有哨兵，事件面与既有实现逐字一致。
+            sink: asyncio.Queue[LoopEvent] = asyncio.Queue()
+            sink_token = current_event_sink.set(sink)
+
+            async def _run_actions(
+                batch: list[_PreparedAction] = prepared,
+                context: LoopContext = ctx,
+                tid: str = trace_id,
+                parallel: bool = concurrent,
+                queue: asyncio.Queue[LoopEvent] = sink,
+            ) -> list[tuple[ActionResult, int]]:
+                try:
+                    return (
+                        await self._gather_actions(batch, context, tid)
+                        if parallel
+                        else await self._execute_serial(batch, context, tid)
+                    )
+                finally:
+                    queue.put_nowait(_ACTIONS_DONE)
+
+            runner = asyncio.create_task(_run_actions())
+            try:
+                async for relayed in _drain_sink(sink):
+                    yield relayed
+                outcomes = await runner
+            finally:
+                current_event_sink.reset(sink_token)
             # 提交严格按原序：事件、观测、回滚、轮次推进与动作顺序一一对应。
             for item, (result, duration_ms) in zip(prepared, outcomes, strict=True):
                 action = item.action

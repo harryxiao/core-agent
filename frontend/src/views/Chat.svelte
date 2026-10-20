@@ -11,6 +11,7 @@
     tabs = [],
     agentView = null,
     onSelectAgent = () => {},
+    onAgentEvent = () => {},
     onTurnEnd = () => {},
   } = $props();
 
@@ -176,11 +177,14 @@
     busy = true;
     phase = "thinking";
     input = "";
+    onAgentEvent({ type: "agent.reset", payload: {} });
     timeline = [...timeline, { kind: "user", text }];
     try {
       for await (const ev of runStream(sessionId, text)) {
         if (ev.type === "error") {
           error = `${ev.payload.code}: ${ev.payload.message}`;
+        } else if (ev.type.startsWith("agent.")) {
+          onAgentEvent(ev);
         } else if (ev.type === "loop.delta") {
           appendDelta(String(ev.payload.text ?? ""));
         } else if (ev.type === "loop.reasoning") {

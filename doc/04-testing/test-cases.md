@@ -5042,3 +5042,22 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > （active：0296 / 0297 / 0298）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0287 行。
 
+## 211. 前台委托子 Agent 实况（TC-AGENTLIVE，change `0298`／ADR-0288，台账 E234）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-AGENTLIVE-01 | 侧信道先于结果 | 动作处理器向 `current_event_sink` 写入事件 | `astream` 先产出该事件，再产出 `action_completed` / `loop_finished`（`tests/test_agent_live_events.py::test_side_channel_events_are_yielded_before_action_result`） |
+| TC-AGENTLIVE-02 | 无订阅零事件 | 工具不写侧信道，`astream` 正常执行 | 事件流无 `agent.*`（`...::test_no_subscriber_keeps_event_stream_unchanged`） |
+| TC-AGENTLIVE-03 | 生命周期三事件 | 前台 `tools.delegate` + 假子 loop | 依序 `agent.started` / `agent.progress` / `agent.completed`；`agent_id` 带画像前缀与实例后缀（`...::test_foreground_delegate_emits_lifecycle_and_whitelisted_progress`） |
+| TC-AGENTLIVE-04 | 白名单裁剪 | 子 loop 发 `action_started`（含表外字段）与 `thinking_delta` | `data` 只含白名单字段；表外类型不外发（同上） |
+| TC-AGENTLIVE-05 | 无订阅仍走 arun | 直接调用 `tools.delegate`（无父循环） | 调 `arun` 不调 `astream`，返回值不变（`...::test_foreground_delegate_without_subscriber_uses_arun`） |
+| TC-AGENTLIVE-06 | 异常可见且不泄正文 | 子 loop 抛 `RuntimeError("内部细节…")` | 先落 `agent.completed{ok:false}`，仅含类型名；工具返回 `ok=false`（`...::test_foreground_delegate_exception_emits_failed_completion`） |
+| TC-AGENTLIVE-07 | TUI 标签与切换 | 主轮产出 `agent.started/progress/completed` | 标签含 `main` + `Agent · 写代码`；点击 ⇒ 只读面板可见、主时间线隐藏；收尾落 ✓ 且详情含回复节选；点击 `main` ⇒ 时间线恢复（`tests/test_repl.py::test_foreground_delegate_tabs_appear_and_switch_views`） |
+| TC-AGENTLIVE-08 | Web 委托模型 | 无任务，仅 `agent.*` 事件 | 标签 `main` + `Agent · 写代码`；选择/详情/收尾/非法 id fail-closed（`frontend/src/lib/taskview.test.js`「委托子 Agent：…」） |
+| TC-AGENTLIVE-09 | Web 回合复位 | `agent.reset` | 委托与委托选择清空；任务子任务选择不受影响（同上「agent.reset…」） |
+
+> **反证 2/2**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：动作批次改回整段 `await`（无队列外发）
+> ⇒ TC-AGENTLIVE-01 红；去掉 `_AGENT_PROGRESS_FIELDS` 白名单（全量透传载荷）⇒ TC-AGENTLIVE-04 红。
+> **实测**：全量 pytest **3380 passed**；`openspec validate --all` **34/0**
+> （active：0296 / 0297 / 0298）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0288 行。

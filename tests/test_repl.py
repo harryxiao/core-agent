@@ -2903,6 +2903,114 @@ def test_task_tabs_keep_terminal_snapshot_then_reset_on_next_task() -> None:
     assert timeline_back is True
 
 
+class _AgentLoop:
+    """主轮内委托子 Agent 的 loop 替身：开工后挂起，release 才收尾。"""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def astream(self, user_input: str, *, session_id: str = ""):
+        yield LoopEvent("loop_started", {"trace_id": "t-main"})
+        yield LoopEvent(
+            "agent.started",
+            {"agent_id": "coding:abcd1234", "agent": "coding", "title": "写代码"},
+        )
+        yield LoopEvent(
+            "agent.progress",
+            {
+                "agent_id": "coding:abcd1234",
+                "event": "action_started",
+                "data": {"round": 0, "tool_id": "tools.file_write", "args": {"path": "a.py"}},
+            },
+        )
+        self.started.set()
+        await self.release.wait()
+        yield LoopEvent(
+            "agent.completed",
+            {"agent_id": "coding:abcd1234", "ok": True, "reply": "子结果"},
+        )
+        yield LoopEvent("loop_finished", {"reply": f"主结果:{user_input}", "trace_id": "t-main"})
+
+
+def test_foreground_delegate_tabs_appear_and_switch_views() -> None:
+    """`tools.delegate` 在前台主轮内 ⇒ 标签栏出现 Agent 标签，可切换查看其交互内容。"""
+    loop = _AgentLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> tuple[list[str], bool, bool, str, list[str], bool, str]:
+        from textual.containers import Horizontal, Vertical  # noqa: PLC0415 — 可选依赖懒 import
+        from textual.widgets import Static  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            await _step_submit(pilot)
+            for _ in range(30):
+                await pilot.pause()
+                if loop.started.is_set():
+                    break
+            labels_running = _tab_labels(app)
+            bar_shown = app.query_one("#task-tabs", Horizontal).display is True
+            agent_tab = next(
+                w
+                for w in app.query(".task-tab")
+                if w.sid == "coding:abcd1234"  # type: ignore[attr-defined]
+            )
+            assert await pilot.click(agent_tab)
+            for _ in range(5):
+                await pilot.pause()
+            panel_shown = app.query_one("#panel", Vertical).display is True
+            timeline_hidden = app.query_one("#timeline", Vertical).display is False
+            panel_text = str(app.query_one("#panel-body", Static).render())
+
+            loop.release.set()
+            for _ in range(30):
+                await pilot.pause()
+            labels_done = _tab_labels(app)
+            detail = next(
+                str(list(box.query(Static))[-1].render())
+                for box in _blocks(app)
+                if getattr(box, "sid", "") == "coding:abcd1234"
+            )
+            main_tab = next(w for w in app.query(".task-tab") if w.sid == "")  # type: ignore[attr-defined]
+            assert await pilot.click(main_tab)
+            for _ in range(5):
+                await pilot.pause()
+            timeline_back = app.query_one("#timeline", Vertical).display is True
+            return (
+                labels_running,
+                bar_shown,
+                panel_shown,
+                timeline_hidden,
+                panel_text,
+                labels_done,
+                timeline_back,
+                detail,
+            )
+
+    (
+        labels_running,
+        bar_shown,
+        panel_shown,
+        timeline_hidden,
+        panel_text,
+        labels_done,
+        timeline_back,
+        detail,
+    ) = asyncio.run(drive())
+    assert labels_running[0] == "main"
+    assert any("Agent · 写代码" in label for label in labels_running)
+    assert bar_shown is True
+    assert panel_shown is True
+    assert timeline_hidden is True
+    assert "Agent：coding" in panel_text
+    assert "Write(a.py)" in panel_text
+    assert any("✓" in label and "写代码" in label for label in labels_done)
+    assert timeline_back is True
+    assert "子结果" in detail
+
+
 def test_resume_clears_task_tabs() -> None:
     """`/resume` 切换会话 ⇒ 标签栏隐藏、标签模型清空、主视图恢复。"""
     orch = _TaskOrchestrator(

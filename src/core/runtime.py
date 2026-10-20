@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import uuid
 import warnings
 from collections.abc import Callable, Coroutine, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -83,11 +84,15 @@ from core.loop import (
     Approver,
     DefaultLoop,
     LoopContext,
+    LoopEvent,
     LoopPlugin,
+    LoopResult,
     Middleware,
     TurnAfter,
     TurnBefore,
     TurnObserver,
+    collect_result,
+    current_event_sink,
     current_session_id,
     current_trace_id,
 )
@@ -445,6 +450,57 @@ def _pet_notification_sink(message: str) -> None:
 
 # 子 Agent 委托运行完整子循环（多次 LLM 往返 + 工具轮），远超 ToolDef 默认 30s
 _DELEGATE_TIMEOUT_S = 600.0
+
+# 前台委托的实况事件（change 0298 / ADR-0288）：子 Agent 生命周期 → `agent.*`。
+# 载荷逐类白名单（与编排层 `_PROGRESS_FIELDS` 同口径）：不把子 Agent 的原始对话 / 思考 /
+# 完整工具输出直接灌进父事件流；args/output 已由 loop 侧有界化。
+_AGENT_TITLE_MAX = 60
+_AGENT_REPLY_MAX = 4000
+_AGENT_PROGRESS_FIELDS: dict[str, tuple[str, ...]] = {
+    "action_started": ("round", "tool_id", "args"),
+    "action_completed": ("round", "tool_id", "ok", "duration_ms", "output"),
+    "step_completed": ("round", "failed"),
+    "loop.compacting": ("round",),
+    "loop.compacted": ("round", "elapsed_ms", "timeout"),
+}
+
+
+def _agent_title(task: str) -> str:
+    """子 Agent 标签标题：任务首个非空行、空白折叠、有界。"""
+    line = next((part.strip() for part in task.splitlines() if part.strip()), "")
+    line = " ".join(line.split())
+    return line if len(line) <= _AGENT_TITLE_MAX else f"{line[: _AGENT_TITLE_MAX - 1]}…"
+
+
+def _emit_agent_event(
+    sink: asyncio.Queue[LoopEvent] | None, event_type: str, payload: dict[str, object]
+) -> None:
+    """向父循环的事件侧信道写一条 `agent.*`；无订阅方（后台 / arun）⇒ 零事件。"""
+    if sink is not None:
+        sink.put_nowait(LoopEvent(event_type, payload))
+
+
+def _relay_agent_progress(
+    sink: asyncio.Queue[LoopEvent] | None, agent_id: str, event: LoopEvent
+) -> None:
+    """把子循环事件按白名单转成 `agent.progress`（表外类型静默丢弃）。"""
+    fields = _AGENT_PROGRESS_FIELDS.get(event.type)
+    if sink is None or fields is None:
+        return
+    raw = event.payload
+    payload = cast("dict[str, object]", raw) if isinstance(raw, dict) else {}
+    data = {key: payload[key] for key in fields if key in payload}
+    _emit_agent_event(
+        sink,
+        "agent.progress",
+        {"agent_id": agent_id, "event": event.type, "data": data},
+    )
+
+
+def _agent_reply_excerpt(reply: str) -> str:
+    """子 Agent 终态回复的**事件**节选（工具返回值仍为全文）。"""
+    text = str(reply)
+    return text if len(text) <= _AGENT_REPLY_MAX else f"{text[: _AGENT_REPLY_MAX - 1]}…"
 
 
 def _failure_lookup(backend: MemoryBackend) -> Callable[[str], str | None]:
@@ -1407,17 +1463,57 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
             return {"ok": False, "error": f"无匹配子 Agent: {exc}"}
         if profile.loop is None:
             return {"ok": False, "error": f"子 Agent {profile.agent_id} 无可用 loop"}
+        loop = profile.loop
         lease: WorkspaceLease | None = None
         if worktrees is not None:
             try:
                 lease = await asyncio.to_thread(worktrees.create, agent_id=profile.agent_id)
             except OrchestrationError as exc:  # fail-closed：绝不回退主工作区
                 return {"ok": False, "error": str(exc)}
+        # 前台委托实况（change 0298 / ADR-0288）：生命周期 + 白名单进度写入父循环侧信道。
+        # 无订阅方（后台 / arun）⇒ sink 为 None，零额外事件。
+        sink = current_event_sink.get()
+        agent_id = f"{profile.agent_id}:{uuid.uuid4().hex[:8]}"
+        _emit_agent_event(
+            sink,
+            "agent.started",
+            {"agent_id": agent_id, "agent": profile.agent_id, "title": _agent_title(task)},
+        )
+
         # 委托轨迹归入发起会话（change 0247 / ADR-0235）：`DefaultLoop` 在动作期设置；
         # 缺省空串 = 未归属，与 delegate 引入前的归属语义一致。
         # 工作区（change 0284）：仅相对路径与省略 cwd 的 code_run 受影响（不是安全沙箱）。
-        with use_workspace(lease.path if lease is not None else None):
-            result = await profile.loop.arun(task, session_id=current_session_id.get())
+        async def _run() -> LoopResult:
+            with use_workspace(lease.path if lease is not None else None):
+                if sink is None:  # 无订阅方 ⇒ 原路径逐字不变
+                    return await loop.arun(task, session_id=current_session_id.get())
+                return await collect_result(
+                    loop.astream(task, session_id=current_session_id.get()),
+                    on_event=lambda event: _relay_agent_progress(sink, agent_id, event),
+                )
+
+        try:
+            result = await _run()
+        except Exception as exc:
+            _emit_agent_event(
+                sink,
+                "agent.completed",
+                {
+                    "agent_id": agent_id,
+                    "ok": False,
+                    "reply": f"子 Agent 执行异常：{type(exc).__name__}",
+                },
+            )
+            raise
+        _emit_agent_event(
+            sink,
+            "agent.completed",
+            {
+                "agent_id": agent_id,
+                "ok": not result.failed,
+                "reply": _agent_reply_excerpt(result.reply),
+            },
+        )
         payload: dict[str, object] = {"ok": not result.failed, "reply": result.reply}
         if lease is not None:
             payload["worktree"] = lease.as_metadata(await asyncio.to_thread(changed_files, lease))

@@ -72,6 +72,7 @@
         {tabs}
         {agentView}
         onSelectAgent={selectAgent}
+        onAgentEvent={onTaskEvent}
         onTurnEnd={refresh}
       />
       <div class="rail">

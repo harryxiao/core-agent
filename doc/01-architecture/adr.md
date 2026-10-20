@@ -10980,6 +10980,44 @@ _await_post_turn()`（无上限）—— 上一轮收尾里的 `turn_observer` /
 丢弃，若关键结论只写在注释里，用户看不到；③ 只看顶层字段，注释对象嵌套动作字段会被当数据
 接受；④ 可选/无逗号拼接均接受，理论上的非标准多值拼接也会被接受。
 
+## ADR-0288：前台委托经动作期侧信道外发子 Agent 实况（change 0298 / 台账 E234）
+
+**背景。** 0294 的主/子 Agent 标签只消费 `TaskScheduler` 的 `task.subtask_*`；`tools.delegate`
+走 `Runtime._dispatch` 同步等待 `profile.loop.arun(...)`，子 Agent 生命周期对父事件流不可见
+⇒ 无标签、无详情、无法观察。修复不能改工具协议（schema 会暴露给模型），也不能在 runtime
+直接写 UI（分层与三入口共用要求）。
+
+**决策**：
+
+- **D1 动作期事件侧信道。** `loop.protocol` 增 `current_event_sink`（`ContextVar` 持有
+  `asyncio.Queue[LoopEvent]`）。`DefaultLoop.astream` 把动作批次放入任务执行，父生成器从队列
+  边取边 `yield`；批次 `finally` 写哨兵，保证侧信道事件先于动作结果与终态。`arun` 不经过
+  `astream` ⇒ 无队列、无额外事件。
+- **D2 只在有订阅方时改走事件流。** `_dispatch` 读 `current_event_sink`；为 `None` 时仍调用
+  `profile.loop.arun(...)`（原路径逐字不变）；非空时用 `collect_result(astream, on_event=…)`
+  驱动子循环。后台 `tools.delegate` 无父轮次 ⇒ 不接实时中继。
+- **D3 生命周期 + 白名单。** `agent.started`（唯一实例 id / 画像 / 有界标题）、
+  `agent.progress`（`event` + `data`，字段白名单同编排层口径）、`agent.completed`
+  （`ok` + 有界 reply 节选）；思考/回复增量与表外事件不外发。异常先落 `ok=false`（只含
+  类型名）再上抛，由既有工具错误面兜底。
+- **D4 呈现复用。** TUI 复用 `_SubtaskBlock` / `_open` / `_progress_subtask` / `_set_focus`，
+  `agent_id` 作 sid；Web 复用 `SubtaskDetail`，新增 `AGENT_SCOPE` 选择域与合成视图。输入框
+  仍只对主 Agent 生效，详情只读。
+- **D5 快照边界。** 委托标签跨回合保留至下一回合 / 下一次任务；Web 由 `agent.reset` 清空，
+  TUI 由 `task_started` / `/resume` 清空；不持久化、不跨进程恢复。
+
+**被拒方案**：给 `tools.delegate` 加事件回调参数（污染工具 schema）；runtime 直接写 UI
+（破坏分层）；全量透传子 Agent 事件（泄露思考/回复与完整工具输出）；后台也实时中继
+（无宿主轮次）；映射成 `task.subtask_*`（伪造编排事件、污染任务区）。
+
+**验证**：`tests/test_agent_live_events.py`（侧信道顺序、无订阅零事件、`arun` 原路径、
+白名单裁剪、异常 `ok=false`）；`tests/test_repl.py`（标签出现/切换/收尾/详情）；
+`frontend/src/lib/taskview.test.js`（无任务也可有 Agent 标签、选择/详情/复位）。反证：
+去掉边执行边外发 ⇒ 顺序用例红；去掉白名单 ⇒ 表外字段用例红。全量门禁见 test-cases §211。
+
+**局限**：① 后台委托仍无实时进度（只有终态通知）；② 详情是「里程碑 + 终态节选」，不是完整
+子 Agent 对话；③ 进程重启后标签不恢复；④ `arun` 调用方永远拿不到 `agent.*`。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11262,3 +11300,4 @@ _await_post_turn()`（无上限）—— 上一轮收尾里的 `turn_observer` /
 | ADR-0285 | 03-interfaces/notes-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0286 | 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/cli-ops-interface.md, 03-interfaces/skills-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0287 | 03-interfaces/loop-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0288 | 03-interfaces/ui-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

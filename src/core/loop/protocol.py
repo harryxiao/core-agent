@@ -13,7 +13,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
+
+if TYPE_CHECKING:
+    import asyncio
 
 # 当前动作所属会话（change 0247 / ADR-0235）：`DefaultLoop` 在每次 `_act` 调用前后
 # set/reset；工具处理器（如 `tools.delegate`）由此把发起会话转交子 Agent。
@@ -46,6 +49,14 @@ class LoopEvent:
 
     type: str
     payload: Any = None
+
+
+# 动作执行期的**事件侧信道**（change 0298 / ADR-0288）：工具处理器（`tools.delegate`）把子
+# Agent 的生命周期事件写入该队列，`DefaultLoop` 在动作批次执行期间边执行边取出并外发。
+# 缺省 ``None`` = 无人订阅（`arun` / 后台路径照旧，不产生额外事件）。
+current_event_sink: ContextVar[asyncio.Queue[LoopEvent] | None] = ContextVar(
+    "current_event_sink", default=None
+)
 
 
 @dataclass
