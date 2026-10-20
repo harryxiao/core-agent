@@ -590,7 +590,9 @@ class _MemorySpy:
     def write(self, layer: str, entry: MemoryEntry) -> str:
         return entry.id
 
-    def compact(self, query: str = "", budget: int = 4096, *, session_id: str = "") -> None:
+    def compact(
+        self, query: str = "", budget: int = 4096, *, session_id: str = "", deadline: Any = None
+    ) -> None:
         self.compacted.append((query, session_id))
 
 

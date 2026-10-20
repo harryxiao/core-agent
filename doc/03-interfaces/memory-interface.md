@@ -51,7 +51,12 @@ class MemoryStore(Plugin):
         """返回 L1 最小索引。"""
 
     def compact(
-        self, query: str = "", budget: int = 4096, *, session_id: str = ""
+        self,
+        query: str = "",
+        budget: int = 4096,
+        *,
+        session_id: str = "",
+        deadline: float | None = None,
     ) -> "DecisionResult | None":
         """压实记忆：注入 summarizer 时按 ``session_id`` 聚合 L2 episodic 提炼为 semantic 摘要
         并归档原条目；注入 compactor 时逐条目打分写回 ``importance`` 并做价值门控（全部可撤销）。
@@ -67,7 +72,15 @@ class MemoryStore(Plugin):
         条目交付钩子**一次**（change `0153` / ADR-0145 / 路线图 G3）；缺省 UNWIRED ⇒ 行为不变。
         投喂摘要器的既有摘要槽为**首尾保留**节选（未越界逐字、越界「首部＋中略标记＋尾部」且总量恰为
         上界），比**纯头截断**（会无声销毁尾部 = 最新结论）**不**削弱「越界即交付」的触发语义 ——
-        触发判据仍读 ``len(prior.content)`` 全体长度（change `0193` / ADR-0183 / 账本 E130）。"""
+        触发判据仍读 ``len(prior.content)`` 全体长度（change `0193` / ADR-0183 / 账本 E130）。
+
+        ``deadline``（change `0296` / ADR-0286，``time.monotonic()`` 语义，``None`` ⇒ 不设截止）：
+        **每次模型调用之前**检查——打分（逐条目）、会话摘要（逐会话）、关键事实 / 关系 / 情景归纳
+        （逐会话）越界即停止后续调用，经 ``warnings.warn`` 留痕（只报阶段/会话键，绝不回显正文），
+        **不提交**半成品摘要、**不迁移**材料条目；截止前已完成的会话写回保留。截止**不抛异常**
+        （与既有压实降级同向）。缺省 ``None`` ⇒ 行为与引入前逐字一致。
+        同一实例上的压实 **single-flight**：已有压实执行时，新调用**非阻塞跳过**（零模型调用、
+        返回 ``None``、``warnings.warn`` 只报「已在运行」），不排队、不阻塞调用方。"""
 
     def audit(self, trace_id: str | None = None) -> list[MemoryEntry]:
         """审计写入记录。"""

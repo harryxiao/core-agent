@@ -378,11 +378,14 @@ def test_tiered_short_band_narrows_and_drops_older_turns(tmp_path: Path) -> None
 def test_maintain_materializes_long_and_mid_summaries(tmp_path: Path) -> None:
     """一次维护节拍产出会话压实（长期）+ 中带物化（中期）两条摘要。"""
     store = _transcript(tmp_path, *[(f"问{i}", f"答{i}") for i in range(8)])
+    now = [0.0]
+    # 压实截止（change 0296）与维护节拍共用同一注入时钟 —— 两处缺省都是 monotonic，
+    # 本用例用假时钟驱动，故记忆存储须显式注入同一时钟（生产装配天然同源）。
     memory = MemoryStore(
-        summarizer=lambda entries: "摘要：" + "；".join(e.content for e in entries)
+        summarizer=lambda entries: "摘要：" + "；".join(e.content for e in entries),
+        clock=lambda: now[0],
     )
     memory.write("L2", _l2_entry("e0", "会话事实", "s1"))
-    now = [0.0]
     loop = DefaultLoop(
         planner=LLMPlanner(_CapturingLLM(), model="m"),
         transcript=store,

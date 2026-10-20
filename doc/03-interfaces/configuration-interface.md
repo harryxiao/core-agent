@@ -587,3 +587,31 @@ known_window(llm.model)  ──►  表命中 ⇒ 该族真实窗口（本 chang
 - **消费方**：`build_runtime` 只在 `candidate_distill()` 为真时注入 `candidate_writer_with(_llm_text)`，
   并把 `auto_promote()` 传给 `Sedimenter`；关闭 distill ⇒ `writer=None` ⇒ 预滤直接返回、零模型调用。
 - 口径来源：`doc/openspec/specs/configuration/spec.md`「沉淀候选配置」（**ADDED**）。
+
+### 2.20 后台派生调用与压实上限（change `0296` / ADR-0286，台账 E232）
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `llm.background_timeout` | `60.0` | **> 0 的数值**（秒） | 后台派生单次模型调用超时上限 |
+| `llm.background_max_retries` | `0` | **≥0 的整数** | 后台派生调用失败最大重试次数 |
+| `loop.compact_timeout` | `60.0` | **> 0 的数值**（秒） | 轮内压实总时长上限；同时作为协作式截止传入 `MemoryStore.compact` |
+
+- **三面**：CLI `--llm.background-timeout` / `--llm.background-max-retries` /
+  `--loop.compact-timeout`；env `CORE_LLM_BACKGROUND_TIMEOUT` /
+  `CORE_LLM_BACKGROUND_MAX_RETRIES` / `CORE_LOOP_COMPACT_TIMEOUT`；yaml `llm.*` / `loop.*`。
+  优先链 CLI > env > config.yaml > 缺省。
+- **非法值阻断**：三项在校验期 `raise ConfigurationError`（`bool` / 非数值 / `≤0`；重试键另拒
+  小数与负数），不静默强转、不回落缺省。
+- **消费方**：
+  - `build_runtime` 另构造 `StdlibLLMProvider(timeout=background_timeout,
+    max_retries=background_max_retries)`，仅供 `_llm_text` 接缝（摘要 / 抽取 / SOP / 沉淀 /
+    进化）；主 provider 仍用 `llm.timeout` / `llm.max_retries`，用户交互调用语义不变。
+    `Runtime.background_llm` 显式暴露后台 provider（接线接缝）。
+  - `compact_timeout` 注入**全部四个** `DefaultLoop`（主 / 子 Agent / 神兽 / 宠物）；
+    缺省 `60.0`。该键只影响轮内压实等待与协作式截止，不改压实产物、触发阈值
+    （`loop.compact_steps`）或维护节拍。
+- **kill-switch 口径**：三个值都与引入前实际行为一致或更安全（重试 `0` 取代沿用的主 provider
+  `3` 次），无「默认开启的新行为」；需要旧口径时可显式配回
+  `llm.max_retries` 的数值（后台重试仍独立配置）。
+- 口径来源：`doc/openspec/specs/configuration/spec.md`「后台派生调用的超时与重试配置」
+  「压实耗时上限配置」（均 **ADDED**）。

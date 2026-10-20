@@ -12,10 +12,12 @@ import hashlib
 import json
 import math
 import os
+import threading
 import time
 import warnings
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from pathlib import Path
 
 from core.judgment import Compactor, DecisionResult
@@ -164,6 +166,14 @@ def _below_gate(entries: list[MemoryEntry], scores: dict[str, float]) -> bool:
     return bool(got) and max(got) < _CONSOLIDATE_THRESHOLD
 
 
+class _SessionOutcome(Enum):
+    """单会话摘要后的去向：继续派生 / 跳过派生 / 停止后续会话（截止）。"""
+
+    PROCEED = "proceed"
+    SKIP_DERIVED = "skip_derived"
+    STOP = "stop"
+
+
 def _plan_key_facts(raw: list[KeyFact], *, cap: int) -> tuple[list[KeyFact], list[str], list[str]]:
     """整批归一化关键事实：**脱敏 + 同批归并 + 有界**。
 
@@ -279,6 +289,8 @@ class MemoryStore:
         # 写入观察者（change 0269）：公开 `write` 落库后回调 `(layer, entry)`；仅观察、
         # 不可否决。缺省 None ⇒ 零调用（行为逐字不变）；异常由本侧吞掉。
         write_observer: Callable[[Layer, MemoryEntry], None] | None = None,
+        # 单调时钟注入（change 0296）：压实协作式截止的比较口径；缺省 `time.monotonic`。
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
         self._tracker = effect_tracker if effect_tracker is not None else EffectTracker()
@@ -294,6 +306,9 @@ class MemoryStore:
         self._estimator = token_estimator if token_estimator is not None else DEFAULT_ESTIMATOR
         self._l2_soft_max_entries = l2_soft_max_entries
         self._write_observer = write_observer
+        self._clock = clock if clock is not None else time.monotonic
+        # 压实 single-flight（change 0296）：已有压实执行时新的触发非阻塞跳过。
+        self._compact_lock = threading.Lock()
         # 临时会话（change 0245 / ADR-0233）：基准/合成执行会话 —— 压实只做会话级摘要与
         # 归档，SHALL NOT 产出全局层派生（关键事实/关系/episodic）或 canonical 摘要提升。
         # 缺省空 ⇒ 压实逐字不变。
@@ -630,7 +645,12 @@ class MemoryStore:
         return entries[:limit]
 
     def compact(
-        self, query: str = "", budget: int = 4096, *, session_id: str = ""
+        self,
+        query: str = "",
+        budget: int = 4096,
+        *,
+        session_id: str = "",
+        deadline: float | None = None,
     ) -> DecisionResult | None:
         """压实记忆：score 原语评分决策 + 注入摘要器时的会话摘要提炼（0041）。
 
@@ -663,7 +683,31 @@ class MemoryStore:
         **全局层**条目（脱敏 ＋ 有界）。缺省 UNWIRED ⇒ 不归纳、行为逐字不变。归纳产物因
         ``kind`` 不是 ``episodic`` 而**不进压实材料** ⇒ 不回喂摘要器（无自激环）。
         """
+        if not self._compact_lock.acquire(blocking=False):
+            warnings.warn(
+                "memory compaction already running; concurrent trigger skipped",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return None
+        try:
+            return self._compact_locked(query, budget, session_id=session_id, deadline=deadline)
+        finally:
+            self._compact_lock.release()
+
+    def _compact_locked(
+        self,
+        query: str,
+        budget: int,
+        *,
+        session_id: str,
+        deadline: float | None,
+    ) -> DecisionResult | None:
+        """``compact`` 的持锁执行体（single-flight 之外的部分，行为与引入前一致）。"""
         decision: DecisionResult | None = None
+        if self._expired(deadline):
+            self._warn_deadline("decision scoring")
+            return None
         if self._compactor is not None:
             items = self.read(query, budget=budget)
             try:
@@ -679,8 +723,24 @@ class MemoryStore:
             or self._relation_extractor is not None
             or self._episodic_extractor is not None
         ):
-            self._summarize_sessions(session_id)
+            if self._expired(deadline):
+                self._warn_deadline("session summarization")
+            else:
+                self._summarize_sessions(session_id, deadline=deadline)
         return decision
+
+    def _expired(self, deadline: float | None) -> bool:
+        """协作式截止判据（``None`` ⇒ 永不越界）。"""
+        return deadline is not None and self._clock() >= deadline
+
+    @staticmethod
+    def _warn_deadline(stage: str) -> None:
+        """截止留痕：只报阶段，绝不回显摘要 / 事件正文。"""
+        warnings.warn(
+            f"memory compaction reached its deadline before {stage}; stopped",
+            RuntimeWarning,
+            stacklevel=3,
+        )
 
     def summarize_slice(
         self, session_id: str, entries: list[MemoryEntry], *, max_chars: int
@@ -841,18 +901,26 @@ class MemoryStore:
             used += cost
         return selected
 
-    def _summarize_sessions(self, session_id: str = "") -> None:
+    def _summarize_sessions(self, session_id: str = "", *, deadline: float | None = None) -> None:
         """按会话聚合 episodic 条目 → 打分写回 + 价值门控 → 提炼摘要 → 归档原条目。
 
         同一循环内亦承载**结构化关键事实抽取**（change 0155）—— 与摘要同材料、同门控、同 trace。
         ``session_id`` 非空 ⇒ 只聚合该会话（change `0131` / E66）；空串 ⇒ 全量（逐字不变）。
+
+        ``deadline``（change 0296）：每次模型调用**之前**检查；越界即停止后续调用，
+        已完成的会话写回保留（渐进式），未提交的摘要不落库。
         """
         summarizer = self._summarizer
         groups = self._episodic_groups(session_id)
         scores: dict[str, float] = {}
         if self._compactor is not None:
-            scores = self._score_importance([e for group in groups.values() for e in group])
+            scores = self._score_importance(
+                [e for group in groups.values() for e in group], deadline=deadline
+            )
         for sid, entries in groups.items():
+            if self._expired(deadline):
+                self._warn_deadline("session summarization")
+                break
             if _below_gate(entries, scores):
                 # 价值门控跳过**留痕**（change 0193）：只报**会话键**，绝不回显摘要 / 事件正文
                 # （承「密钥只引用不读取」红线）；避免「为何我的会话没产摘要」无从判断。
@@ -863,42 +931,74 @@ class MemoryStore:
                 )
                 continue
             if summarizer is not None:
-                prior = self._existing_summary(sid)
-                material = [prior, *entries] if prior is not None else entries
-                summary = summarizer(material)
-                if not summary:
-                    # 空摘要 ⇒ 原条目不会归档、下轮仍是材料：本轮跳过派生抽取，避免同批材料
-                    # 以同一 trace 重复覆盖写并放大模型调用（留痕只报会话键；change 0244）
-                    warnings.warn(
-                        f"memory compaction produced an empty summary for session {sid!r}; "
-                        "derived extraction skipped",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
+                outcome = self._summarize_session(sid, entries, summarizer, deadline)
+                if outcome is _SessionOutcome.STOP:
+                    break
+                if outcome is _SessionOutcome.SKIP_DERIVED:
                     continue
-                self._commit_summary(sid, entries, summary)
-                if sid not in self._ephemeral_sessions:
-                    self._deliver_promotion(sid, prior, summary)
             if sid in self._ephemeral_sessions:
                 # 基准/合成会话（change 0245 / ADR-0233）：只做会话级摘要与归档；三类派生
                 # 都以 `session_id=""` 全局层落库、提升写 canonical 真相层 ⇒ SHALL NOT 发生。
                 continue
+            if self._expired(deadline):
+                self._warn_deadline("derived extraction")
+                break
             self._extract_key_facts(sid, entries)
             self._extract_relations(sid, entries)
             self._consolidate_episodic(sid, entries)
 
-    def _score_importance(self, entries: list[MemoryEntry]) -> dict[str, float]:
+    def _summarize_session(
+        self,
+        sid: str,
+        entries: list[MemoryEntry],
+        summarizer: Summarizer,
+        deadline: float | None,
+    ) -> _SessionOutcome:
+        """提交单会话摘要，返回派生阶段的去向。
+
+        空摘要只留痕并跳过派生抽取（change 0244）；摘要已返回但越界 ⇒ 不提交、不迁移、
+        不派生（change 0296）。
+        """
+        prior = self._existing_summary(sid)
+        material = [prior, *entries] if prior is not None else entries
+        summary = summarizer(material)
+        if self._expired(deadline):
+            self._warn_deadline("summary commit")
+            return _SessionOutcome.STOP
+        if not summary:
+            # 空摘要 ⇒ 原条目不会归档、下轮仍是材料：本轮跳过派生抽取，避免同批材料
+            # 以同一 trace 重复覆盖写并放大模型调用（留痕只报会话键；change 0244）
+            warnings.warn(
+                f"memory compaction produced an empty summary for session {sid!r}; "
+                "derived extraction skipped",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return _SessionOutcome.SKIP_DERIVED
+        self._commit_summary(sid, entries, summary)
+        if sid not in self._ephemeral_sessions:
+            self._deliver_promotion(sid, prior, summary)
+        return _SessionOutcome.PROCEED
+
+    def _score_importance(
+        self, entries: list[MemoryEntry], *, deadline: float | None = None
+    ) -> dict[str, float]:
         """逐条目 importance 打分（judgment ``score`` 原语）并写回（可逆）。
 
         ``score`` 原语返回的是**条目集的单一分数**，故每条目一次调用；按本地多因子序取前
         ``_MAX_SCORED_PER_COMPACT`` 条，控制单次压实的模型调用数。打分失败（抛错 / 无分值）
         跳过该条目——``importance`` 保持原值，绝不降级写 0（否则一次抖动即清空全库重要度）。
+
+        ``deadline``（change 0296）：每次调用**之前**检查；越界即停止后续打分（已写回的保留）。
         """
         scorer = self._compactor
         assert scorer is not None  # noqa: S101 — 调用点已判空
         scored: dict[str, float] = {}
         ordered = sorted(entries, key=lambda e: rank(e, ""), reverse=True)
         for entry in ordered[:_MAX_SCORED_PER_COMPACT]:
+            if self._expired(deadline):
+                self._warn_deadline("importance scoring")
+                break
             state = {
                 "entry_id": entry.id,
                 "session_id": entry.session_id,

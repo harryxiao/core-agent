@@ -287,6 +287,22 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "llm.background_timeout",
+        "--llm.background-timeout",
+        "CORE_LLM_BACKGROUND_TIMEOUT",
+        default=60.0,
+        map_to="llm.background_timeout",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "llm.background_max_retries",
+        "--llm.background-max-retries",
+        "CORE_LLM_BACKGROUND_MAX_RETRIES",
+        default=0,
+        map_to="llm.background_max_retries",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "loop.output_reserve",
         "--loop.output-reserve",
         "CORE_LOOP_OUTPUT_RESERVE",
@@ -316,6 +332,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_LOOP_COMPACT_STEPS",
         default=_DEFAULT_COMPACT_STEPS,
         map_to="loop.compact_steps",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "loop.compact_timeout",
+        "--loop.compact-timeout",
+        "CORE_LOOP_COMPACT_TIMEOUT",
+        default=60.0,
+        map_to="loop.compact_timeout",
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
@@ -908,6 +932,17 @@ class ConfigManager:
         steps = _parse_int(raw.get("compact_steps", _DEFAULT_COMPACT_STEPS))
         return _DEFAULT_COMPACT_STEPS if steps is None else steps
 
+    def compact_timeout(self) -> float:
+        """轮内压实总时长上限（秒，缺省 ``60.0``；change 0296）。
+
+        取值已过校验（``> 0`` 的数值），故此处只做 env/CLI 字符串归一。
+        """
+        if self._config is None:
+            return 60.0
+        raw = cast("dict[str, Any]", self._config.extra.get("loop") or {})
+        value = _as_number(raw.get("compact_timeout", 60.0))
+        return 60.0 if value is None or value <= 0 else value
+
     def block_plan(self) -> bool:
         """上下文区块配比开关（缺省 ``False`` = 不接管；change 0201 / ADR-0191）。
 
@@ -1460,6 +1495,8 @@ class ConfigManager:
             show_thinking=_llm_show_thinking(llm_raw),
             timeout=_llm_timeout(llm_raw),
             max_retries=_llm_max_retries(llm_raw),
+            background_timeout=_llm_background_timeout(llm_raw),
+            background_max_retries=_llm_background_max_retries(llm_raw),
         )
         features_raw = cast(dict[str, Any], merged.get("features") or {})
         features = _normalize_features(features_raw)
@@ -1671,6 +1708,34 @@ def _llm_max_retries(raw: dict[str, Any]) -> int:
     return retries
 
 
+def _llm_background_timeout(raw: dict[str, Any]) -> float:
+    """llm 段 `background_timeout` 解析（change 0296，构建前阻断）。
+
+    缺省 ``60.0``；须为 ``> 0`` 的数值，``bool`` / 非数值 / ≤ 0 一律拒绝。
+    """
+    value = raw.get("background_timeout", 60.0)
+    timeout = _as_number(value)
+    if timeout is None or timeout <= 0:
+        raise ConfigurationError(  # noqa: TRY003
+            f"非法后台调用超时: llm.background_timeout={value!r}（须为 > 0 的数值，单位秒）"
+        )
+    return timeout
+
+
+def _llm_background_max_retries(raw: dict[str, Any]) -> int:
+    """llm 段 `background_max_retries` 解析（change 0296，构建前阻断）。
+
+    缺省 ``0``；须为 ``≥ 0`` 的整数，``bool`` / 小数 / 非数值 / 负数一律拒绝。
+    """
+    value = raw.get("background_max_retries", 0)
+    retries = _parse_int(value)
+    if retries is None or retries < 0:
+        raise ConfigurationError(  # noqa: TRY003
+            f"非法后台最大重试次数: llm.background_max_retries={value!r}（须为 ≥ 0 的整数）"
+        )
+    return retries
+
+
 def _loop_errors(raw: dict[str, Any]) -> list[str]:  # noqa: C901 — 逐键校验按序累积错误
     """循环预算取值校验（对齐 loop「错误与预算控制」）。
 
@@ -1699,6 +1764,12 @@ def _loop_errors(raw: dict[str, Any]) -> list[str]:  # noqa: C901 — 逐键校�
     if steps is None or steps < 1:
         errors.append(
             f"非法压实步数阈值: loop.compact_steps={raw.get('compact_steps')}（须为 ≥1 的整数）"
+        )
+    compact_timeout = _as_number(raw.get("compact_timeout", 60.0))
+    if compact_timeout is None or compact_timeout <= 0:
+        errors.append(
+            f"非法压实耗时上限: loop.compact_timeout={raw.get('compact_timeout')}"
+            "（须为 > 0 的数值，单位秒）"
         )
     value = raw.get("block_plan", False)
     if not isinstance(value, bool) and str(value).strip().lower() not in (
@@ -2139,6 +2210,8 @@ def _merge_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig:
             show_thinking=_llm_show_thinking(llm_raw),
             timeout=_llm_timeout(llm_raw),
             max_retries=_llm_max_retries(llm_raw),
+            background_timeout=_llm_background_timeout(llm_raw),
+            background_max_retries=_llm_background_max_retries(llm_raw),
         ),
         features=features,
         im=im,

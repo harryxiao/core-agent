@@ -39,6 +39,9 @@ class LoopPlugin(Plugin):
 class DefaultLoop(Plugin):
     coeffects = ["model:adapter", "memory:store", "tools:provider", "constitution:v1"]
     # 构造面（节拍相关）：maintenance_interval=900.0s（<=0 关闭）、clock=time.monotonic（可注入，便于测试）
+    # 构造面（上限，change 0296 / ADR-0286）：compact_timeout=60.0s（轮内压实等待上限，None=不限）、
+    #   maintenance_timeout=120.0s（维护节拍总时长上限）、post_turn_wait_timeout=120.0s
+    #   （同步入口 arun/run 等待后台收尾的上限）
     # 注入面（可选）：cold_path: Callable[[], None]（收尾节拍的进化冷路径机会；缺省未注入则不做，
     #   loop 不 import evolution——只拿回调，组合根注入闭包，见 evolution-interface §4.1）
     # 注入面（可选）：trace_observer: Callable[[str], None]（收尾回调：本轮遥测已齐后按**轮**提交
@@ -332,21 +335,31 @@ def remember(self, trace_id: str, trajectory: list[Step], *, session_id: str = "
   `loop.compact_steps`（缺省 `6`），第二维度是 token 达预算；**每轮至多压实一次**（本轮标记）。
   进度与上限（change 0256 / ADR-0247）：阈值压实前后各产出 `loop.compacting`（`round`）与
   `loop.compacted`（`round` / `elapsed_ms` / `timeout`）两条 LoopEvent（未注入压实器 ⇒ 不产出）；
-  等待上限 `compact_timeout`（构造注入，缺省 `120` 秒，`None` 关闭）超时 ⇒ 记
-  `maintenance_failed.step="compaction_timeout"` 并**放行本轮**（fail-open，不中断、不重复压实）。
+  等待上限 `compact_timeout`（构造注入，缺省 `60` 秒，`None` 关闭；生产由
+  `loop.compact_timeout` 注入，见 `configuration-interface.md` §2.20）超时 ⇒ 记
+  `maintenance_failed.step="compaction_timeout"` 并**放行本轮**（fail-open，不中断、不重复压实），
+  同一上限作为**协作式截止**传给 `MemoryStore.compact(deadline=...)`（change 0296 / ADR-0286）。
 - **预算降级续跑**（change 0230 / ADR-0237）：token 达 `token_budget` 且本轮未降级过、已注入
   压实器 ⇒ 先强制压实一次，再给模型**一轮收尾机会**；收尾轮完成 ⇒ 正常收口，仍未完成才以
   `TOKEN_BUDGET_EXCEEDED` 终止（trace 记 `budget_retry`）。压实**不降低**本轮消息记账
   （`ctx.token_used` 不因持久化下降），故降级只能表现为「收尾轮」而非「压完继续跑」；
   未注入压实器 ⇒ 立即终止（既有行为逐字不变）。步数触发的压实**不**续跑。
-- 收尾/维护的执行线程（change 0167 / ADR-0157）：**轮内压实**、**收尾钩子**（`turn_observer`）、
-  **维护节拍**（含 `cold_path`）三段工作 SHALL 在**事件循环之外**执行（循环以 `asyncio.to_thread`
-  卸载并 `await` 其完成），SHALL NOT 在事件循环线程上同步执行 —— 这三段可能含**同步模型调用**
-  （组合根注入的 `_llm_text` 接缝；同步形态 `LLMProvider.completion()` 以 `asyncio.run` 桥接、
-  在运行中循环上必抛 `RuntimeError`），且其耗时为模型网络往返（秒级，会阻塞其余任务）。
-  卸载 SHALL NOT 改变：三段各自的失败降级语义、触发条件、产物与终态、各注入接缝的**同步契约**
-  （`turn_observer` / `cold_path` / `summarizer` / `key_fact_extractor` 仍为同步 callable）——
-  换的是执行线程，不变的是接口与语义。
+- 收尾/维护的执行线程（change 0167 / ADR-0157；change 0296 / ADR-0286 修订）：**轮内压实**、
+  **收尾钩子**（`turn_observer`）、**维护节拍**（含 `cold_path`）三段工作 SHALL 在**事件循环之外**
+  执行（循环经专用守护线程 `_run_offloaded` 卸载，SHALL NOT 用 `asyncio.to_thread` —— 默认执行器
+  在 `shutdown_default_executor()` 时会等待挂起线程），SHALL NOT 在事件循环线程上同步执行 ——
+  这三段可能含**同步模型调用**（组合根注入的 `_llm_text` 接缝；同步形态
+  `LLMProvider.completion()` 以 `asyncio.run` 桥接、在运行中循环上必抛 `RuntimeError`），且其耗时
+  为模型网络往返（秒级，会阻塞其余任务）。卸载 SHALL NOT 改变：三段各自的失败降级语义、触发条件、
+  产物与终态、各注入接缝的**同步契约**（`turn_observer` / `cold_path` / `summarizer` /
+  `key_fact_extractor` 仍为同步 callable）—— 换的是执行线程，不变的是接口与语义。
+- **前台不等待后台收尾**（change 0296 / ADR-0286）：`astream` 轮首 SHALL NOT `await` 上一轮收尾；
+  上一轮收尾仍在执行时只留痕 `post_turn_overlap` 并立即进入感知。各轮收尾在后台**单链路串行**
+  （`asyncio.shield(previous)`；跨事件循环或已结束的上一轮 task 直接放行）。同步入口
+  （`arun` / `run`）可等待链末端，但上限为构造参数 `post_turn_wait_timeout`（缺省 `120` 秒）；
+  超时留痕 `post_turn_timeout` 并正常返回。维护节拍总时长上限为 `maintenance_timeout`
+  （缺省 `120` 秒；截止后跳过剩余步骤并逐项留痕
+  `maintenance_failed{error:"deadline_exceeded"}`，不再发起模型调用）。
 - 技能注入：`LLMPlanner` 每轮推理前调注入的 `skill_router(task) -> list[SkillHint]`，把命中技能
   渲染进 system prompt 的技能块——`- <skill_id>（<版本>）：<instructions 节选>`（步骤为空只留
   `id（版本）`）。`SkillHint` 是**纯 dict**（`skill_id` / `version` / `instructions`），loop 不

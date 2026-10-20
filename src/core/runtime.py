@@ -212,6 +212,9 @@ class Runtime:
     app: AppConfig
     config: ConfigManager
     llm: LLMProvider
+    # 后台派生调用（摘要/抽取/SOP/沉淀/进化）的独立 provider（change 0296）：超时/重试
+    # 由 `llm.background_*` 控制，与用户交互调用解耦。
+    background_llm: LLMProvider
     memory: MemoryStore
     tools: ToolProvider
     tracer: Tracer
@@ -596,6 +599,17 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         timeout=app.llm.timeout,
         max_retries=app.llm.max_retries,
     )
+    # 后台派生调用独立 provider（change 0296）：会话摘要 / 关键事实与关系抽取 / 情景归纳 /
+    # SOP 提炼 / 沉淀候选蒸馏 / 进化 review 共用；独立超时与重试（缺省 60s / 0 次），
+    # 不把交互调用的重试放大叠到收尾路径；主 provider 的超时与重试语义不变。
+    background_llm = StdlibLLMProvider(
+        api_key=api_key,
+        base_url=app.llm.endpoint or None,
+        model=app.llm.model,
+        provider=app.llm.provider,
+        timeout=app.llm.background_timeout,
+        max_retries=app.llm.background_max_retries,
+    )
     # 缺省导出面（change 0089）：JSONL 落 $CORE_STATE_DIR，经缓冲/退避重试包装 ——
     # 导出失败降级为内存缓冲，绝不抛进主循环（规格「遥测故障不阻塞主循环」）；注入者优先。
     tracer = (
@@ -707,8 +721,12 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     # 记忆摘要接缝（0041）：LLM 提炼经 summarize_with 适配为 memory 的摘要契约
     # （与 embedding 同一依赖方向：memory 不 import LLM 抽象，组合根注入模型调用）。
     def _llm_text(prompt: str) -> str:
-        """prompt → 文本：摘要（memory）/ 提炼（skills）/ 补丁（evolution）三条 DI 接缝共用。"""
-        response = llm.completion(
+        """prompt → 文本：摘要（memory）/ 提炼（skills）/ 补丁（evolution）三条 DI 接缝共用。
+
+        后台派生调用（change 0296）：走独立 provider（`llm.background_timeout` /
+        `llm.background_max_retries`），与用户交互调用的超时/重试解耦。
+        """
+        response = background_llm.completion(
             LLMRequest(messages=[Message(role="user", content=prompt)], model=app.llm.model)
         )
         return response.content
@@ -1235,6 +1253,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         router=router if jev is not None else None,
         approver=approver,
         compactor=context_compactor,
+        compact_timeout=config.compact_timeout(),
         turn_observer=loop_turn,
         notes_consult=_consult_notes,
         pinned_notes_consult=_pinned_notes,
@@ -1295,6 +1314,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 router=router if jev is not None else None,
                 approver=approver,
                 compactor=context_compactor,
+                compact_timeout=config.compact_timeout(),
                 turn_observer=agent_turn,
                 notes_consult=_consult_notes,
                 pinned_notes_consult=_pinned_notes,
@@ -1343,6 +1363,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                 router=router if jev is not None else None,
                 approver=approver,
                 compactor=context_compactor,
+                compact_timeout=config.compact_timeout(),
                 turn_observer=beast_turn,
                 notes_consult=_consult_notes,
                 pinned_notes_consult=_pinned_notes,
@@ -1662,6 +1683,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
                     tracer=tracer,
                     approver=approver,
                     compactor=context_compactor,
+                    compact_timeout=config.compact_timeout(),
                     middlewares=[
                         build_safety_middleware(pet_safety, notify=_pet_notify),
                         *hook_middlewares,
@@ -1717,6 +1739,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         app=app,
         config=config,
         llm=llm,
+        background_llm=background_llm,
         memory=memory,
         tools=tools,
         tracer=tracer,

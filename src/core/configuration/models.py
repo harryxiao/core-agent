@@ -48,6 +48,9 @@ class LLMConfig:
     show_thinking: bool = False  # 思考回显开关（可选；缺省关 ⇒ 事件面零新增，见 loop / ui）
     timeout: float = 60.0  # 单次调用超时上限（秒，可选；缺省=实现类缺省，见 llm-provider）
     max_retries: int = 3  # 调用失败最大重试次数（可选；缺省=实现类缺省）
+    # 后台派生调用（摘要/抽取/SOP/沉淀/进化）独立 provider 的超时与重试（change 0296）。
+    background_timeout: float = 60.0
+    background_max_retries: int = 0
 
     @property
     def effective_embedding_model(self) -> str:

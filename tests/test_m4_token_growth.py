@@ -94,7 +94,9 @@ async def _run(count: int, *, externalize: bool) -> tuple[list[int], MemoryStore
     ``externalize=False``：关闭摘要器与维护节拍，``history_turns=count`` ⇒ 全量原文回灌
     （线性基线）。
     """
-    memory = MemoryStore(summarizer=_bounded_summarizer if externalize else None)
+    clock = _SteppingClock()
+    # 压实截止（change 0296）与维护节拍共用同一注入时钟（生产装配天然同源）。
+    memory = MemoryStore(summarizer=_bounded_summarizer if externalize else None, clock=clock)
     planner = LLMPlanner(_StubLLM(), model="stub")
     loop = DefaultLoop(
         planner=planner,
@@ -104,12 +106,15 @@ async def _run(count: int, *, externalize: bool) -> tuple[list[int], MemoryStore
         token_budget=65536,  # 远高于单轮占用 ⇒ 预算闸门不介入（只测装配增长）
         history_turns=20 if externalize else count,
         maintenance_interval=1.0 if externalize else 0.0,
-        clock=_SteppingClock(),
+        clock=clock,
     )
     curve: list[int] = []
     for index in range(count):
         async for _ in loop.astream(_task_text(index), session_id=_SESSION):
             pass
+        # 基准口径：每轮收束后台收尾（压实/维护）后再测下一轮 prompt —— 否则后台链与
+        # 前台轮内压实可能重叠，曲线带随机调度抖动（change 0296 解耦后的确定性前提）。
+        await loop._await_post_turn(timeout=5.0)  # noqa: SLF001 — 基准接缝
         curve.append(planner.last_prompt_tokens())
     return curve, memory
 

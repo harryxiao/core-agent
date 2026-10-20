@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -91,6 +92,9 @@ class SkillLibrary:
         self._path = path
         self._skills: dict[str, Skill] = {}
         self._domain_index: dict[str, list[str]] = {}
+        # 线程安全（change 0296）：后台收尾已移出事件循环线程，SOP 提炼（写）与前台技能
+        # 路由（读）会并发访问同一库；RLock 覆盖注册 / 查询 / 启停 / 删除 / 持久化 / 索引。
+        self._lock = threading.RLock()
         self._load()
 
     def register(self, skill: Skill) -> None:
@@ -103,31 +107,36 @@ class SkillLibrary:
                 f"技能 {skill.skill_id} param_schema 非法（须为 dict）",
             )
         _check_bounds(skill)
-        self._skills[skill.skill_id] = skill
-        self._index(skill)
-        self._persist()
+        with self._lock:
+            self._skills[skill.skill_id] = skill
+            self._index(skill)
+            self._persist()
 
     def lookup(self, skill_id: str) -> Skill:
         """按 skill_id 精确检索。"""
-        return self._skills[skill_id]
+        with self._lock:
+            return self._skills[skill_id]
 
     def list_by_domain(self, domain: str) -> list[Skill]:
         """按领域列出技能。"""
-        return [self._skills[sid] for sid in self._domain_index.get(domain, [])]
+        with self._lock:
+            return [self._skills[sid] for sid in self._domain_index.get(domain, [])]
 
     def all_skills(self) -> list[Skill]:
         """返回全部已注册技能。"""
-        return list(self._skills.values())
+        with self._lock:
+            return list(self._skills.values())
 
     def remove(self, skill_id: str) -> None:
         """卸载技能；不存在抛 KeyError（对齐 lookup）。"""
-        self._skills.pop(skill_id)
-        domain = _domain(skill_id)
-        if domain in self._domain_index:
-            self._domain_index[domain] = [
-                sid for sid in self._domain_index[domain] if sid != skill_id
-            ]
-        self._persist()
+        with self._lock:
+            self._skills.pop(skill_id)
+            domain = _domain(skill_id)
+            if domain in self._domain_index:
+                self._domain_index[domain] = [
+                    sid for sid in self._domain_index[domain] if sid != skill_id
+                ]
+            self._persist()
 
     def check_preconditions(self, skill: Skill, ctx: dict[str, Any]) -> bool:
         """前置条件不满足返回 False（PRECONDITION_FAILED）。"""
@@ -141,14 +150,15 @@ class SkillLibrary:
         未知 id 抛 ``KeyError``（对齐 ``lookup`` / ``remove``，不静默创建）。注入
         ``effect_tracker`` 时登记可逆效应（undo 恢复启用前状态），未注入不记（零行为变化）。
         """
-        skill = self._skills[skill_id]
-        if skill.status == "active":
+        with self._lock:
+            skill = self._skills[skill_id]
+            if skill.status == "active":
+                return skill
+            previous = skill.status
+            skill.status = "active"
+            self._persist()
+            self._track_activation(skill_id, previous, effect_tracker)
             return skill
-        previous = skill.status
-        skill.status = "active"
-        self._persist()
-        self._track_activation(skill_id, previous, effect_tracker)
-        return skill
 
     def deprecate(self, skill_id: str, *, effect_tracker: EffectTracker | None = None) -> Skill:
         """退役：把技能迁至 ``deprecated``（skills spec「SOP 技能退役」）。
@@ -158,14 +168,15 @@ class SkillLibrary:
         退役前状态），未注入不记（零行为变化）。退役技能自动退出路由（放行集只含
         ``active`` / ``gray``），**不**物理删除、可经 ``activate`` 显式复活。
         """
-        skill = self._skills[skill_id]
-        if skill.status == "deprecated":
+        with self._lock:
+            skill = self._skills[skill_id]
+            if skill.status == "deprecated":
+                return skill
+            previous = skill.status
+            skill.status = "deprecated"
+            self._persist()
+            self._track_deprecation(skill_id, previous, effect_tracker)
             return skill
-        previous = skill.status
-        skill.status = "deprecated"
-        self._persist()
-        self._track_deprecation(skill_id, previous, effect_tracker)
-        return skill
 
     # ---- 落盘 ----
 
@@ -207,7 +218,7 @@ class SkillLibrary:
 
     def _restore_status(self, skill_id: str, status: str) -> None:
         """回滚启用：恢复启用前状态；技能已不在库中则不动（幂等）。"""
-        with contextlib.suppress(KeyError):
+        with self._lock, contextlib.suppress(KeyError):
             self._skills[skill_id].status = status
             self._persist()
 

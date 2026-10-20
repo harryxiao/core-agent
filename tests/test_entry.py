@@ -7,6 +7,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -1060,7 +1061,9 @@ def test_memory_maintain_runs_maintenance(
     called: list[str] = []
 
     class _FakeMemory:
-        def compact(self, query: str = "", budget: int = 4096) -> None:
+        def compact(
+            self, query: str = "", budget: int = 4096, *, deadline: float | None = None
+        ) -> None:
             called.append("compact")
 
         def forget(self, *, threshold: float = 0.0) -> list[str]:
@@ -1087,6 +1090,91 @@ def test_memory_maintain_reports_build_failure(
     monkeypatch.setattr("core.entry.build_runtime", _boom)
     assert main(["--config", _write_config(tmp_path), "memory", "maintain"]) == 1
     assert "装配失败" in capsys.readouterr().err
+
+
+class _DeadlineMemory:
+    """记录压实时限的记忆替身。"""
+
+    def __init__(self) -> None:
+        self.deadlines: list[float | None] = []
+        self.forgets = 0
+
+    def compact(
+        self, query: str = "", budget: int = 4096, *, deadline: float | None = None
+    ) -> None:
+        self.deadlines.append(deadline)
+
+    def forget(self, *, threshold: float = 0.0) -> list[str]:
+        self.forgets += 1
+        return []
+
+
+def _patch_memory(monkeypatch, memory: _DeadlineMemory) -> None:
+    monkeypatch.setattr("core.entry.build_runtime", lambda *a, **kw: SimpleNamespace(memory=memory))
+
+
+def test_memory_maintain_default_timeout_is_120(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`memory maintain` 缺省给压实一个 120s 的协作式截止。"""
+    memory = _DeadlineMemory()
+    _patch_memory(monkeypatch, memory)
+
+    before = time.monotonic()
+    assert main(["--config", _write_config(tmp_path), "memory", "maintain"]) == 0
+    after = time.monotonic()
+
+    deadline = memory.deadlines[0]
+    assert deadline is not None
+    assert before + 120 <= deadline <= after + 120
+    assert memory.forgets == 1
+
+
+def test_memory_maintain_accepts_custom_timeout(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--timeout` 覆盖缺省，截止 = 当前时刻 + 给定秒数。"""
+    memory = _DeadlineMemory()
+    _patch_memory(monkeypatch, memory)
+
+    before = time.monotonic()
+    assert main(["--config", _write_config(tmp_path), "memory", "maintain", "--timeout", "5"]) == 0
+    after = time.monotonic()
+
+    deadline = memory.deadlines[0]
+    assert deadline is not None
+    assert before + 5 <= deadline <= after + 5
+
+
+def test_memory_maintain_skips_forget_after_deadline(
+    monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """压实越过上限 ⇒ 跳过遗忘归档并明示（不把「部分完成」伪装成完整维护）。"""
+    memory = _DeadlineMemory()
+    _patch_memory(monkeypatch, memory)
+    clock = [100.0]
+    monkeypatch.setattr("core.entry.time.monotonic", lambda: clock[0])
+
+    original = memory.compact
+
+    def slow_compact(query: str = "", budget: int = 4096, *, deadline: float | None = None) -> None:
+        original(query, budget, deadline=deadline)
+        clock[0] += 200.0  # 压实耗尽了上限
+
+    monkeypatch.setattr(memory, "compact", slow_compact)
+
+    assert main(["--config", _write_config(tmp_path), "memory", "maintain", "--timeout", "10"]) == 0
+
+    assert memory.forgets == 0, "越过上限后不得执行遗忘归档"
+    assert "已达到时间上限" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc"])
+def test_memory_maintain_rejects_invalid_timeout(monkeypatch, tmp_path, value: str) -> None:
+    """`--timeout` 须为 >0 的整数：无效值由 argparse 以退出码 2 拒绝。"""
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--config", _write_config(tmp_path), "memory", "maintain", "--timeout", value])
+    assert excinfo.value.code == 2  # noqa: PLR2004 — argparse 用法错误的固定退出码
 
 
 # ---- 记忆检视与纠错 CLI（change 0262 / ADR-0252 / 台账 E198） ----

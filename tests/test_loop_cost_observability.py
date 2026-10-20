@@ -66,7 +66,9 @@ def test_maintenance_cost_event_only_when_tick_runs() -> None:
 
 
 class _BrokenCompactMemory(MemoryStore):
-    def compact(self, query: str = "", budget: int = 4096, *, session_id: str = "") -> Any:
+    def compact(
+        self, query: str = "", budget: int = 4096, *, session_id: str = "", deadline: Any = None
+    ) -> Any:
         raise RuntimeError("compact boom")  # noqa: TRY003 — 测试用哨兵异常
 
 

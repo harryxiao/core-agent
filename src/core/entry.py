@@ -289,10 +289,28 @@ def _non_negative_int(value: str) -> int:
     return number
 
 
+def _positive_int(value: str) -> int:
+    """`--timeout` 取值：>0 的整数（change 0296）；非法值由 argparse 拒绝（退出码 2）。"""
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"须为整数: {value!r}") from exc  # noqa: TRY003
+    if number <= 0:
+        raise argparse.ArgumentTypeError(f"须为 >0 的整数: {value!r}")  # noqa: TRY003
+    return number
+
+
 def _add_memory_parser(sub: Any) -> None:
     memory = sub.add_parser("memory", help="记忆维护")
     mem_sub = memory.add_subparsers(dest="memory_cmd", metavar="<memory-cmd>")
-    mem_sub.add_parser("maintain", help="触发一次记忆维护（压实 + 遗忘归档）")
+    maintain = mem_sub.add_parser("maintain", help="触发一次记忆维护（压实 + 遗忘归档）")
+    maintain.add_argument(
+        "--timeout",
+        type=_positive_int,
+        default=120,
+        metavar="S",
+        help="压实与遗忘的总时长上限（秒，缺省 120）",
+    )
     listp = mem_sub.add_parser("list", help="列出记忆条目（id / 层 / 来源 / 摘要）")
     listp.add_argument(
         "--limit", type=_non_negative_int, default=50, metavar="N", help="展示条数（0 = 全部）"
@@ -1410,9 +1428,18 @@ def _session_show(registry: SessionRegistry, session_id: str) -> int:
     return 0
 
 
-def _memory_maintain(memory: Any, _args: argparse.Namespace) -> int:
-    """`memory maintain`：触发一次记忆维护（压实 + 遗忘），打印归档条数。"""
-    memory.compact()
+def _memory_maintain(memory: Any, args: argparse.Namespace) -> int:
+    """`memory maintain`：触发一次记忆维护（压实 + 遗忘），打印归档条数。
+
+    总时长上限（change 0296）：以单调时钟计算截止时间传入压实；遗忘归档前再次检查，
+    越界即跳过并明示（仍正常退出）。
+    """
+    timeout = float(args.timeout)
+    deadline = time.monotonic() + timeout
+    memory.compact(deadline=deadline)
+    if time.monotonic() >= deadline:
+        print("已达到时间上限（部分步骤已跳过）")
+        return 0
     forgotten = memory.forget()
     print(f"记忆维护完成：归档 {len(forgotten)} 条")
     return 0

@@ -107,7 +107,13 @@ def _runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, judgment: bool 
     monkeypatch.setenv("JEV_API_KEY", "jev-sk")
     monkeypatch.setenv("CORE_STATE_DIR", str(tmp_path / "state"))
     runtime = build_runtime(ConfigManager(yaml_path=_write_config(tmp_path, judgment=judgment)))
-    monkeypatch.setattr(runtime.llm, "completion", lambda _request: _Reply(_SOP_TEXT))
+
+    # `_llm_text`（SOP 提炼接缝）走后台 provider（change 0296）⇒ 两个 provider 都要打桩。
+    def stub(_request: Any) -> _Reply:
+        return _Reply(_SOP_TEXT)
+
+    monkeypatch.setattr(runtime.llm, "completion", stub)
+    monkeypatch.setattr(runtime.background_llm, "completion", stub)
     return runtime
 
 
@@ -231,7 +237,12 @@ def test_sop_prompt_carries_memory_steps_not_subtask_reply(
     runtime = _runtime(tmp_path, monkeypatch)
     _seed_steps(runtime)
     prompts: list[str] = []
-    monkeypatch.setattr(runtime.llm, "completion", lambda request: _capture(prompts, request))
+
+    def capture(request: Any) -> _Reply:
+        return _capture(prompts, request)
+
+    monkeypatch.setattr(runtime.llm, "completion", capture)
+    monkeypatch.setattr(runtime.background_llm, "completion", capture)
 
     _run(runtime, times=3)
 

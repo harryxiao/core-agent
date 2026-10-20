@@ -48,6 +48,7 @@ class SkillLibrary:
 | **启用放行集** | 路由候选集仍只含 `active` / `gray` —— `activate` **只补迁移路径**，不扩大放行集、不自动启用（下载恒 draft） |
 | **启用可逆** | 注入 `effect_tracker` 时登记 `op="skills.activate"`（undo 恢复启用前状态）；未注入不记（同 `SopExtractor` 接缝口径） |
 | **生产触达点** | CLI `skill activate <name>`（draft → active）、`skill deprecate <name>`（→ deprecated，退出路由、可 `activate` 复活）、`skill list [--status S]`（review draft 用）；均作用于与组合根同源的持久库，故跨进程可见 |
+| **线程安全**（change `0296`／ADR-0286） | 后台收尾运行在工作线程后，SOP 提炼（写）与前台技能路由（读）会真正并发：实例内 `threading.RLock` 覆盖注册 / 查询 / 列表 / 启停 / 删除 / 持久化 / 索引。缺锁时 `_persist` 迭代 `_skills` 期间并发注册会抛 `RuntimeError: dictionary changed size during iteration`。锁只覆盖**单进程**；跨进程共写 `skills.json` 仍以最后落盘为准 |
 
 ---
 

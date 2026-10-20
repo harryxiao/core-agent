@@ -79,8 +79,12 @@ class MemoryStore(Protocol):
         """审计写入记录。"""
         ...
 
-    def compact(self, query: str = "", budget: int = 4096) -> Any:
-        """压实记忆：会话摘要提炼（按 ``session_id`` 聚合）+ 重要性打分写回（可撤销）。"""
+    def compact(self, query: str = "", budget: int = 4096, *, deadline: float | None = None) -> Any:
+        """压实记忆：会话摘要提炼（按 ``session_id`` 聚合）+ 重要性打分写回（可撤销）。
+
+        ``deadline``（``time.monotonic`` 语义）为协作式截止：每次模型调用前检查，
+        越界即停止后续调用；``None`` ⇒ 不设截止。
+        """
         ...
 
     def summary_for(self, session_id: str) -> Any:

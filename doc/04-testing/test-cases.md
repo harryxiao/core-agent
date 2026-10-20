@@ -4995,3 +4995,34 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > TC-SEDIMENT-03 红（垃圾候选落区）；SOP 改回 `active` ⇒ TC-SOP-DRAFT-03 红（draft 直接进路由）。
 > **实测**：全量 pytest **3325 passed**；`openspec validate --all` 33/0。**已知局限**：
 > 见 `coding-plan/known-risk.md` §3 ADR-0285 行。
+
+## 209. 前台存活：收尾/压降解耦与协作式截止（TC-LIVENESS，change `0296`／ADR-0286，台账 E232）
+
+| 编号 | 覆盖 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-LIVENESS-01 | 下一轮不等待 | 上一轮 `turn_observer` 阻塞 5s | 下一轮 < 0.5s 产出终态，留痕 `post_turn_overlap`（`tests/test_loop_foreground_liveness.py::test_next_turn_starts_without_waiting_for_previous_post_turn`） |
+| TC-LIVENESS-02 | 后台串行 | 两轮均触发收尾，第一轮未结束 | 观察者调用序与轮序一致（`...::test_post_turn_chain_is_serial_across_turns`） |
+| TC-LIVENESS-03 | 同步入口有界 | 收尾超过 `post_turn_wait_timeout=0.1` | `run()` < 1s 返回，留痕 `post_turn_timeout`（`...::test_sync_entry_returns_within_post_turn_wait_limit`） |
+| TC-LIVENESS-04 | 维护节拍截止 | 第 1 步越过 `maintenance_timeout` | 后续步骤跳过，逐项 `maintenance_failed{deadline_exceeded}`（`...::test_maintenance_skips_remaining_steps_after_deadline`） |
+| TC-LIVENESS-05 | 压实截止透传 | 轮内压实触发 | `MemoryStore.compact` 收到同一 deadline（`...::test_in_loop_compaction_receives_cooperative_deadline`） |
+| TC-COMPACT-DL-01 | 截止已过 | `deadline` 早于当前时钟 | 打分/摘要零调用，不写摘要（`tests/test_memory_compaction_deadline.py::test_expired_deadline_makes_zero_model_calls`） |
+| TC-COMPACT-DL-02 | 调用间停止 | 打分器推进时钟，deadline 在 1、2 次之间 | 第 2 次及之后不执行（`...::test_deadline_stops_between_scoring_calls`） |
+| TC-COMPACT-DL-03 | 截止后不提交 | 摘要返回时已越界 | 派生抽取零调用，摘要不落库（`...::test_summary_returned_after_deadline_is_not_committed`） |
+| TC-COMPACT-DL-04 | single-flight | 一次压实阻塞中，另一线程再调 | 第二次立即返回 `None`、零额外调用、告警只报「已在运行」（`...::test_concurrent_compaction_is_skipped_without_calls`） |
+| TC-COMPACT-DL-05 | 无截止零回归 | 不传 `deadline`、无并发 | 调用序与产物与引入前逐字一致（`...::test_no_deadline_keeps_existing_behavior`） |
+| TC-LIVENESS-CFG-01 | 三键三面 | ConfigSpec | `llm.background_timeout` / `llm.background_max_retries` / `loop.compact_timeout` 的 CLI flag、env、`map_to` 齐备（`tests/test_foreground_liveness_config.py::test_specs_declare_liveness_keys`） |
+| TC-LIVENESS-CFG-02 | 缺省 / 优先级 | 未配置；yaml < env < CLI | 缺省 `60.0 / 0 / 60.0`；优先级链逐级覆盖（同文件 `test_defaults_unchanged` / `test_env_overrides_yaml` / `test_cli_overrides_env_and_yaml`） |
+| TC-LIVENESS-CFG-03 | 非法值阻断 | `0/-1/abc/true` 与 `-1/1.5/abc/true` | 校验失败阻断启动，不静默回落（`...::test_invalid_background_timeout_blocks_startup` / `test_invalid_compact_timeout_blocks_startup` / `test_invalid_value_does_not_silently_fall_back`） |
+| TC-LIVENESS-CFG-04 | 后台 provider 注入 | 主 `(30,3)`、后台 `(15,0)` | 各构造一个；`_llm_text` 接缝只调后台（`...::test_build_runtime_uses_separate_background_provider` / `test_background_seam_uses_background_provider`） |
+| TC-LIVENESS-CFG-05 | 注入全部 loop | `loop.compact_timeout=15` | 主 / 子 Agent / 神兽 / 宠物四个 `DefaultLoop` 均为 15s（`...::test_build_runtime_injects_compact_timeout_into_all_loops`） |
+| TC-LIVENESS-CLI-01 | 缺省 / 自定义 | `memory maintain` 无参 / `--timeout 5` | 压实收到缺省 120s / 约当前 +5s（`tests/test_entry.py::test_memory_maintain_default_timeout_is_120` / `test_memory_maintain_accepts_custom_timeout`） |
+| TC-LIVENESS-CLI-02 | 截止跳过 | 压实越过截止 | 不执行遗忘，打印提示，退出 0（`...::test_memory_maintain_skips_forget_after_deadline`） |
+| TC-LIVENESS-CLI-03 | 非法拒绝 | `--timeout 0/-1/abc` | argparse 退出码 2（`...::test_memory_maintain_rejects_invalid_timeout`） |
+| TC-LIVENESS-SKILL-01 | 技能库跨线程 | 持久化迭代中另一线程注册 | 不抛 `dictionary changed size during iteration`，三技能齐全（`tests/test_skills_thread_safety.py::test_concurrent_register_is_serialized_against_persist`） |
+
+> **反证 4/4**（均 `cp` 到 `/tmp`、复原后 `md5sum` 一致）：恢复轮首等待 ⇒ TC-LIVENESS-01 红
+> （5.0s > 0.5s）；`_expired` 恒 `False` ⇒ TC-COMPACT-DL-01/02/03 红；`_llm_text` 改回主
+> provider ⇒ TC-LIVENESS-CFG-04 红；`SkillLibrary` 去锁 ⇒ TC-LIVENESS-SKILL-01 红
+> （`RuntimeError`）。**实测**：全量 pytest **3367 passed**；`openspec validate --all` 32/0。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0286 行。
+

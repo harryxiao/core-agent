@@ -15,6 +15,7 @@ import contextlib
 import inspect
 import json
 import os
+import threading
 import time
 import uuid
 import warnings
@@ -115,9 +116,47 @@ TurnCheckpoint = Callable[[str, str, str, bool], None]
 
 
 _MAINTENANCE_INTERVAL_S = 900.0  # 记忆维护节拍（秒）：默认 15 分钟
-# 单次压实耗时上限（秒，change 0256）：正常压实实测约 38s；超限即放行本轮，
+# 单次压实耗时上限（秒，change 0256 / 0296）：正常压实实测约 38s；超限即放行本轮，
 # 避免同步模型调用把事件循环上的其余任务无限期挂起。`None` ⇒ 不设限。
-_COMPACT_TIMEOUT_SECONDS = 120.0
+_COMPACT_TIMEOUT_SECONDS = 60.0
+# 后台收尾（观察者 + 维护节拍）与维护节拍的总时长上限（秒，change 0296）。
+_POST_TURN_TIMEOUT_SECONDS = 120.0
+_MAINTENANCE_TIMEOUT_SECONDS = 120.0
+
+
+def _run_offloaded(func: Callable[[], Any]) -> asyncio.Future[Any]:
+    """把同步工作放到**守护线程**执行，并在事件循环上交付结果。
+
+    不用 ``asyncio.to_thread``：其线程属于事件循环的默认执行器，
+    ``asyncio.run`` 收尾会 ``shutdown_default_executor()`` 并**无限期等待**卡住的
+    工作线程 ⇒ 「有界等待」会被进程退出反噬（change 0296）。
+    守护线程不参与该收尾，等待方超时后即可返回。
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[Any] = loop.create_future()
+
+    def deliver(setter: Callable[[Any], None], value: Any) -> None:
+        if future.done() or loop.is_closed():
+            return
+        setter(value)
+
+    def post(setter: Callable[[Any], None], value: Any) -> None:
+        # 事件循环已关闭：丢弃结果（等待方已不再关心）
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(deliver, setter, value)
+
+    def worker() -> None:
+        try:
+            result = func()
+        except Exception as err:  # noqa: BLE001 — 原样转交给等待方
+            post(future.set_exception, err)
+        else:
+            post(future.set_result, result)
+
+    threading.Thread(target=worker, name="loop-offload", daemon=True).start()
+    return future
+
+
 _MAX_ACTION_EXCERPT = 400  # 动作事件 args/output 节选上界（事件面有界）
 _MAX_STEP_VALUE = 80  # 行动序列单参数值摘要上界（change 0171 / ADR-0162）
 _MAX_STEP_LINE = 300  # 行动序列整行上界（change 0171 / ADR-0162）
@@ -468,6 +507,10 @@ class DefaultLoop(Plugin):
         # 单次压实耗时上限（秒，change 0256）：超时 ⇒ 留痕 `maintenance_failed`
         # （step=`compaction_timeout`）并放行本轮；`None` ⇒ 不设限（既有行为）。
         compact_timeout: float | None = _COMPACT_TIMEOUT_SECONDS,
+        # 后台收尾等待上限（秒，change 0296）：`arun` 等待本链末端的上限；`None` ⇒ 无限期。
+        post_turn_wait_timeout: float | None = _POST_TURN_TIMEOUT_SECONDS,
+        # 维护节拍总时长上限（秒，change 0296）：截止后跳过后续步骤；`None` ⇒ 不设限。
+        maintenance_timeout: float | None = _MAINTENANCE_TIMEOUT_SECONDS,
         clock: Callable[[], float] | None = None,
         # 情景链的**时序相邻标注**开关（change 0202 / ADR-0192，缺省**关**）。开启 ⇒ 轮级失败
         # 条目的 `tags` 增 `after:<同会话上一已记忆轮>`；关闭 ⇒ 失败条目**逐字不变**。
@@ -516,6 +559,8 @@ class DefaultLoop(Plugin):
         self._history_turns = history_turns
         self._maintenance_interval = maintenance_interval
         self._compact_timeout = compact_timeout
+        self._post_turn_wait_timeout = post_turn_wait_timeout
+        self._maintenance_timeout = maintenance_timeout
         self._clock = clock if clock is not None else time.monotonic
         self._last_maintenance = self._clock()
         self._causal_links = causal_links
@@ -570,10 +615,11 @@ class DefaultLoop(Plugin):
         """异步执行入口：只取终态（三态归一由 `collect_result` 单一实现）。
 
         ``collect_result`` 在 ``loop_finished`` 处提前返回 ⇒ 生成器其后不再推进；轮末
-        收尾以后台 task 挂出，此处**等候收束**，保证 ``run``/``arun`` 语义仍含完整收尾。
+        收尾以后台 task 挂出，此处**有界等候**（change 0296）：保证 ``run``/``arun``
+        语义仍含完整收尾，但超限即返回本轮结果并留痕 ``post_turn_timeout``。
         """
         result = await collect_result(self.astream(user_input, session_id=session_id))
-        await self._await_post_turn()
+        await self._await_post_turn(timeout=self._post_turn_wait_timeout, trace_id=result.trace_id)
         return result
 
     async def _collect_reason(
@@ -646,8 +692,11 @@ class DefaultLoop(Plugin):
     ) -> AsyncGenerator[LoopEvent, None]:
         yield LoopEvent("loop_started", {"trace_id": trace_id})
         self._trace(trace_id, "loop_started", {"trace_id": trace_id})
-        # 与上一轮后台收尾串行：避免新一轮感知/记忆与旧轮技能迭代、维护节拍并发踩踏。
-        await self._await_post_turn()
+        # 前台不等待上一轮后台收尾（change 0296）：收尾在后台单链路串行（由
+        # `_schedule_post_turn` 保证），本轮只留痕后立即进入感知。
+        previous = self._post_turn_task
+        if previous is not None and not previous.done():
+            self._trace(trace_id, "post_turn_overlap", {})
         # 轮首注入点（change 0269）：在 context 装配前投递；False ⇒ 本轮以已拒绝回复终止。
         self._turn_index += 1
         allowed = await self._notify_turn_before(session_id, trace_id, user_input)
@@ -939,35 +988,72 @@ class DefaultLoop(Plugin):
     ) -> None:
         """把 ``turn_observer`` + ``maintain`` 挂为后台 task（不阻塞 ``loop_finished`` 外发）。
 
-        收尾钩子 / 维护节拍均可含同步模型调用（0167）⇒ 必须 ``to_thread``；又因
+        收尾钩子 / 维护节拍均可含同步模型调用（0167）⇒ 必须在工作线程执行；又因
         ``collect_result`` 在 ``loop_finished`` 提前返回，不可把 await 写在 yield 之后。
+
+        后台收尾**单链路串行**（change 0296）：新 task 先等上一轮收尾结束再执行，
+        避免技能 / 记忆写入并发踩踏；前台轮首不再等待本链。
         """
+        previous = self._post_turn_task
+        loop = asyncio.get_running_loop()
 
         async def _run() -> None:
-            await asyncio.to_thread(self._notify_turn, ctx, trace_id, ok=ok)
-            await asyncio.to_thread(self._maintain, trace_id, session_id)
+            if previous is not None and not previous.done() and previous.get_loop() is loop:
+                try:
+                    await asyncio.shield(previous)
+                except asyncio.CancelledError:
+                    if not previous.cancelled():
+                        raise
+                except Exception:  # noqa: BLE001 — 上一轮收尾失败不影响本轮收尾
+                    pass
+            await _run_offloaded(lambda: self._notify_turn(ctx, trace_id, ok=ok))
+            await _run_offloaded(lambda: self._maintain(trace_id, session_id))
 
-        self._post_turn_task = asyncio.get_running_loop().create_task(_run(), name="loop-post-turn")
+        task = loop.create_task(_run(), name="loop-post-turn")
+        self._post_turn_task = task
 
-    async def _await_post_turn(self) -> None:
-        """等候上一轮后台收尾收束（无在途 task ⇒ 立即返回）。
+        def _done(finished: asyncio.Task[None]) -> None:
+            # 取回异常：无人 await 时避免 "Task exception was never retrieved"。
+            if not finished.cancelled():
+                finished.exception()
+            # 只清自己：更晚的收尾 task 可能已就位（单链路串行）。
+            if self._post_turn_task is finished:
+                self._post_turn_task = None
 
-        task 已被宿主取消（承载它的 event loop 关闭清理 —— ``run()`` 同步入口 /
-        测试驱动每次 ``asyncio.run`` 新建 loop，旧轮 task 在旧 loop 上被 cancel）⇒
-        **放行**：后台收尾本是尽力而为语义，取消态不得杀死新一轮。当前协程自身被
-        取消（打断等）仍照常传播 —— 以 ``task.cancelled()`` 区分两者。
+        task.add_done_callback(_done)
+
+    async def _await_post_turn(self, *, timeout: float | None = None, trace_id: str = "") -> bool:
+        """有界等候后台收尾收束；返回是否在时限内收束（无在途 task ⇒ True）。
+
+        ``timeout=None`` ⇒ 无限期等待（既有测试接缝）；超时**不取消**收尾 task
+        （``shield``），后续轮仍可继续等待同一链路。task 已被宿主取消（承载它的
+        event loop 关闭清理）⇒ 放行：后台收尾本是尽力而为语义；当前协程自身被取消
+        （打断等）仍照常传播 —— 以 ``task.cancelled()`` 区分两者。
         """
         task = self._post_turn_task
         if task is None:
-            return
+            return True
+        if task.get_loop() is not asyncio.get_running_loop():
+            # 旧 event loop 的 task 不可跨循环等待（sync `run()` 每次新建 loop）。
+            if self._post_turn_task is task:
+                self._post_turn_task = None
+            return True
+        settled = True
         try:
-            await task
+            if timeout is None:
+                await asyncio.shield(task)
+            else:
+                await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except TimeoutError:
+            settled = False
+            self._trace(trace_id, "post_turn_timeout", {"timeout_s": timeout})
         except asyncio.CancelledError:
             if not task.cancelled():
                 raise  # 被取消的是当前协程（本轮被打断/清理）⇒ 照常传播
         finally:
-            if self._post_turn_task is task:
+            if settled and self._post_turn_task is task:
                 self._post_turn_task = None
+        return settled
 
     async def _notify_turn_before(self, session_id: str, trace_id: str, text: str) -> bool:
         """轮首注入点：返回 False ⇒ 本轮终止（fail-closed：钩子适配层异常亦阻断）。"""
@@ -1038,9 +1124,17 @@ class DefaultLoop(Plugin):
             return
         self._last_maintenance = now
         step_ms: dict[str, float] = {}
+        deadline = None if self._maintenance_timeout is None else now + self._maintenance_timeout
 
         def run(name: str, step: Callable[[], Any]) -> None:
-            """计时执行一步；失败留痕（带 step 归因）不中断其余步骤。"""
+            """计时执行一步；越过总时长上限即跳过；失败留痕、不中断其余步骤。"""
+            if deadline is not None and self._clock() >= deadline:
+                self._trace(
+                    trace_id,
+                    "maintenance_failed",
+                    {"step": name, "error": "deadline_exceeded"},
+                )
+                return
             started = time.perf_counter()
             try:
                 step()
@@ -1052,7 +1146,10 @@ class DefaultLoop(Plugin):
         memory = self._memory
         if memory is not None:
             if session_id:
-                run("session_compact", lambda: memory.compact(session_id=session_id))
+                run(
+                    "session_compact",
+                    lambda: memory.compact(session_id=session_id, deadline=deadline),
+                )
                 run("mid_summary", lambda: self._materialize_mid(session_id))
             run("forget", memory.forget)
         cold_path = self._cold_path
@@ -1116,7 +1213,14 @@ class DefaultLoop(Plugin):
             return self._compactor.should_compact(ctx.rounds, 0, 1)
         return self._compactor.should_compact(ctx.rounds, ctx.token_used, self._token_budget)
 
-    def _compact(self, ctx: LoopContext, trace_id: str, *, trigger: str = "threshold") -> None:
+    def _compact(
+        self,
+        ctx: LoopContext,
+        trace_id: str,
+        *,
+        trigger: str = "threshold",
+        deadline: float | None = None,
+    ) -> None:
         """压实：**本轮**消息 + 工具 I/O 提炼沉淀（persist）→ 记忆固化（打分 + 摘要）→ 遗忘归档。
 
         输入是 ``ctx.messages``（**仅本轮**，多轮历史由三层滑窗 change 0178 与记忆压实承载 ——
@@ -1172,7 +1276,10 @@ class DefaultLoop(Plugin):
                 finally:
                     step_ms[name] = (time.perf_counter() - step_started) * 1000.0
 
-            run("memory_compact", lambda: memory.compact(session_id=ctx.session_id))
+            run(
+                "memory_compact",
+                lambda: memory.compact(session_id=ctx.session_id, deadline=deadline),
+            )
             run("forget", memory.forget)
         self._trace(
             trace_id,
@@ -1196,7 +1303,10 @@ class DefaultLoop(Plugin):
         """
         started = time.perf_counter()
         timeout = self._compact_timeout
-        call = asyncio.to_thread(self._compact, ctx, trace_id, trigger=trigger)
+        deadline = None if timeout is None else self._clock() + timeout
+        call = _run_offloaded(
+            lambda: self._compact(ctx, trace_id, trigger=trigger, deadline=deadline)
+        )
         try:
             if timeout is None:
                 await call

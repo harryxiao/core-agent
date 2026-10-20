@@ -163,11 +163,13 @@ class _BlockingMemory(MemoryStore):
         self.compacted = 0
         self.on_loop = True
 
-    def compact(self, session_id: str = "") -> Any:  # type: ignore[override]
+    def compact(
+        self, query: str = "", budget: int = 4096, *, session_id: str = "", deadline: Any = None
+    ) -> Any:  # type: ignore[override]
         self.compacted += 1
         self.on_loop = _on_loop_thread()
         time.sleep(_BLOCK_S)
-        return super().compact(session_id)
+        return super().compact(query, budget, session_id=session_id, deadline=deadline)
 
 
 def test_event_loop_not_blocked_during_compaction() -> None:

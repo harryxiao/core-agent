@@ -149,7 +149,7 @@ def render_sessions / render_config / render_mcp / render_skills / render_notes(
 
 | 子命令 | 退出码 | 产出 |
 |---|---|---|
-| `core-agent memory maintain` | 恒 `0` | 压实 + 遗忘，打印归档条数 |
+| `core-agent memory maintain [--timeout S]` | 恒 `0`（非法 `--timeout` ⇒ argparse `2`） | 压实 + 遗忘，打印归档条数；`--timeout` 为总时长上限（秒，整数，缺省 `120`，须 `> 0`），截止后跳过尚未开始的步骤并明示「已达到时间上限（部分步骤已跳过）」 |
 | `core-agent memory list [--limit N]` | 恒 `0` | 逐条打印 id / layer / kind / source / session / importance / ts / 单行摘要；`--limit` 只限制展示（缺省 50，`0` = 全部），截断时提示总数 |
 | `core-agent memory get <id>` | 命中 `0`；未找到 `1` | 元数据 + 全文（`redact_secrets` 脱敏后回显） |
 | `core-agent memory delete <id>` | 成功 `0`；未找到 / 备份失败 `1` | 先追加备份到 `$CORE_STATE_DIR/memory-deleted.jsonl`（0600），再 `MemoryStore.discard`；打印备份路径 |
@@ -159,6 +159,10 @@ def render_sessions / render_config / render_mcp / render_skills / render_notes(
 
 - **一次性、不改变运行态**：二者都「装配 runtime → 执行一次动作 → 打印 → 退出」，**不**启动常驻进程、
   **不**挂维护节拍（自动触发须另立 change）。
+- **`maintain` 的总时长上限**（change `0296` / ADR-0286）：`--timeout S`（秒，整数，缺省 `120`，
+  `argparse` 拒绝 `0` / 负数 / 非整数，退出码 `2`）⇒ 以 `deadline = monotonic() + S` 调用压实，
+  遗忘归档前再次检查；截止后**不发起**新的模型调用、**不执行**尚未开始的步骤，命令仍**正常退出
+  `0`** 并明示「已达到时间上限（部分步骤已跳过）」。该上限只约束本次进程，不改任何运行态配置。
 - **缺省执行、`--dry-run` 只报告**：与 `evolve implement --dry-run` 同口径 —— 该命令是**显式**运维入口。
   预演**只读**：不删条目、不落库、不落备份文件。
 - **报表口径**：识别到的失效条目数与会话数 · 成功重抽与已删除条数 · 备份文件路径 · 跳过项

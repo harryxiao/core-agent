@@ -10878,6 +10878,74 @@ change）；自动聚焦正在运行的子 Agent（打断主视图阅读，只�
 `auto_promote` 支持度固定 2，无配置旋钮；⑥ 迁移只移 `notes.turn` 来源，既有 promote/milestone/rag
 保持原状；⑦ SOP 的 `threshold=3` 与样本文件仍为进程内/单文件语义，未改跨进程协调。
 
+## ADR-0286：前台轮与后台收尾/压降解耦（change 0296 / 台账 E232）
+
+**背景。** 实机事故：用户输入「执行」后 agent 长时间无响应，记忆压缩同样无反应。轨迹显示
+`loop_started` 之后 **146 秒零事件**。根因四处叠加：① `astream` 在**轮首** `await
+_await_post_turn()`（无上限）—— 上一轮收尾里的 `turn_observer` / 维护节拍经 `_llm_text`
+同步调用模型，端点挂起时下一轮被整条拖住；② 轮内压实只 `await` 工作线程、**无协作式截止**，
+单次可拖 **144.8 秒**；③ 维护节拍与 CLI `memory maintain` 同样无边界；④ 主 provider 超时
+60 秒 × 4 次重试把单次后台调用放大到约 4 分钟。后台派生工作（摘要 / 抽取 / SOP / 沉淀 /
+进化）与用户交互调用共用一个重试策略，放大了故障面。
+
+**决策**：
+
+- **D1 前台不等待后台收尾。** `_astream_events` 删除轮首 await；上一轮收尾仍在跑时只记
+  `post_turn_overlap` 并立即进入感知。收尾的观察者与维护节拍改由
+  `_schedule_post_turn` 挂后台 task。
+- **D2 后台单链路串行。** 新一轮收尾以 `asyncio.shield(previous)` 等上一轮收尾结束后再执行
+  （不并发写技能 / 记忆）；跨事件循环或已结束的上一轮 task 直接放行；完成后只清理自身引用。
+- **D3 工作线程 + 协作式截止，不用 `asyncio.to_thread`。** 收尾 / 压实经专用守护线程
+  `_run_offloaded` 执行（`asyncio.to_thread` 的默认执行器在 `shutdown_default_executor()`
+  时会被挂起线程拖住）。压实把 deadline（`time.monotonic()` 语义）传入 `MemoryStore.compact`，
+  **每次模型调用前**检查：越界即停止后续调用、不提交半成品摘要、不抛异常，仅
+  `warnings.warn`（只报阶段/会话键，绝不回显正文）。
+- **D4 所有等待都有上限。** 同步入口 `arun` 等待收尾缺省 120 秒（超时留痕
+  `post_turn_timeout` 并返回本轮结果）；维护节拍总时长缺省 120 秒（截止后逐项留痕
+  `maintenance_failed{error:"deadline_exceeded"}` 并跳过）；轮内压实缺省 60 秒
+  （`loop.compact_timeout` 可配，截止后记 `compaction_timeout` 并放行本轮，至多再压实一次）。
+- **D5 压实 single-flight。** `MemoryStore` 以非阻塞锁串行化压实：已有压实执行时，新调用
+  立即返回 `None` 并告警（不排队、不阻塞、零模型调用），避免后台收尾与前台轮内压实叠加。
+- **D6 后台派生调用使用独立 provider。** 组合根另构造 `StdlibLLMProvider`（
+  `llm.background_timeout` 缺省 60 秒、`llm.background_max_retries` 缺省 0），仅供
+  `_llm_text` 接缝（摘要 / 抽取 / SOP / 沉淀 / 进化）；主 provider 的
+  `llm.timeout` / `llm.max_retries` 与用户交互语义逐字不变。`Runtime.background_llm` 显式
+  暴露该 provider 作为接线接缝。
+- **D7 CLI `memory maintain --timeout`。** 缺省 120 秒；以 `deadline = monotonic() + S`
+  调用压实，遗忘归档前再次检查；截止后正常退出（0）并明示「已达到时间上限（部分步骤已跳过）」；
+  非法值由 argparse 拒绝（退出码 2）。
+- **D8 `SkillLibrary` 加 `RLock`。** 后台收尾运行在工作线程后，SOP 提炼（写）与前台技能路由
+  （读）会真正并发；锁覆盖注册 / 查询 / 列表 / 启停 / 删除 / 持久化 / 索引。缺锁时
+  `_persist` 迭代 `_skills` 会抛 `RuntimeError: dictionary changed size during iteration`。
+
+**三键单一真源**：`llm.background_timeout`（> 0，缺省 60.0）、
+`llm.background_max_retries`（≥ 0 整数，缺省 0）、`loop.compact_timeout`（> 0，缺省 60.0）
+均进 ConfigSpec（CLI flag / env / config.yaml 三面），非法值校验期阻断启动；组合根把
+`compact_timeout` 注入**全部四个** `DefaultLoop`（主 / 子 Agent / 神兽 / 宠物）。
+
+**被拒方案**：保留轮首等待、只把 provider 超时调小（没有边界，仍随模型挂起无界）；
+用 `asyncio.wait_for` 取消压实（同步模型调用无法被取消，线程继续跑且退出时仍可能被 join）；
+`asyncio.to_thread`（默认执行器关停会等挂起线程）；让后台派生调用沿用主 provider 重试
+（正是 4 分钟放大的来源）；把 `memory maintain` 改成 fire-and-forget（CLI 退出后工作丢失）；
+只在 loop 层做压实互斥（漏掉后台维护与前台轮内压实的跨入口叠加）；缺省关闭维护节拍
+（牺牲既有能力，不是修边界）；把 `SkillLibrary` 改成无锁快照持久化（写入仍会交错，复杂度更高）。
+
+**验证**：新增 `tests/test_loop_foreground_liveness.py` 5 例、`tests/test_memory_compaction_deadline.py`
+5 例、`tests/test_foreground_liveness_config.py` 25 例、`tests/test_entry.py` 4 例、
+`tests/test_skills_thread_safety.py` 1 例；反证 4/4（均 `cp` 到 `/tmp`、复原后 `md5sum` 一致）：
+恢复轮首等待 ⇒ 解耦用例红（5.0s > 0.5s）；`_expired` 恒 False ⇒ 三个截止用例红；`_llm_text`
+改回主 provider ⇒ 后台接缝用例红；`SkillLibrary` 去锁 ⇒ 并发注册抛 `RuntimeError`。
+全量 pytest **3367 passed**；ruff check / ruff format --check / pyright 全绿；
+`openspec validate --all` 32/0。
+
+**局限**：① 协作式截止只能阻止**下一次**模型调用；已开始且挂死的同步调用无法中断，守护线程
+会滞留到进程退出（不阻塞前台、不阻塞解释器退出，但会占一个线程）；② 后台收尾单链路串行 ⇒
+若某一轮收尾永久挂起，后续收尾会排在它之后（新的前台轮仍不受影响，但技能沉淀会停摆）；
+③ `post_turn_overlap` / `post_turn_timeout` 只留痕、不重试，收尾仍是尽力而为语义；
+④ 三个上限都是**时长**而非模型调用次数上限，慢而不断的多步维护可在上限内完成任意多步；
+⑤ `SkillLibrary` 的锁只覆盖单进程，跨进程（多实例共写 `skills.json`）仍以最后落盘为准；
+⑥ CLI `--timeout` 只作用于 `memory maintain`，其他命令不设统一墙钟。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11158,3 +11226,4 @@ change）；自动聚焦正在运行的子 Agent（打断主视图阅读，只�
 | ADR-0283 | 02-modules/llm-provider.md, 03-interfaces/llm-provider-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0284 | 03-interfaces/ui-interface.md, 03-interfaces/ui-scheme.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0285 | 03-interfaces/notes-interface.md, 03-interfaces/skills-interface.md, 03-interfaces/loop-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0286 | 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/cli-ops-interface.md, 03-interfaces/skills-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
