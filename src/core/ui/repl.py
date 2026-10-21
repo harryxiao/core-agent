@@ -20,6 +20,8 @@ CLIBridge.connect() 落地为 Textual 交互会话循环；textual 仅此文件�
 from __future__ import annotations
 
 import contextlib
+import difflib
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -258,6 +260,133 @@ def _action_title(tool: str, target: str, *, ok: bool | None = None, ms: object 
         elapsed = _fmt_ms(ms)
         return f"{base} · {elapsed}" if elapsed else f"{base} · ok"
     return f"{base} · failed"
+
+
+# ---- 文件工具呈现（change 0299 / ADR-0289：元信息行 + 语法高亮 + 行数上界） ----
+# 事件面事实：args 为结构化 dict（逐值 ≤400 字符节选，change 0152），output 为
+# `str(result.data)[:400]` 的 dict repr ⇒ 计数是**下界**，截断侧以 `节选` 标注。
+
+_MAX_BODY_LINES = 40  # 展开体行数上界（正常内容 ≤400 字符不可达；防换行密集的空白行洪泛）
+
+_LEXERS_BY_SUFFIX: Mapping[str, str] = {
+    "py": "python",
+    "pyi": "python",
+    "js": "javascript",
+    "mjs": "javascript",
+    "jsx": "javascript",
+    "ts": "typescript",
+    "tsx": "typescript",
+    "json": "json",
+    "yaml": "yaml",
+    "yml": "yaml",
+    "toml": "toml",
+    "md": "markdown",
+    "markdown": "markdown",
+    "sh": "bash",
+    "bash": "bash",
+    "zsh": "bash",
+    "rs": "rust",
+    "go": "go",
+    "java": "java",
+    "c": "c",
+    "h": "c",
+    "cpp": "cpp",
+    "hpp": "cpp",
+    "cc": "cpp",
+    "html": "html",
+    "css": "css",
+    "sql": "sql",
+    "xml": "xml",
+    "ini": "ini",
+    "cfg": "ini",
+    "conf": "ini",
+    "diff": "diff",
+    "patch": "diff",
+    "txt": "text",
+}
+
+_REPR_UNESCAPE = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", "'": "'", '"': '"'}
+_REPR_ESCAPE_RE = re.compile(r"\\(.)")
+_BYTES_RE = re.compile(r"'bytes_written': (\d+)")
+
+
+def _lexer_for_path(path: str) -> str | None:
+    """按文件后缀取 lexer 别名；未知后缀 None（回退纯文本）。"""
+    suffix = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    return _LEXERS_BY_SUFFIX.get(suffix)
+
+
+def _unescape_repr(text: str) -> str:
+    """单遍反转义 repr 常用转义（`\n \t \r \\ \' \"`；其余保持字面，不执行任何求值）。"""
+    return _REPR_ESCAPE_RE.sub(lambda m: _REPR_UNESCAPE.get(m.group(1), m.group(0)), text)
+
+
+def _read_content(output: str) -> tuple[str, bool] | None:
+    """从 file_read 的 output（dict repr 节选）切出正文：`(正文, 是否完整)`；切不出 None。
+
+    只对**自家工具**的固定形态 `{'path': …, 'content': …}` 按字面标记切片（纯正则/切片，
+    无求值）；repr 被 400 字符截断时结尾无 `'}"` 收尾 ⇒ 标记为不完整。
+    """
+    if not output.startswith("{'path': ") or "'content': '" not in output:
+        return None
+    raw = output.split("'content': '", 1)[1]
+    if raw.endswith("'}"):
+        return _unescape_repr(raw[:-2]), True
+    return _unescape_repr(raw), False
+
+
+def _render_tool_output(
+    tool_id: str, args: Mapping[str, object], output: str
+) -> tuple[str, str, str | None]:
+    """文件三件套的展开体呈现：`(元信息行, 正文, lexer)`；非文件工具 `("", output, None)`。
+
+    抽取失败回退既有纯文本呈现（返回空 meta + 原样 output）；其他工具的呈现逐字不变。
+    """
+    fields = args
+    path = str(fields.get("path", ""))
+    if tool_id == "tools.file_write":
+        content = str(fields.get("content", ""))
+        meta = ""
+        found = _BYTES_RE.search(output)
+        if found is not None:
+            n_lines = content.count("\n") + 1
+            if content and not content.endswith("…"):
+                meta = f"{int(found.group(1))} 字节 · {n_lines} 行写入"
+            else:
+                meta = f"{int(found.group(1))} 字节写入"
+        return meta, content, _lexer_for_path(path)
+    if tool_id == "tools.file_patch":
+        old = str(fields.get("old_content", ""))
+        new = str(fields.get("new_content", ""))
+        diff_lines = list(
+            difflib.unified_diff(
+                old.splitlines(),
+                new.splitlines(),
+                fromfile=f"a/{path or 'old'}",
+                tofile=f"b/{path or 'new'}",
+                lineterm="",
+            )
+        )
+        added = sum(1 for line in diff_lines if line.startswith("+") and not line.startswith("+++"))
+        removed = sum(
+            1 for line in diff_lines if line.startswith("-") and not line.startswith("---")
+        )
+        hunks = sum(1 for line in diff_lines if line.startswith("@@"))
+        meta = f"+{added} −{removed} · hunk {hunks}"
+        if "replaced': False" in output:
+            meta += " · 未命中"
+        if old.endswith("…") or new.endswith("…"):
+            meta += " · 节选"
+        return meta, "\n".join(diff_lines), "diff"
+    if tool_id == "tools.file_read":
+        got = _read_content(output)
+        if got is None:
+            return "", output, None
+        content, complete = got
+        n_lines = content.count("\n") + 1 if content else 0
+        meta = f"{n_lines} 行" + ("" if complete else " · 节选")
+        return meta, content, _lexer_for_path(path)
+    return "", output, None
 
 
 def _code_run_name(args: object, default_shell: str | None = None) -> str:
@@ -535,8 +664,11 @@ def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — �
 
         def __init__(self, title: str, *, collapsed: bool = True, symbol: str = "·") -> None:
             self._lines: list[str] = [""]
+            self._meta = Static("", classes="step-meta", markup=False)
+            self._meta.display = False  # 纯文本路径无元信息行（不占行）
             self._body = Static("", classes="step-body", markup=False)
             super().__init__(
+                self._meta,
                 self._body,
                 title=title,
                 collapsed=collapsed,
@@ -555,6 +687,22 @@ def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — �
             """一次性成文（工具输出：整体替换）。"""
             self._lines = text.split("\n")
             self._render_body()
+
+        def set_code(self, code: str, meta: str, lexer: str | None) -> None:
+            """文件工具终态：dim 元信息行 + 按后缀高亮正文 + 行数上界（change 0299）。"""
+            self._meta.display = True
+            lines = code.split("\n")
+            if len(lines) > _MAX_BODY_LINES:
+                lines = [*lines[:_MAX_BODY_LINES], f"…（共 {len(lines)} 行，已截断）"]
+            self._lines = lines
+            self._meta.update(meta)
+            text = "\n".join(lines)
+            if lexer and code:
+                from rich.syntax import Syntax  # noqa: PLC0415 — MAL 懒 import 同策略
+
+                self._body.update(Syntax(text, lexer, theme="ansi_dark"))
+            else:
+                self._body.update(text)
 
         def plain_text(self) -> str:
             """当前缓冲全文（供收起态标题摘要）。"""
@@ -627,18 +775,20 @@ def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — �
     border: none;
     padding: 0;
 }
-#hints {
-    border: round $panel;
-    width: auto;
-    padding: 0 2;
+#status {  /* 单行状态行：spinner 与快捷键提示同行共存（无边框；change 0299 密度预算） */
+    height: 1;
     margin: 0 1;
+}
+#hints {
+    height: 1;
+    width: 1fr;
+    padding: 0 0 0 2;
     color: $text-muted;
-    align: center middle;
 }
 #spinner {
     height: 1;
     width: auto;
-    padding: 0 2;
+    padding: 0;
     color: $text-muted;
 }
 .echo {  /* 用户输入回显：❯ 前缀行（accent 前缀经 markup） */
@@ -665,10 +815,9 @@ def build_app(api: UIAPILayer, session_id: str = "") -> Any:  # noqa: C901 — �
     color: $error;
     width: auto;
 }
-.welcome {  /* 启动横幅 */
-    border: round $panel;
+.welcome {  /* 启动横幅：无边框 2 行（change 0299 密度预算） */
     padding: 0 1;
-    margin: 0 1 1 1;
+    margin: 0 1;
     color: $text-muted;
 }
 Collapsible {  /* 子任务/工具动作：单行提示，点击展开 */
@@ -686,16 +835,47 @@ Collapsible > CollapsibleTitle {
 Collapsible > CollapsibleTitle:hover {
     background: $panel;
 }
+Collapsible > Contents {  /* 展开体：默认 1 0 0 3（顶空一行且深缩进）⇒ 零顶空行 + 2 列缩进 */
+    padding: 0 0 0 2;
+}
+.step-meta {  /* 展开体首行 dim 元信息（write 字节/行数、patch +N −M、read 行数；change 0299） */
+    color: $text-muted;
+    width: 1fr;
+}
+Markdown {  /* 回复密度：Textual 默认四周留白全部压实（change 0299；段落间 1 行保留） */
+    padding: 0;
+}
+MarkdownParagraph {
+    margin: 0 0 1 0;
+}
+MarkdownH1, MarkdownH2, MarkdownH3, MarkdownH4, MarkdownH5, MarkdownH6 {
+    margin: 1 0 0 0;
+}
+MarkdownHorizontalRule {
+    height: 1;
+    padding-top: 0;
+    margin: 0;
+}
 MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同色（对比度≈1.02，用户实测不可辨）
                     ⇒ 换为不透明中性灰，块边界一眼可辨；token 高亮仍为亮色，深灰底上可读
-                    （change 0158 / ADR-0150） */
+                    （change 0158 / ADR-0150）；四周零附加行（change 0299） */
     background: $surface-lighten-3;
+    margin: 0;
+    padding: 0 1;
+}
+MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另一半）⇒ 一并压实 */
+    padding: 0 1;
+}
+.turn-sep {  /* 轮次分隔：每轮回复结束后 1 行 dim 虚线（空内容 ⇒ 不进文本断言面） */
+    height: 1;
+    border-top: dashed $panel;
+    margin: 0 1;
 }
 #palette {  /* 斜杠命令浮层：默认隐藏，输入 `/` 时经 `display` 翻转呈现（沿 #panel 惯用法）
                —— 不引入 Screen/layer；不可聚焦（见 _PaletteList）（change 0159 / ADR-0151） */
     display: none;
     height: auto;
-    max-height: 8;
+    max-height: 6;
     border: round $panel;
     margin: 0 1;
 }
@@ -753,9 +933,8 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
             with Vertical(id="panel"):  # 子 Agent 焦点视图（初始隐藏，见 on_mount）
                 yield Static(id="panel-title")
                 yield Static("", id="panel-body", classes="hint", markup=False)
-            yield Static(id="spinner")
             yield _PaletteList(id="palette")  # 斜杠命令浮层（CSS 初始 display:none）
-            with Vertical(id="footer"):  # 输入区+提示盒钉底，时间线独占剩余空间
+            with Vertical(id="footer"):  # 输入区+状态行钉底，时间线独占剩余空间
                 yield Horizontal(id="task-tabs")  # 主/子 Agent 标签栏（初始隐藏）
                 with Horizontal(id="input-box"):
                     yield Static("❯ ", id="prompt")
@@ -764,7 +943,9 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                         id="input",
                         suggester=_PaletteSuggester(self._candidates),  # 幽灵补全（与浮层同源）
                     )
-                yield Static(self._HINTS_SHORT, id="hints")
+                with Horizontal(id="status"):  # 单行状态行：spinner（左）+ 快捷键提示（右）
+                    yield Static(id="spinner")
+                    yield Static(self._HINTS_SHORT, id="hints")
 
         async def on_event(self, event: events.Event) -> None:
             """事件入口兜底（textual#6643，上游 8.2.8 未修）：流式 `Markdown.update()`
@@ -1346,7 +1527,14 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 ok=bool(data.get("ok")),
                 ms=data.get("duration_ms"),
             )
-            box.set_text(str(data.get("output", "")))
+            render_args = cast(Mapping[str, object], args if isinstance(args, Mapping) else {})
+            meta, code, lexer = _render_tool_output(
+                str(data.get("tool_id")), render_args, str(data.get("output", ""))
+            )
+            if lexer is not None or meta:
+                box.set_code(code, meta, lexer)
+            else:
+                box.set_text(str(data.get("output", "")))
 
         def _settle_one_thinking(self, box: _StepBlock) -> None:
             """单块 Thinking 落静：去掉省略号，附客户端测得的耗时后缀。"""
@@ -1780,6 +1968,8 @@ MarkdownFence {  /* 代码块：默认 `black 10%` 在深色底上合成近同�
                 if self._turn_busy:  # loop.result 已收尾则跳过（防二次复位）
                     self._settle_thinking_titles()
                     self._end_turn(flush_live=True)
+                with contextlib.suppress(Exception):  # 轮次分隔：呈现层，尽力而为（change 0299）
+                    self._add(Static("", classes="turn-sep"))
 
     class _PaletteSuggester(Suggester):
         """内联幽灵补全：与浮层候选**同源**（复用同一候选取口），`→` 由 `Input` 原生采纳。

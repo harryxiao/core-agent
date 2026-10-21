@@ -11018,6 +11018,48 @@ _await_post_turn()`（无上限）—— 上一轮收尾里的 `turn_observer` /
 **局限**：① 后台委托仍无实时进度（只有终态通知）；② 详情是「里程碑 + 终态节选」，不是完整
 子 Agent 对话；③ 进程重启后标签不恢复；④ `arun` 调用方永远拿不到 `agent.*`。
 
+## ADR-0289：TUI 视觉密度预算——边框/留白/行数账目与文件工具块呈现（change 0299 / 台账 E235）
+
+**背景。** 用户反馈「TUI 丑：显示文件间距大、字体偏大」。勘察结论是**密度工程**而非审美：
+Textual 默认留白规则未被覆盖（`Collapsible > Contents` 顶空一行 + 3 列缩进、Markdown 围栏
+四周 +4 行、H1 +3、水平线 3 行），底部 `#input-box` 与 `#hints` 各背一个 round 边框盒
+（idle 6 行 / busy 8 行），启动横幅 5 行；文件工具的 `output` 是 `str(data)[:400]` 的
+**dict repr**（换行转义不可读）⇒ 展开是灰色 repr 墙。字号无应用侧杠杆（终端模拟器决定）。
+
+**决策**：
+
+- **D1 chrome 单行化。** `#hints` 去边框高 1 行；`#spinner` 从主流程移入 footer 与提示同住
+  `#status` 单行；预算 **idle ≤ 4 / busy ≤ 5 行**；边框只留输入框（交互锚点）与命令浮层。
+  widget id 不变（查询面与 `action_hints` 零改动）。
+- **D2 留白压实。** `Contents` 零顶空行 + 2 列缩进；Markdown `padding 0`、围栏（含内层
+  `Label` 自带 `1 2`）四周零附加行、H1–H6 上留 1 行、水平线 1 行；**段落间 1 行保留**
+  （可读性不是浪费）；横幅 2 行；palette max-height 6；每轮回复后 1 行 dim 虚线分隔
+  （空内容 Static ⇒ 不进文本断言面）。
+- **D3 文件呈现。** 展开体首行 dim 元信息 + 按后缀 `Syntax` 高亮（patch 用 diff）+ 40 行
+  上界。数据全部取自事件面既有节选：write 正文取 `args["content"]`（真实字符串）、字节取
+  output repr 的 `bytes_written`；patch 由 args 的 old/new 节选合成 unified diff 并计数；
+  read 从 output repr 按字面标记切出正文、单遍 `re.sub(r"\\(.)")` 反转义常用转义。
+  任一侧被 400 字符节选截断 ⇒ 元信息标 `节选`（计数是下界，不谎报全量）；抽取失败回退
+  既有纯文本。
+- **D4 行上界 40 而非计划的 200。** `action_completed.output` 事件面已有 400 字符上界
+  （0152）⇒ 200 行永不触达（死代码）；40 行可被换行密集输入触达（防空白行洪泛），正常
+  内容不可达。
+- **D5 零开关零依赖。** 紧凑即唯一形态（无 `ui.density` 键）；`Syntax` 来自 rich（textual
+  既有依赖）；全部改动集中于 `repl.py` 呈现层，一次 revert 整体回退。
+
+**被拒方案**：`ui.density`/主题配置键（双形态测试面翻倍、无真实需求）；自绘边框/半块字符
+（终端宽度兼容性差）；改共享标题语法表迁就密度（破坏 TUI+Web 同源）；改 loop 事件面携带
+结构化输出（超出呈现层边界，0152 有界事件面已定）；第三方高亮库；200 行截断（不可达）。
+
+**验证**：`tests/test_repl.py` 密度用例组（chrome 预算 4/5、展开体无顶空行 + 2 列缩进、围栏
+N=N、40 行截断 + 尾行、write/patch 元信息行、Syntax 冒烟 + code_run 纯文本不变、横幅 2 行、
+轮次分隔 1 行）。反证：去围栏覆盖 ⇒ 高度用例红；去截断 ⇒ 病态长输出用例红；恢复 `#hints`
+边框 ⇒ chrome 预算用例红。观感以人工目检为准（`uv run core-agent`）。全量门禁见 §212。
+
+**局限**：① read 正文抽取依赖自家工具的固定 dict 形态，工具返回形态变更需同步（回退是灰显
+而非崩溃）；② 大文件的 `+N −M` 计数是节选下界（事件面 400 字符所限，标 `节选`）；③ 终端
+字号仍需终端侧配置（文档给建议）；④ 轮次分隔线依赖 Textual 空内容 Static 的边框渲染行为。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11301,3 +11343,4 @@ _await_post_turn()`（无上限）—— 上一轮收尾里的 `turn_observer` /
 | ADR-0286 | 03-interfaces/loop-interface.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 03-interfaces/cli-ops-interface.md, 03-interfaces/skills-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0287 | 03-interfaces/loop-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0288 | 03-interfaces/ui-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0289 | 03-interfaces/ui-scheme.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

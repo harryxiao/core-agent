@@ -70,6 +70,8 @@ TUI：图标经 Collapsible 的 `collapsed_symbol`/`expanded_symbol`（收起/�
 - `loop.result`（映射后的终态）到达 ⇒ **立即**进入 `idle`（停 spinner / 清状态条），允许用户输入。
 - 轮末 `turn_observer` / `_maintain` 等收尾 **不得**把相位拉回 `thinking`。
 - 有活动步骤块时，优先用**块标题**表达「在干什么」；全局状态行只作整轮 busy 兜底。
+- 状态行/提示行的**呈现密度**（单行、无边框、与谁同行）归各端材质预算（TUI 见 §5.1 密度预算），
+  相位语义本身两端一致、不受密度改版影响（change 0299）。
 
 ## 5. 分端材质映射
 
@@ -80,9 +82,24 @@ TUI：图标经 Collapsible 的 `collapsed_symbol`/`expanded_symbol`（收起/�
 | 时间线 | `#timeline` 追加 widget |
 | 步骤块 | `_StepBlock` / `Collapsible`；`collapsed=True` |
 | Thinking 标题 | 收起态固定 `Thinking` / `Thinking…`，不刷原文 |
-| 全局相位 | `#spinner`（glyph + 文案 + 秒计时）；`loop.result` 时 `_end_turn` |
+| 全局相位 | `#spinner`（glyph + 文案 + 秒计时）与 `#hints` 同住 `#status` **单行**（无边框）；`loop.result` 时 `_end_turn` |
 | 主回复 | Markdown 流式合帧；终态固化 |
 | 审批 | 时间线提示 + 输入 y/n；spinner 改 `等待审批` |
+| 文件工具块 | 展开体首行 dim 元信息（write `N 字节 · M 行写入`、patch `+N −M · hunk H`、read `N 行`）+ 按后缀 `Syntax` 高亮（patch 用 diff）+ 40 行上界；抽取失败回退纯文本（change 0299） |
+
+**视觉密度预算（change 0299 / ADR-0289，紧凑即唯一形态、无开关）**：
+
+| 预算项 | 值 |
+|---|---|
+| 底部 chrome（idle / busy） | ≤ 4 / ≤ 5 行（输入框是唯一带边框的常驻件；spinner 与快捷键同行） |
+| 展开体 | 零顶空行、左缩进 2 列、正文 ≤ 40 行（超出尾行注明总行数） |
+| Markdown | 围栏 N 行内容占 N 行；标题上留 1 行；`---` 1 行；段落间 1 行保留 |
+| 启动横幅 | 2 行（无边框） |
+| 轮次分隔 | 每轮回复结束后 1 行 dim 虚线 |
+| 命令面板 | max-height 6（浮层，保留边框） |
+
+「字体偏大」无应用侧杠杆（终端字体由终端模拟器决定）；配套建议：等宽字体（Cascadia Code /
+JetBrains Mono / Maple Mono）、字号 10–12pt、行距 1.0（Windows Terminal 默认 1.2 常致体感偏大）。
 
 不强制：呼吸灯、震动、微型终端模拟器（Textual 成本高、收益低）。工具输出进步骤块正文即可。
 
@@ -150,6 +167,7 @@ SHALL NOT 接子 Agent 消息流、SHALL NOT 允许发送；详情只用 `task.*
 |---|---|
 | change `0233` | TUI 活动块：缺省收起、标题语法、Thinking 按 round、撤回 Task 壳 |
 | change `0294` / ADR-0284 | 主/子 Agent 标签栏与只读详情（`taskview.js` / `_TaskTab` / `_SubtaskBlock`） |
+| change `0299` / ADR-0289 | TUI 视觉密度预算（chrome/留白/文件呈现）与状态行合并 |
 | `doc/openspec/specs/ui/spec.md` | 三端思考回显、步骤块、SSE、会话等正式 Requirement |
 | `src/core/ui/repl.py` | TUI 时间线 / spinner / `_StepBlock` |
 | `src/core/ui/api.py` | 事件类型映射（`loop.reasoning` 透传等） |
@@ -159,6 +177,6 @@ SHALL NOT 接子 Agent 消息流、SHALL NOT 允许发送；详情只用 `task.*
 
 ## 9. 演进顺序（建议）
 
-1. **已落地（TUI）**：0233 标题与收起；展开即全文；有活动块后隐藏 spinner（标题优先）；子任务标题无 `▸`；`loop.result` 即闲置。
+1. **已落地（TUI）**：0233 标题与收起；展开即全文；有活动块后隐藏 spinner（标题优先）；子任务标题无 `▸`；`loop.result` 即闲置；0299 密度预算与文件工具块高亮/元信息呈现。
 2. **已落地（Web）**：`frontend/src/lib/activity.js` 共享标题；`Chat.svelte` 时间线（Thinking 按 round、工具块、缺省收起、`loop.result` 即闲置）；`TaskPanel` 里程碑同标题表。
 3. **可选增强（Web）**：pulse、失败自动展开、工具输出等宽预览——不回流强迫 TUI。

@@ -3070,3 +3070,243 @@ def test_tab_label_bounds_and_fallbacks() -> None:
     assert _tab_label("   ", "3") == "子任务 3"
     assert _tab_label("", "4") == "子任务 4"
     assert "[red]" in _tab_label("[red]目标", "5")  # markup 不被解释
+
+
+# ---- TUI 视觉密度（change 0299 / ADR-0289：chrome/留白/文件呈现预算） ----
+
+
+def _file_app(tool_id: str, args: dict, output: str) -> object:
+    """构造 app 并注入「一轮指定文件工具动作」的 loop 替身（密度用例复用）。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    class _FileLoop:
+        async def astream(self, user_input: str, *, session_id: str = ""):
+            from core.loop import LoopEvent  # noqa: PLC0415 — 事件构造
+
+            yield LoopEvent("loop_started", {"trace_id": "t1"})
+            yield LoopEvent("action_started", {"round": 0, "tool_id": tool_id, "args": args})
+            yield LoopEvent(
+                "action_completed",
+                {
+                    "round": 0,
+                    "tool_id": tool_id,
+                    "ok": True,
+                    "duration_ms": 12,
+                    "output": output,
+                },
+            )
+            yield LoopEvent("loop_finished", {"reply": "done", "trace_id": "t1"})
+
+    api._loop = _FileLoop()  # noqa: SLF001 — 注入替身驱动事件面
+    return app
+
+
+def _reply_app(reply: str) -> object:
+    """构造 app 并注入「一轮纯回复」的 loop 替身（Markdown 密度用例）。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    class _ReplyLoop:
+        async def astream(self, user_input: str, *, session_id: str = ""):
+            from core.loop import LoopEvent  # noqa: PLC0415 — 事件构造
+
+            yield LoopEvent("loop_started", {"trace_id": "t1"})
+            yield LoopEvent("reply_delta", {"text": reply})
+            yield LoopEvent("loop_finished", {"reply": reply, "trace_id": "t1"})
+
+    api._loop = _ReplyLoop()  # noqa: SLF001
+    return app
+
+
+async def _expand_first_block(pilot: object) -> object:
+    """展开时间线首个步骤块并等待落定（密度用例复用）。"""
+    block = _blocks(pilot.app)[0]
+    await pilot.click(block.query_one("CollapsibleTitle"))
+    await pilot.pause()
+    return block
+
+
+def test_tui_footer_chrome_row_budget() -> None:
+    """底部 chrome 预算：idle 4 行 / 标签栏可见 5 行；提示与 spinner 同行、无边框高 1。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> tuple[int, int, int, int]:
+        async with app.run_test(size=(100, 40)) as pilot:
+            from textual.containers import Horizontal, Vertical  # noqa: PLC0415
+            from textual.widgets import Static  # noqa: PLC0415
+
+            await pilot.pause()
+            idle = app.query_one("#footer", Vertical).size.height
+            status = app.query_one("#status")
+            hints = app.query_one("#hints", Static)
+            status_h = status.region.height
+            hints_h = hints.region.height
+            tabs = app.query_one("#task-tabs", Horizontal)
+            await tabs.mount(Static("main", classes="task-tab"))  # 有标签时标签栏占 1 行
+            tabs.display = True
+            await pilot.pause()
+            busy = app.query_one("#footer", Vertical).size.height
+            return idle, status_h, hints_h, busy
+
+    idle, status_h, hints_h, busy = asyncio.run(drive())
+    assert idle == 4, idle  # noqa: PLR2004 — chrome 预算 idle ≤ 4
+    assert busy == 5, busy  # noqa: PLR2004 — chrome 预算 busy ≤ 5
+    assert status_h == 1 and hints_h == 1, (status_h, hints_h)
+
+
+def test_tui_expanded_body_has_no_top_blank() -> None:
+    """展开体无顶空行：`Contents` 顶部 padding 为 0，正文左缩进恰 2 列。"""
+    app = _step_app("x=1")
+
+    async def drive() -> tuple[int, int, int, int]:
+        async with app.run_test(size=(100, 40)) as pilot:
+            from textual.widgets import Collapsible  # noqa: PLC0415
+
+            await _step_submit(pilot)
+            block = _blocks(app)[0]
+            await pilot.click(block.query_one("CollapsibleTitle"))
+            await pilot.pause()
+            contents = block.query_one(Collapsible.Contents)
+            body = _inner(block, ".step-body")
+            return contents.region.y, body.region.y, contents.region.x, body.region.x
+
+    cy, by, cx, bx = asyncio.run(drive())
+    assert by == cy, (cy, by)  # 顶部零空行
+    assert bx == cx + 2, (cx, bx)  # 缩进恰 2 列
+
+
+def test_tui_markdown_fence_row_budget() -> None:
+    """围栏 N 行内容占 N 行（四周零附加行；改版前为 N+4）。"""
+    app = _reply_app("```python\nx = 1\ny = 2\nz = 3\n```\n")
+
+    async def drive() -> int:
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _step_submit(pilot)
+            return app.query_one("MarkdownFence").region.height
+
+    height = asyncio.run(drive())
+    assert height == 3, height  # noqa: PLR2004 — 3 行围栏占 3 行
+
+
+def test_tui_file_read_body_line_cap_and_tail() -> None:
+    """展开体行数上界：换行密集输出截到 40 行，尾行注明总行数（不洪泛时间线）。"""
+    repr_out = "{'path': 'a.txt', 'content': '" + "\\n" * 180 + "'}"
+    app = _file_app("tools.file_read", {"path": "a.txt"}, repr_out)
+
+    async def drive() -> tuple[int, str, str]:
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _step_submit(pilot)
+            await _expand_first_block(pilot)
+            block = _blocks(app)[0]
+            meta = str(_inner(block, ".step-meta").render())
+            lines = str(block.plain_text()).split("\n")  # 高亮正文经缓冲断言行数
+            return len(lines), lines[-1], meta
+
+    n, tail, meta = asyncio.run(drive())
+    assert n == 41, n  # noqa: PLR2004 — 40 行 + 截断尾行
+    assert "共 181 行" in tail and "已截断" in tail, tail
+    assert "181 行" in meta, meta
+
+
+def test_tui_file_write_meta_line_and_highlight() -> None:
+    """文件写入块：首行 dim 元信息（字节/行数），正文按后缀语法高亮。"""
+    app = _file_app(
+        "tools.file_write",
+        {"path": "src/x.py", "content": "a = 1"},
+        "{'path': 'src/x.py', 'bytes_written': 5}",
+    )
+
+    async def drive() -> tuple[str, object]:
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _step_submit(pilot)
+            await _expand_first_block(pilot)
+            block = _blocks(app)[0]
+            return str(_inner(block, ".step-meta").render()), _inner(block, ".step-body").content
+
+    meta, renderable = asyncio.run(drive())
+    assert meta == "5 字节 · 1 行写入", meta
+    from rich.syntax import Syntax  # noqa: PLC0415 — rich 为 textual 既有依赖
+
+    assert isinstance(renderable, Syntax), type(renderable)
+
+
+def test_tui_file_patch_meta_line_and_diff() -> None:
+    """文件补丁块：`+N −M · hunk H` 元信息行，正文为 diff 形态（含 −旧行 / +新行）。"""
+    app = _file_app(
+        "tools.file_patch",
+        {"path": "a.txt", "old_content": "hello", "new_content": "world"},
+        "{'path': 'a.txt', 'replaced': True}",
+    )
+
+    async def drive() -> tuple[str, str]:
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _step_submit(pilot)
+            await _expand_first_block(pilot)
+            block = _blocks(app)[0]
+            return str(_inner(block, ".step-meta").render()), str(block.plain_text())
+
+    meta, body = asyncio.run(drive())
+    assert meta == "+1 −1 · hunk 1", meta
+    assert "-hello" in body and "+world" in body, body
+
+
+def test_tui_code_run_body_stays_plain() -> None:
+    """非文件工具呈现逐字不变：code_run 正文仍为纯文本（无元信息行/无高亮）。"""
+    app = _step_app("1")
+
+    async def drive() -> tuple[object, str]:
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _step_submit(pilot)
+            await _expand_first_block(pilot)
+            block = _blocks(app)[0]
+            return (
+                _inner(block, ".step-body").content,
+                str(_inner(block, ".step-meta").render()),
+            )
+
+    renderable, meta = asyncio.run(drive())
+    from rich.syntax import Syntax  # noqa: PLC0415
+
+    assert not isinstance(renderable, Syntax)
+    assert meta == "", meta
+
+
+def test_tui_welcome_banner_two_rows() -> None:
+    """启动横幅 2 行（无边框；改版前 4 行区域 + 下边距）。"""
+    loop = RecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> int:
+        async with app.run_test(size=(100, 40)) as pilot:
+            from textual.widgets import Static  # noqa: PLC0415
+
+            await pilot.pause()
+            return app.query_one(".welcome", Static).region.height
+
+    assert asyncio.run(drive()) == 2  # noqa: PLR2004 — 横幅 2 行
+
+
+def test_tui_turn_separator_single_row() -> None:
+    """每轮结束后恰 1 行分隔（高 1 行；不进入时间线文本断言面）。"""
+    app = _step_app("1")
+
+    async def drive() -> tuple[int, int]:
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _step_submit(pilot)
+            seps = list(app.query(".turn-sep"))
+            heights = [w.region.height for w in seps]
+            return len(seps), (heights[0] if heights else 0)
+
+    n, height = asyncio.run(drive())
+    assert n == 1, n
+    assert height == 1, height

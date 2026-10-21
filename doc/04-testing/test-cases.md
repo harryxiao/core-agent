@@ -5061,3 +5061,23 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **实测**：全量 pytest **3380 passed**；`openspec validate --all` **34/0**
 > （active：0296 / 0297 / 0298）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0288 行。
+
+## 212. TUI 视觉密度与文件呈现（TC-DENSITY，change `0299`／ADR-0289，台账 E235）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-DENSITY-01 | 底部 chrome 行数预算 | idle / busy（挂一个任务标签）两种相位 | 钉底输入区整体 ≤ 4 行（idle）/ ≤ 5 行（busy）；`#status` 与 `#hints` 各占 1 行高（`tests/test_repl.py::test_tui_footer_chrome_row_budget`） |
+| TC-DENSITY-02 | 展开体无顶空行 | 展开 `code_run` 步骤块 | `Contents` 区域首行 y 与块体一致（无顶部空行），左缩进恰 2 列（`...::test_tui_expanded_body_has_no_top_blank`） |
+| TC-DENSITY-03 | 围栏高度预算 | 回复含 3 行代码围栏 | `MarkdownFence` 区域高度 == 3（四周零附加行；覆盖本体与内层 `Label` 双层 padding）（`...::test_tui_markdown_fence_row_budget`） |
+| TC-DENSITY-04 | 读文件截断与尾行 | `file_read` 输出 181 行 content 的 dict repr | 展开体 40 行正文 + 1 行 `…（共 181 行，已截断）`；元信息行含 `181 行` 与 `节选`（`...::test_tui_file_read_body_line_cap_and_tail`） |
+| TC-DENSITY-05 | 写文件元信息与高亮 | `file_write`（`src/x.py`，`a = 1`，`bytes_written: 5`） | 元信息行恰 `5 字节 · 1 行写入`；正文为 `rich.syntax.Syntax`（python lexer）（`...::test_tui_file_write_meta_line_and_highlight`） |
+| TC-DENSITY-06 | 补丁 diff 呈现 | `file_patch`（old=`hello`，new=`world`） | 元信息行恰 `+1 −1 · hunk 1`；正文含 `-hello` 与 `+world`（unified diff）（`...::test_tui_file_patch_meta_line_and_diff`） |
+| TC-DENSITY-07 | 其他工具逐字不变 | `code_run` 完成 | `.step-body` 非 `Syntax`，`.step-meta` 不渲染（既有纯文本呈现）（`...::test_tui_code_run_body_stays_plain`） |
+| TC-DENSITY-08 | 横幅 2 行 | TUI 启动 | `.welcome` 区域高度 == 2（无边框）（`...::test_tui_welcome_banner_two_rows`） |
+| TC-DENSITY-09 | 轮次分隔单行 | 完成一轮对话 | 恰 1 个 `.turn-sep` widget，区域高度 == 1（`...::test_tui_turn_separator_single_row`） |
+
+> **反证 3/3**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：去掉 `MarkdownFence`（含 `Label`）
+> 密度覆盖 ⇒ TC-DENSITY-03 红；去掉 `_MAX_BODY_LINES` 截断 ⇒ TC-DENSITY-04 红；
+> 恢复 `#hints` 边框 ⇒ TC-DENSITY-01 红。
+> **实测**：全量 pytest **3389 passed**（3380 + 9）；`openspec validate --all` 结果见归档记录。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0289 行。
