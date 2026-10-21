@@ -3196,6 +3196,65 @@ def test_tui_markdown_fence_row_budget() -> None:
     assert height == 3, height  # noqa: PLR2004 — 3 行围栏占 3 行
 
 
+def test_tui_markdown_paragraph_gap_zero() -> None:
+    """正文紧凑：相邻段落之间 0 空行（change 0300；改版前固定 1 空行）。"""
+    app = _reply_app("段落一。\n\n段落二。\n")
+
+    async def drive() -> tuple[int, int]:
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _step_submit(pilot)
+            paras = list(app.query("MarkdownParagraph"))
+            return paras[0].region.y, paras[1].region.y
+
+    y1, y2 = asyncio.run(drive())
+    assert y2 == y1 + 1, (y1, y2)
+
+
+def test_tui_markdown_list_item_single_row() -> None:
+    """列表每项 1 行（列表项内层段落不再带 1 行 margin；改版前 2 行/项）。"""
+    app = _reply_app("- 项一\n- 项二\n")
+
+    async def drive() -> int:
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _step_submit(pilot)
+            return app.query_one("MarkdownBulletList").region.height
+
+    assert asyncio.run(drive()) == 2  # noqa: PLR2004 — 两项各 1 行
+
+
+def test_tui_markdown_subsection_heading_no_gap() -> None:
+    """小节标题紧接上文：H2 前 0 空行（change 0300；改版前 1 空行）。"""
+    app = _reply_app("正文。\n\n## 1.2 小节\n正文二。\n")
+
+    async def drive() -> tuple[int, int]:
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _step_submit(pilot)
+            para = next(iter(app.query("MarkdownParagraph")))
+            return para.region.y, app.query_one("MarkdownH2").region.y
+
+    y_para, y_h2 = asyncio.run(drive())
+    assert y_h2 == y_para + 1, (y_para, y_h2)
+
+
+def test_tui_markdown_chapter_heading_gap_preserved() -> None:
+    """章边界保留：H1 前 1 空行、后 1 空行（小节、正文两处边界都不侵占）。"""
+    app = _reply_app("正文。\n\n# 第二章\n\n## 2.1 小节\n")
+
+    async def drive() -> tuple[int, int, int]:
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _step_submit(pilot)
+            para = next(iter(app.query("MarkdownParagraph")))
+            return (
+                para.region.y,
+                app.query_one("MarkdownH1").region.y,
+                app.query_one("MarkdownH2").region.y,
+            )
+
+    y_para, y_h1, y_h2 = asyncio.run(drive())
+    assert y_h1 == y_para + 2, (y_para, y_h1)  # 章标题前 1 空行
+    assert y_h2 == y_h1 + 2, (y_h1, y_h2)  # 章标题后 1 空行
+
+
 def test_tui_file_read_body_line_cap_and_tail() -> None:
     """展开体行数上界：换行密集输出截到 40 行，尾行注明总行数（不洪泛时间线）。"""
     repr_out = "{'path': 'a.txt', 'content': '" + "\\n" * 180 + "'}"

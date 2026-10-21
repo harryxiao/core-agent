@@ -842,14 +842,20 @@ Collapsible > Contents {  /* 展开体：默认 1 0 0 3（顶空一行且深缩�
     color: $text-muted;
     width: 1fr;
 }
-Markdown {  /* 回复密度：Textual 默认四周留白全部压实（change 0299；段落间 1 行保留） */
+Markdown {  /* 回复密度：Textual 默认四周留白全部压实（change 0299；段距分级 change 0300） */
     padding: 0;
 }
-MarkdownParagraph {
-    margin: 0 0 1 0;
+MarkdownParagraph {  /* 段落/列表项内层段落：零空行（列表项随之 1 行/项；change 0300） */
+    margin: 0;
 }
-MarkdownH1, MarkdownH2, MarkdownH3, MarkdownH4, MarkdownH5, MarkdownH6 {
-    margin: 1 0 0 0;
+MarkdownBulletList, MarkdownOrderedList {
+    margin: 0;
+}
+MarkdownH1 {  /* 章边界可扫性：章前后各留 1 行（change 0300） */
+    margin: 1 0 1 0;
+}
+MarkdownH2, MarkdownH3, MarkdownH4, MarkdownH5, MarkdownH6 {  /* 小节紧接上文（change 0300） */
+    margin: 0;
 }
 MarkdownHorizontalRule {
     height: 1;

@@ -87,16 +87,22 @@ TUI：图标经 Collapsible 的 `collapsed_symbol`/`expanded_symbol`（收起/�
 | 审批 | 时间线提示 + 输入 y/n；spinner 改 `等待审批` |
 | 文件工具块 | 展开体首行 dim 元信息（write `N 字节 · M 行写入`、patch `+N −M · hunk H`、read `N 行`）+ 按后缀 `Syntax` 高亮（patch 用 diff）+ 40 行上界；抽取失败回退纯文本（change 0299） |
 
-**视觉密度预算（change 0299 / ADR-0289，紧凑即唯一形态、无开关）**：
+**视觉密度预算（change 0299 / ADR-0289；段距分级 change 0300 / ADR-0290；紧凑即唯一形态、无开关）**：
 
 | 预算项 | 值 |
 |---|---|
 | 底部 chrome（idle / busy） | ≤ 4 / ≤ 5 行（输入框是唯一带边框的常驻件；spinner 与快捷键同行） |
 | 展开体 | 零顶空行、左缩进 2 列、正文 ≤ 40 行（超出尾行注明总行数） |
-| Markdown | 围栏 N 行内容占 N 行；标题上留 1 行；`---` 1 行；段落间 1 行保留 |
+| Markdown 围栏 | N 行内容占 N 行（四周零附加行） |
+| Markdown 段距 | 相邻段落 0 空行；列表每项 1 行、项间 0 空行；小节标题（H2–H6）上下 0 空行；章标题（H1）前后各 1 行 |
+| Markdown 其余 | `---` 1 行；块引用/表格保留既有 1 行间距（结构化块自带边界，不属「每一行」） |
 | 启动横幅 | 2 行（无边框） |
 | 轮次分隔 | 每轮回复结束后 1 行 dim 虚线 |
 | 命令面板 | max-height 6（浮层，保留边框） |
+
+章/节只能按**标题级别**区分（Textual CSS 无祖先/兄弟上下文选择器，无法表达「当前所在章」）；
+纯文本大纲（无 `#`/`##`）统一吃段落 0 空行。紧凑化的代价是源文档分段在视觉上不可辨——这是
+2026-10-21 用户裁决的取舍（change 0300），标题的加粗与色彩仍提供结构线索。
 
 「字体偏大」无应用侧杠杆（终端字体由终端模拟器决定）；配套建议：等宽字体（Cascadia Code /
 JetBrains Mono / Maple Mono）、字号 10–12pt、行距 1.0（Windows Terminal 默认 1.2 常致体感偏大）。
@@ -168,6 +174,7 @@ SHALL NOT 接子 Agent 消息流、SHALL NOT 允许发送；详情只用 `task.*
 | change `0233` | TUI 活动块：缺省收起、标题语法、Thinking 按 round、撤回 Task 壳 |
 | change `0294` / ADR-0284 | 主/子 Agent 标签栏与只读详情（`taskview.js` / `_TaskTab` / `_SubtaskBlock`） |
 | change `0299` / ADR-0289 | TUI 视觉密度预算（chrome/留白/文件呈现）与状态行合并 |
+| change `0300` / ADR-0290 | TUI 行距节奏：段落/列表零空行，H1 前后各 1 行，H2–H6 零空行 |
 | `doc/openspec/specs/ui/spec.md` | 三端思考回显、步骤块、SSE、会话等正式 Requirement |
 | `src/core/ui/repl.py` | TUI 时间线 / spinner / `_StepBlock` |
 | `src/core/ui/api.py` | 事件类型映射（`loop.reasoning` 透传等） |

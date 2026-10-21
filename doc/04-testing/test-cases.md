@@ -5081,3 +5081,18 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > 恢复 `#hints` 边框 ⇒ TC-DENSITY-01 红。
 > **实测**：全量 pytest **3389 passed**（3380 + 9）；`openspec validate --all` 结果见归档记录。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0289 行。
+
+## 213. TUI 行距节奏（TC-RHYTHM，change `0300`／ADR-0290，台账 E236）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-RHYTHM-01 | 段落零空行 | 回复 `"段落一。\n\n段落二。\n"` | 第二段 `region.y == 第一段 y + 1`（相邻段落 0 空行）（`tests/test_repl.py::test_tui_markdown_paragraph_gap_zero`） |
+| TC-RHYTHM-02 | 列表每项 1 行 | 回复两项无序列表 | `MarkdownBulletList.region.height == 2`（列表项内层段落不再带 1 行 margin；改版前为 4）（`...::test_tui_markdown_list_item_single_row`） |
+| TC-RHYTHM-03 | 小节标题前 0 空行 | 回复 `"正文。\n\n## 1.2 小节\n正文二。\n"` | `MarkdownH2.region.y == 段落 y + 1`（改版前为 +2）（`...::test_tui_markdown_subsection_heading_no_gap`） |
+| TC-RHYTHM-04 | 章边界各 1 行 | 回复 `"正文。\n\n# 第二章\n\n## 2.1 小节\n"` | `H1.y == 段落 y + 2`（章前 1 空行）且 `H2.y == H1.y + 2`（章后 1 空行）（`...::test_tui_markdown_chapter_heading_gap_preserved`） |
+
+> **反证 3/3**（`cp` 到 `/tmp`、复原后 `md5sum` 一致 `dd541c72…`）：`MarkdownParagraph`
+> margin 回 `0 0 1 0` ⇒ TC-RHYTHM-01/02 红；`MarkdownH2…H6` 回 `1 0 0 0` ⇒ TC-RHYTHM-03 红；
+> `MarkdownH1` 回 `1 0 0 0` ⇒ TC-RHYTHM-04 红。
+> **实测**：全量 pytest **3393 passed**（3389 + 4）；`openspec validate --all` 结果见归档记录。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0290 行。

@@ -11060,6 +11060,41 @@ N=N、40 行截断 + 尾行、write/patch 元信息行、Syntax 冒烟 + code_ru
 而非崩溃）；② 大文件的 `+N −M` 计数是节选下界（事件面 400 字符所限，标 `节选`）；③ 终端
 字号仍需终端侧配置（文档给建议）；④ 轮次分隔线依赖 Textual 空内容 Static 的边框渲染行为。
 
+## ADR-0290：TUI 行距节奏——正文/列表零空行、章边界保留（change 0300 / 台账 E236）
+
+**背景。** 0299 把留白压到「段落间 1 行」后，用户仍反馈「每一行之间都空一行」。真实 REPL
+渲染实测（Textual 8.2.8）：段落 ↔ 段落固定 1 空行；**列表每项占 2 行**（列表项内层也是
+`MarkdownParagraph`，套用同一条 bottom=1）；H1 与 H2–H6 同为 `margin: 1 0 0 0`（章/节无
+密度差异）；H1 下 margin 为 0（章后正文紧跟）。用户裁决：**全紧凑**——正文/列表 0 空行、
+小节标题上方 0 空行、章标题（H1）前后各 1 行。
+
+**决策**：
+
+- **D1 段落零空行。** `MarkdownParagraph { margin: 0 }`。列表项内层同一条规则 ⇒ 列表项从
+  2 行/项回到 1 行/项，无需第二条规则。
+- **D2 列表贴边。** `MarkdownBulletList, MarkdownOrderedList { margin: 0 }`（原先列表后 1 行）。
+- **D3 章/节按标题级别分级。** `MarkdownH1 { margin: 1 0 1 0 }`（章前后各 1 行，章边界可
+  扫）；`MarkdownH2…H6 { margin: 0 }`（小节紧接上文、正文紧接标题）。
+- **D4 结构化块不动。** 块引用（上下各 1 行）与表格（下 1 行）保留既有间距：它们自带缩进/
+  边框，视觉边界已存在，不属用户所指的「每一行之间」。
+- **D5 零开关。** 紧凑即唯一形态（不引入 `ui.density`）。
+
+**被拒方案**：按「当前所在章」压缩内容（Textual CSS 无祖先/兄弟上下文选择器，无法表达
+「本节正文」；唯一可选近似即标题级别）；H2–H6 也保留 1 行（小节之间不收紧，与用户裁决
+不符）；只压小节、段落留 1 行（正文仍逐行空行，未解主诉）；`ui.density` 键（双形态测试面
+翻倍）；改共享标题语法/事件面（超出呈现层边界）。
+
+**验证**：`tests/test_repl.py` 4 用例（相邻段落 `y2 == y1 + 1`、两项列表
+`BulletList.height == 2`、段落 → H2 `y_h2 == y_para + 1`、段落 → H1 `y_h1 == y_para + 2`
+且 H1 → H2 `y_h2 == y_h1 + 2`）。反证（`cp` + `md5sum` 复原）：段落 margin 回 `0 0 1 0`
+⇒ 用例 1/2 红；H2–H6 回 `1 0 0 0` ⇒ 用例 3 红；H1 回 `1 0 0 0` ⇒ 用例 4 红。全量门禁见
+test-cases §213。
+
+**局限**：① 纯文本大纲（无 `#`/`##`）无法区分章/节，只能吃段落 0 空行；② 块引用/表格仍
+保留 1 行间距（有意）；③ 段落连排后源文档分段在视觉上不可辨（内容换取密度，用户明确裁决
+的取舍，标题加粗/色彩仍提供结构线索）；④ 终端行高（Windows Terminal 默认 1.2）仍需终端侧
+设置。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11344,3 +11379,4 @@ N=N、40 行截断 + 尾行、write/patch 元信息行、Syntax 冒烟 + code_ru
 | ADR-0287 | 03-interfaces/loop-interface.md, 03-interfaces/prompts.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0288 | 03-interfaces/ui-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0289 | 03-interfaces/ui-scheme.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0290 | 03-interfaces/ui-scheme.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
