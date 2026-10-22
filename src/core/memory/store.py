@@ -19,6 +19,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import cast
 
 from core.judgment import Compactor, DecisionResult
 from core.plugin_registry import Effect, EffectTracker
@@ -39,7 +40,7 @@ from .extract import (
     scrub_relation,
     slug_entity,
 )
-from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
+from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId, MemoryStatus
 from .relevance import batch_similarities, build_lexical_stats, rank, recency_decay
 from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter
 
@@ -58,6 +59,16 @@ _CONSOLIDATE_THRESHOLD = 0.5
 # ≥ AMBIT 按意向层入库并写回分值。缺省从不评分（scorer UNWIRED ⇒ 写入逐字不变）。
 _IMPORTANCE_FLOOR = 0.2
 _IMPORTANCE_AMBIT = 0.4
+
+# 关键事实版本链（change 0303）：链头 id 为 `keyfact.<slug>`，第 N 版为 `keyfact.<slug>.vN`。
+# `slug_entity` 把 `.` 折成 `-` ⇒ 前缀不会误命中其它实体。
+_KEY_FACT_PREFIX = "keyfact."
+
+
+def _content_hash(content: str) -> str:
+    """正文归一化哈希（仅去首尾空白；change 0303 信封字段）。"""
+    return hashlib.sha256(content.strip().encode("utf-8")).hexdigest()
+
 
 # 闸门**豁免面**（change 0181 / ADR-0172，0241 补 `episodic`）：来源属此面的条目**不经评分**
 # —— 它们皆由系统管道从**已准入**的材料派生（会话摘要与中层摘要 `compaction` / 压实产物
@@ -388,6 +399,10 @@ class MemoryStore:
             candidates = {
                 entry_id: entry for entry_id, entry in candidates.items() if entry.layer in layers
             }
+        # 治理信封（change 0303）：被取代版本退出检索面（审计仍可见），同一位置先于排名与预算。
+        candidates = {
+            entry_id: entry for entry_id, entry in candidates.items() if entry.status == "active"
+        }
         values = list(candidates.values())
         # 批量语义相似（change 0290 / ADR-0280）：排序前按批向量化，query 至多一次；
         # 任一批失败 ⇒ sim_map=None ⇒ 本次检索整体走词法（不混合两种尺度）。
@@ -473,6 +488,8 @@ class MemoryStore:
                 stacklevel=2,
             )
             return None
+        if not entry.content_hash:
+            entry.content_hash = _content_hash(entry.content)
         self._persist(layer, entry)
         if score is not None:
             if score < _IMPORTANCE_AMBIT:
@@ -663,6 +680,7 @@ class MemoryStore:
             for entry in self._all_entries()
             if "failure" in entry.tags
             and "forgotten" not in entry.tags
+            and entry.status == "active"
             and (not session_id or entry.session_id == session_id)
         ]
         entries.sort(key=lambda entry: entry.ts, reverse=True)
@@ -1213,10 +1231,11 @@ class MemoryStore:
             )
 
     def _write_key_fact(self, fact: KeyFact, *, key: str, session_id: str) -> None:
-        """落一条关键事实（同实体同一 `id` ⇒ 覆盖式更新、条目不增长）。
+        """落一条关键事实（版本链：取值未变 ⇒ 就地刷新；取值变化 ⇒ 新增版本 + 旧版 superseded）。
 
-        跨压实覆盖更新保留**首次出现时间戳**（change 0230 / G4）：新值覆盖正文与本次
-        溯源标签，但 `ts` 沿用既有条目（非 0 时），使「首见时间」不被后续压实重置。
+        链头 id 为 `keyfact.<slug>`（version=1），第 N 版为 `keyfact.<slug>.vN`。同值就地刷新
+        保留**首次出现时间戳**（change 0230 / G4）；新版本获得自己的写入时间戳，旧版时间戳
+        不随之改写（change 0303 / ADR-0293）。
         """
         slug = slug_entity(fact.entity)
         tags = [_KEY_FACT_TAG, f"entity:{slug}"]
@@ -1224,22 +1243,97 @@ class MemoryStore:
             tags.append(f"ref:{fact.ref}")
         if session_id:
             tags.append(f"session:{key}")
-        entry_id = f"keyfact.{slug}"
-        existing = self._entry_by_id(entry_id)
+        base_id = f"{_KEY_FACT_PREFIX}{slug}"
+        content = f"{fact.entity}: {fact.value}"
+        digest = _content_hash(content)
+        active = self._active_key_fact(base_id)
+        # 被抹值的条目（`<redacted>`）不含可用信息 ⇒ 不算一个「历史取值」，就地重写而非升版；
+        # 否则失效关键事实运维修复（`repair_stale_key_facts`）会凭空造出 `.v2` 并留下悬空链头。
+        active_value = active.content.rpartition(": ")[2] if active is not None else ""
+        same_value = active is not None and (
+            active_value == REDACTED
+            or (
+                active.content_hash == digest
+                if active.content_hash
+                else active.content.strip() == content.strip()
+            )
+        )
+        if same_value and active is not None:
+            entry_id = active.id
+            version = active.version
+            parent_id = active.parent_id
+            ts = active.ts if active.ts > 0 else 0.0
+            supersede = False
+        elif active is not None:
+            entry_id = f"{base_id}.v{active.version + 1}"
+            version = active.version + 1
+            parent_id = active.id
+            ts = 0.0
+            supersede = True
+        else:
+            entry_id = base_id
+            version = 1
+            parent_id = ""
+            ts = 0.0
+            supersede = False
+        trace_id = f"compaction.{key}"
         self.write(
             "L2",
             MemoryEntry(
                 id=entry_id,
                 layer="L2",
-                content=f"{fact.entity}: {fact.value}",
+                content=content,
                 tags=tags,
                 source="extraction",
-                trace_id=f"compaction.{key}",
+                trace_id=trace_id,
                 session_id="",
                 kind="semantic",
-                ts=existing.ts if existing is not None and existing.ts > 0 else 0.0,
+                ts=ts,
+                content_hash=digest,
+                version=version,
+                parent_id=parent_id,
             ),
         )
+        if supersede and active is not None:
+            self._supersede(active, entry_id, trace_id)
+
+    def _key_fact_chain(self, base_id: str) -> list[MemoryEntry]:
+        """该实体的全部版本（`keyfact.<slug>` 与 `keyfact.<slug>.vN`）。"""
+        prefix = f"{base_id}.v"
+        return [
+            entry
+            for entry in self._all_entries()
+            if entry.id == base_id or entry.id.startswith(prefix)
+        ]
+
+    def _active_key_fact(self, base_id: str) -> MemoryEntry | None:
+        """该实体的活跃链头（无则 ``None``；旧数据缺 status ⇒ 视为 active）。"""
+        chain = [entry for entry in self._key_fact_chain(base_id) if entry.status == "active"]
+        return max(chain, key=lambda entry: entry.version, default=None)
+
+    def _supersede(self, old: MemoryEntry, new_id: str, trace_id: str) -> None:
+        """把旧版本置 `superseded` 并记可逆效应（undo 恢复状态；change 0303）。"""
+        prior_status, prior_by = old.status, old.superseded_by
+        old.status = "superseded"
+        old.superseded_by = new_id
+        self._backend.put(old)
+        self._tracker.record(
+            Effect(
+                op="memory.supersede",
+                target=old.id,
+                undo=lambda: self._restore_status(old, prior_status, prior_by),
+                reversible=True,
+                coeffect=[],
+                trace_id=trace_id,
+                ts=time.time(),
+            )
+        )
+
+    def _restore_status(self, entry: MemoryEntry, status: str, superseded_by: str) -> None:
+        """``memory.supersede`` 的 undo：恢复旧版本状态并落盘。"""
+        entry.status = cast(MemoryStatus, status)
+        entry.superseded_by = superseded_by
+        self._backend.put(entry)
 
     def _consolidate_episodic(self, session_id: str, entries: list[MemoryEntry]) -> None:
         """情景归纳（change 0218 / ADR-0208）：把一批会话事件归纳为一条结论快照。
@@ -1355,11 +1449,12 @@ class MemoryStore:
 
         这类条目是 change `0173` 判据修复前的产物（模型自造的出处说明被当成真引用 ⇒ 取值整条被抹）
         ⇒ **已不含任何可用信息**。带 `coeffect:` 引用的条目（引用本身即信息）与无 `ref` 的条目
-        不识别。
+        不识别。被取代的历史版本（`status != "active"`）不参与修复：重抽会按当前材料追加新版本、
+        再把历史条目删掉 ⇒ 无谓的版本链抖动（change 0303 / ADR-0293）。
         """
         stale: list[MemoryEntry] = []
         for entry in self._all_entries():
-            if _KEY_FACT_TAG not in entry.tags:
+            if _KEY_FACT_TAG not in entry.tags or entry.status != "active":
                 continue
             refs = [tag[len(_REF_TAG) :] for tag in entry.tags if tag.startswith(_REF_TAG)]
             if not refs or any(ref.startswith(_COEFFECT_REF_PREFIX) for ref in refs):

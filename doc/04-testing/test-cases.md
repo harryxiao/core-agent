@@ -5138,3 +5138,22 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **反证 5/5**（`cp` 到 `/tmp`、复原后 `md5sum` 一致：`store.py` `7ea059b7…`、`assembler.py` `a2285e88…`、`planner.py` `0779a8cf…`）：去掉 `read()` 的 `layers` 过滤 ⇒ TC-MEMINJ-01/02/03 红（5 条用例）；事实面白名单放回全层 ⇒ TC-MEMINJ-05/06 红；去掉人格通道 ⇒ TC-MEMINJ-07 红；去掉溯源格式 ⇒ TC-MEMINJ-09/10 红；去掉块首声明 ⇒ TC-MEMINJ-11 红。
 > **实测**：全量 pytest **3415 passed**（3404 + 11）；`openspec validate --all` 结果见归档记录。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0292 行。
+
+## 216. 记忆治理信封与关键事实版本链（TC-MEMVER，change `0303`／ADR-0293，台账 E239）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-MEMVER-01 | 旧行缺键 ⇒ 默认值 | 手写无治理字段的 JSONL 行，`FileBackend` 加载 | `status="active"`、`version=1`、`parent_id=""`、`superseded_by=""`、`content_hash=""`，且 `read()` 可见（`tests/test_memory_version_chain.py::test_legacy_rows_load_with_envelope_defaults`） |
+| TC-MEMVER-02 | 首版信封 | 首次压实抽到 `部署环境=A` | 单条 `keyfact.部署环境`，`status="active"`、`version=1`、`parent_id=''`、`content_hash=sha256(content.strip())`（`...::test_first_version_carries_envelope_defaults`） |
+| TC-MEMVER-03 | 取值变化生成 v2 | 第二次压实抽到同实体、值改为 B | 新增 `keyfact.部署环境.v2`（`version=2`、`parent_id` 指首版）；首版 `superseded`、`superseded_by` 指 v2、旧值未被销毁（`...::test_changed_value_creates_new_version_and_supersedes_old`） |
+| TC-MEMVER-04 | 检索只见链头（含紧预算） | 旧版被取代前先复用一次（复用加权），再紧预算检索 | 只返回 `.v2`（旧版在预算分配前退出，未挤掉链头）；旧版 `reuse_count` 不再增长（`...::test_default_read_returns_latest_only`） |
+| TC-MEMVER-05 | 审计保留全链 | 同上两版 | `audit()` 同时含两个 id（`...::test_audit_keeps_both_versions`） |
+| TC-MEMVER-06 | 同值幂等不升版 | 两次压实取值不变 | 仍为单条 `keyfact.部署环境`、`version=1`、`active`，首见 `ts` 保留（`...::test_unchanged_value_refreshes_in_place`） |
+| TC-MEMVER-07 | 回滚恢复旧版 | v2 与取代落在 `compaction.s2`，回滚该 trace | v2 被移除；首版恢复 `active`、`superseded_by=''`（取代可逆）（`...::test_rollback_of_second_compaction_restores_first_version`） |
+| TC-MEMVER-08 | 哈希忽略首尾空白 | 写入 `"  同一事实  "` 与 `"同一事实"` | 两条 `content_hash` 相同且等于 `sha256("同一事实")`（`...::test_content_hash_ignores_surrounding_whitespace`） |
+| TC-MEMVER-09 | 关系不升版 | 同三元组跨两次压实 | 仍为单条 `relation.a--depends_on--b`、`version=1`、`active`（id 已编码三元组）（`...::test_relation_same_triple_stays_single_entry`） |
+| TC-MEMVER-10 | 抹除值就地重写 | 首版值为 `<redacted>`（带 ref），重抽得到真实值 | 单条首版就地重写为真实值（不生成悬空 `.v2`），`version=1`、`active`（`...::test_redacted_value_is_rewritten_in_place`） |
+
+> **反证 4/4**（`cp` 到 `/tmp`、复原后 `md5sum` 一致：`store.py` `cc51563c…`）：去掉 `read()` 的 `status` 过滤 ⇒ TC-MEMVER-04 红；去掉 `_supersede()` 调用 ⇒ TC-MEMVER-03/04 红；去掉同值判定（一律升版）⇒ TC-MEMVER-06/10 红；把状态过滤挪到 `_truncate` 之后 ⇒ TC-MEMVER-04 红（紧预算下旧版挤掉链头）。
+> **实测**：全量 pytest **3425 passed**（3415 + 10）；`openspec validate --all` 32/0（含本 active change）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0293 行。

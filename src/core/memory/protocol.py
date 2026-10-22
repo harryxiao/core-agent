@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 Layer = Literal["L0", "L1", "L2", "L3", "L4"]
+MemoryStatus = Literal["active", "superseded"]
 MemoryId = str
 
 
@@ -32,6 +33,12 @@ class MemoryEntry:
     session_id: str = ""  # 会话 ID（跨轮记忆归组，缺省空串）
     importance: float = 0.0  # 主观重要度 [0,1]（缺省 0 不调制；自动打分留 Phase 18 #4/#5）
     kind: Literal["episodic", "semantic"] = "episodic"  # 事件 / 提炼事实
+    # 治理信封（change 0303）：旧行缺键 ⇒ 默认值加载；检索缺省只见 active。
+    content_hash: str = ""  # 正文 strip() 后的 SHA-256（写入时自动计算）
+    status: MemoryStatus = "active"
+    version: int = 1  # 同链递增（关键事实版本链）
+    parent_id: str = ""  # 被本版本替代的条目 id（首版空）
+    superseded_by: str = ""  # 仅旧版本填写：替代它的新版本 id
 
 
 @dataclass
@@ -64,6 +71,7 @@ class MemoryStore(Protocol):
         ``session_id`` 非空 ⇒ 只返回本会话条目 + 全局层（缺省空串 ⇒ 不过滤）。
         ``include_forgotten`` 缺省 False ⇒ 带 ``forgotten`` 标签的条目在排名前剔除（change 0301）。
         ``layers`` 非空 ⇒ 只返回所列层，排名前剔除（缺省空 ⇒ 不施加层过滤；change 0302）。
+        缺省只返回 ``status="active"`` 的条目（被取代版本仅在 ``audit()`` 可见；change 0303）。
         """
         ...
 

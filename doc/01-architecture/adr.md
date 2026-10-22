@@ -11188,6 +11188,52 @@ L4 不吃预算 / 人格独立且不进 facts / 人格必保 / 溯源格式 / `u
 回溯；④ 人格为必保项 ⇒ 极大的 Core.md 人格配极小预算会显式 `BUDGET_EXCEEDED`（取代此前
 静默超预算）；⑤ `id` 注入增加少量 token（keyfact slug ≤ 48）。
 
+## ADR-0293：记忆治理信封与关键事实版本链（change 0303 / 台账 E239）
+
+**背景。** 对照 `ai-arch/docs/memory-sdd.md` v1.0：① 条目无内容寻址 / 状态 / 版本字段，无法
+判断两条事实是否同值、也无「已被取代」的概念（P1-1）；② 关键事实按固定 id
+`keyfact.<slug>` **原地覆盖** —— 取值变化时旧值被静默销毁，审计面无法回答「当时为什么这么记」
+（P1-2）。
+
+**决策**：
+
+- **D1 五个信封字段，全有默认值。** `content_hash` / `status` / `version` / `parent_id` /
+  `superseded_by`。序列化仍走 `asdict`、加载走 `MemoryEntry(**json)` ⇒ 旧行缺键自动取默认
+  （`active` / `1` / 空串），单向兼容、无需迁移脚本。**被拒**：`namespace` / `trust` /
+  `confidence`（无消费方 ⇒ 死字段）；新增存储格式或版本号列。
+- **D2 版本链只用于关键事实。** 首版保持 `keyfact.<slug>`（id 稳定），第 N 版为
+  `keyfact.<slug>.vN`；`slug_entity` 把 `.` 折成 `-` ⇒ 实体名不会与 `.vN` 后缀相撞。关系条目
+  不做版本链（id 已编码三元组）；summary / episodic / transcript 仍是覆盖式（单条滚动形态）。
+- **D3 检索在预算前排除旧版。** `read()` 在来源 / 会话 / 遗忘 / 层过滤同一位置剔除
+  `status != "active"` ⇒ 旧版不吃预算、不被 `_reinforce`；`audit()` / `index()` /
+  `_all_entries()` 不过滤。**被拒**：`read(include_superseded=)` 开关（回溯面已有 `audit()`，
+  开关只会让注入面偶遇旧值）；读后过滤（旧版已吃预算）。
+- **D4 取代可逆。** `_supersede()` 把旧版置 `superseded` 并记
+  `Effect(op="memory.supersede", undo=恢复原 status/superseded_by)`，trace 与压实相同 ⇒
+  回滚 `compaction.<sid>` 时先删新版（写入效应回滚）、再恢复旧版 `active`。
+- **D5 哈希去首尾空白。** `sha256(content.strip())`；同值判定优先比 `content_hash`，旧行空串
+  时退回 `content.strip()` 比较。**`<redacted>` 不是历史取值**：旧值为抹除态时就地重写
+  （否则失效关键事实修复会追加 `.v2` 再删掉旧条目，留下 `version=2` 的悬空链头）。
+- **D6 `_stale_key_facts()` 只认活跃条目。** 历史版本不参与修复重抽（重抽只会按当前材料造
+  新版本、再删历史，无谓抖动）；被抹值的历史版本保留在 `audit()` 中。
+
+**被拒方案**：原地覆盖 + 审计事件另存（需第二份真相源，回滚要同时撤两者）；全部条目统一版本链
+（摘要 / 情景链是「每会话至多一条」的滚动形态，升版会让链无限增长）；物理删除旧版（丢失可追溯性，
+且与「反方向可逆溶解」不符）。
+
+**验证**：新增 `tests/test_memory_version_chain.py` 10（旧行缺键默认 / 首版信封 / 变更生成 v2 /
+检索只见最新（含紧预算与复用加权反证）/ `audit()` 见全链 / 同值幂等 / 回滚恢复旧版 / 哈希去空白 /
+关系不升版 / 抹除值就地重写）；改写 `tests/test_memory_key_facts.py` 两条覆盖式用例为版本链
+口径。反证（`cp` + `md5sum` 复原）：去 `read()` 状态过滤 ⇒ 1 红；去 `_supersede` ⇒ 2 红；
+去掉同值判定 ⇒ 2 红；过滤挪到预算之后 ⇒ 1 红。全量 **3425 passed**。
+
+**局限**：① 版本链无保留期 / 条数上限，压实频繁且取值常变时 L2 持续增长（清理走 `audit()` /
+人工运维）；② 链头判定每次关键事实写入都扫 `_all_entries()`（O(N)），大库压实成本随库增长；
+③ 旧行 `content_hash` 为空串，首次重写前只能走正文比较，且不回填；④ 被取代的历史条目不再修复
+（`_stale_key_facts` 只认活跃）；⑤ `status` 只有两态，无 `retracted` / 逻辑删除；⑥ 关系条目与
+摘要 / 情景链不参与版本链；⑦ `read()` 无 `include_superseded` 开关，旧值只能经 `audit()` /
+CLI 回溯；⑧ 同值判定忽略首尾空白（`"A"` 与 `" A "` 视为同值，属预期）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11475,3 +11521,4 @@ L4 不吃预算 / 人格独立且不进 facts / 人格必保 / 溯源格式 / `u
 | ADR-0290 | 03-interfaces/ui-scheme.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0291 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0292 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0293 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

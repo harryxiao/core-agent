@@ -142,8 +142,8 @@ def test_extracted_key_fact_lands_with_expected_shape() -> None:
     assert entry.session_id == "", "关键事实属全局层（不参与会话隔离），会话只作溯源标注"
 
 
-def test_same_entity_is_idempotent_overwrite() -> None:
-    """同实体至多一条：重复抽取覆盖式更新，条目不增长。"""
+def test_same_entity_value_change_versions() -> None:
+    """同实体取值变化 ⇒ 新增版本、旧版 superseded（change 0303：不原地覆盖）。"""
     holder: dict[str, list[KeyFact]] = {"facts": [KeyFact(entity="部署环境", value="生产集群 A")]}
     store = MemoryStore(
         summarizer=lambda entries: "摘要：事实",
@@ -156,9 +156,10 @@ def test_same_entity_is_idempotent_overwrite() -> None:
     store.write("L2", _episodic("e1", "s1"))
     store.compact(session_id="s1")
 
-    hits = [e for e in _facts(store) if e.id == "keyfact.部署环境"]
-    assert len(hits) == 1, "同实体 ⇒ 单条（不增长）"
-    assert hits[0].content == "部署环境: 生产集群 B", "覆盖式更新"
+    hits = sorted(_facts(store), key=lambda e: e.version)
+    assert [e.id for e in hits] == ["keyfact.部署环境", "keyfact.部署环境.v2"], "旧值可追溯"
+    assert hits[0].status == "superseded" and hits[0].content == "部署环境: 生产集群 A"
+    assert hits[1].status == "active" and hits[1].content == "部署环境: 生产集群 B"
 
 
 def test_same_entity_overwrite_preserves_first_seen_ts() -> None:
@@ -172,13 +173,12 @@ def test_same_entity_overwrite_preserves_first_seen_ts() -> None:
     store.compact(session_id="s1")
     first = next(e for e in _facts(store) if e.id == "keyfact.部署环境")
 
-    holder["facts"] = [KeyFact(entity="部署环境", value="生产集群 B")]
     store.write("L2", _episodic("e1", "s1"))
     store.compact(session_id="s1")
 
     updated = next(e for e in _facts(store) if e.id == "keyfact.部署环境")
-    assert updated.content == "部署环境: 生产集群 B"
-    assert updated.ts == first.ts, "覆盖更新保留首次落库时间戳"
+    assert updated.content == "部署环境: 生产集群 A", "同值就地刷新、不生成新版本"
+    assert updated.ts == first.ts, "就地刷新保留首次落库时间戳"
 
 
 def test_key_fact_is_global_so_visible_across_sessions() -> None:

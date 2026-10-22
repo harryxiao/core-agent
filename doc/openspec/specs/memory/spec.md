@@ -719,8 +719,11 @@ L5 组合根注入。抽取材料 SHALL 是**本次压实聚合的 episodic 条�
 承「无行动不记忆」。
 承载本轮**行动与结果**序列的那条 L2 条目，其**内容口径**（有界、写入前脱敏）由 `loop`「执行循环」规定 —— 本能力只消费该材料，不另行定义其形态。
 
-落库形态 SHALL 为：`id = f"keyfact.{实体 slug}"`（**同一实体至多一条** —— 重复抽取得**覆盖式
-更新**，条目不增长）；`kind="semantic"`；`source="extraction"`（短标签）；`trace_id` 与压实同
+落库形态 SHALL 为：首版 `id = f"keyfact.{实体 slug}"`；同实体**取值变化**时 SHALL 新增
+版本条目 `id = f"keyfact.{实体 slug}.v{version}"`（`version` 自 1 起递增、`parent_id` 指向被替代
+的旧版），旧版 SHALL 置 `status="superseded"` 且 `superseded_by` 指向新版本（**版本链**，见
+「记忆条目的治理信封」；SHALL NOT 原地覆盖 ⇒ 旧值仍可经 `audit()` 追溯）；同实体**取值未变**
+⇒ SHALL 在活跃版本上就地刷新溯源（幂等，条目不增长、版本不升）；`kind="semantic"`；`source="extraction"`（短标签）；`trace_id` 与压实同
 （`compaction.<session_id>`）；`tags` SHALL 含 `key_fact` 与 `entity:<slug>`，给出引用时 SHALL 另含
 `ref:<ref>`；`content` SHALL 为 `<entity>: <value>`（`value` 已脱敏）；产生它的会话 SHALL 经 `tags` 的
 `session:<sid>` 标注溯源（`sid` 非空时）。关键事实 SHALL 属**全局层**（条目 `session_id` SHALL 置
@@ -795,7 +798,9 @@ SHALL **首尾保留**（头尾各半、中以 `…` 连接，总长 SHALL NOT �
 - **THEN** 产出两条 `kind="semantic"` 条目（`source="extraction"`、`tags` 含 `key_fact` 与
   `entity:<slug>`、`trace_id=compaction.<sid>`、`content` 为 `<entity>: <value>`）；条目 `session_id`
   为**空串**（全局层，不参与会话隔离）而 `tags` 含 `session:<sid>`（溯源标注）；**AND WHEN**
-  再次压实同一实体且取值已变 **THEN** 仍为**单条**（同 `id` 覆盖式更新，条目不增长）
+  再次压实同一实体**且取值未变** **THEN** 仍为**单条**（同 `id` 就地刷新，条目不增长）；
+  **AND WHEN** 取值已变 **THEN** 新增 `keyfact.<slug>.v2` 版本条目，旧版 `status="superseded"`、
+  `superseded_by` 指向新版（版本链，不覆盖）
 
 #### Scenario: 明文密钥强制脱敏
 - **GIVEN** 抽取器返回的事实其 `value` 为明文密钥（已知前缀族如 `sk-…`，或长随机串）
@@ -876,6 +881,14 @@ SHALL **首尾保留**（头尾各半、中以 `…` 连接，总长 SHALL NOT �
 - **GIVEN** **未**显式配置 `memory.key_fact_extract`（缺省）
 - **WHEN** 组合根装配 `MemoryStore`
 - **THEN** 照常注入抽取器 ⇒ 关键事实抽取行为与引入该键前**逐字一致**（缺省不改变在用能力）
+
+#### Scenario: 取值变化 ⇒ 新增版本、旧值可追溯
+
+- **GIVEN** 某实体的关键事实已落库为首版 `keyfact.<slug>`（`version=1`、`status="active"`）
+- **WHEN** 后续压实抽到同一实体但取值不同
+- **THEN** 新增 `keyfact.<slug>.v2`（`version=2`、`parent_id` 指向首版、`status="active"`），首版置
+  `status="superseded"`、`superseded_by="keyfact.<slug>.v2"`；**AND** 缺省检索只返回 v2，
+  `audit()` 同时可见两版且旧版可直接读取（旧值未被销毁）
 
 ### Requirement: 失效关键事实的运维修复
 
@@ -1304,21 +1317,36 @@ SHALL NOT 另写第二份词表 —— 纯中文会话须能直接选词。
 
 ### Requirement: 关键事实的跨压实合并
 
-跨压实批次重复抽取同一实体时，关键事实 SHALL 按实体 slug **覆盖式更新**既有条目
-（`id = f"keyfact.{slug}"`），SHALL NOT 新增条目；更新后 `content` SHALL 为新取值、
-`trace_id` / `tags` SHALL 随本次压实刷新（会话溯源随本次压实），但条目**首次出现的时间戳**
-（`ts`）SHALL 保留，SHALL NOT 被本次写入重置。同批归并语义（同批同 slug 只留首条）SHALL
-保持不变。
+跨压实批次重复抽取同一实体时，关键事实 SHALL 按实体 slug 维护**版本链**：
+**取值未变** ⇒ 在活跃版本上**就地刷新**溯源（`trace_id` / `tags` 随本次压实刷新）；
+**取值变化** ⇒ SHALL **新增版本条目**（`id = f"keyfact.{slug}.v{version}"`、`version` 递增、
+`parent_id` 指向旧版），旧版 SHALL 置 `status="superseded"` 且 `superseded_by` 指向新版，
+SHALL NOT 原地覆盖。任一版本条目的**首次出现时间戳**（`ts`）SHALL 在后续同版本就地刷新时保留；
+新版本获得自己的写入时间戳（旧版时间戳不随之改写）。缺省检索 SHALL 只见 `status="active"`
+的链头（旧版本经 `audit()` 追溯）；取代动作 SHALL 记可撤销效应并随同一
+`compaction.<session_id>` trace 回滚（回滚新版 ⇒ 旧版恢复 active）。同批归并语义
+（同批同 slug 只留首条）SHALL 保持不变。
 
 #### Scenario: 跨压实同实体合并不新增条目
-- **GIVEN** 两个压实批次抽取到同一实体、不同取值
+- **GIVEN** 两个压实批次抽取到同一实体、**相同取值**
 - **WHEN** 第二批压实落库
-- **THEN** 仍只有一条 `keyfact.<slug>` 条目，`content` 为第二批取值
+- **THEN** 仍只有一条 `keyfact.<slug>` 条目（版本不变），`trace_id` / `tags` 刷新为第二批溯源
+
+#### Scenario: 跨压实取值变化新增版本
+- **GIVEN** 某实体的关键事实已在第一批压实落库（`version=1`）
+- **WHEN** 第二批压实抽到**不同取值**
+- **THEN** 新增 `keyfact.<slug>.v2`；首版 `status="superseded"`、`superseded_by` 指向 v2；
+  **AND** 缺省检索只返回 v2，`audit()` 两版俱在
 
 #### Scenario: 跨压实更新保留首见时间戳
 - **GIVEN** 某实体的关键事实已在第一批压实落库
-- **WHEN** 第二批压实覆盖更新该实体
+- **WHEN** 第二批压实抽到**相同取值**并就地刷新
 - **THEN** 条目 `ts` 仍等于首次落库时间，未被重置为第二批写入时间
+
+#### Scenario: 版本链可回滚
+- **GIVEN** 第二批压实产生了 `keyfact.<slug>.v2` 并取代了首版
+- **WHEN** 回滚第二批压实的 `compaction.<session_id>` trace
+- **THEN** v2 被删除、首版恢复 `status="active"`（旧值重新可召回）
 
 ### Requirement: L2 活跃层软上限
 
@@ -1582,3 +1610,40 @@ gold，recall@5 由 `1.000` 降至 `0.45`。零偏移使未分档条目得分与
 - **GIVEN** 同时给出层白名单、来源前缀排除与会话标识
 - **WHEN** 检索
 - **THEN** 三类过滤同时生效（命中任一排除条件的条目都不出现）
+
+### Requirement: 记忆条目的治理信封
+
+每条记忆条目 SHALL 携带治理信封字段，缺省值保证旧数据与既有构造点**逐字兼容**：
+
+- `content_hash`：正文 `strip()` 后的 SHA-256（十六进制）。写入路径 SHALL 在字段为空时自动计算；
+  调用方显式给值 SHALL 被尊重。该字段只服务幂等比较 / 内容寻址，SHALL NOT 参与排序打分。
+- `status`：`"active"`（缺省）或 `"superseded"`。
+- `version`：版本号，缺省 `1`，同链递增。
+- `parent_id`：被本版本替代的条目 id；首版为空串。
+- `superseded_by`：仅旧版本填写，指向替代它的新版本 id。
+
+反序列化 SHALL 对缺键的旧行应用默认值（`active` / `1` / 空串）。检索面 `read()` SHALL 在
+**排名与预算之前**剔除 `status != "active"` 的条目（与遗忘 / 层过滤同一位置 ⇒ 不吃预算、
+不被复用强化）；`audit()` / `index()` / `_all_entries()` SHALL NOT 施加该过滤（历史可追溯）。
+本条 SHALL NOT 引入 `namespace` / `trust` / `confidence`（当前无消费方）。
+
+#### Scenario: 旧行缺键 ⇒ 默认值加载
+- **GIVEN** `memory.jsonl` 中某行为变更前写入（无治理字段）
+- **WHEN** `FileBackend` 重新加载
+- **THEN** 条目 `status="active"`、`version=1`、`parent_id=""`、`superseded_by=""`，
+  `content_hash` 为空串，且其检索可见性与变更前一致
+
+#### Scenario: 写入自动计算内容哈希
+- **GIVEN** 调用方写入条目时未提供 `content_hash`
+- **WHEN** 写入完成
+- **THEN** 条目 `content_hash == sha256(content.strip())`（正文仅差首尾空白 ⇒ 哈希相同）
+
+#### Scenario: 检索默认排除 superseded
+- **GIVEN** 同一实体的两个版本：旧版 `status="superseded"`、新版 `status="active"`
+- **WHEN** 以缺省参数 `read()` 检索
+- **THEN** 只返回新版；旧版不占预算、`reuse_count` 不递增
+
+#### Scenario: 审计面保留历史版本
+- **GIVEN** 同一实体存在 `superseded` 旧版与 `active` 新版
+- **WHEN** 调用 `audit()`
+- **THEN** 两个版本都返回，旧版 `superseded_by` 指向新版

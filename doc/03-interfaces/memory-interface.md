@@ -45,6 +45,10 @@ class MemoryStore(Plugin):
         过滤与上述条件**同一位置**（排名与预算之前）⇒ 被滤项不吃预算、不被复用强化；缺省空元组
         ⇒ 不施加层过滤（检索语义与既往逐字一致）。装配器用它把事实面限定在 ``("L1","L2")``、
         人格单独读 ``("L0",)``。
+
+        ``status``（change 0303 / ADR-0293）：缺省只返回 ``status="active"`` 的条目；被取代
+        （``superseded``）的旧版本与上述过滤**同一位置**（排名与预算之前）剔除 ⇒ 不吃预算、
+        不被复用强化。无 ``include_superseded`` 开关 —— 历史回溯走 ``audit()``。
         """
 
     def write(self, layer: Layer, entry: MemoryEntry) -> MemoryId:
@@ -207,6 +211,12 @@ class MemoryEntry:
     session_id: str = ""     # 会话归属：产生该条目的会话（缺省空串 = 未归属）；压实/固化/遗忘按此归组
     importance: float = 0.0                          # 主观重要度 [0,1]（缺省 0 不调制）
     kind: Literal["episodic", "semantic"] = "episodic"  # 事件 / 提炼事实
+    # —— 治理信封（change 0303 / ADR-0293，全部有默认值 ⇒ 旧行缺键可加载）——
+    content_hash: str = ""     # content.strip() 的 SHA-256；write() 为空时自动计算
+    status: Literal["active", "superseded"] = "active"
+    version: int = 1           # 同链递增（关键事实版本链）
+    parent_id: str = ""        # 被本版本替代的条目 id（首版空）
+    superseded_by: str = ""    # 仅旧版本填写：替代它的新版本 id
 ```
 
 ---

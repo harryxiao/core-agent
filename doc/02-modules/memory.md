@@ -528,6 +528,33 @@ MemoryStore
 **代价**：L4 归档不再经 prompt 偶遇（主动回溯走 `audit()` / CLI）；人格配置过大时极小预算
 直接 `BUDGET_EXCEEDED`（显式失败取代静默超窗）。
 
+### 3.18 治理信封与关键事实版本链（change `0303`／ADR-0293／台账 E239）
+
+**信封字段**（`MemoryEntry`，全默认 ⇒ 旧 JSONL 缺键可直接加载）：`content_hash`
+（`content.strip()` 的 SHA-256，`write()` 为空时自动计算）、`status`（`active` /
+`superseded`）、`version`（同链递增）、`parent_id`（本版本替代的旧版 id）、`superseded_by`
+（旧版指向新版）。**不**引入 `namespace` / `trust` / `confidence`（当前无消费方）。
+
+**检索口径**：`read()` 在来源排除 / 会话 / 遗忘 / 层过滤**同一位置**（排名与预算之前）剔除
+`status != "active"` ⇒ 旧版不吃预算、不被复用强化；`audit()` / `index()` / `_all_entries()`
+不过滤（历史可追溯）。无 `include_superseded` 开关。
+
+**关键事实版本链**（取代此前的原地覆盖）：同实体 slug 的活跃链头为
+`keyfact.<slug>`（v1）/ `keyfact.<slug>.vN`。
+
+| 情形 | 行为 |
+|---|---|
+| 取值未变 | 在活跃版本上**就地刷新**（`trace_id` / `tags` 随本次压实刷新；保留首见 `ts`） |
+| 取值变化 | 新增 `keyfact.<slug>.v{N+1}`（`parent_id` 指向旧版），旧版置 `superseded` + `superseded_by`；**不覆盖** ⇒ 旧值经 `audit()` 可读 |
+| 旧值为 `<redacted>` | 视为**无历史取值** ⇒ 就地重写（避免失效关键事实修复造出悬空 `.v2` 链头） |
+
+取代动作记 `Effect(op="memory.supersede")`（同 `compaction.<session_id>` trace）⇒ 回滚新版
+压实即删除新版并恢复旧版 `active`。`_stale_key_facts()` 只扫活跃条目（历史版本不参与修复）。
+关系条目不做版本链：其 id 已编码完整三元组，同三元组覆盖即幂等。
+
+**代价 / 局限**：版本链无保留期上限（压实越频繁、取值越常变，L2 增长越多，清理依赖
+`audit()` / 人工）；链头判定每次写关键事实都扫描全部条目（`_all_entries()`，O(N)）。
+
 ---
 
 ## 4. 记忆写入规范（"无行动不记忆"的落地）
