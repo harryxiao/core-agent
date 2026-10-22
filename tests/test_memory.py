@@ -134,7 +134,9 @@ def test_no_action_no_write() -> None:
 def test_crystallize_dissolve() -> None:
     crystallizer = Crystallizer()
     skill = _entry("skill1", "L3", "处理 CSV 的经验")
+    skill.reuse_count = 3  # 复用达阈值方可结晶（change 0305）
     candidate = crystallizer.crystallize(skill)
+    assert candidate is not None
     assert candidate.plugin_id == "skill.skill1"
     assert candidate.source_entry_id == "skill1"
     lesson = crystallizer.dissolve("plugin.x")

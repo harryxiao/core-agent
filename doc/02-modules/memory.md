@@ -155,9 +155,15 @@ MemoryStore
 
 ### 3.3 结晶与溶解（与 L4 进化联动）
 
-- 结晶由 L4 进化引擎触发：`Proposer` 产出技能→插件补丁，`Validator` 通过后 `MemoryStore.crystallize`。
-- 溶解由 L4 诊断触发：插件失败归因后 `MemoryStore.dissolve`，把插件语义 + 教训回写为 L3 技能。
-- 二者都走**可逆效应**：结晶可回滚（卸载插件恢复技能），溶解可回滚（重装插件）。
+- **结晶钩子**：`Crystallizer.crystallize(skill_entry, *, force=False) -> PluginCandidate | None`
+  按 `reuse_count >= 3`（`CRYSTALLIZE_MIN_REUSE`）或显式 `force` 产出插件候选，交 L4 Validator；
+  未达标返回 `None`。L4 引擎在人工确认后的架构级分支以 `force=True` 调用，产物随
+  `EvolutionOutcome.artifact` 返回（change `0305`／ADR-0295）。
+- **溶解钩子**：`Crystallizer.dissolve(plugin_id)` 返回 L3 教训条目，`trace_id` 非空、可被
+  `MemoryStore.write()` 接受。观察期溶解走 `EvolutionEngine.dissolve()`（写 L2 教训 + 弃用技能），
+  与钩子不双写。
+- **能力边界**：两个钩子都是**纯函数** —— 不自行落盘、不注册可逆效应；回滚（卸载插件 / 重装插件）
+  由调用方（进化引擎 / 技能库）负责。
 
 ### 3.4 结构化关键事实抽取（key_facts，change `0155`／ADR-0147／路线图 G4）
 

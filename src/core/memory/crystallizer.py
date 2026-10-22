@@ -13,6 +13,9 @@ from typing import Any
 
 from .protocol import MemoryEntry
 
+# 结晶阈值：与 SDD「技能晋级至少 3 次成功或 1 次显式用户要求」同口径（change 0305）。
+CRYSTALLIZE_MIN_REUSE = 3
+
 
 @dataclass
 class PluginCandidate:
@@ -28,7 +31,12 @@ class PluginCandidate:
 class Crystallizer:
     """结晶 / 溶解钩子。"""
 
-    def crystallize(self, skill_entry: MemoryEntry) -> PluginCandidate:
+    def crystallize(
+        self, skill_entry: MemoryEntry, *, force: bool = False
+    ) -> PluginCandidate | None:
+        """复用证据（或显式要求）达标才产出候选；未达标返回 ``None``。"""
+        if not force and skill_entry.reuse_count < CRYSTALLIZE_MIN_REUSE:
+            return None
         return PluginCandidate(
             plugin_id=f"skill.{skill_entry.id}",
             generation=1,
@@ -43,5 +51,5 @@ class Crystallizer:
             content=f"失败插件 {plugin_id} 的教训（待复核）",
             tags=["dissolved", "lesson"],
             source="evolution",
-            trace_id="",
+            trace_id=f"evolution.dissolve.{plugin_id}",
         )

@@ -354,8 +354,10 @@ class EvolutionEngine:
         return EvolutionOutcome(status="published", candidate=candidate, skill_id=skill.skill_id)
 
     def _crystallize_plugin(self, candidate: GenerationCandidate) -> EvolutionOutcome:
+        artifact = None
         if self._memory_crystallizer is not None:
-            self._memory_crystallizer.crystallize(
+            # 已过人工 confirm（高风险还须已批准审批单）⇒ 属显式要求，豁免复用阈值
+            artifact = self._memory_crystallizer.crystallize(
                 MemoryEntry(
                     id=f"evolution.candidate.{candidate.generation}",
                     layer="L3",
@@ -363,10 +365,11 @@ class EvolutionEngine:
                     tags=["evolution", "candidate"],
                     source="evolution",
                     trace_id="evolution",
-                )
+                ),
+                force=True,
             )
         # 结局诚实：架构级候选只「批准登记」，不产出任何可发布产物 ⇒ 不谎报 published
-        return EvolutionOutcome(status="accepted", candidate=candidate)
+        return EvolutionOutcome(status="accepted", candidate=candidate, artifact=artifact)
 
 
 class EvolutionTrigger:

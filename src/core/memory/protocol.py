@@ -158,8 +158,11 @@ class MemoryStore(Protocol):
 class Crystallizer(Protocol):
     """结晶 / 溶解钩子（联动 L4 Evolution Engine）。"""
 
-    def crystallize(self, skill_entry: MemoryEntry) -> Any:
-        """把 L3 技能提升为插件候选（PluginCandidate，交 L4 Validator）。"""
+    def crystallize(self, skill_entry: MemoryEntry, *, force: bool = False) -> Any:
+        """把 L3 技能提升为插件候选（PluginCandidate，交 L4 Validator）。
+
+        复用不足（< ``CRYSTALLIZE_MIN_REUSE``）且未 ``force`` ⇒ ``None``。
+        """
         ...
 
     def dissolve(self, plugin_id: str) -> MemoryEntry:

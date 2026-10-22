@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
 
+from core.memory.crystallizer import PluginCandidate
+
 # 结晶面门的**口径版本**：判定所依据的 review / 运行时测试 / 留出评测口径的版本号。
 # 任何改变结晶面判定口径的变更（新增判据、换打分生产者、换阈值语义）SHALL 递增它；递增即
 # 「新口径只对新增候选生效」——旧候选随台账冻结在旧口径，投放时被拒（须按现口径重新提案），
@@ -136,6 +138,8 @@ class EvolutionOutcome:
     gate: GateReport | None = None
     eval: EvalReport | None = None
     skill_id: str | None = None
+    # 架构级候选的结晶钩子产物（change 0305）：只随结局返回，落盘/实施由调用方决定
+    artifact: PluginCandidate | None = None
 
 
 @dataclass

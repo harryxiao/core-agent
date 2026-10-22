@@ -2,7 +2,9 @@
 
 ## Purpose
 进化引擎实现"进化即结晶"的结晶经济闭环：闭环主干为四阶段——对比诊断（Diagnoser 归因到单个插件）→ 模块级提案（Proposer 生成世代化候选）→ 验证门（Validator 执行 review + 运行时测试）→ 留出评测（Evaluator 防退化）——在此基础上把行动经验结晶为技能/SOP、把无效技能溶解回收，使能力以可复用资产形式沉淀。验证门与留出评测依托可落地的评测基建（基准集 + 评测运行器 + 指标对比基线）工程化执行，并扩展到对任意任务的通用质量评测（任务完成度、正确性、轨迹质量），复用同一套评测基建。
+
 ## Requirements
+
 ### Requirement: 经验采集
 系统 SHALL 从遥测数据中采集"行动→结果"成对证据，作为进化的唯一输入。采集 SHALL 覆盖**两类**证据来源：①工具调用类（按工具 id 归因）与②**带模块归因**的遥测事件（按事件携带的 `module_id` 归因为该**架构模块**）——后者使架构模块**自身失败**（如执行循环因预算耗尽失败）成为可诊断证据。既有工具调用通道的归因与产出语义 SHALL NOT 改变。①工具调用类通道 SHALL 由**执行循环在生产链路产出**（`kind="tool_call"` 遥测，见 loop「异步流式执行」），SHALL NOT 依赖仅有消费侧而无生产侧的纸面通道。**内部核心模块的 `plugin_id` SHALL 表示「归因对象身份」**（供进化引擎监控该模块与定位其缺陷），**SHALL NOT 蕴含**该模块已纳入 `PluginRegistry` 生命周期；模块自身的失败证据 SHALL 经**模块归因遥测通道**（`module_id`）承载，采集与诊断 SHALL NOT 要求该模块在注册表中可查。
 
@@ -35,6 +37,7 @@
 - **GIVEN** 一个**未纳入** `PluginRegistry` 的内部核心模块（如 `loop.default`）产生了失败证据
 - **WHEN** 采集与对比诊断
 - **THEN** 仍能归因到该模块 id（证据经模块归因遥测通道承载、并按归因白名单判为架构级候选），不要求该模块在注册表中可查
+
 ### Requirement: 结晶为技能/SOP
 系统 SHALL 把高频成功模式结晶为技能/SOP，并生成带验收标准的单元。
 
@@ -47,6 +50,7 @@
 - **GIVEN** 一个技能候选生成
 - **WHEN** 入库前
 - **THEN** 进入评审队列，通过后入 skills 库（与权限审批流联动）
+
 ### Requirement: 溶解与回收
 系统 SHALL 检测退化的技能/SOP，评估后标记废弃或回收。
 
@@ -59,6 +63,7 @@
 - **GIVEN** 一个技能被判定长期失效
 - **WHEN** 溶解器运行
 - **THEN** 其有效片段回收为事实/经验，回写记忆层
+
 ### Requirement: 对比诊断
 系统 SHALL 把缺陷定位到单个插件级别，作为进化闭环的起点；SHALL 接受**可选的目标先验**
 （来自课程）作为**并列裁决**输入。
@@ -95,6 +100,7 @@
 - **WHEN** Diagnoser 运行诊断
 - **THEN** 报告 `failure_notes` 含该摘要（有界），而归因（`target_plugin` / `confidence`）
   与未接线时**一致**；**未接线**或查询抛错时该字段为空、诊断照常产出
+
 ### Requirement: 模块级提案
 系统 SHALL 针对诊断结果生成世代化产物（技能/插件补丁 + delta）。候选的 `kind` SHALL 由**诊断归因**
 驱动：`target_plugin` 属于**内部核心模块**（归因白名单）时 SHALL 产出 `kind="plugin"`，否则 SHALL
@@ -125,6 +131,7 @@
 - **GIVEN** 候选已生成
 - **WHEN** 发布前
 - **THEN** 交 Validator 验证，未过门不发布
+
 ### Requirement: 验证门
 
 系统 SHALL 对候选执行 review + 运行时测试，通过才允许发布。
@@ -230,6 +237,7 @@
 - **WHEN** 校验该候选
 - **THEN** `GateReport.passed=False`，review 表明空壳类理由，`test_results` 为空，且 SHALL NOT
   再跑运行时测试；同开关下带有效 `content` 的技能候选仍走既有 review + 运行时测试路径
+
 ### Requirement: 留出评测
 系统 SHALL 在留出集上评测候选，防止过拟合与退化。
 
@@ -267,6 +275,7 @@
 - **GIVEN** 一个候选，其 `target_plugin` **无**绑定基准（或基准无样本、或执行器未注册）
 - **WHEN** Evaluator 评测该候选
 - **THEN** `verdict="freeze"`、`passed=False`；候选**不发布**、**不**被记作退化、**不**触发回滚
+
 ### Requirement: 评测基建
 系统 SHALL 提供可落地的评测基建（基准集 + 评测运行器 + 指标对比基线），支撑验证门与留出评测的工程化执行。
 
@@ -346,6 +355,7 @@
 - **THEN** 会话级摘要与原条目归档照常进行，但 SHALL NOT 产出全局层派生条目（关键事实 /
   关系 / 情景归纳），SHALL NOT 交付 canonical 摘要提升 —— 用户会话的全局检索面不被基准
   内容污染
+
 ### Requirement: 任务质量评测
 系统 SHALL 对任意任务提供通用质量评测，从任务完成度、正确性、轨迹质量三个维度量化任务执行质量，复用评测基建（基准集 + 评测运行器 + 指标对比基线）工程化执行。
 
@@ -363,6 +373,7 @@
 - **GIVEN** 一个任务的完整执行轨迹
 - **WHEN** 评测运行器分析轨迹
 - **THEN** 产出轨迹质量指标（无效步骤、回退次数等），供诊断与优化
+
 ### Requirement: 架构级候选强制人工审批（HITL confirm gate）
 系统 SHALL 按风险域区分候选的确认路径：世代化候选 SHALL 携带 `risk_level`（`high` 为架构级——
 `kind="plugin"`，`low` 为技能库级——`kind="skill"`）。`risk_level="high"` 的候选 SHALL 强制走
@@ -421,6 +432,7 @@
 - **GIVEN** 一个 `status="pending"` 的候选（无论 `risk_level`）
 - **WHEN** 直接调用 `crystallize`
 - **THEN** 抛 `CANDIDATE_PENDING`，不产生 `accepted` 亦不产生 `published` 结局
+
 ### Requirement: 架构级候选的原生实施（可选）
 系统 SHALL 支持把架构级候选的 `accepted` 结局**可选地**推进为**已实施**：**仅当**
 `features.evolution_executor` 显式开启时，组合根 SHALL 装配**原生执行器**（`EvolutionExecutor`）；
@@ -524,6 +536,7 @@ SHALL NOT 落地**：
 - **WHEN** 后续进程查该候选
 - **THEN** 候选状态为 `implemented`、制品（补丁与门禁报告）仍可读——实施结论 SHALL NOT 只存在于
   一次性进程的标准输出
+
 ### Requirement: 观察期回归自动溶解（auto-dissolve）
 系统 SHALL 在**结晶发布后**为该产物开启**观察期窗口**（记录发布时评测基线分），并由调用方持续
 采样发布后的回归指标：观察样本数达下限**且**观察均分低于「基线 − 容差」时 SHALL **自动溶解**
@@ -597,6 +610,7 @@ SHALL NOT 落地**：
 - **GIVEN** 一个已开窗目标（基线分 0.9）
 - **WHEN** 连续上报若干样本
 - **THEN** 窗口基线恒为开窗时的 0.9，SHALL NOT 被在线样本均值改写
+
 ### Requirement: 自动课程（目标生成与调度）
 
 系统 SHALL 提供**课程**：从结构化信号生成**有界、有序**的迭代目标议程（agenda），作为进化冷路径
@@ -648,6 +662,7 @@ SHALL NOT 新增驱动面、SHALL NOT 常驻、SHALL NOT 给模型新增工具�
 - **GIVEN** 同一批 trace 与同一组已处理目标
 - **WHEN** 课程连续生成两次议程
 - **THEN** 两次结果逐项相同
+
 ### Requirement: 冷路径驱动（cold path driving）
 系统 SHALL 提供驱动**进化冷路径**的两个入口——①loop 收尾的维护节拍（注入冷路径回调时给出一次机会）
 与②CLI 显式入口 `evolve run`——二者 SHALL 调用 `EvolutionWorker.maybe_run`：**是否真正运行一轮
@@ -679,6 +694,7 @@ cycle 由 `EvolutionTrigger` 阈值门决定**（显式入口以 `force` 跳过�
 - **GIVEN** 本批 trace 的失败证据指向插件 B
 - **WHEN** 执行 `evolve run --goal A`
 - **THEN** 本轮目标为 A（不被证据改写），照常走提案 → 验证门 → 留出评测
+
 ### Requirement: 观察期窗口持久化（observation window persistence）
 系统 SHALL 支持把观察期窗口（基线分 / 观察样本 / 冻结截止）落盘为 JSON 并在启动时恢复；
 未注入路径时 SHALL 纯内存运行（零行为变化、不写盘）。
@@ -696,6 +712,7 @@ cycle 由 `EvolutionTrigger` 阈值门决定**（显式入口以 `force` 跳过�
 - **GIVEN** 注册表未注入路径
 - **WHEN** 开窗 / 采样 / 冻结
 - **THEN** 不产生任何落盘文件，行为与未持久化时一致
+
 ### Requirement: 人工确认队列的持久化与操作面
 系统 SHALL 让进化候选的人工确认队列**可跨进程驱动**：候选 SHALL 携带**稳定身份**（不依赖进程内对象标识），过门候选 SHALL 连同其验证门报告与留出评测报告**作为一条记录**落盘为 JSON 并在启动时恢复；未注入路径时 SHALL 纯内存运行（零行为变化、不写盘）。系统 SHALL 提供操作面以**列出**待确认候选、**确认放行**（确认后即发布结晶）与**拒绝**候选；对 `risk_level="high"` 的候选，操作面 SHALL 作为审批流的**签发端**构造目标一致的权限审批单并经人工批准后再调用 `confirm`。
 
@@ -757,6 +774,7 @@ cycle 由 `EvolutionTrigger` 阈值门决定**（显式入口以 `force` 跳过�
 - **WHEN** 新进程恢复该队列
 - **THEN** 候选按 `kind="plugin"`、`risk_level="high"`、非 `pending` 恢复，SHALL NOT 以低风险候选
   进入待确认快照或绕过架构级审批
+
 ### Requirement: 未过门教训写回
 
 系统 SHALL 在结晶面验证门未通过、候选被丢弃时，把教训写回记忆后端（兑现「验证门 /
@@ -800,6 +818,7 @@ cycle 由 `EvolutionTrigger` 阈值门决定**（显式入口以 `force` 跳过�
 - **GIVEN** 同一候选先因门禁拒绝写回 `gate_rejected*`，再经人工 `reject(reason=...)`
 - **WHEN** 查询记忆
 - **THEN** `evolution.gate_rejected*` 与 `evolution.rejected.<candidate_id>` 均可 get、互不覆盖
+
 ### Requirement: 技能候选内容生成
 
 系统 SHALL 为**技能级**候选提供可选的内容生成接缝：经组合根注入的 writer 工厂
@@ -858,6 +877,7 @@ cycle 由 `EvolutionTrigger` 阈值门决定**（显式入口以 `force` 跳过�
 - **GIVEN** 一个 `SkillContent`（或 dict）其 `instructions` 超过上界
 - **WHEN** 调用 `validate_skill_content`
 - **THEN** SHALL 返回 `False`（不信任未经 writer 的内容）
+
 ### Requirement: 进化写回与技能内容的密钥形态脱敏
 
 系统 SHALL 在进化侧把任何**自由文本**写入记忆后端或技能库之前，无条件执行 `redact_secrets`
@@ -885,3 +905,27 @@ cycle 由 `EvolutionTrigger` 阈值门决定**（显式入口以 `force` 跳过�
 - **GIVEN** 候选 `delta["content"]` 的 `description` / `preconditions` / `task_types` 含明文密钥形态子串
 - **WHEN** `crystallize` 写入技能库
 - **THEN** 技能对象中对应字段不含该明文（替换为 `<redacted>`），其余内容不变
+
+### Requirement: 架构级候选的结晶产物随结局返回
+
+`EvolutionEngine` 在架构级候选（`kind="plugin"`）的结晶分支调用记忆层钩子
+`Crystallizer.crystallize` 时 SHALL NOT 丢弃其返回值：产出 SHALL 随
+`EvolutionOutcome.artifact` 返回（该字段缺省为 `None`，对既有构造与结局零影响）。
+钩子调用 SHALL 以 `force=True` 进行——该分支此前已强制人工 `confirm`（高风险候选还须匹配的
+已批准审批单），属于「显式用户要求」豁免。结局 `status` SHALL 保持 `accepted`（「已批准、待人工
+实施」），SHALL NOT 因产物可见而改报 `published` 或改变 `crystallize` 的返回值语义。
+
+未装配记忆层结晶器时，`artifact` SHALL 为 `None`，其余结局字段逐字不变。产物随结局返回后，
+其落盘 / 交验证仍由调用方或独立操作面决定；引擎 SHALL NOT 自行把候选写入技能库或记忆。
+
+#### Scenario: 产物随 accepted 结局返回
+
+- **GIVEN** 一个已确认、过门、留出评测不退化、已装配记忆层结晶器的 `kind="plugin"` 候选
+- **WHEN** 调用 `crystallize`
+- **THEN** 结局 `status == "accepted"`，`artifact` 非空且其 `source_entry_id` 指向本次钩子输入条目
+
+#### Scenario: 未装配钩子时产物为空
+
+- **GIVEN** 同一候选但引擎未装配记忆层结晶器
+- **WHEN** 调用 `crystallize`
+- **THEN** 结局 `status == "accepted"`，`artifact is None`（其余字段不变）

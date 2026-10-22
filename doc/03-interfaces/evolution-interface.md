@@ -468,6 +468,9 @@ class CurriculumPlanner:
 - `implemented` = 架构级候选的**源文件补丁**经人工复核后**已永久落地**（`features.evolution_executor`
   开启时的第二阶段结局）。它与 `published` 的区别在**产物形态**：`published` 是 L3 技能库产物，
   `implemented` 是 `src/core/**` 源码补丁；`accepted` 的「未实施」诚实语义**不回退**为 `published`。
+- `artifact`（change `0305`）= 架构级候选结晶时记忆层钩子产出的 `PluginCandidate`（复用证据或
+  `force` 达标才非空）；只随结局返回，落盘 / 实施由调用方或独立操作面决定；未装配钩子 ⇒ `None`。
+  不改变 `accepted` 的「待人工实施」语义。
 - `frozen` = 留出评测**无法评测**（无绑定基准 / 无样本 / 无执行器 / 无基线）⇒ **不下发、不发布**；
   与 `rollback`（**已判退化**）语义分离 —— 「无法评测」SHALL NOT 被谎报为「退化」——change `0119`。
   组合根**暂未接**执行器映射 ⇒ 生产装配下候选恒 `frozen`（见 ADR-0112 已知局限①）。

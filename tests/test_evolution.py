@@ -418,7 +418,7 @@ class _SpyCrystallizer:
     def __init__(self) -> None:
         self.entries: list[MemoryEntry] = []
 
-    def crystallize(self, entry: MemoryEntry) -> None:
+    def crystallize(self, entry: MemoryEntry, *, force: bool = False) -> None:
         self.entries.append(entry)
 
 

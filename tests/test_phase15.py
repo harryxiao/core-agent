@@ -106,9 +106,9 @@ class _SpyCrystallizer(Crystallizer):
         super().__init__()
         self.crystallized: list[str] = []
 
-    def crystallize(self, skill_entry):
+    def crystallize(self, skill_entry, *, force=False):
         self.crystallized.append(skill_entry.id)
-        return super().crystallize(skill_entry)
+        return super().crystallize(skill_entry, force=force)
 
 
 class _PluginProposer(Proposer):

@@ -5174,3 +5174,18 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **反证 4/4**（`cp` 到 `/tmp`、复原后 `md5sum` 一致：`store.py` `47cf481c…`）：去近重复抑制 ⇒ TC-MEMDIV-04/05 红；去会话上限（`_MAX_PER_SESSION` 调大）⇒ TC-MEMDIV-01 红；把多样性挪到预算截断之后 ⇒ TC-MEMDIV-05 红（`unique` 被挤掉）；`matched_count` 改用返回数 ⇒ TC-MEMDIV-07 红。
 > **实测**：全量 pytest **3433 passed**（3425 + 8）；`openspec validate --all` 32/0（含本 active change）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0294 行。
+
+## 218. 结晶 / 溶解钩子可用性（TC-CRYST，change `0305`／ADR-0295，台账 E241）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-CRYST-01 | 复用不足不产出 | L3 技能 `reuse_count=2`，缺省调用 `crystallize` | 返回 `None`（`tests/test_memory_crystallizer.py::test_below_threshold_yields_no_candidate`） |
+| TC-CRYST-02 | 达到阈值产出 | `reuse_count=3` | 返回 `PluginCandidate`；`plugin_id="skill.<id>"`、`source_entry_id` 指向技能条目（`...::test_threshold_yields_candidate`） |
+| TC-CRYST-03 | 显式请求豁免 | `reuse_count=0` + `force=True` | 返回 `PluginCandidate`（`...::test_force_bypasses_threshold`） |
+| TC-CRYST-04 | 溶解教训可入库 | `dissolve("tools.file_write")` 后 `write("L3", lesson)` | `trace_id` 非空；写入返回该 id，`audit()` 可查到（`...::test_dissolve_lesson_is_writable`） |
+| TC-CRYST-05 | 引擎产物随结局返回 | 已确认、过门、留出评测 publish 的 plugin 候选，装配真 `Crystallizer` | `status == "accepted"`，`artifact` 非空且 `source_entry_id == "evolution.candidate.<generation>"`（合成条目复用 0 次，靠 `force` 豁免）（`...::test_plugin_candidate_artifact_is_returned`） |
+| TC-CRYST-06 | 未装配钩子产物为空 | 同一候选，`memory_crystallizer=None` | `status == "accepted"`，`artifact is None`（`...::test_plugin_candidate_without_crystallizer_has_no_artifact`） |
+
+> **反证 4/4**（`cp` 到 `/tmp`、复原后 `md5sum` 一致：`crystallizer.py` `64798710…`、`engine.py` `a1a51115…`）：去复用门 ⇒ TC-CRYST-01 红；去 `force` 豁免 ⇒ TC-CRYST-03/05 红；`dissolve` 仍用空 `trace_id` ⇒ TC-CRYST-04 红；引擎丢弃返回值 ⇒ TC-CRYST-05 红。
+> **实测**：全量 pytest **3439 passed**（3433 + 6）；`openspec validate --all` 32/0（含本 active change）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0295 行。

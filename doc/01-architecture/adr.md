@@ -11280,6 +11280,43 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 ⑤ 旧行每次读取都要现算哈希（无回填），大库首次读取有 O(候选) 哈希成本；⑥ 近重复跨来源
 生效，刻意保留的同文条目（如不同会话的同一句日志）会被合并。
 
+## ADR-0295：结晶 / 溶解钩子可用化（change 0305 / 台账 E241）
+
+**背景。** 对照 `ai-arch/docs/memory-sdd.md` v1.0 走查 **P1-7**：① `Crystallizer.crystallize()`
+不看 `reuse_count`，无条件产出插件候选 —— `doc/02-modules/memory.md` §3.3 声称「复用超过阈值 →
+提升为插件」的承诺无实现；② `EvolutionEngine._crystallize_plugin()` 调用钩子后丢弃返回值，
+`accepted` 结局不携带任何产物；③ `Crystallizer.dissolve()` 返回条目的 `trace_id=""`，被
+`MemoryStore.write()` 的「无行动不记忆」规则**必然拒收** —— 失败教训静默丢失。
+
+**决策**：
+
+- **D1 复用阈值 + 显式豁免。** `crystallize(skill_entry, *, force=False) -> PluginCandidate | None`：
+  `reuse_count >= CRYSTALLIZE_MIN_REUSE`（模块常量 **3**，对齐 SDD「技能晋级至少 3 次成功或 1 次
+  显式用户要求」）或 `force=True` 才产出，否则 `None`。**被拒**：配置键（当前无第二消费方，只会
+  制造未测试组合）；低于阈值抛异常（资格判定用 `None` 更易组合）。
+- **D2 引擎产物不丢弃。** `EvolutionOutcome` 新增 `artifact: PluginCandidate | None = None`；
+  `_crystallize_plugin()` 以 `force=True` 调用并把返回值挂到结局。`force` 的依据是该分支此前已强制
+  人工 `confirm`（高风险还须匹配的已批准审批单）⇒ 属「显式用户要求」，不是绕过门禁。`status`
+  仍 `accepted`，不谎报 `published`。**被拒**：给 `GenerationCandidate` 补 `reuse_count`（进化候选
+  无复用计数语义，硬造会造假证据）；由引擎把候选写入技能库/记忆（钩子契约是「交 L4 Validator」，
+  落盘属调用方）。
+- **D3 溶解教训可入库。** `Crystallizer.dissolve()` 的 `trace_id` 改为
+  `f"evolution.dissolve.{plugin_id}"`（非空、可审计）；条目 id / 层 / 标签 / 正文口径不变。
+  钩子保持纯函数，不自行写存储。**被拒**：给钩子注入 store（纯函数变有状态）；删除钩子
+  （`memory-interface` §4 仍是对外契约，应修可用性而非删面）。
+- **D4 不双写。** `EvolutionEngine.dissolve()` 已有自己的 L2 教训写回路径，本 change **不**把
+  记忆层溶解钩子接进去（双写会产生重复条目）；仅修正钩子自身的可写性，供直接调用方使用。
+
+**验证**：新增 `tests/test_memory_crystallizer.py` 6（阈值下 `None` / 阈值上产出 / `force` 豁免 /
+溶解可写 / 引擎产物返回 / 未装配钩子 `artifact is None`）；既有 `test_crystallize_dissolve` 按新
+契约补 `reuse_count=3`；两处 crystallizer 替身补 `force` 形参。反证（`cp` + `md5sum` 复原，`crystallizer.py`
+`64798710…`、`engine.py` `a1a51115…`）：去复用门 ⇒ 1 红；去 `force` 豁免 ⇒ 2 红；`dissolve` 空
+`trace_id` ⇒ 1 红；引擎丢弃产物 ⇒ 1 红。全量 **3439 passed**。
+
+**局限**：① 阈值 3 无配置开关；② `force` 的前提（确属显式要求 / 已批准）由调用方保证 —— 钩子
+无审批上下文、无法自证；③ 引擎合成条目 `reuse_count` 恒 0，产物只依赖 `force`，不复用真实技能
+条目的复用证据；④ 产物仍无消费方（无自动落盘/实施），本 change 只保证「不再静默丢弃」。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11569,3 +11606,4 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 | ADR-0292 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0293 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0294 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0295 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

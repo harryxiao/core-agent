@@ -507,13 +507,24 @@ CLI：``core-agent memory repair-keyfacts [--dry-run]``。
 ## 4. 结晶 / 溶解钩子
 
 ```python
+CRYSTALLIZE_MIN_REUSE = 3
+
 class Crystallizer:
-    def crystallize(self, skill_entry: MemoryEntry) -> PluginCandidate:
-        """把 L3 技能提升为插件候选（交 L4 Validator）。"""
+    def crystallize(self, skill_entry: MemoryEntry, *,
+                    force: bool = False) -> PluginCandidate | None:
+        """把 L3 技能提升为插件候选（交 L4 Validator）。
+
+        `reuse_count >= CRYSTALLIZE_MIN_REUSE` 或 `force=True` 才产出；
+        否则返回 `None`。`force` 只应由「显式用户要求 / 已获人工批准」路径使用。
+        """
 
     def dissolve(self, plugin_id: str) -> MemoryEntry:
-        """把失败插件降级为 L3 技能（保留教训）。"""
+        """把失败插件降级为 L3 技能（保留教训，`trace_id` 非空、可直接写入）。"""
 ```
+
+- 钩子为**纯函数**：不写 `MemoryStore`、不注册可逆效应；落盘与回滚由调用方负责。
+- `EvolutionEngine` 的架构级结晶分支以 `force=True` 调用（已过人工 `confirm`），产物随
+  `EvolutionOutcome.artifact` 返回（change `0305`）。
 
 ---
 
