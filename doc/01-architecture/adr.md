@@ -11095,6 +11095,51 @@ test-cases §213。
 的取舍，标题加粗/色彩仍提供结构线索）；④ 终端行高（Windows Terminal 默认 1.2）仍需终端侧
 设置。
 
+## ADR-0291：记忆落盘跨进程合并与遗忘检索隔离（change 0301 / 台账 E237）
+
+**背景。** 对照 `ai-arch/docs/memory-sdd.md` v1.0 走查确认两项 P0：
+
+1. **跨进程全量重写 ⇒ 静默丢记忆**：`FileBackend` 构造时只加载一次，之后每次写入都用进程内
+   快照整体重写 `memory.jsonl`；`read()` 命中即强化落盘、循环每轮都跑。TUI 长驻进程、`task` /
+   cron 短进程、`memory maintain` 共用同一文件 ⇒ 后写者覆盖先写者，无锁、无告警。
+2. **遗忘不生效**：`forget()` 只把低分条目迁 L4，而 `read()` 不按层过滤（L4 仅降权 0.08）、
+   `failure_lessons()` 亦层无关 ⇒ 被「遗忘」的内容仍从两个注入面进入提示词（SDD §5.6 / A7
+   要求 forget 后召回与索引不可见，墓碑保留供审计）。
+
+**决策**：
+
+- **D1 中性锁模块。** `exclusive_file_lock` / `try_exclusive_file_lock`（含平台实现）移入
+  `src/core/filelock.py`；`core/orchestration/state_files.py` re-export（调用方与测试零改动）。
+  memory（L2）不反向依赖编排层（L3.5），也避免 `orchestration.__init__ → background → memory`
+  的循环导入。
+- **D2 变更集合并。** `FileBackend._persist(changed, deleted)` 在锁内读盘 → 覆盖 `changed`
+  → 移除 `deleted` → 原子写 → 采纳盘上集合。基线是盘上最新集合而非启动快照 ⇒ 他进程写入不丢、
+  删除不复活；同 id 并发保持 last-writer-wins；「字节往返不变」以盘上顺序为基线继续成立。
+- **D3 fail-open。** 记忆写入发生在每轮收尾与检索，失败隔离优先（SDD §5.1 要求 5）：锁不可用
+  退化为无锁写，不把锁争用升级为丢记忆。锁文件 `.memory.jsonl.lock`（0600），不删除
+  （删除会让并发进程锁到不同 inode）。
+- **D4 遗忘 = `forgotten` 标签。** `forget()` 迁移同时追加标签，并记一条同 `forgetting.<id>` trace
+  的可逆效应（撤销先摘标签、再迁回 L2）；`read()` 在**排名与预算之前**排除（`include_forgotten`
+  显式回溯）、`failure_lessons()` 同排除；`audit()` / `session_chain()` 不过滤（墓碑语义）。
+  不改 `MemoryEntry` 字段、不改落盘形状、不改无标签 L4 的召回 ⇒ 「归档 ≠ 遗忘」保持。
+
+**被拒方案**：从 memory 函数级 import 编排锁（依赖方向反了）；复制锁代码（两套平台分支，
+单点真源漂移）；append-only journal（更贴 SDD §4.6，但需改写加载/压实/删除/去重语义，超出
+P0）；按 mtime/size 跳过重读（同纳秒同大小窗口仍覆盖）；新 `forgotten: bool` 字段（落盘形状
+变化，牵动字节往返断言）；把全部 L4 设为不可召回（会静默改变压实/闸门/软上限三条既有行为）。
+
+**验证**：`tests/test_memory_backend_durability.py` +4（跨实例合并 / 读取强化不覆盖 / 删除不
+复活 / 锁不可用仍可写）、新增 `tests/test_memory_forget_recall.py` 7（缺省不可召回 / 预算前
+排除 / `include_forgotten` / 审计可见 / 失败教训排除 / 回滚恢复 / 非遗忘归档仍可召回）。
+反证（`cp` + `md5sum` 复原）：旧快照落盘 ⇒ 合并 3 例红；去 `read()` 排除 ⇒ 遗忘 2 例红；
+去 `failure_lessons` 排除 ⇒ 教训 1 例红。全量 **3404 passed**；`validate --all` 31/0。
+
+**局限**：① fail-open 降级期间仍有覆盖窗口（与修复前等价，但非常态路径）；Windows
+`msvcrt.LK_LOCK` 有约 10s 上限，超时降级；② 同 id 并发写仍是 last-writer-wins（不合并字段级
+更新）；③ 0301 之前遗忘产生的 L4 条目无 `forgotten` 标签 ⇒ 不具遗忘语义、仍可召回，无法追溯；
+④ 每次落盘多一次全文件解析（与全量重写同阶）；⑤ 遗忘标签是条目字段级副作用，不清理备份文件
+/ 不重建索引（P2 面，另行立项）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11380,3 +11425,4 @@ test-cases §213。
 | ADR-0288 | 03-interfaces/ui-interface.md, 03-interfaces/loop-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0289 | 03-interfaces/ui-scheme.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0290 | 03-interfaces/ui-scheme.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0291 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -5096,3 +5096,25 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > `MarkdownH1` 回 `1 0 0 0` ⇒ TC-RHYTHM-04 红。
 > **实测**：全量 pytest **3393 passed**（3389 + 4）；`openspec validate --all` 结果见归档记录。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0290 行。
+
+## 214. 记忆落盘合并与遗忘隔离（TC-MEMDUR，change `0301`／ADR-0291，台账 E237）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-MEMDUR-01 | 跨实例写入合并 | 两个 `FileBackend` 同时打开同一文件，先后写入 `e0` / `e1` | 重载同时可见 `e0`、`e1`（快照覆盖则丢先写者）（`tests/test_memory_backend_durability.py::test_cross_instance_writes_merge`） |
+| TC-MEMDUR-02 | 读取强化不覆盖他进程写入 | 甲已加载，乙写入 `e1`，甲随后强化落盘 `e0` | `e0`（`reuse_count=1`）与 `e1` 均在（`...::test_reinforce_write_does_not_clobber_external_write`） |
+| TC-MEMDUR-03 | 删除只作用于目标 | 乙删除 `e0`，甲随后写入 `e2` | 重载为 `e1`、`e2`（`e0` 不复活）（`...::test_delete_only_removes_target`） |
+| TC-MEMDUR-04 | 锁不可用仍可写 | 锁路径被目录占用（`.memory.jsonl.lock`） | 写入照常完成、不抛错、条目在（fail-open）（`...::test_lock_unavailable_still_writes`） |
+| TC-MEMDUR-05 | 遗忘缺省不可召回 | 旧条目 `forget()` 后以缺省 `read()` 检索 | 不返回该条目（`tests/test_memory_forget_recall.py::test_forgotten_entry_not_recalled_by_default`） |
+| TC-MEMDUR-06 | 排除在预算之前 | 高分遗忘条目（超预算）+ 不命中查询的条目，`budget=100` | 只返回可召回条目（遗忘条目不占首条无条件名额）（`...::test_forgotten_entry_excluded_before_budget`） |
+| TC-MEMDUR-07 | `include_forgotten` 回溯 | `read(..., include_forgotten=True)` | 返回遗忘条目，`layer == "L4"` 且 `tags` 含 `forgotten`（`...::test_include_forgotten_returns_them`） |
+| TC-MEMDUR-08 | 审计面仍可见 | `forget()` 后 `audit()` | 条目在，层级 L4、标签含 `forgotten`（墓碑可追溯）（`...::test_audit_still_visible_after_forget`） |
+| TC-MEMDUR-09 | 失败教训排除遗忘 | `tags=["loop","failure"]` 条目被遗忘后 `failure_lessons("s1")` | 不返回；`audit()` 仍在（`...::test_failure_lessons_excludes_forgotten`） |
+| TC-MEMDUR-10 | 遗忘可回滚 | `tracker.rollback("forgetting.e0")` | 迁回 L2、标签移除、缺省 `read()` 重新返回（`...::test_rollback_forget_restores_recall`） |
+| TC-MEMDUR-11 | 非遗忘归档仍可召回 | 条目经 `migrate` 迁 L4（无标签）后缺省 `read()` | 仍返回（归档 ≠ 遗忘）（`...::test_non_forget_archived_entry_still_recalled`） |
+
+> **反证 3/3**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：`_persist` 回「内存快照覆盖」⇒
+> TC-MEMDUR-01/02/03 红；去 `read()` 的 `forgotten` 排除 ⇒ TC-MEMDUR-05/06 红；
+> 去 `failure_lessons()` 的排除 ⇒ TC-MEMDUR-09 红。
+> **实测**：全量 pytest **3404 passed**（3393 + 11）；`openspec validate --all` 结果见归档记录。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0291 行。

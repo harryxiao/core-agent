@@ -327,7 +327,7 @@ class MemoryStore:
     def check(self) -> bool:
         return True
 
-    def read(
+    def read(  # noqa: PLR0913 — 检索面扩展关键字（change 0301）
         self,
         query: str,
         budget: int = 4096,
@@ -335,6 +335,7 @@ class MemoryStore:
         exclude_source_prefixes: tuple[str, ...] = (),
         allow_source_prefixes: tuple[str, ...] = (),
         session_id: str = "",
+        include_forgotten: bool = False,
     ) -> list[MemoryEntry]:
         """检索相关记忆；``exclude_source_prefixes`` 命中的来源在**排名与预算之前**剔除
         （被排除项不吃预算、不被复用计数强化）。缺省空元组 ⇒ 检索语义与既往逐字一致。
@@ -346,6 +347,10 @@ class MemoryStore:
         ``session_id`` 非空时**只**返回归属该会话的条目 + **全局层**（未归属 ``""``）条目；
         会话过滤与来源排除同一位置（排名与预算之前），故被滤项同样不吃预算、不被强化。
         缺省空串 = 未归属调用者 ⇒ 不过滤（与既往语义逐字一致）。
+
+        ``include_forgotten``（change 0301）：缺省 **False** ⇒ 带 ``forgotten`` 标签的条目在
+        排名与预算之前剔除（遗忘 = 退出注入面，墓碑仍可经 ``audit()`` 追溯）；显式 True 为
+        回溯面，沿用既有排序与预算（归档 ≠ 遗忘：无标签的 L4 条目仍照常可召回）。
         """
         try:
             cold = self._backend.search(query)
@@ -367,6 +372,12 @@ class MemoryStore:
                 entry_id: entry
                 for entry_id, entry in candidates.items()
                 if entry.session_id in ("", session_id)
+            }
+        if not include_forgotten:
+            candidates = {
+                entry_id: entry
+                for entry_id, entry in candidates.items()
+                if "forgotten" not in entry.tags
             }
         values = list(candidates.values())
         # 批量语义相似（change 0290 / ADR-0280）：排序前按批向量化，query 至多一次；
@@ -628,6 +639,8 @@ class MemoryStore:
 
         **层无关**：失败条目会随遗忘迁 L4（``_PRESERVE_TAGS`` 只豁免**压实**、不豁免遗忘）——
         已归档者**仍须可读**，否则「教训已积累但被遗忘归档」的会话恰在最需要时看不见自己的教训。
+        **例外**（change 0301）：带 ``forgotten`` 标签者不返回 —— 遗忘优先于教训可见性，
+        其审计仍可经 ``audit()`` 追溯。
 
         次序：``ts`` **降序**（最近者在前）、**至多 ``limit`` 条** ⇒ 产物有界。
 
@@ -639,7 +652,9 @@ class MemoryStore:
         entries = [
             entry
             for entry in self._all_entries()
-            if "failure" in entry.tags and (not session_id or entry.session_id == session_id)
+            if "failure" in entry.tags
+            and "forgotten" not in entry.tags
+            and (not session_id or entry.session_id == session_id)
         ]
         entries.sort(key=lambda entry: entry.ts, reverse=True)
         return entries[:limit]
@@ -791,8 +806,10 @@ class MemoryStore:
         条目（``source ∈ {compaction, context}``）、L0（人格）与 L3（技能）不参与衰减；
         **派生事实类** semantic 条目（``source ∈ {extraction, relation}``）仅在构造开关
         ``semantic_forgetting`` 开启时参与（缺省关闭 ⇒ 与摘要类同不受影响）。
-        **不物理删除**（``audit`` 可见、检索降权）。返回被归档条目 id
-        （撤销句柄：``forgetting.<id>``）。
+        **不物理删除**（``audit`` 可见）。change `0301` 起，迁移的同时打 ``forgotten`` 标签 ⇒
+        条目退出**注入面**（``read()`` 与 ``failure_lessons()`` 缺省不返回；显式
+        ``read(include_forgotten=True)`` 与审计/诊断面仍可见）。返回被归档条目 id
+        （撤销句柄：``forgetting.<id>``；回滚移除标签并迁回原层）。
         """
         forgotten: list[MemoryId] = []
         for entry in self._all_entries():
@@ -800,9 +817,35 @@ class MemoryStore:
                 continue
             if _decay_score(entry) >= threshold:
                 continue
-            self.migrate(entry.id, "L2", "L4", trace_id=f"forgetting.{entry.id}")
+            trace_id = f"forgetting.{entry.id}"
+            if "forgotten" not in entry.tags:
+                entry.tags.append("forgotten")
+            self.migrate(entry.id, "L2", "L4", trace_id=trace_id)
+            # 标签与迁移同一 trace：逆序回滚 ⇒ 先摘标签、再迁回 L2（恢复可召回）。
+            self._tracker.record(
+                Effect(
+                    op="memory.forget",
+                    target=entry.id,
+                    undo=lambda entry_id=entry.id: self._undo_forget_tag(entry_id),
+                    reversible=True,
+                    coeffect=[],
+                    trace_id=trace_id,
+                    ts=time.time(),
+                )
+            )
             forgotten.append(entry.id)
         return forgotten
+
+    def _undo_forget_tag(self, entry_id: str) -> None:
+        """撤销 ``forgotten`` 标签（``forgetting.<id>`` 同一 trace，可逆效应）。"""
+        entry = self._backend.get("L4", entry_id)
+        if entry is None:
+            entry = self._backend.get("L2", entry_id) or self._hot.get(entry_id)
+        if entry is None or "forgotten" not in entry.tags:
+            return
+        entry.tags = [tag for tag in entry.tags if tag != "forgotten"]
+        self._backend.put(entry)
+        self._hot_put(entry)
 
     def _forgettable(self, entry: MemoryEntry) -> bool:
         """遗忘面判据（`forget` 与 L2 软上限共用，单点真源）。"""

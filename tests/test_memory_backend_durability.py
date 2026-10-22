@@ -148,3 +148,62 @@ def test_real_sigkill_then_reload(tmp_path) -> None:
         warnings.simplefilter("error")  # 任何告警都转为失败（原子 ⇒ 应无告警）
         reloaded = FileBackend(path)
     assert [e.id for e in reloaded.search("")] == ["e0", "e1"]
+
+
+# ---- ⑤ 跨进程合并（change 0301：变更集合并，不是快照覆盖） ----
+
+
+def test_cross_instance_writes_merge(tmp_path) -> None:
+    """两个实例（模拟两个进程）各自写入 → 重载同时可见两者（快照覆盖则丢先写者）。"""
+    path = tmp_path / "memory.jsonl"
+    first = FileBackend(path)
+    second = FileBackend(path)  # 与 first 同时打开：各自持有启动时空快照
+
+    first.put(_entry(0))
+    second.put(_entry(1))
+
+    reloaded = FileBackend(path)
+    assert sorted(e.id for e in reloaded.search("")) == ["e0", "e1"]
+
+
+def test_reinforce_write_does_not_clobber_external_write(tmp_path) -> None:
+    """甲读取强化落盘 → 乙期间写入的新条目不丢，且甲条目的 reuse_count 已更新。"""
+    path = tmp_path / "memory.jsonl"
+    first = FileBackend(path)
+    first.put(_entry(0))
+    reinforcing = FileBackend(path)  # 加载到 e0 后，乙再写 e1
+    FileBackend(path).put(_entry(1))
+
+    reinforced = MemoryEntry(
+        id="e0", layer="L2", content="内容0", tags=["t"], source="loop", trace_id="t", reuse_count=1
+    )
+    reinforcing.put(reinforced)  # 复用强化落盘
+
+    reloaded = {e.id: e for e in FileBackend(path).search("")}
+    assert sorted(reloaded) == ["e0", "e1"]
+    assert reloaded["e0"].reuse_count == 1
+
+
+def test_delete_only_removes_target(tmp_path) -> None:
+    """乙删除 e0 → 甲随后写 e2 不复活 e0，其余条目俱在。"""
+    path = tmp_path / "memory.jsonl"
+    first = FileBackend(path)
+    first.put(_entry(0))
+    first.put(_entry(1))
+    stale = FileBackend(path)  # 持有含 e0/e1 的快照
+
+    FileBackend(path).delete("e0")
+    stale.put(_entry(2))
+
+    assert sorted(e.id for e in FileBackend(path).search("")) == ["e1", "e2"]
+
+
+def test_lock_unavailable_still_writes(tmp_path) -> None:
+    """锁路径不可用（被目录占用）→ fail-open：写入照常完成，不抛错、不丢条目。"""
+    path = tmp_path / "memory.jsonl"
+    (tmp_path / ".memory.jsonl.lock").mkdir()  # 令锁文件无法打开
+
+    backend = FileBackend(path)
+    backend.put(_entry(0))
+
+    assert [e.id for e in FileBackend(path).search("")] == ["e0"]

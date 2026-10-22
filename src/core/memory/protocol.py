@@ -46,7 +46,7 @@ class MemoryStore(Protocol):
 
     plugin_id: str = "memory.store"
 
-    def read(
+    def read(  # noqa: PLR0913 — 检索面扩展关键字（change 0301）
         self,
         query: str,
         budget: int = 4096,
@@ -54,12 +54,14 @@ class MemoryStore(Protocol):
         exclude_source_prefixes: tuple[str, ...] = (),
         allow_source_prefixes: tuple[str, ...] = (),
         session_id: str = "",
+        include_forgotten: bool = False,
     ) -> list[MemoryEntry]:
         """检索相关记忆，返回按相关性排序的条目，总 token ≤ budget。
 
         ``exclude_source_prefixes`` 命中的 ``source`` 前缀在排名前剔除（缺省空 ⇒ 语义不变）；
         ``allow_source_prefixes`` 是排除面的**例外面**（同时命中两者 ⇒ 放行）。
         ``session_id`` 非空 ⇒ 只返回本会话条目 + 全局层（缺省空串 ⇒ 不过滤）。
+        ``include_forgotten`` 缺省 False ⇒ 带 ``forgotten`` 标签的条目在排名前剔除（change 0301）。
         """
         ...
 

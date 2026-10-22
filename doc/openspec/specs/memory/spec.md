@@ -505,23 +505,28 @@ L5 组合根注入；**缺省 UNWIRED**。注入后，写入路径 SHALL 先评�
 ### Requirement: 记忆遗忘（forgetting）
 
 系统 SHALL 按衰减评分（新鲜度 × 复用频次 × 重要度）识别低价值记忆并**归档**：评分低于阈值的
-**L2 episodic** 条目 SHALL 迁移到 L4 归档层（**不物理删除**、`audit` 可见、检索降权），且每条
-迁移 SHALL 记录可逆效应（按 trace 回滚即迁回原层）。**新鲜度衰减 SHALL 被复用信号延缓**：
+**L2 episodic** 条目 SHALL 迁移到 L4 归档层（**不物理删除**、`audit` 可见），且每条迁移 SHALL
+记录可逆效应（按 trace 回滚即迁回原层）；迁移的**同时** SHALL 为该条目标注 `forgotten` 标签
+（同一 trace 可回滚）。带 `forgotten` 标签的条目 SHALL **退出所有注入面**——事实检索
+（`read()`）与失败教训读面（`failure_lessons()`）缺省 SHALL NOT 返回；审计（`audit()`）与
+诊断（`session_chain()`）读面 SHALL 仍可见（墓碑语义：保留追溯、停止召回）；显式
+`read(include_forgotten=True)` SHALL 可查看。**新鲜度衰减 SHALL 被复用信号延缓**：
 条目的 freshness 衰减 SHALL 以 `freshness ** (1 / (1 + log1p(reuse_count)))` 调制——`reuse_count`
 为 0 时该调制 SHALL 退化为现状（零回归锚点），复用越多衰减越缓（检索命中反哺遗忘曲线）。
 **摘要类** semantic 条目（`source ∈ {compaction, context}`）、L0 元策略与 L3 技能 SHALL 不受遗忘
 影响。**派生事实类** semantic 条目（`source ∈ {extraction, relation}`）SHALL **仅在**开关
 `memory.semantic_forgetting` 显式开启时参与衰减归档——该开关缺省**关闭**，关闭时派生事实条目与
 摘要类条目**同**不受影响（逐字回归锚点）；开启时派生事实条目的归档判据、归档去向与可撤销性
-SHALL 与 episodic **同一**（同一衰减评分、同一阈值、同一 L4 归档、同一 `forgetting.<id>` 效应）。
-时间戳未知（`ts<=0`）的条目 SHALL 不被惩罚。遗忘 SHALL NOT 中断 Agent 主流程。遗忘 SHALL 由
-**维护节拍**驱动——循环收尾按维护间隔触发，或由显式维护入口一次性触发——而非仅依赖压实旁路；
-节拍只决定"何时跑"，不改上述判据、归档去向与可撤销性。
+SHALL 与 episodic **同一**（同一衰减评分、同一阈值、同一 L4 归档、同一 `forgotten` 标签、同一
+`forgetting.<id>` 效应）。时间戳未知（`ts<=0`）的条目 SHALL 不被惩罚。遗忘 SHALL NOT 中断
+Agent 主流程。遗忘 SHALL 由**维护节拍**驱动——循环收尾按维护间隔触发，或由显式维护入口一次性
+触发——而非仅依赖压实旁路；节拍只决定"何时跑"，不改上述判据、归档去向与可撤销性。
 
 #### Scenario: 低分条目归档
 - **GIVEN** 一条陈旧且从未复用的 L2 episodic 条目
 - **WHEN** 遗忘运行
-- **THEN** 该条目迁至 L4 归档层，`audit` 仍可见，且返回其撤销句柄
+- **THEN** 该条目迁至 L4 归档层、`tags` 含 `forgotten`，`audit` 仍可见，且返回其撤销句柄；
+  缺省 `read()` 不再返回该条目
 
 #### Scenario: 复用延缓新鲜度衰减
 - **GIVEN** 两条时间戳与 `importance` 相同的 L2 episodic 条目，其一 `reuse_count=3`、另一
@@ -552,16 +557,31 @@ SHALL 与 episodic **同一**（同一衰减评分、同一阈值、同一 L4 �
 - **THEN** 三者层级均不变（遗忘只作用于 L2 episodic 与——开关开启时的——派生事实语义条目）
 
 #### Scenario: 遗忘可撤销
-- **GIVEN** 某条目已被遗忘归档
+- **GIVEN** 某条目已被遗忘归档（带 `forgotten` 标签）
 - **WHEN** 按该条目的遗忘 trace 回滚效应
-- **THEN** 条目迁回 L2 原层
+- **THEN** 条目迁回 L2 原层、`forgotten` 标签被移除，且缺省 `read()` 重新返回该条目
+
+#### Scenario: 遗忘条目退出全部注入面
+- **GIVEN** 一条带 `failure` 标签的条目已被遗忘归档（同会话）
+- **WHEN** 以该会话执行事实检索与 `failure_lessons()`
+- **THEN** 两者均不返回该条目；`audit()` 仍返回它（墓碑可追溯）
+
+#### Scenario: 显式包含遗忘条目可见
+- **GIVEN** 一条已被遗忘归档的条目
+- **WHEN** 以 `read(..., include_forgotten=True)` 检索
+- **THEN** 该条目可被返回（显式回溯面），且其层级仍为 L4、标签仍含 `forgotten`
+
+#### Scenario: 非遗忘归档仍可召回
+- **GIVEN** 一条因**压实**迁至 L4 的条目（`tags` 不含 `forgotten`）
+- **WHEN** 以缺省 `read()` 检索命中它
+- **THEN** 该条目仍可被返回（归档 ≠ 遗忘；本能力的排除只认 `forgotten` 标签）
 
 #### Scenario: 开关开启时派生事实参与遗忘
 - **GIVEN** 开关 `memory.semantic_forgetting` 已开启，L2 存在陈旧且从未复用的
   `source="extraction"`（或 `source="relation"`）`kind="semantic"` 条目
 - **WHEN** 遗忘运行
-- **THEN** 该条目迁至 L4 归档层（判据与去向同 episodic），`audit` 仍可见，且返回其撤销句柄
-  `forgetting.<id>`
+- **THEN** 该条目迁至 L4 归档层（判据与去向同 episodic）、`tags` 含 `forgotten`，`audit` 仍
+  可见，且返回其撤销句柄 `forgetting.<id>`
 
 #### Scenario: 缺省关时派生事实不受影响
 - **GIVEN** 开关 `memory.semantic_forgetting` **缺省关闭**，L2 存在陈旧且从未复用的
@@ -967,10 +987,11 @@ SHALL NOT 抛异常。
 **（h）只读失败教训读面.** `MemoryStore.failure_lessons(session_id, *, limit=5) -> list[MemoryEntry]`
 SHALL 返回该会话的**失败条目**（`tags` 含 `failure`），按 `ts` **降序**（最近者在前）、
 **至多 `limit` 条**；`session_id` 缺省空串 ⇒ 不按会话过滤。该读面 SHALL **层无关** ——
-失败条目**已归档至 L4 者 SHALL 仍可读**（失败证据不因层级迁移而失联）。该调用 SHALL 为
-**零效应**：SHALL NOT 强化 `reuse_count`、SHALL NOT 产生任何写入效应 —— 故 SHALL NOT 经
-`read()`（后者会强化 `reuse_count` 并落盘）。该读面只供**注入**消费（渲染为推理提示块，见
-loop「执行循环」），SHALL NOT 变更任何条目字段。
+失败条目**已归档至 L4 者 SHALL 仍可读**（失败证据不因层级迁移而失联）；**例外**：带
+`forgotten` 标签（已遗忘）者 SHALL NOT 返回（遗忘优先于教训可见性，其审计仍可经 `audit()`）。
+该调用 SHALL 为**零效应**：SHALL NOT 强化 `reuse_count`、SHALL NOT 产生任何写入效应 —— 故
+SHALL NOT 经 `read()`（后者会强化 `reuse_count` 并落盘）。该读面只供**注入**消费（渲染为推理
+提示块，见 loop「执行循环」），SHALL NOT 变更任何条目字段。
 
 #### Scenario: 关闭时失败条目标签逐字不变
 
@@ -1022,6 +1043,12 @@ loop「执行循环」），SHALL NOT 变更任何条目字段。
 - **WHEN** 以其中一个会话调用 `failure_lessons(session_id, limit=2)`
 - **THEN** 只得到该会话的失败条目、按 `ts` 递减排列、至多 2 条，且已归档者也含于其中；
   调用前后各条目的 `reuse_count` **不变**、效应追踪器**无新增记录**
+
+#### Scenario: 已遗忘的失败条目不被教训读面返回
+
+- **GIVEN** 该会话的一条失败条目已被遗忘归档（`tags` 含 `forgotten`）
+- **WHEN** 调用 `failure_lessons(session_id)`
+- **THEN** 不返回该条目；`audit()` 仍可查得它（墓碑可追溯）
 
 #### Scenario: 启用教训块时失败条目退出事实面
 
@@ -1158,16 +1185,25 @@ SHALL NOT 另写第二份词表 —— 纯中文会话须能直接选词。
 - **THEN** 该关系（渲染为 `head --predicate--> tail`）**SHALL** 出现在事实面
 
 ### Requirement: 记忆后端落盘耐久（backend durability）
+
 系统 SHALL 保证文件记忆后端（`memory.jsonl`）的落盘耐久：持久化写入 SHALL 为**原子提交**
 （先写临时文件再原子替换——写入中途被中断 SHALL NOT 损坏或清空既有条目集合）；加载 SHALL
 对**逐行损坏容错**（半行/坏行 SHALL 被跳过并记录告警，SHALL NOT 阻断启动，完好行不受影响）。
 告警 SHALL 只报损坏行计数，SHALL NOT 回显条目内容。本要求为**缺陷修复**（既有行为：半写 ⇒
 下次启动 `build_runtime` 直接抛异常），故**缺省生效**、无开关。
 
+**跨进程合并**（change `0301`）：持久化 SHALL 在**独占建议锁**内先读取盘上最新集合，再按
+**本次变更集**（新增/覆盖的条目 id 与删除的 id）合并，SHALL NOT 用进程启动时的内存快照整体
+覆盖盘上文件；锁取不到（fail-open）SHALL 退化为无锁写入（SHALL NOT 让记忆写入成为新的失败面）。
+合并落盘后进程内集合 SHALL 采纳盘上最新集合（其他进程写入的条目对本进程可见）；删除 SHALL
+只移除指定 id，SHALL NOT 复活其他进程已删除的条目。本项同样**缺省生效**、无开关。
+
 - **原子性**：写入失败点若落在持久化路径上，既有条目集合 SHALL 保持完整（可重载、可续用）。
 - **逐行容错**：单行损坏 SHALL NOT 使整个后端不可用（与 durability「检查点损坏降级」同口径：
   不因单点损坏阻塞启动）。
 - **告警不回显**：损坏告警只含计数与文件名，SHALL NOT 含条目正文（条目可能含敏感内容）。
+- **跨进程不覆盖**：两个后端实例分别写入不同条目后，重载 SHALL 同时看到两者；任一实例的
+  读取强化写回 SHALL NOT 丢弃另一实例在期间写入的条目。
 
 #### Scenario: 半写不损坏既有条目
 - **GIVEN** 文件后端已持久化条目集合，且一次持久化写入在中途被中断（写到一半失败）
@@ -1188,6 +1224,26 @@ SHALL NOT 另写第二份词表 —— 纯中文会话须能直接选词。
 - **GIVEN** 一个进程在完成记忆写入后被 `SIGKILL` 终止
 - **WHEN** 另一进程重载同一落盘文件
 - **THEN** 已持久化条目全部可读，无告警（原子替换 ⇒ 无半写残留）
+
+#### Scenario: 跨实例写入合并
+- **GIVEN** 两个后端实例指向同一落盘文件（模拟两个进程），其一先写入条目 A
+- **WHEN** 另一实例写入条目 B 并重新加载
+- **THEN** A 与 B 同时存在于落盘集合中（后写者 SHALL NOT 用启动时快照覆盖先写者）
+
+#### Scenario: 读取强化不覆盖他进程写入
+- **GIVEN** 实例甲已加载集合，实例乙随后写入新条目 C
+- **WHEN** 实例甲经检索选中既有条目并触发复用强化落盘
+- **THEN** C 仍存在于落盘集合，且被强化条目的 `reuse_count` 已更新
+
+#### Scenario: 删除只作用于目标条目
+- **GIVEN** 实例乙删除了条目 A，实例甲随后写入条目 C
+- **WHEN** 两个实例分别重新加载
+- **THEN** A 保持删除、C 与其余条目均在（删除 SHALL NOT 被快照复活）
+
+#### Scenario: 锁不可用仍可写入
+- **GIVEN** 锁文件路径不可用（如被目录占用）
+- **WHEN** 后端持久化写入
+- **THEN** 写入照常完成（fail-open：无锁降级，SHALL NOT 抛错或丢弃条目）
 
 ### Requirement: 情景归纳（episodic consolidation）
 

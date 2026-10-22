@@ -18,6 +18,7 @@ class MemoryStore(Plugin):
         exclude_source_prefixes: tuple[str, ...] = (),
         allow_source_prefixes: tuple[str, ...] = (),
         session_id: str = "",
+        include_forgotten: bool = False,
     ) -> list[MemoryEntry]:
         """检索相关记忆，返回按相关性排序的条目，总 token ≤ budget。
 
@@ -34,6 +35,10 @@ class MemoryStore(Plugin):
         的未归属条目，含 L0 人格与文档化笔记层）；过滤与来源排除**同一位置**（排名与预算
         之前）⇒ 被滤项同样不吃预算、不被复用计数强化。缺省空串 = 未归属调用者 ⇒
         **不过滤**（fail-open，与既往逐字一致）。见 change 0114 / ADR-0107。
+
+        ``include_forgotten``（change 0301 / ADR-0291）：缺省 **False** ⇒ 带 ``forgotten`` 标签
+        的条目与上述过滤**同一位置**（排名与预算之前）剔除；显式 True 为回溯面（审计/诊断用），
+        沿用既有排序与预算。无标签的 L4 条目不受影响（归档 ≠ 遗忘）。
         """
 
     def write(self, layer: Layer, entry: MemoryEntry) -> MemoryId:
@@ -45,7 +50,13 @@ class MemoryStore(Plugin):
 
     def forget(self, *, threshold: float = 0.05) -> list[MemoryId]:
         """遗忘（见 §3）：衰减评分低于 threshold 的 L2 episodic 条目迁 L4 归档，
-        返回被归档条目 id（撤销句柄 forgetting.<id>）；不物理删除。"""
+        返回被归档条目 id（撤销句柄 forgetting.<id>）；不物理删除。
+        迁移同时打 forgotten 标签（change 0301）：read() 与 failure_lessons() 缺省不再返回
+        （audit() / session_chain() 仍可见）；同 trace 回滚即摘标签并迁回原层。"""
+
+    def failure_lessons(self, session_id: str = "", *, limit: int = 5) -> list[MemoryEntry]:
+        """按会话取失败条目（tags 含 failure），ts 降序、至多 limit 条；层无关（已归档仍可读），
+        但带 forgotten 标签者不返回；零效应（不强化 reuse_count、不产生写入效应）。"""
 
     def index(self) -> IndexEntry:
         """返回 L1 最小索引。"""
@@ -478,6 +489,12 @@ MVP 实现：`FileBackend`（`memory/*.md` + `memory/*.jsonl`）。`put_many` �
 （写同目录 tmp ＋ `os.replace` ⇒ 目标文件不出现半写/空文件）；`_load` **逐行容错**（坏行跳过、
 末尾汇总告警 `损坏 N 行`，**不收 `OSError`**、**不回显行内容**）。⇒ 半写崩溃从「启动直接抛异常」
 变为「跳过坏行继续启动」。这是**缺陷修复**（完好文件行为逐字不变），不是可关的新行为。
+
+**跨进程合并（change `0301`／ADR-0291，缺省生效）**：`put` / `put_many` / `delete` 只声明
+**本次变更集**；持久化在 `core.filelock.exclusive_file_lock` 内**先读盘、再合并变更、原子写**，
+落盘后进程内集合采纳盘上集合 ⇒ 多进程（TUI / `task` / cron / `memory maintain`）共写不再互相
+覆盖（同 id 保持 last-writer-wins，删除不复活）。锁为 fail-open：锁不可用即无锁写（记忆写入
+不得成为新失败面）。**不改变** JSONL 格式与上述原子/容错语义。
 
 ---
 
