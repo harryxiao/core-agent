@@ -1,6 +1,6 @@
 """预算管理（BudgetManager）。
 
-按优先级裁剪上下文至 token 预算内：宪章/未决事项/验收标准必保，低相关度
+按优先级裁剪上下文至 token 预算内：宪章/人格/未决事项/验收标准必保，低相关度
 事实/技能优先裁剪；连必保内容都超预算则抛 BUDGET_EXCEEDED。
 
 对应接口：doc/03-interfaces/context-interface.md §5
@@ -44,6 +44,7 @@ class BudgetManager:
     def _measure(self, pack: ContextPack) -> int:
         total = self._tokens(pack.task) + self._tokens(pack.stage)
         total += sum(self._tokens(str(c)) for c in pack.constitution)
+        total += sum(self._tokens(str(m)) for m in pack.personality)
         total += sum(self._tokens(str(p)) for p in pack.pending)
         total += sum(self._tokens(str(f)) for f in pack.facts)
         return total
@@ -51,6 +52,8 @@ class BudgetManager:
     def _mandatory_tokens(self, pack: ContextPack) -> int:
         total = self._tokens(pack.task) + self._tokens(pack.stage)
         total += sum(self._tokens(str(c)) for c in pack.constitution)
+        # 人格与宪法同档（change 0302）：稳定身份不得被事实裁剪挤掉。
+        total += sum(self._tokens(str(m)) for m in pack.personality)
         total += sum(self._tokens(str(p)) for p in pack.pending)
         return total
 

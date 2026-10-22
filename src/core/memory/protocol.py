@@ -55,6 +55,7 @@ class MemoryStore(Protocol):
         allow_source_prefixes: tuple[str, ...] = (),
         session_id: str = "",
         include_forgotten: bool = False,
+        layers: tuple[Layer, ...] = (),
     ) -> list[MemoryEntry]:
         """检索相关记忆，返回按相关性排序的条目，总 token ≤ budget。
 
@@ -62,6 +63,7 @@ class MemoryStore(Protocol):
         ``allow_source_prefixes`` 是排除面的**例外面**（同时命中两者 ⇒ 放行）。
         ``session_id`` 非空 ⇒ 只返回本会话条目 + 全局层（缺省空串 ⇒ 不过滤）。
         ``include_forgotten`` 缺省 False ⇒ 带 ``forgotten`` 标签的条目在排名前剔除（change 0301）。
+        ``layers`` 非空 ⇒ 只返回所列层，排名前剔除（缺省空 ⇒ 不施加层过滤；change 0302）。
         """
         ...
 

@@ -8,7 +8,10 @@
 
 from __future__ import annotations
 
-from core.memory import MemoryStore
+import time
+from typing import Any
+
+from core.memory import Layer, MemoryStore
 from core.tokens import TokenEstimator
 
 from .budget import BudgetManager
@@ -17,6 +20,13 @@ from .models import ContextPack
 
 # 单文档注入的指针上界（目录层须**薄**：全文不进窗口，见 context spec「信息地图」）
 _MAX_POINTERS_PER_DOC = 8
+
+# 事实面层白名单（change 0302）：L1（索引）/ L2（事实）才是「事实」；L0 走人格通道，
+# L3 演化候选与 L4 归档不得以事实名义争抢事实面预算。
+_FACT_LAYERS: tuple[Layer, ...] = ("L1", "L2")
+# L0 人格独立通道（change 0302）：不进事实面，独立块注入且计入预算必保项。
+_PERSONALITY_LAYERS: tuple[Layer, ...] = ("L0",)
+_UNKNOWN_DATE = "unknown"
 
 
 def _matches_any(value: str, prefixes: tuple[str, ...]) -> bool:
@@ -27,6 +37,11 @@ def _matches_any(value: str, prefixes: tuple[str, ...]) -> bool:
 def _shares_any_tag(tags: list[str], excluded: frozenset[str]) -> bool:
     """``tags`` 是否与 ``excluded`` 有交集（**标签**语义，整体相等比较、非前缀）。"""
     return any(tag in excluded for tag in tags)
+
+
+def _fact_date(ts: float) -> str:
+    """条目时间戳 → 注入面日期（change 0302）：本地日期；未记录（``ts<=0``）⇒ ``unknown``。"""
+    return time.strftime("%Y-%m-%d", time.localtime(ts)) if ts > 0 else _UNKNOWN_DATE
 
 
 class DynamicAssembler:
@@ -98,6 +113,7 @@ class DynamicAssembler:
             stage=stage,
             facts=project + self._gather_facts(task, budget, session_id),
             constitution=list(self._constitution),
+            personality=self._gather_personality(task, budget, session_id),
             pending=[],
             pointers=self._gather_pointers(task),
         )
@@ -137,10 +153,11 @@ class DynamicAssembler:
         return out
 
     def _gather_facts(self, query: str, budget: int, session_id: str = "") -> list[dict[str, str]]:
-        """以任务目标为检索 query 召回 L2 事实（stage 不参与检索，架构图 :117）。
+        """以任务目标为检索 query 召回事实（stage 不参与检索，架构图 :117）。
 
-        ``exclude_source_prefixes`` 为装配级配置（缺省空 ⇒ 不含排除）；``session_id`` 为调用方
-        会话标识（缺省空串 ⇒ 不过滤）。两者皆缺省时调用形态与既往逐字一致。
+        层白名单固定 `("L1","L2")`（change 0302）：L0 人格走独立通道，L3/L4 不冒充事实；
+        层过滤在 `read` 的排名与预算之前生效。`exclude_source_prefixes` 为装配级配置
+        （缺省空 ⇒ 不含排除）；`session_id` 为调用方会话标识（缺省空串 ⇒ 不过滤）。
 
         ``exclude_fact_sources``（change `0185` / ADR-0176）为**事实面排除面**：命中 `e.source`
         前缀的条目被挡在注入**步骤**（读**后**过滤）—— 与 `exclude_source_prefixes` 的分工：
@@ -157,16 +174,7 @@ class DynamicAssembler:
         """
         if self._memory is None:
             return []
-        if self._exclude_source_prefixes or session_id:
-            entries = self._memory.read(
-                query,
-                budget,
-                exclude_source_prefixes=self._exclude_source_prefixes,
-                allow_source_prefixes=self._allow_source_prefixes,
-                session_id=session_id,
-            )
-        else:
-            entries = self._memory.read(query, budget)  # 未启用排除 ⇒ 调用形态与既往逐字一致
+        entries = self._read_layers(query, budget, session_id, _FACT_LAYERS)
         if self._exclude_fact_sources or self._exclude_fact_tags:
             entries = [
                 e
@@ -174,4 +182,42 @@ class DynamicAssembler:
                 if not _matches_any(e.source, self._exclude_fact_sources)
                 and not _shares_any_tag(e.tags, self._exclude_fact_tags)
             ]
-        return [{"source": e.source, "content": e.content} for e in entries]
+        return [
+            {
+                "layer": e.layer,
+                "source": e.source,
+                "id": e.id,
+                "date": _fact_date(e.ts),
+                "content": e.content,
+            }
+            for e in entries
+        ]
+
+    def _gather_personality(self, query: str, budget: int, session_id: str = "") -> list[str]:
+        """读 L0 人格条目（change 0302）：独立通道，不进事实面。
+
+        沿用装配级来源排除 / 放行 / 会话参数；层过滤在 `read` 的排名与预算之前生效。
+        L0 为空 ⇒ 空列表 ⇒ 规划器不产块、提示词逐字不变。
+        """
+        if self._memory is None:
+            return []
+        entries = self._read_layers(query, budget, session_id, _PERSONALITY_LAYERS)
+        return [e.content for e in entries]
+
+    def _read_layers(
+        self,
+        query: str,
+        budget: int,
+        session_id: str,
+        layers: tuple[Layer, ...],
+    ) -> list[Any]:
+        """按层白名单读取（change 0302）：调用形态统一，层过滤先于排名/预算。"""
+        assert self._memory is not None  # 调用方已判空
+        return self._memory.read(
+            query,
+            budget,
+            exclude_source_prefixes=self._exclude_source_prefixes,
+            allow_source_prefixes=self._allow_source_prefixes,
+            session_id=session_id,
+            layers=layers,
+        )

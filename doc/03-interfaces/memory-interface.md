@@ -19,6 +19,7 @@ class MemoryStore(Plugin):
         allow_source_prefixes: tuple[str, ...] = (),
         session_id: str = "",
         include_forgotten: bool = False,
+        layers: tuple[Layer, ...] = (),
     ) -> list[MemoryEntry]:
         """检索相关记忆，返回按相关性排序的条目，总 token ≤ budget。
 
@@ -39,6 +40,11 @@ class MemoryStore(Plugin):
         ``include_forgotten``（change 0301 / ADR-0291）：缺省 **False** ⇒ 带 ``forgotten`` 标签
         的条目与上述过滤**同一位置**（排名与预算之前）剔除；显式 True 为回溯面（审计/诊断用），
         沿用既有排序与预算。无标签的 L4 条目不受影响（归档 ≠ 遗忘）。
+
+        ``layers``（change 0302 / ADR-0292）：层白名单（``L0``–``L4`` 子集），非空时只返回所列层，
+        过滤与上述条件**同一位置**（排名与预算之前）⇒ 被滤项不吃预算、不被复用强化；缺省空元组
+        ⇒ 不施加层过滤（检索语义与既往逐字一致）。装配器用它把事实面限定在 ``("L1","L2")``、
+        人格单独读 ``("L0",)``。
         """
 
     def write(self, layer: Layer, entry: MemoryEntry) -> MemoryId:

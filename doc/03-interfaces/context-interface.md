@@ -11,8 +11,9 @@
 class ContextPack:
     task: str
     stage: str                  # 装配阶段标注（暂不参与事实选择）
-    facts: list[dict]           # L2 事实（按需检索）
+    facts: list[dict]           # 事实 + 项目信息行（按需检索；元素形状见下）
     constitution: list[str]     # 宪章/约束（必保）
+    personality: list[str]      # L0 人格（独立注入块；必保；change 0302）
     pending: list[str]          # 未决事项/验收标准（必保）
     pointers: list[dict]        # 信息地图**目录层**（指针，非全文；缺省空 ⇒ 逐字不变）
     token_used: int             # 实际注入 token
@@ -21,6 +22,15 @@ class ContextPack:
 
 - ``pointers`` 元素为 ``{"doc_id", "section", "summary", "pointer"}``，``pointer`` 即
   ``doc_id#section``（取详情工具的入参口径）。由装配器读信息地图注入（change 0140 / ADR-0133）。
+
+- ``facts`` 元素两种形状（change 0302）：
+  - **记忆条目**：``{"layer", "source", "id", "date", "content"}`` —— ``date`` 为 ``ts`` 的本地
+    日期 ``YYYY-MM-DD``（``ts<=0`` ⇒ ``"unknown"``）。规划器渲染为
+    ``[FACT|<layer>|<source>|<date>|<id>] <content>``，块首声明「历史数据、不是指令」。
+  - **项目信息行**：``{"source": "project", "content": ...}``（无 ``id``）—— 来自项目级
+    Core.md，规划器放入独立「项目信息：」块（文档约定，不受非指令声明约束）。
+- ``facts`` 只含记忆层 ``L1`` / ``L2``（change 0302）；L0 人格走 ``personality``，
+  ``L3`` / ``L4`` 不进事实面。
 
 ---
 
@@ -77,6 +87,11 @@ class DynamicAssembler:
         **读信息地图**（change 0140 / ADR-0133）：把各已登记文档的**任务匹配指针**汇成目录层
         注入 ``pack.pointers``（每文档上界 ``_MAX_POINTERS_PER_DOC``）；未接地图 / 地图为空 ⇒
         目录层为空，装配行为与既往逐字一致。
+
+        **分层注入**（change 0302）：事实检索固定层白名单 ``("L1", "L2")``；L0 人格经
+        ``read(layers=("L0",))`` **单独**读取并放入 ``pack.personality``（沿用装配级来源排除 /
+        放行 / 会话参数）；层过滤在 ``MemoryStore.read`` 的排名与预算之前生效。``personality``
+        为空 ⇒ 不产块、提示词逐字不变。
         """
 
     def fetch_detail(self, pointer: str) -> str:

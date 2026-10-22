@@ -40,6 +40,9 @@ class ContextPack:
     stage: str
     facts: list[dict[str, str]] = field(default_factory=list[dict[str, str]])
     constitution: list[str] = field(default_factory=list[str])
+    # L0 人格（change 0302）：经独立层白名单读取 ⇒ 独立「人格」块注入，不再冒充事实；
+    # 计入预算必保项。缺省空 ⇒ 不产块、提示词逐字不变。
+    personality: list[str] = field(default_factory=list[str])
     pending: list[str] = field(default_factory=list[str])
     pointers: list[dict[str, str]] = field(default_factory=list[dict[str, str]])
     token_used: int = 0

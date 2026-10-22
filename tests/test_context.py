@@ -262,14 +262,25 @@ def test_assembler_recalls_facts_by_task() -> None:
         def __init__(self) -> None:
             self.queries: list[str] = []
 
-        def read(self, query: str, budget: int = 0) -> list[SimpleNamespace]:
+        def read(self, query: str, budget: int = 0, **kwargs: Any) -> list[SimpleNamespace]:
             self.queries.append(query)
-            return [SimpleNamespace(source="episodic", content=f"fact:{query}")]
+            if "L2" not in kwargs.get("layers", ("L2",)):
+                return []
+            return [
+                SimpleNamespace(
+                    id=f"fact:{query}",
+                    layer="L2",
+                    source="episodic",
+                    content=f"fact:{query}",
+                    tags=[],
+                    ts=1.0,
+                )
+            ]
 
     spy = _SpyMemory()
     assembler = DynamicAssembler(memory=spy)  # type: ignore[arg-type]
     pack = assembler.build("部署流水线", "reason", budget=1000)
-    assert spy.queries == ["部署流水线"], "应以任务为目标 query 检索，而非阶段名"
+    assert set(spy.queries) == {"部署流水线"}, "应以任务为目标 query 检索，而非阶段名"
     assert any(f["content"] == "fact:部署流水线" for f in pack.facts)
 
 
@@ -305,10 +316,17 @@ def _fact_spy() -> Any:
     """假 MemoryStore：返回两条压缩产物（`compaction`）+ 两条压缩派生物（`context`）。"""
 
     def _entry(entry_id: str, source: str, content: str) -> SimpleNamespace:
-        return SimpleNamespace(id=entry_id, source=source, content=content, tags=["compaction"])
+        return SimpleNamespace(
+            id=entry_id,
+            layer="L2",
+            source=source,
+            content=content,
+            tags=["compaction"],
+            ts=1.0,
+        )
 
     class _SpyMemory:
-        def read(self, query: str, budget: int = 0) -> list[SimpleNamespace]:
+        def read(self, query: str, budget: int = 0, **kwargs: Any) -> list[SimpleNamespace]:
             return [
                 _entry("compaction.summary.default", "compaction", "长期摘要"),
                 _entry("compaction.mid.default", "compaction", "中期摘要"),
@@ -393,10 +411,12 @@ def _steps_spy() -> Any:
     """假 MemoryStore：返原始步序（含 `steps` 标签）+ 轨迹 + 失败摘要（皆不含 `steps`）。"""
 
     def _entry(entry_id: str, source: str, tags: list[str], content: str) -> SimpleNamespace:
-        return SimpleNamespace(id=entry_id, source=source, tags=tags, content=content)
+        return SimpleNamespace(
+            id=entry_id, layer="L2", source=source, tags=tags, content=content, ts=1.0
+        )
 
     class _SpyMemory:
-        def read(self, query: str, budget: int = 0) -> list[SimpleNamespace]:
+        def read(self, query: str, budget: int = 0, **kwargs: Any) -> list[SimpleNamespace]:
             return [
                 _entry("loop.steps.t1", "loop", ["loop", "steps"], "原始步序"),
                 _entry("loop.t1", "loop", ["loop", "trajectory"], "轨迹"),
@@ -428,10 +448,12 @@ def test_fact_tag_exclusion_is_intersection_based() -> None:
     """**交集**语义：条目多标签**任一**命中即挡；空标签永不挡；排除面**字面**比较（非前缀）。"""
 
     def _entry(entry_id: str, tags: list[str]) -> SimpleNamespace:
-        return SimpleNamespace(id=entry_id, source="loop", tags=tags, content=entry_id)
+        return SimpleNamespace(
+            id=entry_id, layer="L2", source="loop", tags=tags, content=entry_id, ts=1.0
+        )
 
     class _SpyMemory:
-        def read(self, query: str, budget: int = 0) -> list[SimpleNamespace]:
+        def read(self, query: str, budget: int = 0, **kwargs: Any) -> list[SimpleNamespace]:
             return [
                 _entry("multi", ["loop", "steps", "extra"]),
                 _entry("no-tags", []),

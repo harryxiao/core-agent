@@ -154,15 +154,16 @@ class _RecordingStore:
         return []
 
 
-def test_assembler_forwards_session_id_only_when_present() -> None:
-    """装配器把会话标识透传至 L2 检索；空标识 ⇒ 调用形态与既往**逐字一致**（两参 read）。"""
+def test_assembler_forwards_session_id_and_layer_filter() -> None:
+    """装配器把会话标识透传至事实 / 人格检索；层白名单恒定（change 0302 起调用形态统一）。"""
     spy = _RecordingStore()
     assembler = DynamicAssembler(memory=cast("MemoryStore", spy))
     assembler.build("蓝图", stage="reason", budget=100, session_id="A")
     assembler.build("蓝图", stage="reason", budget=100)
 
     assert spy.reads[0]["session_id"] == "A"
-    assert "session_id" not in spy.reads[1]
+    assert [call["layers"] for call in spy.reads[:2]] == [("L1", "L2"), ("L0",)]
+    assert spy.reads[2]["session_id"] == ""
 
 
 def test_prompt_from_one_session_never_reaches_another(runtime) -> None:

@@ -336,6 +336,7 @@ class MemoryStore:
         allow_source_prefixes: tuple[str, ...] = (),
         session_id: str = "",
         include_forgotten: bool = False,
+        layers: tuple[Layer, ...] = (),
     ) -> list[MemoryEntry]:
         """检索相关记忆；``exclude_source_prefixes`` 命中的来源在**排名与预算之前**剔除
         （被排除项不吃预算、不被复用计数强化）。缺省空元组 ⇒ 检索语义与既往逐字一致。
@@ -351,6 +352,10 @@ class MemoryStore:
         ``include_forgotten``（change 0301）：缺省 **False** ⇒ 带 ``forgotten`` 标签的条目在
         排名与预算之前剔除（遗忘 = 退出注入面，墓碑仍可经 ``audit()`` 追溯）；显式 True 为
         回溯面，沿用既有排序与预算（归档 ≠ 遗忘：无标签的 L4 条目仍照常可召回）。
+
+        ``layers``（change 0302）：层白名单，非空时只保留所列层的条目，同样在**排名与预算
+        之前**剔除（被滤项不吃预算、不被复用强化）；缺省空元组 ⇒ 不施加层过滤，检索语义
+        与既往逐字一致。
         """
         try:
             cold = self._backend.search(query)
@@ -378,6 +383,10 @@ class MemoryStore:
                 entry_id: entry
                 for entry_id, entry in candidates.items()
                 if "forgotten" not in entry.tags
+            }
+        if layers:
+            candidates = {
+                entry_id: entry for entry_id, entry in candidates.items() if entry.layer in layers
             }
         values = list(candidates.values())
         # 批量语义相似（change 0290 / ADR-0280）：排序前按批向量化，query 至多一次；
