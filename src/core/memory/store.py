@@ -40,7 +40,15 @@ from .extract import (
     scrub_relation,
     slug_entity,
 )
-from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId, MemoryStatus
+from .protocol import (
+    IndexEntry,
+    Layer,
+    MemoryBackend,
+    MemoryEntry,
+    MemoryId,
+    MemoryStatus,
+    RecallResult,
+)
 from .relevance import batch_similarities, build_lexical_stats, rank, recency_decay
 from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter
 
@@ -48,6 +56,8 @@ from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter
 _VEC_CACHE_MAX = 4096
 # 词元缓存上界（change 0276 / ADR-0266）：1 万条目标的 2×，FIFO 淘汰；仅进程内存。
 _TOKEN_CACHE_MAX = 20_000
+# 同会话召回上限（change 0304 / ADR-0294）：session_id 非空时每会话最多 3 条；全局条目豁免。
+_MAX_PER_SESSION = 3
 
 # 写入侧热字典上界（超出按写入序逐出；change 0244）：后端 `_entries` 才是真源，读面不受影响
 _HOT_MAX = 512
@@ -349,6 +359,28 @@ class MemoryStore:
         include_forgotten: bool = False,
         layers: tuple[Layer, ...] = (),
     ) -> list[MemoryEntry]:
+        """检索相关记忆，返回按相关性排序的条目（``recall().entries`` 的兼容薄壳）。"""
+        return self.recall(
+            query,
+            budget,
+            exclude_source_prefixes=exclude_source_prefixes,
+            allow_source_prefixes=allow_source_prefixes,
+            session_id=session_id,
+            include_forgotten=include_forgotten,
+            layers=layers,
+        ).entries
+
+    def recall(  # noqa: PLR0913 — 检索面扩展关键字（change 0301）
+        self,
+        query: str,
+        budget: int = 4096,
+        *,
+        exclude_source_prefixes: tuple[str, ...] = (),
+        allow_source_prefixes: tuple[str, ...] = (),
+        session_id: str = "",
+        include_forgotten: bool = False,
+        layers: tuple[Layer, ...] = (),
+    ) -> RecallResult:
         """检索相关记忆；``exclude_source_prefixes`` 命中的来源在**排名与预算之前**剔除
         （被排除项不吃预算、不被复用计数强化）。缺省空元组 ⇒ 检索语义与既往逐字一致。
 
@@ -367,6 +399,10 @@ class MemoryStore:
         ``layers``（change 0302）：层白名单，非空时只保留所列层的条目，同样在**排名与预算
         之前**剔除（被滤项不吃预算、不被复用强化）；缺省空元组 ⇒ 不施加层过滤，检索语义
         与既往逐字一致。
+
+        多样性（change 0304）：排名之后、预算之前抑制近重复（``content_hash`` 相同只留排名
+        最高者；空正文豁免）并限制每会话最多 ``_MAX_PER_SESSION`` 条（全局条目不受限）。
+        返回 ``RecallResult`` 携带注入统计。
         """
         try:
             cold = self._backend.search(query)
@@ -423,9 +459,17 @@ class MemoryStore:
             ),
             reverse=True,
         )
-        selected = self._truncate(ranked, budget)
+        diverse, excluded_by_diversity = self._diversify(ranked, cap_sessions=not session_id)
+        selected, excluded_by_budget, minimum_budget = self._truncate_with_stats(diverse, budget)
         self._reinforce(selected)
-        return selected
+        return RecallResult(
+            entries=selected,
+            matched_count=len(ranked),
+            injected_count=len(selected),
+            excluded_by_budget=excluded_by_budget,
+            excluded_by_diversity=excluded_by_diversity,
+            minimum_budget=minimum_budget,
+        )
 
     def _reinforce(self, entries: list[MemoryEntry]) -> None:
         """复用即强化（**落盘**，change 0187 / ADR-0178）：自增 + 写回 + 记可撤销效应。
@@ -955,21 +999,63 @@ class MemoryStore:
         while len(self._token_cache) > _TOKEN_CACHE_MAX:
             self._token_cache.pop(next(iter(self._token_cache)))
 
+    def _diversify(
+        self, ranked: list[MemoryEntry], *, cap_sessions: bool = True
+    ) -> tuple[list[MemoryEntry], int]:
+        """排名后的多样性过滤（change 0304）：近重复抑制 + 每会话上限。
+
+        保持排名顺序、先到先得；返回（保留列表，剔除数）。空正文不参与近重复抑制
+        （否则所有空条目会被压成一条）；旧行 ``content_hash`` 为空时按同口径现算。
+        ``cap_sessions=False``（调用方已用 ``session_id`` 收窄到单会话）⇒ 不施加会话
+        上限：结果本就来自同一会话，施加上限只会截断该会话自身的事实面。
+        """
+        kept: list[MemoryEntry] = []
+        seen_hashes: set[str] = set()
+        session_counts: dict[str, int] = {}
+        excluded = 0
+        for entry in ranked:
+            if entry.content.strip():
+                digest = entry.content_hash or _content_hash(entry.content)
+                if digest in seen_hashes:
+                    excluded += 1
+                    continue
+                seen_hashes.add(digest)
+            if entry.session_id and cap_sessions:
+                used = session_counts.get(entry.session_id, 0)
+                if used >= _MAX_PER_SESSION:
+                    excluded += 1
+                    continue
+                session_counts[entry.session_id] = used + 1
+            kept.append(entry)
+        return kept, excluded
+
     def _truncate(self, entries: list[MemoryEntry], budget: int) -> list[MemoryEntry]:
-        """按相关度降序保留可容纳条目，**跳过**放不下的（不掐断后续）。
+        """按相关度降序保留可容纳条目，**跳过**放不下的（不掐断后续）。"""
+        return self._truncate_with_stats(entries, budget)[0]
+
+    def _truncate_with_stats(
+        self, entries: list[MemoryEntry], budget: int
+    ) -> tuple[list[MemoryEntry], int, int]:
+        """``_truncate`` 的统计版：返回（选中列表，预算剔除数，minimum_budget）。
 
         首条无条件保留（``selected and``），保证预算极小时至少返回最高相关的一条；
         其后超预算的条目只跳过自身，不阻塞更小的低相关条目。
+        ``minimum_budget`` 为第一条被跳过条目所需的「已用预算 + 自身成本」（无 ⇒ 0）。
         """
         selected: list[MemoryEntry] = []
         used = 0
+        excluded = 0
+        minimum_budget = 0
         for entry in entries:
             cost = self._estimator.estimate(entry.content)
             if selected and used + cost > budget:
+                excluded += 1
+                if minimum_budget == 0:
+                    minimum_budget = used + cost
                 continue
             selected.append(entry)
             used += cost
-        return selected
+        return selected, excluded, minimum_budget
 
     def _summarize_sessions(self, session_id: str = "", *, deadline: float | None = None) -> None:
         """按会话聚合 episodic 条目 → 打分写回 + 价值门控 → 提炼摘要 → 归档原条目。

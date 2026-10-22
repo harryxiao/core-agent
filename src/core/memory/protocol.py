@@ -48,6 +48,22 @@ class IndexEntry:
     entries: list[tuple[str, Layer]]
 
 
+@dataclass
+class RecallResult:
+    """一次检索的结果与注入统计（change 0304 / ADR-0294）。
+
+    不变式：``matched_count == injected_count + excluded_by_diversity + excluded_by_budget``。
+    ``minimum_budget`` 为再注入第一条被预算跳过条目所需的最小预算（无预算剔除 ⇒ 0）。
+    """
+
+    entries: list[MemoryEntry]
+    matched_count: int = 0
+    injected_count: int = 0
+    excluded_by_budget: int = 0
+    excluded_by_diversity: int = 0
+    minimum_budget: int = 0
+
+
 class MemoryStore(Protocol):
     """记忆存储接口（可插拔后端，MVP 为 FileBackend）。"""
 
@@ -72,6 +88,24 @@ class MemoryStore(Protocol):
         ``include_forgotten`` 缺省 False ⇒ 带 ``forgotten`` 标签的条目在排名前剔除（change 0301）。
         ``layers`` 非空 ⇒ 只返回所列层，排名前剔除（缺省空 ⇒ 不施加层过滤；change 0302）。
         缺省只返回 ``status="active"`` 的条目（被取代版本仅在 ``audit()`` 可见；change 0303）。
+        """
+        ...
+
+    def recall(  # noqa: PLR0913 — 与 read() 同参数
+        self,
+        query: str,
+        budget: int = 4096,
+        *,
+        exclude_source_prefixes: tuple[str, ...] = (),
+        allow_source_prefixes: tuple[str, ...] = (),
+        session_id: str = "",
+        include_forgotten: bool = False,
+        layers: tuple[Layer, ...] = (),
+    ) -> RecallResult:
+        """检索相关记忆并返回注入统计（change 0304）；``read()`` == ``recall().entries``。
+
+        检索管线在排名之后、预算之前施加多样性过滤（近重复抑制 + 每会话最多 3 条），
+        被滤条目不吃预算、不被复用强化。
         """
         ...
 

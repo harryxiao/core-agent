@@ -100,7 +100,8 @@ def test_marked_failure_still_reaches_the_fact_face() -> None:
         failed=True,
     )
     assembler = DynamicAssembler(memory=store, exclude_fact_tags=frozenset({"steps"}))
-    contents = [fact["content"] for fact in assembler.build("t", "reason", budget=4096).facts]
+    pack = assembler.build("t", "reason", budget=4096, session_id="s1")
+    contents = [fact["content"] for fact in pack.facts]
     assert sum("失败：" in content for content in contents) == _ROUNDS, "两条失败条目仍须在事实面"
     # 对照：**纯步序**条目（内容恰为步序）仍被 `steps` 标签挡在事实面外。
     # 注意失败摘要**自身内嵌**步序文本 ⇒ 只能按**整条相等**判定，不能按子串。

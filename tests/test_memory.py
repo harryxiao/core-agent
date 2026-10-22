@@ -537,10 +537,10 @@ def test_compact_summary_outranks_archived_originals() -> None:
     """归档原文仍可检索，但 L2 摘要优先级更高（L2 0.6 > L4 0.2）。"""
 
     def summarizer(entries: list[MemoryEntry]) -> str:
-        return "事实"
+        return "事实小结"
 
     store = MemoryStore(summarizer=summarizer)
-    store.write("L2", _session_entry("e0", "事实", "s1"))
+    store.write("L2", _session_entry("e0", "事实原文", "s1"))
 
     store.compact()
 
@@ -1328,7 +1328,7 @@ def test_reuse_writeback_batches_into_one_persist() -> None:
     backend = _BatchCountingBackend()
     store = MemoryStore(backend=backend)  # type: ignore[arg-type]
     for i in range(3):
-        store.write("L2", _entry(f"e{i}", "L2", "alpha beta"))
+        store.write("L2", _entry(f"e{i}", "L2", f"alpha beta {i}"))
     backend.puts.clear()
 
     store.read("alpha", budget=1000)

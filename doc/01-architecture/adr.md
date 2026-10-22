@@ -11234,6 +11234,52 @@ L4 不吃预算 / 人格独立且不进 facts / 人格必保 / 溯源格式 / `u
 摘要 / 情景链不参与版本链；⑦ `read()` 无 `include_superseded` 开关，旧值只能经 `audit()` /
 CLI 回溯；⑧ 同值判定忽略首尾空白（`"A"` 与 `" A "` 视为同值，属预期）。
 
+## ADR-0294：召回多样性与注入统计（change 0304 / 台账 E240）
+
+**背景。** 对照 `ai-arch/docs/memory-sdd.md` v1.0 §6.4 / A8：① 召回无多样性控制 —— `read()`
+排序后直接按预算截断，同一会话的条目可无限霸榜，内容完全相同的条目各占一份预算（`0303`
+已落地 `content_hash`，具备近重复判据）；② 调用方拿不到注入统计 —— 返回值只有条目列表，
+无法知道候选多少、被预算裁掉多少、再多注入一条需要多少预算。
+
+**决策**：
+
+- **D1 结果对象 + 兼容薄壳。** 新增 `MemoryStore.recall(...) -> RecallResult`（同参数）；
+  `read()` 签名与返回类型不变，实现为 `recall(...).entries`。**被拒**：给 `read()` 加
+  `with_stats=True`（返回类型随开关漂移）；把统计塞进条目字段（调用方信息污染数据）。
+- **D2 多样性在排名之后、预算之前。** 管线：硬过滤 → 排名 → 多样性 → 预算 → 强化。被剔条目
+  不吃预算、不被 `_reinforce` 强化，排名顺序不变（不为凑配额重排）。**被拒**：排名前按 kind
+  分桶（改变相关性主序）；截断后再去重（重复项先吃预算、挤掉后续小条目）。
+- **D3 近重复按 `content_hash` 完全同文。** 跨层 / 跨来源生效；空正文（`strip()` 为空）豁免，
+  否则所有空条目会被压成一条；旧行哈希为空时按同口径现算（不回填）。**被拒**：语义近重复
+  （需 embedding 阈值与标注，另立议题）；同前缀 / 编辑距离（成本高、误杀风险大）。
+- **D4 每会话最多 3 条，收窄豁免。** `_MAX_PER_SESSION = 3`（模块常量，无配置键）；全局条目
+  `session_id == ""` 豁免。**关键交互**：调用方已用检索参数 `session_id` 收窄到单会话时不施加
+  上限 —— 结果本就来自同一会话，施加上限只会截断该会话自身的事实面（`test_loop_causal_link`
+  暴露：装配器按会话读事实时若仍限 3 条，会让早期失败条目消失）。近重复抑制不受此豁免影响。
+- **D5 统计口径与不变式。** `matched_count` = 进入排名的候选数；`injected_count` = 返回数；
+  `excluded_by_diversity` / `excluded_by_budget` = 两类剔除数；不变式
+  `matched_count == injected_count + excluded_by_diversity + excluded_by_budget`。
+  `minimum_budget` = 第一条被预算跳过条目所需的「已用 + 自身成本」（无 ⇒ 0），供调用方判断
+  扩容收益。`_truncate` 签名与语义不变，新增内部 `_truncate_with_stats()` 承载统计。
+
+**被拒方案**：kind 配额（semantic/procedural/episodic 0.4/0.4/0.2 —— 本仓无 procedural，
+L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` 是粗粒度管道标签，关键事实
+全为 `extraction`，按它限流会饿死关键事实）；召回条数上限 8 / 硬上限 20（token 预算已是唯一
+上界，叠加条数上限只会双重裁剪）；`why` / confidence / feedback（P2 范围）。
+
+**验证**：新增 `tests/test_memory_recall_diversity.py` 8（同会话上限 / 收窄豁免 / 全局豁免 /
+近重复 / 剔除项不占预算 / 空正文豁免 / 统计不变式与 `minimum_budget` / `read` 兼容）；既有
+检索测试按新语义复核（三处同文 fixture 改为互异正文；`test_loop_causal_link` 补传 `session_id`
+以覆盖收窄豁免）。反证（`cp` + `md5sum` 复原）：去近重复 ⇒ 2 红；去会话上限 ⇒ 1 红；多样性挪到
+预算后 ⇒ 1 红；`matched_count` 硬编码为返回数 ⇒ 1 红。全量 **3433 passed**。
+
+**局限**：① 只做完全同文级近重复，语义重复仍占预算；② 会话上限为固定常量，且在生产主路径
+（装配器按会话读取）因收窄豁免基本不触发，只对未归属 / 跨会话检索生效；③ 重排后的
+`matched_count` 不含硬过滤剔除项（来源 / 会话 / 遗忘 / 层 / status），调用方无法从统计得知
+被硬过滤多少；④ `minimum_budget` 只看**第一条**被预算跳过者，后续更小条目可能以更少预算入选；
+⑤ 旧行每次读取都要现算哈希（无回填），大库首次读取有 O(候选) 哈希成本；⑥ 近重复跨来源
+生效，刻意保留的同文条目（如不同会话的同一句日志）会被合并。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11522,3 +11568,4 @@ CLI 回溯；⑧ 同值判定忽略首尾空白（`"A"` 与 `" A "` 视为同值
 | ADR-0291 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0292 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/context-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0293 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0294 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

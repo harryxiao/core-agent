@@ -5157,3 +5157,20 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **反证 4/4**（`cp` 到 `/tmp`、复原后 `md5sum` 一致：`store.py` `cc51563c…`）：去掉 `read()` 的 `status` 过滤 ⇒ TC-MEMVER-04 红；去掉 `_supersede()` 调用 ⇒ TC-MEMVER-03/04 红；去掉同值判定（一律升版）⇒ TC-MEMVER-06/10 红；把状态过滤挪到 `_truncate` 之后 ⇒ TC-MEMVER-04 红（紧预算下旧版挤掉链头）。
 > **实测**：全量 pytest **3425 passed**（3415 + 10）；`openspec validate --all` 32/0（含本 active change）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0293 行。
+
+## 217. 召回多样性与注入统计（TC-MEMDIV，change `0304`／ADR-0294，台账 E240）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-MEMDIV-01 | 同会话最多三条 | 4 条 `s1` + 1 条 `s2` 命中，缺省参数检索 | `s1` 仅返回排名前 3 条；`s2` 条目不受影响；`excluded_by_diversity == 1`（`tests/test_memory_recall_diversity.py::test_same_session_is_capped_at_three`） |
+| TC-MEMDIV-02 | 会话收窄豁免 | 同一 `s1` 的 4 条命中，`recall(session_id="s1")` | 4 条全部返回，`excluded_by_diversity == 0`（上限只在跨会话混合结果中生效）（`...::test_scoped_session_recall_is_not_session_capped`） |
+| TC-MEMDIV-03 | 全局条目豁免 | 5 条 `session_id=""` 命中 | 5 条全部返回，`excluded_by_diversity == 0`（`...::test_global_entries_are_not_session_capped`） |
+| TC-MEMDIV-04 | 近重复只留最高分 | 两条同文（仅首尾空白不同）+ 一条独有 | 同文只留 `dup-high`；`excluded_by_diversity == 1`（`...::test_near_duplicate_keeps_best_ranked_only`） |
+| TC-MEMDIV-05 | 剔除项不占预算 | 两条同文长正文 + 一条短正文，预算恰容两条长正文 | 返回 `dup-high` + `unique`；`excluded_by_diversity == 1`、`excluded_by_budget == 0`（多样性在预算前）（`...::test_diversity_exclusions_do_not_consume_budget`） |
+| TC-MEMDIV-06 | 空正文不合并 | 两条空正文（含纯空白）+ 一条有内容 | 三条均返回（空正文豁免近重复）（`...::test_empty_content_is_not_deduplicated`） |
+| TC-MEMDIV-07 | 统计不变式与 `minimum_budget` | 三条长正文、`budget=10` | `matched == injected + diversity + budget`；`excluded_by_budget == 2`；以 `minimum_budget` 重查至少注入 2 条（`...::test_stats_invariant_and_minimum_budget`） |
+| TC-MEMDIV-08 | `read` 兼容 | 任意参数分别调用 `read()` / `recall()` | `read()` 与 `recall().entries` 逐条同序（`...::test_read_delegates_to_recall_entries`） |
+
+> **反证 4/4**（`cp` 到 `/tmp`、复原后 `md5sum` 一致：`store.py` `47cf481c…`）：去近重复抑制 ⇒ TC-MEMDIV-04/05 红；去会话上限（`_MAX_PER_SESSION` 调大）⇒ TC-MEMDIV-01 红；把多样性挪到预算截断之后 ⇒ TC-MEMDIV-05 红（`unique` 被挤掉）；`matched_count` 改用返回数 ⇒ TC-MEMDIV-07 红。
+> **实测**：全量 pytest **3433 passed**（3425 + 8）；`openspec validate --all` 32/0（含本 active change）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0294 行。

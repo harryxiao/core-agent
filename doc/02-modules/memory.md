@@ -555,6 +555,28 @@ MemoryStore
 **代价 / 局限**：版本链无保留期上限（压实越频繁、取值越常变，L2 增长越多，清理依赖
 `audit()` / 人工）；链头判定每次写关键事实都扫描全部条目（`_all_entries()`，O(N)）。
 
+### 3.19 召回多样性与注入统计（change `0304`／ADR-0294／台账 E240）
+
+**管线位置**：候选 → 既有硬过滤（来源 / 会话 / 遗忘 / 层 / `status`）→ 排名 → **多样性** →
+预算截断 → 复用强化。被多样性剔除的条目**不吃预算**、不被 `_reinforce` 强化，排名顺序不变。
+
+| 过滤 | 判据 | 豁免 |
+|---|---|---|
+| 近重复抑制 | `content_hash` 相同 ⇒ 只留排名最高一条（跨层 / 跨来源生效） | `content.strip()` 为空的条目不参与（否则空正文会压成一条）；旧行哈希为空时按同口径现算 |
+| 同会话上限 | `session_id` 非空的条目每会话最多 `_MAX_PER_SESSION = 3` 条 | `session_id == ""` 的全局条目；调用方已用检索参数 `session_id` 收窄到单会话时（结果本就来自同一会话，施加上限只会截断该会话自身事实面） |
+
+**API**：`recall(...) -> RecallResult`（与 `read()` 同参数）；`read()` 签名与返回类型不变
+（`recall(...).entries` 的兼容薄壳）。统计字段：
+
+- `matched_count`：通过既有硬过滤、进入排名的候选数；
+- `injected_count`：最终返回条目数；
+- `excluded_by_diversity` / `excluded_by_budget`：多样性 / 预算剔除数；
+- 不变式：`matched_count == injected_count + excluded_by_diversity + excluded_by_budget`；
+- `minimum_budget`：再注入第一条被预算跳过条目所需的最小预算（无预算剔除 ⇒ 0）。
+
+**代价 / 局限**：近重复是**完全同文**级（不做 embedding 语义近重复）；会话上限为模块常量、
+无配置键；kind 配额与 `source` 级上限不做（本仓字段语义不匹配，见 proposal Non-goals）。
+
 ---
 
 ## 4. 记忆写入规范（"无行动不记忆"的落地）

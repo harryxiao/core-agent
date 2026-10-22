@@ -15,11 +15,13 @@ from core.memory.relevance import rank, relevance
 _CONTENT = "共同 内容"
 
 
-def _entry(entry_id: str, tags: list[str], layer: Layer = "L2") -> MemoryEntry:
+def _entry(
+    entry_id: str, tags: list[str], layer: Layer = "L2", content: str = _CONTENT
+) -> MemoryEntry:
     return MemoryEntry(
         id=entry_id,
         layer=layer,
-        content=_CONTENT,
+        content=content,
         tags=tags,
         source="tier",
         trace_id="t",
@@ -57,12 +59,12 @@ def test_same_tier_keeps_layer_priority() -> None:
 
 
 def test_store_read_orders_by_tier() -> None:
-    """端到端：三条同内容条目按 高 → 默认 → 低 返回。"""
+    """端到端：三条等价条目按 高 → 默认 → 低 返回（正文互异，避免 0304 近重复抑制）。"""
     store = MemoryStore()
     for entry in (
-        _entry("low", ["transcript"]),
-        _entry("default", ["bench"]),
-        _entry("high", ["decision"]),
+        _entry("low", ["transcript"], content=f"{_CONTENT} 甲"),
+        _entry("default", ["bench"], content=f"{_CONTENT} 乙"),
+        _entry("high", ["decision"], content=f"{_CONTENT} 丙"),
     ):
         store.write(entry.layer, entry)
 

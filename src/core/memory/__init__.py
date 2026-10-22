@@ -43,7 +43,7 @@ from .extract import (
     slug_entity,
 )
 from .importance import build_score_prompt, score_with
-from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId
+from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId, RecallResult
 from .relevance import rank, recency_decay, relevance
 from .store import ChainNode, ImportanceScorer, MemoryStore, RepairReport
 from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter, build_prompt, summarize_with
@@ -73,6 +73,7 @@ __all__ = [
     "MemoryStore",
     "PluginCandidate",
     "REDACTED",
+    "RecallResult",
     "ChainNode",
     "RepairReport",
     "Summarizer",

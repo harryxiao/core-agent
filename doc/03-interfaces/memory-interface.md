@@ -49,6 +49,29 @@ class MemoryStore(Plugin):
         ``status``（change 0303 / ADR-0293）：缺省只返回 ``status="active"`` 的条目；被取代
         （``superseded``）的旧版本与上述过滤**同一位置**（排名与预算之前）剔除 ⇒ 不吃预算、
         不被复用强化。无 ``include_superseded`` 开关 —— 历史回溯走 ``audit()``。
+
+        ``diversity``（change 0304 / ADR-0294）：排名之后、预算之前抑制近重复（``content_hash``
+        相同只留排名最高一条，空正文豁免）并限制每会话最多 3 条（全局条目与已按 ``session_id``
+        收窄的调用豁免）；被剔条目不占预算、不被复用强化。统计走 ``recall()``。
+        """
+
+    def recall(
+        self,
+        query: str,
+        budget: int = 4096,
+        *,
+        exclude_source_prefixes: tuple[str, ...] = (),
+        allow_source_prefixes: tuple[str, ...] = (),
+        session_id: str = "",
+        include_forgotten: bool = False,
+        layers: tuple[Layer, ...] = (),
+    ) -> RecallResult:
+        """与 ``read()`` 同参数的检索，额外返回注入统计（change 0304 / ADR-0294）。
+
+        管线：硬过滤 → 排名 → 多样性（近重复抑制 + 每会话上限 3，收窄会话豁免）→ 预算。
+        统计不变式：``matched_count == injected_count + excluded_by_diversity +
+        excluded_by_budget``；``minimum_budget`` 为再注入第一条被预算跳过条目所需预算。
+        ``read()`` ≡ ``recall(...).entries``。
         """
 
     def write(self, layer: Layer, entry: MemoryEntry) -> MemoryId:
@@ -217,6 +240,15 @@ class MemoryEntry:
     version: int = 1           # 同链递增（关键事实版本链）
     parent_id: str = ""        # 被本版本替代的条目 id（首版空）
     superseded_by: str = ""    # 仅旧版本填写：替代它的新版本 id
+
+@dataclass
+class RecallResult:            # change 0304 / ADR-0294
+    entries: list[MemoryEntry]
+    matched_count: int = 0
+    injected_count: int = 0
+    excluded_by_budget: int = 0
+    excluded_by_diversity: int = 0
+    minimum_budget: int = 0    # 再注入第一条被预算跳过条目所需预算（无 ⇒ 0）
 ```
 
 ---
