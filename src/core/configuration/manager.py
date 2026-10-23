@@ -494,6 +494,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "memory.context_checkpoint",
+        "--memory-context-checkpoint",
+        "CORE_MEMORY_CONTEXT_CHECKPOINT",
+        default=True,
+        map_to="memory.context_checkpoint",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "notes.candidate_distill",
         "--notes-candidate-distill",
         "CORE_NOTES_CANDIDATE_DISTILL",
@@ -1198,6 +1206,21 @@ class ConfigManager:
             return True
         raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
         value = raw.get("audit_log", True)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() not in _FEATURE_FALSE
+
+    def context_checkpoint_enabled(self) -> bool:
+        """上下文淘汰的情景检查点开关（缺省 ``True``；change 0310 / ADR-0300）。
+
+        **kill-switch 语义**（同 `audit_log_enabled()`）：淘汰回写默认在场，显式关闭才停写；
+        `memory` 为非结构化段 ⇒ 集合外取值归一为**开启**（笔误不得静默关闭）。
+        关闭 ⇒ `DefaultLoop(context_checkpoint=False)` ⇒ 淘汰零写入，行为回到变更前。
+        """
+        if self._config is None:
+            return True
+        raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
+        value = raw.get("context_checkpoint", True)
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() not in _FEATURE_FALSE

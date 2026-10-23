@@ -670,3 +670,22 @@ known_window(llm.model)  ──►  表命中 ⇒ 该族真实窗口（本 chang
   `None` ⇒ 关闭（既有测试与嵌入用法逐字不变）。见 `memory.md` §3.23。
 - 口径来源：`doc/openspec/specs/configuration/spec.md`「情景记忆保留期配置」（ADDED）、
   `doc/openspec/specs/memory/spec.md`「情景记忆保留期与墓碑化」（ADDED）。
+
+### 2.24 上下文检查点配置（change `0310` / ADR-0300，台账 E246）
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `memory.context_checkpoint` | `true` | 布尔语义（`true`/`false`/`yes`/`no`/`on`/`off`/`1`/`0`） | 上下文淘汰回写检查点的 kill-switch |
+
+- **单一真源**：`ConfigSpec`（`map_to="memory.context_checkpoint"`，`exposure=ADVANCED`）⇒
+  CLI `--memory-context-checkpoint`、env `CORE_MEMORY_CONTEXT_CHECKPOINT`、yaml 三面；
+  优先链 CLI > env > config.yaml > 缺省。
+- **访问器** `ConfigManager.context_checkpoint_enabled() -> bool`：`memory` 为**非结构化段** ⇒
+  集合外取值（拼写错误 / 空串 / 非布尔）归一为**开启**（同 `audit_log`：笔误不得静默关闭淘汰
+  回写）；未加载配置返回 `true`。`false` 是显式 kill-switch（淘汰零写入，行为回到变更前）。
+- **消费方**：`build_runtime` 注入主 loop `DefaultLoop(context_checkpoint=...)`；**只**注入主 loop
+  （子 Agent / 神兽 / 宠物 loop 无转录，同 `transcript` 的注入面）。直接构造 `DefaultLoop` 缺省
+  `False` ⇒ 既有测试与嵌入用法逐字不变。见 `memory.md` §3.2.3。
+- 口径来源：`doc/openspec/specs/configuration/spec.md`「上下文检查点配置」（ADDED）、
+  `doc/openspec/specs/context/spec.md`「上下文淘汰的情景检查点」（ADDED）、
+  `doc/openspec/specs/memory/spec.md`「上下文检查点的水位读取」（ADDED）。

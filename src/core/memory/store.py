@@ -52,6 +52,7 @@ from .protocol import (
 )
 from .relevance import batch_similarities, build_lexical_stats, rank, recency_decay
 from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter
+from .transcript import CHECKPOINT_TAG
 
 # 向量缓存上界（超出按 FIFO 逐出）；进程内易失，不落盘
 _VEC_CACHE_MAX = 4096
@@ -765,6 +766,29 @@ class MemoryStore:
         entry.tags = list(tags)
         self._backend.put(entry)
         self._hot_put(entry)
+
+    def checkpoint_watermark(self, session_id: str) -> int:
+        """上下文检查点水位（change 0310 / ADR-0300）：本会话既有检查点的最大 ``seq_to``。
+
+        只读、零效应。判据**只**按标签 ``context_checkpoint`` + ``session_id``，不过滤层 /
+        ``status`` / ``forgotten`` —— 检查点被墓碑化、迁 L4 或遗忘后仍计入，保证水位
+        **单调不回退**（否则重复回写同一淘汰区间）。坏标签（``seq_to:`` 非整数）跳过。
+        无检查点或空会话标识 ⇒ ``-1``。
+        """
+        if not session_id:
+            return -1
+        watermark = -1
+        for entry in self._all_entries():
+            if entry.session_id != session_id or CHECKPOINT_TAG not in entry.tags:
+                continue
+            for tag in entry.tags:
+                if not tag.startswith("seq_to:"):
+                    continue
+                try:
+                    watermark = max(watermark, int(tag.removeprefix("seq_to:")))
+                except ValueError:
+                    continue
+        return watermark
 
     def summary_for(self, session_id: str) -> MemoryEntry | None:
         """按会话取回既有摘要条目（**只读**；口径同 `_commit_summary`；无则 ``None``）。

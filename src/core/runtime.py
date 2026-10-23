@@ -1352,6 +1352,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         # 轮级检查点：**只**注入主 loop（子 Agent / 神兽 / 宠物 loop 不接 —— 会话维度是主
         # Agent 的门面概念，同 `transcript` 的注入面；change 0214 / ADR-0204）。
         turn_checkpoint=_turn_checkpoint if config.turn_checkpoint() else None,
+        # 上下文淘汰检查点：**只**注入主 loop（子 Agent / 神兽 / 宠物 loop 不接 —— 无转录，
+        # 同 `transcript` 的注入面；change 0310 / ADR-0300）。关闭 ⇒ 淘汰零写入。
+        context_checkpoint=config.context_checkpoint_enabled(),
     )
 
     # 子 Agent 独立 loop：各自 ToolProvider（不含 tools.delegate，结构上杜绝再委托），

@@ -11480,6 +11480,61 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 （ADR-0298 D4）；⑤ 保留期在 `forget` 节拍上执行，最长可晚一个维护间隔；⑥ 不按 namespace /
 会话维度配置保留期（单一全局天数）。
 
+## ADR-0300：上下文淘汰的情景检查点（change 0310 / 台账 E246）
+
+**背景。** 对照 `ai-arch/docs/memory-sdd.md` v1.0 §4.5 / §6.7 Tier 3 / A5：滑出保留窗口的
+对话行必须**先回写**为情景检查点（含摘要、日志水位 `(logId, seqFrom, seqTo)` 与工件引用），
+再到被丢弃 —— 否则「被淘汰」等于「直接消失」，长任务一旦跨过滑窗就丢失中段事实。本仓
+`TranscriptStore` 已有三层滑窗切分，但没有**淘汰事件**、没有回写、没有水位与工件引用，A5 不成立。
+
+**决策**：
+
+- **D1 淘汰在 `perceive` 惰性判定。** 保留窗口 = 短带 ∪ 中带，与 `_load_history` / `window()`
+  **同一口径**（短带 token 截断 + 丢开头孤儿 assistant 行、中带不截断）；边界由 `transcript.
+  evicted_prefix()` 在**一次读取**内给出。时机在读取历史之后、追加本轮 user 行之前 ⇒ 本轮不被
+  判为淘汰。**被拒**：给滑窗加显式「淘汰回调」（`window()` 是纯读路径，回调会污染三个调用方）；
+  另起后台清扫任务（多一个触发面与观测口径，且与轮次语义解耦会漏/重）。
+- **D2 日志水位 = `(session_id, seqFrom, seqTo)`，seq 为**派生的会话行序**。不新增落盘 `seq`
+  列（格式变更 + 跨进程计数器竞态）；水位经 `MemoryStore.checkpoint_watermark(session_id)`
+  读本会话既有检查点标签的最大 `seq_to`。**只写新增区间** `[watermark+1, retained_from-1]`。
+  **被拒**：persist `seq` 列（迁移面大、单店并发追加需全局锁）；每轮写全前缀（重复正文、无界）。
+- **D3 水位跨层跨状态单调。** 判据**只**按标签 `context_checkpoint` + `session_id`，不过滤层 /
+  `status` / `forgotten`：检查点被墓碑化（0309）、迁 L4 或遗忘后仍计入，否则水位回退会重复回写
+  同一区间。坏标签（`seq_to:` 非整数）跳过。**被拒**：只扫 `L2 + active`（墓碑 / 归档即回退，
+  正是最需要防重的路径）；把水位另存一个计数文件（第二真源，回滚不同步）。
+- **D4 摘要为确定性抽取式、写前脱敏、双重有界。** 头部 `会话检查点 seq A-B（N 行）` + 逐行
+  `role: content`；`redact_secrets` 后总长 ≤ 800、单行 ≤ 120（尾部省略号）。原文**不**复制
+  （转录仍是原文真源）。**被拒**：LLM 归纳（淘汰是每轮热路径，模型调用不可控且不可回滚；
+  归纳质量留待 consolidator）；存全文（记忆面被对话原文淹没）。
+- **D5 工件引用走转录可选列。** `TranscriptStore.append(..., artifacts=())` 记录本轮
+  `tools.file_write` / `tools.file_patch` 的 `path`（去重、每轮 ≤ 8、单路径 ≤ 200 字符；
+  **非空才写键** ⇒ 旧行与旧写入逐字不变）；检查点聚合被淘汰区间内全部引用（去重、总计 ≤ 16），
+  追加 `artifact:<path>` 标签；无引用不伪造标签。**被拒**：从工具调用轨迹另存工件索引
+  （第二真源、与转录行对不齐）；给记忆条目加结构化字段（治理信封已冻结）。
+- **D6 开关与失败隔离。** `memory.context_checkpoint` 三面齐备、缺省 `true`（kill-switch；
+  非法值归一**开启**）；组合根**只**注入主 loop（子 Agent / 神兽 / 宠物 loop 无转录，同
+  `transcript` 的注入面）；直接构造 `DefaultLoop` 缺省 `False`（既有测试逐字不变）。
+  转录读 / 水位读 / 记忆写任一失败 ⇒ 只 `warnings.warn` 并跳过本次检查点，不阻断本轮。
+- **D7 可逆与幂等。** 条目 id 与 `trace_id` 同为 `context_checkpoint.<session>.<seqTo>`：
+  重复计算同区间时 `write()` 的幂等重放（0306）返回既有 id、零效应；`EffectTracker.rollback`
+  可直接按 id 撤销。**被拒**：随机 id（回滚不可定位、幂等失效）。
+- **D8 生命周期沿用 episodic。** 检查点 `layer="L2" / kind="episodic" / source="context"`
+  （重要度闸门豁免面）：参与压实材料、衰减遗忘、L2 软上限与 0309 保留期 —— 与 SDD「随后由
+  consolidator 提升」一致。**被拒**：检查点专用层 / 类型（检索、压实、遗忘、保留全链路要新增
+  分支）；不参与遗忘（记忆面无界）。
+
+**验证**：新增 `tests/test_context_checkpoint.py` 22 + `tests/test_memory_checkpoint_watermark.py`
+21 = 43。反证（`cp` 到 `/tmp` + `md5sum` 复原，逐条至少一红）：去 `perceive` 写点 ⇒ 8 红；
+去水位增量（每次写全前缀）⇒ 1 红；去脱敏 ⇒ 1 红；去 `artifact:` 标签 ⇒ 1 红；水位过滤
+`status=="active"` ⇒ 1 红；去开关门控 ⇒ 1 红。全量 **3556 passed**；`openspec validate --all`
+32/0（含本 active change；归档后 31/0）。
+
+**局限**：① 摘要为**确定性抽取式**（无 LLM 归纳，信息密度低于模型摘要）；② 水位按派生行序，
+转录文件被整体重写 / 截断后行序漂移不在建模范围；③ 跨进程并发轮次可能各写各的区间（id 不同
+⇒ 最坏是多一条近重复检查点，不损坏既有条目）；④ 工件只认 `file_write` / `file_patch` 的
+`path`（`code_run` 产生的文件不可见）；⑤ 无 artifact 的区间不回填（历史行不会补写工件列）；
+⑥ 检查点随 episodic 保留期墓碑化，墓碑后正文不可恢复（原文仍在转录日志）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11774,3 +11829,4 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 | ADR-0297 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0298 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0299 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0300 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

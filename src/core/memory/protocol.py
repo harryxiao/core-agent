@@ -141,6 +141,13 @@ class MemoryStore(Protocol):
         """按会话取回既有**中层摘要**条目（只读；无则 ``None``）。"""
         ...
 
+    def checkpoint_watermark(self, session_id: str) -> int:
+        """上下文检查点水位：本会话既有检查点的最大 ``seq_to``（只读、零效应）。
+
+        无检查点或空会话标识 ⇒ ``-1``；跨层跨状态单调（墓碑 / 归档 / forgotten 仍计入）。
+        """
+        ...
+
     def summarize_slice(
         self, session_id: str, entries: list[MemoryEntry], *, max_chars: int
     ) -> str | None:

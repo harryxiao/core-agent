@@ -31,9 +31,21 @@ from collections.abc import (
 from dataclasses import dataclass
 from typing import Any, cast
 
-from core.context import Compactor, ContextError, WindowPlan, estimate_tokens, plan_window
+from core.context import (
+    CHECKPOINT_TAG,
+    MAX_ARTIFACT_CHARS,
+    MAX_ROW_ARTIFACTS,
+    Compactor,
+    ContextError,
+    WindowPlan,
+    checkpoint_artifacts,
+    checkpoint_summary,
+    estimate_tokens,
+    plan_window,
+)
 from core.judgment import DecisionResult, DecisionRouter
 from core.memory import MemoryEntry, MemoryStore, TranscriptStore, redact_secrets
+from core.memory.transcript import CHECKPOINT_ID_PREFIX
 from core.observability import TraceEvent, TraceLogger, Tracer
 from core.plugin_registry import Plugin, RollbackReport
 from core.tools import SCHEMA_READ_TOOL_ID, SafetyGate, ToolProvider
@@ -415,6 +427,28 @@ def _decode_action(message: Any) -> tuple[str, dict[str, Any]] | None:
     return tool_id, cast("dict[str, Any]", args) if isinstance(args, dict) else {}
 
 
+# 写入类工具：其 `path` 参数即本轮产出的 workspace 工件（change 0310 检查点引用聚合）
+_ARTIFACT_TOOL_IDS = frozenset({"tools.file_write", "tools.file_patch"})
+
+
+def _round_artifacts(ctx: LoopContext) -> list[str]:
+    """本轮 `file_write` / `file_patch` 的工件路径（去重保序，每轮 ≤ 8、单路径 ≤ 200 字符）。"""
+    paths: dict[str, None] = {}
+    for message in ctx.messages:
+        decoded = _decode_action(message)
+        if decoded is None:
+            continue
+        tool_id, args = decoded
+        if tool_id not in _ARTIFACT_TOOL_IDS:
+            continue
+        path = args.get("path")
+        if isinstance(path, str) and path:
+            paths.setdefault(path[:MAX_ARTIFACT_CHARS], None)
+            if len(paths) >= MAX_ROW_ARTIFACTS:
+                break
+    return list(paths)
+
+
 def _summarize_args(args: dict[str, Any]) -> str:
     """参数字典 → 人类可读摘要（``key: value`` 升序逗号连接；容器只报类型与规模）。"""
     return ", ".join(f"{key}: {_summarize_value(value)}" for key, value in sorted(args.items()))
@@ -541,6 +575,10 @@ class DefaultLoop(Plugin):
         # `turn_after` 在 trace 封口前执行、仅留痕。`None` ⇒ 零调用，既有路径逐字不变。
         turn_before: TurnBefore | None = None,
         turn_after: TurnAfter | None = None,
+        # 上下文淘汰的情景检查点（change 0310 / ADR-0300，缺省**关**）：注入转录与记忆且开启时，
+        # 每轮把滑出保留窗口的转录行回写为 `context_checkpoint` 情景记录。未注入 ⇒ 零写入、
+        # 既有路径**逐字不变**；组合根按 `memory.context_checkpoint` 注入。
+        context_checkpoint: bool = False,
     ) -> None:
         self._planner = planner
         self._memory = memory
@@ -572,6 +610,7 @@ class DefaultLoop(Plugin):
         # 对话转录：按会话落盘本轮 (user 原话, 最终回复)；缺省未注入 ⇒ 零落盘零回灌
         self._transcript = transcript
         self._history_turns = history_turns
+        self._context_checkpoint = context_checkpoint
         self._maintenance_interval = maintenance_interval
         self._compact_timeout = compact_timeout
         self._post_turn_wait_timeout = post_turn_wait_timeout
@@ -904,7 +943,9 @@ class DefaultLoop(Plugin):
         # 转录在 `remember` **之前**追加（记忆失败不牵连会话历史）；门控 `limit_reason`：
         # 上面刚把 `ctx.reply` 覆盖为**合成**终止文案，落盘即谎报模型原话。
         if not limit_reason:
-            self._append_transcript(session_id, "assistant", ctx.reply)
+            self._append_transcript(
+                session_id, "assistant", ctx.reply, artifacts=_round_artifacts(ctx)
+            )
         self.remember(
             trace_id,
             [*ctx.trajectory, {"reply": ctx.reply}],
@@ -1395,6 +1436,8 @@ class DefaultLoop(Plugin):
         summary_long, summary_mid = self._load_summaries(session_id)
         plan = self._window_plan(tiered=bool(summary_long or summary_mid))
         history = self._load_history(session_id, plan=plan)
+        # 淘汰回写（change 0310）：紧随历史读取、先于本轮 user 行落盘 —— 本轮不被判为淘汰。
+        self._checkpoint_evicted(session_id, plan)
         ctx = LoopContext(
             messages=[{"role": "user", "content": user_input}],
             tools=tools,
@@ -1687,17 +1730,65 @@ class DefaultLoop(Plugin):
             return []
         return rows
 
-    def _append_transcript(self, session_id: str, role: str, content: str) -> None:
+    def _append_transcript(
+        self, session_id: str, role: str, content: str, *, artifacts: Sequence[str] = ()
+    ) -> None:
         """追加一条转录；空标识 / 未注入转录 ⇒ 不落盘。
 
         独立于 `remember`（后者失败**不影响**已落盘的会话历史）；写失败降级不阻断本轮。
+        `artifacts` 只服务检查点工件聚合（change 0310），空 ⇒ 旧写入逐字不变。
         """
         if self._transcript is None or not session_id:
             return
         try:
-            self._transcript.append(session_id, role, content)
+            self._transcript.append(session_id, role, content, artifacts=artifacts)
         except Exception as err:  # noqa: BLE001 — 转录落盘失败降级，不阻断本轮
             warnings.warn(f"转录写入失败: {err}", RuntimeWarning, stacklevel=2)
+
+    def _checkpoint_evicted(self, session_id: str, plan: WindowPlan) -> None:
+        """把滑出保留窗口的转录行回写为 `context_checkpoint` 情景记录（change 0310）。
+
+        只写**新增**淘汰区间 `[watermark+1, retained_from-1]`：确定性 id + 水位双重防重。
+        关闭开关 / 未注入转录或记忆 / 空标识 / 无保留窗口 ⇒ 零写入；任一读或写失败 ⇒
+        只告警并跳过本次检查点，不阻断本轮。
+        """
+        if not self._context_checkpoint or self._transcript is None or self._memory is None:
+            return
+        if not session_id or plan.short_turns <= 0:
+            return
+        try:
+            boundary, evicted = self._transcript.evicted_prefix(
+                session_id,
+                short_turns=plan.short_turns,
+                mid_turns=plan.mid_turns,
+                short_tokens=plan.short_tokens,
+            )
+            if not evicted:
+                return
+            seq_to = boundary - 1
+            watermark = self._memory.checkpoint_watermark(session_id)
+            if seq_to <= watermark:
+                return
+            seq_from = watermark + 1
+            rows = evicted[seq_from:]
+            entry_id = f"{CHECKPOINT_ID_PREFIX}{session_id}.{seq_to}"
+            tags = [CHECKPOINT_TAG, f"seq_from:{seq_from}", f"seq_to:{seq_to}"]
+            tags += [f"artifact:{path}" for path in checkpoint_artifacts(rows)]
+            self._memory.write(
+                "L2",
+                MemoryEntry(
+                    id=entry_id,
+                    layer="L2",
+                    content=checkpoint_summary(rows, seq_from=seq_from, seq_to=seq_to),
+                    tags=tags,
+                    source="context",
+                    trace_id=entry_id,
+                    session_id=session_id,
+                    kind="episodic",
+                ),
+            )
+        except Exception as err:  # noqa: BLE001 — 检查点回写失败降级，不阻断本轮
+            warnings.warn(f"上下文检查点回写失败: {err}", RuntimeWarning, stacklevel=2)
 
     def _start_trace(self, task_id: str) -> str:
         """开轮取 trace_id：经注入的 tracer 建链（其 id 贯穿全链路）。

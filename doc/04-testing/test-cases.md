@@ -5260,3 +5260,25 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **反证 5/5**（`cp` 到 `/tmp`、复原后 `md5sum` 一致：`store.py` `7429c408…`、`manager.py` `d8567639…`）：去保留期前置阶段 ⇒ TC-MEMRET-02/04 红；`retract` 不清正文 ⇒ TC-MEMRET-09 红；不置 `retracted` ⇒ TC-MEMRET-10 红；`_episodic_groups` 去活性过滤 ⇒ TC-MEMRET-06 红；配置非法值归一改为 `0` ⇒ TC-MEMRET-07 参数化 4 红。
 > **实测**：全量 pytest **3513 passed**（3487 + 26）；`openspec validate --all` 32/0（含本 active change；归档后 31/0）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0299 行。
+
+## 223. 上下文淘汰的情景检查点（TC-CTXCP，change `0310`／ADR-0300，台账 E246）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-CTXCP-01 | 转录工件列 | 一行带 `artifacts=["a.py","b.py"]`、一行不带 | 前者读回 `artifacts`；后者**不含**该键（旧行兼容）（`tests/test_context_checkpoint.py::test_transcript_rows_carry_optional_artifacts`、`...::test_in_memory_transcript_keeps_artifacts`） |
+| TC-CTXCP-02 | 淘汰前缀切分 | 3 轮转录，短 1 / 短 1+中 1 / 全体保留 | 分别 `(4, 问1..答2)` / `(2, 问1..答1)` / `(0, [])`（`...::test_evicted_prefix_matches_short_band`、`...::test_evicted_prefix_starts_at_mid_band`、`...::test_evicted_prefix_empty_when_all_retained`） |
+| TC-CTXCP-03 | 淘汰即回写 | 3 轮、`history_turns=1`、开关开，处理下一轮 | 一条 `context_checkpoint`：`L2`/`episodic`/`context`、id `context_checkpoint.s1.3`、`seq_from:0`、`seq_to:3`、头部 `会话检查点 seq 0-3（4 行）`（`...::test_eviction_writes_context_checkpoint`） |
+| TC-CTXCP-04 | 只写新增区间 | 连续两轮 | 第二条 `seq_from:4`/`seq_to:5`，内容只含问3/答3（不重写 0–3）（`...::test_only_new_evicted_range_is_written`） |
+| TC-CTXCP-05 | 同窗口重放零写入 | 同一 `plan` 连续调用两次 | 仅一条检查点（幂等）（`...::test_replaying_same_window_writes_nothing_new`） |
+| TC-CTXCP-06 | 无淘汰 / 无窗口 / 空会话 | `history_turns=20`；`history_turns=0`；无 `session_id` | 均零写入（`...::test_no_eviction_writes_nothing`、`...::test_history_replay_disabled_means_no_checkpoint`、`...::test_empty_session_writes_nothing`） |
+| TC-CTXCP-07 | 工件聚合 | 区间内两行带 `artifacts`（含重复） | `artifact:a.py`、`artifact:b.py` 各一次；无引用区间零 `artifact:` 标签（`...::test_artifacts_aggregate_into_tags`、`...::test_no_artifacts_means_no_artifact_tags`、`...::test_round_artifacts_collects_written_paths_only`） |
+| TC-CTXCP-08 | 摘要脱敏与有界 | 含密钥形态正文 + 2000 字长行 | 密钥消失、含 `<redacted>`；总长 ≤ 800、单行 ≤ 120（`...::test_checkpoint_content_is_redacted_and_bounded`、`...::test_checkpoint_summary_renders_watermark_and_lines`、`...::test_checkpoint_artifacts_is_deduped_and_bounded`） |
+| TC-CTXCP-09 | 可逆 | 写入后 `tracker.rollback("context_checkpoint.s1.1")` | 检查点消失（`...::test_checkpoint_write_is_reversible`） |
+| TC-CTXCP-10 | 开关与失败隔离 | 开关关；无 memory；水位抛错；转录抛错 | 关 ⇒ 零写入；无 memory ⇒ 本轮正常；两类抛错 ⇒ 只告警、本轮完成、零写入（`...::test_kill_switch_disables_checkpoint`、`...::test_without_memory_no_checkpoint_and_turn_completes`、`...::test_watermark_failure_degrades_without_breaking_turn`、`...::test_transcript_failure_degrades_without_breaking_turn`） |
+| TC-CTXCP-11 | 水位读取 | 无检查点 / 多条 / 墓碑迁 L4 / 跨会话 / 坏标签 / 非检查点条目 | `-1` / 取最大 7 / 仍 7 / 其他会话 `-1` / 跳过坏标签取 5 / `-1`；只读零效应（`tests/test_memory_checkpoint_watermark.py::test_watermark_*`） |
+| TC-CTXCP-12 | 配置三面与归一 | spec / 缺省 / yaml / env / CLI / 非法值 / 直接构造 | flag/env/default/map_to 对齐；缺省与非法值返回 `true`；三面均可关闭；直接构造 `_context_checkpoint is False`（`...::test_spec_declares_context_checkpoint` 等 7 项） |
+| TC-CTXCP-13 | 组合根接线 | 缺省 / `memory.context_checkpoint: false` 各构造 runtime | `_context_checkpoint` 分别为 `True` / `False`（`...::test_build_runtime_wires_context_checkpoint`、`...::test_build_runtime_wires_context_checkpoint_off`） |
+
+> **反证 6/6**（`cp` 到 `/tmp`、复原后 `md5sum` 一致：`default.py` `d239cfe6…`、`checkpoint.py` `d21ee862…`、`store.py` `7e5a569a…`）：去 `perceive` 写点 ⇒ TC-CTXCP-03/04/05/07/08/09 等 8 红；去水位增量 ⇒ TC-CTXCP-04 红；去脱敏 ⇒ TC-CTXCP-08 红；去 `artifact:` 标签 ⇒ TC-CTXCP-07 红；水位过滤 `status=="active"` ⇒ TC-CTXCP-11 红；去开关门控 ⇒ TC-CTXCP-10 红。
+> **实测**：全量 pytest **3556 passed**（3513 + 43）；`openspec validate --all` 32/0（含本 active change；归档后 31/0）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0300 行。

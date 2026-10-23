@@ -616,6 +616,10 @@ Agent 主流程。遗忘 SHALL 由**维护节拍**驱动——循环收尾按维
 
 转录 SHALL 为**单店 + `session_id` 列**（与记忆同店形态一致，不得为每会话建独立存储实例）。
 
+转录行 SHALL 支持**可选** `artifacts` 列（字符串列表，缺省不写入该键 ⇒ 旧行与旧写入逐字
+不变）：记录该轮产出/修改的 workspace 工件路径（`file_write` / `file_patch` 的 `path`，
+去重、每轮有界）。该列 SHALL 只服务检查点的工件引用聚合，SHALL NOT 改变转录的任何既有语义。
+
 #### Scenario: 追加后可读
 
 - **GIVEN** 某会话一次性追加了若干轮对话
@@ -675,6 +679,12 @@ Agent 主流程。遗忘 SHALL 由**维护节拍**驱动——循环收尾按维
 - **GIVEN** 短层轮数非正
 - **WHEN** 切分读取
 - **THEN** 短带与中带皆为空
+
+#### Scenario: 工件列可选且旧行兼容
+
+- **GIVEN** 一行以 `artifacts=["a.py"]` 追加、另一行未提供 `artifacts`
+- **WHEN** 按会话读取转录
+- **THEN** 前者带 `artifacts=["a.py"]`，后者**不含** `artifacts` 键；读取与既有读取面一致
 
 ### Requirement: 来源前缀排除与放行（读取面）
 
@@ -1983,3 +1993,36 @@ SHALL NOT 被保留期惩罚。保留期 SHALL 由既有维护节拍驱动（循
 - **GIVEN** 一条刚被 `retract` 的条目
 - **WHEN** 按 `retract.<id>` trace 回滚
 - **THEN** 正文、`status="active"` 与原层均复原
+
+### Requirement: 上下文检查点的水位读取
+
+`MemoryStore` SHALL 提供只读、零效应的 `checkpoint_watermark(session_id) -> int`：返回该会话
+既有 `context_checkpoint` 条目中**最大**的 `seq_to`；不存在 ⇒ `-1`；`session_id` 为空 ⇒ `-1`。
+
+水位判据 SHALL **只**按条目标签 `context_checkpoint` + `session_id` 匹配，SHALL NOT 过滤层、
+`status` 或 `forgotten` 标签 —— 检查点被迁移（L4）、墓碑化（`retracted`）或遗忘后仍计入，
+保证水位**单调不回退**（否则重复回写同一淘汰区间）。坏标签（`seq_to:` 非整数）SHALL 被跳过。
+
+#### Scenario: 无检查点 ⇒ -1
+
+- **GIVEN** 某会话从未写过检查点
+- **WHEN** 读取水位
+- **THEN** 返回 `-1`
+
+#### Scenario: 取最大 seq_to
+
+- **GIVEN** 同一会话存在 `seq_to:3` 与 `seq_to:7` 两条检查点
+- **WHEN** 读取水位
+- **THEN** 返回 `7`
+
+#### Scenario: 跨层跨状态单调
+
+- **GIVEN** `seq_to:7` 的检查点已被墓碑化（`status="retracted"`、迁 L4）
+- **WHEN** 读取水位
+- **THEN** 仍返回 `7`，不回退
+
+#### Scenario: 只认本会话
+
+- **GIVEN** 会话 A 有 `seq_to:9` 的检查点，会话 B 无
+- **WHEN** 以会话 B 读取水位
+- **THEN** 返回 `-1`

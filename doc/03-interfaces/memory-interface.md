@@ -224,8 +224,11 @@ MemoryStore(
 ```python
 TranscriptStore(path: Path | None = None)      # path=None ⇒ 纯内存（测试用）
 
-    def append(session_id, role, content, *, created_at: float | None = None) -> None
-        # 逐行追加；session_id == ""（未归属）⇒ **不落盘**（不制造幻影会话）
+    def append(session_id, role, content, *, created_at: float | None = None,
+               artifacts=()) -> None
+        # 逐行追加；session_id == ""（未归属）⇒ **不落盘**（不制造幻影会话）。
+        # artifacts（change 0310）：本轮 file_write / file_patch 的 workspace 工件路径；
+        # **非空才写 artifacts 键** ⇒ 旧行与既有写入逐字不变（只服务检查点聚合）
 
     def read(session_id: str) -> list[dict]     # 该会话全部转录（按追加次序）
 
@@ -240,12 +243,33 @@ TranscriptStore(path: Path | None = None)      # path=None ⇒ 纯内存（测�
         # 轮（**不**按 token 截断）。两带**不重叠**；轮数不足 ⇒ 短带吃满、中带为空；
         # short_turns <= 0 ⇒ ([], [])（change 0178 / ADR-0169）
 
+    def evicted_prefix(session_id: str, *, short_turns: int, mid_turns: int,
+                       short_tokens: int) -> tuple[int, list[dict]]
+        # 滑出保留窗口（短带 ∪ 中带）的前缀（change 0310）：与 window() **同一口径**，
+        # 返回 (首行下标, 被淘汰行)；无保留窗口或全体保留 ⇒ (0, [])；只读零写入
+
     def summaries() -> dict[str, dict]          # {session_id: {title, updated_at}}（排除未归属）
         # title = 该会话**首条用户消息**压平换行后截断 30 字（超长补「…」），无 user 行 ⇒ 空串
 ```
 
 降级：文件缺失 / 坏行 ⇒ 跳过（不抛错、不阻断主流程）。对应规格：`memory/spec.md`
 「对话转录持久化（非记忆层级）」。
+
+**上下文检查点水位**（`MemoryStore.checkpoint_watermark`，change `0310` / ADR-0300）：
+
+```python
+    def checkpoint_watermark(session_id: str) -> int
+        # 只读零效应：本会话既有 context_checkpoint 条目的最大 seq_to；无 ⇒ -1、空标识 ⇒ -1
+        # 判据只按标签 context_checkpoint + session_id，**不过滤层 / status / forgotten**
+        # （墓碑 / 迁 L4 / 遗忘后仍计入 ⇒ 水位单调不回退）；坏标签（seq_to: 非整数）跳过
+
+# 检查点条目形状（由 DefaultLoop 写入）：
+#   id = trace_id = "context_checkpoint.<session>.<seqTo>"
+#   layer="L2" / kind="episodic" / source="context"
+#   tags = ["context_checkpoint", "seq_from:<n>", "seq_to:<m>", "artifact:<path>"...]
+#   content = 会话检查点 seq A-B（N 行）\n- role: content...（脱敏；总长 ≤ 800 / 单行 ≤ 120）
+# 规格：memory/spec.md「上下文检查点的水位读取」、context/spec.md「上下文淘汰的情景检查点」
+```
 
 ---
 

@@ -151,7 +151,36 @@ MemoryStore
   「按 token 从新到旧截断 + 丢弃开头孤儿 assistant 行」语义）与**中带原文**（其前 `mid_turns` 轮，
   **不**按 token 截断）；两带**不重叠**；`short_turns <= 0` ⇒ 两带皆空。切分**只读不写**、不经
   `MemoryStore`（转录不是记忆层级）。
+- **可选 `artifacts` 列**（change `0310`／ADR-0300）：`append(..., artifacts=())` 记录该轮
+  `file_write` / `file_patch` 的 workspace 工件路径；**非空才写键** ⇒ 旧行与既有写入逐字不变。
+  该列只服务检查点工件聚合，不改转录任何既有语义。
+- **淘汰前缀读取**（change `0310`）：`evicted_prefix(session_id, *, short_turns, mid_turns,
+  short_tokens) -> (int, rows)` 与 `window()` **同一口径**返回滑出保留窗口的前缀与首行下标；
+  边界为**一次读取内的行序**（派生值、不新增落盘列）。
 - 细节见 `03-interfaces/memory-interface.md` §1.1。
+
+### 3.2.3 上下文检查点水位（change `0310`／ADR-0300）
+
+- **用途**：`DefaultLoop` 每轮把滑出保留窗口的转录行回写为一条 `context_checkpoint` 情景记录
+  （`L2` / `kind="episodic"` / `source="context"`，SDD §4.5 / §6.7 Tier 3 / A5）——「被淘汰」
+  不等于「直接消失」。
+- **水位**：`MemoryStore.checkpoint_watermark(session_id) -> int` 只读零效应，返回本会话既有
+  检查点的最大 `seq_to`（无 ⇒ `-1`、空标识 ⇒ `-1`）。判据**只**按标签 `context_checkpoint` +
+  `session_id`，**不过滤**层 / `status` / `forgotten` —— 检查点被墓碑化、迁 L4 或遗忘后仍计入，
+  保证水位**单调不回退**；坏标签（`seq_to:` 非整数）跳过。
+- **写入形态**：只写**新增**淘汰区间 `[watermark+1, retained_from-1]`；id 与 `trace_id` 均为
+  `context_checkpoint.<session>.<seqTo>`（确定性 ⇒ 幂等重放与 `EffectTracker.rollback` 直接可用）。
+- **生命周期**：检查点按 `episodic` 参与压实材料、衰减遗忘与 L2 软上限 —— 与 SDD「随后由
+  consolidator 提升」一致；原文仍以转录日志为真源。
+- **工件聚合**：`checkpoint_artifacts` 去重保序、单路径 ≤ 200 字符、区间总计 ≤ 16 条；
+  无引用 ⇒ 不伪造 `artifact:` 标签。
+- **摘要**：`checkpoint_summary` 纯函数，头部 `会话检查点 seq A-B（N 行）` + 逐行 `role: content`；
+  写前脱敏、总长 ≤ 800、单行 ≤ 120 字符（尾部补省略号）。原文**不**复制进记忆。
+- **失败隔离**：关闭开关 / 未注入转录或记忆 / 空标识 / `history_turns <= 0` ⇒ 零写入；
+  转录读 / 水位读 / 记忆写任一失败 ⇒ 只 `warnings.warn` 并跳过本次检查点，不阻断本轮。
+- **局限**（known-risk `E246`）：摘要为**确定性抽取式**（无 LLM 归纳）；水位按派生行序，
+  转录文件被整体重写 / 截断后行序漂移不在建模范围；跨进程并发轮次可能各写各的区间（id 不同 ⇒
+  最坏是多一条近重复检查点，不损坏既有条目）。
 
 ### 3.3 结晶与溶解（与 L4 进化联动）
 

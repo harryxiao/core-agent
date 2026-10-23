@@ -17,10 +17,16 @@ import json
 import os
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
 from core.tokens import estimate_tokens
+
+# 上下文检查点条目标签与 id 前缀（change 0310 / ADR-0300）：检查点回写与水位扫描共用
+# 同一字面量；定义在此（memory 内的中立模块）以免 `core.memory ↔ core.context` 循环。
+CHECKPOINT_TAG = "context_checkpoint"
+CHECKPOINT_ID_PREFIX = f"{CHECKPOINT_TAG}."
 
 # 会话标题上限（派生读模型，不落盘）：`GET /sessions` 的 `title` 由此截断
 _TITLE_LIMIT = 30
@@ -72,9 +78,19 @@ class TranscriptStore:
     # ---- 写 ----
 
     def append(
-        self, session_id: str, role: str, content: str, *, created_at: float | None = None
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        *,
+        created_at: float | None = None,
+        artifacts: Sequence[str] = (),
     ) -> None:
-        """追加一条转录；``session_id`` 为空串（未归属）时**不落盘**。"""
+        """追加一条转录；``session_id`` 为空串（未归属）时**不落盘**。
+
+        ``artifacts``（change 0310）只服务上下文检查点的工件引用聚合；**非空才写键**
+        ⇒ 旧行与既有写入逐字不变。
+        """
         if not session_id:
             return
         record: dict[str, Any] = {
@@ -83,6 +99,8 @@ class TranscriptStore:
             "content": content,
             "created_at": time.time() if created_at is None else created_at,
         }
+        if artifacts:
+            record["artifacts"] = list(artifacts)
         line = json.dumps(record, ensure_ascii=False) + "\n"
         with self._lock:
             if self._path is None:
@@ -142,6 +160,39 @@ class TranscriptStore:
             entries[starts[mid_start] : starts[short_start]] if mid_start < short_start else []
         )
         return short_rows, mid_rows
+
+    def evicted_prefix(
+        self,
+        session_id: str,
+        *,
+        short_turns: int,
+        mid_turns: int,
+        short_tokens: int,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """滑出保留窗口（短带 ∪ 中带）的前缀：返回 `(首行下标, 被淘汰行)`（change 0310）。
+
+        保留窗口与 `window()` **同一口径**（短带 token 截断 + 丢弃开头孤儿 assistant 行、
+        中带不截断），边界取一次转录读取内的行序（派生值，不新增落盘列）。
+        无保留窗口（`short_turns <= 0`）或全体保留 ⇒ `(0, [])`。
+        """
+        if short_turns <= 0:
+            return 0, []
+        entries = self.read(session_id)
+        starts = [i for i, e in enumerate(entries) if e.get("role") == "user"]
+        if not starts:
+            return 0, []
+        short_start = max(0, len(starts) - short_turns)
+        mid_start = max(0, short_start - mid_turns)
+        short_rows = _truncate_newest(entries[starts[short_start] :], short_tokens)
+        mid_rows = (
+            entries[starts[mid_start] : starts[short_start]] if mid_start < short_start else []
+        )
+        retained_first = (mid_rows or short_rows)[:1]
+        if not retained_first:
+            return 0, []
+        target = retained_first[0]
+        boundary = next(i for i, row in enumerate(entries) if row is target)
+        return boundary, entries[:boundary]
 
     def summaries(self) -> dict[str, dict[str, Any]]:
         """按会话的派生读模型：`{session_id: {title, updated_at}}`（未归属不入）。
