@@ -510,6 +510,8 @@ class MemoryStore:
         """按意向层写入条目（可逆）；可注入**重要度闸门**（change 0177 / ADR-0168）。
 
         「无行动不记忆」：``source`` 或 ``trace_id`` 为空 ⇒ 拒绝（返回 ``None``、无效应）。
+        **幂等重放**（change 0306 / ADR-0296）：同层已存在同 id 且语义载荷相同（见
+        ``_same_payload``）⇒ 直接返回既有 id，零落盘 / 零效应 / 零通知 / 零评分。
         注入 ``importance_scorer`` 后**先评分再落库**（缺省 UNWIRED ⇒ 与既往逐字一致）：
 
         - 分 < ``_IMPORTANCE_FLOOR`` ⇒ **拒收**（不写、无效应、留痕，返回 ``None``）；
@@ -523,6 +525,9 @@ class MemoryStore:
         """
         if not entry.source or not entry.trace_id:
             return None  # 无行动不记忆
+        existing = self._find_entry(entry.id)
+        if existing is not None and self._same_payload(existing, entry, layer):
+            return existing.id  # 幂等重放：零落盘 / 零效应 / 零通知 / 零评分
         score = None if entry.source in _GATE_EXEMPT_SOURCES else self._gate_score(entry)
         if score is not None and score < _IMPORTANCE_FLOOR:
             warnings.warn(
@@ -543,6 +548,40 @@ class MemoryStore:
         self._enforce_l2_cap()
         self._notify_write(entry)
         return entry.id
+
+    def _same_payload(self, existing: MemoryEntry, incoming: MemoryEntry, layer: Layer) -> bool:
+        """语义载荷相等（change 0306）：重放判据只认「同层同 id 同载荷」。
+
+        ``reuse_count`` 是累积证据、``importance`` 由闸门写回，二者均**不**参与；入参
+        ``ts <= 0`` 表示「现在」（所有调用方的缺省），也不参与。``content`` 精确比较，
+        不做归一化 —— 仅首尾空白不同仍是不同载荷（与覆盖语义一致）。
+        """
+        if existing.layer != layer:
+            return False
+        if incoming.ts > 0 and existing.ts != incoming.ts:
+            return False
+        return (
+            existing.content == incoming.content
+            and existing.tags == incoming.tags
+            and existing.source == incoming.source
+            and existing.trace_id == incoming.trace_id
+            and existing.session_id == incoming.session_id
+            and existing.kind == incoming.kind
+            and existing.status == incoming.status
+            and existing.version == incoming.version
+            and existing.parent_id == incoming.parent_id
+            and existing.superseded_by == incoming.superseded_by
+        )
+
+    def _find_entry(self, entry_id: MemoryId) -> MemoryEntry | None:
+        """按 id 取既有条目（热区优先，冷区兜底）。"""
+        entry = self._hot.get(entry_id)
+        if entry is not None:
+            return entry
+        return next(
+            (candidate for candidate in self._backend.search("") if candidate.id == entry_id),
+            None,
+        )
 
     def _notify_write(self, entry: MemoryEntry) -> None:
         """写入观察者通知（change 0269）：仅观察、不可否决；异常吞掉（不牵连写入）。"""

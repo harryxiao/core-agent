@@ -75,7 +75,15 @@ class MemoryStore(Plugin):
         """
 
     def write(self, layer: Layer, entry: MemoryEntry) -> MemoryId:
-        """写入记忆（带 trace_id / 来源 / 时间戳）。"""
+        """写入记忆（带 trace_id / 来源 / 时间戳）。
+
+        **幂等重放**（change 0306 / ADR-0296）：同层已存在同 ``id`` 且语义载荷相同
+        （``content`` / ``tags`` / ``source`` / ``trace_id`` / ``session_id`` / ``kind`` /
+        ``status`` / ``version`` / ``parent_id`` / ``superseded_by`` 相等；``reuse_count`` 与
+        ``importance`` 不参与；入参 ``ts <= 0`` 视为未指定）⇒ 直接返回既有 id，
+        **零落盘 / 零效应 / 零通知 / 零评分**，既有 ``reuse_count`` 与 ``ts`` 不变。
+        同 id 不同载荷仍按覆盖语义写入。
+        """
 
     def migrate(self, entry_id, src, dst, *, trace_id: str | None = None) -> None:
         """层间迁移（可撤销）：记 Effect，按 trace_id 回滚即迁回原层；

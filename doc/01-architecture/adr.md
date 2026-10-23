@@ -11317,6 +11317,41 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 无审批上下文、无法自证；③ 引擎合成条目 `reuse_count` 恒 0，产物只依赖 `force`，不复用真实技能
 条目的复用证据；④ 产物仍无消费方（无自动落盘/实施），本 change 只保证「不再静默丢弃」。
 
+## ADR-0296：写入幂等重放（change 0306 / 台账 E242）
+
+**背景。** 对照 `ai-arch/docs/memory-sdd.md` v1.0 §5.1「幂等：同一 `(eventId, namespace)` 在保留
+窗口内只写一次；重试是 at-least-once，但落库是幂等的」与走查 **P1-6**。本仓逻辑 id 稳定
+（`loop.<trace>` / `compaction.summary.<key>` / `keyfact.<slug>`）⇒ 重复投递不产生**重复条目**；
+但重放同一条 `write()` 仍是**破坏性覆盖**（实测）：`reuse_count` 1→0（技能结晶阈值 3 的证据被
+清零）、`ts` 被刷新、重复记 `memory.write` 效应、重复通知 `write_observer`、二次消耗评分器。
+
+**决策**：
+
+- **D1 语义载荷相等即重放。** 同层 + 同 `id`，且 `content`（精确）、`tags`、`source`、
+  `trace_id`、`session_id`、`kind`、`status`、`version`、`parent_id`、`superseded_by` 逐项相等
+  ⇒ 命中。`reuse_count` 是累积证据、`importance` 由闸门写回（非调用方载荷），**不参与**；入参
+  `ts <= 0` 表示「现在」（所有调用方缺省）⇒ 不参与，显式给值时须相等。**被拒**：用
+  `content_hash` 判等（首尾空白差异会被误判同一条，与覆盖语义不一致）；`ts` 严格比较（`ts=0`
+  入参永不命中，快路径形同虚设）；把 `reuse_count` 纳入（重放入参恒 0 ⇒ 幂等失效）。
+- **D2 快路径在闸门之前。** 位置在「无行动不记忆」守卫**之后**、重要度评分**之前**：重放不
+  二次评分、不二次触发闸门写回；命中即返回既有 id，不 `_persist` / 不 `_enforce_l2_cap` /
+  不 `_notify_write`。**被拒**：在 `_persist` 内判断（效应已记录、评分已发生，救不回来）；
+  在 `EffectTracker` 按目标去重（通用基础设施不应理解记忆载荷语义）。
+- **D3 幂等键是逻辑 id，不是内容。** 不同 id 的同文条目仍是不同证据，各自成条；同 id 不同载荷
+  仍是覆盖（`reuse_count` 归零是「新内容」的既有语义，不属于重放）。
+- **D4 不加重试 / spool。** 本地 JSONL 是唯一权威、写入原子替换、失败向调用方传播；spool 会引入
+  第二权威并掩盖真实失败（`memory.md` §5 已由 change `0302` 订正）。
+
+**验证**：新增 `tests/test_memory_write_idempotency.py` 6（重放保留 `reuse_count`/`ts`/效应数、
+不通知观察者、不二次评分、不同载荷仍覆盖、同文不同 id 不合并、`remember`/`compact` 重放不增殖）。
+反证（`cp` + `md5sum` 复原，`store.py` `5e14ba90…`）：去快路径 ⇒ 4 红；纳入 `reuse_count` ⇒
+1 红；`ts` 严格比较 ⇒ 4 红；按正文跨 id 去重 ⇒ 1 红。全量 **3445 passed**。
+
+**局限**：① 相同载荷的跨 trace 重放不再产生该 trace 的效应 ⇒ 回滚**首个**创建 trace 仍会删除
+条目（无多 trace 共同所有权 / 引用计数）；② 重放不刷新 `ts`（重复到达不是新鲜度证据）；
+③ 同 id 内容修订若需要复用证据延续，须另立设计；④ 快路径每次写入多一次按 id 查找（热区命中，
+冷区回退 `search("")`），未做索引优化。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11607,3 +11642,4 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 | ADR-0293 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0294 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0295 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0296 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

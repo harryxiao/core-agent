@@ -5189,3 +5189,18 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **反证 4/4**（`cp` 到 `/tmp`、复原后 `md5sum` 一致：`crystallizer.py` `64798710…`、`engine.py` `a1a51115…`）：去复用门 ⇒ TC-CRYST-01 红；去 `force` 豁免 ⇒ TC-CRYST-03/05 红；`dissolve` 仍用空 `trace_id` ⇒ TC-CRYST-04 红；引擎丢弃返回值 ⇒ TC-CRYST-05 红。
 > **实测**：全量 pytest **3439 passed**（3433 + 6）；`openspec validate --all` 32/0（含本 active change）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0295 行。
+
+## 219. 写入幂等重放（TC-IDEMP，change `0306`／ADR-0296，台账 E242）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-IDEMP-01 | 同载荷重放零副作用 | 写入 → `read` 强化（`reuse_count>0`）→ 以相同载荷 `ts=0` 再 `write` | 返回既有 id；单条；`reuse_count` 与 `ts` 不变；`memory.write` 效应数不增（`tests/test_memory_write_idempotency.py::test_identical_replay_keeps_evidence_and_timestamp`） |
+| TC-IDEMP-02 | 重放不通知观察者 | 装配 `write_observer`，同一载荷写两次 | 观察者只收到 1 次（`...::test_replay_does_not_notify_observer`） |
+| TC-IDEMP-03 | 重放不二次评分 | 装配评分器，同一载荷写两次 | 评分器只被调用 1 次（`...::test_replay_does_not_rescore`） |
+| TC-IDEMP-04 | 不同载荷仍覆盖 | 同 id 依次写不同正文、再加标签 | 条目为新载荷；三次写入各记 1 条效应（不误判为重放）（`...::test_changed_payload_still_overwrites`） |
+| TC-IDEMP-05 | 同文不同 id 不合并 | 两个 id 写同一正文 | 两条均存在（幂等键是逻辑 id）（`...::test_same_content_different_ids_are_distinct`） |
+| TC-IDEMP-06 | 轮次与压实重放不增殖 | 同 trace 重放 `remember`；恢复同一素材后重放同会话 `compact` | 条目集合不变、`loop.<trace>` 效应数不增；摘要单条且摘要写入效应仍为 1（`...::test_remember_and_compact_replay_do_not_proliferate`） |
+
+> **反证 4/4**（`cp` 到 `/tmp`、复原后 `md5sum` 一致：`store.py` `5e14ba90…`）：去快路径 ⇒ TC-IDEMP-01/02/03/06 红；把 `reuse_count` 纳入相等 ⇒ TC-IDEMP-01 红；`ts` 严格比较 ⇒ 01/02/03/06 红；按正文跨 id 去重 ⇒ TC-IDEMP-05 红。
+> **实测**：全量 pytest **3445 passed**（3439 + 6）；`openspec validate --all` 32/0（含本 active change）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0296 行。
