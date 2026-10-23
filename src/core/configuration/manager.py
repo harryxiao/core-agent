@@ -59,6 +59,8 @@ _TOOL_SCOPES = ("all", "auto")
 # （change 0307 / ADR-0297）：`active` = 压实照常（与引入前逐字一致）；`off` = 单一 kill-switch。
 # `memory` 为非结构化段 ⇒ 集合外取值归一为 `active`（不静默停用固化）。
 _DEFAULT_CONSOLIDATION_MODE = "active"
+# 情景记忆保留期默认天数（change 0309 / ADR-0299）：0 = 关闭。
+_DEFAULT_EPISODIC_RETENTION_DAYS = 90
 _CONSOLIDATION_MODES = ("active", "off")
 
 # 编排调度缺省口径来源：doc/openspec/specs/configuration/spec.md「编排调度配置」
@@ -553,6 +555,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_MEMORY_L2_SOFT_MAX_ENTRIES",
         default=None,
         map_to="memory.l2_soft_max_entries",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "memory.episodic_retention_days",
+        "--memory-episodic-retention-days",
+        "CORE_MEMORY_EPISODIC_RETENTION_DAYS",
+        default=90,
+        map_to="memory.episodic_retention_days",
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
@@ -1304,6 +1314,19 @@ class ConfigManager:
             return None
         value = _parse_int(raw.get("l2_soft_max_entries"))
         return value if value is not None and value >= 1 else None
+
+    def episodic_retention_days(self) -> int:
+        """情景记忆保留期天数（缺省 ``90``；``0`` = 关闭；change 0309 / ADR-0299）。
+
+        **独立访问器**：`memory` 为**非结构化段** ⇒ 非法取值不阻断启动。``bool`` / 小数 /
+        非数值 / 负数一律归一为默认 ``90``（方向恒为「保留期生效」，配置笔误不会静默取消
+        治理保留期）；``0`` 是显式 kill-switch（保留期关闭）。
+        """
+        if self._config is None:
+            return _DEFAULT_EPISODIC_RETENTION_DAYS
+        raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
+        value = _parse_int(raw.get("episodic_retention_days", _DEFAULT_EPISODIC_RETENTION_DAYS))
+        return value if value is not None and value >= 0 else _DEFAULT_EPISODIC_RETENTION_DAYS
 
     def skill_retirement(self) -> bool:
         """SOP 技能退役开关（缺省 ``False`` = 连续退化不退役；change 0205 / ADR-0195）。

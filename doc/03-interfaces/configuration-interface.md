@@ -653,3 +653,20 @@ known_window(llm.model)  ──►  表命中 ⇒ 该族真实窗口（本 chang
   关闭时 `None`（不创建文件）。见 `memory.md` §3.22。
 - 口径来源：`doc/openspec/specs/configuration/spec.md`「记忆审计日志配置」（ADDED）、
   `doc/openspec/specs/memory/spec.md`「记忆治理审计日志」「记忆治理导出」（均 ADDED）。
+
+### 2.23 情景记忆保留期配置（change `0309` / ADR-0299，台账 E245）
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `memory.episodic_retention_days` | `90` | 非负整数；`0` = 关闭 | L2 episodic 保留期天数，到期由 `forget()` 墓碑化 |
+
+- **单一真源**：`ConfigSpec`（`map_to="memory.episodic_retention_days"`，`exposure=ADVANCED`）⇒
+  CLI `--memory-episodic-retention-days`、env `CORE_MEMORY_EPISODIC_RETENTION_DAYS`、yaml 三面；
+  优先链 CLI > env > config.yaml > 缺省。
+- **访问器** `ConfigManager.episodic_retention_days() -> int`：`memory` 为**非结构化段** ⇒
+  非法取值不阻断启动；`bool` / 小数 / 非数值 / 负数归一为 `90`（方向恒为「保留期生效」——
+  配置笔误不得静默取消治理保留期）；`0` 是显式 kill-switch；未加载配置返回 `90`。
+- **消费方**：`build_runtime` 注入 `MemoryStore(episodic_retention_days=...)`；直接构造缺省
+  `None` ⇒ 关闭（既有测试与嵌入用法逐字不变）。见 `memory.md` §3.23。
+- 口径来源：`doc/openspec/specs/configuration/spec.md`「情景记忆保留期配置」（ADDED）、
+  `doc/openspec/specs/memory/spec.md`「情景记忆保留期与墓碑化」（ADDED）。

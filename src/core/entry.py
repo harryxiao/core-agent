@@ -324,7 +324,7 @@ def _add_memory_parser(sub: Any) -> None:
     )
     getp = mem_sub.add_parser("get", help="打印单条记忆全文（内容脱敏）")
     getp.add_argument("entry_id", metavar="<id>")
-    deletep = mem_sub.add_parser("delete", help="删除单条记忆（删除前写持久备份）")
+    deletep = mem_sub.add_parser("delete", help="墓碑化单条记忆（清正文，删除前写持久备份）")
     deletep.add_argument("entry_id", metavar="<id>")
     repair = mem_sub.add_parser("repair-keyfacts", help="修复失效关键事实（重抽 + 清理旧条目）")
     repair.add_argument("--dry-run", action="store_true", help="只报告将修复的内容，不删不写")
@@ -1557,7 +1557,7 @@ def _memory_get(memory: Any, args: argparse.Namespace) -> int:
 
 
 def _memory_delete(memory: Any, args: argparse.Namespace) -> int:
-    """`memory delete <id>`：先备份后删除；备份失败 fail-closed。"""
+    """`memory delete <id>`：先备份后墓碑化（清正文、留哈希/时间）；备份失败 fail-closed。"""
     entry = _memory_find(memory.audit(None), args.entry_id)
     if entry is None:
         print(f"未找到条目: {args.entry_id}", file=sys.stderr)
@@ -1567,10 +1567,10 @@ def _memory_delete(memory: Any, args: argparse.Namespace) -> int:
     except OSError as exc:
         print(f"备份失败，未删除任何条目: {exc}", file=sys.stderr)
         return 1
-    if not memory.discard(entry.id):
+    if not memory.retract(entry.id):
         print(f"删除失败（条目已不存在）: {entry.id}", file=sys.stderr)
         return 1
-    print(f"已删除 {entry.id}；备份文件：{backup}")
+    print(f"已墓碑化 {entry.id}；备份文件：{backup}")
     return 0
 
 

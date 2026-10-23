@@ -89,11 +89,21 @@ class MemoryStore(Plugin):
         """层间迁移（可撤销）：记 Effect，按 trace_id 回滚即迁回原层；
         trace_id 缺省取条目自身来源 trace，压实等批量操作传统一 trace 一起撤销。"""
 
+    def retract(self, entry_id: str, *, reason: str = "tombstone") -> bool:
+        """墓碑化（change 0309 / ADR-0299，见 §1.3）：迁 L4、清正文、置 ``retracted``、
+        追加 ``retracted`` 标签并保留 ``content_hash``；记 ``retract.<id>`` 可逆效应与
+        ``op="delete"`` 审计（``reason`` 区分 ``tombstone`` / ``retention``）。
+        存在 ⇒ ``True``；未知 id ⇒ ``False``（零效应 / 零审计）。"""
+
     def forget(self, *, threshold: float = 0.05) -> list[MemoryId]:
         """遗忘（见 §3）：衰减评分低于 threshold 的 L2 episodic 条目迁 L4 归档，
         返回被归档条目 id（撤销句柄 forgetting.<id>）；不物理删除。
         迁移同时打 forgotten 标签（change 0301）：read() 与 failure_lessons() 缺省不再返回
-        （audit() / session_chain() 仍可见）；同 trace 回滚即摘标签并迁回原层。"""
+        （audit() / session_chain() 仍可见）；同 trace 回滚即摘标签并迁回原层。
+
+        **保留期**（change 0309 / ADR-0299）：注入 ``episodic_retention_days`` 时先墓碑化超过
+        N 天的 L2 episodic（``retract(reason="retention")``，撤销句柄 ``retract.<id>``），
+        结果与衰减归档合并返回；非 ``active`` 条目两阶段均不参与。"""
 
     def failure_lessons(self, session_id: str = "", *, limit: int = 5) -> list[MemoryEntry]:
         """按会话取失败条目（tags 含 failure），ts 降序、至多 limit 条；层无关（已归档仍可读），
@@ -199,6 +209,8 @@ MemoryStore(
                                  # forget() / summarize_slice 不受影响
     audit_log=None,        # 治理审计旁路 MemoryAuditLog（change 0308 / ADR-0298）：缺省 None ⇒
                            # 零文件/零行为；接线后 write/delete/forget 成功后追加元数据事件
+    episodic_retention_days=None,  # 情景保留期（change 0309 / ADR-0299）：缺省 None 关闭
+                                   # （直接构造逐字不变）；N>0 ⇒ forget() 先墓碑化超期 L2 episodic
 )
 ```
 
@@ -255,6 +267,28 @@ reason / count / target / format`。`op ∈ {write, delete, forget, export}`；`
 再截断（id/source/session/trace 128、reason 64、target 512、format 16、hash 80）。
 文件 0600、单次 `os.write` 整行；**不轮转**（外部 logrotate 可安全轮转）。
 
+---
+
+### 1.3 墓碑化（retract，change `0309` / ADR-0299）
+
+```python
+MemoryStore.retract(entry_id, *, reason="tombstone") -> bool
+```
+
+存在 ⇒ 迁 L4、`content=""`、`status="retracted"`、追加 `retracted` 标签，保留
+`id / content_hash / ts / source / session_id / trace_id / version`；记 `memory.retract` 可逆
+效应（trace `retract.<id>`，回滚恢复正文 / 状态 / 原层）与 `op="delete"` 审计
+（`reason="tombstone"` 或 `"retention"`）。未知 id ⇒ `False`、零效应零审计。
+
+| 面 | 可见性 |
+|---|---|
+| `read` / `recall` / `failure_lessons` / 压实材料 / 重抽材料 / L2 软上限 | **不可见**（`status != "active"`，且已迁 L4） |
+| `audit()` / 导出快照 / `memory get` | 可见（空正文 + 保留哈希） |
+| 持久恢复 | `memory delete` 的备份文件（0600，含正文） |
+
+`forget(episodic_retention_days=N)` 对超期 L2 episodic 复用同一原语（`reason="retention"`）。
+`discard()` 保持**物理删除**（压实等内部清退），两者不共用语义。
+
 ## 2. 数据结构
 
 ```python
@@ -275,7 +309,7 @@ class MemoryEntry:
     kind: Literal["episodic", "semantic"] = "episodic"  # 事件 / 提炼事实
     # —— 治理信封（change 0303 / ADR-0293，全部有默认值 ⇒ 旧行缺键可加载）——
     content_hash: str = ""     # content.strip() 的 SHA-256；write() 为空时自动计算
-    status: Literal["active", "superseded"] = "active"
+    status: Literal["active", "superseded", "retracted"] = "active"
     version: int = 1           # 同链递增（关键事实版本链）
     parent_id: str = ""        # 被本版本替代的条目 id（首版空）
     superseded_by: str = ""    # 仅旧版本填写：替代它的新版本 id
@@ -505,6 +539,7 @@ CLI：``core-agent memory repair-keyfacts [--dry-run]``。
 | 返回值 | 被归档条目 id 列表（撤销句柄） |
 | 时间未知 | ``ts<=0`` 时 ``recency_decay`` 返回 1.0，不惩罚 → 不会被遗忘 |
 | 触发 | 维护节拍驱动（change `0049`）：loop 收尾按 `maintenance_interval` 触发（`_maintain`，同节拍兼触发冷路径），或经 `core-agent memory maintain` 显式触发；压实路径（``persist → compact → forget``）仍顺带 sweep。异常降级不中断主流程 |
+| 保留期（change `0309`） | ``episodic_retention_days=N`` 时**先**墓碑化超期 L2 episodic（§1.3，``reason="retention"``），再走衰减；两阶段结果合并返回。非 ``active`` 条目两阶段均不参与 |
 
 **复用延缓衰减**（change `0177`／ADR-0168）：``store._decay_score`` 的 **freshness 项**改为
 ``freshness ** (1 / (1 + log1p(reuse_count)))`` —— 被检索复用越多的条目衰减越慢（同时间戳 / 同

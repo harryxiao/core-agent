@@ -653,6 +653,41 @@ SDD §10.4 的治理面此前只有进程内效应与零散的 `memory-deleted.j
 **局限**：审计文件与记忆库同用户可写（无签名链 / WORM）；不自动轮转；审计关闭期间的动作
 **不可回溯**。
 
+### 3.23 情景保留期与墓碑化（change `0309`／ADR-0299／台账 E245）
+
+SDD §5.6/§10.4 要求情景记忆有保留期、遗忘留下**不含正文**的墓碑。此前 `forget()` 只做衰减
+归档（正文与 `active` 状态保留），`memory delete` 是物理删除 —— 前者无法满足保留期，后者
+让治理面失去可追溯记录。
+
+**保留期**：`MemoryStore(episodic_retention_days=)`（缺省 `None` = 关闭；直接构造逐字不变）。
+组合根缺省注入 `90`（`memory.episodic_retention_days` / `--memory-episodic-retention-days` /
+`CORE_MEMORY_EPISODIC_RETENTION_DAYS`；`0` = kill-switch，非法 / 负数归一 `90`）。
+`forget()` 在自然衰减**之前**执行保留期阶段，判据：`layer == "L2"`、`kind == "episodic"`、
+`status == "active"`、`ts > 0` 且 `ts < now - N×86400`。到期条目**墓碑化**，id 并入
+`forget()` 返回值；自然衰减继续沿用 `reason="decay"`。
+
+**墓碑化原语** `retract(entry_id, *, reason)`（保留期与 CLI 删除共用）：
+
+| 维度 | 墓碑（`retract`） | 遗忘归档（`forget` 衰减） | 物理删除（`discard`） |
+|---|---|---|---|
+| 正文 | **清空** | 保留 | 删除 |
+| `status` | `retracted` | `active` | — |
+| 层 | L4 | L4 | — |
+| 保留字段 | id / `content_hash` / `ts` / source / session / trace / version | 全部 | 无 |
+| 检索 / 教训 / 压实材料 | 不可见 | 不可见（`forgotten` 标签） | 不可见 |
+| `audit()` / 导出 | 可见 | 可见 | 不可见 |
+| 可逆性 | `retract.<id>` trace | `forgetting.<id>` trace | 进程内效应 + 备份文件 |
+
+- **审计**：`op="delete"`、`reason="tombstone"`（CLI 删除）或 `reason="retention"`（保留期）。
+- **CLI**：`memory delete <id>` 先写 0600 备份（保留正文），再 `retract`；输出 `已墓碑化 …`。
+- **活性过滤**（治理信封前置）：`forget` 衰减、`_episodic_groups`、`_material_for_session`、
+  L2 软上限计数均只收 `status == "active"`；墓碑不占 L2 名额、不进压实 / 重抽材料。
+- **迁移后重取**：`_persist` 会采纳盘上副本，热区引用可能已不是真源；`retract` 在 `migrate`
+  之后按 id 重取，避免用旧的 L2 引用把层覆盖回去。
+
+**局限**：保留期只覆盖 L2 episodic（语义 / 技能条目不过期）；不实现 SDD 的「每 namespace
+256 MiB」容量告警；墓碑正文不可恢复（备份文件是唯一持久恢复来源）；审计仍可关闭。
+
 ---
 
 ## 4. 记忆写入规范（"无行动不记忆"的落地）

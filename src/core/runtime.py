@@ -858,6 +858,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         # 治理审计旁路（change 0308 / ADR-0298）：缺省开 ⇒ 事件落
         # `$CORE_STATE_DIR/memory.audit.jsonl`（0600、不含正文）；显式关闭 ⇒ None（零文件）。
         audit_log=MemoryAuditLog(_memory_audit_path()) if config.audit_log_enabled() else None,
+        # 情景保留期（change 0309 / ADR-0299）：缺省 90 天；`0` ⇒ kill-switch（forget 逐字
+        # 回到仅衰减）。到期 episodic 由 `forget()` 墓碑化（清正文 + retracted + L4）。
+        episodic_retention_days=config.episodic_retention_days(),
     )
     # 上下文压实接线（0041）：多轮历史 → persist 落 L2；此前 context.Compactor 与
     # memory.compact 都无生产调用方（死路径），现由 loop 的**工具步数**/预算阈值触发。

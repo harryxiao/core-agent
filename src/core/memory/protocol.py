@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 Layer = Literal["L0", "L1", "L2", "L3", "L4"]
-MemoryStatus = Literal["active", "superseded"]
+MemoryStatus = Literal["active", "superseded", "retracted"]
 MemoryId = str
 
 

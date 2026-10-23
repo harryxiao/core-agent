@@ -1252,20 +1252,26 @@ def test_memory_get_prints_entry_and_unknown_id_exits_nonzero(
     assert "未找到" in capsys.readouterr().err
 
 
-def test_memory_delete_backs_up_then_removes(
+def test_memory_delete_backs_up_then_tombstones(
     monkeypatch, tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`memory delete`：删除前追加备份（0600）、条目消失、打印备份路径。"""
+    """`memory delete`：先备份（0600），再墓碑化（正文清空、retracted、迁 L4）。"""
     store = _seed_memory(_entry("e1"), _entry("e2"))
 
     assert _run_memory_cli(monkeypatch, tmp_path, store, "delete", "e1") == 0
     out = capsys.readouterr().out
     backup = _state_path("memory-deleted.jsonl")
     assert str(backup) in out
-    assert [e.id for e in store.audit(None)] == ["e2"]
+    assert "已墓碑化 e1" in out
+    assert [e.id for e in store.audit(None)] == ["e1", "e2"]
+    tomb = next(e for e in store.audit(None) if e.id == "e1")
+    assert (tomb.status, tomb.content, tomb.layer) == ("retracted", "", "L4")
+    assert tomb.content_hash
+    assert all(entry.id != "e1" for entry in store.read("内容"))
 
     rows = [json.loads(line) for line in backup.read_text(encoding="utf-8").splitlines()]
     assert [row["id"] for row in rows] == ["e1"]
+    assert rows[0]["content"] == "内容"  # 备份保留正文（持久可逆性来源）
     assert backup.stat().st_mode & 0o777 == _MODE_0600
 
 

@@ -11438,6 +11438,48 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 ⑥ 导出是全量快照，无按时间 / 层 / 状态的过滤参数；⑦ 删除事件的持久可逆性仍由 CLI 备份
 （`memory-deleted.jsonl`）承担，审计行不是恢复源。
 
+## ADR-0299：情景保留期与墓碑化（change 0309 / 台账 E245）
+
+**背景。** 对照 `ai-arch/docs/memory-sdd.md` v1.0 §5.6 / §10.4 与走查 **P2-3**：SDD 要求情景
+记忆可配置保留期（缺省 90 天）、遗忘留下**不含正文**的墓碑；本仓 `forget()` 只做衰减归档
+（正文与 `active` 状态保留），`memory delete` 是物理删除。前者无法兑现保留期，后者让治理面
+失去「删过什么」的可追溯记录（审计行只是旁证，不是条目状态）。
+
+**决策**：
+
+- **D1 墓碑化独立原语 `retract()`。** `retract(entry_id, *, reason)`：迁 L4 → 清空正文 →
+  `status="retracted"` → 追加 `retracted` 标签，保留 `id / content_hash / ts / source /
+  session_id / trace_id / version`；记 `memory.retract` 可逆效应（trace `retract.<id>`）与
+  `op="delete"` 审计。**被拒**：直接复用 `discard`（物理删除，无可追溯墓碑）；把清正文藏进
+  `forget`（CLI 删除与保留期需要同一语义，单一原语避免两套「删除」）。
+- **D2 保留期挂在 `forget()` 前置阶段。** 判据 `L2 + episodic + active + ts>0 + ts<now-N×86400`；
+  到期条目复用 `retract(reason="retention")`，id 并入 `forget()` 返回值。**被拒**：新开维护
+  命令 / 定时任务（多一个触发面与观测口径；`forget` 已被 loop 维护节拍与 `memory maintain`
+  共同驱动）；只对 L2 做整体过期（语义 / 技能条目按 SDD 不过期）。
+- **D3 缺省 90 天，`0` 为 kill-switch。** `MemoryStore(episodic_retention_days=None)` 直接构造
+  **关闭**（嵌入用法与既有测试逐字不变）；组合根缺省注入 90；`memory.episodic_retention_days`
+  三面齐备，非法 / 负数归一 **90**（方向恒为「保留期生效」）。**被拒**：默认关闭（SDD 缺省即
+  90，治理能力默认缺席等于没有）；非法值归一 0（配置笔误静默取消保留期）。
+- **D4 治理信封前置。** `forget` 衰减、`_episodic_groups`、`_material_for_session`、L2 软上限
+  只收 `status == "active"`：墓碑不占 L2 名额、不进压实 / 重抽材料。`audit()` / 导出 / `memory
+  get` 仍可见（空正文 + 哈希）。**被拒**：在检索 / 压实各处分别判 `retracted`（漏一处即泄回
+  注入面；状态过滤是单一前置面）。
+- **D5 CLI 删除改墓碑。** `memory delete` 保留 0600 备份（正文的持久恢复来源），再 `retract`；
+  输出 `已墓碑化 …`。`discard` 保持物理删除，仅供压实等内部清退。**被拒**：删除即物理 + 只靠
+  备份（治理面丢失条目状态）；兼容期双模式（多一个开关与两条路径）。
+- **D6 迁移后重取。** `FileBackend._persist` 会采纳盘上副本，热区引用可能已不是真源；
+  `retract` 在 `migrate` 后按 id 重取，避免用旧 L2 引用把层覆盖回去（实现期实测发现的坑）。
+
+**验证**：新增 `tests/test_memory_retention.py` 19 + `tests/test_memory_tombstone.py` 7 = 26；
+`tests/test_entry.py` 删除用例改为墓碑断言。反证（`cp` + `md5sum` 复原）：去保留期前置阶段
+⇒ 2 红；`retract` 不清正文 ⇒ 1 红；不置 `retracted` ⇒ 1 红；`_episodic_groups` 去活性过滤
+⇒ 1 红；配置非法值归一改为 0 ⇒ 4 红。全量 **3513 passed**；`openspec validate --all` 32/0（含本 active change；归档后 31/0）。
+
+**局限**：① 保留期只覆盖 L2 episodic（语义 / 技能条目不过期）；② 不实现 SDD 的「每 namespace
+256 MiB」容量告警；③ 墓碑正文不可恢复，CLI 备份是唯一持久恢复来源；④ 审计仍可关闭
+（ADR-0298 D4）；⑤ 保留期在 `forget` 节拍上执行，最长可晚一个维护间隔；⑥ 不按 namespace /
+会话维度配置保留期（单一全局天数）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11731,3 +11773,4 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 | ADR-0296 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0297 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0298 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0299 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

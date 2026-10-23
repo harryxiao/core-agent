@@ -5239,3 +5239,24 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **反证 5/5**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：删 `write` 钩子 ⇒ TC-MEMAUD-01 红；审计行写入正文 ⇒ TC-MEMAUD-01 红；删 `--yes` 判断 ⇒ TC-MEMAUD-08 红；非法值归一改为关闭 ⇒ TC-MEMAUD-06 参数化 3 红；删 `delete` 钩子 ⇒ TC-MEMAUD-03 红。
 > **实测**：全量 pytest **3487 passed**（3462 + 25）；`openspec validate --all` 32/0（含本 active change）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0298 行。
+
+## 222. 情景保留期与墓碑化（TC-MEMRET，change `0309`／ADR-0299，台账 E245）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-MEMRET-01 | 直接构造默认关闭 | 未注入保留期，写入十年前 L2 episodic 后 `forget()` | 返回 `[]`；条目仍 `active` / L2 / 正文保留（`tests/test_memory_retention.py::test_retention_default_off_for_direct_store`） |
+| TC-MEMRET-02 | 到期墓碑 | `episodic_retention_days=90`，写入 200 天前条目后 `forget()` | 返回 `["old"]`；迁 L4、`status="retracted"`、正文空、带 `retracted` 标签；审计 `("delete","retention")`（`...::test_retention_tombstones_expired_episodic`） |
+| TC-MEMRET-03 | 判据边界 | 新鲜条目 / `ts<=0` / semantic / 非 active | 均不墓碑化（`...::test_retention_keeps_fresh_entry`、`...::test_retention_skips_unknown_timestamp`、`...::test_retention_skips_semantic`、`...::test_retention_skips_non_active`） |
+| TC-MEMRET-04 | 与衰减合并 | 同时存在到期与低分条目，`forget(threshold=10.0)` | 两 id 都返回；到期者为 `retracted`，衰减退者保留正文与 `forgotten` 标签（`...::test_retention_and_decay_share_forget_return`） |
+| TC-MEMRET-05 | 可逆 | 保留期墓碑后 `tracker.rollback("retract.old")` | 正文 / `active` / L2 复原、标签移除（`...::test_retention_is_reversible`） |
+| TC-MEMRET-06 | 退出材料与名额 | 墓碑后查 `_episodic_groups` / `_material_for_session`；L2 上限 1 时写入新条目 | 墓碑不入材料；新条目保持 L2（墓碑不占名额）（`...::test_tombstone_not_in_compaction_material`、`...::test_tombstone_does_not_count_toward_l2_cap`） |
+| TC-MEMRET-07 | 配置三面与归一 | spec / 缺省 / yaml / env / `0` / 非法值 | flag/env/default/map_to 对齐；缺省与非法值返回 `90`；`0` 返回 `0`（`...::test_spec_declares_retention_days` 等 5 项） |
+| TC-MEMRET-08 | 组合根接线 | 缺省 / `episodic_retention_days: 0` 各构造 runtime | `_episodic_retention_days` 分别为 `90` / `0`（`...::test_runtime_wires_retention_days`） |
+| TC-MEMRET-09 | 墓碑原语 | `retract("e1")` 后检查状态 / 正文 / 层 / 哈希 / 审计；未知 id | 迁 L4、空正文、`retracted`、哈希保留、`("delete","tombstone")`；未知 id ⇒ `False` 且零审计（`tests/test_memory_tombstone.py::test_retract_clears_body_and_marks_status`、`...::test_retract_unknown_id_is_noop`） |
+| TC-MEMRET-10 | 注入面与持久 | 墓碑后 `read` / `recall` / `failure_lessons`；重建 store 再读 | 注入面均不可见；空正文 / `retracted` / L4 跨进程持久（`...::test_retracted_entry_leaves_injection_surfaces`、`...::test_tombstone_persists_across_reload`） |
+| TC-MEMRET-11 | 治理面可见 | 墓碑后 `audit(None)` | 条目可见、`status="retracted"`、正文空、`content_hash` 保留（`...::test_audit_and_export_surface_keep_tombstone`） |
+| TC-MEMRET-12 | CLI 删除墓碑化 | `memory delete e1` | 先写 0600 备份（含正文），条目迁 L4 / `retracted` / 空正文；输出 `已墓碑化 e1`（`tests/test_entry.py::test_memory_delete_backs_up_then_tombstones`） |
+
+> **反证 5/5**（`cp` 到 `/tmp`、复原后 `md5sum` 一致：`store.py` `7429c408…`、`manager.py` `d8567639…`）：去保留期前置阶段 ⇒ TC-MEMRET-02/04 红；`retract` 不清正文 ⇒ TC-MEMRET-09 红；不置 `retracted` ⇒ TC-MEMRET-10 红；`_episodic_groups` 去活性过滤 ⇒ TC-MEMRET-06 红；配置非法值归一改为 `0` ⇒ TC-MEMRET-07 参数化 4 红。
+> **实测**：全量 pytest **3513 passed**（3487 + 26）；`openspec validate --all` 32/0（含本 active change；归档后 31/0）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0299 行。

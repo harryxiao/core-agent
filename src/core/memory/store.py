@@ -90,6 +90,9 @@ _GATE_EXEMPT_SOURCES = frozenset({"compaction", "context", "extraction", "relati
 # 遗忘阈值：衰减评分低于此值即归档（≈19 天零复用零重要度）
 _FORGET_THRESHOLD = 0.05
 
+# 保留期判据的日长（change 0309）：与 `time.time()` 同口径。
+_SECONDS_PER_DAY = 86400.0
+
 # 单次压实的逐条目打分调用上界（score 原语一次只给一条目的分）
 _MAX_SCORED_PER_COMPACT = 20
 
@@ -319,6 +322,9 @@ class MemoryStore:
         # 治理审计旁路（change 0308 / ADR-0298）：缺省 None ⇒ 零文件 / 零行为变化；接线后
         # write / delete / forget 成功后追加元数据事件（不含正文），写失败 fail-open。
         audit_log: MemoryAuditLog | None = None,
+        # 情景保留期（change 0309 / ADR-0299）：缺省 None ⇒ 关闭（直接构造逐字不变）；
+        # 正整数 N ⇒ `forget()` 先墓碑化超过 N 天的 L2 episodic（清正文 + retracted + L4）。
+        episodic_retention_days: int | None = None,
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
         self._tracker = effect_tracker if effect_tracker is not None else EffectTracker()
@@ -337,6 +343,7 @@ class MemoryStore:
         self._clock = clock if clock is not None else time.monotonic
         self._consolidation_enabled = consolidation_enabled
         self._audit_log = audit_log
+        self._episodic_retention_days = episodic_retention_days
         # 压实 single-flight（change 0296）：已有压实执行时新的触发非阻塞跳过。
         self._compact_lock = threading.Lock()
         # 临时会话（change 0245 / ADR-0233）：基准/合成执行会话 —— 压实只做会话级摘要与
@@ -709,6 +716,56 @@ class MemoryStore:
         self._delete_entry(entry)
         return True
 
+    def retract(self, entry_id: str, *, reason: str = "tombstone") -> bool:
+        """墓碑化一条记忆（change 0309 / ADR-0299）：清正文、置 ``retracted``、迁 L4。
+
+        与 ``discard``（物理删除，供压实等内部清退）分离：墓碑是**治理面可追溯**的保留
+        记录 —— 保留 id / ``content_hash`` / ``ts`` / 标签，正文清空，``audit()`` 与导出
+        仍可见，检索 / 教训 / 压实材料均不可见。存在 ⇒ ``True``，未知 id ⇒ ``False``
+        （零效应 / 零审计）。可撤销：``retract.<id>`` 回滚恢复正文、状态与原层。
+        """
+        entry = self._entry_by_id(entry_id)
+        if entry is None:
+            return False
+        trace_id = f"retract.{entry.id}"
+        source = entry.layer
+        if source != "L4":
+            self.migrate(entry.id, source, "L4", trace_id=trace_id)
+            # `_persist` 落盘后会采纳盘上副本 ⇒ 热区引用可能已不是真源；迁移后重取，
+            # 确保墓碑化写回的是 L4 副本（否则会用旧的 L2 引用把层覆盖回去）。
+            entry = self._entry_by_id(entry_id)
+            if entry is None:
+                return False
+        prior = (entry.content, entry.status, list(entry.tags))
+        entry.content = ""
+        entry.status = "retracted"
+        if "retracted" not in entry.tags:
+            entry.tags.append("retracted")
+        self._backend.put(entry)
+        self._hot_put(entry)
+        self._tracker.record(
+            Effect(
+                op="memory.retract",
+                target=entry.id,
+                undo=lambda entry=entry, prior=prior: self._undo_retract(entry, prior),
+                reversible=True,
+                coeffect=[],
+                trace_id=trace_id,
+                ts=time.time(),
+            )
+        )
+        self._audit_event("delete", entry, reason=reason)
+        return True
+
+    def _undo_retract(self, entry: MemoryEntry, prior: tuple[str, str, list[str]]) -> None:
+        """撤销墓碑化：恢复正文 / 原状态 / 原标签（``retract.<id>`` 同一 trace）。"""
+        content, status, tags = prior
+        entry.content = content
+        entry.status = cast(MemoryStatus, status)
+        entry.tags = list(tags)
+        self._backend.put(entry)
+        self._hot_put(entry)
+
     def summary_for(self, session_id: str) -> MemoryEntry | None:
         """按会话取回既有摘要条目（**只读**；口径同 `_commit_summary`；无则 ``None``）。
 
@@ -950,10 +1007,18 @@ class MemoryStore:
         条目退出**注入面**（``read()`` 与 ``failure_lessons()`` 缺省不返回；显式
         ``read(include_forgotten=True)`` 与审计/诊断面仍可见）。返回被归档条目 id
         （撤销句柄：``forgetting.<id>``；回滚移除标签并迁回原层）。
+
+        保留期（change 0309）：注入 ``episodic_retention_days`` 时**先**墓碑化超过 N 天的
+        L2 episodic（``retract(reason="retention")``，撤销句柄 ``retract.<id>``），再走衰减。
+        两阶段结果合并返回；未注入 ⇒ 逐字不变。非 ``active`` 条目不参与衰减（治理信封）。
         """
-        forgotten: list[MemoryId] = []
+        forgotten: list[MemoryId] = [
+            entry.id
+            for entry in self._retention_due()
+            if self.retract(entry.id, reason="retention")
+        ]
         for entry in self._all_entries():
-            if entry.layer != "L2" or not self._forgettable(entry):
+            if entry.layer != "L2" or entry.status != "active" or not self._forgettable(entry):
                 continue
             if _decay_score(entry) >= threshold:
                 continue
@@ -976,6 +1041,22 @@ class MemoryStore:
             self._audit_event("forget", entry, reason="decay")
             forgotten.append(entry.id)
         return forgotten
+
+    def _retention_due(self) -> list[MemoryEntry]:
+        """保留期到期条目（change 0309）：仅 L2 / episodic / active / 有已知时间戳。"""
+        days = self._episodic_retention_days
+        if days is None or days <= 0:
+            return []
+        cutoff = time.time() - days * _SECONDS_PER_DAY
+        return [
+            entry
+            for entry in self._all_entries()
+            if entry.layer == "L2"
+            and entry.kind == "episodic"
+            and entry.status == "active"
+            and entry.ts > 0
+            and entry.ts < cutoff
+        ]
 
     def _undo_forget_tag(self, entry_id: str) -> None:
         """撤销 ``forgotten`` 标签（``forgetting.<id>`` 同一 trace，可逆效应）。"""
@@ -1006,11 +1087,19 @@ class MemoryStore:
         if cap is None:
             return
         try:
-            active = [entry for entry in self._all_entries() if entry.layer == "L2"]
+            active = [
+                entry
+                for entry in self._all_entries()
+                if entry.layer == "L2" and entry.status == "active"
+            ]
             if len(active) <= cap:
                 return
             self.forget()
-            active = [entry for entry in self._all_entries() if entry.layer == "L2"]
+            active = [
+                entry
+                for entry in self._all_entries()
+                if entry.layer == "L2" and entry.status == "active"
+            ]
             overflow = len(active) - cap
             if overflow <= 0:
                 return
@@ -1271,7 +1360,7 @@ class MemoryStore:
         """
         groups: dict[str, list[MemoryEntry]] = {}
         for entry in self._all_entries():
-            if entry.kind != "episodic" or entry.layer != "L2":
+            if entry.kind != "episodic" or entry.layer != "L2" or entry.status != "active":
                 continue
             if _PRESERVE_TAGS.intersection(entry.tags):
                 continue
@@ -1630,7 +1719,9 @@ class MemoryStore:
         return [
             entry
             for entry in self._all_entries()
-            if entry.kind == "episodic" and (entry.session_id == session_id or tag in entry.tags)
+            if entry.kind == "episodic"
+            and entry.status == "active"
+            and (entry.session_id == session_id or tag in entry.tags)
         ]
 
     def _delete_entry(self, entry: MemoryEntry) -> None:
