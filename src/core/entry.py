@@ -347,6 +347,11 @@ def _add_memory_parser(sub: Any) -> None:
         "--budget", type=_positive_int, default=4096, metavar="N", help="注入预算（token）"
     )
     whyp.add_argument("--session", default="", metavar="S", help="只检索本会话（缺省不限）")
+    conflictsp = mem_sub.add_parser("conflicts", help="列出冲突裁决（旧值 → 新值；只读）")
+    conflictsp.add_argument("--json", action="store_true", help="输出 JSON（缺省逐行文本）")
+    conflictsp.add_argument(
+        "--limit", type=_non_negative_int, default=20, metavar="N", help="展示条数（0 = 全部）"
+    )
 
 
 def _add_rag_parser(sub: Any) -> None:
@@ -1685,7 +1690,7 @@ def _memory_stats(memory: Any, args: argparse.Namespace) -> int:
     print(
         f"entries={stats.entries_total}\tactive={stats.entries_active}"
         f"\tretracted={stats.entries_retracted}\tsuperseded={stats.entries_superseded}"
-        f"\tforgotten={stats.entries_forgotten}"
+        f"\tforgotten={stats.entries_forgotten}\tconflicts={stats.conflicts}"
     )
     print(f"layers={_counts_text(stats.by_layer)}")
     print(f"status={_counts_text(stats.by_status)}")
@@ -1729,6 +1734,79 @@ def _memory_why(memory: Any, args: argparse.Namespace) -> int:
     return 0
 
 
+def _conflict_entity(entry_id: str) -> str:
+    """`keyfact.<slug>[.vN]` ⇒ `<slug>`；非关键事实 id 原样展示。"""
+    prefix = "keyfact."
+    rest = entry_id[len(prefix) :] if entry_id.startswith(prefix) else entry_id
+    head, sep, tail = rest.rpartition(".v")
+    return head if sep and head and tail.isdigit() else rest
+
+
+def _conflict_rows(entries: list[MemoryEntry]) -> list[dict[str, Any]]:
+    """从条目链派生冲突记录（旧版 `superseded_by` → 新版），按新版时间降序。
+
+    只读派生 ⇒ 覆盖升级前 / 审计关闭期间的历史链；取值一律先脱敏再截断。
+    """
+    by_id = {entry.id: entry for entry in entries}
+    rows: list[dict[str, Any]] = []
+    for old in entries:
+        if not old.superseded_by:
+            continue
+        new = by_id.get(old.superseded_by)
+        rows.append(
+            {
+                "entity": _conflict_entity(old.id),
+                "old_id": old.id,
+                "old_ts": old.ts,
+                "new_id": old.superseded_by,
+                "new_ts": new.ts if new is not None else 0.0,
+                "decision": "newer_wins",
+                "old_value": _one_line_summary(old.content),
+                "new_value": _one_line_summary(new.content) if new is not None else "",
+            }
+        )
+    rows.sort(key=lambda row: row["new_ts"] or row["old_ts"], reverse=True)
+    return rows
+
+
+_CONFLICT_FIELDS = (
+    "entity",
+    "old_id",
+    "old_ts",
+    "new_id",
+    "new_ts",
+    "decision",
+    "old_value",
+    "new_value",
+)
+
+
+def _conflict_cell(name: str, value: object) -> str:
+    """冲突行单字段展示：时间格式化、空值折 `-`、其余原样。"""
+    if name in ("old_ts", "new_ts") and isinstance(value, (int, float)):
+        return _format_ts(float(value))
+    if value is None or value == "":
+        return "-"
+    return str(value)
+
+
+def _memory_conflicts(memory: Any, args: argparse.Namespace) -> int:
+    """`memory conflicts [--json] [--limit N]`：只读列出冲突裁决（零强化、零写入）。"""
+    rows = _conflict_rows(memory.audit(None))
+    limit = int(args.limit)
+    if limit > 0:
+        rows = rows[:limit]
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, sort_keys=True))
+        return 0
+    if not rows:
+        print("（无冲突记录）")
+        return 0
+    for row in rows:
+        print("\t".join(f"{name}={_conflict_cell(name, row[name])}" for name in _CONFLICT_FIELDS))
+    return 0
+
+
 _MEMORY_COMMANDS: dict[str, Callable[[Any, argparse.Namespace], int]] = {
     "maintain": _memory_maintain,
     "list": _memory_list,
@@ -1739,6 +1817,7 @@ _MEMORY_COMMANDS: dict[str, Callable[[Any, argparse.Namespace], int]] = {
     "export": _memory_export,
     "stats": _memory_stats,
     "why": _memory_why,
+    "conflicts": _memory_conflicts,
 }
 
 
@@ -1750,7 +1829,7 @@ def _memory(args: argparse.Namespace) -> int:
             "用法: core-agent memory {maintain|list [--limit N]|get <id>|delete <id>"
             "|repair-keyfacts [--dry-run]|audit [--limit N]|"
             "export [--format jsonl|json] [--out PATH] --yes|stats [--json]|"
-            "why <query> [--budget N] [--session S]}",
+            "why <query> [--budget N] [--session S]|conflicts [--json] [--limit N]}",
             file=sys.stderr,
         )
         return 1

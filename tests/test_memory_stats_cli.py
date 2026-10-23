@@ -112,6 +112,7 @@ def test_stats_json_fixed_keys(
         "entries_retracted",
         "entries_superseded",
         "entries_forgotten",
+        "conflicts",
         "by_layer",
         "by_status",
         "content_bytes",
@@ -145,6 +146,7 @@ def test_stats_text_mode_is_line_oriented(
     out = capsys.readouterr().out
     assert "storage_bytes" in out
     assert "entries=" in out
+    assert "conflicts=" in out
     assert "layers=" in out
     assert "writes=" in out
 

@@ -228,6 +228,7 @@ def test_snapshot_has_fixed_keys() -> None:
         "memory.consolidation.runs",
         "memory.consolidation.failures",
         "memory.consolidation.elapsed_ms",
+        "memory.conflicts",
     ):
         assert snapshot[name] == 0
     assert all(isinstance(value, float) for value in snapshot.values())

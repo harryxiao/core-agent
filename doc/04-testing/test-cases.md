@@ -5316,3 +5316,30 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **反证 5/5**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：去 `reinforce=False` 门控 ⇒ TC-MEMOBS-06/14 红；去私有非计数检索体 ⇒ TC-MEMOBS-05 红；去 `injected_tokens` 传递 ⇒ TC-MEMOBS-09 红；去审计派生计数 ⇒ TC-MEMOBS-10/11 红；无记忆臂误用有记忆库 ⇒ TC-MEMEFF-01 红。
 > **实测**：全量 pytest **3592 passed**（3556 + 36）；`openspec validate --all` 32/0（含本 active change；归档后 31/0）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0301 行。
+
+## 225. 冲突裁决的可见性与计数（TC-MEMCONF，change `0312`／ADR-0302，台账 E248）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-MEMCONF-01 | 取代计数 | 同一实体两次压实、取值不同 | `metrics_snapshot()["memory.conflicts"] == 1`（`tests/test_memory_conflicts.py::test_supersede_increments_conflicts_metric`） |
+| TC-MEMCONF-02 | 同值刷新不计数 | 取值相同就地刷新 | 计数不变（`...::test_same_value_refresh_does_not_count`） |
+| TC-MEMCONF-03 | 审计事件形状 | 接线审计日志后发生取代 | 一行 `op="conflict"`：`id` 为旧版、`target` 为新版、`reason="newer_wins"`、`trace_id` 同压实；文件内无取值明文（`...::test_supersede_writes_conflict_audit_row`） |
+| TC-MEMCONF-04 | 审计关闭仍计数 | 未接线审计日志 | 指标 +1，版本链照常（`...::test_conflict_counted_without_audit_log`） |
+| TC-MEMCONF-05 | 审计失败仍计数 | 审计路径不可写 | 警告一次，指标 +1、取代成功（`...::test_conflict_counted_when_audit_fails`） |
+| TC-MEMCONF-06 | 统计按 `superseded_by` 计 | 两条冲突链 | `stats.conflicts == 2`、`entries_superseded == 2`（`...::test_stats_conflicts_count_superseded_by`） |
+| TC-MEMCONF-07 | 与状态正交 | 旧版随后被 `retract()` | `conflicts == 2`、`entries_superseded == 1`、`entries_retracted == 1`（`...::test_stats_conflicts_orthogonal_to_retracted_status`） |
+| TC-MEMCONF-08 | 文本成对与排序 | 两条冲突链（新版 ts 200 / 400） | 两行 `k=v`；新版较新的链在前；含 `entity` / `old_id` / `new_id` / `decision=newer_wins` / 两版取值（`...::test_conflicts_text_pairs_and_order`） |
+| TC-MEMCONF-09 | `--limit` 截断 | `--limit 1` | 只输出新版最新的一条（`...::test_conflicts_limit`） |
+| TC-MEMCONF-10 | `--limit 0` = 全部 | `--limit 0` | 两条全出（`...::test_conflicts_limit_zero_means_all`） |
+| TC-MEMCONF-11 | JSON 固定键 | `--json` | 数组、每项 8 个固定键，`entity` 派生自 `keyfact.<slug>`（`...::test_conflicts_json_fixed_keys`） |
+| TC-MEMCONF-12 | 历史链不依赖审计 | 未接线审计的库 | 仍输出全部冲突（`...::test_conflicts_history_does_not_need_audit`） |
+| TC-MEMCONF-13 | 空库 | 空存储 | 「（无冲突记录）」、退出 0（`...::test_conflicts_empty_store`） |
+| TC-MEMCONF-14 | 零强化零写入 | 有冲突记录、`reuse_count == 0` | `reuse_count` 不变、无审计文件、条目数不变（`...::test_conflicts_zero_reinforcement_and_no_writes`） |
+| TC-MEMCONF-15 | 取值脱敏 | 两版正文含密钥形态 | 输出无明文、出现 `<redacted>`（`...::test_conflicts_redacts_values`） |
+| TC-MEMCONF-16 | 非关键事实实体名 | 自定义 id 链（`custom-old → custom-new`） | `entity == "custom-old"`（`...::test_conflicts_entity_for_non_keyfact_ids`） |
+| TC-MEMCONF-17 | 用法表登记 | `memory -h` | 用法串含 `conflicts`（`...::test_usage_lists_conflicts`） |
+
+> **配套更新**：`tests/test_memory_stats_cli.py::test_stats_json_fixed_keys`（固定键 +`conflicts`）、`...::test_stats_text_mode_is_line_oriented`（含 `conflicts=`）；`tests/test_memory_metrics.py::test_snapshot_has_fixed_keys`（固定键 +`memory.conflicts`）。
+> **反证 5/5**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：去 `_supersede` 指标自增 ⇒ TC-MEMCONF-01/04 红；去审计事件 ⇒ TC-MEMCONF-03 红；`conflicts` 改按 `status=="superseded"` ⇒ TC-MEMCONF-07 红；CLI 改按审计行派生 ⇒ TC-MEMCONF-12 红；去脱敏 ⇒ TC-MEMCONF-15 红。
+> **实测**：全量 pytest **3609 passed**（3592 + 17）；`openspec validate --all` 32/0（含本 active change；归档后 31/0）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0302 行。

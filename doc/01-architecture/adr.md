@@ -11585,6 +11585,49 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 注入条目，不解释多样性/预算剔除**具体是哪一条**（只给计数）；⑤ 效果评测是单轮任务集，
 不覆盖长任务与多轮状态；⑥ 计数点与副作用同序但不跨进程原子（多进程写同一库时各自计数）。
 
+## ADR-0302：冲突裁决只实现「新证据 > 旧证据」，观察面收口（change 0312 / 台账 E248）
+
+**背景**：SDD `memory-sdd.md` v1.0 §5.5 要求冲突裁决五级规则（显式更正 > 旧、高信任 > 低、
+新证据 > 旧、高置信 > 低、不可判定 ⇒ 双方 `disputed` 并列展示），并保留旧记录不物理覆盖；
+§11.1 要求 `memory.conflicts` 指标。0303 已满足「保留旧记录 + 版本链」，但**裁决本身无留痕**：
+盘上只有两条独立条目，回答不了「哪两条冲突、何时裁决、按何规则」；指标与 `memory stats` 也
+无冲突视图（ADR-0301 局限 ② 显式登记）。
+
+**决策**：
+- **D1 只实现第 3 级裁决，规则固定为 `newer_wins`。** 关键事实唯一生产路径是压实抽取
+  （`source="extraction"`），`MemoryEntry` 无 `trust` / `confidence`，也无「显式用户更正」
+  信号 ⇒ 规则 1/2/4 不可判定；同批同实体冲突已按「留首条 + 告警」归并（规格 0172 钉住），
+  规则 5 无触发点。强行按 `ts` 冒充其余规则只是改名，属伪实现。
+  **被拒**：引入 `trust` / `confidence` 字段（无写入方、无消费方，与 0303「只落有消费者的
+  字段」冲突）；同批冲突标 `disputed`（须重开 0172）；规则 5 并列注入（须重开上下文渲染）。
+  因此 `disputed` 不进入状态机 —— 当前数据模型下不可达，引入即死状态。
+- **D2 冲突计数口径 = `superseded_by` 非空，而非 `status == "superseded"`。** 旧版被
+  `retract()` 墓碑化后状态变为 `retracted`，但仍是一次历史冲突；`conflicts` 与当前状态
+  正交，`conflicts == 0` ⇔ 从未发生取代。与 `entries_superseded` 不相等是**预期**，文档写明。
+- **D3 `memory conflicts` 从条目链派生，不依赖审计开关。** 冲突两端都在条目里（旧版
+  `superseded_by` → 新版 id），CLI 只读 `audit(None)` 即覆盖**升级前**的历史链；审计日志只
+  承担「裁决时刻」的持久事件（可关闭、可丢行）。排序按新版 `ts` 降序（缺失退回旧版），
+  `--limit` 缺省 20 / `0` = 全部（对齐 `memory list` / `memory audit`），取值为
+  `_one_line_summary`（先脱敏再截断）。**被拒**：CLI 以审计行为唯一数据源（升级前与审计
+  关闭期间的冲突不可见）。
+- **D4 审计事件形状。** `_supersede` 追加 `op="conflict"`：`id` = 旧版 id、
+  `count` 不填、`target` = 新版 id、`reason="newer_wins"`，其余为旧版元数据；不含取值
+  明文。`_audit_event` 增加可选 `target`（缺省 `""`），其余调用方逐字不变；审计未接线 /
+  失败 ⇒ fail-open（0308 语义），指标照常计数。
+- **D5 指标 `memory.conflicts`。** `_supersede` 内自增，加入 `FIXED_METRIC_KEYS`（未发生
+  ⇒ 0，实例作用域、零 I/O，与 0311 同口径）。
+
+**验证**：新增 `tests/test_memory_conflicts.py`（17 条）；更新 `test_memory_stats_cli.py`
+（JSON 键 + 文本）与 `test_memory_metrics.py`（固定键）。反证 5/5（`cp` 到 `/tmp` +
+`md5sum` 复原）：去指标自增、去审计事件、`conflicts` 改按状态、CLI 改按审计派生、去脱敏
+—— 各至少一红。`openspec validate --all` 32/0（含本 active change；归档后 31/0）。
+
+**局限**：① 仅覆盖关键事实链；其他条目同 id 覆盖不算冲突（无「同实体多值」语义）；
+② 规则 1/2/4/5 未实现（无信号 / 不可达），`disputed` 不进入状态机；③ 升级前的历史冲突只能
+从条目链看到（无 `conflict` 审计行）；④ 审计关闭 / 丢行时 `memory audit` 看不到冲突事件
+（`memory conflicts` 仍可用）；⑤ 冲突计数不跨进程汇总（实例指标）；⑥ 未来引入
+`trust` / `confidence` / 显式更正信号时，须先改规格再扩裁决规则。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |

@@ -34,6 +34,7 @@ FIXED_METRIC_KEYS: tuple[str, ...] = (
     "memory.consolidation.runs",
     "memory.consolidation.failures",
     "memory.consolidation.elapsed_ms",
+    "memory.conflicts",
 )
 
 
@@ -74,6 +75,7 @@ class MemoryStats:
     entries_retracted: int = 0
     entries_superseded: int = 0
     entries_forgotten: int = 0
+    conflicts: int = 0
     content_bytes: int = 0
     by_layer: dict[str, int] = field(default_factory=dict[str, int])
     by_status: dict[str, int] = field(default_factory=dict[str, int])
@@ -90,6 +92,7 @@ class MemoryStats:
             "entries_retracted": self.entries_retracted,
             "entries_superseded": self.entries_superseded,
             "entries_forgotten": self.entries_forgotten,
+            "conflicts": self.conflicts,
             "content_bytes": self.content_bytes,
             "by_layer": dict(sorted(self.by_layer.items())),
             "by_status": dict(sorted(self.by_status.items())),
@@ -110,9 +113,11 @@ def collect_stats(
 
     条目面：总数与各状态计数；``by_layer`` 只统计 active（层分布是「活记忆」视图）；
     ``content_bytes`` 只计 active 正文的 UTF-8 字节。``entries_forgotten`` 按 ``forgotten``
-    标签计（与状态正交：墓碑亦可能已遗忘）。审计面按 ``op`` 与 ``reason`` 派生。
+    标签计（与状态正交：墓碑亦可能已遗忘）。``conflicts`` 按 ``superseded_by`` 非空计
+    （change 0312：与当前状态正交，墓碑化的旧版仍是一次历史冲突）。审计面按 ``op`` 与
+    ``reason`` 派生。
     """
-    by_layer, by_status, content_bytes, forgotten = _count_entries(entries)
+    by_layer, by_status, content_bytes, forgotten, conflicts = _count_entries(entries)
 
     writes_by_kind, deletes_by_reason, forgets_by_reason, exports = _count_audit(audit_rows)
     return MemoryStats(
@@ -122,6 +127,7 @@ def collect_stats(
         entries_retracted=by_status.get("retracted", 0),
         entries_superseded=by_status.get("superseded", 0),
         entries_forgotten=forgotten,
+        conflicts=conflicts,
         content_bytes=content_bytes,
         by_layer=by_layer,
         by_status=by_status,
@@ -134,12 +140,13 @@ def collect_stats(
 
 def _count_entries(
     entries: Iterable[MemoryEntry],
-) -> tuple[dict[str, int], dict[str, int], int, int]:
-    """条目面：``(by_layer[active], by_status[全部], content_bytes[active], forgotten)``。"""
+) -> tuple[dict[str, int], dict[str, int], int, int, int]:
+    """条目面：层/状态计数、active 正文字节、`forgotten` 标签、冲突数。"""
     by_layer: dict[str, int] = {}
     by_status: dict[str, int] = {}
     content_bytes = 0
     forgotten = 0
+    conflicts = 0
     for entry in entries:
         by_status[entry.status] = by_status.get(entry.status, 0) + 1
         if entry.status == "active":
@@ -147,7 +154,9 @@ def _count_entries(
             content_bytes += len(entry.content.encode("utf-8"))
         if _FORGOTTEN_TAG in entry.tags:
             forgotten += 1
-    return by_layer, by_status, content_bytes, forgotten
+        if entry.superseded_by:
+            conflicts += 1
+    return by_layer, by_status, content_bytes, forgotten, conflicts
 
 
 def _count_audit(

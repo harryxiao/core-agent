@@ -111,6 +111,7 @@
 | 26c | `core-agent evolve run` | 装配 runtime → **强制**跑一轮进化冷路径（诊断/提案），打印结局（`status` 或 `no_op`）；一次性动作、不改运行态 | EvolutionWorker.maybe_run(force=True) |
 | 26d | `core-agent memory stats [--json]` | 只读运维统计：存储字节、条目/状态/层分布、正文字节、审计面写入/删除/遗忘/导出分布；零强化、不新增状态文件 | `collect_stats()` + `MemoryAuditLog.read()`（change `0311` / ADR-0301） |
 | 26e | `core-agent memory why <query> [--budget N] [--session S]` | 一次零强化检索的召回解释：统计行（matched/injected/剔除/最小预算/注入 token）+ 按分值降序的脱敏条目行 | `MemoryStore.recall(reinforce=False)` + `RecallResult.scores`（change `0311` / ADR-0301） |
+| 26f | `core-agent memory conflicts [--json] [--limit N]` | 只读列出冲突裁决（旧版 → 新版成对；新版 ts 降序；缺省 20 / 0 = 全部；两版取值脱敏摘要；空库「（无冲突记录）」退出 0） | `MemoryStore.audit(None)` 条目链派生（不依赖审计开关）（change `0312` / ADR-0302） |
 
 ### 2.8 分发（L5 ReleaseManager · 3）
 

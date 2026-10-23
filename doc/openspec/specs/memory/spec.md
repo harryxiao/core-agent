@@ -1337,26 +1337,42 @@ SHALL NOT 原地覆盖。任一版本条目的**首次出现时间戳**（`ts`�
 `compaction.<session_id>` trace 回滚（回滚新版 ⇒ 旧版恢复 active）。同批归并语义
 （同批同 slug 只留首条）SHALL 保持不变。
 
+一次**取值变化**即一次冲突裁决：裁决规则 SHALL 固定为「新证据 > 旧证据」（SDD §5.5 第 3 级，
+本仓无 `trust` / `confidence` / 显式更正信号，其余规则不可判定）。裁决 SHALL 产生可查询的
+留痕（审计事件、指标与 `memory conflicts`，见「冲突可见性」）；SHALL NOT 改写该要求的版本链
+与时间戳语义。
+
 #### Scenario: 跨压实同实体合并不新增条目
+
 - **GIVEN** 两个压实批次抽取到同一实体、**相同取值**
 - **WHEN** 第二批压实落库
 - **THEN** 仍只有一条 `keyfact.<slug>` 条目（版本不变），`trace_id` / `tags` 刷新为第二批溯源
 
 #### Scenario: 跨压实取值变化新增版本
+
 - **GIVEN** 某实体的关键事实已在第一批压实落库（`version=1`）
 - **WHEN** 第二批压实抽到**不同取值**
 - **THEN** 新增 `keyfact.<slug>.v2`；首版 `status="superseded"`、`superseded_by` 指向 v2；
   **AND** 缺省检索只返回 v2，`audit()` 两版俱在
 
 #### Scenario: 跨压实更新保留首见时间戳
+
 - **GIVEN** 某实体的关键事实已在第一批压实落库
 - **WHEN** 第二批压实抽到**相同取值**并就地刷新
 - **THEN** 条目 `ts` 仍等于首次落库时间，未被重置为第二批写入时间
 
 #### Scenario: 版本链可回滚
+
 - **GIVEN** 第二批压实产生了 `keyfact.<slug>.v2` 并取代了首版
 - **WHEN** 回滚第二批压实的 `compaction.<session_id>` trace
 - **THEN** v2 被删除、首版恢复 `status="active"`（旧值重新可召回）
+
+#### Scenario: 取值变化留下裁决痕
+
+- **GIVEN** 某实体的关键事实已存在且版本链处于 active
+- **WHEN** 新一批压实抽到**不同取值**
+- **THEN** 除版本链变化外，指标 `memory.conflicts` 自增 1，且审计日志新增一行
+  `op="conflict"`（`id` 为旧版、`target` 为新版、`reason="newer_wins"`）
 
 ### Requirement: L2 活跃层软上限
 
@@ -1874,7 +1890,9 @@ SHALL 满足 `matched_count == injected_count + excluded_by_diversity + excluded
 
 - 成功写入（`_persist`）⇒ `op="write"`；
 - 物理删除（`_delete_entry`）⇒ `op="delete"`；
-- 自然衰减归档（`forget`）⇒ `op="forget"`，`reason="decay"`。
+- 自然衰减归档（`forget`）⇒ `op="forget"`，`reason="decay"`；
+- 关键事实取值变化的取代裁决（`_supersede`）⇒ `op="conflict"`，`reason="newer_wins"`，
+  `id` 为旧版、`target` 为新版 id（change 0312）。
 
 事件 SHALL 只含元数据：`ts / op / id / layer / kind / source / session_id / trace_id /
 content_hash / reason / count / target / format`。事件 SHALL NOT 包含条目正文；除
@@ -1915,6 +1933,13 @@ SHALL NOT 产生审计事件。
 - **GIVEN** 审计路径不可写（如指向目录）
 - **WHEN** 写入一条条目
 - **THEN** 写入成功返回 id；仅产生一次 `RuntimeWarning`
+
+#### Scenario: 取代裁决留审计痕
+
+- **GIVEN** 接线了审计日志的存储，某实体的关键事实已存在
+- **WHEN** 同一实体以**不同取值**再次落库
+- **THEN** 新增一行 `op="conflict"`：`id` 为旧版 id、`target` 为新版 id、
+  `reason="newer_wins"`；行内不含取值明文
 
 ### Requirement: 记忆治理导出
 
@@ -2062,7 +2087,8 @@ SHALL NOT 被保留期惩罚。保留期 SHALL 由既有维护节拍驱动（循
   `memory.recall.injected_tokens` / `memory.recall.excluded_by_budget` /
   `memory.recall.excluded_by_diversity`；
 - `memory.consolidation.runs` / `memory.consolidation.failures` /
-  `memory.consolidation.elapsed_ms`。
+  `memory.consolidation.elapsed_ms`；
+- `memory.conflicts`：关键事实取值变化的取代裁决次数（change 0312）。
 
 固定键 SHALL 在快照中**始终存在**（未发生时值为 0）；`memory.writes.<kind>` 只在对应 kind
 发生写入后出现。快照 SHALL 为零 I/O、零写回、零效应，SHALL NOT 包含条目正文、查询文本、
@@ -2099,6 +2125,12 @@ SHALL 以注入的单调钟测量并累计为整数毫秒。
 - **WHEN** 调用 `compact()` 并捕获异常
 - **THEN** `memory.consolidation.runs == 1`、`failures == 1`、`elapsed_ms` 为时钟差值
 
+#### Scenario: 冲突计数
+
+- **GIVEN** 一个新存储与一条已落库的关键事实
+- **WHEN** 依次写入同值（就地刷新）与不同值（取代）
+- **THEN** `memory.conflicts == 1`（同值刷新不计）
+
 ### Requirement: 记忆运维统计（memory stats）
 
 CLI SHALL 提供 `memory stats [--json]`：**只读**聚合既有持久数据，SHALL NOT 触发复用强化、
@@ -2107,6 +2139,8 @@ SHALL NOT 写入任何状态。统计 SHALL 覆盖：
 - `storage_bytes`：`$CORE_STATE_DIR/memory.jsonl` 的文件字节数（文件缺失 ⇒ 0）；
 - 条目面（`audit(None)` 全量）：`entries_total` / `entries_active` / `entries_retracted` /
   `entries_superseded` / `entries_forgotten`，`by_layer`（仅 active）与 `by_status`（全量）；
+- `conflicts`：`superseded_by` 非空的条目数（含后来被墓碑化的旧版；与当前 `status` 正交，
+  change 0312）；
 - `content_bytes`：active 条目正文 UTF-8 字节总和；
 - 审计面（`memory.audit.jsonl`，坏行跳过、文件缺失 ⇒ 空）：`writes_by_kind`（`op="write"`）、
   `deletes_by_reason`（`op="delete"`）、`forgets_by_reason`（`op="forget"`）、
@@ -2134,6 +2168,12 @@ SHALL NOT 写入任何状态。统计 SHALL 覆盖：
 - **GIVEN** 记忆文件与审计文件均不存在
 - **WHEN** 执行 `memory stats --json`
 - **THEN** 输出全 0 统计，退出码 0，不创建任何文件
+
+#### Scenario: 冲突计数与状态正交
+
+- **GIVEN** 一条被取代的关键事实旧版，且该旧版随后被 `retract()` 墓碑化
+- **WHEN** 执行 `memory stats --json`
+- **THEN** `conflicts == 1`（`entries_superseded == 0`）
 
 ### Requirement: 召回解释（memory why）
 
@@ -2196,3 +2236,51 @@ prompt token 大于无记忆（证明事实确实进入提示词）。
 - **GIVEN** 同一任务集
 - **WHEN** 连续两次独立回放
 - **THEN** 两臂的成功判定与 prompt token 完全一致（无时钟 / 随机 / 网络依赖）
+
+### Requirement: 冲突可见性（memory conflicts）
+
+CLI SHALL 提供 `memory conflicts [--json] [--limit N]`：从条目链**只读**派生冲突记录
+（旧版 `superseded_by` → 新版），SHALL NOT 触发复用强化、SHALL NOT 写入任何状态。
+每条记录 SHALL 包含：`entity`（由 `keyfact.<slug>[.vN]` 派生，非关键事实 id 原样）、
+`old_id` / `new_id`、`old_ts` / `new_ts`（缺失版取 0）、`decision`（当前恒
+`"newer_wins"`）、`old_value` / `new_value`（**脱敏**单行摘要；新版缺失 ⇒ 空）。
+
+排序 SHALL 按新版时间降序（新版缺失时退回旧版 `ts`）；`--limit` 缺省 20、`0` 表示全部
+（对齐 `memory list` / `memory audit`）。`--json` SHALL 输出上述固定键的对象数组。
+文本模式 SHALL 逐行输出可处理的 `k=v` 摘要。无记录 ⇒ 输出「（无冲突记录）」并以 0 退出。
+输出 SHALL NOT 包含未脱敏正文或密钥明文。本命令 SHALL 覆盖**升级前**的历史链（不依赖
+审计日志是否开启或是否有 `conflict` 事件）。
+
+本命令 SHALL NOT 提供裁决 / 合并 / 回滚动作（只读观察面）；`disputed` 状态在当前数据模型
+不可达（无 `trust` / `confidence` / 显式更正信号），SHALL NOT 由本要求引入。
+
+#### Scenario: 成对展示
+
+- **GIVEN** 某实体经历 `v1 → v2` 的取值变化
+- **WHEN** 执行 `memory conflicts`
+- **THEN** 输出一条记录：`entity` 为该实体 slug、`old_id` 为 v1、`new_id` 为 v2、
+  `decision=newer_wins`，且两版取值均为脱敏摘要
+
+#### Scenario: 历史链不依赖审计
+
+- **GIVEN** 冲突发生在审计关闭期间（无 `op="conflict"` 行），但两条版本条目仍在
+- **WHEN** 执行 `memory conflicts`
+- **THEN** 仍输出该条记录
+
+#### Scenario: 零强化零写入
+
+- **GIVEN** 存在冲突记录且相关条目 `reuse_count` 为 0
+- **WHEN** 执行 `memory conflicts [--json]`
+- **THEN** 所有条目 `reuse_count` 不变、无新审计写入事件、无新文件
+
+#### Scenario: 空库
+
+- **GIVEN** 空库
+- **WHEN** 执行 `memory conflicts`
+- **THEN** 输出「（无冲突记录）」、退出码 0
+
+#### Scenario: 脱敏
+
+- **GIVEN** 冲突两版正文中含密钥形态字符串
+- **WHEN** 执行 `memory conflicts`
+- **THEN** 输出中密钥已被脱敏替换，不出现明文

@@ -687,10 +687,12 @@ class MemoryStore:
         except Exception:  # noqa: BLE001,S110 — 观察失败不得改变写入结局
             return
 
-    def _audit_event(self, op: str, entry: MemoryEntry, *, reason: str = "") -> None:
+    def _audit_event(
+        self, op: str, entry: MemoryEntry, *, reason: str = "", target: str = ""
+    ) -> None:
         """治理审计钩子（change 0308）：未接线 ⇒ no-op；审计侧失败 fail-open。"""
         if self._audit_log is not None:
-            self._audit_log.record(op, entry, reason=reason)
+            self._audit_log.record(op, entry, reason=reason, target=target)
 
     def _persist(self, layer: Layer, entry: MemoryEntry) -> None:
         """落库 + 记可撤销写入效应（``write`` 的**无闸门主体**）。"""
@@ -1665,11 +1667,18 @@ class MemoryStore:
         return max(chain, key=lambda entry: entry.version, default=None)
 
     def _supersede(self, old: MemoryEntry, new_id: str, trace_id: str) -> None:
-        """把旧版本置 `superseded` 并记可逆效应（undo 恢复状态；change 0303）。"""
+        """把旧版本置 `superseded` 并记可逆效应（undo 恢复状态；change 0303）。
+
+        裁决留痕（change 0312 / SDD §5.5 第 3 级「新证据 > 旧证据」）：自增
+        ``memory.conflicts`` 指标并追加 ``op="conflict"`` 审计事件（旧版 id → 新版
+        ``target``）；审计未接线 / 失败 ⇒ fail-open，不影响取代语义。
+        """
         prior_status, prior_by = old.status, old.superseded_by
         old.status = "superseded"
         old.superseded_by = new_id
         self._backend.put(old)
+        self._metrics.increment("memory.conflicts")
+        self._audit_event("conflict", old, reason="newer_wins", target=new_id)
         self._tracker.record(
             Effect(
                 op="memory.supersede",

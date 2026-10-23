@@ -339,8 +339,8 @@ memory why <query> [--budget N] [--session S]  # 零强化诊断检索；预算�
 
 ```json
 {"storage_bytes": 0, "entries_total": 0, "entries_active": 0, "entries_retracted": 0,
- "entries_superseded": 0, "entries_forgotten": 0, "by_layer": {}, "by_status": {},
- "content_bytes": 0, "writes_by_kind": {}, "deletes_by_reason": {},
+ "entries_superseded": 0, "entries_forgotten": 0, "conflicts": 0, "by_layer": {},
+ "by_status": {}, "content_bytes": 0, "writes_by_kind": {}, "deletes_by_reason": {},
  "forgets_by_reason": {}, "exports": 0}
 ```
 
@@ -348,6 +348,24 @@ memory why <query> [--budget N] [--session S]  # 零强化诊断检索；预算�
 minimum_budget=… injected_tokens=…`；其后每条 `#N score=… layer=… kind=… source=…
 session=… id=… importance=… reuse=… :: <脱敏单行摘要>`，按分值非增。无命中 ⇒ 只输出统计行、
 退出码 0。输出不含正文原文（摘要先 `redact_secrets` 再截断）。
+
+### 1.5 冲突裁决可见性（change `0312` / ADR-0302）
+
+```text
+memory conflicts [--json] [--limit N]          # 只读派生冲突链；缺省 20、0 = 全部
+```
+
+- 数据源：`MemoryStore.audit(None)` 的条目链（旧版 `superseded_by` → 新版），**不依赖审计
+  日志** ⇒ 覆盖升级前与审计关闭期间的历史冲突；只读、零强化、零写入。
+- 记录键（JSON 固定）：`entity` / `old_id` / `new_id` / `old_ts` / `new_ts` / `decision` /
+  `old_value` / `new_value`。`entity` 由 `keyfact.<slug>[.vN]` 派生（否则原样）；`decision`
+  恒 `"newer_wins"`；`old_value` / `new_value` 为 `_one_line_summary`（先脱敏再截断）。
+- 排序：新版 `ts` 降序（新版缺失退回旧版 `ts`）。文本模式逐行 `k=v`（时间格式化、空值
+  `-`）；空库输出「（无冲突记录）」、退出 0。
+- 依据：`_supersede` 同时自增指标 `memory.conflicts` 并追加审计行 `op="conflict"`
+  （`target` = 新版 id、`reason="newer_wins"`）；`MemoryStats.conflicts` 按
+  `superseded_by` 非空计（与 `status` 正交）。裁决规则固定为「新证据 > 旧证据」。
+- 局限：仅关键事实链；`disputed` 状态不进入数据模型（无可达信号）。
 
 ## 2. 数据结构
 
