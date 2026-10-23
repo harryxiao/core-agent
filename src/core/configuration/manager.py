@@ -55,6 +55,11 @@ _DEFAULT_COMPACT_STEPS = 6
 # （kill-switch，与引入前逐字一致）。
 _DEFAULT_TOOL_SCOPE = "auto"
 _TOOL_SCOPES = ("all", "auto")
+# 知识固化模式缺省口径来源：doc/openspec/specs/configuration/spec.md「巩固模式配置」
+# （change 0307 / ADR-0297）：`active` = 压实照常（与引入前逐字一致）；`off` = 单一 kill-switch。
+# `memory` 为非结构化段 ⇒ 集合外取值归一为 `active`（不静默停用固化）。
+_DEFAULT_CONSOLIDATION_MODE = "active"
+_CONSOLIDATION_MODES = ("active", "off")
 
 # 编排调度缺省口径来源：doc/openspec/specs/configuration/spec.md「编排调度配置」
 # （change 0123）。`_DEFAULT_ORCHESTRATION_POLICY = "off"` ⇒ 缺省**不启用**难易度策略，
@@ -524,6 +529,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         "CORE_MEMORY_SEMANTIC_FORGETTING",
         default=False,
         map_to="memory.semantic_forgetting",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
+        "memory.consolidation_mode",
+        "--memory-consolidation-mode",
+        "CORE_MEMORY_CONSOLIDATION_MODE",
+        default=_DEFAULT_CONSOLIDATION_MODE,
+        map_to="memory.consolidation_mode",
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
@@ -1235,6 +1248,24 @@ class ConfigManager:
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in _FEATURE_TRUE
+
+    def consolidation_mode(self) -> str:
+        """知识固化模式（``active`` / ``off``；缺省 ``active``；change 0307 / ADR-0297）。
+
+        **独立访问器**（同 `tool_scope()` 先例）：`memory` 为**非结构化段** ⇒ 非法取值不阻断
+        启动；集合外取值（含拼写错误 / 布尔 / 数字）一律归一为 ``active``（方向恒为「变更前
+        行为」，不会把配置笔误静默变成「停用固化」）。``off`` ⇒ 组合根注入
+        `MemoryStore(consolidation_enabled=False)` ⇒ `compact()` 为 no-op。
+        """
+        if self._config is None:
+            return _DEFAULT_CONSOLIDATION_MODE
+        raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
+        value = raw.get("consolidation_mode", _DEFAULT_CONSOLIDATION_MODE)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in _CONSOLIDATION_MODES:
+                return normalized
+        return _DEFAULT_CONSOLIDATION_MODE
 
     def l2_soft_max_entries(self) -> int | None:
         """L2 活跃层软上限条目数（缺省 ``None`` = 不启用；change 0251 / ADR-0241）。

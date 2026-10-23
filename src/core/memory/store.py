@@ -312,6 +312,9 @@ class MemoryStore:
         write_observer: Callable[[Layer, MemoryEntry], None] | None = None,
         # 单调时钟注入（change 0296）：压实协作式截止的比较口径；缺省 `time.monotonic`。
         clock: Callable[[], float] | None = None,
+        # 固化的单一开关（change 0307 / ADR-0297）：缺省 True = 压实逐字不变；False ⇒
+        # `compact()` 在任何评分 / 模型调用 / 写入 / 迁移之前返回，不影响 `forget()`。
+        consolidation_enabled: bool = True,
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
         self._tracker = effect_tracker if effect_tracker is not None else EffectTracker()
@@ -328,6 +331,7 @@ class MemoryStore:
         self._l2_soft_max_entries = l2_soft_max_entries
         self._write_observer = write_observer
         self._clock = clock if clock is not None else time.monotonic
+        self._consolidation_enabled = consolidation_enabled
         # 压实 single-flight（change 0296）：已有压实执行时新的触发非阻塞跳过。
         self._compact_lock = threading.Lock()
         # 临时会话（change 0245 / ADR-0233）：基准/合成执行会话 —— 压实只做会话级摘要与
@@ -784,6 +788,10 @@ class MemoryStore:
         （迁 L4，不删除），全部效应按 ``trace_id=f"compaction.<session_id>"`` 可撤销。
         摘要提炼异常不吞：向上传播，由触发点记录并重试（原条目保持不变）。
 
+        ``consolidation_enabled=False``（change 0307 / ADR-0297）⇒ 立即返回 ``None``，
+        零评分 / 零模型调用 / 零写入 / 零迁移 / 零效应；``forget()`` 与 ``summarize_slice``
+        不受该开关影响。
+
         **聚合范围可收窄**（change `0131` / ADR-0124 / 账本 E66）：``session_id`` **非空**时只聚合
         **该会话**的条目（供会话级入口 —— 如 Web 的「压缩本会话记忆」—— 使用，SHALL NOT 顺手提炼
         他会话条目）；**空串**（缺省）保持**全量**语义，逐字与既有行为一致 —— 该全量语义**保留给
@@ -808,6 +816,10 @@ class MemoryStore:
         **全局层**条目（脱敏 ＋ 有界）。缺省 UNWIRED ⇒ 不归纳、行为逐字不变。归纳产物因
         ``kind`` 不是 ``episodic`` 而**不进压实材料** ⇒ 不回喂摘要器（无自激环）。
         """
+        # 单一开关（change 0307 / ADR-0297）：off 是静态配置，取锁之前即返回 —— 不评分、
+        # 不调模型、不写入、不迁移、不记效应，也不产生「并发压实」告警。`forget()` 不受影响。
+        if not self._consolidation_enabled:
+            return None
         if not self._compact_lock.acquire(blocking=False):
             warnings.warn(
                 "memory compaction already running; concurrent trigger skipped",

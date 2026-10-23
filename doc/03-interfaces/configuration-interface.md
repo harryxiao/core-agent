@@ -615,3 +615,24 @@ known_window(llm.model)  ──►  表命中 ⇒ 该族真实窗口（本 chang
   `llm.max_retries` 的数值（后台重试仍独立配置）。
 - 口径来源：`doc/openspec/specs/configuration/spec.md`「后台派生调用的超时与重试配置」
   「压实耗时上限配置」（均 **ADDED**）。
+
+### 2.21 巩固模式配置（change `0307` / ADR-0297，台账 E243）
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `memory.consolidation_mode` | `active` | 字符串 `active` / `off`（大小写与首尾空白归一） | 知识固化（`MemoryStore.compact`）的单一开关；缺省 = 压实逐字不变 |
+
+- **单一真源**：`ConfigSpec` 声明（`map_to="memory.consolidation_mode"`，`exposure=ADVANCED`）
+  ⇒ CLI `--memory-consolidation-mode`、env `CORE_MEMORY_CONSOLIDATION_MODE`、
+  yaml `memory.consolidation_mode` 三面一一对应；优先链 CLI > env > config.yaml > 缺省。
+- **访问器** `ConfigManager.consolidation_mode() -> str`：`memory` 为**非结构化段** ⇒ 集合外取值
+  （拼写错误 / 布尔 / 数字 / 空串）一律归一为 `active`（方向恒为「变更前行为」，不静默停用固化，
+  也不阻断启动）。未加载配置时返回 `active`。
+- **消费方**：组合根 `build_runtime` 以
+  `consolidation_enabled=config.consolidation_mode() != "off"` 注入 `MemoryStore`。`off` ⇒
+  `compact()` 在任何评分 / 模型调用 / 写入 / 迁移之前返回 `None` ⇒ 零副作用、不产摘要、不迁 L4；
+  **不**影响 `forget()`（自然衰减归档）与会话滑窗中期摘要 `summarize_slice`。
+- **队列 / 水位不另设配置**：未巩固条目本就留在 L2（持久队列），成功摘要后迁 L4（水位前进）；
+  失败 / 空摘要 / 低价值 / 截止越界不迁移 ⇒ 下个节拍重试。见 `memory.md` §3.21。
+- 口径来源：`doc/openspec/specs/configuration/spec.md`「巩固模式配置」（ADDED）、
+  `doc/openspec/specs/memory/spec.md`「巩固的可关闭性」（ADDED）。

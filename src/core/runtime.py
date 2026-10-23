@@ -841,6 +841,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         l2_soft_max_entries=config.l2_soft_max_entries(),
         # 记忆写入观察者（change 0269）：钩子开启时接线；不可否决、异常吞掉（store 侧隔离）。
         write_observer=hooks.memory_write if hooks is not None else None,
+        # 固化单一开关（change 0307 / ADR-0297）：缺省 `active` ⇒ True ⇒ 压实逐字不变；
+        # `off` ⇒ compact 为 no-op（forget / 中层摘要不受影响）。
+        consolidation_enabled=config.consolidation_mode() != "off",
     )
     # 上下文压实接线（0041）：多轮历史 → persist 落 L2；此前 context.Compactor 与
     # memory.compact 都无生产调用方（死路径），现由 loop 的**工具步数**/预算阈值触发。

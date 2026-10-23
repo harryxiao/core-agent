@@ -132,7 +132,12 @@ class MemoryStore(Plugin):
         **不提交**半成品摘要、**不迁移**材料条目；截止前已完成的会话写回保留。截止**不抛异常**
         （与既有压实降级同向）。缺省 ``None`` ⇒ 行为与引入前逐字一致。
         同一实例上的压实 **single-flight**：已有压实执行时，新调用**非阻塞跳过**（零模型调用、
-        返回 ``None``、``warnings.warn`` 只报「已在运行」），不排队、不阻塞调用方。"""
+        返回 ``None``、``warnings.warn`` 只报「已在运行」），不排队、不阻塞调用方。
+
+        ``consolidation_enabled=False``（change `0307` / ADR-0297）：**取锁之前**立即返回 ``None`` ——
+        零评分 / 零模型调用 / 零写入 / 零迁移 / 零效应，也不产生「并发压实」告警。该开关只停
+        **知识固化**：``forget()``（自然衰减归档）与会话滑窗中期摘要 ``summarize_slice`` 不受影响。
+        缺省 ``True`` ⇒ 上述行为逐字不变。"""
 
     def audit(self, trace_id: str | None = None) -> list[MemoryEntry]:
         """审计写入记录。"""
@@ -186,6 +191,9 @@ MemoryStore(
                                # 超限先 forget，再按 ts 升序迁移可遗忘条目至 L4，异常降级不阻塞写
     write_observer=None,   # 写入观察者 Callable[[Layer, MemoryEntry], None]（change 0269 / ADR-0259）：
                            # 公开 write 落库**之后**同步通知、不可否决、异常吞掉；缺省 None ⇒ 零调用
+    consolidation_enabled=True,  # 固化单一开关（change 0307 / ADR-0297）：缺省 True ⇒ 压实逐字不变；
+                                 # False ⇒ compact() 在任何评分/模型调用/写入/迁移前返回 None，
+                                 # forget() / summarize_slice 不受影响
 )
 ```
 

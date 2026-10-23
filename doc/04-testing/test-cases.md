@@ -5204,3 +5204,19 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **反证 4/4**（`cp` 到 `/tmp`、复原后 `md5sum` 一致：`store.py` `5e14ba90…`）：去快路径 ⇒ TC-IDEMP-01/02/03/06 红；把 `reuse_count` 纳入相等 ⇒ TC-IDEMP-01 红；`ts` 严格比较 ⇒ 01/02/03/06 红；按正文跨 id 去重 ⇒ TC-IDEMP-05 红。
 > **实测**：全量 pytest **3445 passed**（3439 + 6）；`openspec validate --all` 32/0（含本 active change）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0296 行。
+
+## 220. 巩固的可关闭性与水位（TC-CONS，change `0307`／ADR-0297，台账 E243）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-CONS-01 | off 零副作用 | `consolidation_enabled=False`，装配评分器/摘要器/三抽取器，写入 L2 后 `compact("s1")` | 返回 `None`；四路钩子零调用；条目数不变、仍为 L2；`compaction.s1` 无效应（`tests/test_memory_consolidation_mode.py::test_off_mode_makes_compact_a_noop`） |
+| TC-CONS-02 | 缺省行为不变 | 未指定开关，写入 L2 后 `compact("s1")` | 产出 `compaction.summary.s1`（L2），原条目迁 L4（`...::test_default_mode_still_consolidates`） |
+| TC-CONS-03 | off 不影响遗忘 | `consolidation_enabled=False`，写入十年前条目后 `forget()` | 返回 `["e1"]`，条目迁 L4（`...::test_off_mode_does_not_block_forget`） |
+| TC-CONS-04 | 失败不推进水位 | 摘要器首次抛错、随后成功 | 首次抛错后条目仍在 L2；重试成功并迁 L4、产摘要（`...::test_failure_does_not_advance_watermark`） |
+| TC-CONS-05 | 队列跨重启 | `FileBackend(tmp_path)` 写入未巩固条目，新建 store 后 `compact` | 新 store 仍能处理 ⇒ 条目迁 L4（队列在 L2、非进程内存）（`...::test_queue_survives_restart`） |
+| TC-CONS-06 | 配置三面 | spec 声明 / 缺省 / yaml `OFF` / env 覆盖 / 非法值 | flag/env/default/map_to 对齐；缺省与非法值返回 `active`；yaml/env 可关闭（`...::test_spec_declares_consolidation_mode` 等 5 项） |
+| TC-CONS-07 | 组合根接线 | 缺省配置 / `off` 配置各构造一次 runtime | `_consolidation_enabled` 分别为 `True` / `False`（`...::test_build_runtime_default_wires_active`、`...::test_build_runtime_wires_off`） |
+
+> **反证 5/5**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：删 `compact` 早返回 ⇒ TC-CONS-01 红；`off` 也跳过 `forget` ⇒ TC-CONS-03 红；非法字符串归一 `off` ⇒ TC-CONS-06 参数化 3 红（布尔/数字走非字符串分支）；组合根恒 `True` ⇒ TC-CONS-07 红；摘要器失败时仍迁移 ⇒ TC-CONS-04 红。
+> **实测**：全量 pytest **3462 passed**（3445 + 17）；`openspec validate --all` 32/0（含本 active change）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0297 行。

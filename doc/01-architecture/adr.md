@@ -11352,6 +11352,46 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 ③ 同 id 内容修订若需要复用证据延续，须另立设计；④ 快路径每次写入多一次按 id 查找（热区命中，
 冷区回退 `search("")`），未做索引优化。
 
+## ADR-0297：巩固的单一开关与水位语义（change 0307 / 台账 E243）
+
+**背景。** 对照 `ai-arch/docs/memory-sdd.md` v1.0 §5.3 与走查 **P2-1**。SDD 要求巩固
+**可关闭**（`mode: off`）、有持久任务队列（至少一次、幂等）、水位、可重放且不阻塞主流程。
+本仓的实际缺口只有**单一关停面**：摘要器在 `runtime.py:809` **无条件接线** ⇒ 即便把
+`key_fact_extract` / `relation_extract` / `episodic_extract` 三个抽取器全部关闭，维护节拍仍会
+产会话摘要并把原条目迁 L4（`compact` 的摘要分支与三个抽取器独立注入）。
+
+**决策**：
+
+- **D1 开关落在 `MemoryStore`，且在取锁之前。** 新增构造参 `consolidation_enabled`（缺省
+  `True`）；为 `False` 时 `compact()` 第一行返回 `None` —— 零评分 / 零模型调用 / 零写入 /
+  零迁移 / 零效应，也不触发「并发压实」告警。**被拒**：在组合根把四个钩子全部置 `None`
+  （四改、可被直接构造 `MemoryStore` 的测试/宿主绕过、且「关闭」与「装配遗漏」不可区分）；
+  在 `_episodic_groups` 过滤（三路共用材料源，但摘要写入与迁移已发生一半，不是全停）。
+- **D2 配置口径。** `memory.consolidation_mode`（`active` / `off`），ConfigSpec 单一真源，
+  CLI / env / yaml 三面齐备；`memory` 为非结构化段 ⇒ 集合外取值归一为 `active`（方向恒为
+  「变更前行为」，拼写错误不静默停用固化）。组合根
+  `consolidation_enabled=config.consolidation_mode() != "off"`。SDD 的嵌套
+  `memory.consolidation.mode` 在本仓扁平点号 key 下落到 `memory.consolidation_mode`（同
+  `memory.l2_soft_max_entries` 先例）。
+- **D3 队列 / 水位用既有机制兑现，不造第二权威。** L2 未迁移的 episodic 条目**就是**持久队列
+  （`memory.jsonl` 单一权威、原子替换 + 跨进程合并）；成功提交摘要后迁 L4 **就是**水位前进；
+  低价值 / 空摘要 / 截止越界 / 摘要器失败 ⇒ 不迁移 ⇒ 下个节拍重试；产物 id 稳定 ＋ 同载荷
+  重放零副作用（ADR-0296）⇒ 至少一次投递不产重复知识。**被拒**：新增 `consolidation.jsonl`
+  （第二权威，SDD 自身规定传输/队列不得作为权威存储，本仓也无独立队列消费者）；给条目加
+  单调 `seq`（`memory.jsonl` 无序号域、旧行迁移面大，`id + ts` 已足以表达哪批被处理）；把水位
+  写进条目（污染检索面、参与衰减与遗忘）。
+
+**验证**：新增 `tests/test_memory_consolidation_mode.py` 17（off 零副作用 / 缺省不变 / off 不
+影响遗忘 / 配置三面与非法归一 / 组合根接线 / 失败不推进水位 / 跨重启队列）。反证（`cp` +
+`md5sum` 复原）：删 `compact` 早返回 ⇒ 1 红；`off` 也跳过 `forget` ⇒ 1 红；非法字符串取值归一
+`off` ⇒ 3 红（`disable` / `ong` / 空串；YAML 布尔与数字走非字符串分支，本就归 `active`）；组合根
+恒 `True` ⇒ 1 红；失败时误迁移 ⇒ 1 红。全量 **3462 passed**。
+
+**局限**：① `off` 只停知识固化，`forget()` 与中层摘要 `summarize_slice` 不受影响（文档明示）；
+② 低价值会话每个维护节拍（缺省 15 分钟）会被**重新评分**，无失败退避 / 负缓存（触发再评估：
+实测评分模型成本显著，或长期驻留的低价值会话）；③ 不记录 `extractorVersion`，prompt/规则
+变化后无法解释历史产物；④ 无「待巩固任务列表」视图（队列可见性就是 L2 层本身）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11643,3 +11683,4 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 | ADR-0294 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0295 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0296 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0297 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
