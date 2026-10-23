@@ -25,6 +25,7 @@ from core.judgment import Compactor, DecisionResult
 from core.plugin_registry import Effect, EffectTracker
 from core.tokens import DEFAULT_ESTIMATOR, TokenEstimator
 
+from .audit import MemoryAuditLog
 from .backend import FileBackend
 from .episodic import MAX_EPISODIC_CHARS, EpisodicExtractor
 from .extract import (
@@ -315,6 +316,9 @@ class MemoryStore:
         # 固化的单一开关（change 0307 / ADR-0297）：缺省 True = 压实逐字不变；False ⇒
         # `compact()` 在任何评分 / 模型调用 / 写入 / 迁移之前返回，不影响 `forget()`。
         consolidation_enabled: bool = True,
+        # 治理审计旁路（change 0308 / ADR-0298）：缺省 None ⇒ 零文件 / 零行为变化；接线后
+        # write / delete / forget 成功后追加元数据事件（不含正文），写失败 fail-open。
+        audit_log: MemoryAuditLog | None = None,
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
         self._tracker = effect_tracker if effect_tracker is not None else EffectTracker()
@@ -332,6 +336,7 @@ class MemoryStore:
         self._write_observer = write_observer
         self._clock = clock if clock is not None else time.monotonic
         self._consolidation_enabled = consolidation_enabled
+        self._audit_log = audit_log
         # 压实 single-flight（change 0296）：已有压实执行时新的触发非阻塞跳过。
         self._compact_lock = threading.Lock()
         # 临时会话（change 0245 / ADR-0233）：基准/合成执行会话 —— 压实只做会话级摘要与
@@ -551,6 +556,8 @@ class MemoryStore:
                 self._write_importance(entry, score, trace_id=entry.trace_id)
         self._enforce_l2_cap()
         self._notify_write(entry)
+        # 治理审计（change 0308）：落库与闸门降层之后追加，记录的 layer 是**最终**层。
+        self._audit_event("write", entry)
         return entry.id
 
     def _same_payload(self, existing: MemoryEntry, incoming: MemoryEntry, layer: Layer) -> bool:
@@ -595,6 +602,11 @@ class MemoryStore:
             self._write_observer(entry.layer, entry)
         except Exception:  # noqa: BLE001,S110 — 观察失败不得改变写入结局
             return
+
+    def _audit_event(self, op: str, entry: MemoryEntry, *, reason: str = "") -> None:
+        """治理审计钩子（change 0308）：未接线 ⇒ no-op；审计侧失败 fail-open。"""
+        if self._audit_log is not None:
+            self._audit_log.record(op, entry, reason=reason)
 
     def _persist(self, layer: Layer, entry: MemoryEntry) -> None:
         """落库 + 记可撤销写入效应（``write`` 的**无闸门主体**）。"""
@@ -678,6 +690,12 @@ class MemoryStore:
         if trace_id is None:
             return entries
         return [e for e in entries if e.trace_id == trace_id]
+
+    def record_export(self, *, count: int, target: str, format: str) -> None:
+        """导出审计事件（change 0308）：未接线审计日志 ⇒ no-op。"""
+        if self._audit_log is None:
+            return
+        self._audit_log.record("export", count=count, target=target, format=format)
 
     def discard(self, entry_id: str) -> bool:
         """按 id 删除一条条目：存在 ⇒ 删除并记可逆效应（``True``），不存在 ⇒ ``False``。
@@ -955,6 +973,7 @@ class MemoryStore:
                     ts=time.time(),
                 )
             )
+            self._audit_event("forget", entry, reason="decay")
             forgotten.append(entry.id)
         return forgotten
 
@@ -1633,6 +1652,7 @@ class MemoryStore:
                 ts=time.time(),
             )
         )
+        self._audit_event("delete", entry)
 
     def _restore_entry(self, entry: MemoryEntry) -> None:
         """把条目放回后端与热区（`_delete_entry` 的进程内 undo）。"""

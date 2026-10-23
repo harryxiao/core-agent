@@ -11392,6 +11392,52 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 实测评分模型成本显著，或长期驻留的低价值会话）；③ 不记录 `extractorVersion`，prompt/规则
 变化后无法解释历史产物；④ 无「待巩固任务列表」视图（队列可见性就是 L2 层本身）。
 
+## ADR-0298：记忆治理审计旁路与导出（change 0308 / 台账 E244）
+
+**背景。** 对照 `ai-arch/docs/memory-sdd.md` v1.0 §10.4 与走查 **P2-2**：写入 / 删除 / 遗忘都会
+改变持久知识集，但本仓只有进程内 `EffectTracker`（随进程结束失效）与仅覆盖 CLI 删除的
+`memory-deleted.jsonl`；跨进程无法回答「何时、对哪条、做了什么」，遗忘也没有原因与内容依据；
+同时缺少 SDD 要求的治理导出面。
+
+**决策**：
+
+- **D1 审计挂在 `MemoryStore` 旁路，而非 CLI / 后端。** 新增可选构造参 `audit_log`
+  （`MemoryAuditLog | None`，缺省 `None` ⇒ 零文件、零行为）。钩子在**动作成功之后**：
+  `write()` 返回前（落库 + 闸门降层后，记录**最终**层）、`_delete_entry()`、`forget()` 每条。
+  **不审计**幂等重放、闸门拒收、`reuse_count` 强化、层间迁移与检索读路径（无知识集变化 /
+  写放大不可控）。**被拒**：只审计 CLI（漏 loop / web / 子 Agent 的写入）；审计
+  `MemoryBackend.put`（迁移 / 复用回写混入，语义过粗）；复用 `traces.jsonl`（可被采样 / 关闭 /
+  外发，治理审计需要独立稳定的旁路）。
+- **D2 只写元数据。** `ts / op / id / layer / kind / source / session_id / trace_id /
+  content_hash / reason / count / target / format`；**不含正文**。字符串先 `redact_secrets`
+  再截断（id/source/session/trace 128、reason 64、target 512）；`content_hash` 只截断不脱敏
+  —— 它是派生摘要，脱敏会破坏「删除 / 导出」关联。**被拒**：把审计行写进 `memory.jsonl`
+  （污染检索面与幂等判据；审计是事件流，不是记忆条目）。
+- **D3 fail-open。** 追加失败吞异常、每实例 `RuntimeWarning` 一次，记忆操作照常成功。
+  **被拒**：fail-closed —— 新增「审计故障 ⇒ 记忆全停」故障模式，与记忆可用性冲突；代价是
+  可能丢审计行（登记 E244，由文件是否持续增长发现）。
+- **D4 缺省开启 + kill-switch。** `memory.audit_log` 缺省 `true`，三面齐备；集合外取值归一为
+  **开启**（同 `key_fact_extract`，笔误不得静默关闭治理能力）。关闭只停新事件，不删既有文件，
+  `memory audit` 仍可读。**被拒**：默认关（治理能力默认缺席等于没有）。
+- **D5 遗忘原因与墓碑。** 不另建墓碑存储：条目本身留在 L4 + `forgotten` 标签（ADR-0291）；
+  审计行补 `reason="decay"` + `content_hash`。自然衰减与 L2 软上限触发的衰减共用该值（判据同为
+  `_decay_score`）。
+- **D6 导出必须显式确认。** `memory export [--format jsonl|json] [--out PATH] --yes`：缺
+  `--yes` 退出 1、stdout 为空；全层 / 全状态快照；字符串脱敏（`content_hash` 除外）；文件
+  0600；成功落 `export` 审计；只读 `audit(None)` ⇒ 不触发复用强化。**被拒**：循环 `memory get`
+  （无确认门 / 无审计 / 无法成档）；哈希链 / 签名（需密钥管理与外部锚定，超出 P2-2）。
+
+**验证**：新增 `tests/test_memory_audit.py` 20 + `tests/test_memory_export_cli.py` 5 = 25。
+反证（`cp` + `md5sum` 复原）：删 `write` 钩子 ⇒ 1 红；审计行写入正文 ⇒ 1 红；删 `--yes` 判断
+⇒ 1 红；非法取值归一改为关闭 ⇒ 3 红（`disable` / `ong` / 空串）；删 `delete` 钩子 ⇒ 1 红。
+全量 **3487 passed**；`openspec validate --all` 32/0（归档后 31/0）。
+
+**局限**：① 审计文件与记忆库同用户可写，**无签名链 / WORM**（同用户进程可改写）；
+② 不自动轮转（行 ≤ ~1KB，随治理动作线性增长；外部 logrotate 可安全轮转）；
+③ 审计关闭期间的动作不可回溯；④ fail-open 允许丢行；⑤ 不审计读路径与迁移；
+⑥ 导出是全量快照，无按时间 / 层 / 状态的过滤参数；⑦ 删除事件的持久可逆性仍由 CLI 备份
+（`memory-deleted.jsonl`）承担，审计行不是恢复源。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11684,3 +11730,4 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 | ADR-0295 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/evolution-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0296 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0297 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0298 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

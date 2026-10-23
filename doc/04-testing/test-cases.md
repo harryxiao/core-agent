@@ -5220,3 +5220,22 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **反证 5/5**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：删 `compact` 早返回 ⇒ TC-CONS-01 红；`off` 也跳过 `forget` ⇒ TC-CONS-03 红；非法字符串归一 `off` ⇒ TC-CONS-06 参数化 3 红（布尔/数字走非字符串分支）；组合根恒 `True` ⇒ TC-CONS-07 红；摘要器失败时仍迁移 ⇒ TC-CONS-04 红。
 > **实测**：全量 pytest **3462 passed**（3445 + 17）；`openspec validate --all` 32/0（含本 active change）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0297 行。
+
+## 221. 记忆治理审计与导出（TC-MEMAUD，change `0308`／ADR-0298，台账 E244）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-MEMAUD-01 | 写入只记元数据 | 接线审计，写入正文含密钥形态的条目 | 一行 `op="write"`，含 id/layer/kind/source/session/trace/hash；文件不含正文与密钥明文（`tests/test_memory_audit.py::test_write_appends_metadata_only`） |
+| TC-MEMAUD-02 | 重放 / 拒收不审计 | 同载荷重放；重要度闸门拒收 | 均不新增审计行（`...::test_idempotent_replay_writes_no_audit`、`...::test_importance_gate_rejection_writes_no_audit`） |
+| TC-MEMAUD-03 | 删除与遗忘可追溯 | `discard()`；十年前 L2 episodic 条目 `forget()` | 各一行 delete / forget；forget 含 `reason="decay"` 与 content_hash；条目仍在 L4 + `forgotten`（`...::test_delete_appends_audit`、`...::test_forget_appends_reason_and_hash`） |
+| TC-MEMAUD-04 | fail-open + 单次告警 | 审计路径指向目录，连续写两条 | 两次写入均成功；仅一次 `RuntimeWarning`（`...::test_audit_failure_does_not_block_write_and_warns_once`） |
+| TC-MEMAUD-05 | 0600 与坏行容错 | 写入后检查权限并追加坏行 | 文件 0600；读取跳过坏行（`...::test_audit_file_mode_and_bad_line_tolerance`） |
+| TC-MEMAUD-06 | 配置三面与归一 | spec / 缺省 / yaml / env / CLI / 非法值 | flag/env/default/map_to 对齐；缺省与非法值返回 `true`；三面均可关闭（`...::test_spec_declares_audit_log` 等 7 项） |
+| TC-MEMAUD-07 | 组合根接线 | 缺省 / `memory.audit_log: false` 各构造 runtime | `_audit_log` 分别为接线（路径 `memory.audit.jsonl`）/ `None`（`...::test_build_runtime_default_wires_audit`、`...::test_build_runtime_wires_audit_off`） |
+| TC-MEMAUD-08 | 导出确认门 | `memory export --out ...` 无 `--yes` | 退出 1、stdout 为空、不落文件、无 export 审计（`tests/test_memory_export_cli.py::test_export_requires_explicit_yes`） |
+| TC-MEMAUD-09 | 导出脱敏 / 格式 / 留痕 | jsonl 到 stdout；json 到文件 | 全层快照；密钥明文消失、正文 `<redacted>`、hash 保留；文件 0600；export 事件含 count/target/format；不触发复用强化（`...::test_export_jsonl_redacts_and_audits`、`...::test_export_json_to_file_is_0600`） |
+| TC-MEMAUD-10 | 审计读取 | `memory audit --limit 1`；无文件 | 只打印尾部一行；空态输出「（无审计记录）」退出 0（`...::test_memory_audit_prints_tail`、`...::test_memory_audit_empty`） |
+
+> **反证 5/5**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：删 `write` 钩子 ⇒ TC-MEMAUD-01 红；审计行写入正文 ⇒ TC-MEMAUD-01 红；删 `--yes` 判断 ⇒ TC-MEMAUD-08 红；非法值归一改为关闭 ⇒ TC-MEMAUD-06 参数化 3 红；删 `delete` 钩子 ⇒ TC-MEMAUD-03 红。
+> **实测**：全量 pytest **3487 passed**（3462 + 25）；`openspec validate --all` 32/0（含本 active change）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0298 行。

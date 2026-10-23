@@ -636,3 +636,20 @@ known_window(llm.model)  ──►  表命中 ⇒ 该族真实窗口（本 chang
   失败 / 空摘要 / 低价值 / 截止越界不迁移 ⇒ 下个节拍重试。见 `memory.md` §3.21。
 - 口径来源：`doc/openspec/specs/configuration/spec.md`「巩固模式配置」（ADDED）、
   `doc/openspec/specs/memory/spec.md`「巩固的可关闭性」（ADDED）。
+
+### 2.22 记忆审计日志配置（change `0308` / ADR-0298，台账 E244）
+
+| 键 | 缺省 | 约束 | 说明 |
+|---|---|---|---|
+| `memory.audit_log` | `true` | 布尔语义（`true`/`false`/`yes`/`no`/`on`/`off`/`1`/`0`） | 治理审计旁路（write/delete/forget/export）的 kill-switch |
+
+- **单一真源**：`ConfigSpec` 声明（`map_to="memory.audit_log"`，`exposure=ADVANCED`）⇒ CLI
+  `--memory-audit-log`、env `CORE_MEMORY_AUDIT_LOG`、yaml `memory.audit_log` 三面一一对应；
+  优先链 CLI > env > config.yaml > 缺省。
+- **访问器** `ConfigManager.audit_log_enabled() -> bool`：`memory` 为**非结构化段** ⇒ 集合外取值
+  （拼写错误 / 空串）归一为**开启**（同 `key_fact_extract`：笔误不得静默关闭治理能力）；未加载
+  配置时返回 `true`。关闭只影响新事件：既有 `memory.audit.jsonl` 不删除，`memory audit` 仍可读。
+- **消费方**：`build_runtime` 开启时注入 `MemoryAuditLog($CORE_STATE_DIR/memory.audit.jsonl)`，
+  关闭时 `None`（不创建文件）。见 `memory.md` §3.22。
+- 口径来源：`doc/openspec/specs/configuration/spec.md`「记忆审计日志配置」（ADDED）、
+  `doc/openspec/specs/memory/spec.md`「记忆治理审计日志」「记忆治理导出」（均 ADDED）。

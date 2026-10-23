@@ -142,6 +142,9 @@ class MemoryStore(Plugin):
     def audit(self, trace_id: str | None = None) -> list[MemoryEntry]:
         """审计写入记录。"""
 
+    def record_export(self, *, count: int, target: str, format: str) -> None:
+        """导出审计事件（change `0308` / ADR-0298）：未接线 `audit_log` ⇒ no-op。"""
+
     def summary_for(self, session_id: str) -> MemoryEntry | None:
         """按会话取回既有摘要条目（**只读**；change `0150` / ADR-0142 / 账本 E94）。
 
@@ -194,6 +197,8 @@ MemoryStore(
     consolidation_enabled=True,  # 固化单一开关（change 0307 / ADR-0297）：缺省 True ⇒ 压实逐字不变；
                                  # False ⇒ compact() 在任何评分/模型调用/写入/迁移前返回 None，
                                  # forget() / summarize_slice 不受影响
+    audit_log=None,        # 治理审计旁路 MemoryAuditLog（change 0308 / ADR-0298）：缺省 None ⇒
+                           # 零文件/零行为；接线后 write/delete/forget 成功后追加元数据事件
 )
 ```
 
@@ -231,6 +236,24 @@ TranscriptStore(path: Path | None = None)      # path=None ⇒ 纯内存（测�
 「对话转录持久化（非记忆层级）」。
 
 ---
+
+### 1.2 治理审计日志（MemoryAuditLog，change `0308` / ADR-0298）
+
+append-only JSONL 旁路，只记元数据、不含正文。写失败 **fail-open**：吞异常、每实例一次
+`RuntimeWarning`，不影响记忆操作。
+
+```python
+MemoryAuditLog(path: Path | None)          # path=None ⇒ 全部 no-op
+
+    def record(op, entry=None, *, reason="", count=None, target="", format="") -> None
+    def read(limit: int | None = 50) -> list[dict[str, Any]]   # 文件序尾部；坏行跳过
+```
+
+事件字段固定：`ts / op / id / layer / kind / source / session_id / trace_id / content_hash /
+reason / count / target / format`。`op ∈ {write, delete, forget, export}`；`forget` 的
+`reason="decay"`。除 `content_hash`（派生摘要，只截断）外，字符串字段先 `redact_secrets`
+再截断（id/source/session/trace 128、reason 64、target 512、format 16、hash 80）。
+文件 0600、单次 `os.write` 整行；**不轮转**（外部 logrotate 可安全轮转）。
 
 ## 2. 数据结构
 

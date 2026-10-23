@@ -623,6 +623,36 @@ MemoryStore
 **局限**：低价值会话每个维护节拍（缺省 15 分钟）会被**重新评分**（无失败退避 / 负缓存）；不记录
 `extractorVersion`；队列可见性就是 L2 层本身（无「待巩固任务列表」视图）。
 
+### 3.22 治理审计与导出（change `0308`／ADR-0298／台账 E244）
+
+SDD §10.4 的治理面此前只有进程内效应与零散的 `memory-deleted.jsonl`；跨进程无法回答「何时写了 /
+删了 / 遗忘了哪条」。本 change 增加**旁路**审计日志与只读导出，不改记忆语义。
+
+**审计日志**：`MemoryStore(audit_log=MemoryAuditLog(path)|None)`（缺省 `None` ⇒ 零文件、零行为）。
+组合根缺省注入 `$CORE_STATE_DIR/memory.audit.jsonl`（0600，append-only JSONL），
+`memory.audit_log: false` 为 kill-switch。
+
+| 事件 | 触发点 | 关键字段 |
+|---|---|---|
+| `write` | `write()` 成功返回前（落库 + 闸门降层之后） | id / **最终** layer / kind / source / session / trace / content_hash |
+| `delete` | `_delete_entry()` | id / layer / trace / hash |
+| `forget` | `forget()` 每条 | 同上 + `reason="decay"`（自然衰减与 L2 软上限共用） |
+| `export` | CLI 导出成功后 `record_export()` | `count` / `target`（stdout 记 `-`）/ `format` |
+
+- **只写元数据**：不含正文；除 `content_hash` 外字符串字段先 `redact_secrets` 再截断
+  （id/source/session/trace 128、reason 64、target 512）。哈希只截断不脱敏 —— 派生摘要用于关联。
+- **不审计**：幂等重放（零落盘）、闸门拒收、`reuse_count` 强化、层间迁移、检索读路径。
+- **fail-open**：追加失败吞异常、每实例告警一次，记忆操作照常成功（审计是观测面，不是写入前提）。
+- **有界性**：目标 ≤ ~1KB/行、O_APPEND 单次写整行；**不轮转**（外部 logrotate 可轮转）。
+- **墓碑**：遗忘条目仍在 L4 + `forgotten` 标签（§3.16）；审计行补 reason/hash，不另建墓碑库。
+- **导出**：`memory export [--format jsonl|json] [--out PATH] --yes` —— 缺 `--yes` 拒绝；
+  全层 / 全状态快照、所有字符串字段脱敏、文件 0600、成功后落 `export` 审计；只读
+  `audit(None)`，不触发复用强化。
+- **查看**：`memory audit [--limit N]`（缺省 50，`0` = 全部；坏行跳过）。
+
+**局限**：审计文件与记忆库同用户可写（无签名链 / WORM）；不自动轮转；审计关闭期间的动作
+**不可回溯**。
+
 ---
 
 ## 4. 记忆写入规范（"无行动不记忆"的落地）
@@ -654,6 +684,7 @@ L2 条目**不入选** `_episodic_groups()` —— 该函数是打分（`_score_
 | 写入失败 | **不重试、无本地队列**：`_persist` 直写后端，异常向调用方传播（loop 侧不吞错；由进程级错误边界处理）。change `0302` 订正旧文档的「重试 1 次 + 本地队列」臆述 |
 | 重复投递同一条写入 | 同层同 id 同载荷 ⇒ 幂等快路径，返回既有 id 且零副作用（change `0306`／§3.20）；载荷不同 ⇒ 覆盖语义，逐字不变 |
 | 需要整体停用知识固化 | `memory.consolidation_mode: off` ⇒ `compact()` 零副作用返回；`forget()` / 中层摘要不受影响（change `0307`／§3.21） |
+| 审计日志追加失败 | **fail-open**：吞异常、每实例告警一次，写入 / 删除 / 遗忘照常成功（change `0308`／§3.22）；代价是可能丢审计行 |
 | 结晶后插件退化 | L4 评测触发溶解，回退 L3，保留教训 |
 | 索引与事实不一致 | 写入 / 迁移在同一路径内同步更新后端索引（`put` / `move`），无异步同步窗口 |
 

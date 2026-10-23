@@ -73,7 +73,14 @@ from core.mcp import (
     default_endpoint_name,
     mcp_endpoints_path,
 )
-from core.memory import FileBackend, MemoryEntry, MemoryStore, TranscriptStore, redact_secrets
+from core.memory import (
+    FileBackend,
+    MemoryAuditLog,
+    MemoryEntry,
+    MemoryStore,
+    TranscriptStore,
+    redact_secrets,
+)
 from core.notes import (
     NoteEntry,
     NoteError,
@@ -321,6 +328,16 @@ def _add_memory_parser(sub: Any) -> None:
     deletep.add_argument("entry_id", metavar="<id>")
     repair = mem_sub.add_parser("repair-keyfacts", help="修复失效关键事实（重抽 + 清理旧条目）")
     repair.add_argument("--dry-run", action="store_true", help="只报告将修复的内容，不删不写")
+    auditp = mem_sub.add_parser("audit", help="查看治理审计日志（写入 / 删除 / 遗忘 / 导出）")
+    auditp.add_argument(
+        "--limit", type=_non_negative_int, default=50, metavar="N", help="展示条数（0 = 全部）"
+    )
+    exportp = mem_sub.add_parser("export", help="导出记忆快照（内容脱敏；需 --yes 显式确认）")
+    exportp.add_argument(
+        "--format", choices=("jsonl", "json"), default="jsonl", help="输出格式（缺省 jsonl）"
+    )
+    exportp.add_argument("--out", metavar="PATH", help="写入文件（缺省 stdout）")
+    exportp.add_argument("--yes", action="store_true", help="确认导出（缺省拒绝）")
 
 
 def _add_rag_parser(sub: Any) -> None:
@@ -1557,12 +1574,100 @@ def _memory_delete(memory: Any, args: argparse.Namespace) -> int:
     return 0
 
 
+_AUDIT_FIELDS = (
+    "ts",
+    "op",
+    "id",
+    "layer",
+    "kind",
+    "source",
+    "session_id",
+    "trace_id",
+    "content_hash",
+    "reason",
+    "count",
+    "target",
+    "format",
+)
+
+
+def _audit_cell(name: str, value: object) -> str:
+    """审计行单字段展示：时间格式化、空值折 `-`、其余原样。"""
+    if name == "ts" and isinstance(value, (int, float)):
+        return _format_ts(float(value))
+    if value is None or value == "":
+        return "-"
+    return str(value)
+
+
+def _memory_audit(_memory: Any, args: argparse.Namespace) -> int:
+    """`memory audit [--limit N]`：只读审计日志尾部（坏行由 `read` 跳过）。"""
+    limit = int(args.limit)
+    rows = MemoryAuditLog(_state_path("memory.audit.jsonl")).read(None if limit == 0 else limit)
+    if not rows:
+        print("（无审计记录）")
+        return 0
+    for row in rows:
+        print("\t".join(_audit_cell(name, row.get(name)) for name in _AUDIT_FIELDS))
+    return 0
+
+
+def _memory_export(memory: Any, args: argparse.Namespace) -> int:
+    """`memory export`：全量快照（脱敏）→ stdout / 0600 文件；成功后留审计痕。
+
+    缺 `--yes` 一律拒绝（内容会离开状态目录，必须是显式动作）。导出只读
+    `audit(None)`，不触发复用强化。
+    """
+    if not args.yes:
+        print("导出需显式确认：请加 --yes（导出内容会离开状态目录）", file=sys.stderr)
+        return 1
+    rows = [
+        {
+            # `content_hash` 是派生摘要（不含内容），保留原值以便留档关联。
+            key: (
+                value
+                if key == "content_hash" or not isinstance(value, str)
+                else redact_secrets(value)
+            )
+            for key, value in asdict(entry).items()
+        }
+        for entry in memory.audit(None)
+    ]
+    fmt = str(args.format)
+    if fmt == "json":
+        payload = json.dumps(rows, ensure_ascii=False, indent=2) + "\n"
+    else:
+        payload = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
+    if args.out:
+        path = Path(args.out)
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, payload.encode("utf-8"))
+            finally:
+                os.close(fd)
+            with contextlib.suppress(OSError):  # 覆盖既有宽权限文件时一并收紧
+                os.chmod(path, 0o600)
+        except OSError as exc:
+            print(f"导出失败: {exc}", file=sys.stderr)
+            return 1
+        target = str(path)
+        print(f"已导出 {len(rows)} 条 → {path}")
+    else:
+        sys.stdout.write(payload)
+        target = "-"
+    memory.record_export(count=len(rows), target=target, format=fmt)
+    return 0
+
+
 _MEMORY_COMMANDS: dict[str, Callable[[Any, argparse.Namespace], int]] = {
     "maintain": _memory_maintain,
     "list": _memory_list,
     "get": _memory_get,
     "delete": _memory_delete,
     "repair-keyfacts": _memory_repair_keyfacts,
+    "audit": _memory_audit,
+    "export": _memory_export,
 }
 
 
@@ -1572,7 +1677,8 @@ def _memory(args: argparse.Namespace) -> int:
     if action is None:
         print(
             "用法: core-agent memory {maintain|list [--limit N]|get <id>|delete <id>"
-            "|repair-keyfacts [--dry-run]}",
+            "|repair-keyfacts [--dry-run]|audit [--limit N]|"
+            "export [--format jsonl|json] [--out PATH] --yes}",
             file=sys.stderr,
         )
         return 1

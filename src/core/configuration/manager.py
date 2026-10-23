@@ -484,6 +484,14 @@ _CONFIG_SPECS: list[ConfigSpec] = [
         exposure=ConfigExposure.ADVANCED,
     ),
     ConfigSpec(
+        "memory.audit_log",
+        "--memory-audit-log",
+        "CORE_MEMORY_AUDIT_LOG",
+        default=True,
+        map_to="memory.audit_log",
+        exposure=ConfigExposure.ADVANCED,
+    ),
+    ConfigSpec(
         "notes.candidate_distill",
         "--notes-candidate-distill",
         "CORE_NOTES_CANDIDATE_DISTILL",
@@ -1165,6 +1173,21 @@ class ConfigManager:
             return True
         raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
         value = raw.get("key_fact_extract", True)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() not in _FEATURE_FALSE
+
+    def audit_log_enabled(self) -> bool:
+        """记忆治理审计日志开关（缺省 ``True``；change 0308 / ADR-0298）。
+
+        **kill-switch 语义**（同 `key_fact_extract()`）：治理能力默认在场，显式关闭才停写；
+        `memory` 为非结构化段 ⇒ 集合外取值归一为**开启**（笔误不得静默关闭审计）。
+        关闭只影响新事件，既有审计文件不删除、只读面仍可查看。
+        """
+        if self._config is None:
+            return True
+        raw = cast("dict[str, Any]", self._config.extra.get("memory") or {})
+        value = raw.get("audit_log", True)
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() not in _FEATURE_FALSE

@@ -104,6 +104,7 @@ from core.mcp import MCPClient, MCPEndpointRegistry, mcp_endpoints_path
 from core.memory import (
     Crystallizer,
     FileBackend,
+    MemoryAuditLog,
     MemoryBackend,
     MemoryEntry,
     MemoryStore,
@@ -301,6 +302,16 @@ def _memory_path() -> Path:
     """
     base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
     return base / "memory.jsonl"
+
+
+def _memory_audit_path() -> Path:
+    """记忆治理审计路径：$CORE_STATE_DIR（缺省 ~/.core/state）/memory.audit.jsonl。
+
+    与 `memory.jsonl` / `memory-deleted.jsonl` 同目录约定；append-only、0600
+    （change 0308 / ADR-0298）。
+    """
+    base = Path(os.environ.get("CORE_STATE_DIR") or Path.home() / ".core" / "state")
+    return base / "memory.audit.jsonl"
 
 
 def _trace_path() -> Path:
@@ -844,6 +855,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         # 固化单一开关（change 0307 / ADR-0297）：缺省 `active` ⇒ True ⇒ 压实逐字不变；
         # `off` ⇒ compact 为 no-op（forget / 中层摘要不受影响）。
         consolidation_enabled=config.consolidation_mode() != "off",
+        # 治理审计旁路（change 0308 / ADR-0298）：缺省开 ⇒ 事件落
+        # `$CORE_STATE_DIR/memory.audit.jsonl`（0600、不含正文）；显式关闭 ⇒ None（零文件）。
+        audit_log=MemoryAuditLog(_memory_audit_path()) if config.audit_log_enabled() else None,
     )
     # 上下文压实接线（0041）：多轮历史 → persist 落 L2；此前 context.Compactor 与
     # memory.compact 都无生产调用方（死路径），现由 loop 的**工具步数**/预算阈值触发。

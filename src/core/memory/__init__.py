@@ -7,6 +7,7 @@ L0-L4 分层记忆、热/冷温度检索、无行动不记忆、结晶/溶解、
 对应规格：doc/openspec/specs/memory/spec.md
 """
 
+from .audit import MemoryAuditLog
 from .backend import FileBackend
 from .crystallizer import Crystallizer, PluginCandidate
 from .embedding import batch_embed
@@ -67,6 +68,7 @@ __all__ = [
     "RELATION_PREDICATES",
     "Relation",
     "RelationExtractor",
+    "MemoryAuditLog",
     "MemoryBackend",
     "MemoryEntry",
     "MemoryId",
