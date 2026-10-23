@@ -11535,6 +11535,56 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 `path`（`code_run` 产生的文件不可见）；⑤ 无 artifact 的区间不回填（历史行不会补写工件列）；
 ⑥ 检查点随 episodic 保留期墓碑化，墓碑后正文不可恢复（原文仍在转录日志）。
 
+## ADR-0301：记忆指标进程内累计、统计从既有数据派生（change 0311 / 台账 E247）
+
+**背景。** 对照 `ai-arch/docs/memory-sdd.md` v1.0 §11.1/§11.2/§11.3：记忆缺少运行指标、
+运维统计、召回解释与「有/无记忆」效果评测。现状只能从轨迹里散读字段，回答不了「写入了多少 /
+注入了多少 token / 为什么是这一条 / 有记忆比没记忆好在哪」。同时明确的约束：读路径是每轮
+热路径（检索 + 注入），不能为观测额外落盘或发网络调用；密钥 / 正文不得进指标与统计输出。
+
+**决策**：
+
+- **D1 指标 = 实例内计数，不落盘。** `MemoryMetrics` 由 `MemoryStore` 持有（可注入），
+  `metrics_snapshot()` 返回拷贝；键名对齐 SDD §11.1；固定键始终在场、`writes.<kind>` 动态
+  出现；`kind` 规范化（小写、非 `[a-z0-9_]` → `_`、空 ⇒ `unknown`）。计数点在**成功落库之后**
+  （幂等重放与闸门拒收单独计数），故「计数」与「真实副作用」一一对应。**被拒**：读路径
+  追加 metrics JSONL（每轮 I/O + 轮转 + 并发追加复杂度）；复用既有 `MetricsCollector`
+  （change 0253 已裁决轨迹事件才是成本信号，且其单例无实例语义）；定时快照线程（多一个
+  生命周期与退出面，收益只是保留重启前计数）。
+- **D2 内部打分读不计入。** 压实为决策打分发起的检索走私有 `_read_for_scoring()`
+  （`counted=False`），公开 `recall()` 恒计入。否则 `memory.recall.injected` 会被用户
+  从未看见的条目虚增，指标失去解释力。**被拒**：靠调用方传 `counted` 参数（公开面泄漏内部
+  分支）；压实复用 `read()` 再事后扣减（并发下扣减不原子）。
+- **D3 运维统计 = 既有持久数据的只读投影。** `memory stats` 从 `audit(None)`（条目）、
+  `memory.audit.jsonl`（治理事件）与 `memory.jsonl` 文件大小派生，不新增状态文件、不写回。
+  `by_layer` 只统计 active（活记忆视图），`by_status` 全量；审计面坏行跳过、缺失为空。
+  **被拒**：另建 `memory.stats.json`（第二真源，与条目/审计漂移）；把统计写进审计日志
+  （自指、放大）；把 counters 持久化（重启语义与回滚面都变复杂，收益低）。
+- **D4 召回解释零强化。** `recall(reinforce=False)` 跳过 `_reinforce`（零写回、零效应、
+  零复用计数），`memory why` 用它；同时 `RecallResult` 新增 `injected_tokens` 与 `scores`
+  （与 `entries` 等长同序，排序所用分值快照）。**被拒**：`why` 直接调 `recall()`（诊断动作
+  会改写复用信号，污染结晶阈值）；在 `why` 里重新实现排序（两套口径必然漂移）。
+- **D5 效果评测 = 离线确定性回放，只作机制性判据。** 固定任务集 × 两臂，同一真实链路与桩
+  provider；桩只在提示词出现 gold 标记时答对，成功判据纯确定性；断言有记忆成功率 ≥ 0.9、
+  严格高于无记忆、prompt token 更大。墙钟只报告。**被拒**：对真实模型跑评测（不可复现、
+  成本与外网依赖）；设绝对性能阈值（机器噪声，无稳定基线）。
+- **D6 输出脱敏与有界。** `why` 的条目摘要复用 `_one_line_summary`（先 `redact_secrets`
+  再截断）；`stats` 只输出计数与键名，从不读正文；指标不含正文、查询、session/trace 标识。
+
+**验证**：新增 `tests/test_memory_metrics.py`（13）、`tests/test_memory_stats.py`（8）、
+`tests/test_memory_stats_cli.py`（10）、`tests/test_memory_effectiveness.py`（2），扩
+`tests/test_memory_recall_diversity.py`（+3）＝ 36 条新用例；效果基准实测有记忆
+`1.00` / 无记忆 `0.00`，prompt token 2585 vs 1889。反证（`cp` 到 `/tmp` + `md5sum` 复原，
+逐条至少一红）：去 `reinforce=False` 门控、去私有打分检索体、去 `injected_tokens` 传递、
+去审计派生计数、无记忆臂误用有记忆库 —— 各至少一红。`openspec validate --all` 32/0
+（含本 active change；归档后 31/0）。
+
+**局限**：① 指标是**实例**作用域，多实例无汇总面、重启归零（D1 的代价）；② 未提供
+`hit_rate`（缺「该召回却未召回」的分母）、`conflicts`（无冲突判定原语）、`skill.*`
+（技能使用/晋升尚未有统一埋点）；③ `stats` 的审计面在审计关闭期间为空洞；④ `why` 只解释
+注入条目，不解释多样性/预算剔除**具体是哪一条**（只给计数）；⑤ 效果评测是单轮任务集，
+不覆盖长任务与多轮状态；⑥ 计数点与副作用同序但不跨进程原子（多进程写同一库时各自计数）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |

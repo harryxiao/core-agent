@@ -154,6 +154,45 @@ def test_stats_invariant_and_minimum_budget() -> None:
     assert wider.injected_count >= 2, "minimum_budget 应足够再注入一条"  # noqa: PLR2004
 
 
+def test_injected_tokens_matches_injected_count() -> None:
+    """`injected_tokens` 与注入条数同零同正（change 0311）。"""
+    store = _store(_entry("a", "巡检 一号", importance=0.9), _entry("b", "巡检 二号"))
+
+    hit = store.recall("巡检", budget=4096)
+    assert hit.injected_count == len(hit.entries) == 2  # noqa: PLR2004 — 两条候选均注入
+    assert hit.injected_tokens > 0
+
+    empty = MemoryStore().recall("巡检", budget=4096)
+    assert empty.injected_count == 0
+    assert empty.injected_tokens == 0
+    assert empty.scores == []
+
+
+def test_scores_align_with_entries_and_are_non_increasing() -> None:
+    """`scores` 与 `entries` 等长同序，且按返回顺序非增（change 0311）。"""
+    store = _store(
+        _entry("hi", "巡检 一号", importance=0.9),
+        _entry("lo", "巡检 二号", importance=0.1),
+        _entry("mid", "巡检 三号", importance=0.5),
+    )
+
+    result = store.recall("巡检", budget=4096)
+
+    assert len(result.scores) == len(result.entries)
+    assert all(left >= right for left, right in zip(result.scores, result.scores[1:], strict=False))
+    assert result.entries[0].id == "hi"
+
+
+def test_reinforce_false_keeps_reuse_count() -> None:
+    """诊断检索（`reinforce=False`）不写回、不自增 `reuse_count`（change 0311）。"""
+    store = _store(_entry("a", "巡检 一号"))
+
+    result = store.recall("巡检", reinforce=False)
+
+    assert [entry.id for entry in result.entries] == ["a"]
+    assert store.audit()[0].reuse_count == 0
+
+
 def test_read_delegates_to_recall_entries() -> None:
     """read() 与 recall().entries 返回同一集合与顺序。"""
     store = _store(

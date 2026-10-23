@@ -79,6 +79,7 @@ from core.memory import (
     MemoryEntry,
     MemoryStore,
     TranscriptStore,
+    collect_stats,
     redact_secrets,
 )
 from core.notes import (
@@ -338,6 +339,14 @@ def _add_memory_parser(sub: Any) -> None:
     )
     exportp.add_argument("--out", metavar="PATH", help="写入文件（缺省 stdout）")
     exportp.add_argument("--yes", action="store_true", help="确认导出（缺省拒绝）")
+    statsp = mem_sub.add_parser("stats", help="只读统计（存储体积 / 条目 / 治理事件）")
+    statsp.add_argument("--json", action="store_true", help="输出 JSON（缺省逐行文本）")
+    whyp = mem_sub.add_parser("why", help="召回解释：诊断检索（零强化）")
+    whyp.add_argument("query", metavar="<query>")
+    whyp.add_argument(
+        "--budget", type=_positive_int, default=4096, metavar="N", help="注入预算（token）"
+    )
+    whyp.add_argument("--session", default="", metavar="S", help="只检索本会话（缺省不限）")
 
 
 def _add_rag_parser(sub: Any) -> None:
@@ -1660,6 +1669,66 @@ def _memory_export(memory: Any, args: argparse.Namespace) -> int:
     return 0
 
 
+def _memory_stats(memory: Any, args: argparse.Namespace) -> int:
+    """`memory stats [--json]`：从既有持久数据派生只读统计（零强化、零写入）。"""
+    path = _state_path("memory.jsonl")
+    try:
+        storage_bytes = path.stat().st_size
+    except OSError:
+        storage_bytes = 0
+    rows = MemoryAuditLog(_state_path("memory.audit.jsonl")).read(None)
+    stats = collect_stats(memory.audit(None), rows, storage_bytes=storage_bytes)
+    if args.json:
+        print(json.dumps(stats.to_dict(), ensure_ascii=False, sort_keys=True))
+        return 0
+    print(f"storage_bytes\t{stats.storage_bytes}")
+    print(
+        f"entries={stats.entries_total}\tactive={stats.entries_active}"
+        f"\tretracted={stats.entries_retracted}\tsuperseded={stats.entries_superseded}"
+        f"\tforgotten={stats.entries_forgotten}"
+    )
+    print(f"layers={_counts_text(stats.by_layer)}")
+    print(f"status={_counts_text(stats.by_status)}")
+    print(f"writes={_counts_text(stats.writes_by_kind)}")
+    print(
+        f"governance=deletes:{_counts_text(stats.deletes_by_reason)}"
+        f" forgets:{_counts_text(stats.forgets_by_reason)} exports:{stats.exports}"
+    )
+    return 0
+
+
+def _counts_text(values: dict[str, int]) -> str:
+    """计数映射 → 单行 `k:v`（按 key 排序，稳定输出）。"""
+    return ",".join(f"{key}:{values[key]}" for key in sorted(values)) or "-"
+
+
+def _memory_why(memory: Any, args: argparse.Namespace) -> int:
+    """`memory why <query>`：零强化诊断检索（不写回、不强化），输出统计行与条目序。"""
+    result = memory.recall(
+        args.query,
+        args.budget,
+        session_id=args.session,
+        reinforce=False,
+    )
+    print(
+        f"matched={result.matched_count} injected={result.injected_count}"
+        f" excluded_by_diversity={result.excluded_by_diversity}"
+        f" excluded_by_budget={result.excluded_by_budget}"
+        f" minimum_budget={result.minimum_budget}"
+        f" injected_tokens={result.injected_tokens}"
+    )
+    for index, (entry, score) in enumerate(
+        zip(result.entries, result.scores, strict=False), start=1
+    ):
+        print(
+            f"#{index} score={score:.4f} layer={entry.layer} kind={entry.kind}"
+            f" source={entry.source} session={entry.session_id or '-'} id={entry.id}"
+            f" importance={entry.importance:.2f} reuse={entry.reuse_count}"
+            f" :: {_one_line_summary(entry.content)}"
+        )
+    return 0
+
+
 _MEMORY_COMMANDS: dict[str, Callable[[Any, argparse.Namespace], int]] = {
     "maintain": _memory_maintain,
     "list": _memory_list,
@@ -1668,6 +1737,8 @@ _MEMORY_COMMANDS: dict[str, Callable[[Any, argparse.Namespace], int]] = {
     "repair-keyfacts": _memory_repair_keyfacts,
     "audit": _memory_audit,
     "export": _memory_export,
+    "stats": _memory_stats,
+    "why": _memory_why,
 }
 
 
@@ -1678,7 +1749,8 @@ def _memory(args: argparse.Namespace) -> int:
         print(
             "用法: core-agent memory {maintain|list [--limit N]|get <id>|delete <id>"
             "|repair-keyfacts [--dry-run]|audit [--limit N]|"
-            "export [--format jsonl|json] [--out PATH] --yes}",
+            "export [--format jsonl|json] [--out PATH] --yes|stats [--json]|"
+            "why <query> [--budget N] [--session S]}",
             file=sys.stderr,
         )
         return 1

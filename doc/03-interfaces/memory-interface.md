@@ -313,6 +313,42 @@ MemoryStore.retract(entry_id, *, reason="tombstone") -> bool
 `forget(episodic_retention_days=N)` 对超期 L2 episodic 复用同一原语（`reason="retention"`）。
 `discard()` 保持**物理删除**（压实等内部清退），两者不共用语义。
 
+---
+
+### 1.4 指标、统计与召回解释（change `0311` / ADR-0301）
+
+```python
+MemoryStore.metrics_snapshot() -> dict[str, float]   # 实例作用域累计；零 I/O / 零写回
+MemoryStore.read(..., reinforce=True) -> list[MemoryEntry]
+MemoryStore.recall(..., reinforce=True) -> RecallResult
+```
+
+- `reinforce=False`：诊断读 —— 不自增 `reuse_count`、不写回、不记 `memory.reuse` 效应
+  （结果与缺省检索相同）；缺省 `True` 与既往逐字一致。
+- `metrics_snapshot()` 固定键见模块文档 §3.24；`memory.writes.<kind>` 动态出现；未发生时
+  固定键值为 `0.0`。`MemoryMetrics` 可经构造参数注入（缺省每实例新建）。
+
+**CLI**
+
+```text
+memory stats [--json]                          # 只读聚合；--json 固定键、映射按 key 排序
+memory why <query> [--budget N] [--session S]  # 零强化诊断检索；预算缺省 4096
+```
+
+`memory stats --json` 形状（键固定，映射已排序）：
+
+```json
+{"storage_bytes": 0, "entries_total": 0, "entries_active": 0, "entries_retracted": 0,
+ "entries_superseded": 0, "entries_forgotten": 0, "by_layer": {}, "by_status": {},
+ "content_bytes": 0, "writes_by_kind": {}, "deletes_by_reason": {},
+ "forgets_by_reason": {}, "exports": 0}
+```
+
+`memory why` 首行 `matched=… injected=… excluded_by_diversity=… excluded_by_budget=…
+minimum_budget=… injected_tokens=…`；其后每条 `#N score=… layer=… kind=… source=…
+session=… id=… importance=… reuse=… :: <脱敏单行摘要>`，按分值非增。无命中 ⇒ 只输出统计行、
+退出码 0。输出不含正文原文（摘要先 `redact_secrets` 再截断）。
+
 ## 2. 数据结构
 
 ```python
@@ -339,13 +375,15 @@ class MemoryEntry:
     superseded_by: str = ""    # 仅旧版本填写：替代它的新版本 id
 
 @dataclass
-class RecallResult:            # change 0304 / ADR-0294
+class RecallResult:            # change 0304 / ADR-0294；注入 token 与分值见 change 0311
     entries: list[MemoryEntry]
     matched_count: int = 0
     injected_count: int = 0
     excluded_by_budget: int = 0
     excluded_by_diversity: int = 0
     minimum_budget: int = 0    # 再注入第一条被预算跳过条目所需预算（无 ⇒ 0）
+    injected_tokens: int = 0   # 注入条目 token 估算总和（空 ⇒ 0）
+    scores: list[float] = []   # 与 entries 等长同序；尺度随排序后端，不可跨运行比较
 ```
 
 ---
@@ -662,7 +700,8 @@ MVP 实现：`FileBackend`（`memory/*.md` + `memory/*.jsonl`）。`put_many` �
   （change 0245）：CJK 字符 ≈1 token/字符、其余 4 字符 ≈1 token（共享 `core.tokens`，
   与 `context.budget` / 转录短带截断同一口径）。
 - `read` 命中即 `reuse_count += 1`（复用即强化；**落盘**，写放大有界于选中集，且经
-  `put_many` 单次批量落盘 —— change `0244`）。写入侧热字典有界（`_HOT_MAX=512`，写入序淘汰）；
+  `put_many` 单次批量落盘 —— change `0244`）。`reinforce=False`（诊断读，change `0311`）
+  是唯一例外：零写回、零复用效应。写入侧热字典有界（`_HOT_MAX=512`，写入序淘汰）；
   后端内存集才是全量真源，读面不受淘汰影响。
 - `read` 的会话过滤在**排名/预算之前**生效（被滤项不吃预算、不被强化），与来源排除同口径；
   空标识不过滤 ⇒ 存量未归属条目构成全局层（ADR-0107）。

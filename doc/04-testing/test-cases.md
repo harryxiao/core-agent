@@ -5282,3 +5282,37 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **反证 6/6**（`cp` 到 `/tmp`、复原后 `md5sum` 一致：`default.py` `d239cfe6…`、`checkpoint.py` `d21ee862…`、`store.py` `7e5a569a…`）：去 `perceive` 写点 ⇒ TC-CTXCP-03/04/05/07/08/09 等 8 红；去水位增量 ⇒ TC-CTXCP-04 红；去脱敏 ⇒ TC-CTXCP-08 红；去 `artifact:` 标签 ⇒ TC-CTXCP-07 红；水位过滤 `status=="active"` ⇒ TC-CTXCP-11 红；去开关门控 ⇒ TC-CTXCP-10 红。
 > **实测**：全量 pytest **3556 passed**（3513 + 43）；`openspec validate --all` 32/0（含本 active change；归档后 31/0）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0300 行。
+
+## 224. 记忆指标、统计、召回解释与效果评测（TC-MEMOBS / TC-MEMEFF，change `0311`／ADR-0301，台账 E247）
+
+### 224.1 运行指标（TC-MEMOBS）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-MEMOBS-01 | 按 kind 计写入 | 写入 `episodic` ×2、`semantic` ×1 | `memory.writes.episodic == 2`、`memory.writes.semantic == 1`（`tests/test_memory_metrics.py::test_writes_counted_by_kind`） |
+| TC-MEMOBS-02 | kind 规范化 | `kind` 为空 / 含大写与非法字符 | 空 ⇒ `memory.writes.unknown`；小写化、非 `[a-z0-9_]` ⇒ `_`（`...::test_kind_is_sanitized`） |
+| TC-MEMOBS-03 | 重放与拒收分开计 | 同层同 id 同载荷重放；闸门拒收；无行动守卫拒收 | `deduped == 1`、`rejected == 1`；无行动拒收**不**计入 `rejected`（`...::test_idempotent_replay_counted_as_deduped`、`...::test_gate_rejection_counted_not_as_write`、`...::test_no_action_rejection_not_counted_as_rejected`） |
+| TC-MEMOBS-04 | 召回累计守恒 | 两次 `read()`（其一预算截断） | `calls == 2`；`candidates == injected + 两类剔除`；`injected_tokens` 为两次之和（`...::test_recall_stats_accumulate`） |
+| TC-MEMOBS-05 | 内部打分读不计入 | 注入 compactor，仅调 `compact()` | `memory.recall.calls == 0`（`...::test_internal_compaction_read_not_counted`） |
+| TC-MEMOBS-06 | 诊断读零强化 | `recall(reinforce=False)` / 缺省 | `False` ⇒ `reuse_count` 不变、无复用效应；缺省 ⇒ 照常自增（`...::test_reinforce_false_leaves_reuse_count_and_no_effect`、`...::test_reinforce_default_still_increments`） |
+| TC-MEMOBS-07 | 巩固耗时与失败 | 注入单调钟与抛错摘要器 | `runs == 1`、`failures == 1`、`elapsed_ms` 为时钟差值；开关关闭时零计数（`...::test_consolidation_duration_and_failure`、`...::test_disabled_consolidation_not_counted`） |
+| TC-MEMOBS-08 | 快照形态与零效应 | 新存储 / 若干写入后 | 固定键始终在场（未发生为 0）；`snapshot()` 零 I/O、不改条目、不产生效应（`...::test_snapshot_has_fixed_keys`、`...::test_snapshot_is_zero_effect`） |
+| TC-MEMOBS-09 | 注入 token 与分值 | 命中若干条 / 空库 | `injected_tokens == 0` ⇔ `injected_count == 0`；`len(scores) == len(entries)` 且非增；空库二者为 0/`[]`；`reinforce=False` 不动 `reuse_count`（`tests/test_memory_recall_diversity.py::test_injected_tokens_matches_injected_count`、`...::test_scores_align_with_entries_and_are_non_increasing`、`...::test_reinforce_false_keeps_reuse_count`） |
+| TC-MEMOBS-10 | 统计派生（纯函数） | active / 墓碑 / 被取代条目 + 审计行 | 状态计数与 `by_status` 一致、`by_layer` 只计 active、`content_bytes` 只计 active UTF-8；审计按 op 派生、未知 op 忽略；空输入全 0；映射按键排序；不改动入参（`tests/test_memory_stats.py::test_entry_and_status_counts`、`...::test_by_layer_counts_only_active`、`...::test_content_bytes_counts_active_only`、`...::test_audit_derived_counts`、`...::test_unknown_ops_ignored`、`...::test_empty_inputs_are_all_zero`、`...::test_to_dict_maps_are_sorted`、`...::test_stats_do_not_mutate_entries`） |
+| TC-MEMOBS-11 | `memory stats --json` 全量聚合 | 两写入一墓碑 + 审计事件 | 固定 13 键；`by_layer == {"L2": 1}`；`storage_bytes == memory.jsonl` 大小；输出不含正文（`tests/test_memory_stats_cli.py::test_stats_json_counts_entries_and_audit`、`...::test_stats_json_fixed_keys`） |
+| TC-MEMOBS-12 | `memory stats` 零强化与空库 | 有可命中条目 / 空库 | `reuse_count` 不变、无新审计事件、不创建文件；空库全 0 且退出 0（`...::test_stats_zero_reinforcement_and_no_new_files`） |
+| TC-MEMOBS-13 | `memory stats` 文本模式 | 执行命令 | 逐行输出：存储字节、条目数、层分布、状态分布、写入分布、治理计数（`...::test_stats_text_mode_is_line_oriented`） |
+| TC-MEMOBS-14 | `memory why` 输出 | 3 条命中 / 含密钥正文 / 空库 / `--budget` 与 `--session` | 统计行在前、条目行按分值非增；密钥被脱敏；无命中只输出统计行且退出 0；两 flag 透传（`...::test_why_prints_stats_and_ranked_entries`、`...::test_why_redacts_content`、`...::test_why_no_match_exits_zero`、`...::test_why_budget_and_session_flags`） |
+| TC-MEMOBS-15 | `memory why` 零强化 | 命中条目 `reuse_count == 0` | 执行后仍为 0、无写回（`...::test_why_is_zero_reinforcement`） |
+| TC-MEMOBS-16 | 用法表登记 | `memory -h` | 用法串含 `stats [--json]` 与 `why <query>`（`...::test_usage_lists_new_commands`） |
+
+### 224.2 效果评测（TC-MEMEFF）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-MEMEFF-01 | 有记忆提升成功率 | 6 任务集 × 有/无记忆两臂，同一真实链路 + 桩 provider | 有记忆成功率 ≥ 0.9 且严格高于无记忆；无记忆 < 0.9；有记忆 prompt token 更大（`tests/test_memory_effectiveness.py::test_memory_improves_replay_success_rate`） |
+| TC-MEMEFF-02 | 评测确定性 | 两臂各连续回放两次 | 成功判定与 prompt token 完全一致（无时钟/随机/网络）（`...::test_replay_is_deterministic`） |
+
+> **反证 5/5**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：去 `reinforce=False` 门控 ⇒ TC-MEMOBS-06/14 红；去私有非计数检索体 ⇒ TC-MEMOBS-05 红；去 `injected_tokens` 传递 ⇒ TC-MEMOBS-09 红；去审计派生计数 ⇒ TC-MEMOBS-10/11 红；无记忆臂误用有记忆库 ⇒ TC-MEMEFF-01 红。
+> **实测**：全量 pytest **3592 passed**（3556 + 36）；`openspec validate --all` 32/0（含本 active change；归档后 31/0）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0301 行。

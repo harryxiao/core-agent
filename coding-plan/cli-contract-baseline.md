@@ -109,6 +109,8 @@
 | 26 | `core-agent run [--prompt "..." \| --file task.md] [--session ID] [--max-turns N]` | 运行一轮/一个任务 | UIAPILayer.run_loop() + AgentLoop.max_turns |
 | 26b | `core-agent memory maintain` | 触发一次记忆维护（压实 + 遗忘归档），打印归档条数 | MemoryStore.compact() + forget() |
 | 26c | `core-agent evolve run` | 装配 runtime → **强制**跑一轮进化冷路径（诊断/提案），打印结局（`status` 或 `no_op`）；一次性动作、不改运行态 | EvolutionWorker.maybe_run(force=True) |
+| 26d | `core-agent memory stats [--json]` | 只读运维统计：存储字节、条目/状态/层分布、正文字节、审计面写入/删除/遗忘/导出分布；零强化、不新增状态文件 | `collect_stats()` + `MemoryAuditLog.read()`（change `0311` / ADR-0301） |
+| 26e | `core-agent memory why <query> [--budget N] [--session S]` | 一次零强化检索的召回解释：统计行（matched/injected/剔除/最小预算/注入 token）+ 按分值降序的脱敏条目行 | `MemoryStore.recall(reinforce=False)` + `RecallResult.scores`（change `0311` / ADR-0301） |
 
 ### 2.8 分发（L5 ReleaseManager · 3）
 

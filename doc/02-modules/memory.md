@@ -717,6 +717,46 @@ SDD §5.6/§10.4 要求情景记忆有保留期、遗忘留下**不含正文**�
 **局限**：保留期只覆盖 L2 episodic（语义 / 技能条目不过期）；不实现 SDD 的「每 namespace
 256 MiB」容量告警；墓碑正文不可恢复（备份文件是唯一持久恢复来源）；审计仍可关闭。
 
+### 3.24 指标、统计与召回解释（change `0311`／ADR-0301／台账 E247）
+
+SDD §11.1/§11.2/§11.3 要求记忆可观测：运行指标、运维统计、召回解释与效果评测。此前四者
+全缺 —— 只能从轨迹散读，无法回答「注入了多少 / 为什么是这条 / 有记忆比没记忆好在哪」。
+
+**运行指标（`metrics_snapshot()`）**：`MemoryStore` **实例作用域**的进程内累计（不落盘、
+不跨实例共享），键名对齐 SDD §11.1：
+
+| 键 | 口径 |
+|---|---|
+| `memory.writes.<kind>` | 成功落库写入数，按 `kind` 分组（小写化、非 `[a-z0-9_]` → `_`、空 ⇒ `unknown`） |
+| `memory.writes.deduped` | 幂等重放快路径命中数 |
+| `memory.writes.rejected` | 重要度闸门拒收数（不再同时计入 kind） |
+| `memory.recall.calls` / `.candidates` / `.injected` / `.injected_tokens` / `.excluded_by_budget` / `.excluded_by_diversity` | 公开检索的累计注入统计（口径同 `RecallResult` 字段） |
+| `memory.consolidation.runs` / `.failures` / `.elapsed_ms` | 压实**实际执行**次数、抛错次数、累计耗时（注入单调钟，整数毫秒） |
+
+固定键始终在场（未发生 ⇒ 0）；`writes.<kind>` 动态出现。**内部打分读不计入**：压实为决策
+打分发起的检索走私有 `_read_for_scoring()`（`counted=False`），避免虚增注入统计。开关关闭 /
+并发跳过的压实不计 `runs`；执行抛错计 `failures` 后照常上抛。
+
+**运维统计（`memory stats [--json]`）**：只读聚合**既有持久数据**，零强化、零写入（不新建
+指标文件）：条目面来自 `audit(None)`（总数 / 各状态 / active 层分布 / active 正文字节），
+审计面来自 `memory.audit.jsonl`（写入 kind、删除原因、遗忘原因、导出次数），
+`storage_bytes` 取 `memory.jsonl` 文件大小（缺失 ⇒ 0）。空库输出全 0、退出 0。
+
+**召回解释（`memory why <query> [--budget N] [--session S]`）**：一次 `reinforce=False` 的
+诊断检索 —— 只返回结果，**不自增 `reuse_count`、不写回、不记复用效应**。输出统计行
+（matched / injected / 两类剔除 / minimum_budget / injected_tokens）与按分值降序的条目行
+（含层 / kind / source / session / id / importance / reuse 与**脱敏后**摘要）。
+
+**效果评测（`tests/test_memory_effectiveness.py`）**：固定 6 任务 × 两臂（有记忆 / 空库），
+两臂走同一真实链路（`DefaultLoop` + `LLMPlanner` + `DynamicAssembler`），桩 provider 仅在
+提示词出现 `GOLD[...]` 标记（只存在于 gold 事实）时答对。离线确定性重放，断言有记忆成功率
+≥ 0.9 且严格高于无记忆、prompt token 更大；墙钟只报告、不作门禁。
+
+**局限**：指标是**实例**作用域（多实例各自计数，无汇总面）、重启归零；`memory stats` 的
+审计面受审计开关影响（关闭期间事件不可回溯）；`why` 只解释**注入**条目，不解释被排除条目
+的具体原因；未提供 SDD §11.1 的 `hit_rate` / `conflicts` / `skill.*` 指标（缺少可靠分母或
+数据源，见 ADR-0301 被拒项）；效果评测是**单轮**任务集，不覆盖多轮长任务。
+
 ---
 
 ## 4. 记忆写入规范（"无行动不记忆"的落地）

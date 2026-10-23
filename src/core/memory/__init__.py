@@ -46,6 +46,14 @@ from .extract import (
 from .importance import build_score_prompt, score_with
 from .protocol import IndexEntry, Layer, MemoryBackend, MemoryEntry, MemoryId, RecallResult
 from .relevance import rank, recency_decay, relevance
+from .stats import (
+    FIXED_METRIC_KEYS,
+    MemoryMetrics,
+    MemoryStats,
+    collect_stats,
+    metric_kind,
+    writes_metric,
+)
 from .store import ChainNode, ImportanceScorer, MemoryStore, RepairReport
 from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter, build_prompt, summarize_with
 from .transcript import TranscriptStore
@@ -53,6 +61,7 @@ from .transcript import TranscriptStore
 __all__ = [
     "Crystallizer",
     "EpisodicExtractor",
+    "FIXED_METRIC_KEYS",
     "FileBackend",
     "ImportanceScorer",
     "IndexEntry",
@@ -72,6 +81,8 @@ __all__ = [
     "MemoryBackend",
     "MemoryEntry",
     "MemoryId",
+    "MemoryMetrics",
+    "MemoryStats",
     "MemoryStore",
     "PluginCandidate",
     "REDACTED",
@@ -87,11 +98,13 @@ __all__ = [
     "build_prompt",
     "build_relation_prompt",
     "build_score_prompt",
+    "collect_stats",
     "consolidate_with",
     "extract_relations_with",
     "extract_with",
     "key_fact_cap",
     "looks_like_secret",
+    "metric_kind",
     "normalize_predicate",
     "parse_key_facts",
     "parse_relations",
@@ -105,4 +118,5 @@ __all__ = [
     "scrub_relation",
     "slug_entity",
     "summarize_with",
+    "writes_metric",
 ]

@@ -10,7 +10,7 @@ typing.Protocol 骨架：MemoryStore / Crystallizer / MemoryBackend，
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 Layer = Literal["L0", "L1", "L2", "L3", "L4"]
@@ -54,6 +54,8 @@ class RecallResult:
 
     不变式：``matched_count == injected_count + excluded_by_diversity + excluded_by_budget``。
     ``minimum_budget`` 为再注入第一条被预算跳过条目所需的最小预算（无预算剔除 ⇒ 0）。
+    ``injected_tokens`` 为注入条目的 token 估算总和（change 0311）；``scores`` 与 ``entries``
+    等长同序、记录排序所用分值（尺度随排序后端变化，不可跨运行比较）。
     """
 
     entries: list[MemoryEntry]
@@ -62,6 +64,8 @@ class RecallResult:
     excluded_by_budget: int = 0
     excluded_by_diversity: int = 0
     minimum_budget: int = 0
+    injected_tokens: int = 0
+    scores: list[float] = field(default_factory=list[float])
 
 
 class MemoryStore(Protocol):
@@ -79,6 +83,7 @@ class MemoryStore(Protocol):
         session_id: str = "",
         include_forgotten: bool = False,
         layers: tuple[Layer, ...] = (),
+        reinforce: bool = True,
     ) -> list[MemoryEntry]:
         """检索相关记忆，返回按相关性排序的条目，总 token ≤ budget。
 
@@ -88,6 +93,8 @@ class MemoryStore(Protocol):
         ``include_forgotten`` 缺省 False ⇒ 带 ``forgotten`` 标签的条目在排名前剔除（change 0301）。
         ``layers`` 非空 ⇒ 只返回所列层，排名前剔除（缺省空 ⇒ 不施加层过滤；change 0302）。
         缺省只返回 ``status="active"`` 的条目（被取代版本仅在 ``audit()`` 可见；change 0303）。
+        ``reinforce=False`` ⇒ 诊断读：不自增 ``reuse_count``、不写回、不记复用效应
+        （change 0311；缺省 True 与既往逐字一致）。
         """
         ...
 
@@ -101,11 +108,12 @@ class MemoryStore(Protocol):
         session_id: str = "",
         include_forgotten: bool = False,
         layers: tuple[Layer, ...] = (),
+        reinforce: bool = True,
     ) -> RecallResult:
         """检索相关记忆并返回注入统计（change 0304）；``read()`` == ``recall().entries``。
 
         检索管线在排名之后、预算之前施加多样性过滤（近重复抑制 + 每会话最多 3 条），
-        被滤条目不吃预算、不被复用强化。
+        被滤条目不吃预算、不被复用强化。``reinforce=False`` ⇒ 诊断读（零写回、零复用效应）。
         """
         ...
 

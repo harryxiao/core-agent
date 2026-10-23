@@ -51,6 +51,7 @@ from .protocol import (
     RecallResult,
 )
 from .relevance import batch_similarities, build_lexical_stats, rank, recency_decay
+from .stats import MemoryMetrics, writes_metric
 from .summarize import MAX_SUMMARY_CHARS, Summarizer, SummaryPromoter
 from .transcript import CHECKPOINT_TAG
 
@@ -326,6 +327,8 @@ class MemoryStore:
         # 情景保留期（change 0309 / ADR-0299）：缺省 None ⇒ 关闭（直接构造逐字不变）；
         # 正整数 N ⇒ `forget()` 先墓碑化超过 N 天的 L2 episodic（清正文 + retracted + L4）。
         episodic_retention_days: int | None = None,
+        # 运行指标累计器（change 0311）：缺省新建**本实例**计数器（不落盘、不跨实例共享）。
+        metrics: MemoryMetrics | None = None,
     ) -> None:
         self._backend = backend if backend is not None else FileBackend()
         self._tracker = effect_tracker if effect_tracker is not None else EffectTracker()
@@ -345,6 +348,7 @@ class MemoryStore:
         self._consolidation_enabled = consolidation_enabled
         self._audit_log = audit_log
         self._episodic_retention_days = episodic_retention_days
+        self._metrics = metrics if metrics is not None else MemoryMetrics()
         # 压实 single-flight（change 0296）：已有压实执行时新的触发非阻塞跳过。
         self._compact_lock = threading.Lock()
         # 临时会话（change 0245 / ADR-0233）：基准/合成执行会话 —— 压实只做会话级摘要与
@@ -375,8 +379,13 @@ class MemoryStore:
         session_id: str = "",
         include_forgotten: bool = False,
         layers: tuple[Layer, ...] = (),
+        reinforce: bool = True,
     ) -> list[MemoryEntry]:
-        """检索相关记忆，返回按相关性排序的条目（``recall().entries`` 的兼容薄壳）。"""
+        """检索相关记忆，返回按相关性排序的条目（``recall().entries`` 的兼容薄壳）。
+
+        ``reinforce=False``（change 0311）⇒ 诊断读：不自增 ``reuse_count``、不写回、不记
+        复用效应；缺省 True 与既往逐字一致。
+        """
         return self.recall(
             query,
             budget,
@@ -385,6 +394,7 @@ class MemoryStore:
             session_id=session_id,
             include_forgotten=include_forgotten,
             layers=layers,
+            reinforce=reinforce,
         ).entries
 
     def recall(  # noqa: PLR0913 — 检索面扩展关键字（change 0301）
@@ -397,6 +407,7 @@ class MemoryStore:
         session_id: str = "",
         include_forgotten: bool = False,
         layers: tuple[Layer, ...] = (),
+        reinforce: bool = True,
     ) -> RecallResult:
         """检索相关记忆；``exclude_source_prefixes`` 命中的来源在**排名与预算之前**剔除
         （被排除项不吃预算、不被复用计数强化）。缺省空元组 ⇒ 检索语义与既往逐字一致。
@@ -419,8 +430,48 @@ class MemoryStore:
 
         多样性（change 0304）：排名之后、预算之前抑制近重复（``content_hash`` 相同只留排名
         最高者；空正文豁免）并限制每会话最多 ``_MAX_PER_SESSION`` 条（全局条目不受限）。
-        返回 ``RecallResult`` 携带注入统计。
+        返回 ``RecallResult`` 携带注入统计、注入 token 与逐条分值（change 0311）。
+
+        ``reinforce=False``（change 0311）⇒ 诊断读：只返回结果，**不**自增 ``reuse_count``、
+        不写回、不记复用效应（``memory why`` 的「只看不强化」）。
         """
+        return self._recall(
+            query,
+            budget,
+            exclude_source_prefixes=exclude_source_prefixes,
+            allow_source_prefixes=allow_source_prefixes,
+            session_id=session_id,
+            include_forgotten=include_forgotten,
+            layers=layers,
+            reinforce=reinforce,
+            counted=True,
+        )
+
+    def metrics_snapshot(self) -> dict[str, float]:
+        """本实例的累计运行指标快照（change 0311）：零 I/O、零写回、零效应；不落盘。"""
+        return self._metrics.snapshot()
+
+    def _read_for_scoring(self, query: str, budget: int) -> list[MemoryEntry]:
+        """巩固决策打分用的检索：与 ``read()`` 同语义，但**不**计入 recall 指标。
+
+        内部打分读若计入 ``memory.recall.*`` 会虚增注入统计（调用方从未看到这些条目）。
+        """
+        return self._recall(query, budget, counted=False).entries
+
+    def _recall(  # noqa: PLR0913 — 与公开检索面同参数 + 内部分支
+        self,
+        query: str,
+        budget: int = 4096,
+        *,
+        exclude_source_prefixes: tuple[str, ...] = (),
+        allow_source_prefixes: tuple[str, ...] = (),
+        session_id: str = "",
+        include_forgotten: bool = False,
+        layers: tuple[Layer, ...] = (),
+        reinforce: bool = True,
+        counted: bool = False,
+    ) -> RecallResult:
+        """检索主体：``counted`` 控制是否累计 recall 指标（公开入口恒 True）。"""
         try:
             cold = self._backend.search(query)
         except Exception:  # noqa: BLE001 — 冷区检索失败降级
@@ -465,28 +516,50 @@ class MemoryStore:
         # embedder 失败降级时同样带 IDF/长度归一。
         stats = build_lexical_stats(values, query, token_cache=self._token_cache)
         self._trim_token_cache()
-        ranked = sorted(
-            values,
-            key=lambda e: rank(
-                e,
-                query,
-                None,
-                stats=stats,
-                sim=sim_map.get(e.id) if sim_map is not None else None,
-            ),
-            reverse=True,
-        )
+        scored = [
+            (
+                entry,
+                rank(
+                    entry,
+                    query,
+                    None,
+                    stats=stats,
+                    sim=sim_map.get(entry.id) if sim_map is not None else None,
+                ),
+            )
+            for entry in values
+        ]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        ranked = [entry for entry, _ in scored]
+        scores = {entry.id: score for entry, score in scored}
         diverse, excluded_by_diversity = self._diversify(ranked, cap_sessions=not session_id)
-        selected, excluded_by_budget, minimum_budget = self._truncate_with_stats(diverse, budget)
-        self._reinforce(selected)
-        return RecallResult(
+        selected, excluded_by_budget, minimum_budget, injected_tokens = self._truncate_with_stats(
+            diverse, budget
+        )
+        if reinforce:
+            self._reinforce(selected)
+        result = RecallResult(
             entries=selected,
             matched_count=len(ranked),
             injected_count=len(selected),
             excluded_by_budget=excluded_by_budget,
             excluded_by_diversity=excluded_by_diversity,
             minimum_budget=minimum_budget,
+            injected_tokens=injected_tokens,
+            scores=[scores[entry.id] for entry in selected],
         )
+        if counted:
+            self._count_recall(result)
+        return result
+
+    def _count_recall(self, result: RecallResult) -> None:
+        """累计一次公开检索的指标（change 0311）。"""
+        self._metrics.increment("memory.recall.calls")
+        self._metrics.increment("memory.recall.candidates", result.matched_count)
+        self._metrics.increment("memory.recall.injected", result.injected_count)
+        self._metrics.increment("memory.recall.injected_tokens", result.injected_tokens)
+        self._metrics.increment("memory.recall.excluded_by_budget", result.excluded_by_budget)
+        self._metrics.increment("memory.recall.excluded_by_diversity", result.excluded_by_diversity)
 
     def _reinforce(self, entries: list[MemoryEntry]) -> None:
         """复用即强化（**落盘**，change 0187 / ADR-0178）：自增 + 写回 + 记可撤销效应。
@@ -544,9 +617,11 @@ class MemoryStore:
             return None  # 无行动不记忆
         existing = self._find_entry(entry.id)
         if existing is not None and self._same_payload(existing, entry, layer):
+            self._metrics.increment("memory.writes.deduped")
             return existing.id  # 幂等重放：零落盘 / 零效应 / 零通知 / 零评分
         score = None if entry.source in _GATE_EXEMPT_SOURCES else self._gate_score(entry)
         if score is not None and score < _IMPORTANCE_FLOOR:
+            self._metrics.increment("memory.writes.rejected")
             warnings.warn(
                 f"entry rejected by importance gate "
                 f"(score {score:.3f} < {_IMPORTANCE_FLOOR}): {entry.id!r}",
@@ -566,6 +641,7 @@ class MemoryStore:
         self._notify_write(entry)
         # 治理审计（change 0308）：落库与闸门降层之后追加，记录的 layer 是**最终**层。
         self._audit_event("write", entry)
+        self._metrics.increment(writes_metric(entry.kind))
         return entry.id
 
     def _same_payload(self, existing: MemoryEntry, incoming: MemoryEntry, layer: Layer) -> bool:
@@ -926,9 +1002,16 @@ class MemoryStore:
                 stacklevel=2,
             )
             return None
+        started = self._clock()
+        self._metrics.increment("memory.consolidation.runs")
         try:
             return self._compact_locked(query, budget, session_id=session_id, deadline=deadline)
+        except Exception:
+            self._metrics.increment("memory.consolidation.failures")
+            raise
         finally:
+            elapsed_ms = int((self._clock() - started) * 1000)
+            self._metrics.increment("memory.consolidation.elapsed_ms", elapsed_ms)
             self._compact_lock.release()
 
     def _compact_locked(
@@ -945,7 +1028,7 @@ class MemoryStore:
             self._warn_deadline("decision scoring")
             return None
         if self._compactor is not None:
-            items = self.read(query, budget=budget)
+            items = self._read_for_scoring(query, budget)
             try:
                 decision = self._compactor.score(
                     {"query": query, "count": len(items)},
@@ -1218,12 +1301,13 @@ class MemoryStore:
 
     def _truncate_with_stats(
         self, entries: list[MemoryEntry], budget: int
-    ) -> tuple[list[MemoryEntry], int, int]:
-        """``_truncate`` 的统计版：返回（选中列表，预算剔除数，minimum_budget）。
+    ) -> tuple[list[MemoryEntry], int, int, int]:
+        """``_truncate`` 的统计版：返回（选中列表，预算剔除数，minimum_budget，注入 token）。
 
         首条无条件保留（``selected and``），保证预算极小时至少返回最高相关的一条；
         其后超预算的条目只跳过自身，不阻塞更小的低相关条目。
         ``minimum_budget`` 为第一条被跳过条目所需的「已用预算 + 自身成本」（无 ⇒ 0）。
+        第四个元素为选中条目的 token 估算总和（change 0311）。
         """
         selected: list[MemoryEntry] = []
         used = 0
@@ -1238,7 +1322,7 @@ class MemoryStore:
                 continue
             selected.append(entry)
             used += cost
-        return selected, excluded, minimum_budget
+        return selected, excluded, minimum_budget, used
 
     def _summarize_sessions(self, session_id: str = "", *, deadline: float | None = None) -> None:
         """按会话聚合 episodic 条目 → 打分写回 + 价值门控 → 提炼摘要 → 归档原条目。
