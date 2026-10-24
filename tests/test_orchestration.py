@@ -780,9 +780,11 @@ class _FakeLLM:
         self.contents = [content] if isinstance(content, str) else list(content)
         self.error = error
         self.calls = 0
+        self.requests: list[LLMRequest] = []
 
     async def acompletion(self, request: object) -> object:
         self.calls += 1
+        self.requests.append(cast(LLMRequest, request))
         if self.error is not None:
             raise self.error
         # 逐次回放；耗尽后重复末项（重试场景末项即最终输出）
@@ -863,6 +865,43 @@ def test_llm_verifier_judges_acceptance() -> None:
 
 
 _VERIFY_RETRIES_TOTAL = 2  # 判定调用总次数：首发 + 单次重试
+
+
+_OUTPUT_BOUND = 123
+
+
+def test_llm_planner_and_verifier_carry_output_bound() -> None:
+    """注入输出上界后，拆解与验收请求均携带（change 0317）。"""
+    dag = json.dumps({"subtasks": [{"id": "1", "goal": "g"}]})
+    planner_llm = _FakeLLM(dag)
+    asyncio.run(LLMSubtaskPlanner(planner_llm, max_tokens=_OUTPUT_BOUND)("目标"))
+    assert planner_llm.requests[0].max_tokens == _OUTPUT_BOUND
+
+    verifier_llm = _FakeLLM('{"passed": true, "reason": "ok"}')
+    verdict = asyncio.run(
+        LLMVerifier(verifier_llm, max_tokens=_OUTPUT_BOUND)(
+            Subtask(id="1", goal="g", acceptance="标准"), "结果"
+        )
+    )
+    assert verdict.passed is True
+    assert verifier_llm.requests[0].max_tokens == _OUTPUT_BOUND
+
+
+def test_llm_planner_and_verifier_without_bound_leave_field_unset() -> None:
+    """未注入上界时请求逐字不变（`max_tokens` 不设置）。"""
+    dag = json.dumps({"subtasks": [{"id": "1", "goal": "g"}]})
+    planner_llm = _FakeLLM(dag)
+    asyncio.run(LLMSubtaskPlanner(planner_llm)("目标"))
+    assert planner_llm.requests[0].max_tokens is None
+
+    verifier_llm = _FakeLLM('{"passed": true, "reason": "ok"}')
+    asyncio.run(LLMVerifier(verifier_llm)(Subtask(id="1", goal="g", acceptance="标准"), "结果"))
+    assert verifier_llm.requests[0].max_tokens is None
+
+    # 非正值视同未注入（防误配成 0 造成空输出）
+    zero = _FakeLLM(dag)
+    asyncio.run(LLMSubtaskPlanner(zero, max_tokens=0)("目标"))
+    assert zero.requests[0].max_tokens is None
 
 
 def test_llm_verifier_normalizes_string_bool_and_retries() -> None:

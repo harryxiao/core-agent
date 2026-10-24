@@ -158,6 +158,11 @@ class ToolError:
 > 读取**调用时**真实注册面（含 MCP 动态注册），不是构造快照。返回形状：
 > 无参 `{"tools": [{tool_id, description}...]}`；有参
 > `{"schemas": [{tool_id, description, parameters}...], "unknown": [...]}`（未知 id 不阻断）。
+> **受限视图口径（change `0317` / ADR-0307）**：承载于 `ToolProvider.subset(...)` 视图时，
+> `catalog` 闭包 SHALL 绑定**该视图自身**的工具面（组合根 `_plan_tool_view` 重绑）——
+> 无参列表不含视图外工具，按 id 请求视图外工具落 `unknown` 且不返回 schema。目录面与执行面
+> 同源，模型不会拿到「看得见、调不动」的工具。
+>
 > 权限按 coeffect 词元 `schema:read` 判 `READ` 自动放行。它只提供参数信息，**不是**访问控制
 > —— 未加载 schema 的工具仍可经文本 JSON 动作路径调用。`auto` 生效时的请求侧收窄语义见
 > `loop-interface.md` §3.3。

@@ -5492,3 +5492,33 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **实测**：全量 pytest **3653 passed**（3646 + 7）；`openspec validate --all` 32/0（含本 active
 > change；归档后 31/0）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0306 行。
+
+## 230. 计划轮延迟与勘察工具面保真（change 0317 / ADR-0307）
+
+### 230.1 受限视图目录（TC-PLANLAT-VIEW）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-PLANLAT-VIEW-01 | **目录不泄漏视图外工具** | 根面注册 `tools.file_read` / `tools.web_fetch` / `tools.schema_read`；经 `_plan_tool_view` 建视图 | 视图工具面只含 `file_read` + `schema_read`；无参列表不含 `web_fetch`（`tests/test_plan_mode.py::test_plan_tool_view_schema_read_does_not_leak`） |
+| TC-PLANLAT-VIEW-02 | 按 id 请求视图外工具 | 视图内 `schema_read({"tool_ids": ["tools.web_fetch"]})` | `schemas == []`、`unknown == ["tools.web_fetch"]`（同上） |
+
+### 230.2 拆解/验收输出上界（TC-PLANLAT-BOUND）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-PLANLAT-BOUND-01 | 注入上界后携带 | `LLMSubtaskPlanner(..., max_tokens=123)` / `LLMVerifier(..., max_tokens=123)` | 两次 `LLMRequest.max_tokens == 123`（`tests/test_orchestration.py::test_llm_planner_and_verifier_carry_output_bound`） |
+| TC-PLANLAT-BOUND-02 | 未注入/非正逐字不变 | 不传 或 `max_tokens=0` | `LLMRequest.max_tokens is None`（`...::test_llm_planner_and_verifier_without_bound_leave_field_unset`） |
+
+### 230.3 拆解等待上界（TC-PLANLAT-UI）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-PLANLAT-UI-01 | **超时快速失败** | 拆解挂起 5s、上界 0.05s | `UI_PLAN_DRAFT_FAILED`，文案含 `0.05` 与 `/quick`；无 `plan.draft_ready`；模式仍 `plan`（`tests/test_plan_mode.py::test_run_plan_turn_draft_timeout_is_structured`） |
+| TC-PLANLAT-UI-02 | 缺省上界推导 | LLM `timeout=10`；未注入 LLM 配置 | 上界分别为 40s / 90s（`...::test_plan_draft_timeout_defaults_to_llm_timeout_plus_margin`） |
+
+> **反证 3/3**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：去 `_plan_tool_view` 的目录重绑 ⇒
+> TC-PLANLAT-VIEW-01/02 红；去 `max_tokens` 透传 ⇒ TC-PLANLAT-BOUND-01 红；去 `asyncio.wait_for`
+> ⇒ TC-PLANLAT-UI-01 红。
+> **实测**：全量 pytest **3658 passed**（3653 + 5）；`openspec validate --all` 32/0（含本 active
+> change；归档后 31/0）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0307 行。

@@ -69,9 +69,13 @@ def _extract_json(text: str) -> Any:
 class LLMSubtaskPlanner:
     """LLM 子任务拆解器：目标 → 子任务 DAG；失败/不可解析回落单子任务。"""
 
-    def __init__(self, llm: LLMProvider, *, model: str | None = None) -> None:
+    def __init__(
+        self, llm: LLMProvider, *, model: str | None = None, max_tokens: int | None = None
+    ) -> None:
         self._llm = llm
         self._model = model
+        # 输出上界（change 0317）：仅正数生效；未注入时不写字段，请求与既往逐字一致。
+        self._max_tokens = max_tokens if max_tokens is not None and max_tokens > 0 else None
 
     async def __call__(self, goal: str) -> DecomposeResult:
         request = LLMRequest(
@@ -80,6 +84,7 @@ class LLMSubtaskPlanner:
                 Message(role="user", content=f"目标：{goal}"),
             ],
             model=self._model or "",
+            max_tokens=self._max_tokens,
         )
         try:
             response = await self._llm.acompletion(request)
@@ -173,9 +178,13 @@ def _as_bool(value: Any) -> bool | None:
 class LLMVerifier:
     """LLM 验收门：对照 acceptance 判定结果；调用失败/不可解析 fail-closed。"""
 
-    def __init__(self, llm: LLMProvider, *, model: str | None = None) -> None:
+    def __init__(
+        self, llm: LLMProvider, *, model: str | None = None, max_tokens: int | None = None
+    ) -> None:
         self._llm = llm
         self._model = model
+        # 输出上界（change 0317）：口径同 `LLMSubtaskPlanner`（非正数视同未注入）。
+        self._max_tokens = max_tokens if max_tokens is not None and max_tokens > 0 else None
 
     async def __call__(self, subtask: Subtask, result: Any) -> VerifyResult:
         text = str(result or "").strip()
@@ -192,6 +201,7 @@ class LLMVerifier:
                 ),
             ],
             model=self._model or "",
+            max_tokens=self._max_tokens,
         )
         # 单次重试容忍偶发空响应/不可解析输出；重试仍失败按 fail-closed 不放行
         verdict = await _judge(self._llm, request)

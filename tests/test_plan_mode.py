@@ -14,14 +14,22 @@ from core.configuration.models import LLMConfig
 from core.loop import LoopEvent, LoopResult
 from core.orchestration import OrchestrationError, OrchestrationErrorCode, Plan, Subtask
 from core.permission.policy import readonly_tool_ids
-from core.tools import Tool, ToolDef, ToolProvider
+from core.plugin_registry import CoeffectResolver
+from core.runtime import _plan_tool_view
+from core.tools import SCHEMA_READ_TOOL_ID, Tool, ToolDef, ToolProvider, schema_read
 from core.ui import Event, UIAPILayer, UiError, UiErrorCode
 from core.ui.plan import PlanDraft, PlanSessions
 from core.ui.sessions import SessionRegistry
 
 
-def _llm(key: str = "${OPENAI_API_KEY}") -> LLMConfig:
-    return LLMConfig(provider="openai", model="gpt-4o", endpoint="https://x", api_key_ref=key)
+def _llm(key: str = "${OPENAI_API_KEY}", timeout: float = 60.0) -> LLMConfig:
+    return LLMConfig(
+        provider="openai",
+        model="gpt-4o",
+        endpoint="https://x",
+        api_key_ref=key,
+        timeout=timeout,
+    )
 
 
 class _PlanLoop:
@@ -46,11 +54,14 @@ class _Orchestrator:
         self.drafts: list[dict[str, Any]] = []
         self.runs: list[dict[str, Any]] = []
         self.fail_draft = False
+        self.draft_delay = 0.0
 
     async def draft_plan(
         self, goal: str, success_criteria: list[str] | None = None, *, context: str = ""
     ) -> Plan:
         self.drafts.append({"goal": goal, "criteria": success_criteria, "context": context})
+        if self.draft_delay:
+            await asyncio.sleep(self.draft_delay)
         if self.fail_draft:
             raise OrchestrationError(OrchestrationErrorCode.SUBTASK_EXECUTION_FAILED, "拆解失败")
         return Plan(
@@ -68,7 +79,12 @@ class _Orchestrator:
 
 
 def _api(
-    *, plan_loop: Any = None, orchestrator: Any = None, registry: SessionRegistry | None = None
+    *,
+    plan_loop: Any = None,
+    orchestrator: Any = None,
+    registry: SessionRegistry | None = None,
+    plan_draft_timeout: float | None = None,
+    llm_timeout: float = 60.0,
 ) -> tuple[UIAPILayer, str]:
     kwargs: dict[str, Any] = {}
     if plan_loop is not None:
@@ -77,8 +93,10 @@ def _api(
         kwargs["orchestrator"] = orchestrator
     if registry is not None:
         kwargs["registry"] = registry
+    if plan_draft_timeout is not None:
+        kwargs["plan_draft_timeout"] = plan_draft_timeout
     api = UIAPILayer(**kwargs)
-    api.set_llm_config(_llm())
+    api.set_llm_config(_llm(timeout=llm_timeout))
     session_id = api.create_session("tui")
     return api, session_id
 
@@ -216,6 +234,39 @@ def test_run_plan_turn_draft_failure_is_structured() -> None:
     assert api.agent_mode(sid) == "plan"  # 失败不偷偷退回 quick
 
 
+def test_run_plan_turn_draft_timeout_is_structured() -> None:
+    """拆解超过等待上界 ⇒ 快速失败（结构化错误、无草案、模式不变；change 0317）。"""
+    orch = _Orchestrator()
+    orch.draft_delay = 5.0
+    api, sid = _api(plan_loop=_PlanLoop(), orchestrator=orch, plan_draft_timeout=0.05)
+    api.set_agent_mode(sid, "plan")
+    events: list[Event] = []
+
+    async def _drain() -> None:
+        async for event in api.run_plan_turn(sid, "做点事"):
+            events.append(event)  # noqa: PERF401 — 抛错时需保留已收事件（不能等流结束）
+
+    with pytest.raises(UiError) as exc:
+        asyncio.run(_drain())
+    assert exc.value.code == UiErrorCode.UI_PLAN_DRAFT_FAILED
+    assert "0.05" in exc.value.message
+    assert "/quick" in exc.value.message
+    assert "plan.draft_ready" not in [event.type for event in events]
+    assert api.agent_mode(sid) == "plan"  # 与拆解失败同语义：不偷偷退回 quick
+
+
+_DRAFT_TIMEOUT_MARGIN = 30.0
+_DEFAULT_DRAFT_TIMEOUT = 90.0
+
+
+def test_plan_draft_timeout_defaults_to_llm_timeout_plus_margin() -> None:
+    """缺省上界 = LLM 单次超时 + 30s；未注入 LLM 配置时 90s。"""
+    llm_timeout = 10.0
+    api, _ = _api(plan_loop=_PlanLoop(), orchestrator=_Orchestrator(), llm_timeout=llm_timeout)
+    assert api._plan_draft_timeout == llm_timeout + _DRAFT_TIMEOUT_MARGIN
+    assert UIAPILayer(plan_loop=_PlanLoop())._plan_draft_timeout == _DEFAULT_DRAFT_TIMEOUT
+
+
 # ---- 审批 ----
 
 
@@ -301,6 +352,35 @@ def _tool(tool_id: str, coeffects: list[str]) -> Tool:
         ),
         handler=lambda **_: "ok",
     )
+
+
+def test_plan_tool_view_schema_read_does_not_leak() -> None:
+    """计划只读视图的 schema_read 目录绑定视图自身：视图外工具不入列表、落 unknown。"""
+    resolver = CoeffectResolver()
+    resolver.register("schema:read", True)
+    provider = ToolProvider(coeffect_resolver=resolver)
+    provider.register(_tool("tools.file_read", ["filesystem:read"]))
+    provider.register(_tool("tools.web_fetch", ["network:outbound"]))
+    provider.register(schema_read(catalog=provider.active_tools))
+
+    view = _plan_tool_view(provider)
+
+    assert {tool.tool_id for tool in view.active_tools()} == {
+        "tools.file_read",
+        SCHEMA_READ_TOOL_ID,
+    }
+    listed = asyncio.run(view.ainvoke(SCHEMA_READ_TOOL_ID, {}, trace_id="t"))
+    assert listed.ok is True
+    assert [item["tool_id"] for item in listed.data["tools"]] == [
+        "tools.file_read",
+        SCHEMA_READ_TOOL_ID,
+    ]
+    probed = asyncio.run(
+        view.ainvoke(SCHEMA_READ_TOOL_ID, {"tool_ids": ["tools.web_fetch"]}, trace_id="t")
+    )
+    assert probed.ok is True
+    assert probed.data["schemas"] == []
+    assert probed.data["unknown"] == ["tools.web_fetch"]
 
 
 def test_tool_subset_view_hides_and_blocks_excluded_tools() -> None:

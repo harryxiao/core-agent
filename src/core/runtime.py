@@ -175,6 +175,7 @@ from core.skills import (
     sop_writer_with,
 )
 from core.tools import (
+    SCHEMA_READ_TOOL_ID,
     Tool,
     ToolDef,
     ToolProvider,
@@ -638,6 +639,24 @@ def _render_failure_lessons(entries: Sequence[MemoryEntry]) -> str:
         lines.append(f"- {text}")
         budget -= len(text)
     return "\n".join(lines)
+
+
+def _plan_tool_view(tools: ToolProvider) -> ToolProvider:
+    """计划轮只读视图（change 0317）：子集 + `schema_read` 目录重绑到**视图自身**。
+
+    `tools.schema_read` 的目录闭包绑定组合根工具面；子集视图复用同一工具实例时，
+    勘察期会列出并返回视图外工具（如 `tools.web_fetch`）的 schema，而执行面又对这些
+    工具 fail-closed ⇒ 模型反复空转。这里把目录取数器换成本视图的 `active_tools`，
+    使 schema 面与执行面同源。
+    """
+    view = tools.subset(
+        readonly_tool_ids(
+            [(definition.tool_id, definition.coeffects) for definition in tools.active_tools()]
+        )
+    )
+    view.unregister(SCHEMA_READ_TOOL_ID)
+    view.register(schema_read(catalog=view.active_tools))
+    return view
 
 
 def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
@@ -1714,11 +1733,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
     # **显式排除** `tools.delegate`。子集视图共享 resolver / tracker / gate / approver，
     # 被排除工具在 schema 与执行面双重不可用（模型幻觉调用 fail-closed）；其余装配与主 loop
     # 逐项同源（memory / transcript / tracer / planner 配置），故勘察轨迹与权限口径不分叉。
-    plan_provider = tools.subset(
-        readonly_tool_ids(
-            [(definition.tool_id, definition.coeffects) for definition in tools.active_tools()]
-        )
-    )
+    plan_provider = _plan_tool_view(tools)
     plan_loop = cast(
         LoopPlugin,
         DefaultLoop(
@@ -1768,8 +1783,10 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
 
     orchestrator = TaskScheduler(
         decomposer=SubtaskDecomposer(
-            planner=LLMSubtaskPlanner(llm, model=app.llm.model),
-            verifier=LLMVerifier(llm, model=app.llm.model),
+            # 输出上界与主 planner 同源（change 0317）：拆解/验收也受 `loop.output_reserve`
+            # 约束，不再无界生成拖满单次超时。
+            planner=LLMSubtaskPlanner(llm, model=app.llm.model, max_tokens=max_tokens),
+            verifier=LLMVerifier(llm, model=app.llm.model, max_tokens=max_tokens),
         ),
         router=agent_router,
         state_machine=StateMachine(),

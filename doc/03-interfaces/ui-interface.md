@@ -30,7 +30,8 @@ class UIAPILayer:
     async def run_plan_turn(self, session_id: str, user_input: str) -> AsyncIterator[Event]:
         """计划轮：只读勘察（plan loop，READ 工具面）→ `plan.drafting` → 草案 → `plan.draft_ready`。
         要求会话处于 plan 模式（否则 UI_PLAN_MODE_INVALID）；缺 plan loop / 编排器 ⇒
-        UI_PLAN_UNAVAILABLE；拆解失败 ⇒ UI_PLAN_DRAFT_FAILED。事件载荷不含勘察原文。"""
+        UI_PLAN_UNAVAILABLE；拆解失败或超时 ⇒ UI_PLAN_DRAFT_FAILED。事件载荷不含勘察原文。
+        拆解等待有界（change 0317）：缺省 LLM 单次超时 + 30s，无 LLM 配置时 90s。"""
     async def approve_plan(self, session_id: str, draft_id: str) -> AsyncIterator[Event]:
         """按批准草案执行（`astream(..., self_run=True)`）；**开始执行前**即回 `quick`。
         草案不存在 / 已消费 ⇒ UI_PLAN_DRAFT_NOT_FOUND。"""
@@ -333,7 +334,8 @@ Web 侧同一语义由标签栏 + 只读详情承接（见上段）。
 `quick`（缺省，`DefaultLoop` 直出）与 `plan`；`/plan` / `/quick` 切换（真源 `_COMMANDS` 登记，参数位
 报用法），`/task` **不再是** TUI 入口（CLI `task` 与 Web `POST /task` 作为操作面保留）。plan 模式下输入
 目标 ⇒ `run_plan_turn`（**只读**勘察循环 `plan_loop` + `ToolProvider.subset(readonly_tool_ids())`，
-显式排除 `tools.delegate`）⇒ `plan.drafting`（拆解阶段信号，状态行「拆解计划中」；change 0316 /
+显式排除 `tools.delegate`；视图内 `tools.schema_read` 的目录绑定**视图自身**，不泄漏视图外工具——
+change 0317 / ADR-0307）⇒ `plan.drafting`（拆解阶段信号，状态行「拆解计划中」；change 0316 /
 ADR-0306）⇒ 编排器 `draft_plan` 产出**会话内临时** `PlanDraft`（进程内、一会话一草案、
 一次性；拆解器回落为单子任务且目标逐字等于送入文本时，子任务目标还原为原始目标，勘察上下文
 不成为执行指令）⇒ 时间线呈现 `plan.draft_ready` 的 `{goal, subtasks, waves, success_criteria}`（**不含**勘察原文）
@@ -453,7 +455,7 @@ LLM API（provider / endpoint / key / base URL）只在后端配置一次：
 | `UI_BEAST_STATE_INVALID` | 神兽状态不允许该操作（`BEAST_ALREADY_MANIFEST` 重复召唤 / `BEAST_NOT_MANIFEST` 无在岗可召回，change `0137`） |
 | `UI_PLAN_MODE_INVALID` | `set_agent_mode` 收到非 `quick|plan`；或 `run_plan_turn` 时会话不在计划模式（change `0313`，不静默归一） |
 | `UI_PLAN_UNAVAILABLE` | 计划能力未注入（缺只读循环 `plan_loop` / 编排器；change `0313`） |
-| `UI_PLAN_DRAFT_FAILED` | 计划拆解失败（`draft_plan` 抛错，change `0313`） |
+| `UI_PLAN_DRAFT_FAILED` | 计划拆解失败（`draft_plan` 抛错，change `0313`）；或拆解超过等待上界（缺省 LLM 单次超时 + 30s，change `0317`） |
 | `UI_PLAN_DRAFT_NOT_FOUND` | 草案不存在或已消费（`approve_plan` / `discard_plan`，change `0313`） |
 
 ---

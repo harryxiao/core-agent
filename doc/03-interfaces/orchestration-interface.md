@@ -93,12 +93,16 @@ class DecomposeResult:
 ```python
 class LLMSubtaskPlanner:
     """经 llm-provider acompletion 产子任务 DAG；失败/不可解析回落单子任务。"""
-    def __init__(self, llm: LLMProvider, *, model: str | None = None) -> None: ...
+    def __init__(
+        self, llm: LLMProvider, *, model: str | None = None, max_tokens: int | None = None
+    ) -> None: ...
     async def __call__(self, goal: str) -> DecomposeResult: ...
 
 class LLMVerifier:
     """经 acompletion 对照 acceptance 判定结果；调用失败/不可解析 fail-closed。"""
-    def __init__(self, llm: LLMProvider, *, model: str | None = None) -> None: ...
+    def __init__(
+        self, llm: LLMProvider, *, model: str | None = None, max_tokens: int | None = None
+    ) -> None: ...
     async def __call__(self, subtask: Subtask, result: Any) -> VerifyResult: ...
 
 class LLMTaskVerifier:
@@ -122,6 +126,9 @@ class LLMTaskVerifier:
   —— **不剔除**子任务、不抛裸异常（与 `priority` 非整数取 0 同口径；与**配置键**非法即阻断启动的
   口径**有意不同**，见 §4）。
 - 验收 prompt 输出 `{"passed": bool, "reason": str}`；解析失败按不通过处理（fail-closed）。
+- **输出上界（change `0317` / ADR-0307）**：`LLMSubtaskPlanner` / `LLMVerifier` 的 `max_tokens`
+  仅正数生效并写入请求；组合根以主 planner **同一来源**（`loop.output_reserve`）注入。未注入
+  （`None` / 非正）时不写字段，请求与既往逐字一致。
 
 **重新拆解输入（change `0291` / ADR-0281）**：恢复回路触发重拆时，调度器传给
 `decompose` 的输入按失败类型分支，整体截断到 `MAX_HANDOFF_CHARS=2000`：

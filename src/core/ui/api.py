@@ -8,6 +8,7 @@ API：会话 / 循环（SSE 流式）、记忆、工具、LLM 配置；CLI 的 T
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -55,6 +56,10 @@ _EVENT_MAP = {
 # 输出预留缺省口径来源：doc/openspec/specs/configuration/spec.md「循环预算配置」。
 # 仅在**无配置源**（裸 UIAPILayer）时就地派生；有配置源一律以 ConfigManager.loop_limits() 为准。
 _DEFAULT_OUTPUT_RESERVE = 8192
+
+# 计划拆解等待上界（change 0317）：LLM 单次超时 + 余量；无 LLM 配置时取缺省 90s。
+_PLAN_DRAFT_TIMEOUT_MARGIN = 30.0
+_DEFAULT_PLAN_DRAFT_TIMEOUT = 90.0
 
 
 def _require_ref(ref: str) -> None:
@@ -121,6 +126,8 @@ class UIAPILayer:
         orchestrator: TaskScheduler | None = None,
         # 只读计划循环（change 0313）：工具面仅 READ 级且排除 tools.delegate。
         plan_loop: LoopPlugin | None = None,
+        # 计划拆解等待上界（change 0317）：None ⇒ 按 LLM 单次超时 + 30s 推导（缺省 90s）。
+        plan_draft_timeout: float | None = None,
         pet_activator: PetActivator | None = None,
         pet_control: PetControl | None = None,
         beast_activator: BeastActivator | None = None,
@@ -140,6 +147,7 @@ class UIAPILayer:
         self._orchestrator = orchestrator
         self._plan_loop = plan_loop
         self._plan_sessions = PlanSessions()
+        self._plan_draft_timeout_override = plan_draft_timeout
         self._pet_activator = pet_activator
         self._pet_control = pet_control
         # 神兽三入口（斜杠 / WebUI 自然语言）缺省未接 ⇒ 报 `UI_BEAST_UNSET`（对称 pet）
@@ -247,6 +255,15 @@ class UIAPILayer:
         self._require_session(session_id)
         self._plan_sessions.set_mode(session_id, mode)
 
+    @property
+    def _plan_draft_timeout(self) -> float:
+        """拆解等待上界（change 0317）：显式装配值优先，否则 LLM 单次超时 + 30s 余量。"""
+        if self._plan_draft_timeout_override is not None:
+            return self._plan_draft_timeout_override
+        if self._llm_config is not None:
+            return self._llm_config.timeout + _PLAN_DRAFT_TIMEOUT_MARGIN
+        return _DEFAULT_PLAN_DRAFT_TIMEOUT
+
     async def run_plan_turn(self, session_id: str, user_input: str) -> AsyncIterator[Event]:
         """计划轮：只读勘察 → 拆解草案 → `plan.draft_ready`（不含勘察原文）。"""
         self._require_session(session_id)
@@ -269,8 +286,16 @@ class UIAPILayer:
             yield self._map_event(session_id, loop_event)
         # 拆解为阻塞式 LLM 调用（可达数十秒）：先给阶段信号，呈现端不停在勘察态
         yield Event(type="plan.drafting")
+        timeout = self._plan_draft_timeout
         try:
-            plan = await self._orchestrator.draft_plan(user_input, context=exploration)
+            plan = await asyncio.wait_for(
+                self._orchestrator.draft_plan(user_input, context=exploration), timeout
+            )
+        except TimeoutError as exc:
+            raise UiError(
+                UiErrorCode.UI_PLAN_DRAFT_FAILED,
+                f"计划拆解超时（>{timeout:g}s），请重试或改用 /quick",
+            ) from exc
         except OrchestrationError as exc:
             raise UiError(UiErrorCode.UI_PLAN_DRAFT_FAILED, f"计划拆解失败：{exc}") from exc
         draft = PlanDraft(

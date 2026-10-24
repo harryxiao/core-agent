@@ -11827,6 +11827,45 @@ arxiv.org）；`tools.list` 只列**插件安装面**，描述与载荷都没说
 不停（线程不可中断，与 Ctrl+Q 的放弃语义一致）；取消后已发起的 LLM 请求可能仍在服务端计费；
 ④ `plan.drafting` 是阶段信号，不携带进度百分比；⑤ 只覆盖 TUI（Web / CLI 无计划轮）。
 
+## ADR-0307：计划轮延迟与勘察工具面保真（change 0317 / 台账 E253）
+
+**背景。** 用户实测 TUI `/plan` 后「计划拆解耗时 150 秒都没有完成」。对照 trace 与离线重放：
+
+1. **勘察轮空转约 3 分钟**（trace `ebcfabbf`，17 轮）。计划轮按规格只暴露 `READ` 级工具
+   （`web_fetch` / `code_run` / `delegate` 均判 `high-risk`），但 `tools.schema_read` 的目录
+   闭包绑定在**根工具面**：勘察期它成功返回视图外工具的 schema，模型据此连续调用，每次 0ms
+   得到「未知工具」，直到耗尽轮次。
+2. **拆解无输出上界、重试放大等待**。以真实勘察文本重放 `decompose`：一次 60.1s 超时并回落
+   单子任务；同请求加 `max_tokens=2000/4000/8192` 后分别 9.7s / 7.4s / 13.0s 正常产出。
+   拆解走主 provider（`timeout=60`、`max_retries=3`）⇒ 单次卡顿最坏放大到 `60×4 + 退避 ≈ 247s`，
+   期间界面无上限、无失败回执。
+
+**决策**：
+
+- **D1 视图目录绑定视图自身。** 组合根新增 `_plan_tool_view(tools)`：先 `subset(readonly_ids)`，
+  再 `unregister(SCHEMA_READ_TOOL_ID)` + `register(schema_read(catalog=view.active_tools))`。
+  勘察期无参列表只含视图内工具，按 id 请求视图外工具落 `unknown`。**被拒**：在
+  `ToolProvider.subset` 内自动重绑（provider 层反向依赖具体内置工具，层次倒置，且改变子 Agent /
+  宠物等所有视图的既有语义）；只在提示词里写「不要调用网络工具」（模型仍能从目录拿到 schema）。
+- **D2 拆解/验收请求带输出上界。** `LLMSubtaskPlanner` / `LLMVerifier` 接受可选 `max_tokens`
+  （仅正数写入；`None`/非正 ⇒ 不写字段，逐字不变）；组合根注入 `config.output_reserve()`
+  （与主 `LLMPlanner` 同源，缺省 8192）。**被拒**：新增拆解专用配置键（与 `loop.output_reserve`
+  语义重复）；只调小 `max_retries`（全局影响主循环，放大面不可归因）。
+- **D3 拆解等待有界。** `run_plan_turn` 以 `asyncio.wait_for` 包住 `draft_plan`：上限 =
+  `llm.timeout + 30s`（无 LLM 配置 90s），可由装配参数 `plan_draft_timeout` 覆盖（测试/嵌入式
+  装配用，非配置键）。超时 ⇒ `UI_PLAN_DRAFT_FAILED`，文案含上界与「重试或改用 /quick」；不创建
+  草案、不静默回落单子任务、模式不变。**被拒**：超时静默回落（用户拿到劣质计划却不知情）；
+  不设上限只靠 provider 重试（最坏 4 分钟无回执）；新增面向用户的配置键。
+
+**验证**：`tests/test_plan_mode.py` 3 条（视图目录不泄漏 / 拆解超时结构化 / 缺省上界推导）+
+`tests/test_orchestration.py` 2 条（注入上界携带 / 未注入逐字不变）。反证 3/3（`cp` 到 `/tmp` +
+`md5sum` 复原）：去目录重绑 / 去 `max_tokens` 透传 / 去 `wait_for` ⇒ 对应用例红。
+
+**局限**：① 端点长尾不可控 —— D2/D3 只保证「有上界、有回执」，不保证拆解一次成功；② 超时后
+provider 在途线程不可取消（`asyncio.to_thread`），仍可能在服务端完成并计费、结果被丢弃；
+③ 视图重绑只覆盖 `schema_read`，未来新增「目录型」只读工具须同样绑定视图；④ 计划勘察仍无网络
+能力（产品取舍未变，检索落在批准后的执行）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -12126,3 +12165,4 @@ arxiv.org）；`tools.list` 只列**插件安装面**，描述与载荷都没说
 | ADR-0304 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0305 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0306 | 03-interfaces/ui-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0307 | 03-interfaces/ui-interface.md, 03-interfaces/tool-use-interface.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
