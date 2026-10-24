@@ -11970,6 +11970,36 @@ JSON 含转义引号 / 反斜杠解码逐字不变）。反证 3/3（`cp` 到 `/
 参数，最终仍由工具参数校验兜底；③ 不处理尾部夹带 / 正文混写等其他形态；④ 不改变
 `loop.parse_retry` 缺省关，也不处理流式超时（另案，先验证 change 0320）。
 
+## ADR-0312：退化 JSON 的裸控制字符修复（change 0322 / 台账 E258）
+
+**背景。** 2026-10-24 15:28，后台子 Agent（`bg-77cd2045c223`，实施 0305）第 20 轮失败
+（trace `fe9f78fd…`）。动作对象**结构完整**，但 `script` 字符串值内**原样**写入了 4 个换行
+（多行 heredoc）⇒ `json.loads` 报 `Invalid control character`。ADR-0311 的字面量修复只处理
+非法反斜杠转义与未转义内引号，不改变裸控制字符 ⇒ 修复返回 `None`，仍落通用失败；进程启动
+（15:15:42）晚于 0321 提交（15:13:26），非陈旧代码。
+
+**决策**：
+
+- **D1 同一状态机补一支。** 在 `_repair_string_fragment` 内处理字符串中的裸控制字符
+  （`ord(char) < 0x20`）：`\n` `\r` `\t` `\b` `\f` 改写为对应 JSON 转义，其余为 `\u00XX`。
+  单遍扫描、不二次遍历。
+- **D2 语义等价。** 转义只改表示、不改解码值：`script` 与模型原文逐字相同（含换行）。与
+  ADR-0311「不删改非控制字符」一致。
+- **D3 边界不变。** 采纳门槛（可解码为 dict 且含非空 `tool_id` / `reply`）、结构不补全、
+  先于 `loop.parse_retry` 全部沿用 0321。
+- **D4 不扩大到其他字符。** 不处理 U+007F（JSON 合法），不做通用 JSON5 / 容错解析器。
+
+**验证**：`tests/test_degenerate_json_repair.py` 增至 6 条（新增多行 heredoc 事故复刻、
+裸制表 / 回车等值转义；合法 `\n` / `\t` 转义用例零影响）。事故原文 542 字符离线回放 ⇒
+`tool_id=tools.code_run`、`script` 含原换行、`failed=False`、无 `raw_output`。反证 2/2
+（`cp` 到 `/tmp` + `md5sum` 复原）：删控制字符支 ⇒ 两条新用例红；仅映射 `\n` 且无兜底 ⇒
+制表 / 回车用例红。全量 **3669 passed / 1 failed**（失败与 30 条 pyright 报错均来自并行会话
+未提交的 `0305` 对 `src/core/entry.py` / `src/core/memory/store.py` 的在途修改，与本 change
+无关；本 change 触及文件 ruff / 格式 / pyright 均干净）。
+
+**局限**：① 仍只覆盖结构完整的对象；未闭合 / 截断维持失败语义；② 不校验参数语义
+（`INVALID_ARGS` 仍由工具链 Gate 承担）；③ 未处理 DEL 等稀有字符（JSON 本已允许）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -12273,3 +12303,4 @@ JSON 含转义引号 / 反斜杠解码逐字不变）。反证 3/3（`cp` 到 `/
 | ADR-0309 | 03-interfaces/mcp-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0310 | 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0311 | 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0312 | 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

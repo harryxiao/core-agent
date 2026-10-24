@@ -276,6 +276,8 @@ def _recover_truncated_tool_json(text: str) -> dict[str, Any] | None:  # noqa: P
 _VALID_JSON_ESCAPES = frozenset('"\\/bfnrtu')
 _JSON_STRING_CLOSERS = frozenset(",:}]")
 _BRACKET_DELTA = {"{": 1, "[": 1, "}": -1, "]": -1}
+_CONTROL_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t", "\b": "\\b", "\f": "\\f"}
+_MIN_PRINTABLE_CODEPOINT = 0x20
 
 
 def _repair_string_fragment(text: str, index: int) -> tuple[str, int, bool]:
@@ -286,6 +288,8 @@ def _repair_string_fragment(text: str, index: int) -> tuple[str, int, bool]:
         if following in _VALID_JSON_ESCAPES:
             return text[index : index + 2], index + 2, False
         return "\\\\", index + 1, False
+    if char in _CONTROL_ESCAPES or ord(char) < _MIN_PRINTABLE_CODEPOINT:
+        return _CONTROL_ESCAPES.get(char, f"\\u{ord(char):04x}"), index + 1, False
     if char != '"':
         return char, index + 1, False
     lookahead = index + 1
@@ -305,6 +309,10 @@ def _repair_degenerate_json_literals(text: str) -> dict[str, Any] | None:
     ``, : } ]`` 或已到文末时视为闭合，否则补转义。**不**补缺失的括号 / 引号（未闭合与
     截断维持既有失败语义）；仅插入反斜杠，不删改已有字符。仅采纳可解码为 dict 且含
     非空 ``tool_id`` 或非空 ``reply`` 的结果。
+
+    第二现场（trace ``fe9f78fd…``，change 0322 / ADR-0312）：字符串值内**原样**写入换行
+    （多行 heredoc）⇒ ``Invalid control character``。裸控制字符（``< 0x20``）改写为等值
+    JSON 转义（``\\n`` ``\\r`` ``\\t`` ``\\b`` ``\\f``，其余 ``\\u00XX``），解码值逐字保留。
     """
     repaired: list[str] = []
     in_string = False

@@ -5578,3 +5578,21 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > active change `0305` / `0318` 与本 change；归档后 33/0）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0311 行（仅结构完整对象；引号判据为
 > 启发式；不处理夹带 / 混写；`parse_retry` 缺省仍关）。
+
+## 235. 退化 JSON 的裸控制字符修复（change 0322 / ADR-0312）
+
+### 235.1 控制字符转义（TC-DEGCTRL）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-DEGCTRL-01 | **事故原文恢复** | 结构完整的动作对象，`script` 字符串值内原样含换行（多行 heredoc，trace `fe9f78fd…` 原文） | 解析为 `tools.code_run` 工具动作，`script` 保留原换行；`failed=False`、无 `raw_output`（`tests/test_degenerate_json_repair.py::test_raw_newlines_in_string_recover`） |
+| TC-DEGCTRL-02 | 裸控制字符等值转义 | `{"tool_id": "tools.echo", "args": {"text": "a\tb\rc"}}`（裸制表 / 回车） | 解析成功，`args["text"] == "a\tb\rc"` 逐字不变（`...::test_raw_control_characters_are_escaped_equivalently`） |
+
+> **反证 2/2**（`cp` 到 `/tmp`、复原后 `md5sum` 一致 `1f4554fb…`）：删 `_repair_string_fragment`
+> 的控制字符支 ⇒ TC-DEGCTRL-01 / 02 红；仅映射 `\n` 且去掉 `< 0x20` 兜底 ⇒ TC-DEGCTRL-02 红。
+> **实测**：全量 pytest **3669 passed / 1 failed**（3670 = 3668 + 2；失败
+> `test_prompt_mirror.py::test_mirror_landing_line_points_at_symbol[⹭]` 与 30 条 pyright 报错
+> 均来自并行会话未提交的 `0305` 对 `entry.py` / `store.py` 的在途修改，与本 change 无关；
+> 本 change 触及文件 ruff / 格式 / pyright 干净）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0312 行（仍只覆盖结构完整对象；不校验
+> 参数语义；DEL 等稀有字符未处理）。

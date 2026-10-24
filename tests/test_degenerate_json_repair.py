@@ -4,6 +4,10 @@
 字符串内的双引号未转义、``\\|`` 是非法 JSON 转义 ⇒ ``json.loads`` 失败、既有恢复链
 均不命中 ⇒ 整轮「无法解析」。本文件钉恢复与**不越界**两侧：只有结构完整、修复后可
 解码为动作 / 回复对象的形态才采纳；未闭合与无动作字段的形态维持可见失败。
+
+第二类事故（trace ``fe9f78fd…``，2026-10-24 15:28，change 0322 / ADR-0312）：字符串值
+内原样写入换行（多行 heredoc）⇒ ``Invalid control character``；同一修复把裸控制字符改写
+为等值 JSON 转义。
 """
 
 from __future__ import annotations
@@ -25,6 +29,24 @@ _INCIDENT = (
 _SCRIPT = (
     'cd ~/work/core-agent && ls tests/ | grep -i "memory\\|write\\|deactiv" ; '
     'grep -n "write_checked\\|WriteRejection" src/core/memory/store.py'
+)
+
+# 第二类事故复刻：script 值内原样换行（多行 heredoc），JSON 字符串不允许裸控制字符。
+_INCIDENT_CONTROL = (
+    '{"tool_id": "tools.code_run", "args": {"cwd": "/home/harry/work/core-agent", '
+    '"script": "grep -n \\"def _entry_by_id\\" -A 12 src/core/memory/store.py\n'
+    "python - <<'EOF'\n"
+    "from core.memory.store import MemoryStore\n"
+    "print(hasattr(m, 'apply_deactivations'))\n"
+    'EOF","type": "bash"}}'
+)
+
+_SCRIPT_CONTROL = (
+    'grep -n "def _entry_by_id" -A 12 src/core/memory/store.py\n'
+    "python - <<'EOF'\n"
+    "from core.memory.store import MemoryStore\n"
+    "print(hasattr(m, 'apply_deactivations'))\n"
+    "EOF"
 )
 
 
@@ -73,6 +95,24 @@ def test_repaired_object_without_action_or_reply_is_not_adopted() -> None:
 
     assert action.failed is True
     assert action.args["reply"] == "LLM_PLAN_PARSE_FAILED: 无法解析模型输出为动作"
+
+
+def test_raw_newlines_in_string_recover() -> None:
+    """事故复刻：字符串内裸换行 ⇒ 改写为等值转义，脚本逐字保留。"""
+    action = _parse(_INCIDENT_CONTROL)
+
+    assert action.failed is False
+    assert action.tool_id == "tools.code_run"
+    assert action.args["script"] == _SCRIPT_CONTROL
+
+
+def test_raw_control_characters_are_escaped_equivalently() -> None:
+    """制表 / 回车等裸控制字符同样改写为等值转义，解码值逐字不变。"""
+    action = _parse('{"tool_id": "tools.echo", "args": {"text": "a\tb\rc"}}')
+
+    assert action.failed is False
+    assert action.tool_id == "tools.echo"
+    assert action.args["text"] == "a\tb\rc"
 
 
 def test_valid_json_with_escapes_is_unchanged() -> None:
