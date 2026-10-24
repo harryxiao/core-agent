@@ -814,9 +814,19 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
 
         后台派生调用（change 0296）：走独立 provider（`llm.background_timeout` /
         `llm.background_max_retries`），与用户交互调用的超时/重试解耦。
+
+        推理档位与交互调用同源（change 0320 / ADR-0310）：`llm.reasoning_effort` 是 `llm`
+        级配置，前台全部 planner 已下发；后台漏发曾使摘要按端点默认档位长时间思考
+        （实测 44.8s / 4988 tokens），反复撞 60s 后台超时 ⇒ 压实「总有超时」。未配置时
+        `None` 不下发（逐字不变）。**不**加 `max_tokens`：实测只掐输出会让思考吃满预算、
+        正文为空（`finish=length`）。
         """
         response = background_llm.completion(
-            LLMRequest(messages=[Message(role="user", content=prompt)], model=app.llm.model)
+            LLMRequest(
+                messages=[Message(role="user", content=prompt)],
+                model=app.llm.model,
+                reasoning_effort=app.llm.reasoning_effort,
+            )
         )
         return response.content
 

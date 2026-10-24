@@ -11900,6 +11900,43 @@ handler 直接把 `MCPClient.call_tool` 的返回值（`CallResult` dataclass）
 计数须另加带语义指标；② 信封不改变远端参数语义（如 codebase-memory 不展开 `~`，远端路径须
 给绝对路径）；③ 非 JSON 原生载荷仍依赖各传输实现的归一。
 
+## ADR-0310：后台派生调用透传推理档位（change 0320 / 台账 E256）
+
+**背景。** 用户反馈 TUI「总有会话上下文压缩超时」。诊断落在**一处配置泄漏**：组合根
+`_llm_text` 接缝（会话摘要、关键事实 / 关系 / 情景归纳、SOP 提炼、沉淀候选蒸馏、进化
+review / patch author）构造 `LLMRequest` 时只带 `messages` / `model`；而前台全部 6 处
+planner 调用都带 `reasoning_effort=app.llm.reasoning_effort`。于是用户配置的
+`llm.reasoning_effort: low` 对后台调用**从未生效**，端点按默认档位长时间思考。同一段摘要
+prompt（GLM-5.3）实测：不传档位 44.8s / 4988 completion tokens；传 `low` 10.0s / 901。
+后台 provider 超时与轮内压实上限都是 60s ⇒ 摘要 / 关键事实两次调用常打满或超时，摘要不落库、
+原条目不归档，**下一轮同样触发**（traces 中 `maintenance_failed` 59 次 vs `compaction` 10 次）。
+
+**决策**：
+
+- **D1 后台与交互同源透传。** `_llm_text` 构造请求时带 `reasoning_effort=app.llm.reasoning_effort`。
+  `llm.reasoning_effort` 是 `llm` 级配置，语义覆盖全部模型调用；前台已全量下发，后台漏发是
+  实现缺陷而非策略差异。一处修复即覆盖该接缝全部消费者。**被拒**：在 `StdlibLLMProvider`
+  内按「后台 provider」身份自动补默认档位 —— 把策略藏进实现层，且无法区分「未配置」与
+  「显式配置 low」。
+- **D2 不新增 `max_tokens` 缺省。** 实测只加 `max_tokens=2048`：思考吃满预算，26.0s 后
+  **正文为空**（`finish=length`）；`_summarize_session` 对空摘要只留痕并跳过派生抽取 ⇒ 记忆
+  永不固化且每轮重试，比超时更糟。**被拒**：后台固定 2048（饿死正文）；复用
+  `loop.output_reserve`（默认档位下实测 4988 tokens 已接近，仍撞 60s；对 patch author 等长
+  输出面语义不明）。
+- **D3 未配置不下发。** `None` 时请求字段保持 `None`，provider 不写请求体 ⇒ 与引入前逐字一致；
+  端点兼容性风险面不因本 change 扩大。
+
+**验证**：`tests/test_background_reasoning_effort.py` 2 条（经真实 `build_runtime` +
+打桩 `acompletion`：配置时每个后台请求携带 `low`；未配置时全部 `None`）。反证 3/3（`cp` 到
+`/tmp` + `md5sum` 复原）：删实参 ⇒ 透传用例红；硬编码 `high` ⇒ 两条全红；未配置回落 `low`
+⇒ 未配置用例红。真实端点正证：同一压实路径（合成会话）**10.2s** 完成、摘要落库（324 字）、
+源条目迁 L4。
+
+**局限**：① 未配置 `llm.reasoning_effort` 的用户仍可能超时 —— 本 change 只修配置泄漏，不发明
+后台专用默认档位；② 端点是否真正采纳低档位无法在配置期校验，只能由延迟/超时反馈证伪；
+③ 压实仍是轮内阻塞路径：修复后单次摘要 + 关键事实约 2×5–10s，不再撞 60s 墙，但仍占用本轮
+时间。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -12201,3 +12238,4 @@ handler 直接把 `MCPClient.call_tool` 的返回值（`CallResult` dataclass）
 | ADR-0306 | 03-interfaces/ui-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0307 | 03-interfaces/ui-interface.md, 03-interfaces/tool-use-interface.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0309 | 03-interfaces/mcp-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0310 | 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

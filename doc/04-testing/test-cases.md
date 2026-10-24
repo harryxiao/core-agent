@@ -5540,3 +5540,22 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **实测**：全量 pytest **3662 passed**（3658 + 4）；`openspec validate --all` 34/0（含并行
 > active change `0305` / `0318`；归档后 32/0）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0309 行。
+
+## 233. 后台派生调用的推理档位透传（change 0320 / ADR-0310）
+
+### 233.1 后台接缝的推理档位（TC-BGREASON）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-BGREASON-01 | **配置时透传** | `llm.reasoning_effort: low`；经真实 `build_runtime` 装配后写一条该会话 L2 episodic 并 `MemoryStore.compact(session_id=…)`（打桩 `StdlibLLMProvider.acompletion` 捕获请求） | 捕获的**每个**后台请求（摘要 / 关键事实）`reasoning_effort == "low"`（`tests/test_background_reasoning_effort.py::test_background_calls_carry_configured_reasoning_effort`） |
+| TC-BGREASON-02 | 未配置时不下发 | 配置无 `llm.reasoning_effort`；同一压实路径 | 每个请求 `reasoning_effort is None`（端点请求体不含该字段，零变化；`...::test_background_calls_omit_reasoning_effort_when_unset`） |
+
+> **反证 3/3**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：删 `_llm_text` 的 `reasoning_effort`
+> 实参 ⇒ TC-BGREASON-01 红；硬编码 `"high"`（无视配置）⇒ 两条全红；未配置回落 `"low"` ⇒
+> TC-BGREASON-02 红。
+> **真实端点正证**：合成会话经同一压实路径 **10.2s** 完成、摘要落库（324 字）、源条目迁 L4
+> （修复前同一摘要 prompt 单次 44.8s / 4988 tokens，撞 60s 超时）。
+> **实测**：全量 pytest **3664 passed**（3662 + 2）；`openspec validate --all` 34/0（含并行
+> active change `0305` / `0318`；归档后 33/0）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0310 行（未配置档位仍可能超时；端点采纳
+> 不可校验；压实仍轮内阻塞）。
