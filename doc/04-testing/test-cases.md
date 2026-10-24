@@ -5522,3 +5522,21 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **实测**：全量 pytest **3658 passed**（3653 + 5）；`openspec validate --all` 32/0（含本 active
 > change；归档后 31/0）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0307 行。
+
+## 232. MCP 远端工具结果可序列化（change 0319 / ADR-0309）
+
+### 232.1 本地载荷信封（TC-MCPPAYLOAD）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-MCPPAYLOAD-01 | **成功结果信封** | 远端 `tools/call` 成功载荷 `{"result": "ok:search", "args": {...}}`，经 `InstallDispatcher` 安装后调用 `mcp.files.search` | 本地 `ToolResult.ok is True`；`data` 顶层键恰为 `{ok,data,code,error}`；`data["data"]` 为远端载荷，`code`/`error` 为 `None`；`json.dumps({"data": …})` 成功（`tests/test_mcp_tool_payload.py::test_remote_tool_success_returns_serializable_envelope`） |
+| TC-MCPPAYLOAD-02 | **远端 `isError` 回喂** | 远端应答 `{"content":[{"type":"text","text":"{\"code\":\"REMOTE_FAILED\",\"error\":\"pipeline failed: bad repo_path\"}"}],"isError":true}` | 本地 `ok is True`（不触发回滚）；信封 `ok=false`、`data=None`、`code="REMOTE_FAILED"`、`error` 保留远端正文（`...::test_remote_is_error_is_fed_back_not_raised`） |
+| TC-MCPPAYLOAD-03 | 协议层错误保留归一码 | 远端对已知工具抛 `KeyError`（`tools/call` 被拒） | 信封 `ok=false`、`code="MCP_TOOL_NOT_FOUND"`，仍可序列化（`...::test_remote_protocol_error_keeps_code`） |
+| TC-MCPPAYLOAD-04 | **远端载荷不冒充终止回复** | 远端成功载荷 `{"reply": "远端载荷不得冒充终止回复"}` | 信封顶层只有四键、无 `reply`；载荷原样嵌在 `data` 下（`...::test_remote_reply_payload_is_not_terminal`） |
+
+> **反证 3/3**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：handler 回到返回 `CallResult` ⇒ 四条全红
+> （首条即 `TypeError: Object of type CallResult is not JSON serializable`）；成功时平铺载荷 ⇒
+> TC-MCPPAYLOAD-01/04 红；远端失败抛成本地失败 ⇒ TC-MCPPAYLOAD-02/03 红。
+> **实测**：全量 pytest **3662 passed**（3658 + 4）；`openspec validate --all` 34/0（含并行
+> active change `0305` / `0318`；归档后 32/0）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0309 行。

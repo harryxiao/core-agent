@@ -118,7 +118,16 @@ class InstallDispatcher:
 
     def _remote_tool(self, definition: ToolDef, handle: ServerHandle, name: str) -> Tool:
         def handler(**kwargs: Any) -> Any:
-            return self._mcp.call_tool(handle, name, dict(kwargs))
+            # 观测记录按 JSON 落盘（DefaultLoop._record_observation），故远端结果必须归一为
+            # 恒定信封；远端失败只回喂模型，不冒充本地失败（否则触发本轮效应回滚、
+            # 且载荷丢失远端错误正文）。change 0319 / ADR-0309。
+            result = self._mcp.call_tool(handle, name, dict(kwargs))
+            return {
+                "ok": result.ok,
+                "data": result.data,
+                "code": result.code,
+                "error": result.error,
+            }
 
         return Tool(definition=definition, handler=handler)
 

@@ -100,6 +100,11 @@ L3 Loop ──► ToolProvider ──► [本地工具 | MCP 适配工具]
   `initialize` 回 `protocolVersion`/`capabilities`/`serverInfo` —— **双向对齐标准 MCP**（server 可被
   Claude Code / Cursor 直接挂载，client 可挂 `claude mcp serve` 等标准 server）；client 侧同时**兼容旧式
   裸形状**应答（不打破既有服务端），见 `doc/03-interfaces/mcp-interface.md` §6。
+- **本地工具结果信封（change `0319` / ADR-0309）**：`InstallDispatcher` 适配出的
+  `mcp.<server>.<tool>` 返回恒定四键、可 JSON 序列化的信封 `{ok, data, code, error}`
+  （成功 `data` 为远端载荷；远端 `isError`/协议失败 `ok=false` 并保留归一码与正文）；本地
+  `ToolResult.ok` 恒 `true`、不触发本轮回滚；载荷只嵌在 `data` 下，避免被 `observe` 误判为
+  终止回复。不可直接返回 `CallResult`（观测落盘 `json.dumps` 会抛 `TypeError`）。
 
 ### 3.6 端点注册表与装配期注册（change `0074`）
 

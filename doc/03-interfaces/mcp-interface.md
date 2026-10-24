@@ -116,6 +116,19 @@ ToolProvider.invoke(mcp.x.y, args)
 `CallResult`（`isError` 为真 → `ok=False`；文本为合法 JSON 时解码，否则原样承载）。旧式**裸列表 /
 裸对象**应答仍可解析（向后兼容既有 server）。
 
+**本地工具结果信封（change `0319` / ADR-0309）**：经 `InstallDispatcher` 适配进工具面的
+`mcp.<server>.<tool>` 把 `CallResult` 转成**恒定四键、可 JSON 序列化**的信封
+`{"ok": bool, "data": Any, "code": str | null, "error": str | null}`：
+
+- 成功 ⇒ `ok=true`、`data` 为远端载荷、`code`/`error` 为 `null`；
+- 远端 `isError` / 协议或传输失败 ⇒ `ok=false`、`data=null`、`code`/`error` 取 `CallResult`
+  已归一字段（如 `MCP_TOOL_NOT_FOUND` / `MCP_UNAVAILABLE`）；
+- 本地 `ToolResult.ok` 恒为 `true`（远端失败**不冒充本地失败**、不触发本轮效应回滚），
+  失败信息经信封回喂模型；
+- 远端载荷只嵌在 `data` 下，信封顶层恒四键 —— 载荷中的 `reply` 不会被 `DefaultLoop.observe`
+  误判为终止回复；`DefaultLoop._record_observation` 的 `json.dumps` 因此恒成功。
+  SHALL NOT 返回 `CallResult` 实例（不可序列化，会崩掉整轮）。
+
 ---
 
 ## 6. MCPServer 接口（server）

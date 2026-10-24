@@ -11866,6 +11866,40 @@ provider 在途线程不可取消（`asyncio.to_thread`），仍可能在服务�
 ③ 视图重绑只覆盖 `schema_read`，未来新增「目录型」只读工具须同样绑定视图；④ 计划勘察仍无网络
 能力（产品取舍未变，检索落在批准后的执行）。
 
+## ADR-0309：MCP 远端工具结果信封化（change 0319 / 台账 E255）
+
+**背景。** 用户在 TUI 调用已安装 MCP 工具 `mcp.cbm.index_repository` 时整轮崩溃：
+`TypeError: Object of type CallResult is not JSON serializable`，栈顶是
+`DefaultLoop._record_observation` 的 `json.dumps`。根因：`InstallDispatcher._remote_tool` 的
+handler 直接把 `MCPClient.call_tool` 的返回值（`CallResult` dataclass）当工具结果返回。
+离线复现确认 `ToolResult(ok=True, data=CallResult(...))` 在观测落盘时抛同型错误。次生口径：
+① 若把远端失败改判为本地 `ok=False`，`DefaultLoop` 会 `rollback(trace_id)`，且观测只写错误码
+字符串 —— 远端错误正文与同轮既有成功效应一起丢失；② `observe` 把顶层含 `reply` 的结果当作
+终止回复，远端载荷若为 `{"reply": …}` 会被误判。
+
+**决策**：
+
+- **D1 恒定四键信封。** handler 返回 `{"ok", "data", "code", "error"}`：成功时 `data` 为远端
+  载荷、`code`/`error` 为 `null`；远端逻辑/协议失败时 `ok=false`、`data=null`、其余两键取
+  `CallResult` 已归一字段。四键恒在 ⇒ 模型与测试无需按成败分支，且恒可 JSON 序列化。
+  **被拒**：在 `_record_observation` 加 `json.dumps(default=str)` 兜底（把契约违约点留在源头
+  之外，模型看到 `"CallResult(...)"` 字符串，语义仍错，且下一个不可序列化形状照样穿透）；
+  成功平铺载荷 / 失败另给形状（形状随成败漂移，且不解决 `reply` 碰撞）。
+- **D2 远端失败不冒充本地失败。** handler 不抛异常、也不让 `ToolResult.ok=False` ⇒ 本轮不回滚
+  （远端多为不可逆外部副作用，回滚只会让同轮既有写入陪葬），远端 `code`/`error` 正文逐字回喂
+  模型（ReAct 自愈）。**被拒**：远端 `ok=False` 透传为本地失败（丢正文 + 回滚副作用）。
+- **D3 载荷嵌套在 `data` 下。** 信封顶层恒四键 ⇒ `observe` 的 `reply` 终止判定不会被远端载荷
+  触发。**被拒**：载荷与信封键平铺（键冲突不可避免）。
+
+**验证**：`tests/test_mcp_tool_payload.py` 4 条（成功四键/可序列化、`isError` 回喂保留正文、
+协议错误保留 `MCP_TOOL_NOT_FOUND`、`{"reply": …}` 载荷不冒充终止）。反证 3/3（`cp` 到 `/tmp` +
+`md5sum` 复原）：回到返回 `CallResult` ⇒ 4 条全红；成功平铺 ⇒ 首条与 `reply` 用例红；远端
+失败抛成本地失败 ⇒ 中间两条红。
+
+**局限**：① 可观测面仍把远端逻辑失败记为工具调用成功（载荷内 `ok=false`），若需按远端成败
+计数须另加带语义指标；② 信封不改变远端参数语义（如 codebase-memory 不展开 `~`，远端路径须
+给绝对路径）；③ 非 JSON 原生载荷仍依赖各传输实现的归一。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -12166,3 +12200,4 @@ provider 在途线程不可取消（`asyncio.to_thread`），仍可能在服务�
 | ADR-0305 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0306 | 03-interfaces/ui-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0307 | 03-interfaces/ui-interface.md, 03-interfaces/tool-use-interface.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0309 | 03-interfaces/mcp-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
