@@ -5559,3 +5559,22 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > active change `0305` / `0318`；归档后 33/0）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0310 行（未配置档位仍可能超时；端点采纳
 > 不可校验；压实仍轮内阻塞）。
+
+## 234. 退化 JSON 的转义与内引号修复（change 0321 / ADR-0311）
+
+### 234.1 字面量修复与不越界（TC-DEGJSON）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-DEGJSON-01 | **事故原文恢复** | 结构完整的动作对象，字符串内含未转义双引号与非法 `\|` 转义（trace `a36c6cff…` 原文） | 解析为 `tools.code_run` 工具动作，`script` 逐字保留 `"memory\|write\|deactiv"`；`failed=False`、无 `raw_output`（`tests/test_degenerate_json_repair.py::test_unescaped_quotes_and_invalid_escapes_recover`） |
+| TC-DEGJSON-02 | 未闭合不修复 | 同类非法转义但括号 / 引号未闭合 | 维持失败态终止动作，`reply` 以 `LLM_PLAN_PARSE_FAILED` 开头，不猜补缺失结构（`...::test_unclosed_payload_does_not_get_repaired`） |
+| TC-DEGJSON-03 | 无动作字段不采纳 | 修复后可解码为 `{"hello": "a\"b"}`（无 `tool_id` / `reply`） | 维持通用文案「无法解析模型输出为动作」，零工具执行（`...::test_repaired_object_without_action_or_reply_is_not_adopted`） |
+| TC-DEGJSON-04 | 合法 JSON 零影响 | 含 `\"` 与 `\\` 的合法动作对象 | 解码值逐字不变（`...::test_valid_json_with_escapes_is_unchanged`） |
+
+> **反证 3/3**（`cp` 到 `/tmp`、复原后 `md5sum` 一致 `958e284e…`）：删 `_parse` 的修复调用 ⇒
+> TC-DEGJSON-01 红；关闭内引号修复（引号一律视为闭合）⇒ TC-DEGJSON-01 红；去掉采纳门槛 ⇒
+> TC-DEGJSON-03 红。
+> **实测**：全量 pytest **3668 passed**（3664 + 4）；`openspec validate --all` 34/0（含并行
+> active change `0305` / `0318` 与本 change；归档后 33/0）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0311 行（仅结构完整对象；引号判据为
+> 启发式；不处理夹带 / 混写；`parse_retry` 缺省仍关）。

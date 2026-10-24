@@ -273,6 +273,73 @@ def _recover_truncated_tool_json(text: str) -> dict[str, Any] | None:  # noqa: P
     return {"tool_id": head.group(1), "args": args}
 
 
+_VALID_JSON_ESCAPES = frozenset('"\\/bfnrtu')
+_JSON_STRING_CLOSERS = frozenset(",:}]")
+_BRACKET_DELTA = {"{": 1, "[": 1, "}": -1, "]": -1}
+
+
+def _repair_string_fragment(text: str, index: int) -> tuple[str, int, bool]:
+    """修复字符串内的一个字符：返回（输出片段, 下一索引, 是否遇到闭合引号）。"""
+    char = text[index]
+    if char == "\\":
+        following = text[index + 1] if index + 1 < len(text) else ""
+        if following in _VALID_JSON_ESCAPES:
+            return text[index : index + 2], index + 2, False
+        return "\\\\", index + 1, False
+    if char != '"':
+        return char, index + 1, False
+    lookahead = index + 1
+    while lookahead < len(text) and text[lookahead] in " \t\r\n":
+        lookahead += 1
+    if lookahead >= len(text) or text[lookahead] in _JSON_STRING_CLOSERS:
+        return '"', index + 1, True
+    return '\\"', index + 1, False
+
+
+def _repair_degenerate_json_literals(text: str) -> dict[str, Any] | None:
+    """结构完整但字面量写坏的 ``{…}`` → 修复转义后的对象；不可采纳 ⇒ ``None``。
+
+    现场（trace ``a36c6cff…``，change 0321 / ADR-0311）：动作对象括号完整，但字符串内
+    双引号未转义、``\\|`` 是非法 JSON 转义 ⇒ `json.loads` 必然失败。字符串感知单遍扫描：
+    非法反斜杠转义补成字面反斜杠；字符串内的 ``"`` 仅当其后的首个非空白字符为
+    ``, : } ]`` 或已到文末时视为闭合，否则补转义。**不**补缺失的括号 / 引号（未闭合与
+    截断维持既有失败语义）；仅插入反斜杠，不删改已有字符。仅采纳可解码为 dict 且含
+    非空 ``tool_id`` 或非空 ``reply`` 的结果。
+    """
+    repaired: list[str] = []
+    in_string = False
+    depth = 0
+    index = 0
+    length = len(text)
+    while index < length:
+        if in_string:
+            fragment, index, closed = _repair_string_fragment(text, index)
+            repaired.append(fragment)
+            in_string = not closed
+            continue
+        char = text[index]
+        repaired.append(char)
+        if char == '"':
+            in_string = True
+        depth += _BRACKET_DELTA.get(char, 0)
+        index += 1
+    if in_string or depth != 0:
+        return None
+    try:
+        obj = json.loads("".join(repaired))
+    except ValueError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    data = cast("dict[str, Any]", obj)
+    tool_id = data.get("tool_id")
+    if isinstance(tool_id, str) and tool_id:
+        return data
+    if data.get("reply") is not None:
+        return data
+    return None
+
+
 def _leading_object(text: str) -> tuple[dict[str, Any], int] | None:
     """解码 ``text`` **首个**（即自首字符起的）JSON 对象，返回对象与其结束下标。
 
@@ -880,6 +947,10 @@ class LLMPlanner:
                 data = json.loads(text)
             except ValueError:
                 repaired = _recover_truncated_tool_json(text)
+                if repaired is not None:
+                    return self._from_dict(repaired)
+                # 字面量修复（change 0321 / ADR-0311）：结构完整、仅转义 / 内引号写坏。
+                repaired = _repair_degenerate_json_literals(text)
                 if repaired is not None:
                     return self._from_dict(repaired)
                 return Action(

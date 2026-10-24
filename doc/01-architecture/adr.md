@@ -11937,6 +11937,39 @@ prompt（GLM-5.3）实测：不传档位 44.8s / 4988 completion tokens；传 `l
 ③ 压实仍是轮内阻塞路径：修复后单次摘要 + 关键事实约 2×5–10s，不再撞 60s 墙，但仍占用本轮
 时间。
 
+## ADR-0311：退化 JSON 的转义与内引号修复（change 0321 / 台账 E257）
+
+**背景。** 2026-10-24 14:14，子 Agent 在 6 轮勘察后整轮失败（trace `a36c6cff…`）。模型交出的
+动作对象**结构完整**，但字符串内双引号未转义、`\|` 是非法 JSON 转义 ⇒ `json.loads` 必然失败。
+既有恢复链（`<parameter>` 混写、截断补括号）均不命中，落到通用「无法解析」失败动作；
+`loop.parse_retry` 缺省关，于是零回喂、零执行，前面的工具结果全部白费。这类退化没有语义
+歧义——模型要执行的命令就是它写出来的文本，只是漏了 JSON 转义。
+
+**决策**：
+
+- **D1 确定性字面量修复，而非只靠重试。** 修复零额外模型调用、可复现；回喂重试不保证第二次
+  不再写坏。`parse_retry` 保留为其他解析失败形态的兜底，二者不互斥。**被拒**：把
+  `loop.parse_retry` 缺省改为开（改变既有策略与调用次数，且不解决根因）。
+- **D2 字符串感知单遍扫描。** 非法反斜杠转义（反斜杠后不属于 `" \ / b f n r t u`）补成字面
+  反斜杠；字符串内的 `"` 仅当其后的首个非空白字符为 `,` `:` `}` `]` 或已到文末时视为闭合，
+  否则补转义。合法 JSON 不会命中（合法字符串内不存在裸露 `"`），对既有输入零影响。
+- **D3 采纳门槛与结构不补全。** 扫描结束时仍在字符串内或括号深度非 0 ⇒ 放弃；修复文本必须
+  解码为 dict 且含非空 `tool_id` 或非空 `reply` 才采纳。**不**补缺失括号 / 引号、**不**删改
+  任何已有字符（只插入转义反斜杠）——未闭合 / 截断维持既有失败语义与 `raw_output` 留痕。
+- **D4 顺序。** 位于既有截断恢复之后、失败动作之前；修复成功即走 `_from_dict` 既有工具 /
+  终止语义，不触发 `parse_retry`。
+
+**验证**：`tests/test_degenerate_json_repair.py` 4 条（事故原文恢复为 `tools.code_run` 且
+`script` 逐字保留 `\|` 与内引号；未闭合形态仍失败；修复后无动作字段仍给通用失败文案；合法
+JSON 含转义引号 / 反斜杠解码逐字不变）。反证 3/3（`cp` 到 `/tmp` + `md5sum` 复原）：删修复
+调用 ⇒ 事故用例红；关内引号修复 ⇒ 事故用例红；去掉采纳门槛 ⇒ 无动作字段用例红。全量
+**3668 passed**。
+
+**局限**：① 只覆盖**结构完整**的对象；未闭合 / 截断仍按既有失败语义，不猜缺失内容；② 引号
+闭合判据是启发式——闭合引号后误跟正文单词（本身已非法）会被当作内容引号，可能恢复成错误
+参数，最终仍由工具参数校验兜底；③ 不处理尾部夹带 / 正文混写等其他形态；④ 不改变
+`loop.parse_retry` 缺省关，也不处理流式超时（另案，先验证 change 0320）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -12239,3 +12272,4 @@ prompt（GLM-5.3）实测：不传档位 44.8s / 4988 completion tokens；传 `l
 | ADR-0307 | 03-interfaces/ui-interface.md, 03-interfaces/tool-use-interface.md, 03-interfaces/orchestration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0309 | 03-interfaces/mcp-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0310 | 02-modules/memory.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0311 | 02-modules/loop.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
