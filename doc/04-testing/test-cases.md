@@ -5414,3 +5414,43 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **实测**：全量 pytest **3636 passed**（3629 + 7）；`openspec validate --all` 32/0（含本 active
 > change；归档后 31/0）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0304 行。
+
+---
+
+## 228. TUI 优雅退出 `/exit`（change 0315 / ADR-0305）
+
+**目标**：`/exit` SHALL 先收束本会话轮末后台收尾链（技能反馈 + 压实/遗忘）再正常退出，且有界；
+有在途轮次时 SHALL 拒绝并提示。Ctrl+Q 的立即退出语义不变。
+
+### 228.1 循环接缝（TC-EXIT-FLUSH）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-EXIT-FLUSH-01 | 等待收尾链 | 观察者阻塞 `_maintain` 0.3s 后再放行 | `flush_post_turn()` 返回 True 且耗时 ≥ 阻塞时长（`tests/test_exit_graceful.py::test_flush_post_turn_waits_for_background_chain`） |
+| TC-EXIT-FLUSH-02 | **有界且不取消** | `post_turn_wait_timeout=0.1`、收尾阻塞 1s | 首次调用 < 1.0s 返回；后台任务仍在跑，随后 `timeout=2.0` 返回 True（`...::test_flush_post_turn_is_bounded_and_keeps_task_running`） |
+| TC-EXIT-FLUSH-03 | 无在途 | 无收尾任务 | 立即返回 True（`...::test_flush_post_turn_without_pending_returns_true`） |
+
+### 228.2 API 委托（TC-EXIT-API）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-EXIT-API-01 | 委托 loop 接缝 | 假 loop 记录 `flush_post_turn` 调用并返回 False | API 返回 False、调用一次（`tests/test_exit_graceful.py::test_api_flush_post_turn_delegates_to_loop`） |
+| TC-EXIT-API-02 | 无接缝 | `loop=object()` | 直接返回 True（不阻塞退出）（`...::test_api_flush_post_turn_without_seam_returns_true`） |
+| TC-EXIT-API-03 | 未知会话 | 未注册的 session id | `UiErrorCode.UI_SESSION_NOT_FOUND`（`...::test_api_flush_post_turn_requires_session`） |
+
+### 228.3 TUI 命令（TC-EXIT-CMD）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-EXIT-CMD-01 | 空闲先 flush 再退出 | 空闲输入 `/exit`，假 loop `settled=True` | `flush_calls == 1`、`exit` 一次、时间线含「正在保存会话记忆…」与「会话记忆已保存，退出」（`tests/test_repl.py::test_exit_command_flushes_then_exits`） |
+| TC-EXIT-CMD-02 | 收尾超时仍退出 | 假 loop `settled=False` | 仍 `exit`，时间线含「记忆收尾超时（已尽力保存），退出」（`...::test_exit_command_timeout_still_exits`） |
+| TC-EXIT-CMD-03 | **在途轮次拒绝** | 助手回复阻塞时输入 `/exit` | `flush_calls == 0`、未退出，提示「本轮进行中：等本轮结束后再 /exit，或 Ctrl+Q 立即退出」（`...::test_exit_command_rejects_while_busy`） |
+| TC-EXIT-CMD-04 | 拒参数 | 输入 `/exit now` | 提示「/exit 不接受参数」、不 flush、不退出（`...::test_exit_command_rejects_args`） |
+| TC-EXIT-CMD-05 | 真实进程（正证） | pty 起 TUI，空闲输入 `/exit` | **0.36s** 退出、status 0；同环境 Ctrl+Q **0.37s**、status 0（回调 0314 语义不变） |
+
+> **反证 3/3**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：去掉 `api.flush_post_turn` 调用 ⇒
+> TC-EXIT-CMD-01 红（`flush_calls 0 != 1`）；去掉忙态检查 ⇒ TC-EXIT-CMD-03 红
+> （`flush_calls 1 != 0`）；结果文案硬编码为成功 ⇒ TC-EXIT-CMD-02 红。
+> **实测**：全量 pytest **3646 passed**（3636 + 10）；`openspec validate --all` 32/0（含本 active
+> change；归档后 31/0）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0305 行。

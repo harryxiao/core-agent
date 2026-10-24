@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, cast
 
 from core.beast import BeastActivator, BeastError
@@ -343,6 +343,21 @@ class UIAPILayer:
             return {"entries": []}
         entries = self._memory.read(session_id, budget=2048)
         return {"entries": [e.content for e in entries if e.session_id == session_id]}
+
+    async def flush_post_turn(self, session_id: str) -> bool:
+        """等待本会话轮末后台收尾链收束（change 0315 / ADR-0305）。
+
+        供 TUI `/exit` 使用：返回是否在既有上限内收束（无在途 ⇒ ``True``）。
+        自定义 loop 未提供该接缝 ⇒ 视为无在途收尾（不报错）。
+        """
+        self._require_session(session_id)
+        flush = cast(
+            "Callable[[], Awaitable[bool]] | None",
+            getattr(self._loop, "flush_post_turn", None),
+        )
+        if not callable(flush):
+            return True
+        return bool(await flush())
 
     def compact(self, session_id: str) -> None:
         """压缩**本会话**记忆：触发存储层真实压实（按会话聚合摘要 + 重要度写回，可撤销）。

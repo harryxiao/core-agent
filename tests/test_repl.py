@@ -346,6 +346,145 @@ def test_plan_command_rejects_args() -> None:
     assert mode == "quick"  # 未进入计划模式
 
 
+# ---- 优雅退出（`/exit`，change 0315 / ADR-0305） ----
+
+
+class _FlushRecordingLoop(RecordingLoop):
+    """记录收尾接缝调用的 loop 替身。"""
+
+    def __init__(self, settled: bool = True) -> None:
+        super().__init__()
+        self.settled = settled
+        self.flush_calls = 0
+
+    async def flush_post_turn(self) -> bool:
+        self.flush_calls += 1
+        return self.settled
+
+
+def _capture_exit(app: object) -> list[bool]:
+    """替换 `app.exit` 为记录器（headless 会话保持存活，便于断言时间线文案）。"""
+    exits: list[bool] = []
+    app.exit = lambda: exits.append(True)  # type: ignore[attr-defined,method-assign]
+    return exits
+
+
+def test_exit_command_flushes_then_exits() -> None:
+    """`/exit` 空闲：先等收尾接缝收束，再正常退出。"""
+    loop = _FlushRecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+    exits = _capture_exit(app)
+
+    async def drive() -> str:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            app.query_one("#input", Input).focus()
+            await _type_line(pilot, "/exit")
+            for _ in range(30):
+                await pilot.pause()
+            return _timeline_text(app)
+
+    text = asyncio.run(drive())
+    assert loop.flush_calls == 1
+    assert exits == [True]
+    assert "正在保存会话记忆" in text
+    assert "会话记忆已保存，退出" in text
+
+
+def test_exit_command_timeout_still_exits() -> None:
+    """收尾超过上限：明示后仍退出（不挂死）。"""
+    loop = _FlushRecordingLoop(settled=False)
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+    exits = _capture_exit(app)
+
+    async def drive() -> str:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            app.query_one("#input", Input).focus()
+            await _type_line(pilot, "/exit")
+            for _ in range(30):
+                await pilot.pause()
+            return _timeline_text(app)
+
+    text = asyncio.run(drive())
+    assert loop.flush_calls == 1
+    assert exits == [True]
+    assert "记忆收尾超时（已尽力保存），退出" in text
+
+
+def test_exit_command_rejects_while_busy() -> None:
+    """有在途轮次：拒绝并提示（不等待、不退出）。"""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _BlockingLoop(_FlushRecordingLoop):
+        async def astream(self, user_input: str, *, session_id: str = ""):
+            self.inputs.append(user_input)
+            started.set()
+            await release.wait()
+            yield LoopEvent("loop_finished", {"reply": "done"})
+
+    loop = _BlockingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+    exits = _capture_exit(app)
+
+    async def drive() -> str:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            app.query_one("#input", Input).focus()
+            await _type_line(pilot, "hello")
+            for _ in range(50):
+                await pilot.pause()
+                if started.is_set():
+                    break
+            await _type_line(pilot, "/exit")
+            for _ in range(20):
+                await pilot.pause()
+            text = _timeline_text(app)
+            release.set()
+            for _ in range(20):
+                await pilot.pause()
+        return text
+
+    text = asyncio.run(drive())
+    assert loop.flush_calls == 0
+    assert exits == []
+    assert "本轮进行中" in text
+
+
+def test_exit_command_rejects_args() -> None:
+    """`/exit` 不接受参数：提示且不退出。"""
+    loop = _FlushRecordingLoop()
+    api = UIAPILayer(loop=loop)
+    api.set_llm_config(_llm())
+    app = build_app(api)
+    exits = _capture_exit(app)
+
+    async def drive() -> str:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            app.query_one("#input", Input).focus()
+            await _type_line(pilot, "/exit now")
+            for _ in range(20):
+                await pilot.pause()
+            return _timeline_text(app)
+
+    text = asyncio.run(drive())
+    assert loop.flush_calls == 0
+    assert exits == []
+    assert "/exit 不接受参数" in text
+
+
 def test_task_busy_rejects_concurrent() -> None:
     """编排执行期间再发消息提示等待（不并发派发任务）。"""
     started = asyncio.Event()
@@ -1875,6 +2014,7 @@ def test_palette_options_lists_all_commands_on_slash() -> None:
         "/skill",
         "/notes",
         "/chain",
+        "/exit",
     ]
 
 
@@ -2000,6 +2140,7 @@ def test_palette_opens_on_slash_and_lists_registered_commands() -> None:
         "cmd:/skill",
         "cmd:/notes",
         "cmd:/chain",
+        "cmd:/exit",
     ]
 
 

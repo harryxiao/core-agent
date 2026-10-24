@@ -11744,6 +11744,44 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 `set_default_executor` 的 CPython 类型检查口径（继承 `ThreadPoolExecutor` 但覆写提交路径），
 若该限制未来改变需复核；⑤ 测试用 0.5s/1s 有界阈值，极端负载下可能抖动。
 
+## ADR-0305：TUI `/exit` 先收束轮末后台收尾链再退出（change 0315 / 台账 E251）
+
+**背景。** ADR-0304 让 Ctrl+Q 退出及时（放弃在途工作），但轮末的后台收尾链（change 0296：
+技能反馈 + `_maintain` 的会话压实 / 遗忘，`_schedule_post_turn` → `_run_offloaded`）也随之
+被放弃。核对写入时序：每轮对话记录与 `remember` 在回复展示前**同步**写入，`MemoryBackend._persist`
+是 tmp + `os.replace` 原子替换（change 0206）⇒ 轮内记忆**必然完整**；退出可能丢的只是
+**轮末压实 / 遗忘 / 技能反馈**。用户需要一条「先存会话记忆、再正确退出」的显式退出路径。
+
+**决策**：
+
+- **D1 `/exit` = 有界排空轮末后台收尾链。** TUI 新增 `/exit`：新增
+  `DefaultLoop.flush_post_turn(*, timeout=None)` 公开接缝，内部复用既有
+  `_await_post_turn` 与 `self._post_turn_wait_timeout`（change 0296，缺省 **120s**），
+  返回是否在限内收束；超时 shield-not-cancel，**不**取消后台任务。`UIAPILayer.flush_post_turn`
+  以 `getattr` 鸭子类型委托（无该接缝的自定义 loop ⇒ 直接 True），**不**扩展 `LoopPlugin` 协议。
+  **被拒**：用 `api.compact(session_id)` 排空 —— 压实锁非阻塞，维护已在跑时直接返回 None，
+  恰好在最需要等待时失去等待语义。
+- **D2 有在途轮次时拒绝并提示。** `_turn_busy` ⇒ 提示「等本轮结束后再 /exit，或 Ctrl+Q 立即
+  退出」，不排队、不放弃本轮。**被拒**：排队到轮末再退出（用户裁决「拒绝并提示」；隐式延迟
+  退出难以预测）；让 `/exit` 放弃在途轮次（与 Ctrl+Q 语义重叠）。
+- **D3 失败 / 超时明示后仍退出。** 收尾异常或超过上限 ⇒ 提示「记忆收尾超时（已尽力保存），
+  退出」，照常 `exit()`；收尾窗口内 `_turn_busy=True` 拒收新输入并防重复 `/exit`。
+  **被拒**：无限等待（应用可能永不退出）；新增 `ui.exit_timeout` 等配置键（违背零新配置键）。
+- **D4 Ctrl+Q 不变。** 仍是立即退出逃生口（ADR-0304）；`/exit` 不接受参数；零新依赖。
+
+**验证**：`tests/test_exit_graceful.py` 6 条（等待收尾链 / 有界且不取消后台任务 / 无在途即 True /
+API 委托 / 无接缝即 True / 会话校验）+ `tests/test_repl.py` 4 条（先 flush 再退出 / 超时仍退出 /
+忙态拒绝 / 拒参数）。全量 **3646 passed**（3636 → +10）。反证 3/3（`cp` 到 `/tmp` + `md5sum`
+复原）：去掉 flush 调用 ⇒ 空闲退出用例红（`flush_calls 0 != 1`）；去掉忙态检查 ⇒ 忙态用例红
+（`flush_calls 1 != 0`）；把结果文案硬编码为成功 ⇒ 超时用例红。正证（pty 真实进程）：
+`/exit` ⇒ **0.36s** 退出、status 0；同环境 Ctrl+Q **0.37s**、status 0。无在途收尾时提示行
+不保证被绘制（flush 在同一 tick 返回即 `exit()`），有在途时等待期间会绘制「正在保存会话记忆…」。
+
+**局限**：① 只覆盖 TUI；一次性 `run` / `serve` / `task` 无此入口；② 后台收尾链在 120s 内
+未收束时仍可能丢失（明示「已尽力保存」）；③ 自定义 loop 无接缝时直接视为已收束（不阻塞退出）；
+④ 「已保存」只保证轮末链已收束，不保证压实/遗忘产生任何变更；⑤ 无在途收尾时结束文案通常不可见
+（终端已退出），成功提示的消费者主要是测试与日志。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -12041,3 +12079,4 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 | ADR-0300 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0303 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0304 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0305 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

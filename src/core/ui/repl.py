@@ -522,6 +522,8 @@ _COMMANDS: tuple[_Command, ...] = (
     _Command("/skill", "技能目录", handler="_show_skill"),
     _Command("/notes", "笔记与常驻项", handler="_show_notes"),
     _Command("/chain", "情景链（按时序）", handler="_show_chain"),
+    # 优雅退出（change 0315）：先等轮末后台收尾链（记忆压实/遗忘、技能反馈）再退出。
+    _Command("/exit", "保存会话记忆后退出"),
 )
 
 
@@ -1235,6 +1237,8 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
                 return  # 空回车忽略（IME 确认误触不退出；退出走 Ctrl+Q/Ctrl+C）
             if self._handle_focus_command(text):  # 焦点命令先于忙态拒绝（运行中亦可用）
                 return
+            if self._handle_exit_command(text):  # 优雅退出（忙态由本分支给专用提示）
+                return
             if self._turn_busy:
                 self._add(Static("处理中，请稍候（Ctrl+B 打断）", classes="hint"))
                 return
@@ -1941,6 +1945,41 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
             self._apply_mode_placeholder()  # 模式随会话切换（各会话独立）
             self._replay_history(sid, list(items))
             return True
+
+        def _handle_exit_command(self, text: str) -> bool:
+            """`/exit`：先等会话轮末后台收尾链收束，再正常退出（change 0315 / ADR-0305）。
+
+            有在途轮次 ⇒ 拒绝并提示（不排队、不放弃本轮）；Ctrl+Q 仍是立即退出的逃生口。
+            """
+            head, _, arg = text.partition(" ")
+            if head != "/exit":
+                return False
+            if arg.strip():
+                self._add(Static("/exit 不接受参数", classes="hint"))
+                return True
+            if self._turn_busy:
+                self._add(
+                    Static("本轮进行中：等本轮结束后再 /exit，或 Ctrl+Q 立即退出", classes="hint")
+                )
+                return True
+            self._turn_busy = True  # 收尾窗口：拒收新输入并防重复 /exit
+            self.run_worker(self._exit_gracefully())
+            return True
+
+        async def _exit_gracefully(self) -> None:
+            """保存会话记忆（有界等待后台收尾链）后正常退出；超时/失败明示后仍退出。"""
+            self._add(Static("正在保存会话记忆…", classes="hint"))
+            try:
+                settled = await api.flush_post_turn(self._session_id)
+            except Exception:  # noqa: BLE001 — 收尾失败不阻断退出（明示后仍退出）
+                settled = False
+            self._add(
+                Static(
+                    "会话记忆已保存，退出" if settled else "记忆收尾超时（已尽力保存），退出",
+                    classes="hint",
+                )
+            )
+            self.exit()
 
         def _handle_plan_command(self, text: str) -> bool:
             """`/plan` / `/quick`：会话级执行模式切换（进程内临时状态，不落注册表）。"""

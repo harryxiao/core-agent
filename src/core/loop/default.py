@@ -1135,6 +1135,16 @@ class DefaultLoop(Plugin):
                 self._post_turn_task = None
         return settled
 
+    async def flush_post_turn(self, *, timeout: float | None = None) -> bool:
+        """等待轮末后台收尾链收束（change 0315 / ADR-0305）。
+
+        TUI `/exit` 的公开接缝：先让技能反馈 + 记忆压实/遗忘收尾，再退出。
+        ``timeout=None`` ⇒ 用既有 ``post_turn_wait_timeout``（缺省 120s，零新配置键）；
+        超时**不取消** task（既有 ``shield`` 语义），返回 ``False``。
+        """
+        wait = self._post_turn_wait_timeout if timeout is None else timeout
+        return await self._await_post_turn(timeout=wait)
+
     async def _notify_turn_before(self, session_id: str, trace_id: str, text: str) -> bool:
         """轮首注入点：返回 False ⇒ 本轮终止（fail-closed：钩子适配层异常亦阻断）。"""
         if self._turn_before is None:

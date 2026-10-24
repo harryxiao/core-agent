@@ -45,6 +45,12 @@ class UIAPILayer:
         """读会话记忆：只返回归属该会话的条目（他会话与未归属条目不可见）。"""
     def compact(self, session_id: str) -> None:
         """压实该会话记忆：触发存储层真实压实（按会话聚合摘要 + 重要度写回，可撤销）。"""
+    async def flush_post_turn(self, session_id: str) -> bool:
+        """等待本会话轮末后台收尾链（技能反馈 + 记忆压实/遗忘）收束。
+
+        供 TUI `/exit` 使用；有界（复用循环既有轮末等待上限），返回是否在限内收束
+        （无在途 ⇒ True；自定义 loop 无该接缝 ⇒ True）。change 0315 / ADR-0305。
+        """
 
     # 工具
     def list_tools(self) -> list[Tool]: ...
@@ -341,6 +347,13 @@ Web 侧同一语义由标签栏 + 只读详情承接（见上段）。
 ⇒ Ctrl+Q 不等待在途 LLM 流 / 工具线程（实测在途 45s 工作下 0.36s 退出，原为 42.4s）；
 **退出即放弃在途轮次**，「停本轮」仍由 Ctrl+B 承担。TUI 内呈现、命令、审批语义逐字不变。
 
+**TUI 优雅退出（`/exit`，change 0315 / ADR-0305）**：`/exit` 在**无在途轮次**时先显示「正在保存会话
+记忆…」，经 `UIAPILayer.flush_post_turn` 有界等待本会话**轮末后台收尾链**（技能反馈 + 记忆压实/遗忘，
+change 0296）收束，再 `app.exit()` 正常退出；收束成功 ⇒「会话记忆已保存，退出」，超时/失败 ⇒
+「记忆收尾超时（已尽力保存），退出」后仍退出（不挂死）。有在途轮次 ⇒ 拒绝并提示（「等本轮结束后再
+/exit，或 Ctrl+Q 立即退出」），不排队、不放弃本轮；`/exit` 不接受参数。Ctrl+Q 的**立即退出**语义
+逐字不变。等待上限复用 `DefaultLoop._post_turn_wait_timeout`（缺省 120s），零新配置键。
+
 **TUI 只读命令族（change 0163 / ADR-0154）**：真源 `_COMMANDS` 增 `handler` 字段（处理器**方法名**，
 `""` ⇒ 走既有专用分支，既有 6 条命令**逐字不变**）并追加 8 条**只读**命令 —— `/doctor`（自检诊断）、
 `/status`（状态概览）、`/sessions`（会话清单）、`/config`（配置视图）、`/mcp`（MCP 端点）、`/skill`
@@ -442,5 +455,6 @@ LLM API（provider / endpoint / key / base URL）只在后端配置一次：
 - 模块：`06-ui-frontend/ui-architecture.md`
 - 规格：`openspec/specs/ui/spec.md`
 - LLM 归一化：经 `llm-provider` 虚拟接口调用（可替换默认实现）
-- 决策：ADR-0013 ~ 0015、ADR-0031、ADR-0083（宠物控制面）、ADR-0303（执行模式与计划审批）
+- 决策：ADR-0013 ~ 0015、ADR-0031、ADR-0083（宠物控制面）、ADR-0303（执行模式与计划审批）、
+  ADR-0304（退出及时性）、ADR-0305（优雅退出 `/exit`）
 - 测试：`04-testing/test-cases.md`（TC-UI 系列）
