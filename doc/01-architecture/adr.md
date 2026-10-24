@@ -11699,6 +11699,51 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 长任务下与 quick 单轮共享 token 预算口径；⑤ 计划批准后不重新校验计划与工作区状态（草案可能
 已过期）；⑥ `PlanSessions` 无跨进程并发保护（同一会话在两个 TUI 进程各持模式，互不可见）。
 
+## ADR-0304：TUI 退出用守护线程默认执行器 + 显式事件循环（change 0314 / 台账 E250）
+
+**背景。** TUI 里 Ctrl+Q 退出会「卡住」。实测：空闲退出 0.27s；有在途阻塞工作时 **42.4s**
+（= 在途 45s 工作的剩余时长）。根因：`run_repl` → Textual `App.run()` → `asyncio.run()`；
+`asyncio.run` 收尾的 `loop.shutdown_default_executor(wait=True)` **无限期 join 默认执行器
+线程**，而取消 worker task 不会中断线程本身 —— LLM 流式生产线程卡在 socket 读上（≤
+`llm.timeout`，缺省 60s），工具执行（`asyncio.to_thread`，change 0265 已注明不可取消）与
+`code_run` 前台子进程可能更久。仓库已有同类认知：`loop/default.py::_run_offloaded`
+（change 0296）为压实/收尾改用**守护线程**，但未覆盖 LLM 流与工具面。
+
+**决策**：
+
+- **D1 TUI 入口自建事件循环并装配守护线程默认执行器。** `run_repl` 用
+  `asyncio.new_event_loop()` + `loop.set_default_executor(_DaemonExecutor())` +
+  `app.run(loop=loop)`（Textual 原生支持外部 loop）。`_DaemonExecutor` **必须继承
+  `ThreadPoolExecutor`**（CPython `set_default_executor` 只接受该类型），但**全量覆写**
+  `submit`：工作线程为 daemon，且不创建 / 不登记 `ThreadPoolExecutor` 自己的非 daemon 线程
+  （`concurrent.futures.thread._threads_queues` 不感知本实例）。**被拒**：逐个把
+  `to_thread` / `run_in_executor` 换成 `_run_offloaded` 式守护线程（provider / tools / hooks /
+  worktrees 十余处，执行器层一处收口等价）；`os._exit(0)`（跳过 `atexit` 的钩子 close / MCP
+  子进程回收 / 插件卸载 ⇒ 泄漏）。
+- **D2 收尾有界。** `_close_loop` 复刻 `asyncio.run` 的**取消**部分（取消残留任务 →
+  `shutdown_asyncgens` → `loop.close()`），**省略** `shutdown_default_executor`；
+  `_DaemonExecutor.shutdown(wait=True)` 也立即返回（双保险）。**被拒**：退出前优雅排空并加
+  等待上限（用户裁决「退出即放弃」；新增配置键违背零新配置键）。
+- **D3 退出即放弃在途轮次。** Ctrl+Q = 结束进程；「停一轮」仍由 Ctrl+B 承担，两者语义分离。
+  被放弃的线程随进程终止（socket 由 OS 回收），不执行其 `finally`。**被拒**：退出时主动
+  close LLM 响应 / kill 子进程（需 app→provider 的取消链路，且覆盖不全：hooks / worktrees /
+  gate）。
+- **D4 只改 TUI 入口。** 一次性 `run` / `serve` / `task` 的在途取消仍走 `asyncio.run` 收尾
+  （观察项）；TUI 内呈现 / 命令 / 事件面逐字不变，零新配置键、零新依赖。
+
+**验证**：新增 `tests/test_repl_exit.py` 7 条（执行器结果 / 异常 / daemon 线程 / shutdown 后
+拒收 / **有界 shutdown**（在途 Job 卡 2s，断言 < 0.5s）/ 入口装配与关循环 / **在途不等待**）。
+全量 **3636 passed**（3629 → +7）。反证 3/3（`cp` 到 `/tmp` + `md5sum` 复原）：线程改非 daemon
+⇒ daemon 用例红；`run_repl` 换回系统 `ThreadPoolExecutor` ⇒ 装配用例红且 pty 在途 Ctrl+Q
+21.9s 仍活（挂）；`run_repl` 换回 `app.run()` ⇒ 两条入口用例红且 pty 在途 Ctrl+Q 22.1s 仍活。
+正证（pty 真实进程）：在途 45s 工作 + Ctrl+Q ⇒ **0.36s** 退出、status 0；空闲 0.27s。
+
+**局限**：① 退出瞬间被放弃的线程可能只做了一半（`file_write` 已原子化、记忆整文件写，风险
+面小但非零）；② 只覆盖 TUI，一次性 `run` / `serve` / `task` 的 Ctrl+C 仍可能等待在途线程；
+③ daemon 线程不执行 `finally` 清理（HTTP 响应对象、临时文件句柄）；④ 依赖
+`set_default_executor` 的 CPython 类型检查口径（继承 `ThreadPoolExecutor` 但覆写提交路径），
+若该限制未来改变需复核；⑤ 测试用 0.5s/1s 有界阈值，极端负载下可能抖动。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11995,3 +12040,4 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 | ADR-0299 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0300 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0303 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0304 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

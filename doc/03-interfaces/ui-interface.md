@@ -334,6 +334,13 @@ Web 侧同一语义由标签栏 + 只读详情承接（见上段）。
 **单子任务且注入了 `self_loop`** ⇒ 自跑（不经 router 委派），其余情形逐字沿用既有路由；缺 `plan_loop` /
 编排器 ⇒ `UI_PLAN_UNAVAILABLE`。模式是**会话级呈现态**，与权限模式（permission mode）正交、互不写回。
 
+**TUI 退出（change 0314 / ADR-0304）**：`run_repl` 自建事件循环并装配**守护线程默认执行器**
+（`_DaemonExecutor`：继承 `ThreadPoolExecutor` 以满足 CPython `set_default_executor` 的类型
+检查，全量覆写 `submit` 走 daemon 线程），再 `app.run(loop=loop)`；收尾走 `_close_loop`
+（取消残留任务 → `shutdown_asyncgens` → `close`），**不**调用 `shutdown_default_executor`。
+⇒ Ctrl+Q 不等待在途 LLM 流 / 工具线程（实测在途 45s 工作下 0.36s 退出，原为 42.4s）；
+**退出即放弃在途轮次**，「停本轮」仍由 Ctrl+B 承担。TUI 内呈现、命令、审批语义逐字不变。
+
 **TUI 只读命令族（change 0163 / ADR-0154）**：真源 `_COMMANDS` 增 `handler` 字段（处理器**方法名**，
 `""` ⇒ 走既有专用分支，既有 6 条命令**逐字不变**）并追加 8 条**只读**命令 —— `/doctor`（自检诊断）、
 `/status`（状态概览）、`/sessions`（会话清单）、`/config`（配置视图）、`/mcp`（MCP 端点）、`/skill`

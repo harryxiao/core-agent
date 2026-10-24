@@ -5382,3 +5382,35 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **反证 5/5**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：去 `tools.delegate` 排除 ⇒ TC-PLAN-10 红；`self_run` 缺省改 True ⇒ TC-SELFRUN-03 红；`approve_plan` 不先回 quick ⇒ TC-PLAN-07 红；`draft_plan` 不还原 `plan.goal` ⇒ TC-SELFRUN-07 红；TUI 恢复 `/task` ⇒ 命令真源用例红。
 > **实测**：全量 pytest **3629 passed**（3609 + 20）；`openspec validate --all` 32/0（含本 active change；归档后 31/0）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0303 行。
+
+---
+
+## 227. TUI 退出及时性（change 0314 / ADR-0304）
+
+**目标**：Ctrl+Q 的退出耗时 SHALL NOT 随在途阻塞工作（LLM 流读取 / 工具执行）的剩余时长增长。
+
+### 227.1 守护线程执行器（TC-EXIT-EXEC）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-EXIT-EXEC-01 | 结果交付 | `submit(lambda: 42)` | Future 结果为 42（`tests/test_repl_exit.py::test_daemon_executor_delivers_result`） |
+| TC-EXIT-EXEC-02 | 异常转交 | 工作函数抛 `ValueError` | Future 以同异常失败（原样转交，不吞）（`...::test_daemon_executor_propagates_exception`） |
+| TC-EXIT-EXEC-03 | 守护线程 | 工作中读 `threading.current_thread()` | `.daemon is True` ⇒ 解释器退出不 join（`...::test_daemon_executor_uses_daemon_threads`） |
+| TC-EXIT-EXEC-04 | shutdown 后拒收 | `shutdown()` 后再 `submit` | `RuntimeError("cannot schedule new futures after shutdown")`（`...::test_daemon_executor_rejects_after_shutdown`） |
+| TC-EXIT-EXEC-05 | **有界 shutdown** | 在途 Job 卡 2s 后释放；`shutdown(wait=True)` | 立即返回（< 0.5s），不 join（`...::test_executor_shutdown_does_not_wait_for_blocked_job`） |
+
+### 227.2 入口装配与在途不等待（TC-EXIT-ENTRY）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-EXIT-ENTRY-01 | 显式 loop + 执行器 + 关循环 | 假 app 记录 `run(loop=...)` | loop 非空、默认执行器为 `_DaemonExecutor`、返回后 loop 已关闭（`...::test_run_repl_installs_daemon_executor_and_closes_loop`） |
+| TC-EXIT-ENTRY-02 | 在途工作不阻塞返回 | 假 app 内提交阻塞 Job 后返回 | `run_repl` < 1s 返回（`...::test_run_repl_does_not_wait_for_in_flight_job`） |
+| TC-EXIT-ENTRY-03 | 真实进程（正证） | pty 起 TUI，45s 在途工作 + Ctrl+Q | **0.36s** 退出、status 0；空闲 0.27s |
+
+> **反证 3/3**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：线程改非 daemon ⇒ TC-EXIT-EXEC-03 红；
+> `run_repl` 换回系统 `ThreadPoolExecutor` ⇒ TC-EXIT-ENTRY-01 红，且 pty 在途 Ctrl+Q **21.9s**
+> 仍活（挂）；`run_repl` 换回 `app.run()` ⇒ TC-EXIT-ENTRY-01/02 红，且 pty 在途 Ctrl+Q
+> **22.1s** 仍活。
+> **实测**：全量 pytest **3636 passed**（3629 + 7）；`openspec validate --all` 32/0（含本 active
+> change；归档后 31/0）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0304 行。

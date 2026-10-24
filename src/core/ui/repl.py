@@ -19,11 +19,14 @@ CLIBridge.connect() 落地为 Textual 交互会话循环；textual 仅此文件�
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import difflib
 import re
+import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -2115,6 +2118,68 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
     return ReplApp(session_id, history)
 
 
+class _DaemonExecutor(ThreadPoolExecutor):
+    """退出友好的默认执行器（change 0314 / ADR-0304）。
+
+    ``asyncio.run`` 收尾的 ``shutdown_default_executor(wait=True)`` 会**无限期 join**
+    默认执行器线程；取消 worker task 不会中断线程本身（LLM 流读取可拖到 ``llm.timeout``，
+    工具执行可能更久）。本执行器：线程为 daemon（解释器退出不 join），``shutdown(wait=True)``
+    立即返回 ⇒ Ctrl+Q 的退出耗时与在途工作的剩余时长无关。
+
+    继承 ``ThreadPoolExecutor`` 仅是 ``loop.set_default_executor`` 的类型要求
+    （CPython 只接受该类型）；``submit`` 全量覆写 ⇒ 不创建其非 daemon 线程，
+    也不登记进 ``concurrent.futures.thread._threads_queues``。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()  # 不建线程：submit 被覆写
+        self._closed = False
+
+    def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future[Any]:
+        if self._closed:
+            raise RuntimeError("cannot schedule new futures after shutdown")  # noqa: TRY003
+        future: Future[Any] = Future()
+
+        def runner() -> None:
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except BaseException as exc:  # noqa: BLE001 — 与标准执行器同口径：原样转交
+                future.set_exception(exc)
+
+        threading.Thread(target=runner, name="tui-offload", daemon=True).start()
+        return future
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        # 提交即启动（无待启动队列）；daemon 线程不 join —— 退出不等待在途工作。
+        self._closed = True
+        super().shutdown(wait=False, cancel_futures=cancel_futures)
+
+
+def _close_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """自建循环的收尾：取消残留任务 + 关异步生成器；**不** join 默认执行器（change 0314）。"""
+    pending = asyncio.all_tasks(loop)
+    for task in pending:
+        task.cancel()
+    if pending:
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+    with contextlib.suppress(Exception):  # 关循环前的尽力而为
+        loop.run_until_complete(loop.shutdown_asyncgens())
+    loop.close()
+
+
 def run_repl(api: UIAPILayer, session_id: str = "") -> None:
-    """启动 Textual 交互会话循环（阻塞；懒 import textual）。`session_id` 非空 ⇒ 续聊既有会话。"""
-    build_app(api, session_id).run()
+    """启动 Textual 交互会话循环（阻塞；懒 import textual）。`session_id` 非空 ⇒ 续聊既有会话。
+
+    自建事件循环并装配守护线程执行器（change 0314）：Ctrl+Q 时不等待在途 LLM 流 / 工具线程。
+    """
+    app = build_app(api, session_id)
+    loop = asyncio.new_event_loop()
+    loop.set_default_executor(_DaemonExecutor())
+    try:
+        asyncio.set_event_loop(loop)
+        app.run(loop=loop)  # Textual 原生支持外部 loop（内部 run_until_complete）
+    finally:
+        _close_loop(loop)
+        asyncio.set_event_loop(None)
