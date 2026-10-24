@@ -1403,6 +1403,7 @@ def _patch_fake_runtime(
         pet_activator=None,
         pet_manager=None,
         beast_activator=None,  # change 0137：`_build_ui` 读该字段
+        plan_loop=None,  # change 0313：`_build_ui` 读该字段（此处不接计划轮）
         transcript=None,  # change 0115：`_build_ui` 读该字段；None ⇒ 读取面逐字保持原形状
         env_snapshot=None,  # change 0240：`_build_ui` 读该字段；None ⇒ 标题用中性 Shell
         recover=lambda: [],  # change 0207：入口启动扫描调 `runtime.recover()`；空 ⇒ 静默

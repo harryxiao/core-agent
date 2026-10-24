@@ -143,31 +143,46 @@ class TaskScheduler:
     def __init__(self, ..., max_concurrency: int = 4, difficulty_policy: str = "off",
                  tracer: Tracer | None = None,
                  success_checker: SuccessChecker | None = None,
-                 task_token_budget: int = 0) -> None:
+                 task_token_budget: int = 0,
+                 self_loop: LoopPlugin | None = None) -> None:
         """``task_token_budget``：整任务 token 预算（change 0280 / ADR-0270）。
         按 ``LoopResult.token_used``（上下文估算）逐子任务累计；越过正预算 ⇒ 当前子任务
         ``TASK_TOKEN_BUDGET_EXCEEDED``，**禁重试、禁重拆**，终态 ``FAILED``
         （``extra={"token_used","token_budget"}``）。``0`` = 关闭（既有行为逐字不变）；
         负数构造期 ``OrchestrationError(INVALID_DISPATCH_POLICY)``。生产值由组合根注入
-        ``orchestration.task_token_budget``。"""
+        ``orchestration.task_token_budget``。
+
+        ``self_loop``：单子任务自跑执行者（change 0313 / ADR-0303）。仅当调用方显式声明
+        ``self_run=True`` 且计划恰好一个子任务时使用；``None`` ⇒ 该声明回落既有路由
+        （不使任务失败）。"""
 
     async def run(
         self, task_id: str, goal: str, success_criteria: list[str] | None = None,
         *, plan: Plan | None = None, completed: set[str] | None = None,
         results: dict[str, str] | None = None, session_id: str = "",
+        self_run: bool = False,
     ) -> list[SubtaskOutcome]:
         """同步语义收口：消费 astream，终态失败按原错误码抛 OrchestrationError。
         plan/completed/results 为断点续跑注入面（跳过拆解与已完成子任务、
         重建依赖结果上下文）。``session_id`` 为**发起方会话标识**（缺省空串 = 未归属），
-        透传至子 Agent 执行 ⇒ 子任务轨迹按发起会话归属（change 0114 / ADR-0107）。"""
+        透传至子 Agent 执行 ⇒ 子任务轨迹按发起会话归属（change 0114 / ADR-0107）。
+        ``self_run`` 缺省 False ⇒ 行为逐字不变；显式 True 且计划单子任务 ⇒ 经统一
+        ``TaskHandoff`` 交 ``self_loop`` 自跑（甲-2，change 0313 / ADR-0303）。"""
 
     def astream(self, task_id, goal, success_criteria=None, *, plan=None, completed=None,
-        results=None, session_id=""
+        results=None, session_id="", self_run=False
     ) -> AsyncIterator[LoopEvent]:
         """流式任务执行（进度事件）：task_started / plan_ready / wave_started /
         subtask_started / subtask_progress / subtask_completed / task_checkpoint /
         task_retrying / task_replanning / task_finished / task_failed；
         关键节点（拆解/验收/检查点/终态）经 tracer 写 trace。"""
+
+    async def draft_plan(
+        self, goal: str, success_criteria: list[str] | None = None, *, context: str = ""
+    ) -> Plan:
+        """只拆解、不执行（change 0313 / ADR-0303）：plan 模式的草案产出面。
+        ``context`` 为只读勘察结论，截断到 ``MAX_HANDOFF_CHARS`` 后追加为拆解参考；
+        拆解后**还原** ``plan.goal = goal``。零检查点 / 零 trace / 零进度副作用。"""
 
     def cancel(self, task_id: str) -> None:
         """取消运行中任务：置协作取消信号、立即打断在途波次、转 FAILED 并释放
@@ -259,8 +274,11 @@ class TaskScheduler:
   **表外事件类型（含未来新增）一律不外发**；模型流式原文 `reply_delta` **有意排除**
   （洪泛 + 暴露未定稿原文）。终态归一由 `core.loop.collect_result`（`DefaultLoop.arun`
   的同一实现）承担，编排层与同步入口共用 ⇒ 语义单一真源。
-- TUI 入口：REPL 会话内输入 `/task <目标>`，经 `UIAPILayer.run_task` 驱动同一编排器，
-  进度事件以 `task.*` 前缀映射为 UI Event 流式呈现（与 CLI 同一格式化）。
+- **TUI 入口（change 0313 / ADR-0303）**：用户可见模式只有 `quick`（缺省）与 `plan`；
+  `/task` 不再是用户命令。plan 模式下一条消息经 `UIAPILayer.run_plan_turn` 只读勘察并产出
+  草案，`y` 批准后由 `UIAPILayer.approve_plan` 调 `astream(..., plan=草案, self_run=True)`
+  驱动同一编排器，进度事件以 `task.*` 前缀映射为 UI Event 流式呈现（与 CLI 同一格式化）。
+  CLI `core-agent task` 与 Web `/task` 保留为操作面（缺省 `self_run=False`）。
 
 ### 2.3 同波次调度策略（change 0123 / ADR-0116）
 

@@ -146,6 +146,7 @@ from core.orchestration import (
     worktree_tools,
 )
 from core.permission import PermissionGuard, SandboxManager, SandboxPolicy
+from core.permission.policy import readonly_tool_ids
 from core.pet.core import PetActivator, PetManager, PetSession
 from core.pet.explore import Explorer
 from core.pet.library import persona_from_record
@@ -238,6 +239,8 @@ class Runtime:
     # 空 = features.evolution_executor 未开启（缺省关；见 OPT_IN_MODULES）
     evolution_executor: EvolutionExecutor | None
     orchestrator: TaskScheduler
+    # 只读计划循环（change 0313 / ADR-0303）：TUI 计划轮使用（工具面仅 READ、无 delegate）。
+    plan_loop: LoopPlugin
     # 后台子 Agent 注册表（change 0270 / ADR-0260）：完成通知按会话堆积，主 loop 轮首取用。
     background_tasks: BackgroundAgentRegistry
     # 子 Agent 工作树管理器（change 0284 / ADR-0274）：空 = 开关关闭（未装配）。
@@ -1707,6 +1710,62 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         if retention_policy is not None:
             retention.apply(retention_policy)
 
+    # 只读计划循环（change 0313 / ADR-0303）：主 Agent 的第二个 loop，工具面仅 `READ` 级且
+    # **显式排除** `tools.delegate`。子集视图共享 resolver / tracker / gate / approver，
+    # 被排除工具在 schema 与执行面双重不可用（模型幻觉调用 fail-closed）；其余装配与主 loop
+    # 逐项同源（memory / transcript / tracer / planner 配置），故勘察轨迹与权限口径不分叉。
+    plan_provider = tools.subset(
+        readonly_tool_ids(
+            [(definition.tool_id, definition.coeffects) for definition in tools.active_tools()]
+        )
+    )
+    plan_loop = cast(
+        LoopPlugin,
+        DefaultLoop(
+            causal_links=causal_links,
+            planner=LLMPlanner(
+                llm,
+                model=app.llm.model,
+                reasoning_effort=app.llm.reasoning_effort,
+                show_thinking=app.llm.show_thinking,
+                assembler=assembler,
+                skill_router=loop_hints,
+                tools=plan_provider,
+                max_tokens=max_tokens,
+                block_plan=block_plan,
+                parse_retry=parse_retry,
+                env_snapshot=env_snapshot,
+                tool_scope=config.tool_scope(),
+            ),
+            memory=memory,
+            tools=plan_provider,
+            gate=guard,
+            tracer=tracer,
+            router=router if jev is not None else None,
+            approver=approver,
+            compactor=context_compactor,
+            compact_timeout=config.compact_timeout(),
+            turn_observer=loop_turn,
+            notes_consult=_consult_notes,
+            pinned_notes_consult=_pinned_notes,
+            failure_lessons_consult=(_failure_lessons if config.failure_lessons() else None),
+            notices_consult=background_tasks.render_notices,
+            cold_path=cold_path,
+            trace_observer=trace_observer,
+            middlewares=[constraints_chain.middleware, *hook_middlewares],
+            action_observers=[constraints_chain.observe_result, *hook_observers],
+            turn_before=hook_turn_before,
+            turn_after=hook_turn_after,
+            max_rounds=max_rounds,
+            token_budget=token_budget,
+            transcript=transcript,
+            history_turns=config.history_turns(),
+            act_wrapper=_fault_wrapper(plan_provider),
+            turn_checkpoint=_turn_checkpoint if config.turn_checkpoint() else None,
+            context_checkpoint=config.context_checkpoint_enabled(),
+        ),
+    )
+
     orchestrator = TaskScheduler(
         decomposer=SubtaskDecomposer(
             planner=LLMSubtaskPlanner(llm, model=app.llm.model),
@@ -1727,6 +1786,9 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         checkpoint=_checkpoint,
         on_done=_finalize,
         tracer=tracer,
+        # 单子任务自跑（change 0313 / 甲-2）：本调度器的自跑执行者即主 Agent。
+        # `DefaultLoop` 与 `LoopPlugin` 协议存在既有签名错位（见下），此处同样以 cast 桥接。
+        self_loop=cast("LoopPlugin", loop),
     )
 
     # DefaultLoop 与 LoopPlugin 协议签名存在既有错位（astream/act async 方向相反），
@@ -1875,6 +1937,7 @@ def build_runtime(  # noqa: PLR0915, PLR0913, PLR0912, C901
         evolution=evolution,
         evolution_executor=evolution_executor,
         orchestrator=orchestrator,
+        plan_loop=plan_loop,
         background_tasks=background_tasks,
         worktrees=worktrees,
         checkpoints=checkpoints,

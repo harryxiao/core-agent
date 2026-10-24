@@ -703,7 +703,8 @@ def _build_ui(
         tools=runtime.tools,
         config=runtime.config,
         approval=approval,
-        orchestrator=runtime.orchestrator,  # /task 命令驱动同一编排器
+        orchestrator=runtime.orchestrator,  # 计划批准后的执行流驱动同一编排器
+        plan_loop=runtime.plan_loop,  # 计划轮只读勘察（READ 级工具面，无 delegate）
         pet_activator=runtime.pet_activator,  # WebUI 自然语言宠物激活
         beast_activator=runtime.beast_activator,  # 神兽三入口（/summon·/recall + NL，change 0137）
         pet_control=(

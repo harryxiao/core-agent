@@ -88,6 +88,15 @@ CREATED → PLANNING → EXECUTING → VERIFYING → DONE
 - **委托会话透传**：主循环在 `_act` 期间把当前 `session_id` 写入 `current_session_id` ContextVar，
   `runtime._dispatch` 读取后转交子 Agent ⇒ 委托轨迹归入发起会话；`source` 命名空间划分不变
   （`exclude_source_prefixes=("beast.","pet")`）。
+- **单子任务自跑与只读草案**（change `0313`／ADR-0303）：构造注入 `self_loop`（plan 模式只读循环）与
+  主循环同工厂构造；`run` / `astream` 增 `self_run` 参数，沿 `_stream_task → _execute_wave →
+  _stream_wave → _fan_out → _guarded_subtask → _run_subtask` **显式透传**（不经 ContextVar，便于测试
+  与复用）。`_run_subtask` 解析执行者：`self_run` 且计划**恰好 1 个子任务**且 `self_loop` 已注入 ⇒
+  该子任务交 `self_loop` **自跑**（不经 MultiAgentRouter）；其余情形逐字走既有路由。两条路径共用
+  `handoff.stream_handoff`（同一实现）。缺省 `self_run=False` ⇒ 单子任务也走路由（行为逐字不变）。
+  `draft_plan(goal, success_criteria=None, *, context="")` 做**只读**计划拆解：`context` 先按
+  `MAX_HANDOFF_CHARS` 截断、`plan.goal` 还原为原始目标、零检查点 / 零 trace / 零事件 —— 审批工件由
+  UI 层的会话级临时 `PlanDraft` 承载，不进检查点、不落盘。
 
 ### 3.4 并行扇出（fan-out / fan-in 波次调度）
 

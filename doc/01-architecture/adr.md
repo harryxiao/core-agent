@@ -11628,6 +11628,77 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 （`memory conflicts` 仍可用）；⑤ 冲突计数不跨进程汇总（实例指标）；⑥ 未来引入
 `trust` / `confidence` / 显式更正信号时，须先改规格再扩裁决规则。
 
+## ADR-0303：plan 为会话级产品模式，草案进程内临时；单子任务确定性自跑（change 0313 / 台账 E249）
+
+**背景。** 对照 `agentic-os/sdd/Agent_Workflow_Specification-3.md` §五「视角四 产品入口模式」：
+外部规格的用户可见模式只有 `quick`（缺省）与 `plan`，`delegate` 是装配期启用的**内部**路径；
+且计划只有一个子任务时由发起方主 Agent **确定性自跑**（`selfRunSingleTask`，甲-2）。本仓三处
+不符：① TUI 把 `/task` 暴露为编排入口，用户可绕过计划与审批直接进多 Agent 派发；② 无 plan
+模式（不能「只读勘察 → 审阅计划 → 批准后按 quick 权限执行」）；③ 单子任务仍无条件经能力词元
+路由，多一次跨 Agent 交接，还可能因词元无命中判 `NO_AGENT_MATCH`。**用户裁决**（2026-10-24）：
+`收敛，甲-2 自跑本轮做，plan 的审批工件落在会话内临时 PlanDraft`。
+
+**决策**：
+
+- **D1 入口模式是会话级产品状态，不是 permission mode。** `agent_mode ∈ {quick, plan}` 存于
+  `PlanSessions`（进程内、按 `session_id` 分桶、缺省 quick、非法值 `UI_PLAN_MODE_INVALID` 且
+  不改原值）。合法模式切换**必须**经 `UIAPILayer.set_agent_mode`（`run_plan_turn` 复核当前
+  模式）。**被拒**：做成 permission mode（permission 是装配期固定的权限口径，plan 执行要用
+  quick 权限，二者正交）；落注册表 / 落盘（草案是会话内临时工件，引入生命周期与隐私面）。
+- **D2 计划轮用第二个 `DefaultLoop` + 只读工具子集视图。** 组合根以同一工厂构造 plan loop
+  （共享 memory / transcript / tracer / gate / approver），唯一差异是 `ToolProvider.subset
+  (readonly_ids)`。`readonly_ids` 由 `PolicyEngine.classify(...) is READ` 派生并**显式排除**
+  `tools.delegate`（`classify` 对 `agent:delegate` 有字面量只读豁免，但 plan **SHALL NOT**
+  自动升级为 delegate）。子集视图**schema 面与执行面同时受限**：视图外工具在 `ainvoke` 处
+  返回「未知工具」fail-closed，不只靠 schema 隐藏。**被拒**：给根 loop 加每轮工具白名单
+  （要改 `LoopPlugin` 协议与全部循环实现，且执行面仍需另拦一遍）；plan 期间复用主 loop 并
+  在循环内过滤（同一循环承担两种安全边界，分叉不可归因）。
+- **D3 草案是 `TaskScheduler.draft_plan(goal, success_criteria=None, *, context="")`。**
+  拆解输入 = 目标 +（非空时）有界勘察结论（`MAX_HANDOFF_CHARS`，与交接字段同一上界）；拆解后
+  **还原 `plan.goal = goal`**（勘察上下文不得成为执行目标）；**零执行副作用**（不写检查点 /
+  trace / 进度）。复用既有 `LLMSubtaskPlanner`，不新增第二个拆解口径。**被拒**：UI 层直接调
+  decomposer（绕过编排器配置）；把勘察原文放进草案事件（载荷只给目标 / 子任务 / 依赖 / 验收 /
+  波次 / 成功标准）。
+- **D4 草案一次性消费、同会话至多一份。** `PlanDraft` 含 `draft_id`（`draft-<uuid8>`）/ 目标 /
+  `Plan` / 勘察结论 / 时间戳；`put` 覆盖旧草案，`take` 为一次 pop，`discard` 返回是否命中。
+  批准 / 丢弃都**先**回 quick：执行失败也不把会话卡在 plan（`approve_plan` 在开始执行前即
+  `set_mode("quick")`）。草案不存在 / 非本会话 ⇒ `UI_PLAN_DRAFT_NOT_FOUND`。
+- **D5 批准后按批准计划执行，`self_run=True`，走同一编排器。** `approve_plan` 以
+  `astream(task_id, draft.goal, plan=draft.plan, session_id=..., self_run=True)` 执行；不重拆、
+  不自动升级 delegate、权限与 quick 相同；事件面沿用 `task.<kind>`，TUI 复用既有折叠块 /
+  标签栏 / 焦点视图。**被拒**：批准后自动走 delegate（外部规格明文禁止）；把计划编译成新配置
+  （第二真源）。
+- **D6 单子任务自跑只看计划规模，显式参数透传。** `TaskScheduler` 接受可选
+  `self_loop: LoopPlugin | None`；`run` / `astream` 增 `self_run: bool = False`，沿
+  `_stream_task → _execute_wave → _stream_wave → _fan_out → _run_subtask` 逐层显式透传（与
+  `attempt` / `previous` 同型）。`_run_subtask` 仅在 `self_run and len(plan.subtasks) == 1 and
+  self_loop` 时用主 loop，否则回落既有路由（未注入 `self_loop` 也不使任务失败）。自跑仍经
+  **统一 `TaskHandoff`** 与 `stream_handoff`，验收 / 重试 1 / 重拆 1 / 检查点 / token 预算 /
+  取消分支**零新增**；`handoff.session_id` 已填发起会话 ⇒ 轨迹与记忆落在发起会话。**被拒**：
+  实例级可变标志（并发任务共享调度器 ⇒ 串味）；在 router 里注册主 Agent 画像（仍会经能力打分，
+  词元无命中可能选中别人；甲-2 的语义是确定性）。
+- **D7 TUI 只保留 `quick` / `plan` 两个用户模式。** `_COMMANDS` 删 `/task`、增 `/plan` 与
+  `/quick`；两者走专用分发（忙态沿用既有拒绝），模式仅经输入框 placeholder 与一行提示可见
+  （不新增 chrome 行，守 0299 密度预算）。输入分发次序：工具审批 → 计划审批 → 浮层采纳 →
+  忙态 → `/resume` → 模式切换 → 只读命令 → 普通消息；计划审批挂起期间浮层一并收起。计划轮与
+  普通轮共用抽取出的 `_handle_turn_event`（纯呈现，无状态迁移）；忙态保留到草案就绪。CLI
+  `core-agent task` 与 Web `/task` 作为操作面保留（缺省 `self_run=False`，行为逐字不变）。
+- **D8 缺省逐字不变、零新配置键。** quick 模式的 prompt / 工具面 / 事件面不变；`self_run`
+  缺省 False ⇒ 单子任务仍走路由。新增的 4 个错误码只出现在新接口。**被拒**：加
+  `ui.agent_mode` / `orchestration.self_run` 配置键（模式是会话级交互状态，不是装配期配置）。
+
+**验证**：新增 `tests/test_plan_mode.py` 11 + `tests/test_self_run.py` 7 + `tests/test_repl.py`
+2 条 TUI 模式用例；既有 TUI 用例改经 `/plan` → 草案 → `y` 驱动。反证 5/5（`cp` 到 `/tmp` +
+`md5sum` 复原）：去 `tools.delegate` 排除 ⇒ 只读面用例红；`self_run` 缺省改 True ⇒ 逐字不变
+用例红；`approve_plan` 不先回 quick ⇒ 模式用例红；`draft_plan` 不还原 `plan.goal` ⇒ 目标用例
+红；TUI 恢复 `/task` ⇒ 命令真源用例红。全量 **3629 passed**。
+
+**局限**：① 草案与模式都是**进程内**状态 —— 进程退出即失效，不跨 Web / CLI 入口共享；
+② 只做 y/n 二选一，无「编辑后重提」；③ plan 轮工具面按 `PolicyEngine.classify` 静态判定，
+新注册工具的只读性若不准确会直接影响勘察面；④ 自跑使单任务执行复用主 loop 的上下文与预算，
+长任务下与 quick 单轮共享 token 预算口径；⑤ 计划批准后不重新校验计划与工作区状态（草案可能
+已过期）；⑥ `PlanSessions` 无跨进程并发保护（同一会话在两个 TUI 进程各持模式，互不可见）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -11923,3 +11994,4 @@ L3 技能已在 `0302` 退出事实面）；`maxPerSource=2`（本仓 `source` �
 | ADR-0298 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0299 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0300 | 02-modules/memory.md, 03-interfaces/memory-interface.md, 03-interfaces/configuration-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0303 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

@@ -698,6 +698,7 @@ def test_entry_run_wires_runtime(monkeypatch) -> None:
             self.pet_activator = object()
             self.pet_manager = None  # _build_ui 若接了则构造控制门面（此处不接）
             self.beast_activator = None  # change 0137：`_build_ui` 读该字段（此处不接）
+            self.plan_loop = None  # change 0313：`_build_ui` 读该字段（此处不接）
             self.transcript = None  # change 0115：_build_ui 读该字段（此处不接转录）
             self.env_snapshot = None  # change 0240：_build_ui 读该字段（标题用中性 Shell）
             self.app = SimpleNamespace(llm=SimpleNamespace(api_key_ref="${KEY}"))

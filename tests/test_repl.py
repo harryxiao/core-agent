@@ -12,6 +12,7 @@ from core.configuration.models import LLMConfig
 from core.diagnostics import Deps
 from core.loop import LoopEvent, LoopResult
 from core.memory import ChainNode, TranscriptStore
+from core.orchestration import Plan, Subtask
 from core.ui import Event, UIAPILayer, UiError, UiErrorCode
 from core.ui.repl import (
     _COMMANDS,
@@ -197,25 +198,63 @@ def test_input_clears_after_submit() -> None:
     assert loop.inputs == ["hi"]
 
 
-# ---- TUI 任务入口（/task 命令驱动编排器，进度事件流式呈现） ----
+# ---- TUI 任务入口（/plan 批准路径驱动编排器，进度事件流式呈现；change 0313） ----
 
 
 def _timeline_text(app: object) -> str:
-    """时间线全量文本：Static 取渲染文本，Collapsible 取标题 + 内部 Static。"""
+    """时间线全量文本：Static 取渲染文本，Markdown 取源文本，Collapsible 取标题 + 内部 Static。"""
     from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
-    from textual.widgets import Collapsible, Static  # noqa: PLC0415 — 可选依赖懒 import
+    from textual.widgets import Collapsible, Markdown, Static  # noqa: PLC0415
 
     parts: list[str] = []
     for child in app.query_one("#timeline", Vertical).children:
         if isinstance(child, Collapsible):
             parts.append(str(child.title))
             parts.extend(str(s.render()) for s in child.query(Static))
+        elif isinstance(child, Markdown):
+            parts.append(str(child.source))  # `render()` repr 含对象地址，不稳定
         else:
             parts.append(str(child.render()))
     return "".join(parts)
 
 
-class _TaskOrchestrator:
+class _PlanLoop:
+    """只读计划循环桩（change 0313）：无勘察结论，直接进入草案。"""
+
+    async def astream(self, user_input: str, *, session_id: str = ""):
+        yield LoopEvent("loop_finished", {"reply": ""})
+
+
+_PLAN_LOOP = _PlanLoop()
+
+
+class _PlanDraftMixin:
+    """plan 草案拆解桩：单子任务，目标原样；供 `y` 批准后回放既有任务事件。"""
+
+    async def draft_plan(
+        self, goal: str, success_criteria: list[str] | None = None, *, context: str = ""
+    ) -> Plan:
+        return Plan(
+            subtasks=[Subtask(id="1", goal=goal, acceptance="完成")],
+            goal=goal,
+            order=["1"],
+            success_criteria=list(success_criteria or []),
+            waves=[["1"]],
+        )
+
+
+async def _start_task(pilot: object, app: object, goal: str) -> None:
+    """TUI 编排入口（change 0313）：`/plan` → 目标 → 草案 → `y` 批准执行。"""
+    await _type_line(pilot, "/plan")
+    await _type_line(pilot, goal)
+    for _ in range(80):
+        await pilot.pause()  # type: ignore[attr-defined]
+        if getattr(app, "_plan_future", None) is not None:
+            break
+    await _type_line(pilot, "y")
+
+
+class _TaskOrchestrator(_PlanDraftMixin):
     """编排器桩：回放进度事件并记录目标。"""
 
     def __init__(self, events: list[tuple[str, dict]]) -> None:
@@ -254,8 +293,8 @@ def test_format_event_maps_task_prefixed_events() -> None:
     )
 
 
-def test_task_command_drives_orchestrator_not_loop() -> None:
-    """/task 命令驱动编排器（不进普通对话），进度事件落日志，结束后忙态复位。"""
+def test_plan_approval_drives_orchestrator_not_loop() -> None:
+    """`/plan` → 目标 → 草案 → y 批准：驱动编排器（不进普通对话），结束后忙态复位。"""
     orch = _TaskOrchestrator(
         [
             ("task_started", {"task_id": "t1", "goal": "build it"}),
@@ -263,15 +302,13 @@ def test_task_command_drives_orchestrator_not_loop() -> None:
         ]
     )
     loop = RecordingLoop()
-    api = UIAPILayer(loop=loop, orchestrator=orch)
+    api = UIAPILayer(loop=loop, orchestrator=orch, plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
     app = build_app(api)
 
     async def drive() -> str:
         async with app.run_test() as pilot:
-            for ch in "/task build it":
-                await pilot.press(ch)
-            await pilot.press("enter")
+            await _start_task(pilot, app, "build it")
             for _ in range(50):  # 等 worker 跑完编排桩（事件即时产出）
                 await pilot.pause()
                 if orch.goals:
@@ -285,35 +322,36 @@ def test_task_command_drives_orchestrator_not_loop() -> None:
 
     text = asyncio.run(drive())
     assert orch.goals == ["build it"]
-    assert loop.inputs == ["hi"]  # /task 不进普通对话；结束后复位可继续
+    assert loop.inputs == ["hi"]  # 批准后进编排；结束后复位可继续
     assert "◍ 任务 t1：build it" in text
     assert "任务完成" in text  # task_finished 终态单行（✔ 任务完成…）
 
 
-def test_task_command_without_goal_shows_usage() -> None:
-    orch = _TaskOrchestrator([])
-    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+def test_plan_command_rejects_args() -> None:
+    """`/plan` 不接受参数（只切换模式）：给出提示且模式不变。"""
+    api = UIAPILayer(loop=RecordingLoop(), plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
+    sid = api.create_session("cli")
     app = build_app(api)
 
-    async def drive() -> None:
+    async def drive() -> tuple[str, str]:
         async with app.run_test() as pilot:
-            for ch in "/task ":
-                await pilot.press(ch)
-            await pilot.press("enter")
+            await _type_line(pilot, "/plan now")
             for _ in range(10):
                 await pilot.pause()
+            return _timeline_text(app), api.agent_mode(sid)
 
-    asyncio.run(drive())
-    assert orch.goals == []  # 空目标不启动任务
+    text, mode = asyncio.run(drive())
+    assert "/plan 不接受参数" in text
+    assert mode == "quick"  # 未进入计划模式
 
 
-def test_task_command_busy_rejects_concurrent() -> None:
-    """/task 运行期间再发消息提示等待（不并发放任务）。"""
+def test_task_busy_rejects_concurrent() -> None:
+    """编排执行期间再发消息提示等待（不并发派发任务）。"""
     started = asyncio.Event()
     release = asyncio.Event()
 
-    class _BlockingOrchestrator:
+    class _BlockingOrchestrator(_PlanDraftMixin):
         """阻塞式编排器：started 后挂起，release 才收尾（忙态窗口确定）。"""
 
         async def astream(self, task_id: str, goal: str, **kwargs: object):
@@ -322,15 +360,13 @@ def test_task_command_busy_rejects_concurrent() -> None:
             yield LoopEvent("task_finished", {"outcomes": []})
 
     loop = RecordingLoop()
-    api = UIAPILayer(loop=loop, orchestrator=_BlockingOrchestrator())
+    api = UIAPILayer(loop=loop, orchestrator=_BlockingOrchestrator(), plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
     app = build_app(api)
 
     async def drive() -> None:
         async with app.run_test() as pilot:
-            for ch in "/task slow":
-                await pilot.press(ch)
-            await pilot.press("enter")
+            await _start_task(pilot, app, "slow")
             for _ in range(50):
                 await pilot.pause()
                 if started.is_set():
@@ -347,6 +383,73 @@ def test_task_command_busy_rejects_concurrent() -> None:
 
     asyncio.run(drive())
     assert loop.inputs == []  # 忙时的 hello 未进普通对话
+
+
+def test_plan_command_toggles_mode_and_placeholder() -> None:
+    """`/plan` 与 `/quick` 切换会话级执行模式，并即时反映到输入框 placeholder。"""
+    api = UIAPILayer(loop=RecordingLoop(), plan_loop=_PLAN_LOOP)
+    api.set_llm_config(_llm())
+    sid = api.create_session("cli")
+    app = build_app(api, sid)
+
+    async def drive() -> tuple[str, str, str, str]:
+        from textual.widgets import Input  # noqa: PLC0415 — 可选依赖懒 import
+
+        async with app.run_test() as pilot:
+            inp = app.query_one("#input", Input)
+            inp.focus()
+            await _type_line(pilot, "/plan")
+            for _ in range(5):
+                await pilot.pause()
+            in_plan = (api.agent_mode(sid), inp.placeholder)
+            await _type_line(pilot, "/quick")
+            for _ in range(5):
+                await pilot.pause()
+            return in_plan[0], in_plan[1], api.agent_mode(sid), inp.placeholder
+
+    in_plan_mode, plan_placeholder, out_mode, quick_placeholder = asyncio.run(drive())
+    assert in_plan_mode == "plan"
+    assert "计划模式" in plan_placeholder
+    assert out_mode == "quick"
+    assert "/plan" in quick_placeholder
+
+
+def test_plan_draft_suppresses_palette_and_rejects_invalid_answer() -> None:
+    """草案审批期：浮层不呈现；非 y/n 输入提示重输且不执行；`n` 丢弃并回快速模式。"""
+    orch = _TaskOrchestrator([("task_finished", {"outcomes": []})])
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch, plan_loop=_PLAN_LOOP)
+    api.set_llm_config(_llm())
+    sid = api.create_session("cli")
+    app = build_app(api, sid)
+
+    async def drive() -> tuple[bool, str, str, list[str], str]:
+        async with app.run_test() as pilot:
+            await _type_line(pilot, "/plan")
+            await _type_line(pilot, "查答案")
+            for _ in range(80):
+                await pilot.pause()
+                if app._plan_future is not None:  # noqa: SLF001 — 等草案就绪
+                    break
+            await _type_line(pilot, "/")  # 审批期：浮层不呈现
+            for _ in range(5):
+                await pilot.pause()
+            palette = _palette_display(app)
+            await _type_line(pilot, "maybe")
+            for _ in range(5):
+                await pilot.pause()
+            text = _timeline_text(app)
+            await _type_line(pilot, "n")
+            for _ in range(20):
+                await pilot.pause()
+            return palette, text, api.agent_mode(sid), orch.goals, _timeline_text(app)
+
+    palette, pending_text, mode, goals, after = asyncio.run(drive())
+    assert palette is False
+    assert "计划草案" in pending_text
+    assert "请输入 y（批准执行）或 n（放弃计划）" in pending_text
+    assert mode == "quick"
+    assert goals == []  # 未批准 ⇒ 编排器零调用
+    assert "已放弃计划，回到快速模式" in after
 
 
 def test_task_subtask_collapsible_lifecycle() -> None:
@@ -371,7 +474,7 @@ def test_task_subtask_collapsible_lifecycle() -> None:
             ("task_finished", {"outcomes": []}),
         ]
     )
-    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch, plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
     app = build_app(api)
 
@@ -380,9 +483,7 @@ def test_task_subtask_collapsible_lifecycle() -> None:
             from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
             from textual.widgets import Collapsible  # noqa: PLC0415 — 可选依赖懒 import
 
-            for ch in "/task 查答案":
-                await pilot.press(ch)
-            await pilot.press("enter")
+            await _start_task(pilot, app, "查答案")
             for _ in range(50):  # 等 worker 跑完编排桩（事件即时产出）
                 await pilot.pause()
                 if orch.goals:
@@ -1068,13 +1169,11 @@ def test_open_fence_still_streams() -> None:
 
 
 def _drive_task(app: object, goal: str, *, pauses: int = 60) -> str:
-    """以 `/task <目标>` 驱动 headless app，返回时间线全量文本。"""
+    """以 `/plan` 批准路径驱动 headless app，返回时间线全量文本。"""
 
     async def drive() -> str:
         async with app.run_test() as pilot:  # type: ignore[attr-defined]
-            for ch in f"/task {goal}":
-                await pilot.press(ch)
-            await pilot.press("enter")
+            await _start_task(pilot, app, goal)
             for _ in range(pauses):
                 await pilot.pause()
             return _timeline_text(app)
@@ -1140,7 +1239,7 @@ def test_subtask_milestones_render_in_collapsible_detail() -> None:
             ("task_finished", {"outcomes": []}),
         ]
     )
-    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch, plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
 
     text = _drive_task(build_app(api), "查答案")
@@ -1156,7 +1255,7 @@ def test_subtask_title_shows_running_mark_until_completion() -> None:
     started = asyncio.Event()
     release = asyncio.Event()
 
-    class _BlockingOrchestrator:
+    class _BlockingOrchestrator(_PlanDraftMixin):
         """阻塞式编排器：subtask_started 后挂起，release 才收尾（运行态窗口确定）。"""
 
         async def astream(self, task_id: str, goal: str, **kwargs: object):
@@ -1172,7 +1271,9 @@ def test_subtask_title_shows_running_mark_until_completion() -> None:
             )
             yield LoopEvent("task_finished", {"outcomes": []})
 
-    api = UIAPILayer(loop=RecordingLoop(), orchestrator=_BlockingOrchestrator())
+    api = UIAPILayer(
+        loop=RecordingLoop(), orchestrator=_BlockingOrchestrator(), plan_loop=_PLAN_LOOP
+    )
     api.set_llm_config(_llm())
     app = build_app(api)
 
@@ -1181,9 +1282,7 @@ def test_subtask_title_shows_running_mark_until_completion() -> None:
         from textual.widgets import Collapsible  # noqa: PLC0415 — 可选依赖懒 import
 
         async with app.run_test() as pilot:
-            for ch in "/task 查答案":
-                await pilot.press(ch)
-            await pilot.press("enter")
+            await _start_task(pilot, app, "查答案")
             for _ in range(50):
                 await pilot.pause()
                 if started.is_set():
@@ -1237,7 +1336,7 @@ def test_progress_for_unknown_subtask_is_ignored() -> None:
             ("task_finished", {"outcomes": []}),
         ]
     )
-    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch, plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
     app = build_app(api)
 
@@ -1246,9 +1345,7 @@ def test_progress_for_unknown_subtask_is_ignored() -> None:
         from textual.widgets import Collapsible  # noqa: PLC0415 — 可选依赖懒 import
 
         async with app.run_test() as pilot:
-            for ch in "/task 查答案":
-                await pilot.press(ch)
-            await pilot.press("enter")
+            await _start_task(pilot, app, "查答案")
             for _ in range(60):
                 await pilot.pause()
             boxes = len(app.query_one("#timeline", Vertical).query(Collapsible))
@@ -1305,7 +1402,7 @@ def test_non_action_progress_renders_no_line() -> None:
             ("task_finished", {"outcomes": []}),
         ]
     )
-    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch, plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
 
     text = _drive_task(build_app(api), "查答案")
@@ -1327,7 +1424,7 @@ def _panel_text(app: object) -> str:
     return f"{title.render()}{body.render()}"
 
 
-class _GatedOrchestrator:
+class _GatedOrchestrator(_PlanDraftMixin):
     """门控编排器：`subtask_started` 后挂起，按事件门放行里程碑与收尾（运行态窗口确定）。"""
 
     def __init__(self, *, milestone: asyncio.Event, done: asyncio.Event) -> None:
@@ -1374,7 +1471,7 @@ class _GatedOrchestrator:
 
 
 async def _type_line(pilot: object, text: str) -> None:
-    """逐字符输入并回车（headless 输入驱动，与既有 /task 用例同法）。"""
+    """逐字符输入并回车（headless 输入驱动，与既有命令用例同法）。"""
     for ch in text:
         await pilot.press(ch)  # type: ignore[attr-defined]
     await pilot.press("enter")  # type: ignore[attr-defined]
@@ -1393,7 +1490,7 @@ def test_focus_shows_subtask_panel_and_hides_timeline() -> None:
     milestone, done = asyncio.Event(), asyncio.Event()
     orch = _GatedOrchestrator(milestone=milestone, done=done)
     loop = RecordingLoop()
-    api = UIAPILayer(loop=loop, orchestrator=orch)
+    api = UIAPILayer(loop=loop, orchestrator=orch, plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
     app = build_app(api)
 
@@ -1401,7 +1498,7 @@ def test_focus_shows_subtask_panel_and_hides_timeline() -> None:
         from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
 
         async with app.run_test() as pilot:
-            await _type_line(pilot, "/task 查答案")
+            await _start_task(pilot, app, "查答案")
             await _wait_started(pilot, orch)
             await _type_line(pilot, "/focus 1")
             for _ in range(20):
@@ -1426,13 +1523,13 @@ def test_focus_panel_refreshes_on_milestone_and_completion() -> None:
     """聚焦期间**实时刷新**：里程碑补入正文，收尾后标题落 ✓ 且正文含判定。"""
     milestone, done = asyncio.Event(), asyncio.Event()
     orch = _GatedOrchestrator(milestone=milestone, done=done)
-    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch, plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
     app = build_app(api)
 
     async def drive() -> tuple[str, str]:
         async with app.run_test() as pilot:  # type: ignore[attr-defined]
-            await _type_line(pilot, "/task 查答案")
+            await _start_task(pilot, app, "查答案")
             await _wait_started(pilot, orch)
             await _type_line(pilot, "/focus 1")
             for _ in range(10):
@@ -1457,7 +1554,7 @@ def test_returning_to_main_view_leaves_timeline_unchanged() -> None:
     """`/main` 回主视图：时间线重新可见且文本与聚焦前**逐字一致**（呈现层切换不改内容）。"""
     milestone, done = asyncio.Event(), asyncio.Event()
     orch = _GatedOrchestrator(milestone=milestone, done=done)
-    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch, plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
     app = build_app(api)
 
@@ -1465,7 +1562,7 @@ def test_returning_to_main_view_leaves_timeline_unchanged() -> None:
         from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
 
         async with app.run_test() as pilot:
-            await _type_line(pilot, "/task 查答案")
+            await _start_task(pilot, app, "查答案")
             await _wait_started(pilot, orch)
             before = _timeline_text(app)
             await _type_line(pilot, "/focus 1")
@@ -1493,7 +1590,7 @@ def test_focus_command_bypasses_busy_rejection() -> None:
     milestone, done = asyncio.Event(), asyncio.Event()
     orch = _GatedOrchestrator(milestone=milestone, done=done)
     loop = RecordingLoop()
-    api = UIAPILayer(loop=loop, orchestrator=orch)
+    api = UIAPILayer(loop=loop, orchestrator=orch, plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
     app = build_app(api)
 
@@ -1501,7 +1598,7 @@ def test_focus_command_bypasses_busy_rejection() -> None:
         from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
 
         async with app.run_test() as pilot:
-            await _type_line(pilot, "/task 查答案")
+            await _start_task(pilot, app, "查答案")
             await _wait_started(pilot, orch)
             await _type_line(pilot, "/focus 1")
             for _ in range(10):
@@ -1533,7 +1630,7 @@ def test_focus_unknown_subtask_keeps_main_view() -> None:
             ("task_finished", {"outcomes": []}),
         ]
     )
-    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch, plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
     app = build_app(api)
 
@@ -1545,7 +1642,7 @@ def test_focus_unknown_subtask_keeps_main_view() -> None:
             for _ in range(10):
                 await pilot.pause()
             early = app.query_one("#panel", Vertical).display
-            await _type_line(pilot, "/task 查答案")
+            await _start_task(pilot, app, "查答案")
             for _ in range(60):
                 await pilot.pause()
             await _type_line(pilot, "/focus 99")  # 未知标识
@@ -1563,13 +1660,13 @@ def test_focus_panel_does_not_leak_tool_id_or_args() -> None:
     """焦点面板沿用友好名口径：不含内部 `tool_id` 与工具原始参数。"""
     milestone, done = asyncio.Event(), asyncio.Event()
     orch = _GatedOrchestrator(milestone=milestone, done=done)
-    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch, plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
     app = build_app(api)
 
     async def drive() -> str:
         async with app.run_test() as pilot:  # type: ignore[attr-defined]
-            await _type_line(pilot, "/task 查答案")
+            await _start_task(pilot, app, "查答案")
             await _wait_started(pilot, orch)
             milestone.set()
             for _ in range(30):
@@ -1763,7 +1860,8 @@ def test_parse_beast_command_forms() -> None:
 def test_palette_options_lists_all_commands_on_slash() -> None:
     """输入 `/` ⇒ 列出单一真源内的全部命令（顺序即真源顺序）。"""
     assert [c.fill for c in _palette_options("/")] == [
-        "/task",
+        "/plan",
+        "/quick",
         "/focus",
         "/main",
         "/summon",
@@ -1782,7 +1880,7 @@ def test_palette_options_lists_all_commands_on_slash() -> None:
 
 def test_palette_options_filters_by_command_prefix() -> None:
     """候选按前缀收窄（只认命令名前缀）。"""
-    assert [c.fill for c in _palette_options("/ta")] == ["/task"]
+    assert [c.fill for c in _palette_options("/pl")] == ["/plan"]
     assert [c.fill for c in _palette_options("/re")] == ["/recall", "/resume"]
 
 
@@ -1791,7 +1889,7 @@ def test_palette_options_closed_for_unknown_or_plain_input() -> None:
     assert _palette_options("/zzz") == []
     assert _palette_options("hi") == []
     assert _palette_options("") == []
-    assert _palette_options("/task ") == []  # 参数不可枚举 ⇒ 无二级
+    assert _palette_options("/plan ") == []  # 无参数面 ⇒ 无二级
 
 
 def test_palette_options_second_level_lists_and_narrows_subtasks() -> None:
@@ -1810,17 +1908,17 @@ def test_palette_options_closed_when_arg_has_space() -> None:
 
 
 def test_palette_options_no_second_level_for_non_enum_arg() -> None:
-    """参数**不可枚举**的命令（`/summon` `/task`）不进二级。"""
+    """参数**不可枚举**的命令（`/summon` `/plan`）不进二级。"""
     assert _palette_options("/summon qinglong") == []
-    assert _palette_options("/task build") == []
+    assert _palette_options("/plan build") == []
 
 
 def test_palette_options_arg_next_marks_commands_taking_arg() -> None:
     """带参数命令采纳后补出参数位（`arg_next`），无参命令不补。"""
     by_fill = {c.fill: c for c in _palette_options("/")}
-    assert by_fill["/task"].arg_next is True
     assert by_fill["/focus"].arg_next is True
     assert by_fill["/resume"].arg_next is True
+    assert by_fill["/plan"].arg_next is False
     assert by_fill["/main"].arg_next is False
 
 
@@ -1849,7 +1947,9 @@ def _palette_api(
 ) -> tuple[UIAPILayer, RecordingLoop]:
     """浮层用例的 api：真 `RecordingLoop` + 可选编排器桩 / 只读诊断源（LLM 已配置）。"""
     loop = RecordingLoop()
-    api = UIAPILayer(loop=loop, orchestrator=orchestrator, diagnostics=diagnostics)
+    api = UIAPILayer(
+        loop=loop, orchestrator=orchestrator, plan_loop=_PLAN_LOOP, diagnostics=diagnostics
+    )
     api.set_llm_config(_llm())
     return api, loop
 
@@ -1885,7 +1985,8 @@ def test_palette_opens_on_slash_and_lists_registered_commands() -> None:
             return _palette_option_ids(app)
 
     assert asyncio.run(drive()) == [
-        "cmd:/task",
+        "cmd:/plan",
+        "cmd:/quick",
         "cmd:/focus",
         "cmd:/main",
         "cmd:/summon",
@@ -1982,14 +2083,14 @@ def test_palette_enter_completes_prefix_without_submitting() -> None:
 
         async with app.run_test() as pilot:
             app.query_one("#input", Input).focus()
-            for ch in "/ta":
+            for ch in "/fo":
                 await pilot.press(ch)
             await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()
             return app.query_one("#input", Input).value
 
-    assert asyncio.run(drive()) == "/task "
+    assert asyncio.run(drive()) == "/focus "
     assert loop.inputs == []
 
 
@@ -2093,7 +2194,7 @@ def test_palette_second_level_lists_live_subtask_ids() -> None:
         async with app.run_test() as pilot:
             inp = app.query_one("#input", Input)
             inp.focus()
-            await _type_line(pilot, "/task 查答案")
+            await _start_task(pilot, app, "查答案")
             await _wait_started(pilot, orch)
             inp.value = "/focus "  # 命令 + 空格 ⇒ 进二级
             await pilot.pause()
@@ -2120,7 +2221,7 @@ def test_palette_second_level_fill_targets_subtask() -> None:
         async with app.run_test() as pilot:
             inp = app.query_one("#input", Input)
             inp.focus()
-            await _type_line(pilot, "/task 查答案")
+            await _start_task(pilot, app, "查答案")
             await _wait_started(pilot, orch)
             inp.value = "/focus "
             await pilot.pause()
@@ -2178,7 +2279,8 @@ def test_registry_commands_are_all_dispatchable() -> None:
             inp = app.query_one("#input", Input)
             inp.focus()
             for line in (
-                "/task 目标",
+                "/plan",
+                "/quick",
                 "/focus 1",
                 "/main",
                 "/summon qinglong",
@@ -2210,7 +2312,9 @@ def _switch_api(
     """两个已登记会话的 api：A（当前，空转录）与 B（含用户消息 + 带围栏的 agent 回复）。"""
     transcript = TranscriptStore()
     loop = RecordingLoop()
-    api = UIAPILayer(loop=loop, transcript=transcript, orchestrator=orchestrator)
+    api = UIAPILayer(
+        loop=loop, transcript=transcript, orchestrator=orchestrator, plan_loop=_PLAN_LOOP
+    )
     api.set_llm_config(_llm())
     a = api.create_session("cli")
     b = api.create_session("cli")
@@ -2335,7 +2439,7 @@ def test_resume_rejected_while_busy() -> None:
         async with app.run_test() as pilot:
             inp = app.query_one("#input", Input)
             inp.focus()
-            await _type_line(pilot, "/task 查答案")
+            await _start_task(pilot, app, "查答案")
             await _wait_started(pilot, orch)
             inp.value = f"/resume {b}"
             await pilot.press("enter")
@@ -2376,7 +2480,7 @@ def test_resume_resets_previous_session_view_state() -> None:
         async with app.run_test() as pilot:
             inp = app.query_one("#input", Input)
             inp.focus()
-            await _type_line(pilot, "/task 查答案")
+            await _start_task(pilot, app, "查答案")
             for _ in range(30):
                 await pilot.pause()
             inp.value = "/focus 1"
@@ -2542,7 +2646,7 @@ def test_readonly_command_rejected_while_busy(tmp_path) -> None:
     started = asyncio.Event()
     release = asyncio.Event()
 
-    class _BlockingOrchestrator:
+    class _BlockingOrchestrator(_PlanDraftMixin):
         """阻塞式编排器：`started` 后挂起，`release` 才收尾（忙态窗口确定）。"""
 
         async def astream(self, task_id: str, goal: str, **kwargs: object):
@@ -2552,7 +2656,10 @@ def test_readonly_command_rejected_while_busy(tmp_path) -> None:
 
     loop = RecordingLoop()
     api = UIAPILayer(
-        loop=loop, orchestrator=_BlockingOrchestrator(), diagnostics=_readonly_deps(tmp_path)
+        loop=loop,
+        orchestrator=_BlockingOrchestrator(),
+        plan_loop=_PLAN_LOOP,
+        diagnostics=_readonly_deps(tmp_path),
     )
     api.set_llm_config(_llm())
     app = build_app(api)
@@ -2563,9 +2670,7 @@ def test_readonly_command_rejected_while_busy(tmp_path) -> None:
         async with app.run_test() as pilot:
             inp = app.query_one("#input", Input)
             inp.focus()
-            for ch in "/task slow":
-                await pilot.press(ch)
-            await pilot.press("enter")
+            await _start_task(pilot, app, "slow")
             for _ in range(50):
                 await pilot.pause()
                 if started.is_set():
@@ -2717,7 +2822,7 @@ def _tab_labels(app: object) -> list[str]:
     return [str(w.render()) for w in app.query(".task-tab")]  # type: ignore[attr-defined]
 
 
-class _SnapThenResetOrchestrator:
+class _SnapThenResetOrchestrator(_PlanDraftMixin):
     """第一次任务：开工后挂起，收尾后保留快照；第二次任务：`task_started` 后挂起（可观察重置）。"""
 
     def __init__(self) -> None:
@@ -2764,7 +2869,7 @@ def test_task_tabs_appear_and_switch_views() -> None:
     """标签自动出现（main + 主题缩写）；点击子任务/`main` 切换且主时间线逐字不变。"""
     milestone, done = asyncio.Event(), asyncio.Event()
     orch = _GatedOrchestrator(milestone=milestone, done=done)
-    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch, plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
     app = build_app(api)
 
@@ -2772,7 +2877,7 @@ def test_task_tabs_appear_and_switch_views() -> None:
         from textual.containers import Horizontal, Vertical  # noqa: PLC0415 — 可选依赖懒 import
 
         async with app.run_test() as pilot:
-            await _type_line(pilot, "/task 查答案")
+            await _start_task(pilot, app, "查答案")
             await _wait_started(pilot, orch)
             for _ in range(5):
                 await pilot.pause()
@@ -2813,7 +2918,7 @@ def test_clicking_subtask_block_title_focuses_and_still_toggles() -> None:
     """点击子任务折叠块标题 ⇒ 进入焦点视图，且既有展开/收起语义保持不变。"""
     milestone, done = asyncio.Event(), asyncio.Event()
     orch = _GatedOrchestrator(milestone=milestone, done=done)
-    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch, plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
     app = build_app(api)
 
@@ -2821,7 +2926,7 @@ def test_clicking_subtask_block_title_focuses_and_still_toggles() -> None:
         from textual.containers import Vertical  # noqa: PLC0415 — 可选依赖懒 import
 
         async with app.run_test() as pilot:
-            await _type_line(pilot, "/task 查答案")
+            await _start_task(pilot, app, "查答案")
             await _wait_started(pilot, orch)
             for _ in range(5):
                 await pilot.pause()
@@ -2845,7 +2950,7 @@ def test_clicking_subtask_block_title_focuses_and_still_toggles() -> None:
 def test_task_tabs_keep_terminal_snapshot_then_reset_on_next_task() -> None:
     """收尾保留 ✓ 标签与焦点；下一次 `task_started` 重置为仅 `main` 并回主视图。"""
     orch = _SnapThenResetOrchestrator()
-    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch)
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch, plan_loop=_PLAN_LOOP)
     api.set_llm_config(_llm())
     app = build_app(api)
 
@@ -2856,7 +2961,7 @@ def test_task_tabs_keep_terminal_snapshot_then_reset_on_next_task() -> None:
         async with app.run_test() as pilot:
             inp = app.query_one("#input", Input)
             inp.focus()
-            await _type_line(pilot, "/task 查答案")
+            await _start_task(pilot, app, "查答案")
             await _wait_started(pilot, orch)
             for _ in range(5):
                 await pilot.pause()
@@ -2872,7 +2977,7 @@ def test_task_tabs_keep_terminal_snapshot_then_reset_on_next_task() -> None:
             timeline_hidden = app.query_one("#timeline", Vertical).display is False
 
             inp.focus()
-            await _type_line(pilot, "/task 第二个目标")
+            await _start_task(pilot, app, "第二个目标")
             for _ in range(30):
                 await pilot.pause()
                 if orch.second_started.is_set():
@@ -3034,7 +3139,7 @@ def test_resume_clears_task_tabs() -> None:
         async with app.run_test() as pilot:
             inp = app.query_one("#input", Input)
             inp.focus()
-            await _type_line(pilot, "/task 查答案")
+            await _start_task(pilot, app, "查答案")
             for _ in range(30):
                 await pilot.pause()
             before = _tab_labels(app)

@@ -5343,3 +5343,42 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **反证 5/5**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：去 `_supersede` 指标自增 ⇒ TC-MEMCONF-01/04 红；去审计事件 ⇒ TC-MEMCONF-03 红；`conflicts` 改按 `status=="superseded"` ⇒ TC-MEMCONF-07 红；CLI 改按审计行派生 ⇒ TC-MEMCONF-12 红；去脱敏 ⇒ TC-MEMCONF-15 红。
 > **实测**：全量 pytest **3609 passed**（3592 + 17）；`openspec validate --all` 32/0（含本 active change；归档后 31/0）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0302 行。
+
+## 226. plan 模式与单子任务自跑（TC-PLAN / TC-SELFRUN，change `0313`／ADR-0303，台账 E249）
+
+### 226.1 会话模式与草案（TC-PLAN）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-PLAN-01 | 缺省 quick / 非法模式 | 新会话；`set_mode(session, "planx")` | 缺省 `quick`；非法值抛 `UI_PLAN_MODE_INVALID` 且**不改原值**（`tests/test_plan_mode.py::test_plan_sessions_default_quick_and_invalid_mode`） |
+| TC-PLAN-02 | 同会话单草案与一次性消费 | `put` 两次；`take` 两次 | 第二次 `put` 覆盖；`take` 第二次返回 `None`；`get` 校验会话隔离（`...::test_plan_sessions_draft_is_single_and_one_shot`） |
+| TC-PLAN-03 | 计划轮产出草案且不泄漏勘察原文 | plan 模式，勘察返回文本 | 末事件 `plan.draft_ready`；载荷含 `draft_id` / 目标 / 子任务 / 波次，**不含** `exploration`（`...::test_run_plan_turn_emits_draft_without_exploration`） |
+| TC-PLAN-04 | 非 plan 模式拒绝 | quick 下直接调 `run_plan_turn` | `UI_PLAN_MODE_INVALID`（`...::test_run_plan_turn_requires_plan_mode`） |
+| TC-PLAN-05 | 依赖未注入 | 缺 `plan_loop` 或编排器 | `UI_PLAN_UNAVAILABLE`（`...::test_run_plan_turn_unavailable_without_dependencies`） |
+| TC-PLAN-06 | 拆解失败结构化 | 拆解器抛 `OrchestrationError` | `UI_PLAN_DRAFT_FAILED`，无草案入 session（`...::test_run_plan_turn_draft_failure_is_structured`） |
+| TC-PLAN-07 | 批准执行且先回 quick | 生成草案后 `approve_plan` | 事件映射为 `task.*`；`astream` 收到批准计划 / 同会话 / `self_run=True`；模式回 `quick`；草案不可重放（`...::test_approve_plan_executes_approved_plan_and_returns_quick`） |
+| TC-PLAN-08 | 丢弃草案 | `discard_plan` | 返回 `True` 并回 `quick`；二次丢弃 `False`；随后批准 ⇒ `UI_PLAN_DRAFT_NOT_FOUND`；编排器零调用（`...::test_discard_plan_drops_draft_and_returns_quick`） |
+| TC-PLAN-09 | 零注册表副作用 | 模式切换 + 草案 | 会话注册表逐字不变（`...::test_plan_mode_does_not_touch_registry`） |
+| TC-PLAN-10 | 只读工具面判定 | 写/读/委托工具混合 | 仅保留 `classify == READ`；`tools.delegate` **显式排除**（`...::test_readonly_tool_ids_are_read_level_and_exclude_delegate`） |
+| TC-PLAN-11 | 子集视图执行面受限 | 子集视图调视图外工具 | `active_tools()` 不含；`ainvoke` 返回「未知工具」（fail-closed）（`...::test_tool_subset_view_hides_and_blocks_excluded_tools`） |
+| TC-PLAN-12 | TUI 模式切换与 placeholder | `/plan` → `/quick` | 模式 `plan` → `quick`；placeholder 反映计划模式 / `/plan` 提示（`tests/test_repl.py::test_plan_command_toggles_mode_and_placeholder`） |
+| TC-PLAN-13 | 审批期浮层与非法输入 | 草案就绪后输入 `/`、`maybe`、`n` | 浮层不呈现；提示重输；`n` 丢弃、回 `quick`、编排器零调用（`...::test_plan_draft_suppresses_palette_and_rejects_invalid_answer`） |
+| TC-PLAN-14 | 批准驱动编排且不进对话 | `/plan` → 目标 → `y` → 终态后再发普通消息 | 编排器收到目标；普通消息仅在终态后进 loop；任务事件落时间线（`...::test_plan_approval_drives_orchestrator_not_loop`） |
+| TC-PLAN-15 | `/plan` 拒绝参数 | `/plan now` | 提示「不接受参数」、模式仍 `quick`（`...::test_plan_command_rejects_args`） |
+
+### 226.2 单子任务自跑与草案拆解（TC-SELFRUN）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-SELFRUN-01 | 单子任务自跑 | 单子任务 + `self_run=True` + `self_loop` | 主 loop 收到交接 prompt；router 未被匹配（`tests/test_self_run.py::test_self_run_single_subtask_uses_main_loop`） |
+| TC-SELFRUN-02 | 多子任务忽略自跑 | 两子任务 + `self_run=True` | 主 loop 零调用；router 匹配两次（`...::test_self_run_multiple_subtasks_uses_router`） |
+| TC-SELFRUN-03 | 缺省逐字不变 | 不传 `self_run` | 单子任务仍走 router（`...::test_self_run_default_off_keeps_router_path`） |
+| TC-SELFRUN-04 | 未注入自跑者 | `self_run=True`、`self_loop=None` | 回落 router，不失败（`...::test_self_run_without_main_loop_falls_back_to_router`） |
+| TC-SELFRUN-05 | 失败语义不变 | 自跑总验收失败 | 重试 1 + 重拆 1 后 `SUBTASK_VERIFY_FAILED`、状态 `FAILED`（`...::test_self_run_failure_keeps_retry_and_replan_semantics`） |
+| TC-SELFRUN-06 | 会话归属 | 自跑带 `session_id` | 交接 prompt / 自跑 loop 收到同会话（`...::test_self_run_carries_session_id`） |
+| TC-SELFRUN-07 | 草案拆解 | 有界上下文 + 多子任务计划 | `plan.goal` 还原为原始目标；`context` 截断到 `MAX_HANDOFF_CHARS`；零 trace / 零检查点 / 零执行（`...::test_draft_plan_restores_goal_bounds_context_and_has_no_side_effects`） |
+
+> **配套更新**：`tests/test_repl.py` 的任务呈现用例改经 `/plan` → 草案 → `y` 驱动；命令真源 / 浮层候选 / 占位符断言去掉 `/task`、加入 `/plan` `/quick`；`tests/test_entry.py` / `tests/test_phase13.py` 的 runtime 替身补 `plan_loop=None`；`doc/03-interfaces/prompts.md` 落点行号随 `entry.py` 增行同步。
+> **反证 5/5**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：去 `tools.delegate` 排除 ⇒ TC-PLAN-10 红；`self_run` 缺省改 True ⇒ TC-SELFRUN-03 红；`approve_plan` 不先回 quick ⇒ TC-PLAN-07 红；`draft_plan` 不还原 `plan.goal` ⇒ TC-SELFRUN-07 红；TUI 恢复 `/task` ⇒ 命令真源用例红。
+> **实测**：全量 pytest **3629 passed**（3609 + 20）；`openspec validate --all` 32/0（含本 active change；归档后 31/0）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0303 行。

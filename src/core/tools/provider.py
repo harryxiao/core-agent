@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any, cast
 
 from core.constraints import Validator
@@ -77,6 +77,24 @@ class ToolProvider:
     def active_tools(self) -> list[ToolDef]:
         """返回当前已注册工具的定义列表（供 loop 注入）。"""
         return [tool.definition for tool in self._tools.values()]
+
+    def subset(self, tool_ids: Iterable[str]) -> ToolProvider:
+        """返回共享依赖的受限视图：只暴露 ``tool_ids`` 内工具（change 0313）。
+
+        schema 面（``active_tools``）与执行面（``ainvoke``）同时受限：视图外工具按
+        「未知工具」fail-closed。解析器 / 效应追踪 / 安全门 / 审批通道与本体共享，
+        故审批与回滚语义不变；注册表本体不受视图影响。
+        """
+        allowed = frozenset(tool_ids)
+        view = ToolProvider(
+            coeffect_resolver=self._resolver,
+            effect_tracker=self._tracker,
+            gate=self._gate,
+            approver=self._approver,
+        )
+        view._tools = {tool_id: tool for tool_id, tool in self._tools.items() if tool_id in allowed}
+        view._warnings = list(self._warnings)
+        return view
 
     def invoke(
         self, tool_id: str, args: dict[str, Any], *, trace_id: str, approved: bool = False

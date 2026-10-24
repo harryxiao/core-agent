@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Sequence
 
 from .errors import AccessControlError, PermissionErrorCode
 from .models import Decision, PermissionMode, RiskLevel
@@ -105,6 +106,26 @@ class PolicyEngine:
                 False, f"高危操作 {op} 作用于 {target}，需人工审批", approval_required=True
             )
         return Decision(True, f"{risk.value} 操作放行")
+
+
+# plan 模式只读工具面**显式排除**的委托工具（change 0313）：`tools.delegate` 的 coeffect
+# 有字面量只读豁免（change 0095），不排除会让 plan 自动升级为多 Agent 派发。
+_PLAN_EXCLUDED_TOOL = "tools.delegate"
+
+
+def readonly_tool_ids(tools: Iterable[tuple[str, Sequence[str]]]) -> frozenset[str]:
+    """只读工具面：``RiskLevel.READ`` 且显式排除委托工具（change 0313）。
+
+    ``tools`` 为 ``(tool_id, coeffects)`` 序列（取自 ``ToolProvider.active_tools``）。
+    分级口径委托 :meth:`PolicyEngine.classify`（单一真源），本函数不另立规则。
+    """
+    engine = PolicyEngine()
+    return frozenset(
+        tool_id
+        for tool_id, coeffects in tools
+        if tool_id != _PLAN_EXCLUDED_TOOL
+        and engine.classify(tool_id, "", list(coeffects)) is RiskLevel.READ
+    )
 
 
 class PermissionModeGate:

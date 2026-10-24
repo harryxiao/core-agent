@@ -8,6 +8,7 @@ API：会话 / 循环（SSE 流式）、记忆、工具、LLM 配置；CLI 的 T
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any, cast
@@ -26,6 +27,7 @@ from core.tools.env_shell import EnvironmentSnapshot
 
 from .errors import UiError, UiErrorCode
 from .models import Event
+from .plan import PlanDraft, PlanSessions
 from .sessions import SessionRegistry
 
 # LoopEvent 类型 → SSE 事件类型（DefaultLoop 产出七类 LoopEvent，spec：异步流式执行）。
@@ -117,6 +119,8 @@ class UIAPILayer:
         supported_modalities: set[str] | None = None,
         approval: ApprovalChannel | None = None,
         orchestrator: TaskScheduler | None = None,
+        # 只读计划循环（change 0313）：工具面仅 READ 级且排除 tools.delegate。
+        plan_loop: LoopPlugin | None = None,
         pet_activator: PetActivator | None = None,
         pet_control: PetControl | None = None,
         beast_activator: BeastActivator | None = None,
@@ -134,6 +138,8 @@ class UIAPILayer:
         )
         self._approval = approval
         self._orchestrator = orchestrator
+        self._plan_loop = plan_loop
+        self._plan_sessions = PlanSessions()
         self._pet_activator = pet_activator
         self._pet_control = pet_control
         # 神兽三入口（斜杠 / WebUI 自然语言）缺省未接 ⇒ 报 `UI_BEAST_UNSET`（对称 pet）
@@ -228,6 +234,101 @@ class UIAPILayer:
         task_id = f"task-{uuid.uuid4().hex[:8]}"
         async for task_event in self._orchestrator.astream(task_id, goal, session_id=session_id):
             yield Event(type=f"task.{task_event.type}", payload=task_event.payload)
+
+    # ---- 会话级执行模式与计划审批（change 0313 / ADR-0303） ----
+
+    def agent_mode(self, session_id: str) -> str:
+        """读会话执行模式（缺省 ``quick``）；未登记会话 ⇒ `UI_SESSION_NOT_FOUND`。"""
+        self._require_session(session_id)
+        return self._plan_sessions.mode(session_id)
+
+    def set_agent_mode(self, session_id: str, mode: str) -> None:
+        """置会话执行模式；非法值 ⇒ `UI_PLAN_MODE_INVALID`（不静默归一）。"""
+        self._require_session(session_id)
+        self._plan_sessions.set_mode(session_id, mode)
+
+    async def run_plan_turn(self, session_id: str, user_input: str) -> AsyncIterator[Event]:
+        """计划轮：只读勘察 → 拆解草案 → `plan.draft_ready`（不含勘察原文）。"""
+        self._require_session(session_id)
+        if self._plan_sessions.mode(session_id) != "plan":
+            raise UiError(UiErrorCode.UI_PLAN_MODE_INVALID, "当前会话不在计划模式")
+        if self._plan_loop is None or self._orchestrator is None:
+            raise UiError(UiErrorCode.UI_PLAN_UNAVAILABLE, "计划能力未注入（只读循环 / 编排器）")
+        exploration = ""
+        async for loop_event in self._plan_loop.astream(user_input, session_id=session_id):
+            payload = loop_event.payload
+            if loop_event.type == "reply_delta" and isinstance(payload, dict):
+                data = cast(dict[str, Any], payload)
+                text = data.get("text", "")
+                if isinstance(text, str):
+                    exploration += text
+            elif loop_event.type == "loop_finished":
+                reply = getattr(loop_event.payload, "reply", "") or ""
+                if reply:
+                    exploration = reply
+            yield self._map_event(session_id, loop_event)
+        try:
+            plan = await self._orchestrator.draft_plan(user_input, context=exploration)
+        except OrchestrationError as exc:
+            raise UiError(UiErrorCode.UI_PLAN_DRAFT_FAILED, f"计划拆解失败：{exc}") from exc
+        draft = PlanDraft(
+            draft_id=f"draft-{uuid.uuid4().hex[:8]}",
+            session_id=session_id,
+            goal=user_input,
+            plan=plan,
+            exploration=exploration,
+            created_at=time.time(),
+        )
+        self._plan_sessions.put(draft)
+        yield Event(type="plan.draft_ready", payload=self._draft_payload(draft))
+
+    async def approve_plan(self, session_id: str, draft_id: str) -> AsyncIterator[Event]:
+        """按已批准计划执行（`self_run=True`）；开始执行**前**即回 ``quick``。"""
+        self._require_session(session_id)
+        if self._orchestrator is None:
+            raise UiError(UiErrorCode.UI_PLAN_UNAVAILABLE, "编排器未注入（计划执行不可用）")
+        draft = self._plan_sessions.take(session_id, draft_id)
+        if draft is None:
+            raise UiError(
+                UiErrorCode.UI_PLAN_DRAFT_NOT_FOUND, f"计划草案 {draft_id} 不存在或已消费"
+            )
+        self._plan_sessions.set_mode(session_id, "quick")
+        task_id = f"task-{uuid.uuid4().hex[:8]}"
+        async for task_event in self._orchestrator.astream(
+            task_id,
+            draft.goal,
+            plan=draft.plan,
+            session_id=session_id,
+            self_run=True,
+        ):
+            yield Event(type=f"task.{task_event.type}", payload=task_event.payload)
+
+    def discard_plan(self, session_id: str, draft_id: str) -> bool:
+        """丢弃草案并回 ``quick``；返回是否确有草案被丢弃。"""
+        self._require_session(session_id)
+        discarded = self._plan_sessions.discard(session_id, draft_id)
+        self._plan_sessions.set_mode(session_id, "quick")
+        return discarded
+
+    @staticmethod
+    def _draft_payload(draft: PlanDraft) -> dict[str, object]:
+        """草案事件载荷：目标 / 子任务 / 依赖 / 波次 / 成功标准（**不含**勘察原文）。"""
+        plan = draft.plan
+        return {
+            "draft_id": draft.draft_id,
+            "goal": draft.goal,
+            "subtasks": [
+                {
+                    "id": s.id,
+                    "goal": s.goal,
+                    "acceptance": s.acceptance,
+                    "depends_on": list(s.depends_on),
+                }
+                for s in plan.subtasks
+            ],
+            "waves": [list(w) for w in plan.waves],
+            "success_criteria": list(plan.success_criteria),
+        }
 
     def barge_in(self) -> None:
         """语音播报被打断（barge-in）：语音输出为抽象能力（TTS 后端未接）。"""

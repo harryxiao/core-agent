@@ -18,9 +18,27 @@ class UIAPILayer:
     def barge_in(self) -> None: ...
         """打断当前语音播报（barge-in）：语音输出为抽象能力（TTS 后端未接）。"""
 
-    # 任务编排（TUI `/task` / 复用 CLI 同一编排器）
+    # 任务编排（操作面入口：Web `/task`；复用 CLI 同一编排器）
     def run_task(self, session_id: str, goal: str) -> AsyncIterator[Event]:
         """SSE 流式输出编排任务进度事件（task.*）；编排器未注入时 UI_ORCHESTRATOR_UNSET。"""
+
+    # 执行模式与计划（change 0313 / ADR-0303）：TUI 用户模式只有 quick / plan
+    def agent_mode(self, session_id: str) -> str:
+        """会话级执行模式（缺省 `quick`）；未登记会话 ⇒ UI_SESSION_NOT_FOUND。"""
+    def set_agent_mode(self, session_id: str, mode: str) -> None:
+        """切换 `quick|plan`；非法值 ⇒ UI_PLAN_MODE_INVALID（不改原值）。"""
+    async def run_plan_turn(self, session_id: str, user_input: str) -> AsyncIterator[Event]:
+        """计划轮：只读勘察（plan loop，READ 工具面）→ 草案 → `plan.draft_ready`。
+        要求会话处于 plan 模式（否则 UI_PLAN_MODE_INVALID）；缺 plan loop / 编排器 ⇒
+        UI_PLAN_UNAVAILABLE；拆解失败 ⇒ UI_PLAN_DRAFT_FAILED。事件载荷不含勘察原文。"""
+    async def approve_plan(self, session_id: str, draft_id: str) -> AsyncIterator[Event]:
+        """按批准草案执行（`astream(..., self_run=True)`）；**开始执行前**即回 `quick`。
+        草案不存在 / 已消费 ⇒ UI_PLAN_DRAFT_NOT_FOUND。"""
+    def discard_plan(self, session_id: str, draft_id: str) -> bool:
+        """丢弃草案并回 `quick`；返回是否确有草案被丢弃。"""
+
+    # 计划轮注入（组合根装配；None ⇒ run_plan_turn / approve_plan 报 UI_PLAN_UNAVAILABLE）
+    plan_loop: LoopPlugin | None
 
     # 记忆（会话维度：session_id 由 create_session 生成并无改写透传至 loop 与记忆写入）
     def get_memory(self, session_id: str) -> dict:
@@ -305,6 +323,17 @@ Web 侧同一语义由标签栏 + 只读详情承接（见上段）。
 分支位置：**忙态检查之后**（与在途轮次互斥）、回主视图与回显**之前**（切换不产生 `❯ /resume` 回显；
 落痕为 `↻ 续接会话 <标识>（N 条历史已载入）`）。`/resume` 无参数 ⇒ 只提示用法、不切换。
 
+**TUI 执行模式与计划审批（change 0313 / ADR-0303）**：TUI 用户面**只有**两种执行模式 ——
+`quick`（缺省，`DefaultLoop` 直出）与 `plan`；`/plan` / `/quick` 切换（真源 `_COMMANDS` 登记，参数位
+报用法），`/task` **不再是** TUI 入口（CLI `task` 与 Web `POST /task` 作为操作面保留）。plan 模式下输入
+目标 ⇒ `run_plan_turn`（**只读**勘察循环 `plan_loop` + `ToolProvider.subset(readonly_tool_ids())`，
+显式排除 `tools.delegate`）⇒ 编排器 `draft_plan` 产出**会话内临时** `PlanDraft`（进程内、一会话一草案、
+一次性）⇒ 时间线呈现 `plan.draft_ready` 的 `{goal, subtasks, waves, success_criteria}`（**不含**勘察原文）
+并进入审批挂起：`y` ⇒ `approve_plan`（**执行前**先回 `quick`，以 `self_run=True` 走既有任务事件面），
+`n` ⇒ `discard_plan`（回 `quick`），其他输入**重提示**、不消费草案。审批挂起期间浮层收起（承 0159 口径）。
+**单子任务且注入了 `self_loop`** ⇒ 自跑（不经 router 委派），其余情形逐字沿用既有路由；缺 `plan_loop` /
+编排器 ⇒ `UI_PLAN_UNAVAILABLE`。模式是**会话级呈现态**，与权限模式（permission mode）正交、互不写回。
+
 **TUI 只读命令族（change 0163 / ADR-0154）**：真源 `_COMMANDS` 增 `handler` 字段（处理器**方法名**，
 `""` ⇒ 走既有专用分支，既有 6 条命令**逐字不变**）并追加 8 条**只读**命令 —— `/doctor`（自检诊断）、
 `/status`（状态概览）、`/sessions`（会话清单）、`/config`（配置视图）、`/mcp`（MCP 端点）、`/skill`
@@ -394,6 +423,10 @@ LLM API（provider / endpoint / key / base URL）只在后端配置一次：
 | `UI_BEAST_UNKNOWN_VERB` | `beast_command` 收到未支持的控制动词（change `0137`） |
 | `UI_BEAST_NOT_FOUND` | 无匹配神兽（领域 `NO_AGENT_MATCH` 在 API 边界归一，change `0137`） |
 | `UI_BEAST_STATE_INVALID` | 神兽状态不允许该操作（`BEAST_ALREADY_MANIFEST` 重复召唤 / `BEAST_NOT_MANIFEST` 无在岗可召回，change `0137`） |
+| `UI_PLAN_MODE_INVALID` | `set_agent_mode` 收到非 `quick|plan`；或 `run_plan_turn` 时会话不在计划模式（change `0313`，不静默归一） |
+| `UI_PLAN_UNAVAILABLE` | 计划能力未注入（缺只读循环 `plan_loop` / 编排器；change `0313`） |
+| `UI_PLAN_DRAFT_FAILED` | 计划拆解失败（`draft_plan` 抛错，change `0313`） |
+| `UI_PLAN_DRAFT_NOT_FOUND` | 草案不存在或已消费（`approve_plan` / `discard_plan`，change `0313`） |
 
 ---
 
@@ -402,5 +435,5 @@ LLM API（provider / endpoint / key / base URL）只在后端配置一次：
 - 模块：`06-ui-frontend/ui-architecture.md`
 - 规格：`openspec/specs/ui/spec.md`
 - LLM 归一化：经 `llm-provider` 虚拟接口调用（可替换默认实现）
-- 决策：ADR-0013 ~ 0015、ADR-0031、ADR-0083（宠物控制面）
+- 决策：ADR-0013 ~ 0015、ADR-0031、ADR-0083（宠物控制面）、ADR-0303（执行模式与计划审批）
 - 测试：`04-testing/test-cases.md`（TC-UI 系列）

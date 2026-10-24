@@ -502,7 +502,9 @@ class _Command:
 
 
 _COMMANDS: tuple[_Command, ...] = (
-    _Command("/task", "启动编排任务", "目标"),
+    # 执行模式（change 0313）：TUI 的编排执行只经计划批准进入，SHALL NOT 暴露 `/task`。
+    _Command("/plan", "进入计划模式"),
+    _Command("/quick", "返回快速模式"),
     _Command("/focus", "聚焦子任务视图", "子任务标识", "subtask"),
     _Command("/main", "返回主视图"),
     _Command("/summon", "召唤神兽执行任务", "神兽"),
@@ -896,7 +898,7 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
 
         _HINTS_SHORT = "F1 快捷键 · Ctrl+B 打断 · Ctrl+Q 退出 · /focus 子任务 聚焦 · F2 返回主视图"
         _HINTS_FULL = (
-            "F1 快捷键 · Ctrl+B 打断 · Ctrl+Q 退出 · /task <目标> 启动编排 · "
+            "F1 快捷键 · Ctrl+B 打断 · Ctrl+Q 退出 · /plan 进入计划模式 · "
             "/focus <子任务> 聚焦 · /main 或 F2 返回主视图 · "
             "审批 y 批准 / n 拒绝 · 点击子任务/动作行展开详情"
         )
@@ -910,6 +912,9 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
             self._tail_widget: Markdown | None = None  # 尾段渲染块
             self._last_reply: str = ""  # 终态回复原文（Markdown 无公开源文本取口）
             self._approval_future: Any | None = None  # 挂起中的审批 Future[bool]
+            # 计划草案审批（change 0313）：挂起中的 y/n Future 与待决草案标识
+            self._plan_future: Any | None = None
+            self._plan_draft_id: str = ""
             self._turn_busy = False  # 本轮 worker 是否在跑（忙时新消息提示等待）
             self._open: dict[str, tuple[Collapsible, Static, str]] = {}  # sid→(块, 详情, goal)
             self._focus_sid: str = ""  # 焦点中的子任务标识（"" = 主视图）
@@ -945,7 +950,7 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
                 with Horizontal(id="input-box"):
                     yield Static("❯ ", id="prompt")
                     yield Input(
-                        placeholder="发送消息，或 /task <目标> 启动编排任务",
+                        placeholder="发送消息，或 /plan 进入计划模式",
                         id="input",
                         suggester=_PaletteSuggester(self._candidates),  # 幽灵补全（与浮层同源）
                     )
@@ -970,7 +975,8 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
             self._add(
                 Static(
                     f"[{_ACCENT}]◍ core-agent[/] 已就绪\n"
-                    "/task <目标> 启动编排任务 · 高风险动作需 y/n 审批 · 点击折叠行展开详情",
+                    "/plan 进入计划模式（批准后执行编排）"
+                    "· 高风险动作需 y/n 审批 · 点击折叠行展开详情",
                     classes="welcome",
                     markup=True,
                 )
@@ -1205,6 +1211,19 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
                 else:
                     self._add(Static("请输入 y（批准）或 n（拒绝）", classes="hint"))
                 return
+            plan_pending = self._plan_future
+            if plan_pending is not None and not plan_pending.done():
+                # 计划草案决断分支（change 0313）：y 批准执行 / n 放弃；其他输入提示重输
+                message.input.clear()
+                answer = message.value.strip().lower()
+                if answer in ("y", "yes", "n", "no"):
+                    self._add(
+                        Static(f"[{_ACCENT}]❯[/] {escape(answer)}", classes="echo", markup=True)
+                    )
+                    plan_pending.set_result(answer in ("y", "yes"))
+                else:
+                    self._add(Static("请输入 y（批准执行）或 n（放弃计划）", classes="hint"))
+                return
             if self._palette_open and self._accept_palette_selection():
                 return  # 浮层采纳：只补全输入框，不提交（下次回车才走既有分发链）
             text = message.value.strip()
@@ -1218,6 +1237,8 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
                 return
             if self._handle_resume_command(text):  # 会话切换（忙态后：与在途轮次互斥）
                 return
+            if self._handle_plan_command(text):  # 执行模式切换（忙态后：只影响下一条消息）
+                return
             if self._dispatch_registered(text):  # 真源登记的只读命令（忙态后：同 /resume 一侧）
                 return
             self._set_focus("")  # 普通输入 ⇒ 回主视图（回复不落进被隐藏的时间线）
@@ -1230,17 +1251,12 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
             try:
                 # 本轮执行进 worker：handler 即刻返回，消息泵保持可响应
                 # （审批 y/n、Ctrl+B 打断等后续输入才能被分发——泵内 await 会死锁）
-                if text.startswith("/task "):  # 任务命令：驱动编排器（不进普通对话）
-                    goal = text[len("/task ") :].strip()
-                    if goal:
-                        self.run_worker(self._run_task_turn(goal))
-                    else:
-                        self._turn_busy = False
-                        self._add(Static("用法：/task <目标>", classes="hint"))
-                    return
                 if self._handle_beast_command(text):  # 神兽斜杠入口（change 0137）
                     return
-                self.run_worker(self._run_turn(text))
+                if api.agent_mode(self._session_id) == "plan":  # 计划模式：只读勘察轮
+                    self.run_worker(self._run_plan_turn(text))
+                else:
+                    self.run_worker(self._run_turn(text))
             except Exception:  # 派发失败：复位忙态后原样冒泡（崩溃可见性不变）
                 self._turn_busy = False
                 raise
@@ -1278,7 +1294,10 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
         def _refresh_palette(self, value: str) -> None:
             """按当前输入开合浮层：有候选且**无待决审批** ⇒ 呈现，否则收起。"""
             pending = self._approval_future
-            if pending is not None and not pending.done():
+            plan_pending = self._plan_future
+            if (pending is not None and not pending.done()) or (
+                plan_pending is not None and not plan_pending.done()
+            ):
                 self._close_palette()  # 审批期不呈现（y/n 决断输入不被遮蔽）
                 return
             cands = self._candidates(value)
@@ -1386,20 +1405,79 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
             finally:
                 self._end_turn()
 
-        # ---- 任务轮（/task）----
+        # ---- 计划轮（/plan → 只读勘察 → 草案 → y/n → 执行；change 0313）----
 
-        async def _run_task_turn(self, goal: str) -> None:
-            """任务轮：经 /task 驱动编排器，进度事件落时间线（单行提示+折叠块）。"""
+        async def _run_plan_turn(self, text: str) -> None:
+            """计划轮：只读勘察 → 草案 → y/n；批准后在同一会话按草案执行编排。"""
             try:
-                self._spin_start("任务执行中")
-                async for event in api.run_task(self._session_id, goal):
-                    self._add_task_widget(event)
+                self._spin_start("只读勘察中")
+                self._reasoning_by_round.clear()
+                self._reasoning_fallback = None
+                draft_id = ""
+                future: Any | None = None
+                async for event in api.run_plan_turn(self._session_id, text):
+                    if event.type == "plan.draft_ready":
+                        draft_id, future = self._present_plan_draft(event)
+                        continue
+                    self._handle_turn_event(event, end_turn=False)
+                if draft_id and future is not None:
+                    approved = await future
+                    if approved:
+                        self._spin_start("任务执行中")
+                        async for event in api.approve_plan(self._session_id, draft_id):
+                            self._add_task_widget(event)
+                    else:
+                        api.discard_plan(self._session_id, draft_id)
+                        self._add(Static("已放弃计划，回到快速模式", classes="hint"))
             except UiError as err:
                 line = _format_event(_error_event(err))
                 if line:
                     self._add(Static(line, classes="fail", markup=False))
             finally:
-                self._end_turn()
+                self._plan_future = None
+                self._plan_draft_id = ""
+                with contextlib.suppress(Exception):  # 卸载期取件失败：呈现层尽力而为
+                    self._apply_mode_placeholder()
+                if self._turn_busy:  # 草案未产出等路径：收尾同样经过此处
+                    self._settle_thinking_titles()
+                    self._end_turn(flush_live=True)
+                with contextlib.suppress(Exception):  # 轮次分隔：呈现层，尽力而为
+                    self._add(Static("", classes="turn-sep"))
+
+        def _present_plan_draft(self, event: Event) -> tuple[str, Any | None]:
+            """草案呈现 + 挂起 y/n；返回 `(draft_id, future)`（载荷非法 ⇒ 空标识）。"""
+            payload = event.payload
+            if not isinstance(payload, dict):
+                return "", None
+            data = cast(dict[str, Any], payload)
+            draft_id = str(data.get("draft_id", ""))
+            if not draft_id:
+                return "", None
+            self._set_focus("")  # 草案提示须可见（否则落进被隐藏的时间线）
+            self._close_palette()  # 审批期不呈现浮层（y/n 决断输入不被遮蔽）
+            lines = [f"**计划草案** · {data.get('goal', '')}"]
+            for item in cast(list[dict[str, Any]], data.get("subtasks") or []):
+                dep = cast(list[Any], item.get("depends_on") or [])
+                dep_text = f"（依赖 {', '.join(str(d) for d in dep)}）" if dep else ""
+                lines.append(
+                    f"- **{item.get('id', '')}** {item.get('goal', '')}{dep_text}"
+                    f" · 验收：{item.get('acceptance') or '（无）'}"
+                )
+            waves = cast(list[list[Any]], data.get("waves") or [])
+            if waves:
+                lines.append("")
+                lines.append(
+                    "波次：" + " → ".join("[" + ", ".join(str(s) for s in w) + "]" for w in waves)
+                )
+            self._add(Markdown("\n".join(lines)))
+            self._add(Static("输入 y 批准执行 / n 放弃计划", classes="hint"))
+            self._spin_start("等待计划审批")
+            import asyncio  # noqa: PLC0415 — 与 textual 懒 import 同策略
+
+            future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+            self._plan_draft_id = draft_id
+            self._plan_future = future
+            return draft_id, future
 
         def _add_task_widget(self, event: Event) -> None:  # noqa: PLR0911 — 一分支一事件
             """编排事件 → 时间线 widget：任务/波次浅灰单行，子任务折叠块，终态高亮。"""
@@ -1857,8 +1935,43 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
             self._set_focus("")  # 焦点块已随时间线销毁 ⇒ 先回主视图再清句柄
             self._reset_turn_state()
             self._session_id = sid
+            self._apply_mode_placeholder()  # 模式随会话切换（各会话独立）
             self._replay_history(sid, list(items))
             return True
+
+        def _handle_plan_command(self, text: str) -> bool:
+            """`/plan` / `/quick`：会话级执行模式切换（进程内临时状态，不落注册表）。"""
+            head, _, arg = text.partition(" ")
+            if head not in ("/plan", "/quick"):
+                return False
+            if arg.strip():
+                self._add(Static(f"{head} 不接受参数", classes="hint"))
+                return True
+            try:
+                api.set_agent_mode(self._session_id, "plan" if head == "/plan" else "quick")
+            except UiError as err:
+                line = _format_event(_error_event(err))
+                if line:
+                    self._add(Static(line, classes="fail", markup=False))
+                return True
+            self._apply_mode_placeholder()
+            self._add(
+                Static(
+                    "已进入计划模式：下一条消息只读勘察并产出计划草案"
+                    if head == "/plan"
+                    else "已返回快速模式",
+                    classes="hint",
+                )
+            )
+            return True
+
+        def _apply_mode_placeholder(self) -> None:
+            """输入框 placeholder 反映当前执行模式（模式可见性，零新增 chrome 行）。"""
+            self.query_one("#input", Input).placeholder = (
+                "计划模式：发送消息以只读勘察并产出计划"
+                if api.agent_mode(self._session_id) == "plan"
+                else "发送消息，或 /plan 进入计划模式"
+            )
 
         def _reset_turn_state(self) -> None:
             """清空**跨会话无意义**的呈现态（旧内容已随时间线销毁 ⇒ 句柄不得悬挂）。"""
@@ -1945,27 +2058,7 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
                 self._reasoning_by_round.clear()
                 self._reasoning_fallback = None
                 async for event in api.run_loop(self._session_id, text):
-                    delta = _event_delta(event)
-                    if delta is not None:
-                        self._show_delta(delta)
-                        continue
-                    if event.type == "loop.reasoning":  # 思考回显（缺省收起，按 round 归并）
-                        self._add_reasoning_widget(event)
-                        continue
-                    if event.type.startswith("loop.action_"):  # 工具动作（缺省收起）
-                        self._add_action_widget(event)
-                        continue
-                    if event.type.startswith("agent."):  # 前台委托实况（change 0298）
-                        self._add_agent_widget(event)
-                        continue
-                    if event.type == "loop.result":  # 终态：立刻停「思考中」，再等流收束
-                        self._add_raw_output_widget(event)
-                        self._settle_thinking_titles()
-                        self._end_turn(flush_live=True)
-                        continue
-                    line = _format_event(event)
-                    if line:
-                        self._add(Static(line, classes="hint", markup=False))
+                    self._handle_turn_event(event)
             except UiError as err:
                 line = _format_event(_error_event(err))
                 if line:
@@ -1976,6 +2069,31 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
                     self._end_turn(flush_live=True)
                 with contextlib.suppress(Exception):  # 轮次分隔：呈现层，尽力而为（change 0299）
                     self._add(Static("", classes="turn-sep"))
+
+        def _handle_turn_event(self, event: Event, *, end_turn: bool = True) -> None:
+            """普通轮事件呈现（计划轮复用；`end_turn=False` 时保留忙态到草案就绪）。"""
+            delta = _event_delta(event)
+            if delta is not None:
+                self._show_delta(delta)
+                return
+            if event.type == "loop.reasoning":  # 思考回显（缺省收起，按 round 归并）
+                self._add_reasoning_widget(event)
+                return
+            if event.type.startswith("loop.action_"):  # 工具动作（缺省收起）
+                self._add_action_widget(event)
+                return
+            if event.type.startswith("agent."):  # 前台委托实况（change 0298）
+                self._add_agent_widget(event)
+                return
+            if event.type == "loop.result":  # 终态：立刻停「思考中」，再等流收束
+                self._add_raw_output_widget(event)
+                self._settle_thinking_titles()
+                if end_turn:
+                    self._end_turn(flush_live=True)
+                return
+            line = _format_event(event)
+            if line:
+                self._add(Static(line, classes="hint", markup=False))
 
     class _PaletteSuggester(Suggester):
         """内联幽灵补全：与浮层候选**同源**（复用同一候选取口），`→` 由 `Input` 原生采纳。

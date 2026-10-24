@@ -24,12 +24,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from core.loop import LoopEvent, collect_result
+from core.loop import LoopEvent, LoopPlugin, collect_result
 from core.observability import TraceEvent, Tracer
 
 from .decomposer import SubtaskDecomposer
 from .errors import OrchestrationError, OrchestrationErrorCode
-from .handoff import DEFAULT_CONTEXT_TOKENS, MAX_HANDOFF_CHARS, build_context_pack
+from .handoff import DEFAULT_CONTEXT_TOKENS, MAX_HANDOFF_CHARS, build_context_pack, stream_handoff
 from .models import Plan, Subtask, TaskHandoff, TaskState, VerifyResult, plan_to_dict
 from .router import MultiAgentRouter
 from .state_machine import StateMachine
@@ -248,6 +248,9 @@ class TaskScheduler:
         tracker: ProgressTracker | None = None,
         max_concurrency: int = 4,
         difficulty_policy: str = "off",
+        # 单子任务自跑（change 0313 / 甲-2）：发起方主 Agent 循环。缺省 None ⇒ 未注入，
+        # 自跑声明回落既有路由（不使任务失败）。
+        self_loop: LoopPlugin | None = None,
         # 子任务交接超时（秒；`0` = 不设限）。构造缺省保持 `0`（不注入即不改变行为）；
         # 配置缺省 `600` 由组合根显式注入（change 0247 / 0260）。
         subtask_timeout: float = 0,
@@ -285,6 +288,7 @@ class TaskScheduler:
         self._tracker = tracker if tracker is not None else ProgressTracker()
         self._max_concurrency = max_concurrency
         self._difficulty_policy = difficulty_policy
+        self._self_loop = self_loop
         self._subtask_timeout = subtask_timeout
         self._task_token_budget = task_token_budget
         self._success_checker = success_checker
@@ -308,12 +312,14 @@ class TaskScheduler:
         completed: set[str] | None = None,
         results: dict[str, str] | None = None,
         session_id: str = "",
+        self_run: bool = False,
     ) -> list[SubtaskOutcome]:
         """同步语义收口：消费 astream；终态失败按原错误码抛 OrchestrationError。
 
         plan / completed / results 为断点续跑注入面：跳过拆解、跳过已完成
         子任务、重建依赖结果上下文。``session_id`` 为发起方会话标识（缺省空串 =
         未归属），透传至子 Agent 执行 ⇒ 子任务轨迹按发起会话归属。
+        ``self_run`` 声明单子任务自跑（缺省关，行为逐字不变）。
         """
         async for event in self.astream(
             task_id,
@@ -323,6 +329,7 @@ class TaskScheduler:
             completed=completed,
             results=results,
             session_id=session_id,
+            self_run=self_run,
         ):
             if event.type == "task_failed":
                 data = cast(dict[str, Any], event.payload)
@@ -345,6 +352,7 @@ class TaskScheduler:
         completed: set[str] | None = None,
         results: dict[str, str] | None = None,
         session_id: str = "",
+        self_run: bool = False,
     ) -> AsyncIterator[LoopEvent]:
         """流式任务执行：拆解 → 波次扇出 → 验收推进 → 有限恢复，进度事件依序外发。
 
@@ -360,10 +368,26 @@ class TaskScheduler:
                 completed=completed,
                 results=results,
                 session_id=session_id,
+                self_run=self_run,
             ):
                 yield event
         finally:
             self._release(task_id)
+
+    async def draft_plan(
+        self, goal: str, success_criteria: list[str] | None = None, *, context: str = ""
+    ) -> Plan:
+        """只读计划草案（change 0313）：复用拆解器产出计划，零执行副作用。
+
+        ``context`` 为只读勘察结论（有界，仅作拆解参考）；产出计划的 ``goal`` 精确等于
+        原始目标。不执行子任务，不写检查点 / trace / 进度跟踪器 / 记忆。
+        """
+        text = goal
+        if context:
+            text = f"{goal}\n\n【只读勘察结论（供拆解参考）】\n{context[:MAX_HANDOFF_CHARS]}"
+        plan = await self._decomposer.decompose(text, success_criteria)
+        plan.goal = goal
+        return plan
 
     async def _stream_task(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — 主管线多早退/多分支
         self,
@@ -375,6 +399,7 @@ class TaskScheduler:
         completed: set[str] | None = None,
         results: dict[str, str] | None = None,
         session_id: str = "",
+        self_run: bool = False,
     ) -> AsyncIterator[LoopEvent]:
         """主管线：由 `astream` 包装，负责取消观察与（正常/失败）终态事件。"""
         cancel_event = self._cancel_events.setdefault(task_id, asyncio.Event())
@@ -441,7 +466,12 @@ class TaskScheduler:
                 yield LoopEvent("wave_started", {"task_id": task_id, "wave": list(wave)})
                 wave_result = _WaveResult(outcomes=outcomes)
                 async for event in self._execute_wave(
-                    task_id, plan, wave, session_id=session_id, result=wave_result
+                    task_id,
+                    plan,
+                    wave,
+                    session_id=session_id,
+                    self_run=self_run,
+                    result=wave_result,
                 ):
                     yield event
                 if cancel_event.is_set():
@@ -689,12 +719,18 @@ class TaskScheduler:
         wave: list[str],
         *,
         session_id: str,
+        self_run: bool,
         result: _WaveResult,
     ) -> AsyncIterator[LoopEvent]:
         """执行一波次并完成重试收口；累计结果与失败写回 ``result``。"""
         wave_outcomes: list[SubtaskOutcome] = []
         async for event in self._stream_wave(
-            task_id, plan, wave, session_id=session_id, sink=wave_outcomes
+            task_id,
+            plan,
+            wave,
+            session_id=session_id,
+            self_run=self_run,
+            sink=wave_outcomes,
         ):
             yield event
         if self._is_cancelled(task_id):
@@ -733,6 +769,7 @@ class TaskScheduler:
                     plan,
                     failure.failed,
                     session_id=session_id,
+                    self_run=self_run,
                     sink=retried,
                     attempt=attempt,
                     previous={sid: failure.reason for sid in failure.failed},
@@ -775,6 +812,7 @@ class TaskScheduler:
         wave: list[str],
         *,
         session_id: str,
+        self_run: bool,
         sink: list[SubtaskOutcome],
         attempt: int = 1,
         previous: dict[str, str] | None = None,
@@ -794,6 +832,7 @@ class TaskScheduler:
                 wave,
                 queue.put_nowait,
                 session_id=session_id,
+                self_run=self_run,
                 attempt=attempt,
                 previous=previous,
             )
@@ -824,6 +863,7 @@ class TaskScheduler:
         emit: Emit,
         *,
         session_id: str = "",
+        self_run: bool = False,
         attempt: int = 1,
         previous: dict[str, str] | None = None,
     ) -> list[SubtaskOutcome]:
@@ -841,6 +881,7 @@ class TaskScheduler:
                         semaphore,
                         emit,
                         session_id=session_id,
+                        self_run=self_run,
                         attempt=attempt,
                         previous_reason=(previous or {}).get(subtask.id, ""),
                     )
@@ -860,6 +901,7 @@ class TaskScheduler:
         emit: Emit,
         *,
         session_id: str = "",
+        self_run: bool = False,
         attempt: int = 1,
         previous_reason: str = "",
     ) -> SubtaskOutcome:
@@ -875,6 +917,7 @@ class TaskScheduler:
                 semaphore,
                 emit,
                 session_id=session_id,
+                self_run=self_run,
                 attempt=attempt,
                 previous_reason=previous_reason,
             )
@@ -939,13 +982,16 @@ class TaskScheduler:
         emit: Emit,
         *,
         session_id: str = "",
+        self_run: bool = False,
         attempt: int = 1,
         previous_reason: str = "",
     ) -> SubtaskOutcome:
         """执行单个子任务：幂等跳过已完成 → 匹配 Agent → 异步执行 → 验收门。
 
         ``session_id`` 为发起方会话标识（缺省空串 = 未归属），透传至子 Agent 执行。
-        ``attempt`` / ``previous_reason`` 为重试面（1 = 首发；>1 时把上次失败原因注入目标）。
+        ``self_run`` 声明自跑：计划恰好一个子任务且注入了主 Agent 循环时，直接交给该
+        循环（不经能力路由）；否则行为与既往逐字一致。``attempt`` / ``previous_reason``
+        为重试面（1 = 首发；>1 时把上次失败原因注入目标）。
         """
         if subtask.id in self._tracker.completed(task_id):
             emit(
@@ -969,30 +1015,33 @@ class TaskScheduler:
             )
         )
         async with semaphore:
-            try:
-                profile = self._router.match(subtask.goal)
-            except OrchestrationError:
-                profile = None
-            if profile is None or profile.loop is None:
-                emit(
-                    LoopEvent(
-                        "subtask_completed",
-                        {
-                            "task_id": task_id,
-                            "subtask_id": subtask.id,
-                            "ok": False,
-                            "reason": "无匹配 Agent",
-                            "attempt": attempt,
-                        },
+            self_run_here = self_run and len(plan.subtasks) == 1 and self._self_loop is not None
+            profile = None
+            if not self_run_here:
+                try:
+                    profile = self._router.match(subtask.goal)
+                except OrchestrationError:
+                    profile = None
+                if profile is None or profile.loop is None:
+                    emit(
+                        LoopEvent(
+                            "subtask_completed",
+                            {
+                                "task_id": task_id,
+                                "subtask_id": subtask.id,
+                                "ok": False,
+                                "reason": "无匹配 Agent",
+                                "attempt": attempt,
+                            },
+                        )
                     )
-                )
-                return SubtaskOutcome(
-                    subtask.id,
-                    ok=False,
-                    error=OrchestrationErrorCode.NO_AGENT_MATCH,
-                    reason="无匹配 Agent",
-                    attempt=attempt,
-                )
+                    return SubtaskOutcome(
+                        subtask.id,
+                        ok=False,
+                        error=OrchestrationErrorCode.NO_AGENT_MATCH,
+                        reason="无匹配 Agent",
+                        attempt=attempt,
+                    )
             handoff = self._build_handoff(
                 task_id,
                 plan,
@@ -1003,7 +1052,15 @@ class TaskScheduler:
             )
             # 统一执行器：TaskHandoff 全字段消费（context_pack / acceptance / deadline /
             # priority / session_id；change 0247）。子任务轨迹按发起方会话归属。
-            stream = self._router.handoff_stream(profile.agent_id, handoff)
+            # 自跑与路由两条路径同用 `stream_handoff`（router.handoff_stream 本就是
+            # resolve + stream_handoff；change 0313 / ADR-0303）。
+            if self_run_here:
+                assert self._self_loop is not None  # self_run_here 已含非空判定
+                executor = self._self_loop
+            else:
+                assert profile is not None and profile.loop is not None
+                executor = profile.loop
+            stream = stream_handoff(executor, handoff, deadline=handoff.deadline)
             # 流式执行：里程碑事件实时回流，终态仍归一为 LoopResult（附加通道，不改判定）
             result = await collect_result(
                 stream, lambda event: self._emit_progress(task_id, subtask.id, event, emit)
