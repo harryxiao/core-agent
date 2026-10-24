@@ -105,17 +105,24 @@ def uninstall_tool(installer: PluginInstaller | None = None) -> Tool:
     )
 
 
+_LIST_NOTE = (
+    "本清单只含经插件安装面（tools.install）安装的插件；内置原子工具（如 tools.web_fetch / "
+    "tools.code_run / 文件工具）与插件安装状态无关，始终按系统提示的「可用工具」可用。"
+    "清单为空不代表没有可用工具。"
+)
+
+
 def list_tool(installer: PluginInstaller | None = None) -> Tool:
-    """list 工具：列出已安装插件清单。"""
+    """list 工具：列出已安装插件清单（不含内置原子工具；change 0316 明示口径）。"""
     inst = installer if installer is not None else PluginInstaller()
 
-    def handler() -> dict[str, list[dict[str, str]]]:
-        return {"installed": inst.installed()}
+    def handler() -> dict[str, Any]:
+        return {"installed": inst.installed(), "note": _LIST_NOTE}
 
     return Tool(
         definition=ToolDef(
             tool_id="tools.list",
-            description="列出已安装插件清单",
+            description="列出已安装插件清单（仅插件；不含内置原子工具，后者始终可用）",
             schema=_LIST_SCHEMA,
             coeffects=[],
             reversible=True,

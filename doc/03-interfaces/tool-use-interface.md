@@ -97,7 +97,7 @@ class ToolError:
 | `tools.memory` | `layer`, `action`, `entry` | 记忆读写 |
 | `tools.install` | `source`, `kind`, `name` | 安装插件（discover→verify→install→register→activate；写 + 不可逆 ⇒ 走确认门） |
 | `tools.uninstall` | `plugin_id` | 卸载插件（deactivate→uninstall 对称回退；写 + 不可逆 ⇒ 走确认门） |
-| `tools.list` | — | 列出已装插件（只读，`coeffects=[]`） |
+| `tools.list` | — | 列出**已装插件**（只读，`coeffects=[]`）；载荷另含 `note` 说明内置原子工具与插件安装状态无关、空清单不代表无可用工具（change 0316 / ADR-0306） |
 | `tools.gate_run` | `gate` | 按名运行质量门禁（`lint`/`typecheck`/`test`/`build`）；门禁名与门禁命令取自 `ci-cd` **单一真源** `GATE_COMMANDS`，**执行器经组合根注入**（工具层不依赖 L5）；`coeffects=["process:spawn","filesystem:write"]` + 不可逆 ⇒ 走确认门；`timeout_s=660` > 执行器内部 600 上界 |
 | `tools.schema_read` | `tool_ids`（可选字符串数组） | 查询工具参数 schema（只读，`coeffects=["schema:read"]` + 可逆 ⇒ 自动放行；无参列全部工具目录，有参返回 `description` + `parameters`，未知 id 记入 `unknown`）；`loop.tool_scope=auto` 下，未随请求注入 schema 的工具须先经本工具加载，**下一轮**生效。**只挂主工具面** |
 | `tools.context_read` | `pointer` | 按信息地图指针（`doc_id#section`）取文档片段详情（只读，`coeffects=[]` + 可逆 ⇒ 自动放行）；**取数器经组合根注入**（工具层不依赖 context 层）；指针无命中返空串不报错（context spec「信息地图」；change 0140 / ADR-0133） |

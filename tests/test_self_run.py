@@ -208,3 +208,41 @@ def test_draft_plan_restores_goal_bounds_context_and_has_no_side_effects() -> No
     assert checkpoints == []
     assert sub.inputs == []  # 草案不执行
     assert router.matched == []
+
+
+def _echo_planner() -> tuple[Any, list[str]]:
+    """拆解器回落形态：单子任务，目标逐字等于送入文本。"""
+    seen: list[str] = []
+
+    def plan(goal: str) -> list[Subtask]:
+        seen.append(goal)
+        return [Subtask(id="1", goal=goal, acceptance="")]
+
+    return plan, seen
+
+
+def test_draft_plan_normalizes_planner_fallback_goal() -> None:
+    """回落计划不得把勘察结论当子任务指令（change 0316 / ui 实测回归）。
+
+    `LLMSubtaskPlanner._fallback` 把**送入拆解的整段文本**用作唯一子任务目标；草案入口须还原
+    为原始目标，否则批准后主 Agent 按「无法执行……建议安装插件」这段勘察文字执行。
+    """
+    planner, seen = _echo_planner()
+    scheduler = _scheduler(planner=planner, router=_RecordingRouter([]))
+
+    plan = asyncio.run(scheduler.draft_plan("帮我检索论文", context="勘察结论：未安装插件"))
+
+    assert "【只读勘察结论（供拆解参考）】" in seen[0]  # 上下文确实送入了拆解
+    assert plan.goal == "帮我检索论文"
+    assert [s.goal for s in plan.subtasks] == ["帮我检索论文"]
+
+
+def test_draft_plan_keeps_non_fallback_single_subtask_goal() -> None:
+    """正常拆解出的单子任务（目标 ≠ 送入文本）逐字保留 —— 归一不误伤。"""
+    planner, _ = _planner([Subtask(id="1", goal="检索 arxiv 论文", acceptance="列出 3 篇")])
+    scheduler = _scheduler(planner=planner, router=_RecordingRouter([]))
+
+    plan = asyncio.run(scheduler.draft_plan("帮我检索论文", context="勘察结论"))
+
+    assert [s.goal for s in plan.subtasks] == ["检索 arxiv 论文"]
+    assert [s.acceptance for s in plan.subtasks] == ["列出 3 篇"]

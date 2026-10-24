@@ -267,6 +267,8 @@ class UIAPILayer:
                 if reply:
                     exploration = reply
             yield self._map_event(session_id, loop_event)
+        # 拆解为阻塞式 LLM 调用（可达数十秒）：先给阶段信号，呈现端不停在勘察态
+        yield Event(type="plan.drafting")
         try:
             plan = await self._orchestrator.draft_plan(user_input, context=exploration)
         except OrchestrationError as exc:

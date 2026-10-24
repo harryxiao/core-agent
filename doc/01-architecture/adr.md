@@ -11782,6 +11782,51 @@ API 委托 / 无接缝即 True / 会话校验）+ `tests/test_repl.py` 4 条（�
 ④ 「已保存」只保证轮末链已收束，不保证压实/遗忘产生任何变更；⑤ 无在途收尾时结束文案通常不可见
 （终端已退出），成功提示的消费者主要是测试与日志。
 
+## ADR-0306：计划轮可信度与可打断性（change 0316 / 台账 E252）
+
+**背景。** 用户实测 TUI `/plan`（目标「在 arxiv.org 查询 Agent RSI 相关论文」）出现三处缺陷：
+① 勘察轮回复「运行时未安装任何插件（tools.list 返回空），没有可用的网络原子工具……建议安装
+arxiv-mcp-server」——而内置 `tools.web_fetch` 始终在工具面（批准后的自跑轮确以它访问
+arxiv.org）；`tools.list` 只列**插件安装面**，描述与载荷都没说明这一点。② 勘察结束后进入拆解
+（阻塞式 LLM 调用，实测 27s），状态行仍停在「只读勘察中」、输入被忙态拒绝；草案挂起后输入面
+只认 y/n；`Ctrl+B` 只打印 TTS barge-in 提示、**不打断本轮**（与 `ui` 规格「Ctrl+B 打断（停本轮）」
+不符）。③ checkpoint 证据显示被批准计划的唯一子任务目标**逐字等于**「原始目标 + 勘查结论 +
+勘察原文」——拆解器回落 `_fallback(goal)` 把勘察结论当成了子任务指令，批准后主 Agent 按
+「无法执行……建议安装插件」这段文字执行（`draft_plan` 只还原了顶层 `goal`）。
+
+**决策**：
+
+- **D1 `tools.list` 明示范围。** 描述改为「列出已安装插件清单（仅插件；不含内置原子工具，后者
+  始终可用）」，载荷追加静态 `note`：内置原子工具与插件安装状态无关、始终按系统提示「可用工具」
+  可用；清单为空不代表无可用工具。**被拒**：返回全量工具面（超出该工具语义、扩大模型可见面）；
+  在勘察 prompt 里硬编码纠偏（治标且把口径散到 prompt）。
+- **D2 草案归一拆解器回落。** `draft_plan` 在 `len(subtasks) == 1` 且该子任务 `goal.strip()` 逐字
+  等于**送入拆解的文本**时，把子任务目标还原为原始目标。判定是精确相等（回落定义），正常拆解
+  出的子任务目标不会与整段送入文本逐字相同，故不误伤。**被拒**：草案遇回落直接
+  `UI_PLAN_DRAFT_FAILED`（把可执行任务判死，违背落回的既有设计）；给 `LLMSubtaskPlanner` 加
+  draft 专用参数（拆解器不认识草案语义）。
+- **D3 拆解阶段可见。** `run_plan_turn` 在拆解前产出 `plan.drafting` 阶段事件，TUI 状态行切到
+  「拆解计划中」。事件面只增不改：既有 `loop.*` 与 `plan.draft_ready` 顺序不变。**被拒**：复用
+  `plan.draft_ready` 加 phase 字段（语义混淆、破坏既有载荷形状）。
+- **D4 `Ctrl+B` 真正打断本轮。** 登记 `_turn_worker`（计划轮 / 快速轮 / 神兽轮三个 `run_worker`
+  调用点）；`action_barge_in`：草案 y/n 待决 ⇒ `future.set_result(False)`（等价 `n`：丢弃草案、
+  回 `quick`）；在途轮 worker 未结束 ⇒ `cancel()`（收尾走既有 `finally`：忙态复位、尾段固化、
+  轮次分隔）；否则保持既有 barge-in（TTS）语义。**被拒**：只做「无可中断时提示」（用户真正需要
+  的是停本轮）；新造 asyncio 取消脚手架（Textual worker 已提供）；丢弃整轮已收内容（违背
+  `flush_live` 保字口径）。
+
+**验证**：`tests/test_install_tools.py` 1 条（载荷/描述口径）+ `tests/test_self_run.py` 2 条
+（回落归一 / 非回落不误伤）+ `tests/test_plan_mode.py` 2 条（事件顺序更新 + drafting 先于拆解
+调用）+ `tests/test_repl.py` 3 条（打断在途轮并恢复输入 / 丢弃待决草案 / 空闲 barge-in 不变）。
+反证 4/4（`cp` 到 `/tmp` + `md5sum` 复原）：去 `note` / 去回落归一 / 去 `plan.drafting` /
+`action_barge_in` 仅提示 ⇒ 对应用例红。全量 pytest 见 tasks 实测节。
+
+**局限**：① `tools.list` 的纠偏是**提示性**的 —— 模型仍可能忽略 `note` 自行推断（不引入
+结构化「可用工具」返回面）；② `draft_plan` 的回落判定只认**逐字相等**；拆解器若未来改变回落
+形态（如拆成多个子任务）须同步此守卫；③ `Ctrl+B` 只取消 worker 协程，已在线程中执行的工具
+不停（线程不可中断，与 Ctrl+Q 的放弃语义一致）；取消后已发起的 LLM 请求可能仍在服务端计费；
+④ `plan.drafting` 是阶段信号，不携带进度百分比；⑤ 只覆盖 TUI（Web / CLI 无计划轮）。
+
 ## 变更追踪
 
 | 编号 | 关联文档 |
@@ -12080,3 +12125,4 @@ API 委托 / 无接缝即 True / 会话校验）+ `tests/test_repl.py` 4 条（�
 | ADR-0303 | 02-modules/orchestration.md, 03-interfaces/orchestration-interface.md, 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0304 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
 | ADR-0305 | 03-interfaces/ui-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |
+| ADR-0306 | 03-interfaces/ui-interface.md, 03-interfaces/tool-use-interface.md, 04-testing/test-cases.md, coding-plan/known-risk.md |

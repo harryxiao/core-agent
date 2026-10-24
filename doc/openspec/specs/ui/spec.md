@@ -945,7 +945,9 @@ TUI SHALL 在**单一真源命令清单**内提供 `/plan`（进入计划模式�
 计划模式下，用户消息 SHALL 走**计划轮**：以**主 Agent 循环**执行，工具面 SHALL 仅含
 `READ` 级风险工具，且 SHALL **显式排除** `tools.delegate`（plan SHALL NOT 自动升级为
 delegate）；被排除工具 SHALL 在 schema 与**执行面**双重不可用（模型幻觉调用 SHALL
-fail-closed）。勘察完成后，系统 SHALL 复用编排器的拆解能力产出**计划草案**。
+fail-closed）。勘察完成后，系统 SHALL 复用编排器的拆解能力产出**计划草案**。进入拆解阶段时，
+计划轮 SHALL 先产出 `plan.drafting` 阶段事件、再产出 `plan.draft_ready`，使呈现端在拆解等待期
+SHALL NOT 继续显示勘察阶段的状态。
 
 计划草案 SHALL 是会话内**临时工件**（`PlanDraft`：草案标识 / 目标 / 子任务 DAG / 波次 /
 成功标准），SHALL NOT 落盘、SHALL NOT 进入注册表 / 记忆 / 检查点；同一会话同一时刻 SHALL
@@ -979,8 +981,14 @@ fail-closed）。勘察完成后，系统 SHALL 复用编排器的拆解能力�
 #### Scenario: 计划轮产出临时草案
 - **GIVEN** 会话处于 `plan` 模式且只读循环与编排器已注入
 - **WHEN** 用户发送一条目标消息
-- **THEN** 流式产出只读勘察事件，随后产出 `plan.draft_ready`（草案标识 / 目标 / 子任务 /
-  波次 / 成功标准）；草案不写入注册表、记忆或检查点；事件载荷不含勘察原文
+- **THEN** 流式产出只读勘察事件，随后产出 `plan.drafting`，再产出 `plan.draft_ready`
+  （草案标识 / 目标 / 子任务 / 波次 / 成功标准）；草案不写入注册表、记忆或检查点；事件载荷
+  不含勘察原文
+
+#### Scenario: 拆解阶段可见
+- **GIVEN** 勘察已结束、拆解调用尚未返回
+- **WHEN** 呈现端处理 `plan.drafting`
+- **THEN** 状态行显示拆解阶段（不再显示勘察阶段），且该事件先于拆解调用发起被产出
 
 #### Scenario: 批准后同会话执行且回快速模式
 - **GIVEN** 一份待决计划草案（含一个子任务）
@@ -1021,6 +1029,11 @@ TUI 用户请求退出（Ctrl+Q）时，进程 SHALL 及时结束：退出路径
 空闲退出与一轮正常完成后的退出 SHALL 与既有行为一致。Ctrl+B 打断（停本轮）与 Ctrl+Q
 退出（结束进程）语义 SHALL 保持分离。
 
+「打断本轮」SHALL 指取消在途轮次的执行：轮次按既有异常安全路径收尾（忙态复位、已收内容不
+丢），进程 SHALL NOT 结束，输入面 SHALL 恢复接受新消息。计划草案处于 y/n 待决时，Ctrl+B
+SHALL 等价于放弃草案（草案丢弃、模式回到 `quick`）。无在途轮次时，Ctrl+B SHALL 保持既有
+barge-in（TTS 打断）语义，SHALL NOT 结束进程。
+
 #### Scenario: 在途阻塞工作不阻塞退出
 - **GIVEN** TUI 正有一轮在途，且其工作线程阻塞在长读（如 LLM 流式响应 / 工具执行）
 - **WHEN** 用户按 Ctrl+Q
@@ -1035,6 +1048,22 @@ TUI 用户请求退出（Ctrl+Q）时，进程 SHALL 及时结束：退出路径
 - **GIVEN** TUI 正有一轮在途
 - **WHEN** 用户按 Ctrl+B
 - **THEN** 仅打断本轮（进程继续运行）；Ctrl+Q 才结束进程
+
+#### Scenario: 打断在途轮次后输入恢复
+- **GIVEN** TUI 正有一轮在途（LLM 流未收束）
+- **WHEN** 用户按 Ctrl+B
+- **THEN** 该轮被取消、忙态复位并明示「已打断本轮」；随后发送的新消息 SHALL 被正常受理
+  （进程不退出）
+
+#### Scenario: 打断待决计划草案等价放弃
+- **GIVEN** 计划草案已呈现并挂起等待 y/n
+- **WHEN** 用户按 Ctrl+B
+- **THEN** 草案被丢弃、会话模式回到 `quick`、编排器 SHALL NOT 被驱动；提示「已放弃计划」
+
+#### Scenario: 空闲时 barge-in 语义不变
+- **GIVEN** TUI 空闲（无在途轮次、无待决草案）
+- **WHEN** 用户按 Ctrl+B
+- **THEN** 仅呈现既有 barge-in（TTS 打断）提示，进程不退出、无轮次状态变化
 
 ### Requirement: TUI 优雅退出（`/exit`）
 

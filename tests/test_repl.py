@@ -327,6 +327,102 @@ def test_plan_approval_drives_orchestrator_not_loop() -> None:
     assert "任务完成" in text  # task_finished 终态单行（✔ 任务完成…）
 
 
+# ---- Ctrl+B 打断本轮（change 0316） ----
+
+
+def test_ctrl_b_interrupts_inflight_turn_and_restores_input() -> None:
+    """Ctrl+B 取消在途轮次：忙态复位、明示打断、输入恢复（进程不退出）。"""
+    release = asyncio.Event()
+    started = asyncio.Event()
+    inputs: list[str] = []
+
+    class _BlockingLoop:
+        async def astream(self, user_input: str, *, session_id: str = ""):
+            inputs.append(user_input)
+            started.set()
+            await release.wait()  # 模拟长读：不 release 则本轮永不收束
+            yield LoopEvent("loop_finished", {"reply": "late"})
+
+    api = UIAPILayer(loop=_BlockingLoop())
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> tuple[bool, list[str], str]:
+        async with app.run_test() as pilot:
+            await _type_line(pilot, "hi")
+            for _ in range(50):
+                await pilot.pause()
+                if started.is_set():
+                    break
+            assert app._turn_busy  # noqa: SLF001 — 忙态窗口确定
+            await pilot.press("ctrl+b")
+            for _ in range(50):
+                await pilot.pause()
+                if not app._turn_busy:  # noqa: SLF001
+                    break
+            busy = app._turn_busy  # noqa: SLF001
+            release.set()
+            await _type_line(pilot, "yo")  # 打断后新消息可受理
+            for _ in range(50):
+                await pilot.pause()
+                if len(inputs) >= 2 and not app._turn_busy:  # noqa: SLF001, PLR2004
+                    break
+            return busy, list(inputs), _timeline_text(app)
+
+    busy, seen, text = asyncio.run(drive())
+    assert busy is False  # 忙态复位（不变式）
+    assert seen == ["hi", "yo"]  # 打断后输入恢复
+    assert "已打断本轮" in text
+
+
+def test_ctrl_b_discards_pending_plan_draft() -> None:
+    """草案 y/n 待决时 Ctrl+B 等价放弃：草案丢弃、模式回 quick、编排器不被驱动。"""
+    orch = _TaskOrchestrator([])
+    api = UIAPILayer(loop=RecordingLoop(), orchestrator=orch, plan_loop=_PLAN_LOOP)
+    api.set_llm_config(_llm())
+    sid = api.create_session("cli")
+    app = build_app(api, sid)
+
+    async def drive() -> tuple[str, bool, str]:
+        async with app.run_test() as pilot:
+            await _type_line(pilot, "/plan")
+            await _type_line(pilot, "检索论文")
+            for _ in range(80):
+                await pilot.pause()
+                if app._plan_future is not None:  # noqa: SLF001 — 草案已挂起
+                    break
+            await pilot.press("ctrl+b")
+            for _ in range(80):
+                await pilot.pause()
+                if app._plan_future is None and not app._turn_busy:  # noqa: SLF001
+                    break
+            return api.agent_mode(sid), bool(orch.goals), _timeline_text(app)
+
+    mode, ran, text = asyncio.run(drive())
+    assert mode == "quick"  # 放弃后回快速模式
+    assert ran is False  # 未被批准执行
+    assert "已放弃计划" in text
+
+
+def test_ctrl_b_idle_keeps_barge_in_hint() -> None:
+    """无在途轮次时 Ctrl+B 保持既有 barge-in（TTS）语义，不产生打断提示。"""
+    api = UIAPILayer(loop=RecordingLoop())
+    api.set_llm_config(_llm())
+    app = build_app(api)
+
+    async def drive() -> str:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("ctrl+b")
+            for _ in range(10):
+                await pilot.pause()
+            return _timeline_text(app)
+
+    text = asyncio.run(drive())
+    assert "语音播报被打断" in text
+    assert "已打断本轮" not in text
+
+
 def test_plan_command_rejects_args() -> None:
     """`/plan` 不接受参数（只切换模式）：给出提示且模式不变。"""
     api = UIAPILayer(loop=RecordingLoop(), plan_loop=_PLAN_LOOP)

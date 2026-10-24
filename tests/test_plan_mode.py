@@ -142,7 +142,12 @@ def test_run_plan_turn_emits_draft_without_exploration() -> None:
 
     events = asyncio.run(_collect(api.run_plan_turn(sid, "实现登录")))
 
-    assert [event.type for event in events] == ["loop.delta", "loop.result", "plan.draft_ready"]
+    assert [event.type for event in events] == [
+        "loop.delta",
+        "loop.result",
+        "plan.drafting",
+        "plan.draft_ready",
+    ]
     assert loop.inputs == ["实现登录"]
     assert loop.sessions == [sid]
     assert orch.drafts[0]["goal"] == "实现登录"
@@ -154,6 +159,27 @@ def test_run_plan_turn_emits_draft_without_exploration() -> None:
     assert "exploration" not in payload
     assert "仓库是 Python 项目" not in json.dumps(payload, ensure_ascii=False)
     assert api.agent_mode(sid) == "plan"  # 批准前仍在 plan
+
+
+def test_run_plan_turn_emits_drafting_before_decompose_starts() -> None:
+    """拆解等待期可见：`plan.drafting` 须在拆解调用**发起前**产出（change 0316）。"""
+    orch = _Orchestrator()
+    api, sid = _api(plan_loop=_PlanLoop(), orchestrator=orch)
+    api.set_agent_mode(sid, "plan")
+
+    async def drive() -> tuple[list[str], bool]:
+        seen: list[str] = []
+        decompose_started_at_drafting = False
+        async for event in api.run_plan_turn(sid, "实现登录"):
+            seen.append(event.type)
+            if event.type == "plan.drafting":
+                decompose_started_at_drafting = bool(orch.drafts)
+        return seen, decompose_started_at_drafting
+
+    seen, decompose_started_at_drafting = asyncio.run(drive())
+
+    assert "plan.drafting" in seen
+    assert not decompose_started_at_drafting  # 事件先于拆解调用发起
 
 
 def test_run_plan_turn_requires_plan_mode() -> None:

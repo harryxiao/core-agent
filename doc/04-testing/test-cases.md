@@ -5454,3 +5454,41 @@ SSE 注释 / keep-alive 不入队 ⇒ 「连接活着但无增量」时无限等
 > **实测**：全量 pytest **3646 passed**（3636 + 10）；`openspec validate --all` 32/0（含本 active
 > change；归档后 31/0）。
 > **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0305 行。
+
+---
+
+## 229. 计划轮可信度与可打断性（change 0316 / ADR-0306）
+
+**目标**：`tools.list` SHALL 明示只列插件（内置原子工具始终可用）；计划草案 SHALL NOT 把勘察
+结论当子任务指令；拆解阶段 SHALL 可见（`plan.drafting`）；`Ctrl+B` SHALL 真正打断本轮
+（取消在途轮次 / 放弃待决草案），空闲时保持既有 barge-in 语义。
+
+### 229.1 工具口径（TC-PLANTURN-TOOLS）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-PLANTURN-TOOLS-01 | 空插件清单附注 | 未安装任何插件时调用 `tools.list` | `installed == []`；描述含「内置原子工具」；载荷 `note` 说明内置原子工具与插件状态无关、清单为空不代表无可用工具（`tests/test_install_tools.py::test_list_tool_clarifies_plugin_only_scope`） |
+
+### 229.2 草案归一（TC-PLANTURN-DRAFT）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-PLANTURN-DRAFT-01 | **回落归一** | 拆解器回显送入文本（「原始目标 + 勘察上下文」） | 顶层 `goal` 与唯一子任务目标均为原始目标；勘察上下文仍被送入拆解（`tests/test_self_run.py::test_draft_plan_normalizes_planner_fallback_goal`） |
+| TC-PLANTURN-DRAFT-02 | 非回落不误伤 | 单子任务 `goal="检索 arxiv 论文"`、验收非空 | 子任务目标与验收逐字保留（`...::test_draft_plan_keeps_non_fallback_single_subtask_goal`） |
+
+### 229.3 事件与呈现（TC-PLANTURN-UI）
+
+| 编号 | 场景 | 输入 / 场景 | 期望 |
+|---|---|---|---|
+| TC-PLANTURN-UI-01 | 阶段事件顺序 | plan 模式一条目标消息 | 事件序 `loop.delta, loop.result, plan.drafting, plan.draft_ready`（`tests/test_plan_mode.py::test_run_plan_turn_emits_draft_without_exploration`） |
+| TC-PLANTURN-UI-02 | drafting 先于拆解 | 消费到 `plan.drafting` 时检查编排器 | 拆解调用尚未发起（`...::test_run_plan_turn_emits_drafting_before_decompose_starts`） |
+| TC-PLANTURN-UI-03 | **打断在途轮并恢复输入** | 阻塞 loop 在途时按 Ctrl+B | 忙态复位、时间线含「已打断本轮」、随后新消息被受理（`tests/test_repl.py::test_ctrl_b_interrupts_inflight_turn_and_restores_input`） |
+| TC-PLANTURN-UI-04 | 打断待决草案 | 草案 y/n 待决时按 Ctrl+B | 模式回 `quick`、编排器未被驱动、时间线含「已放弃计划」（`...::test_ctrl_b_discards_pending_plan_draft`） |
+| TC-PLANTURN-UI-05 | 空闲 barge-in 不变 | 空闲时按 Ctrl+B | 含「语音播报被打断」、不含「已打断本轮」（`...::test_ctrl_b_idle_keeps_barge_in_hint`） |
+
+> **反证 4/4**（`cp` 到 `/tmp`、复原后 `md5sum` 一致）：去掉 `note` ⇒ TC-PLANTURN-TOOLS-01 红；
+> 去掉回落归一 ⇒ TC-PLANTURN-DRAFT-01 红；去掉 `plan.drafting` ⇒ TC-PLANTURN-UI-01/02 红；
+> `action_barge_in` 恢复为仅 TTS 提示 ⇒ TC-PLANTURN-UI-03/04 红。
+> **实测**：全量 pytest **3653 passed**（3646 + 7）；`openspec validate --all` 32/0（含本 active
+> change；归档后 31/0）。
+> **已知局限**：见 `coding-plan/known-risk.md` §3 ADR-0306 行。

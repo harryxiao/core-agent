@@ -28,7 +28,7 @@ class UIAPILayer:
     def set_agent_mode(self, session_id: str, mode: str) -> None:
         """切换 `quick|plan`；非法值 ⇒ UI_PLAN_MODE_INVALID（不改原值）。"""
     async def run_plan_turn(self, session_id: str, user_input: str) -> AsyncIterator[Event]:
-        """计划轮：只读勘察（plan loop，READ 工具面）→ 草案 → `plan.draft_ready`。
+        """计划轮：只读勘察（plan loop，READ 工具面）→ `plan.drafting` → 草案 → `plan.draft_ready`。
         要求会话处于 plan 模式（否则 UI_PLAN_MODE_INVALID）；缺 plan loop / 编排器 ⇒
         UI_PLAN_UNAVAILABLE；拆解失败 ⇒ UI_PLAN_DRAFT_FAILED。事件载荷不含勘察原文。"""
     async def approve_plan(self, session_id: str, draft_id: str) -> AsyncIterator[Event]:
@@ -333,8 +333,10 @@ Web 侧同一语义由标签栏 + 只读详情承接（见上段）。
 `quick`（缺省，`DefaultLoop` 直出）与 `plan`；`/plan` / `/quick` 切换（真源 `_COMMANDS` 登记，参数位
 报用法），`/task` **不再是** TUI 入口（CLI `task` 与 Web `POST /task` 作为操作面保留）。plan 模式下输入
 目标 ⇒ `run_plan_turn`（**只读**勘察循环 `plan_loop` + `ToolProvider.subset(readonly_tool_ids())`，
-显式排除 `tools.delegate`）⇒ 编排器 `draft_plan` 产出**会话内临时** `PlanDraft`（进程内、一会话一草案、
-一次性）⇒ 时间线呈现 `plan.draft_ready` 的 `{goal, subtasks, waves, success_criteria}`（**不含**勘察原文）
+显式排除 `tools.delegate`）⇒ `plan.drafting`（拆解阶段信号，状态行「拆解计划中」；change 0316 /
+ADR-0306）⇒ 编排器 `draft_plan` 产出**会话内临时** `PlanDraft`（进程内、一会话一草案、
+一次性；拆解器回落为单子任务且目标逐字等于送入文本时，子任务目标还原为原始目标，勘察上下文
+不成为执行指令）⇒ 时间线呈现 `plan.draft_ready` 的 `{goal, subtasks, waves, success_criteria}`（**不含**勘察原文）
 并进入审批挂起：`y` ⇒ `approve_plan`（**执行前**先回 `quick`，以 `self_run=True` 走既有任务事件面），
 `n` ⇒ `discard_plan`（回 `quick`），其他输入**重提示**、不消费草案。审批挂起期间浮层收起（承 0159 口径）。
 **单子任务且注入了 `self_loop`** ⇒ 自跑（不经 router 委派），其余情形逐字沿用既有路由；缺 `plan_loop` /
@@ -346,6 +348,12 @@ Web 侧同一语义由标签栏 + 只读详情承接（见上段）。
 （取消残留任务 → `shutdown_asyncgens` → `close`），**不**调用 `shutdown_default_executor`。
 ⇒ Ctrl+Q 不等待在途 LLM 流 / 工具线程（实测在途 45s 工作下 0.36s 退出，原为 42.4s）；
 **退出即放弃在途轮次**，「停本轮」仍由 Ctrl+B 承担。TUI 内呈现、命令、审批语义逐字不变。
+
+**TUI 打断本轮（`Ctrl+B`，change 0316 / ADR-0306）**：`_turn_worker` 登记计划轮 / 快速轮 /
+神兽轮的 worker；`action_barge_in` 三态 —— 计划草案 y/n 待决 ⇒ 等价放弃（`_plan_future` 置
+False，草案丢弃、模式回 `quick`）；在途 worker 未结束 ⇒ `worker.cancel()`（轮次 `finally` 复位
+忙态、固化已收内容、输入恢复，进程不退出）；无在途轮次 ⇒ 既有 barge-in（TTS）提示逐字不变。
+`ui` 规格「Ctrl+B 打断（停本轮）与 Ctrl+Q 退出（结束进程）语义分离」由此落实。
 
 **TUI 优雅退出（`/exit`，change 0315 / ADR-0305）**：`/exit` 在**无在途轮次**时先显示「正在保存会话
 记忆…」，经 `UIAPILayer.flush_post_turn` 有界等待本会话**轮末后台收尾链**（技能反馈 + 记忆压实/遗忘，

@@ -69,6 +69,22 @@ def test_list_tool_lists_installed() -> None:
     assert any(item["plugin_id"] == "installed.skill.demo" for item in result["installed"])
 
 
+def test_list_tool_clarifies_plugin_only_scope() -> None:
+    """list 只列**插件安装面**；描述与载荷须注明内置原子工具与之无关（change 0316）。
+
+    回归：模型曾据 `{"installed": []}` 断言「运行时未安装任何插件 ⇒ 没有可用的网络原子工具」，
+    尽管 `tools.web_fetch` 始终在工具面。
+    """
+    tool = list_tool(_installer())
+    result = tool.handler()
+
+    assert result["installed"] == []
+    assert "内置原子工具" in tool.definition.description
+    note = result["note"]
+    assert "内置原子工具" in note
+    assert "不代表" in note
+
+
 # ---- 组合根接线（change 0108 / 账本 E33）----
 
 

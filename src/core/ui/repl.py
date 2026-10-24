@@ -921,6 +921,7 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
             self._plan_future: Any | None = None
             self._plan_draft_id: str = ""
             self._turn_busy = False  # 本轮 worker 是否在跑（忙时新消息提示等待）
+            self._turn_worker: Any | None = None  # 在途轮次 worker（Ctrl+B 打断用；change 0316）
             self._open: dict[str, tuple[Collapsible, Static, str]] = {}  # sid→(块, 详情, goal)
             self._focus_sid: str = ""  # 焦点中的子任务标识（"" = 主视图）
             self._focus_box: Collapsible | None = None  # 焦点折叠块（身份绑定：sid 跨任务复用）
@@ -1087,6 +1088,22 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
                 self._spin_start("思考中")
 
         def action_barge_in(self) -> None:
+            """Ctrl+B：打断本轮（停本轮，进程不退出；change 0316）。
+
+            计划草案 y/n 待决 ⇒ 等价放弃（`_run_plan_turn` 收到 False 后丢弃草案回 quick）；
+            在途轮次 ⇒ 取消其 worker（轮次 `finally` 复位忙态、固化已收内容）；无在途轮次 ⇒
+            既有 barge-in（TTS）语义逐字不变（`ui` 规格「Ctrl+B 与 Ctrl+Q 语义分离」）。
+            """
+            draft = self._plan_future
+            if draft is not None and not draft.done():
+                draft.set_result(False)
+                self._add(Static("⏹ 已打断本轮（计划草案已放弃）", classes="hint", markup=False))
+                return
+            worker = self._turn_worker
+            if worker is not None and not worker.is_finished:
+                worker.cancel()
+                self._add(Static("⏹ 已打断本轮（Ctrl+Q 退出）", classes="hint", markup=False))
+                return
             line = _format_event(barge_in_event(api))
             if line:
                 self._add(Static(line, classes="hint", markup=False))
@@ -1261,9 +1278,9 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
                 if self._handle_beast_command(text):  # 神兽斜杠入口（change 0137）
                     return
                 if api.agent_mode(self._session_id) == "plan":  # 计划模式：只读勘察轮
-                    self.run_worker(self._run_plan_turn(text))
+                    self._turn_worker = self.run_worker(self._run_plan_turn(text))
                 else:
-                    self.run_worker(self._run_turn(text))
+                    self._turn_worker = self.run_worker(self._run_turn(text))
             except Exception:  # 派发失败：复位忙态后原样冒泡（崩溃可见性不变）
                 self._turn_busy = False
                 raise
@@ -1383,7 +1400,7 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
                 self._add(Static(_BEAST_USAGE, classes="hint"))
                 self._turn_busy = False
             else:
-                self.run_worker(self._run_beast_turn(*parsed))
+                self._turn_worker = self.run_worker(self._run_beast_turn(*parsed))
             return True
 
         # ---- 神兽轮（/summon · /recall，change 0137 / 账本 E74）----
@@ -1425,6 +1442,9 @@ MarkdownFence Label {  /* 内层 Label 自带 padding 1 2（围栏 N+4 行的另
                 async for event in api.run_plan_turn(self._session_id, text):
                     if event.type == "plan.draft_ready":
                         draft_id, future = self._present_plan_draft(event)
+                        continue
+                    if event.type == "plan.drafting":  # 拆解等待期（可达数十秒）
+                        self._spin_start("拆解计划中")
                         continue
                     self._handle_turn_event(event, end_turn=False)
                 if draft_id and future is not None:

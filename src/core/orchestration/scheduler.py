@@ -387,6 +387,9 @@ class TaskScheduler:
             text = f"{goal}\n\n【只读勘察结论（供拆解参考）】\n{context[:MAX_HANDOFF_CHARS]}"
         plan = await self._decomposer.decompose(text, success_criteria)
         plan.goal = goal
+        # 拆解器回落（单子任务、目标逐字等于送入文本）会把勘察上下文当子任务指令 ⇒ 还原原始目标
+        if len(plan.subtasks) == 1 and plan.subtasks[0].goal.strip() == text.strip():
+            plan.subtasks[0].goal = goal
         return plan
 
     async def _stream_task(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — 主管线多早退/多分支
